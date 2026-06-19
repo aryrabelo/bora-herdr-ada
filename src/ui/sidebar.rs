@@ -662,7 +662,7 @@ pub(super) fn render_sidebar_collapsed(app: &AppState, frame: &mut Frame, area: 
             break;
         }
         let (agg_state, agg_seen) = ws.aggregate_state(&app.terminals);
-        let (icon, icon_style) = state_dot(agg_state, agg_seen, p);
+        let (icon, icon_style) = state_dot(agg_state, agg_seen, app.spinner_tick, p);
         let is_selected = visible_idx == app.selected && is_navigating;
         let is_active = Some(visible_idx) == app.active;
         let row_style = if is_selected {
@@ -878,7 +878,7 @@ fn render_workspace_list(
             Style::default().fg(p.subtext0)
         };
 
-        let (icon, icon_style) = state_dot(agg_state, agg_seen, p);
+        let (icon, icon_style) = state_dot(agg_state, agg_seen, app.spinner_tick, p);
         let label = ws.display_name_from(&app.terminals, terminal_runtimes);
         let mut line1 = Vec::new();
         let mut show_workspace_icon = true;
@@ -888,7 +888,7 @@ fn render_workspace_list(
             let icon = if collapsed { "▸" } else { "▾" };
             let (state_icon, state_style) = if collapsed {
                 let (state, seen) = space_aggregate_state(app, &key);
-                state_dot(state, seen, p)
+                state_dot(state, seen, app.spinner_tick, p)
             } else {
                 (icon, Style::default().fg(p.accent))
             };
