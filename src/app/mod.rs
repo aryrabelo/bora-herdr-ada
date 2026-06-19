@@ -514,6 +514,7 @@ impl App {
             request_submit_worktree_create: false,
             request_submit_worktree_open: false,
             request_submit_worktree_remove: false,
+            request_submit_worktree_merge: false,
             request_reload_config: false,
             request_client_config_reload: false,
             request_clipboard_write: None,
