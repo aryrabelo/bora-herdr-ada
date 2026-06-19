@@ -146,6 +146,7 @@ impl App {
             error: None,
             removing: false,
             force_confirmation: false,
+            branch: ws.branch(),
         });
         self.state.mode = Mode::ConfirmRemoveWorktree;
     }
@@ -576,6 +577,7 @@ impl App {
                 };
             }
             KeyCode::Enter => self.start_worktree_remove(),
+            KeyCode::Char('m') => self.start_worktree_merge_and_remove(),
             _ => {}
         }
     }
@@ -651,6 +653,61 @@ impl App {
                     result,
                 },
             )));
+        });
+    }
+
+    /// Merge the worktree's branch into the base checkout, then remove it.
+    /// Aborts (no changes applied) if either side is dirty or the merge
+    /// conflicts; the resulting error is shown in the confirmation popup.
+    pub(crate) fn start_worktree_merge_and_remove(&mut self) {
+        let Some((workspace_id, repo_root, path, branch)) =
+            self.state.worktree_remove.as_mut().and_then(|remove| {
+                if remove.removing {
+                    return None;
+                }
+                let branch = remove.branch.clone()?;
+                remove.removing = true;
+                remove.error = None;
+                Some((
+                    remove.workspace_id.clone(),
+                    remove.repo_root.clone(),
+                    remove.path.clone(),
+                    branch,
+                ))
+            })
+        else {
+            return;
+        };
+
+        tracing::info!(workspace_id = %workspace_id, branch = %branch, "starting worktree merge-and-remove");
+        let event_tx = self.event_tx.clone();
+        std::thread::spawn(move || {
+            let result = (|| -> Result<(), String> {
+                if crate::worktree::checkout_has_dirty_files(&path)? {
+                    return Err(
+                        "worktree has uncommitted changes; commit them before merging".into(),
+                    );
+                }
+                if crate::worktree::checkout_has_dirty_files(&repo_root)? {
+                    return Err(
+                        "base checkout has uncommitted changes; commit or stash them first".into(),
+                    );
+                }
+                let merge = crate::worktree::build_worktree_merge_command(&repo_root, &branch);
+                if let Err(err) = crate::worktree::run_worktree_command(&merge) {
+                    let abort = crate::worktree::build_worktree_merge_abort_command(&repo_root);
+                    let _ = crate::worktree::run_worktree_command(&abort);
+                    return Err(format!("merge failed (no changes applied): {err}"));
+                }
+                let remove = crate::worktree::build_worktree_remove_command(&repo_root, &path, false);
+                crate::worktree::run_worktree_command(&remove)
+            })();
+            let _ =
+                event_tx.blocking_send(AppEvent::WorktreeRemoveFinished(WorktreeRemoveResult {
+                    workspace_id,
+                    path,
+                    result,
+                }));
         });
     }
 
@@ -1802,6 +1859,7 @@ mod tests {
             error: None,
             removing: true,
             force_confirmation: false,
+            branch: None,
         });
 
         app.handle_worktree_remove_finished(WorktreeRemoveResult {
@@ -1834,6 +1892,7 @@ mod tests {
             error: None,
             removing: true,
             force_confirmation: false,
+            branch: None,
         });
 
         app.handle_worktree_remove_finished(WorktreeRemoveResult {

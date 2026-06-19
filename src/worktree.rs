@@ -196,7 +196,6 @@ pub(crate) fn worktree_dirty_remove_message(path: &Path) -> String {
     )
 }
 
-#[cfg(any(windows, test))]
 pub(crate) fn checkout_has_dirty_files(path: &Path) -> Result<bool, String> {
     let path_arg = path.display().to_string();
     let output = std::process::Command::new("git")
@@ -242,6 +241,35 @@ pub(crate) fn build_worktree_add_new_branch_command(
             branch.to_string(),
             path.display().to_string(),
             base.to_string(),
+        ],
+    }
+}
+
+/// Merge `branch` into whatever is checked out at `repo_root` (the parent/main
+/// checkout). Uses --no-ff so the merged worktree leaves a marker commit.
+pub(crate) fn build_worktree_merge_command(repo_root: &Path, branch: &str) -> WorktreeCommand {
+    WorktreeCommand {
+        program: "git".to_string(),
+        args: vec![
+            "-C".to_string(),
+            repo_root.display().to_string(),
+            "merge".to_string(),
+            "--no-ff".to_string(),
+            "--no-edit".to_string(),
+            branch.to_string(),
+        ],
+    }
+}
+
+/// Abort an in-progress merge in `repo_root` (used to clean up after a conflict).
+pub(crate) fn build_worktree_merge_abort_command(repo_root: &Path) -> WorktreeCommand {
+    WorktreeCommand {
+        program: "git".to_string(),
+        args: vec![
+            "-C".to_string(),
+            repo_root.display().to_string(),
+            "merge".to_string(),
+            "--abort".to_string(),
         ],
     }
 }
@@ -476,6 +504,27 @@ mod tests {
         run_git(&repo, &["add", "README.md"]);
         run_git(&repo, &["commit", "--quiet", "-m", "initial"]);
         repo
+    }
+
+    #[test]
+    fn merge_command_brings_worktree_branch_into_base() {
+        let repo = create_committed_repo("merge-base");
+        let wt = unique_temp_path("merge-wt");
+        run_git(
+            &repo,
+            &["worktree", "add", "-b", "feat-x", wt.to_str().unwrap()],
+        );
+        std::fs::write(wt.join("feature.txt"), "hi\n").unwrap();
+        run_git(&wt, &["add", "feature.txt"]);
+        run_git(&wt, &["commit", "--quiet", "-m", "feature"]);
+
+        let merge = build_worktree_merge_command(&repo, "feat-x");
+        run_worktree_command(&merge).expect("merge should succeed");
+
+        assert!(
+            repo.join("feature.txt").exists(),
+            "merge should bring the branch's file into the base checkout"
+        );
     }
 
     #[test]

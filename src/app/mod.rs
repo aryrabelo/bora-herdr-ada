@@ -933,6 +933,12 @@ impl App {
                 needs_render = true;
             }
 
+            if self.state.request_submit_worktree_merge {
+                self.state.request_submit_worktree_merge = false;
+                self.start_worktree_merge_and_remove();
+                needs_render = true;
+            }
+
             if self.state.request_reload_config {
                 self.state.request_reload_config = false;
                 self.reload_config();
