@@ -80,6 +80,19 @@ fn pane_attention_priority(state: AgentState, seen: bool) -> u8 {
     }
 }
 
+/// Display-only priority: prefers `Working` over a just-finished `Done`
+/// (Idle-unseen). Mirrors `pane_attention_priority` but is used to pick the dot
+/// shown for a space, not the sort order.
+fn pane_display_priority(state: AgentState, seen: bool) -> u8 {
+    match (state, seen) {
+        (AgentState::Blocked, _) => 4,
+        (AgentState::Working, _) => 3,
+        (AgentState::Idle, false) => 2,
+        (AgentState::Idle, true) => 1,
+        (AgentState::Unknown, _) => 0,
+    }
+}
+
 impl Workspace {
     pub fn aggregate_state(
         &self,
@@ -94,6 +107,25 @@ impl Workspace {
                     .map(|terminal| (terminal.state, pane.seen))
             })
             .max_by_key(|(state, seen)| pane_attention_priority(*state, *seen))
+            .unwrap_or((AgentState::Unknown, true))
+    }
+
+    /// Like `aggregate_state` but uses `pane_display_priority`, so a `Working`
+    /// pane wins over a just-finished `Done` pane. Drives the SPACES dot only;
+    /// the agent-panel sort still uses `aggregate_state`.
+    pub fn aggregate_display_state(
+        &self,
+        terminals: &HashMap<TerminalId, TerminalState>,
+    ) -> (AgentState, bool) {
+        self.tabs
+            .iter()
+            .flat_map(|tab| tab.panes.values())
+            .filter_map(|pane| {
+                terminals
+                    .get(&pane.attached_terminal_id)
+                    .map(|terminal| (terminal.state, pane.seen))
+            })
+            .max_by_key(|(state, seen)| pane_display_priority(*state, *seen))
             .unwrap_or((AgentState::Unknown, true))
     }
 
@@ -193,6 +225,38 @@ mod tests {
 
         assert_eq!(state, AgentState::Idle);
         assert!(!seen);
+    }
+
+    #[test]
+    fn aggregate_display_state_working_beats_done() {
+        let mut ws = Workspace::test_new("test");
+        let id2 = ws.test_split(Direction::Horizontal);
+        let root_id = ws.tabs[0]
+            .panes
+            .keys()
+            .find(|id| **id != id2)
+            .copied()
+            .unwrap();
+        let mut terminals = HashMap::new();
+        let mut root_terminal = terminal_for_pane(&ws, root_id);
+        root_terminal.state = AgentState::Idle;
+        terminals.insert(root_terminal.id.clone(), root_terminal);
+        let mut second_terminal = terminal_for_pane(&ws, id2);
+        second_terminal.state = AgentState::Working;
+        terminals.insert(second_terminal.id.clone(), second_terminal);
+        let root = ws.tabs[0].panes.get_mut(&root_id).unwrap();
+        root.seen = false;
+
+        // Display prefers the live Working pane over the just-finished Done pane.
+        let (display_state, display_seen) = ws.aggregate_display_state(&terminals);
+        assert_eq!(display_state, AgentState::Working);
+        assert!(display_seen);
+
+        // Sort priority still surfaces the Done (Idle-unseen) pane, proving the
+        // display and sort orderings are decoupled.
+        let (sort_state, sort_seen) = ws.aggregate_state(&terminals);
+        assert_eq!(sort_state, AgentState::Idle);
+        assert!(!sort_seen);
     }
 
     #[test]

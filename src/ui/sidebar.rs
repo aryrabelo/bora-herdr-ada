@@ -239,12 +239,34 @@ fn workspace_attention_priority(state: AgentState, seen: bool) -> u8 {
     }
 }
 
+/// Display-only priority for a space's aggregate dot: prefers `Working` over a
+/// just-finished `Done` (Idle-unseen). Mirrors `workspace_attention_priority`
+/// but does not affect sort order.
+fn workspace_display_priority(state: AgentState, seen: bool) -> u8 {
+    match (state, seen) {
+        (AgentState::Blocked, _) => 4,
+        (AgentState::Working, _) => 3,
+        (AgentState::Idle, false) => 2,
+        (AgentState::Idle, true) => 1,
+        (AgentState::Unknown, _) => 0,
+    }
+}
+
 fn space_aggregate_state(app: &AppState, key: &str) -> (AgentState, bool) {
     app.workspaces
         .iter()
         .filter(|ws| ws.worktree_space().is_some_and(|space| space.key == key))
         .map(|ws| ws.aggregate_state(&app.terminals))
         .max_by_key(|(state, seen)| workspace_attention_priority(*state, *seen))
+        .unwrap_or((AgentState::Unknown, true))
+}
+
+fn space_aggregate_display_state(app: &AppState, key: &str) -> (AgentState, bool) {
+    app.workspaces
+        .iter()
+        .filter(|ws| ws.worktree_space().is_some_and(|space| space.key == key))
+        .map(|ws| ws.aggregate_display_state(&app.terminals))
+        .max_by_key(|(state, seen)| workspace_display_priority(*state, *seen))
         .unwrap_or((AgentState::Unknown, true))
 }
 
@@ -661,7 +683,7 @@ pub(super) fn render_sidebar_collapsed(app: &AppState, frame: &mut Frame, area: 
         if y >= ws_area.y + ws_area.height {
             break;
         }
-        let (agg_state, agg_seen) = ws.aggregate_state(&app.terminals);
+        let (agg_state, agg_seen) = ws.aggregate_display_state(&app.terminals);
         let (icon, icon_style) = state_dot(agg_state, agg_seen, app.spinner_tick, p);
         let is_selected = visible_idx == app.selected && is_navigating;
         let is_active = Some(visible_idx) == app.active;
@@ -851,7 +873,7 @@ fn render_workspace_list(
         let is_active = Some(i) == app.active;
         let is_dragged = dragged_ws_idx == Some(i);
         let highlighted = selected || is_active || is_dragged;
-        let (agg_state, agg_seen) = ws.aggregate_state(&app.terminals);
+        let (agg_state, agg_seen) = ws.aggregate_display_state(&app.terminals);
 
         if highlighted {
             let bg = if selected {
@@ -887,7 +909,7 @@ fn render_workspace_list(
         } else if let Some((key, collapsed)) = workspace_parent_group_state(app, i) {
             let icon = if collapsed { "▸" } else { "▾" };
             let (state_icon, state_style) = if collapsed {
-                let (state, seen) = space_aggregate_state(app, &key);
+                let (state, seen) = space_aggregate_display_state(app, &key);
                 state_dot(state, seen, app.spinner_tick, p)
             } else {
                 (icon, Style::default().fg(p.accent))
