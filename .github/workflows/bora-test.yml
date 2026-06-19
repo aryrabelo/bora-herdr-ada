@@ -1,6 +1,8 @@
 name: bora test
 
 on:
+  push:
+    branches: [bora]
   workflow_dispatch:
 
 permissions:
