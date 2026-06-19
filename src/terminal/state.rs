@@ -1046,7 +1046,7 @@ mod tests {
     }
 
     #[test]
-    fn omp_hook_authority_works_without_detected_agent_variant() {
+    fn omp_hook_authority_uses_omp_agent_variant() {
         let mut terminal = test_terminal();
         terminal.set_hook_authority(
             "herdr:omp".into(),
@@ -1058,7 +1058,7 @@ mod tests {
 
         assert_eq!(terminal.detected_agent, None);
         assert_eq!(terminal.effective_agent_label(), Some("omp"));
-        assert_eq!(terminal.effective_known_agent(), None);
+        assert_eq!(terminal.effective_known_agent(), Some(Agent::Omp));
         assert_eq!(terminal.state, AgentState::Working);
 
         let change = terminal.set_detected_state_with_visible_blocker(

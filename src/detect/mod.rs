@@ -42,6 +42,7 @@ pub struct AgentDetection {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Agent {
     Pi,
+    Omp,
     Claude,
     Codex,
     Gemini,
@@ -62,8 +63,9 @@ pub enum Agent {
 }
 
 impl Agent {
-    pub const ALL: [Self; 18] = [
+    pub const ALL: [Self; 19] = [
         Self::Pi,
+        Self::Omp,
         Self::Claude,
         Self::Codex,
         Self::Gemini,
@@ -87,6 +89,7 @@ impl Agent {
 pub fn agent_label(agent: Agent) -> &'static str {
     match agent {
         Agent::Pi => "pi",
+        Agent::Omp => "omp",
         Agent::Claude => "claude",
         Agent::Codex => "codex",
         Agent::Gemini => "gemini",
@@ -111,6 +114,7 @@ pub fn parse_agent_label(agent: &str) -> Option<Agent> {
     let name = normalized_agent_lookup_name(agent);
     match name.as_str() {
         "pi" => Some(Agent::Pi),
+        "omp" => Some(Agent::Omp),
         "claude" | "claude-code" => Some(Agent::Claude),
         "codex" => Some(Agent::Codex),
         "gemini" => Some(Agent::Gemini),
@@ -139,6 +143,7 @@ pub fn identify_agent(process_name: &str) -> Option<Agent> {
     // Match against known binary names
     match name.as_str() {
         "pi" => Some(Agent::Pi),
+        "omp" => Some(Agent::Omp),
         "claude" | "claude-code" => Some(Agent::Claude),
         "codex" => Some(Agent::Codex),
         "gemini" => Some(Agent::Gemini),
@@ -581,6 +586,7 @@ mod tests {
     #[test]
     fn identify_known_agents() {
         assert_eq!(identify_agent("pi"), Some(Agent::Pi));
+        assert_eq!(identify_agent("omp"), Some(Agent::Omp));
         assert_eq!(identify_agent("claude"), Some(Agent::Claude));
         assert_eq!(identify_agent("claude-code"), Some(Agent::Claude));
         assert_eq!(identify_agent("codex"), Some(Agent::Codex));
@@ -611,6 +617,7 @@ mod tests {
     #[test]
     fn parse_known_agent_labels() {
         assert_eq!(parse_agent_label("pi"), Some(Agent::Pi));
+        assert_eq!(parse_agent_label("omp"), Some(Agent::Omp));
         assert_eq!(parse_agent_label("claude"), Some(Agent::Claude));
         assert_eq!(parse_agent_label("cursor-agent"), Some(Agent::Cursor));
         assert_eq!(parse_agent_label("devin-cli"), Some(Agent::Devin));
@@ -628,6 +635,17 @@ mod tests {
         assert_eq!(parse_agent_label("grok-build"), Some(Agent::Grok));
         assert_eq!(parse_agent_label("hermes-agent"), Some(Agent::Hermes));
         assert_eq!(parse_agent_label("kilo-code"), Some(Agent::Kilo));
+    }
+
+    #[test]
+    fn detect_omp_pi_states_from_status_bar() {
+        // omp/pi renders a "π  /" status bar; a turn in progress shows the
+        // braille spinner + ⟦esc⟧ interrupt hint, the prompt shows neither.
+        let working =
+            "scrollback line\n╭── π  / ⬢ Opus 4.8 · ◒ med / 📁 repo ──╮\n ⠧ Reading files ⟦esc⟧\n";
+        assert_eq!(detect_state(Some(Agent::Omp), working), AgentState::Working);
+        let idle = "scrollback line\n╭── π  / ⬢ Opus 4.8 · ◒ med / 📁 repo ──╮\n ╭──\n │ (empty - press Ctrl+N)\n";
+        assert_eq!(detect_state(Some(Agent::Omp), idle), AgentState::Idle);
     }
 
     #[test]
