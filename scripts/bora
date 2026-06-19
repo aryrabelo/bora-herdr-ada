@@ -1,0 +1,84 @@
+#!/usr/bin/env sh
+# herdr-bora — manage our herdr fork build with local improvements.
+#
+# herdr-bora is just our fork's `herdr` binary installed under a distinct name
+# and run on its own named session, so it coexists with a stock herdr from
+# brew/mise without overwriting it. We keep the fork on the `bora` branch and
+# merge upstream `master` into it from time to time.
+#
+# Usage:
+#   scripts/bora update     merge upstream master into the bora branch
+#   scripts/bora build      cargo build --release, install bin as herdr-bora
+#   scripts/bora ci-build   trigger the GitHub Actions macOS build on the fork
+#   scripts/bora ci-install download the latest macOS CI artifact, install it
+#   scripts/bora install <file>  install an arbitrary binary as herdr-bora
+#   scripts/bora run [args]  run herdr-bora on the dedicated "bora" session
+#
+# ponytail: a thin sh wrapper, not a framework. Build needs a working zig
+# toolchain; on macOS 26 the vendored libghostty (zig 0.15.2) does not link
+# locally, so use `ci-build` + `ci-install` until the toolchain is fixed.
+
+set -eu
+
+REPO_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+BIN_DIR="${HERDR_BORA_BIN_DIR:-$HOME/.local/bin}"
+BIN="$BIN_DIR/herdr-bora"
+SESSION="${HERDR_BORA_SESSION:-bora}"
+UPSTREAM_REMOTE="${HERDR_BORA_UPSTREAM:-origin}"
+UPSTREAM_BRANCH="${HERDR_BORA_UPSTREAM_BRANCH:-master}"
+FORK_REMOTE="${HERDR_BORA_FORK:-fork}"
+
+cmd=${1:-help}
+[ $# -gt 0 ] && shift || true
+
+case "$cmd" in
+  update)
+    cd "$REPO_DIR"
+    git fetch "$UPSTREAM_REMOTE" "$UPSTREAM_BRANCH"
+    git checkout bora
+    git merge --no-edit "$UPSTREAM_REMOTE/$UPSTREAM_BRANCH"
+    echo "bora: merged $UPSTREAM_REMOTE/$UPSTREAM_BRANCH into bora. Rebuild with: scripts/bora build (or ci-build)."
+    ;;
+  build)
+    cd "$REPO_DIR"
+    cargo build --release --locked
+    mkdir -p "$BIN_DIR"
+    cp target/release/herdr "$BIN"
+    chmod +x "$BIN"
+    echo "bora: installed $("$BIN" --version 2>/dev/null || echo herdr-bora) -> $BIN"
+    ;;
+  ci-build)
+    cd "$REPO_DIR"
+    git push "$FORK_REMOTE" bora
+    gh workflow run build-artifacts-manual.yml --repo "$(gh repo view --json nameWithOwner -q .nameWithOwner)" \
+      --ref bora -f build_group=macos -f libghostty_optimize=ReleaseSafe -f libghostty_simd=false
+    echo "bora: dispatched macOS build for branch bora. Watch: gh run watch ; then: scripts/bora ci-install"
+    ;;
+  ci-install)
+    cd "$REPO_DIR"
+    tmp=$(mktemp -d)
+    gh run download --repo "$(gh repo view --json nameWithOwner -q .nameWithOwner)" --dir "$tmp" \
+      $( [ $# -gt 0 ] && echo "$1" )
+    found=$(find "$tmp" -type f -name 'herdr*' ! -name '*.txt' ! -name '*.json' | head -1)
+    [ -n "$found" ] || { echo "bora: no herdr binary found in artifacts under $tmp" >&2; exit 1; }
+    mkdir -p "$BIN_DIR"
+    cp "$found" "$BIN"
+    chmod +x "$BIN"
+    rm -rf "$tmp"
+    echo "bora: installed CI binary -> $BIN"
+    ;;
+  install)
+    [ $# -ge 1 ] || { echo "usage: scripts/bora install <file>" >&2; exit 1; }
+    mkdir -p "$BIN_DIR"
+    cp "$1" "$BIN"
+    chmod +x "$BIN"
+    echo "bora: installed $1 -> $BIN"
+    ;;
+  run)
+    [ -x "$BIN" ] || { echo "bora: $BIN not installed; run scripts/bora build or ci-install" >&2; exit 1; }
+    exec "$BIN" --session "$SESSION" "$@"
+    ;;
+  help|*)
+    sed -n '2,20p' "$0"
+    ;;
+esac
