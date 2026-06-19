@@ -916,6 +916,16 @@ fn render_workspace_list(
         } else {
             line1.push(Span::styled(label, name_style));
         }
+        // Per-pane status dots: one glyph per pane so multi-pane workspaces show
+        // each pane's state (working spins) instead of only the aggregate dot.
+        let pane_details = ws.pane_details(&app.terminals);
+        if pane_details.len() > 1 {
+            for detail in pane_details.iter() {
+                let (pdot, pstyle) = state_dot(detail.state, detail.seen, app.spinner_tick, p);
+                line1.push(Span::styled(" ", Style::default()));
+                line1.push(Span::styled(pdot, pstyle));
+            }
+        }
 
         frame.render_widget(
             Paragraph::new(Line::from(line1)),
