@@ -692,6 +692,10 @@ impl App {
                 WorktreeRemoveResult {
                     workspace_id,
                     path,
+                    workspace: None,
+                    worktree: None,
+                    forced: false,
+                    api_request: None,
                     result,
                 },
             )));
@@ -1070,7 +1074,6 @@ impl App {
         }
     }
 
-    #[cfg(windows)]
     pub(crate) fn shutdown_workspace_terminal_runtimes_for_worktree_remove(
         &mut self,
         ws_idx: usize,
@@ -2115,6 +2118,7 @@ mod tests {
             error: None,
             removing: true,
             force_confirmation: true,
+            branch: None,
         });
         app.state.workspaces.clear();
 
