@@ -2233,7 +2233,14 @@ mod tests {
 
         assert_eq!(
             menu.items(),
-            &["Rename", "Close", "Delete worktree checkout..."]
+            &[
+                "Rename",
+                "Close",
+                "Merge to main",
+                "Open PR",
+                "Sync",
+                "Delete worktree checkout..."
+            ]
         );
     }
 
@@ -2253,7 +2260,13 @@ mod tests {
 
         assert_eq!(
             menu.items(),
-            &["Rename", "Close", "New worktree", "Open worktree..."]
+            &[
+                "Rename",
+                "Close",
+                "New worktree",
+                "Open worktree...",
+                "Sync"
+            ]
         );
     }
 
@@ -2278,6 +2291,7 @@ mod tests {
                 "Close group",
                 "New worktree",
                 "Open worktree...",
+                "Sync",
                 "Collapse"
             ]
         );
