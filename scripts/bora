@@ -58,7 +58,7 @@ case "$cmd" in
     cd "$REPO_DIR"
     git push "$FORK_REMOTE" bora
     gh workflow run build-artifacts-manual.yml --repo "$(gh repo view --json nameWithOwner -q .nameWithOwner)" \
-      --ref bora -f build_group=macos -f libghostty_optimize=ReleaseSafe -f libghostty_simd=false
+      --ref bora -f build_group=macos -f libghostty_optimize=ReleaseFast -f libghostty_simd=false
     echo "bora: dispatched macOS build for branch bora. Watch: gh run watch ; then: scripts/bora ci-install"
     ;;
   ci-install)
