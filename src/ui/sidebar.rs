@@ -252,15 +252,6 @@ fn workspace_display_priority(state: AgentState, seen: bool) -> u8 {
     }
 }
 
-fn space_aggregate_state(app: &AppState, key: &str) -> (AgentState, bool) {
-    app.workspaces
-        .iter()
-        .filter(|ws| ws.worktree_space().is_some_and(|space| space.key == key))
-        .map(|ws| ws.aggregate_state(&app.terminals))
-        .max_by_key(|(state, seen)| workspace_attention_priority(*state, *seen))
-        .unwrap_or((AgentState::Unknown, true))
-}
-
 fn space_aggregate_display_state(app: &AppState, key: &str) -> (AgentState, bool) {
     app.workspaces
         .iter()
