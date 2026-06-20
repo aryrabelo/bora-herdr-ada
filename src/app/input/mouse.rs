@@ -320,12 +320,11 @@ impl AppState {
                             .worktree_remove
                             .as_ref()
                             .is_some_and(|remove| remove.removing);
-                        let (merge_rect, remove, cancel) =
-                            crate::ui::remove_worktree_button_rects(
-                                inner,
-                                force_confirmation,
-                                mergeable,
-                            );
+                        let (merge_rect, remove, cancel) = crate::ui::remove_worktree_button_rects(
+                            inner,
+                            force_confirmation,
+                            mergeable,
+                        );
                         if let Some(merge_rect) = merge_rect {
                             if !removing
                                 && mouse.column >= merge_rect.x

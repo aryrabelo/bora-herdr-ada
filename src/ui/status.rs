@@ -190,7 +190,12 @@ pub(super) fn render_config_diagnostic(frame: &mut Frame, area: Rect, message: &
     }
 }
 
-pub(super) fn state_dot(state: AgentState, seen: bool, tick: u32, p: &Palette) -> (&'static str, Style) {
+pub(super) fn state_dot(
+    state: AgentState,
+    seen: bool,
+    tick: u32,
+    p: &Palette,
+) -> (&'static str, Style) {
     match (state, seen) {
         (AgentState::Blocked, _) => ("?", Style::default().fg(p.red)),
         (AgentState::Working, _) => (super::spinner_frame(tick), Style::default().fg(p.yellow)),
