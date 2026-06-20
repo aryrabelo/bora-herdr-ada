@@ -335,6 +335,28 @@ pub(crate) fn open_pull_request(checkout_path: &Path, branch: &str) -> Result<St
     }
 }
 
+/// A `git -C <checkout_path> <args...>` command.
+fn build_git_in_checkout_command(checkout_path: &Path, args: &[&str]) -> WorktreeCommand {
+    let mut full = vec!["-C".to_string(), checkout_path.display().to_string()];
+    full.extend(args.iter().map(|arg| arg.to_string()));
+    WorktreeCommand {
+        program: "git".to_string(),
+        args: full,
+    }
+}
+
+/// Sync the checkout's branch with its upstream: fast-forward in remote commits
+/// (`pull --ff-only`, never creating merge commits or conflicts), then push any
+/// local commits. A diverged branch fails the `--ff-only` pull cleanly without
+/// touching the tree.
+pub(crate) fn sync_branch_with_upstream(checkout_path: &Path) -> Result<(), String> {
+    run_worktree_command(&build_git_in_checkout_command(
+        checkout_path,
+        &["pull", "--ff-only"],
+    ))?;
+    run_worktree_command(&build_git_in_checkout_command(checkout_path, &["push"]))
+}
+
 pub(crate) fn run_worktree_command(command: &WorktreeCommand) -> Result<(), String> {
     let output = std::process::Command::new(&command.program)
         .args(&command.args)
@@ -635,6 +657,13 @@ mod tests {
                 "worktree/feat",
             ]
         );
+    }
+
+    #[test]
+    fn git_in_checkout_command_prefixes_dash_c() {
+        let cmd = build_git_in_checkout_command(Path::new("/repo/herdr"), &["pull", "--ff-only"]);
+        assert_eq!(cmd.program, "git");
+        assert_eq!(cmd.args, vec!["-C", "/repo/herdr", "pull", "--ff-only"]);
     }
 
     #[test]

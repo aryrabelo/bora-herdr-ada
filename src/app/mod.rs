@@ -513,6 +513,7 @@ impl App {
             request_remove_linked_worktree: None,
             request_merge_worktree_to_main: None,
             request_open_worktree_pr: None,
+            request_sync_workspace_git: None,
             request_submit_worktree_create: false,
             request_submit_worktree_open: false,
             request_submit_worktree_remove: false,
@@ -925,6 +926,11 @@ impl App {
 
             if let Some(ws_idx) = self.state.request_open_worktree_pr.take() {
                 self.start_worktree_open_pr(ws_idx);
+                needs_render = true;
+            }
+
+            if let Some(ws_idx) = self.state.request_sync_workspace_git.take() {
+                self.start_workspace_git_sync(ws_idx);
                 needs_render = true;
             }
 

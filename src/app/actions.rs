@@ -2550,6 +2550,7 @@ impl AppState {
             AppEvent::WorktreeRemoveFinished(_) => Vec::new(),
             AppEvent::WorktreeMergeToMainFinished { .. } => Vec::new(),
             AppEvent::WorktreeOpenPrFinished { .. } => Vec::new(),
+            AppEvent::WorktreeSyncFinished { .. } => Vec::new(),
             AppEvent::PluginCommandFinished { .. } => Vec::new(),
         }
     }

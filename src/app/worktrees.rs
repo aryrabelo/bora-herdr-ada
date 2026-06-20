@@ -757,6 +757,33 @@ impl App {
         });
     }
 
+    /// Sync the workspace's git branch with its upstream (pull --ff-only + push).
+    /// Works for any git workspace (the parent/main checkout or a linked
+    /// worktree). Runs in the background; result surfaces as a toast.
+    pub(crate) fn start_workspace_git_sync(&mut self, ws_idx: usize) {
+        let Some(cwd) = self
+            .state
+            .workspaces
+            .get(ws_idx)
+            .and_then(|ws| ws.resolved_identity_cwd())
+        else {
+            self.state.config_diagnostic = Some("Workspace has no resolved git checkout.".into());
+            return;
+        };
+        let branch = self
+            .state
+            .workspaces
+            .get(ws_idx)
+            .and_then(|ws| ws.branch())
+            .unwrap_or_default();
+        tracing::info!(ws_idx, branch = %branch, "starting workspace git sync");
+        let event_tx = self.event_tx.clone();
+        std::thread::spawn(move || {
+            let result = crate::worktree::sync_branch_with_upstream(&cwd);
+            let _ = event_tx.blocking_send(AppEvent::WorktreeSyncFinished { branch, result });
+        });
+    }
+
     pub(crate) fn handle_worktree_add_finished(&mut self, result: WorktreeAddResult) {
         if result.api_request.is_some() {
             self.handle_api_worktree_add_finished(result);
@@ -1012,6 +1039,31 @@ impl App {
                 self.show_worktree_op_toast(
                     crate::app::state::ToastKind::NeedsAttention,
                     "open PR failed",
+                    message,
+                );
+            }
+        }
+    }
+
+    pub(crate) fn handle_worktree_sync_finished(
+        &mut self,
+        branch: String,
+        result: Result<(), String>,
+    ) {
+        match result {
+            Ok(()) => {
+                tracing::info!(branch = %branch, "workspace git sync completed");
+                self.show_worktree_op_toast(
+                    crate::app::state::ToastKind::Finished,
+                    "synced with upstream",
+                    branch,
+                );
+            }
+            Err(message) => {
+                tracing::warn!(branch = %branch, error = %message, "workspace git sync failed");
+                self.show_worktree_op_toast(
+                    crate::app::state::ToastKind::NeedsAttention,
+                    "sync failed",
                     message,
                 );
             }

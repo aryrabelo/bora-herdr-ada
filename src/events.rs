@@ -164,4 +164,9 @@ pub enum AppEvent {
         branch: String,
         result: Result<String, String>,
     },
+    /// Background sync (pull --ff-only + push) of a workspace branch completed.
+    WorktreeSyncFinished {
+        branch: String,
+        result: Result<(), String>,
+    },
 }
