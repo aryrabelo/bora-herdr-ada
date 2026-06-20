@@ -511,6 +511,7 @@ impl App {
             request_open_existing_worktree: None,
             request_new_workspace_cwd: None,
             request_remove_linked_worktree: None,
+            request_merge_worktree_to_main: None,
             request_submit_worktree_create: false,
             request_submit_worktree_open: false,
             request_submit_worktree_remove: false,
@@ -913,6 +914,11 @@ impl App {
 
             if let Some(ws_idx) = self.state.request_remove_linked_worktree.take() {
                 self.open_remove_linked_worktree_confirmation(ws_idx);
+                needs_render = true;
+            }
+
+            if let Some(ws_idx) = self.state.request_merge_worktree_to_main.take() {
+                self.start_worktree_merge_to_main(ws_idx);
                 needs_render = true;
             }
 

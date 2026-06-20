@@ -557,6 +557,13 @@ impl HeadlessServer {
                 crate::render_prof::event("full_render_cause.deferred_worktree_dialog");
             }
 
+            if let Some(ws_idx) = self.app.state.request_merge_worktree_to_main.take() {
+                self.app.start_worktree_merge_to_main(ws_idx);
+                needs_render = true;
+                needs_full_render = true;
+                crate::render_prof::event("full_render_cause.deferred_worktree_merge");
+            }
+
             if self.app.state.request_submit_worktree_create {
                 self.app.state.request_submit_worktree_create = false;
                 self.app.start_worktree_add();

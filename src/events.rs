@@ -154,4 +154,9 @@ pub enum AppEvent {
     WorktreeAddFinished(Box<WorktreeAddResult>),
     /// Background `git worktree remove` completed.
     WorktreeRemoveFinished(Box<WorktreeRemoveResult>),
+    /// Background merge-to-main of a worktree branch completed.
+    WorktreeMergeToMainFinished {
+        branch: String,
+        result: Result<(), String>,
+    },
 }

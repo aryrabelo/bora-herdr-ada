@@ -274,6 +274,29 @@ pub(crate) fn build_worktree_merge_abort_command(repo_root: &Path) -> WorktreeCo
     }
 }
 
+/// Merge `branch` into the parent/main checkout, refusing if either side is
+/// dirty and aborting (no changes applied) on conflict. Shared by the
+/// merge-to-main and merge-and-remove flows.
+pub(crate) fn merge_branch_to_parent(
+    repo_root: &Path,
+    checkout_path: &Path,
+    branch: &str,
+) -> Result<(), String> {
+    if checkout_has_dirty_files(checkout_path)? {
+        return Err("worktree has uncommitted changes; commit them before merging".into());
+    }
+    if checkout_has_dirty_files(repo_root)? {
+        return Err("base checkout has uncommitted changes; commit or stash them first".into());
+    }
+    let merge = build_worktree_merge_command(repo_root, branch);
+    if let Err(err) = run_worktree_command(&merge) {
+        let abort = build_worktree_merge_abort_command(repo_root);
+        let _ = run_worktree_command(&abort);
+        return Err(format!("merge failed (no changes applied): {err}"));
+    }
+    Ok(())
+}
+
 pub(crate) fn run_worktree_command(command: &WorktreeCommand) -> Result<(), String> {
     let output = std::process::Command::new(&command.program)
         .args(&command.args)
@@ -525,6 +548,38 @@ mod tests {
             repo.join("feature.txt").exists(),
             "merge should bring the branch's file into the base checkout"
         );
+    }
+
+    #[test]
+    fn merge_branch_to_parent_lands_clean_branch_into_base() {
+        let repo = create_committed_repo("mbp-base");
+        let wt = unique_temp_path("mbp-wt");
+        run_git(
+            &repo,
+            &["worktree", "add", "-b", "feat-y", wt.to_str().unwrap()],
+        );
+        std::fs::write(wt.join("feature.txt"), "hi\n").unwrap();
+        run_git(&wt, &["add", "feature.txt"]);
+        run_git(&wt, &["commit", "--quiet", "-m", "feature"]);
+
+        merge_branch_to_parent(&repo, &wt, "feat-y").expect("clean merge should succeed");
+        assert!(repo.join("feature.txt").exists());
+    }
+
+    #[test]
+    fn merge_branch_to_parent_refuses_dirty_worktree() {
+        let repo = create_committed_repo("mbp-dirty");
+        let wt = unique_temp_path("mbp-dirty-wt");
+        run_git(
+            &repo,
+            &["worktree", "add", "-b", "feat-z", wt.to_str().unwrap()],
+        );
+        std::fs::write(wt.join("dirty.txt"), "wip\n").unwrap();
+        run_git(&wt, &["add", "dirty.txt"]);
+
+        let err = merge_branch_to_parent(&repo, &wt, "feat-z").expect_err("dirty worktree refused");
+        assert!(err.contains("uncommitted"), "unexpected error: {err}");
+        assert!(!repo.join("dirty.txt").exists());
     }
 
     #[test]

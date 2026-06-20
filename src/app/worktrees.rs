@@ -683,31 +683,57 @@ impl App {
         let event_tx = self.event_tx.clone();
         std::thread::spawn(move || {
             let result = (|| -> Result<(), String> {
-                if crate::worktree::checkout_has_dirty_files(&path)? {
-                    return Err(
-                        "worktree has uncommitted changes; commit them before merging".into(),
-                    );
-                }
-                if crate::worktree::checkout_has_dirty_files(&repo_root)? {
-                    return Err(
-                        "base checkout has uncommitted changes; commit or stash them first".into(),
-                    );
-                }
-                let merge = crate::worktree::build_worktree_merge_command(&repo_root, &branch);
-                if let Err(err) = crate::worktree::run_worktree_command(&merge) {
-                    let abort = crate::worktree::build_worktree_merge_abort_command(&repo_root);
-                    let _ = crate::worktree::run_worktree_command(&abort);
-                    return Err(format!("merge failed (no changes applied): {err}"));
-                }
-                let remove = crate::worktree::build_worktree_remove_command(&repo_root, &path, false);
+                crate::worktree::merge_branch_to_parent(&repo_root, &path, &branch)?;
+                let remove =
+                    crate::worktree::build_worktree_remove_command(&repo_root, &path, false);
                 crate::worktree::run_worktree_command(&remove)
             })();
-            let _ =
-                event_tx.blocking_send(AppEvent::WorktreeRemoveFinished(WorktreeRemoveResult {
+            let _ = event_tx.blocking_send(AppEvent::WorktreeRemoveFinished(Box::new(
+                WorktreeRemoveResult {
                     workspace_id,
                     path,
                     result,
-                }));
+                },
+            )));
+        });
+    }
+
+    /// Resolve a linked worktree's `(repo_root, checkout_path, branch)` for the
+    /// merge-to-main / open-PR background ops, or `None` if `ws_idx` is not a
+    /// Herdr-managed linked worktree.
+    fn linked_worktree_target(
+        &self,
+        ws_idx: usize,
+    ) -> Option<(std::path::PathBuf, std::path::PathBuf, Option<String>)> {
+        let ws = self.state.workspaces.get(ws_idx)?;
+        let space = ws
+            .worktree_space()
+            .filter(|space| space.is_linked_worktree)?;
+        Some((
+            space.repo_root.clone(),
+            space.checkout_path.clone(),
+            ws.branch(),
+        ))
+    }
+
+    /// Merge the linked worktree's branch into the parent/main checkout, keeping
+    /// the worktree. Runs in the background; result surfaces as a toast.
+    pub(crate) fn start_worktree_merge_to_main(&mut self, ws_idx: usize) {
+        let Some((repo_root, path, branch)) = self.linked_worktree_target(ws_idx) else {
+            self.state.config_diagnostic =
+                Some("This workspace is not a Herdr-managed worktree checkout.".into());
+            return;
+        };
+        let Some(branch) = branch else {
+            self.state.config_diagnostic = Some("Worktree has no branch to merge.".into());
+            return;
+        };
+        tracing::info!(ws_idx, branch = %branch, "starting worktree merge-to-main");
+        let event_tx = self.event_tx.clone();
+        std::thread::spawn(move || {
+            let result = crate::worktree::merge_branch_to_parent(&repo_root, &path, &branch);
+            let _ =
+                event_tx.blocking_send(AppEvent::WorktreeMergeToMainFinished { branch, result });
         });
     }
 
@@ -902,6 +928,51 @@ impl App {
         force || cfg!(windows)
     }
 
+    fn show_worktree_op_toast(
+        &mut self,
+        kind: crate::app::state::ToastKind,
+        title: &str,
+        context: String,
+    ) {
+        let previous_toast = self.state.toast.clone();
+        self.state.toast = Some(crate::app::state::ToastNotification {
+            kind,
+            title: title.to_string(),
+            context,
+            position: None,
+            target: None,
+        });
+        self.sync_toast_deadline(previous_toast);
+        self.render_dirty.store(true, Ordering::Release);
+        self.render_notify.notify_one();
+    }
+
+    pub(crate) fn handle_worktree_merge_to_main_finished(
+        &mut self,
+        branch: String,
+        result: Result<(), String>,
+    ) {
+        match result {
+            Ok(()) => {
+                tracing::info!(branch = %branch, "worktree merge-to-main completed");
+                self.show_worktree_op_toast(
+                    crate::app::state::ToastKind::Finished,
+                    "merged to main",
+                    branch,
+                );
+            }
+            Err(message) => {
+                tracing::warn!(branch = %branch, error = %message, "worktree merge-to-main failed");
+                self.show_worktree_op_toast(
+                    crate::app::state::ToastKind::NeedsAttention,
+                    "merge to main failed",
+                    message,
+                );
+            }
+        }
+    }
+
+    #[cfg(windows)]
     pub(crate) fn shutdown_workspace_terminal_runtimes_for_worktree_remove(
         &mut self,
         ws_idx: usize,

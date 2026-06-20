@@ -684,6 +684,10 @@ pub(super) fn apply_context_menu_action(
             state.request_open_existing_worktree = Some(ws_idx);
             leave_modal(state);
         }
+        (ContextMenuKind::GitWorkspace { ws_idx, .. }, Some("Merge to main")) => {
+            state.request_merge_worktree_to_main = Some(ws_idx);
+            leave_modal(state);
+        }
         (
             ContextMenuKind::GitWorkspace {
                 ws_idx, collapsed, ..
@@ -1478,5 +1482,40 @@ mod tests {
         assert_eq!(state.selected, 0);
         assert_eq!(state.mode, Mode::ConfirmClose);
         assert_eq!(state.workspaces.len(), 2);
+    }
+
+    #[test]
+    fn context_menu_linked_worktree_offers_merge_to_main() {
+        let mut state = state_with_workspaces(&["main", "issue"]);
+        state.active = Some(0);
+        state.selected = 1;
+        state.workspaces[1].worktree_space = Some(crate::workspace::WorktreeSpaceMembership {
+            key: "repo-key".into(),
+            label: "herdr".into(),
+            repo_root: "/repo/herdr".into(),
+            checkout_path: "/repo/herdr-issue".into(),
+            is_linked_worktree: true,
+        });
+        let menu = ContextMenuState {
+            kind: ContextMenuKind::GitWorkspace {
+                ws_idx: 1,
+                is_linked_worktree: true,
+                has_worktree_children: false,
+                collapsed: false,
+            },
+            x: 0,
+            y: 0,
+            list: MenuListState::new(0),
+        };
+        assert!(menu.items().contains(&"Merge to main"));
+        let merge_idx = menu
+            .items()
+            .iter()
+            .position(|item| *item == "Merge to main")
+            .expect("merge to main item");
+        let mut terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
+        apply_context_menu_action(&mut state, &mut terminal_runtimes, menu, merge_idx);
+        assert_eq!(state.request_merge_worktree_to_main, Some(1));
+        assert_ne!(state.mode, Mode::ContextMenu);
     }
 }
