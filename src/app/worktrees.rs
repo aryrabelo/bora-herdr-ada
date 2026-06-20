@@ -737,6 +737,26 @@ impl App {
         });
     }
 
+    /// Push the linked worktree's branch and open a GitHub PR via `gh`. Runs in
+    /// the background; result (PR URL or error) surfaces as a toast.
+    pub(crate) fn start_worktree_open_pr(&mut self, ws_idx: usize) {
+        let Some((_repo_root, path, branch)) = self.linked_worktree_target(ws_idx) else {
+            self.state.config_diagnostic =
+                Some("This workspace is not a Herdr-managed worktree checkout.".into());
+            return;
+        };
+        let Some(branch) = branch else {
+            self.state.config_diagnostic = Some("Worktree has no branch to open a PR for.".into());
+            return;
+        };
+        tracing::info!(ws_idx, branch = %branch, "starting worktree open-pr");
+        let event_tx = self.event_tx.clone();
+        std::thread::spawn(move || {
+            let result = crate::worktree::open_pull_request(&path, &branch);
+            let _ = event_tx.blocking_send(AppEvent::WorktreeOpenPrFinished { branch, result });
+        });
+    }
+
     pub(crate) fn handle_worktree_add_finished(&mut self, result: WorktreeAddResult) {
         if result.api_request.is_some() {
             self.handle_api_worktree_add_finished(result);
@@ -966,6 +986,32 @@ impl App {
                 self.show_worktree_op_toast(
                     crate::app::state::ToastKind::NeedsAttention,
                     "merge to main failed",
+                    message,
+                );
+            }
+        }
+    }
+
+    pub(crate) fn handle_worktree_open_pr_finished(
+        &mut self,
+        branch: String,
+        result: Result<String, String>,
+    ) {
+        match result {
+            Ok(url) => {
+                tracing::info!(branch = %branch, url = %url, "worktree open-pr completed");
+                let context = if url.is_empty() { branch } else { url };
+                self.show_worktree_op_toast(
+                    crate::app::state::ToastKind::Finished,
+                    "opened PR",
+                    context,
+                );
+            }
+            Err(message) => {
+                tracing::warn!(branch = %branch, error = %message, "worktree open-pr failed");
+                self.show_worktree_op_toast(
+                    crate::app::state::ToastKind::NeedsAttention,
+                    "open PR failed",
                     message,
                 );
             }

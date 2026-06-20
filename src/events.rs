@@ -159,4 +159,9 @@ pub enum AppEvent {
         branch: String,
         result: Result<(), String>,
     },
+    /// Background `gh pr create` for a worktree completed; Ok carries the PR URL.
+    WorktreeOpenPrFinished {
+        branch: String,
+        result: Result<String, String>,
+    },
 }

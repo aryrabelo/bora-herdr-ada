@@ -688,6 +688,10 @@ pub(super) fn apply_context_menu_action(
             state.request_merge_worktree_to_main = Some(ws_idx);
             leave_modal(state);
         }
+        (ContextMenuKind::GitWorkspace { ws_idx, .. }, Some("Open PR")) => {
+            state.request_open_worktree_pr = Some(ws_idx);
+            leave_modal(state);
+        }
         (
             ContextMenuKind::GitWorkspace {
                 ws_idx, collapsed, ..
@@ -1517,5 +1521,39 @@ mod tests {
         apply_context_menu_action(&mut state, &mut terminal_runtimes, menu, merge_idx);
         assert_eq!(state.request_merge_worktree_to_main, Some(1));
         assert_ne!(state.mode, Mode::ContextMenu);
+    }
+
+    #[test]
+    fn context_menu_linked_worktree_offers_open_pr() {
+        let mut state = state_with_workspaces(&["main", "issue"]);
+        state.active = Some(0);
+        state.selected = 1;
+        state.workspaces[1].worktree_space = Some(crate::workspace::WorktreeSpaceMembership {
+            key: "repo-key".into(),
+            label: "herdr".into(),
+            repo_root: "/repo/herdr".into(),
+            checkout_path: "/repo/herdr-issue".into(),
+            is_linked_worktree: true,
+        });
+        let menu = ContextMenuState {
+            kind: ContextMenuKind::GitWorkspace {
+                ws_idx: 1,
+                is_linked_worktree: true,
+                has_worktree_children: false,
+                collapsed: false,
+            },
+            x: 0,
+            y: 0,
+            list: MenuListState::new(0),
+        };
+        assert!(menu.items().contains(&"Open PR"));
+        let pr_idx = menu
+            .items()
+            .iter()
+            .position(|item| *item == "Open PR")
+            .expect("open pr item");
+        let mut terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
+        apply_context_menu_action(&mut state, &mut terminal_runtimes, menu, pr_idx);
+        assert_eq!(state.request_open_worktree_pr, Some(1));
     }
 }

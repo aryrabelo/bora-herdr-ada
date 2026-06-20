@@ -297,6 +297,44 @@ pub(crate) fn merge_branch_to_parent(
     Ok(())
 }
 
+/// Push `branch` to `origin` from the worktree checkout, setting upstream so a
+/// subsequent `gh pr create` has a remote head to open a PR from.
+pub(crate) fn build_worktree_push_command(checkout_path: &Path, branch: &str) -> WorktreeCommand {
+    WorktreeCommand {
+        program: "git".to_string(),
+        args: vec![
+            "-C".to_string(),
+            checkout_path.display().to_string(),
+            "push".to_string(),
+            "-u".to_string(),
+            "origin".to_string(),
+            branch.to_string(),
+        ],
+    }
+}
+
+/// Push the worktree branch and open a GitHub PR via `gh pr create --fill`,
+/// returning the PR URL printed on stdout. `gh` runs inside the checkout so it
+/// resolves the repo from the worktree's remote.
+pub(crate) fn open_pull_request(checkout_path: &Path, branch: &str) -> Result<String, String> {
+    run_worktree_command(&build_worktree_push_command(checkout_path, branch))?;
+    let output = std::process::Command::new("gh")
+        .current_dir(checkout_path)
+        .args(["pr", "create", "--fill"])
+        .output()
+        .map_err(|err| format!("failed to run gh: {err}"))?;
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        Err(if stderr.is_empty() {
+            "gh pr create failed".to_string()
+        } else {
+            stderr
+        })
+    }
+}
+
 pub(crate) fn run_worktree_command(command: &WorktreeCommand) -> Result<(), String> {
     let output = std::process::Command::new(&command.program)
         .args(&command.args)
@@ -580,6 +618,23 @@ mod tests {
         let err = merge_branch_to_parent(&repo, &wt, "feat-z").expect_err("dirty worktree refused");
         assert!(err.contains("uncommitted"), "unexpected error: {err}");
         assert!(!repo.join("dirty.txt").exists());
+    }
+
+    #[test]
+    fn push_command_targets_origin_branch_from_checkout() {
+        let cmd = build_worktree_push_command(Path::new("/repo/herdr-issue"), "worktree/feat");
+        assert_eq!(cmd.program, "git");
+        assert_eq!(
+            cmd.args,
+            vec![
+                "-C",
+                "/repo/herdr-issue",
+                "push",
+                "-u",
+                "origin",
+                "worktree/feat",
+            ]
+        );
     }
 
     #[test]

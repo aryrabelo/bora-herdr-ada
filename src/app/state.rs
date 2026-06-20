@@ -1105,6 +1105,7 @@ impl ContextMenuState {
                 "Rename",
                 "Close",
                 "Merge to main",
+                "Open PR",
                 "Delete worktree checkout...",
             ],
             ContextMenuKind::GitWorkspace {
@@ -1294,6 +1295,7 @@ pub struct AppState {
     pub request_new_workspace_cwd: Option<std::path::PathBuf>,
     pub request_remove_linked_worktree: Option<usize>,
     pub request_merge_worktree_to_main: Option<usize>,
+    pub request_open_worktree_pr: Option<usize>,
     pub request_submit_worktree_create: bool,
     pub request_submit_worktree_open: bool,
     pub request_submit_worktree_remove: bool,
@@ -1647,6 +1649,7 @@ impl AppState {
             request_new_workspace_cwd: None,
             request_remove_linked_worktree: None,
             request_merge_worktree_to_main: None,
+            request_open_worktree_pr: None,
             request_submit_worktree_create: false,
             request_submit_worktree_open: false,
             request_submit_worktree_remove: false,
