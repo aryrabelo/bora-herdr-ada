@@ -30,7 +30,40 @@ fn server_stop(args: &[String]) -> std::io::Result<i32> {
         return Ok(2);
     }
 
-    super::send_ok_request(Method::ServerStop(EmptyParams::default()))
+    server_stop_with(super::send_request)
+}
+
+fn server_stop_with(
+    send_request: impl FnOnce(&Request) -> std::io::Result<serde_json::Value>,
+) -> std::io::Result<i32> {
+    match send_request(&Request {
+        id: "cli:request".into(),
+        method: Method::ServerStop(EmptyParams::default()),
+    }) {
+        Ok(response) => {
+            if response.get("error").is_some() {
+                eprintln!("{}", serde_json::to_string(&response).unwrap());
+                return Ok(1);
+            }
+            Ok(0)
+        }
+        // No server is listening: the socket file is missing (NotFound) or
+        // stale with no listener (ConnectionRefused). Stopping a server that
+        // is not running is a no-op, not an error, so chains like
+        // `herdr server stop && herdr ...` keep working after a crash.
+        Err(err) if server_not_running(&err) => {
+            eprintln!("no herdr server is running");
+            Ok(0)
+        }
+        Err(err) => Err(err),
+    }
+}
+
+fn server_not_running(err: &std::io::Error) -> bool {
+    matches!(
+        err.kind(),
+        std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+    )
 }
 
 fn server_reload_config(args: &[String]) -> std::io::Result<i32> {
@@ -355,5 +388,59 @@ mod tests {
         );
         assert_eq!(params.expected_protocol, Some(9));
         assert_eq!(params.expected_version.as_deref(), Some("0.6.2"));
+    }
+
+    #[test]
+    fn server_stop_treats_missing_socket_as_no_op() {
+        let exit = server_stop_with(|_request| {
+            Err(std::io::Error::new(std::io::ErrorKind::NotFound, "missing"))
+        })
+        .unwrap();
+        assert_eq!(exit, 0);
+    }
+
+    #[test]
+    fn server_stop_treats_refused_connection_as_no_op() {
+        let exit = server_stop_with(|_request| {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::ConnectionRefused,
+                "refused",
+            ))
+        })
+        .unwrap();
+        assert_eq!(exit, 0);
+    }
+
+    #[test]
+    fn server_stop_propagates_unexpected_io_errors() {
+        let err = server_stop_with(|_request| {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "denied",
+            ))
+        })
+        .unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
+    }
+
+    #[test]
+    fn server_stop_reports_error_response() {
+        let exit = server_stop_with(|_request| {
+            Ok(serde_json::json!({
+                "id": "cli:request",
+                "error": { "code": "boom", "message": "boom" }
+            }))
+        })
+        .unwrap();
+        assert_eq!(exit, 1);
+    }
+
+    #[test]
+    fn server_stop_succeeds_on_ok_response() {
+        let exit = server_stop_with(|_request| {
+            Ok(serde_json::json!({ "id": "cli:request", "result": {} }))
+        })
+        .unwrap();
+        assert_eq!(exit, 0);
     }
 }
