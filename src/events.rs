@@ -154,4 +154,19 @@ pub enum AppEvent {
     WorktreeAddFinished(Box<WorktreeAddResult>),
     /// Background `git worktree remove` completed.
     WorktreeRemoveFinished(Box<WorktreeRemoveResult>),
+    /// Background merge-to-main of a worktree branch completed.
+    WorktreeMergeToMainFinished {
+        branch: String,
+        result: Result<(), String>,
+    },
+    /// Background `gh pr create` for a worktree completed; Ok carries the PR URL.
+    WorktreeOpenPrFinished {
+        branch: String,
+        result: Result<String, String>,
+    },
+    /// Background sync (pull --ff-only + push) of a workspace branch completed.
+    WorktreeSyncFinished {
+        branch: String,
+        result: Result<(), String>,
+    },
 }
