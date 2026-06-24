@@ -559,7 +559,7 @@ fn platform_name(p: PluginPlatform) -> &'static str {
 }
 
 fn normalize_command(command: Vec<String>) -> Result<Vec<String>, (&'static str, String)> {
-    if command.is_empty() || command.iter().any(|arg| arg.is_empty()) {
+    if command.is_empty() || command.iter().any(std::string::String::is_empty) {
         return Err((
             "invalid_plugin_command",
             "command must contain non-empty argv strings".to_string(),

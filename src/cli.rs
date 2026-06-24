@@ -69,7 +69,7 @@ pub(super) fn print_read_response(response: &serde_json::Value) -> std::io::Resu
 }
 
 pub fn maybe_run(args: &[String]) -> std::io::Result<CommandOutcome> {
-    let Some(command) = args.get(1).map(|arg| arg.as_str()) else {
+    let Some(command) = args.get(1).map(std::string::String::as_str) else {
         return Ok(CommandOutcome::NotCli);
     };
 
@@ -106,7 +106,7 @@ pub fn maybe_run(args: &[String]) -> std::io::Result<CommandOutcome> {
 }
 
 fn run_channel_command(args: &[String]) -> std::io::Result<i32> {
-    match args.first().map(|arg| arg.as_str()) {
+    match args.first().map(std::string::String::as_str) {
         Some("set") => channel_set(&args[1..]),
         Some("show") if args.len() == 1 => {
             let config = crate::config::Config::load().config;
@@ -194,7 +194,7 @@ fn channel_set(args: &[String]) -> std::io::Result<i32> {
 }
 
 fn parse_channel_set_arg(args: &[String]) -> Option<&str> {
-    let channel = args.first().map(|arg| arg.as_str())?;
+    let channel = args.first().map(std::string::String::as_str)?;
     if args.len() == 1 && matches!(channel, "stable" | "preview") {
         Some(channel)
     } else {
@@ -241,7 +241,7 @@ fn print_channel_help() {
 }
 
 fn run_config_command(args: &[String]) -> std::io::Result<i32> {
-    let Some(subcommand) = args.first().map(|arg| arg.as_str()) else {
+    let Some(subcommand) = args.first().map(std::string::String::as_str) else {
         print_config_help();
         return Ok(2);
     };
@@ -376,7 +376,7 @@ fn key_config_backup_path(path: &std::path::Path) -> std::path::PathBuf {
 }
 
 fn run_terminal_command(args: &[String]) -> std::io::Result<i32> {
-    let Some(subcommand) = args.first().map(|arg| arg.as_str()) else {
+    let Some(subcommand) = args.first().map(std::string::String::as_str) else {
         print_terminal_help();
         return Ok(2);
     };
@@ -396,8 +396,9 @@ fn run_terminal_command(args: &[String]) -> std::io::Result<i32> {
     }
 }
 
+
 fn run_session_command(args: &[String]) -> std::io::Result<i32> {
-    let Some(subcommand) = args.first().map(|arg| arg.as_str()) else {
+    let Some(subcommand) = args.first().map(std::string::String::as_str) else {
         print_session_help();
         return Ok(2);
     };
@@ -658,7 +659,7 @@ fn parse_terminal_dimension(raw: &str, flag: &str) -> std::io::Result<u16> {
 }
 
 fn terminal_title(args: &[String]) -> std::io::Result<i32> {
-    match args.first().map(|arg| arg.as_str()) {
+    match args.first().map(std::string::String::as_str) {
         Some("set") => {
             if args.len() != 2 {
                 eprintln!("usage: bora terminal title set <title>");

@@ -899,7 +899,7 @@ impl App {
             .state
             .workspaces
             .get(ws_idx)
-            .and_then(|ws| ws.branch())
+            .and_then(super::super::workspace::Workspace::branch)
             .unwrap_or_default();
         tracing::info!(ws_idx, branch = %branch, "starting workspace git sync");
         let event_tx = self.event_tx.clone();

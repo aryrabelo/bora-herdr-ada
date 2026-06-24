@@ -106,7 +106,7 @@ impl App {
             plugin_id: plugin.plugin_id.clone(),
             action_id,
             event,
-            command: command.clone(),
+            command,
             status: PluginCommandStatus::Running,
             started_unix_ms,
             finished_unix_ms: None,

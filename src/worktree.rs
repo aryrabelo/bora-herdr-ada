@@ -395,7 +395,7 @@ pub(crate) fn open_pull_request(checkout_path: &Path, branch: &str) -> Result<St
 /// A `git -C <checkout_path> <args...>` command.
 fn build_git_in_checkout_command(checkout_path: &Path, args: &[&str]) -> WorktreeCommand {
     let mut full = vec!["-C".to_string(), checkout_path.display().to_string()];
-    full.extend(args.iter().map(|arg| arg.to_string()));
+    full.extend(args.iter().map(std::string::ToString::to_string));
     WorktreeCommand {
         program: "git".to_string(),
         args: full,

@@ -30,9 +30,7 @@ pub(crate) fn extract_version_triple(text: &str) -> Option<(u64, u64, u64)> {
         let patch: u64 = parts
             .next()
             .map(|rest| {
-                rest.chars()
-                    .take_while(|c| c.is_ascii_digit())
-                    .collect::<String>()
+                rest.chars().take_while(char::is_ascii_digit).collect::<String>()
             })
             .and_then(|digits| digits.parse().ok())
             .unwrap_or(0);

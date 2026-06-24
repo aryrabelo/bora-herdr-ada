@@ -66,8 +66,8 @@ pub(super) fn ghostty_mouse_encoder_for_terminal(
         // SGR-pixels to normal SGR so forwarded coordinates stay cell-local.
         encoder.set_format(crate::ghostty::MOUSE_FORMAT_SGR);
     }
-    let cols = terminal.cols().ok()? as u32;
-    let rows = terminal.rows().ok()? as u32;
+    let cols = u32::from(terminal.cols().ok()?);
+    let rows = u32::from(terminal.rows().ok()?);
     encoder.set_size(cols, rows, 1, 1);
     Some(encoder)
 }
@@ -125,7 +125,7 @@ pub(super) fn ghostty_mouse_event_from_button_kind(
         event.clear_button();
     }
     event.set_mods(ghostty_mods_from_key_modifiers(modifiers));
-    event.set_position(column as f32, row as f32);
+    event.set_position(f32::from(column), f32::from(row));
     Some(event)
 }
 
@@ -143,7 +143,7 @@ pub(super) fn ghostty_mouse_event_from_motion_kind(
     event.set_action(crate::ghostty::MOUSE_ACTION_MOTION);
     event.clear_button();
     event.set_mods(ghostty_mods_from_key_modifiers(modifiers));
-    event.set_position(column as f32, row as f32);
+    event.set_position(f32::from(column), f32::from(row));
     Some(event)
 }
 
@@ -164,7 +164,7 @@ pub(super) fn ghostty_mouse_event_from_wheel_kind(
     };
     event.set_button(button);
     event.set_mods(ghostty_mods_from_key_modifiers(modifiers));
-    event.set_position(column as f32, row as f32);
+    event.set_position(f32::from(column), f32::from(row));
     Some(event)
 }
 

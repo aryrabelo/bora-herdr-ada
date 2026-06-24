@@ -47,7 +47,10 @@ impl AppState {
         // Check before advancing the cursor: if already Dragging from a prior
         // event, it stays true. If Anchored, the mouse must have moved away
         // from the anchor cell for this to count as a real drag.
-        let was_dragging = self.selection.as_ref().is_some_and(|s| s.is_dragging());
+        let was_dragging = self
+            .selection
+            .as_ref()
+            .is_some_and(crate::selection::Selection::is_dragging);
         let anchor_differs_from_mouse = self.selection.as_ref().is_some_and(|s| {
             // Convert anchor to screen coords for comparison.
             // Anchor is stored in absolute row; for a simple screen
