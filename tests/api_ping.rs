@@ -120,14 +120,10 @@ fn spawn_herdr_with_options(
     path_override: Option<&Path>,
     shell: &str,
 ) -> SpawnedHerdr {
-    fs::create_dir_all(config_home.join("herdr")).unwrap();
+    fs::create_dir_all(config_home.join("bora")).unwrap();
     fs::create_dir_all(runtime_dir).unwrap();
     register_runtime_dir(runtime_dir);
-    fs::write(
-        config_home.join("herdr/config.toml"),
-        "onboarding = false\n",
-    )
-    .unwrap();
+    fs::write(config_home.join("bora/config.toml"), "onboarding = false\n").unwrap();
 
     let pair = native_pty_system()
         .openpty(PtySize {
@@ -138,7 +134,7 @@ fn spawn_herdr_with_options(
         })
         .unwrap();
 
-    let mut cmd = CommandBuilder::new(env!("CARGO_BIN_EXE_herdr"));
+    let mut cmd = CommandBuilder::new(env!("CARGO_BIN_EXE_bora"));
     cmd.arg("server");
     cmd.env("XDG_CONFIG_HOME", config_home);
     cmd.env("XDG_RUNTIME_DIR", runtime_dir);
@@ -320,7 +316,7 @@ fn server_reload_agent_manifests_reports_runtime_override() {
     let child = spawn_herdr(&config_home, &runtime_dir, &socket_path);
     wait_for_socket(&socket_path, Duration::from_secs(5));
 
-    let override_dir = config_home.join("herdr-dev").join("agent-detection");
+    let override_dir = config_home.join("bora-dev").join("agent-detection");
     fs::create_dir_all(&override_dir).unwrap();
     let override_path = override_dir.join("codex.toml");
     fs::write(

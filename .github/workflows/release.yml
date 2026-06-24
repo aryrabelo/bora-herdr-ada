@@ -42,22 +42,22 @@ jobs:
         include:
           - target: x86_64-unknown-linux-musl
             os: ubuntu-latest
-            name: herdr-linux-x86_64
+            name: bora-linux-x86_64
             libghostty_vt_optimize: ReleaseFast
             libghostty_vt_simd: 'true'
           - target: aarch64-unknown-linux-musl
             os: ubuntu-latest
-            name: herdr-linux-aarch64
+            name: bora-linux-aarch64
             libghostty_vt_optimize: ReleaseFast
             libghostty_vt_simd: 'true'
           - target: x86_64-apple-darwin
             os: macos-latest
-            name: herdr-macos-x86_64
+            name: bora-macos-x86_64
             libghostty_vt_optimize: ReleaseFast
             libghostty_vt_simd: 'true'
           - target: aarch64-apple-darwin
             os: macos-latest
-            name: herdr-macos-aarch64
+            name: bora-macos-aarch64
             libghostty_vt_optimize: ReleaseFast
             libghostty_vt_simd: 'true'
 
@@ -140,7 +140,7 @@ jobs:
         run: cargo build --release --locked --target ${{ matrix.target }}
 
       - name: Rename binary
-        run: cp target/${{ matrix.target }}/release/herdr ${{ matrix.name }}
+        run: cp target/${{ matrix.target }}/release/bora ${{ matrix.name }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -182,10 +182,10 @@ jobs:
         uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3
         with:
           files: |
-            herdr-linux-x86_64/herdr-linux-x86_64
-            herdr-linux-aarch64/herdr-linux-aarch64
-            herdr-macos-x86_64/herdr-macos-x86_64
-            herdr-macos-aarch64/herdr-macos-aarch64
+            bora-linux-x86_64/bora-linux-x86_64
+            bora-linux-aarch64/bora-linux-aarch64
+            bora-macos-x86_64/bora-macos-x86_64
+            bora-macos-aarch64/bora-macos-aarch64
           body_path: RELEASE_NOTES.md
 
   close-released-issues:

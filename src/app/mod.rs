@@ -4000,7 +4000,7 @@ mod tests {
             app.event_tx
                 .try_send(AppEvent::UpdateReady {
                     version: format!("9.9.{i}"),
-                    install_command: "herdr update".into(),
+                    install_command: "bora update".into(),
                 })
                 .unwrap();
         }
