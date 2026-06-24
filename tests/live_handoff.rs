@@ -186,7 +186,7 @@ fn spawn_server_with_args_and_socket_env(
             pixel_height: 0,
         })
         .unwrap();
-    let mut cmd = CommandBuilder::new(env!("CARGO_BIN_EXE_herdr"));
+    let mut cmd = CommandBuilder::new(env!("CARGO_BIN_EXE_bora"));
     if let Some(session_name) = session_name {
         cmd.arg("--session");
         cmd.arg(session_name);

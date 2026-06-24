@@ -313,6 +313,21 @@ impl App {
 
         changed |= self.expire_due_metadata(now);
 
+        // Periodically sweep workspaces and update their idle-since timestamps.
+        let idle_check_due = self
+            .workspace_idle_check_deadline
+            .is_none_or(|deadline| now >= deadline);
+        if idle_check_due {
+            for ws in &mut self.state.workspaces {
+                let prev_active = ws.last_activity_at.is_some();
+                ws.update_idle_since(&self.state.terminals, now);
+                // Only trigger redraw when a workspace transitions idle state.
+                changed |= ws.last_activity_at.is_some() != prev_active;
+            }
+            self.workspace_idle_check_deadline =
+                Some(now + crate::app::WORKSPACE_IDLE_CHECK_INTERVAL);
+        }
+
         if geometry_dirty || resized {
             self.pending_agent_resume_deadline = None;
         } else {
@@ -605,6 +620,7 @@ impl App {
             self.session_save_deadline,
             self.selection_autoscroll_deadline,
             self.selection_highlight_clear_deadline,
+            self.workspace_idle_check_deadline,
             render_deadline,
         ]
         .into_iter()

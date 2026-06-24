@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 mod tokens;
 
 use ratatui::{
@@ -225,6 +227,36 @@ fn workspace_entry_gap(entries: &[WorkspaceListEntry], entry_idx: usize, indente
     )
 }
 
+/// Row height for a visual group member: workspace name + branch + one line per
+/// tab when more than one tab exists.
+fn vg_member_row_height(app: &AppState, ws: &crate::workspace::Workspace) -> u16 {
+    let base = workspace_row_height(app, ws, false);
+    if ws.tabs.len() > 1 {
+        base + ws.tabs.len() as u16
+    } else {
+        base
+    }
+}
+
+/// Branch sync status icon for visual group members.
+///
+/// Returns (icon, style) based on the workspace's ahead/behind state relative
+/// to its upstream branch.  Extensible: CI/CD status and merge-base checks can
+/// be added here later without changing callers.
+fn branch_status_icon(
+    ws: &crate::workspace::Workspace,
+    p: &crate::app::state::Palette,
+) -> (&'static str, ratatui::style::Style) {
+    use ratatui::style::Style;
+    match ws.git_ahead_behind() {
+        Some((0, 0)) => ("✓", Style::default().fg(p.green)), // synced with upstream
+        Some((_, 0)) => ("⇡", Style::default().fg(p.yellow)), // ahead — needs push
+        Some((0, _)) => ("⇣", Style::default().fg(p.red)),   // behind — needs pull
+        Some((_, _)) => ("⇕", Style::default().fg(p.red)),   // diverged
+        None => ("⎇", Style::default().fg(p.overlay0)),      // no upstream tracking
+    }
+}
+
 fn workspace_attention_priority(state: AgentState, seen: bool) -> u8 {
     match (state, seen) {
         (AgentState::Blocked, _) => 4,
@@ -241,6 +273,25 @@ fn space_aggregate_state(app: &AppState, key: &str) -> (AgentState, bool) {
         .filter(|ws| ws.worktree_space().is_some_and(|space| space.key == key))
         .map(|ws| ws.aggregate_state(&app.terminals))
         .max_by_key(|(state, seen)| workspace_attention_priority(*state, *seen))
+        .unwrap_or((AgentState::Unknown, true))
+}
+
+fn workspace_display_priority(state: AgentState, seen: bool) -> u8 {
+    match (state, seen) {
+        (AgentState::Blocked, _) => 4,
+        (AgentState::Working, _) => 3,
+        (AgentState::Idle, false) => 2,
+        (AgentState::Idle, true) => 1,
+        (AgentState::Unknown, _) => 0,
+    }
+}
+
+fn space_aggregate_display_state(app: &AppState, key: &str) -> (AgentState, bool) {
+    app.workspaces
+        .iter()
+        .filter(|ws| ws.worktree_space().is_some_and(|space| space.key == key))
+        .map(|ws| ws.aggregate_display_state(&app.terminals))
+        .max_by_key(|(state, seen)| workspace_display_priority(*state, *seen))
         .unwrap_or((AgentState::Unknown, true))
 }
 
@@ -287,7 +338,14 @@ pub(crate) fn grouped_child_display_label(
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum WorkspaceListEntry {
-    Workspace { ws_idx: usize, indented: bool },
+    Workspace {
+        ws_idx: usize,
+        indented: bool,
+    },
+    /// A user-defined visual group header row.
+    GroupHeader {
+        name: String,
+    },
 }
 
 pub(crate) fn next_entry_is_indented_workspace(entries: &[WorkspaceListEntry], idx: usize) -> bool {
@@ -323,6 +381,7 @@ pub(crate) fn workspace_list_entries_expanded(app: &AppState) -> Vec<WorkspaceLi
 }
 
 fn workspace_list_entries_inner(app: &AppState, force_expanded: bool) -> Vec<WorkspaceListEntry> {
+    // --- Worktree group setup ---
     let mut members_by_key = std::collections::HashMap::<String, Vec<usize>>::new();
     for (ws_idx, ws) in app.workspaces.iter().enumerate() {
         if let Some(space) = ws.worktree_space() {
@@ -358,66 +417,183 @@ fn workspace_list_entries_inner(app: &AppState, force_expanded: bool) -> Vec<Wor
             .map(|space| space.key.clone())
     });
 
-    let mut emitted_groups = std::collections::HashSet::<String>::new();
-    let mut entries = Vec::new();
+    // --- Visual group setup ---
+    // ALL workspaces with visual_group participate, even if also in a worktree group.
+    let mut visual_group_members = std::collections::HashMap::<String, Vec<usize>>::new();
     for (ws_idx, ws) in app.workspaces.iter().enumerate() {
-        let Some(space) = ws
+        if let Some(ref group_name) = ws.visual_group {
+            visual_group_members
+                .entry(group_name.clone())
+                .or_default()
+                .push(ws_idx);
+        }
+    }
+    let in_visual_group: std::collections::HashSet<usize> = visual_group_members
+        .values()
+        .flat_map(|v| v.iter().copied())
+        .collect();
+
+    // Pre-compute: worktree children whose parent is in a visual group are consumed
+    // by the visual group handler and must be skipped in the main loop.
+    let mut consumed = std::collections::HashSet::<usize>::new();
+    for (ws_idx, ws) in app.workspaces.iter().enumerate() {
+        if ws.visual_group.is_some() {
+            if let Some(space) = ws
+                .worktree_space()
+                .filter(|s| grouped_keys.contains(&s.key) && !s.is_linked_worktree)
+            {
+                if let Some(members) = members_by_key.get(&space.key) {
+                    for &m in members {
+                        if m != ws_idx {
+                            consumed.insert(m);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let mut emitted_worktree_groups = std::collections::HashSet::<String>::new();
+    let mut emitted_visual_groups = std::collections::HashSet::<String>::new();
+    let mut entries = Vec::new();
+
+    for (ws_idx, ws) in app.workspaces.iter().enumerate() {
+        // Skip worktree children consumed by a visual group.
+        if consumed.contains(&ws_idx) {
+            continue;
+        }
+
+        // --- Worktree group handling ---
+        let in_worktree_group = ws
             .worktree_space()
             .filter(|space| grouped_keys.contains(&space.key))
-        else {
+            .is_some();
+
+        if in_worktree_group && !in_visual_group.contains(&ws_idx) {
+            let space = ws.worktree_space().unwrap();
+            if emitted_worktree_groups.contains(&space.key) {
+                continue;
+            }
+
+            emitted_worktree_groups.insert(space.key.clone());
+
+            let Some(members) = members_by_key.get(&space.key) else {
+                continue;
+            };
+            let parent_idx = members.iter().copied().find(|idx| {
+                app.workspaces
+                    .get(*idx)
+                    .and_then(|w| w.worktree_space())
+                    .is_some_and(|s| !s.is_linked_worktree)
+            });
+            let Some(parent_idx) = parent_idx else {
+                entries.push(WorkspaceListEntry::Workspace {
+                    ws_idx,
+                    indented: false,
+                });
+                continue;
+            };
+            let collapsed = !force_expanded && app.collapsed_space_keys.contains(&space.key);
             entries.push(WorkspaceListEntry::Workspace {
-                ws_idx,
+                ws_idx: parent_idx,
                 indented: false,
             });
-            continue;
-        };
 
-        if !emitted_groups.insert(space.key.clone()) {
+            if collapsed {
+                if let Some(active_idx) = visible_group_idx
+                    .filter(|idx| *idx != parent_idx)
+                    .filter(|_| active_group.as_deref() == Some(space.key.as_str()))
+                {
+                    entries.push(WorkspaceListEntry::Workspace {
+                        ws_idx: active_idx,
+                        indented: true,
+                    });
+                }
+            } else {
+                for member_idx in members {
+                    if *member_idx == parent_idx {
+                        continue;
+                    }
+                    entries.push(WorkspaceListEntry::Workspace {
+                        ws_idx: *member_idx,
+                        indented: true,
+                    });
+                }
+            }
             continue;
         }
 
-        let Some(members) = members_by_key.get(&space.key) else {
+        // Worktree child in a group that's already been emitted — skip.
+        if in_worktree_group {
+            let space = ws.worktree_space().unwrap();
+            if emitted_worktree_groups.contains(&space.key) {
+                continue;
+            }
+        }
+
+        // --- Visual group handling ---
+        if in_visual_group.contains(&ws_idx) {
+            let group_name = ws
+                .visual_group
+                .as_deref()
+                .expect("in_visual_group only set for workspaces with visual_group");
+            if emitted_visual_groups.insert(group_name.to_owned()) {
+                let vg_key = format!("vg:{group_name}");
+                let collapsed = !force_expanded && app.collapsed_space_keys.contains(&vg_key);
+                entries.push(WorkspaceListEntry::GroupHeader {
+                    name: group_name.to_owned(),
+                });
+                if !collapsed {
+                    if let Some(vg_members) = visual_group_members.get(group_name) {
+                        for &member_idx in vg_members {
+                            let member_ws = &app.workspaces[member_idx];
+
+                            // Check if this member is a worktree parent with children.
+                            let wt_key = member_ws
+                                .worktree_space()
+                                .filter(|s| grouped_keys.contains(&s.key) && !s.is_linked_worktree)
+                                .map(|s| s.key.clone());
+
+                            if let Some(ref wt_key) = wt_key {
+                                // Emit worktree parent as vg member + children nested below.
+                                emitted_worktree_groups.insert(wt_key.clone());
+                                entries.push(WorkspaceListEntry::Workspace {
+                                    ws_idx: member_idx,
+                                    indented: false,
+                                });
+                                let wt_collapsed =
+                                    !force_expanded && app.collapsed_space_keys.contains(wt_key);
+                                if !wt_collapsed {
+                                    if let Some(wt_members) = members_by_key.get(wt_key) {
+                                        for &child_idx in wt_members {
+                                            if child_idx != member_idx {
+                                                entries.push(WorkspaceListEntry::Workspace {
+                                                    ws_idx: child_idx,
+                                                    indented: true,
+                                                });
+                                            }
+                                        }
+                                    }
+                                }
+                            } else {
+                                // Standalone visual group member.
+                                entries.push(WorkspaceListEntry::Workspace {
+                                    ws_idx: member_idx,
+                                    indented: false,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
             continue;
-        };
-        let Some(parent_idx) = members.iter().copied().find(|idx| {
-            app.workspaces
-                .get(*idx)
-                .and_then(|member| member.worktree_space())
-                .is_some_and(|member_space| !member_space.is_linked_worktree)
-        }) else {
-            entries.push(WorkspaceListEntry::Workspace {
-                ws_idx,
-                indented: false,
-            });
-            continue;
-        };
-        let collapsed = !force_expanded && app.collapsed_space_keys.contains(&space.key);
+        }
+
+        // --- Flat (ungrouped) workspace ---
         entries.push(WorkspaceListEntry::Workspace {
-            ws_idx: parent_idx,
+            ws_idx,
             indented: false,
         });
-
-        if collapsed {
-            if let Some(active_idx) = visible_group_idx
-                .filter(|idx| *idx != parent_idx)
-                .filter(|_| active_group.as_deref() == Some(space.key.as_str()))
-            {
-                entries.push(WorkspaceListEntry::Workspace {
-                    ws_idx: active_idx,
-                    indented: true,
-                });
-            }
-        } else {
-            for member_idx in members {
-                if *member_idx == parent_idx {
-                    continue;
-                }
-                entries.push(WorkspaceListEntry::Workspace {
-                    ws_idx: *member_idx,
-                    indented: true,
-                });
-            }
-        }
     }
     entries
 }
@@ -450,12 +626,22 @@ fn workspace_list_visible_count(app: &AppState, area: Rect, scroll: usize) -> us
     let entries = workspace_list_entries(app);
     for (entry_idx, entry) in entries.iter().enumerate().skip(scroll) {
         let (row_height, gap) = match entry {
+            WorkspaceListEntry::GroupHeader { .. } => {
+                // One row for the header + one gap row below it.
+                (1u16, 1u16)
+            }
             WorkspaceListEntry::Workspace { ws_idx, indented } => {
                 let Some(ws) = app.workspaces.get(*ws_idx) else {
                     continue;
                 };
+                let is_vg = !*indented && ws.visual_group.is_some();
+                let row_height = if is_vg {
+                    vg_member_row_height(app, ws)
+                } else {
+                    workspace_row_height_in_body(app, ws, *indented, body.height)
+                };
                 (
-                    workspace_row_height_in_body(app, ws, *indented, body.height),
+                    row_height,
                     workspace_entry_gap(&entries, entry_idx, *indented),
                 )
             }
@@ -478,13 +664,21 @@ fn workspace_list_bottom_start(app: &AppState, area: Rect) -> usize {
     let mut used_rows = 0u16;
     let mut start = entries.len();
     for (entry_idx, entry) in entries.iter().enumerate().rev() {
-        let WorkspaceListEntry::Workspace { ws_idx, indented } = entry;
-        let Some(workspace) = app.workspaces.get(*ws_idx) else {
-            continue;
+        let needed = match entry {
+            WorkspaceListEntry::GroupHeader { .. } => 2u16,
+            WorkspaceListEntry::Workspace { ws_idx, indented } => {
+                let Some(workspace) = app.workspaces.get(*ws_idx) else {
+                    continue;
+                };
+                let is_vg = !*indented && workspace.visual_group.is_some();
+                let row_height = if is_vg {
+                    vg_member_row_height(app, workspace)
+                } else {
+                    workspace_row_height_in_body(app, workspace, *indented, body.height)
+                };
+                row_height.saturating_add(workspace_entry_gap(&entries, entry_idx, *indented))
+            }
         };
-        let gap = workspace_entry_gap(&entries, entry_idx, *indented);
-        let needed = workspace_row_height_in_body(app, workspace, *indented, body.height)
-            .saturating_add(gap);
         if used_rows.saturating_add(needed) > body.height {
             break;
         }
@@ -638,7 +832,10 @@ pub(crate) fn agent_panel_scrollbar_rect(app: &AppState, area: Rect) -> Option<R
 pub(crate) fn compute_workspace_list_areas(
     app: &AppState,
     area: Rect,
-) -> (Vec<crate::app::state::WorkspaceCardArea>, Vec<()>) {
+) -> (
+    Vec<crate::app::state::WorkspaceCardArea>,
+    Vec<crate::app::state::GroupHeaderCardArea>,
+) {
     let ws_area = workspace_list_rect(area, app.sidebar_section_split);
     if ws_area == Rect::default() {
         return (Vec::new(), Vec::new());
@@ -654,16 +851,32 @@ pub(crate) fn compute_workspace_list_areas(
     let mut row_y = body.y;
     let body_bottom = body.y + body.height;
     let mut cards = Vec::new();
-    let headers = Vec::new();
+    let mut headers: Vec<crate::app::state::GroupHeaderCardArea> = Vec::new();
 
     let entries = workspace_list_entries(app);
     for (entry_idx, entry) in entries.iter().enumerate().skip(scroll) {
         match entry {
+            WorkspaceListEntry::GroupHeader { name } => {
+                // One row for the header; one gap row after (not occupying body space).
+                if row_y >= body_bottom {
+                    break;
+                }
+                headers.push(crate::app::state::GroupHeaderCardArea {
+                    name: name.clone(),
+                    rect: Rect::new(body.x, row_y, body.width, 1),
+                });
+                row_y = row_y.saturating_add(2); // header row + gap
+            }
             WorkspaceListEntry::Workspace { ws_idx, indented } => {
                 let Some(ws) = app.workspaces.get(*ws_idx) else {
                     continue;
                 };
-                let row_height = workspace_row_height_in_body(app, ws, *indented, body.height);
+                let is_vg = !*indented && ws.visual_group.is_some();
+                let row_height = if is_vg {
+                    vg_member_row_height(app, ws)
+                } else {
+                    workspace_row_height_in_body(app, ws, *indented, body.height)
+                };
                 let gap = workspace_entry_gap(&entries, entry_idx, *indented);
                 if row_y.saturating_add(row_height) > body_bottom {
                     break;
@@ -747,8 +960,11 @@ pub(super) fn render_sidebar_collapsed(app: &AppState, frame: &mut Frame, area: 
         if y >= ws_area.y + ws_area.height {
             break;
         }
-        let (agg_state, agg_seen) = ws.aggregate_state(&app.terminals);
-        let (icon, icon_style) = state_dot(agg_state, agg_seen, p);
+        let (agg_state, agg_seen) = ws.aggregate_display_state(&app.terminals);
+        let idle_stale = ws.last_activity_at.is_some_and(|t| {
+            Instant::now().duration_since(t) >= crate::app::WORKSPACE_IDLE_TIMEOUT
+        });
+        let (icon, icon_style) = state_dot(agg_state, agg_seen, app.spinner_tick, p, idle_stale);
         let is_selected = visible_idx == app.selected && is_navigating;
         let is_active = Some(visible_idx) == app.active;
         let row_style = if is_selected {
@@ -1075,11 +1291,16 @@ fn render_workspace_list(
 
     let list_bottom = area.y + area.height.saturating_sub(1);
     if area.height > 0 {
-        frame.render_widget(
-            Paragraph::new(Line::from(vec![Span::styled(
+        let version_tag = concat!("v", env!("CARGO_PKG_VERSION"));
+        let header_line = Line::from(vec![
+            Span::styled(
                 " spaces",
                 Style::default().fg(p.overlay0).add_modifier(Modifier::BOLD),
-            )])),
+            ),
+            Span::styled(format!(" {version_tag}"), Style::default().fg(p.overlay0)),
+        ]);
+        frame.render_widget(
+            Paragraph::new(header_line),
             Rect::new(area.x, area.y, area.width, 1),
         );
     }
@@ -1087,6 +1308,7 @@ fn render_workspace_list(
     let metrics = workspace_list_scroll_metrics(app, area);
     let scrollbar_rect = workspace_list_scrollbar_rect(app, area);
     let cards = &app.view.workspace_card_areas;
+    let now = Instant::now();
 
     for card in cards {
         let i = card.ws_idx;
@@ -1124,6 +1346,10 @@ fn render_workspace_list(
             Style::default().fg(p.subtext0)
         };
 
+        let idle_stale = ws
+            .last_activity_at
+            .is_some_and(|t| now.duration_since(t) >= crate::app::WORKSPACE_IDLE_TIMEOUT);
+        let is_vg_member = !card.indented && ws.visual_group.is_some();
         let label = ws.display_name_from(&app.terminals, terminal_runtimes);
         let display_label = if card.indented {
             grouped_child_display_label(&label, ws.branch().as_deref(), ws.custom_name.is_some())
@@ -1136,9 +1362,9 @@ fn render_workspace_list(
         let (display_state, display_seen) = parent_group
             .as_ref()
             .filter(|(_, collapsed)| *collapsed)
-            .map(|(key, _)| space_aggregate_state(app, key))
+            .map(|(key, _)| space_aggregate_display_state(app, key))
             .unwrap_or((agg_state, agg_seen));
-        let state_icon = state_dot(display_state, display_seen, p);
+        let state_icon = state_dot(display_state, display_seen, app.spinner_tick, p, idle_stale);
         let state_text_style = Style::default()
             .fg(state_label_color(display_state, display_seen, p))
             .add_modifier(Modifier::DIM);
@@ -1208,6 +1434,56 @@ fn render_workspace_list(
                 Rect::new(card.rect.x, row_y + row_index as u16, card.rect.width, 1),
             );
         }
+
+        // Visual group members: render tab lines when >1 tab.
+        if is_vg_member && ws.tabs.len() > 1 {
+            let branch_rows = if ws.branch().is_some() { 1u16 } else { 0 };
+            for (tab_idx, _tab) in ws.tabs.iter().enumerate() {
+                let tab_y = row_y + 1 + branch_rows + tab_idx as u16;
+                if tab_y >= list_bottom {
+                    break;
+                }
+                let tab_name = ws
+                    .tab_display_name(tab_idx)
+                    .unwrap_or_else(|| (tab_idx + 1).to_string());
+                let is_active_tab = tab_idx == ws.active_tab;
+                let tab_icon = if is_active_tab { "▸" } else { "·" };
+                let tab_style = if is_active_tab {
+                    Style::default().fg(p.subtext0)
+                } else {
+                    Style::default().fg(p.overlay0)
+                };
+                let line = Line::from(vec![
+                    Span::styled("    ", Style::default()),
+                    Span::styled(tab_icon, tab_style),
+                    Span::styled(" ", Style::default()),
+                    Span::styled(tab_name, tab_style),
+                ]);
+                frame.render_widget(
+                    Paragraph::new(line),
+                    Rect::new(card.rect.x, tab_y, card.rect.width, 1),
+                );
+            }
+        }
+    }
+
+    // Render visual group headers (interleaved with workspace cards by y-position).
+    for header in &app.view.workspace_group_header_areas {
+        if header.rect.y >= list_bottom {
+            continue;
+        }
+        let vg_key = format!("vg:{}", header.name);
+        let collapsed = app.collapsed_space_keys.contains(&vg_key);
+        let chevron = if collapsed { "▸" } else { "▾" };
+        let line = Line::from(vec![
+            Span::styled(chevron, Style::default().fg(p.accent)),
+            Span::styled(" ", Style::default()),
+            Span::styled(
+                header.name.clone(),
+                Style::default().fg(p.overlay0).add_modifier(Modifier::BOLD),
+            ),
+        ]);
+        frame.render_widget(Paragraph::new(line), header.rect);
     }
 
     if let Some(y) = insertion_row.filter(|y| *y < list_bottom) {
@@ -2304,5 +2580,143 @@ mod tests {
                 },
             ]
         );
+    }
+
+    // --- Visual group tests ---
+
+    #[test]
+    fn single_member_visual_group_renders_header_and_indented_child() {
+        let mut app = AppState::test_new();
+        let mut ws = Workspace::test_new("alpha");
+        ws.visual_group = Some("g1".into());
+        app.workspaces = vec![ws];
+
+        let entries = workspace_list_entries(&app);
+
+        assert_eq!(
+            entries,
+            vec![
+                WorkspaceListEntry::GroupHeader { name: "g1".into() },
+                WorkspaceListEntry::Workspace {
+                    ws_idx: 0,
+                    indented: false,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn multi_member_visual_group_all_under_header() {
+        let mut app = AppState::test_new();
+        let mut ws0 = Workspace::test_new("alpha");
+        ws0.visual_group = Some("g1".into());
+        let mut ws1 = Workspace::test_new("beta");
+        ws1.visual_group = Some("g1".into());
+        app.workspaces = vec![ws0, ws1];
+
+        let entries = workspace_list_entries(&app);
+
+        assert_eq!(
+            entries,
+            vec![
+                WorkspaceListEntry::GroupHeader { name: "g1".into() },
+                WorkspaceListEntry::Workspace {
+                    ws_idx: 0,
+                    indented: false,
+                },
+                WorkspaceListEntry::Workspace {
+                    ws_idx: 1,
+                    indented: false,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn collapsed_visual_group_shows_only_header() {
+        let mut app = AppState::test_new();
+        let mut ws0 = Workspace::test_new("alpha");
+        ws0.visual_group = Some("g1".into());
+        let mut ws1 = Workspace::test_new("beta");
+        ws1.visual_group = Some("g1".into());
+        app.workspaces = vec![ws0, ws1];
+        app.collapsed_space_keys.insert("vg:g1".into());
+
+        let entries = workspace_list_entries(&app);
+
+        assert_eq!(
+            entries,
+            vec![WorkspaceListEntry::GroupHeader { name: "g1".into() },]
+        );
+    }
+
+    #[test]
+    fn visual_group_wraps_worktree_group() {
+        let mut app = AppState::test_new();
+        // ws0 is a worktree parent AND has a visual_group — vg wraps the worktree group.
+        let mut ws0 = workspace_with_worktree_space("main", Some("repo-key"), "/repo/herdr");
+        ws0.visual_group = Some("g1".into());
+        let ws1 = workspace_with_worktree_space("issue", Some("repo-key"), "/repo/herdr-issue");
+        app.workspaces = vec![ws0, ws1];
+
+        let entries = workspace_list_entries(&app);
+
+        // Visual group header, then worktree parent (not indented), then worktree child (indented).
+        assert_eq!(
+            entries,
+            vec![
+                WorkspaceListEntry::GroupHeader { name: "g1".into() },
+                WorkspaceListEntry::Workspace {
+                    ws_idx: 0,
+                    indented: false,
+                },
+                WorkspaceListEntry::Workspace {
+                    ws_idx: 1,
+                    indented: true,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn ungrouped_workspaces_render_flat() {
+        let mut app = AppState::test_new();
+        app.workspaces = vec![Workspace::test_new("alpha"), Workspace::test_new("beta")];
+
+        let entries = workspace_list_entries(&app);
+
+        assert_eq!(
+            entries,
+            vec![
+                WorkspaceListEntry::Workspace {
+                    ws_idx: 0,
+                    indented: false,
+                },
+                WorkspaceListEntry::Workspace {
+                    ws_idx: 1,
+                    indented: false,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn group_header_areas_allocated_for_visual_groups() {
+        let mut app = AppState::test_new();
+        let mut ws0 = Workspace::test_new("alpha");
+        ws0.visual_group = Some("mygroup".into());
+        let mut ws1 = Workspace::test_new("beta");
+        ws1.visual_group = Some("mygroup".into());
+        app.workspaces = vec![ws0, ws1];
+
+        let (cards, headers) = compute_workspace_list_areas(&app, Rect::new(0, 0, 30, 40));
+
+        assert_eq!(headers.len(), 1);
+        assert_eq!(headers[0].name, "mygroup");
+        assert_eq!(cards.len(), 2);
+        assert!(!cards[0].indented);
+        assert!(!cards[1].indented);
+        // Group header must appear before its member cards.
+        assert!(headers[0].rect.y < cards[0].rect.y);
     }
 }

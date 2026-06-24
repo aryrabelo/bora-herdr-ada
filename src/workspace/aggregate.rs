@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::time::Instant;
 
 use crate::detect::{Agent, AgentState};
 use crate::layout::PaneId;
@@ -86,6 +87,18 @@ fn pane_attention_priority(state: AgentState, seen: bool) -> u8 {
         (AgentState::Unknown, _) => 0,
     }
 }
+/// Display-only priority: prefers `Working` over a just-finished `Done`
+/// (Idle-unseen). Mirrors `pane_attention_priority` but is used to pick the dot
+/// shown for a space, not the sort order.
+fn pane_display_priority(state: AgentState, seen: bool) -> u8 {
+    match (state, seen) {
+        (AgentState::Blocked, _) => 4,
+        (AgentState::Working, _) => 3,
+        (AgentState::Idle, false) => 2,
+        (AgentState::Idle, true) => 1,
+        (AgentState::Unknown, _) => 0,
+    }
+}
 
 impl Workspace {
     pub fn aggregate_state(
@@ -101,6 +114,25 @@ impl Workspace {
                     .map(|terminal| (terminal.state, pane.seen))
             })
             .max_by_key(|(state, seen)| pane_attention_priority(*state, *seen))
+            .unwrap_or((AgentState::Unknown, true))
+    }
+
+    /// Like `aggregate_state` but uses `pane_display_priority`, so a `Working`
+    /// pane wins over a just-finished `Done` pane. Drives the SPACES dot only;
+    /// the agent-panel sort still uses `aggregate_state`.
+    pub fn aggregate_display_state(
+        &self,
+        terminals: &HashMap<TerminalId, TerminalState>,
+    ) -> (AgentState, bool) {
+        self.tabs
+            .iter()
+            .flat_map(|tab| tab.panes.values())
+            .filter_map(|pane| {
+                terminals
+                    .get(&pane.attached_terminal_id)
+                    .map(|terminal| (terminal.state, pane.seen))
+            })
+            .max_by_key(|(state, seen)| pane_display_priority(*state, *seen))
             .unwrap_or((AgentState::Unknown, true))
     }
 
@@ -126,6 +158,27 @@ impl Workspace {
                 detail
             })
             .collect()
+    }
+
+    /// Update the idle-since timestamp.
+    ///
+    /// Call periodically from the tick loop.  When all panes are idle AND
+    /// seen, starts the timer (only sets it if not already running).  Any
+    /// other aggregate state clears the timer so the clock resets on activity.
+    pub(crate) fn update_idle_since(
+        &mut self,
+        terminals: &HashMap<TerminalId, TerminalState>,
+        now: Instant,
+    ) {
+        let (state, seen) = self.aggregate_display_state(terminals);
+        if state == AgentState::Idle && seen {
+            // Start the timer only when it isn't already running.
+            if self.last_activity_at.is_none() {
+                self.last_activity_at = Some(now);
+            }
+        } else {
+            self.last_activity_at = None;
+        }
     }
 }
 

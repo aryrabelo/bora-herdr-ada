@@ -66,6 +66,8 @@ pub struct WorkspaceSnapshot {
     pub tabs: Vec<TabSnapshot>,
     #[serde(default)]
     pub active_tab: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub visual_group: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -162,6 +164,7 @@ impl From<LegacyWorkspaceSnapshot> for WorkspaceSnapshot {
             next_public_tab_number: 0,
             tabs: vec![tab],
             active_tab: 0,
+            visual_group: None,
         }
     }
 }
@@ -303,6 +306,7 @@ fn capture_workspace(
             .map(|tab| capture_tab(tab, terminals, terminal_runtimes))
             .collect(),
         active_tab: ws.active_tab,
+        visual_group: ws.visual_group.clone(),
     }
 }
 
@@ -645,6 +649,7 @@ mod tests {
                     root_pane: Some(0),
                 }],
                 active_tab: 0,
+                visual_group: None,
             }],
             active: Some(0),
             selected: 0,
@@ -1199,6 +1204,7 @@ mod tests {
                     root_pane: Some(0),
                 }],
                 active_tab: 0,
+                visual_group: None,
             }],
             active: Some(0),
             selected: 0,
