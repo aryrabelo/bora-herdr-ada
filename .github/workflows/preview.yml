@@ -127,19 +127,19 @@ jobs:
         include:
           - target: x86_64-unknown-linux-musl
             os: ubuntu-latest
-            name: herdr-linux-x86_64
+            name: bora-linux-x86_64
           - target: aarch64-unknown-linux-musl
             os: ubuntu-latest
-            name: herdr-linux-aarch64
+            name: bora-linux-aarch64
           - target: x86_64-apple-darwin
             os: macos-latest
-            name: herdr-macos-x86_64
+            name: bora-macos-x86_64
           - target: aarch64-apple-darwin
             os: macos-latest
-            name: herdr-macos-aarch64
+            name: bora-macos-aarch64
           - target: x86_64-pc-windows-msvc
             os: windows-latest
-            name: herdr-windows-x86_64.zip
+            name: bora-windows-x86_64.zip
     runs-on: ${{ matrix.os }}
     env:
       LIBGHOSTTY_VT_OPTIMIZE: ReleaseFast
@@ -229,7 +229,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cp target/${{ matrix.target }}/release/herdr ${{ matrix.name }}
+          cp target/${{ matrix.target }}/release/bora ${{ matrix.name }}
           if [ "${{ runner.os }}" = "Linux" ]; then
             file ${{ matrix.name }} > BUILD_INFO.txt
             ldd ${{ matrix.name }} > LDD_INFO.txt 2>&1 || true
@@ -260,9 +260,9 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           $package = Join-Path $env:RUNNER_TEMP "Microsoft.Windows.Console.ConPTY.nupkg"
-          $stage = Join-Path $env:RUNNER_TEMP "herdr-windows-x86_64"
+          $stage = Join-Path $env:RUNNER_TEMP "bora-windows-x86_64"
           .\scripts\package_windows_conpty.ps1 `
-            -HerdrExe target\${{ matrix.target }}\release\herdr.exe `
+            -HerdrExe target\${{ matrix.target }}\release\bora.exe `
             -PackagePath $package `
             -StageDir $stage `
             -OutputPath ${{ matrix.name }}
@@ -329,9 +329,9 @@ jobs:
           python3 - <<'PY'
           import json, pathlib
           result = {}
-          for path in pathlib.Path('artifacts').glob('herdr-*/*.sha256'):
+          for path in pathlib.Path('artifacts').glob('bora-*/*.sha256'):
               digest, name = path.read_text().split()[:2]
-              target = name.removeprefix('herdr-').removesuffix('.exe').removesuffix('.zip')
+              target = name.removeprefix('bora-').removesuffix('.exe').removesuffix('.zip')
               result[target] = digest
           pathlib.Path('preview-sha256.json').write_text(json.dumps(result, indent=2) + '\n')
           PY
@@ -347,11 +347,11 @@ jobs:
           overwrite_files: true
           target_commitish: ${{ needs.preflight.outputs.commit }}
           files: |
-            artifacts/herdr-linux-x86_64/herdr-linux-x86_64
-            artifacts/herdr-linux-aarch64/herdr-linux-aarch64
-            artifacts/herdr-macos-x86_64/herdr-macos-x86_64
-            artifacts/herdr-macos-aarch64/herdr-macos-aarch64
-            artifacts/herdr-windows-x86_64.zip/herdr-windows-x86_64.zip
+            artifacts/bora-linux-x86_64/bora-linux-x86_64
+            artifacts/bora-linux-aarch64/bora-linux-aarch64
+            artifacts/bora-macos-x86_64/bora-macos-x86_64
+            artifacts/bora-macos-aarch64/bora-macos-aarch64
+            artifacts/bora-windows-x86_64.zip/bora-windows-x86_64.zip
 
       - name: Update preview manifest
         run: |

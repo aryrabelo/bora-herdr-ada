@@ -1,5 +1,5 @@
 [package]
-name = "herdr"
+name = "bora"
 version = "0.7.5"
 edition = "2021"
 build = "build.rs"
@@ -16,6 +16,7 @@ include = [
     "skills/herdr/SKILL.md",
     "README.md",
     "LICENSE",
+    "NOTICE",
     "Cargo.toml",
 ]
 

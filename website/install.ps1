@@ -16,7 +16,7 @@ if ([string]::IsNullOrWhiteSpace($Channel)) {
 }
 
 if ($Channel -notin @("stable", "preview")) {
-    Write-Error "Invalid Herdr channel '$Channel'. Use 'preview'."
+    Write-Error "Invalid Bora channel '$Channel'. Use 'preview'."
     exit 1
 }
 
@@ -30,8 +30,8 @@ function Write-WarningStep {
     Write-Warning $Message
 }
 
-function Get-HerdrCommandSource {
-    $existing = Get-Command herdr -ErrorAction SilentlyContinue
+function Get-BoraCommandSource {
+    $existing = Get-Command bora -ErrorAction SilentlyContinue
     if ($null -eq $existing) {
         return $null
     }
@@ -230,7 +230,7 @@ function Test-FileDigest {
         $sha256.Dispose()
     }
     if ($actual -ne $ExpectedDigest.ToLowerInvariant()) {
-        throw "Downloaded Herdr checksum did not match. Expected $ExpectedDigest but got $actual."
+        throw "Downloaded Bora checksum did not match. Expected $ExpectedDigest but got $actual."
     }
 }
 
@@ -263,7 +263,7 @@ function Test-HerdrReleaseComplete {
     if (-not (Test-RegularDirectory -Path $ReleaseDir)) {
         return $false
     }
-    $herdrExe = Join-Path $ReleaseDir "herdr.exe"
+    $herdrExe = Join-Path $ReleaseDir "bora.exe"
     if (-not (Test-RegularFile -Path $herdrExe)) {
         return $false
     }
@@ -543,9 +543,9 @@ switch ($architecture) {
 
 if ([string]::IsNullOrWhiteSpace($ManifestUrl)) {
     $ManifestUrl = if ($Channel -eq "preview") {
-        "https://herdr.dev/preview.json"
+        "https://raw.githubusercontent.com/aryrabelo/bora-herdr-ada/main/website/preview.json"
     } else {
-        "https://herdr.dev/latest.json"
+        "https://raw.githubusercontent.com/aryrabelo/bora-herdr-ada/main/website/latest.json"
     }
 }
 
@@ -576,13 +576,13 @@ try {
     $allowLegacyVisibleBinMigration = $false
 }
 
-$existingHerdr = Get-HerdrCommandSource
-if (-not [string]::IsNullOrWhiteSpace($existingHerdr) -and -not (Test-PathStartsWith -Path $existingHerdr -Prefix $visibleBinDir)) {
-    Write-Step "Detected existing Herdr command at $existingHerdr"
-    Write-WarningStep "PATH order decides which Herdr runs. This installer will put $visibleBinDir first for future and current PowerShell sessions."
+$existingBora = Get-BoraCommandSource
+if (-not [string]::IsNullOrWhiteSpace($existingBora) -and -not (Test-PathStartsWith -Path $existingBora -Prefix $visibleBinDir)) {
+    Write-Step "Detected existing bora command at $existingBora"
+    Write-WarningStep "PATH order decides which bora runs. This installer will put $visibleBinDir first for future and current PowerShell sessions."
 }
 
-Write-Step "Fetching Herdr $Channel manifest"
+Write-Step "Fetching bora $Channel manifest"
 $manifest = ConvertTo-ManifestObject -Manifest (Invoke-RestMethod -Uri $ManifestUrl)
 if (-not [string]::IsNullOrWhiteSpace($ExpectedBuildId) -and [string]$manifest.build_id -ne $ExpectedBuildId) {
     throw "Preview manifest changed while updating. Expected build $ExpectedBuildId but found $($manifest.build_id). Run herdr update again."
@@ -593,8 +593,8 @@ $safeVersionIdentity = $versionIdentity -replace '[^0-9A-Za-z._-]', '-'
 $releaseName = "$safeVersionIdentity-$targetTriple"
 $releaseDir = Join-Path $releasesDir $releaseName
 
-Write-Step "Installing Herdr $versionIdentity for $targetTriple"
-$tempDir = Join-Path ([System.IO.Path]::GetTempPath()) ("herdr-install-" + [System.Guid]::NewGuid().ToString("N"))
+Write-Step "Installing bora $versionIdentity for $targetTriple"
+$tempDir = Join-Path ([System.IO.Path]::GetTempPath()) ("bora-install-" + [System.Guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Force -Path $tempDir | Out-Null
 
 try {
@@ -602,9 +602,9 @@ try {
         Remove-StaleInstallArtifacts -ReleasesDir $releasesDir
 
         if (-not (Test-HerdrReleaseComplete -ReleaseDir $releaseDir -Format $asset.Format)) {
-            $downloadPath = Join-Path $tempDir "herdr-download.$($asset.Format)"
+            $downloadPath = Join-Path $tempDir "bora-download.$($asset.Format)"
             $stagingDir = Join-Path $releasesDir ".staging.$releaseName.$PID"
-            Write-Step "Downloading Herdr"
+            Write-Step "Downloading bora"
             Invoke-WebRequest -Uri $asset.Url -OutFile $downloadPath
             Test-FileDigest -Path $downloadPath -ExpectedDigest $asset.Sha256
 
@@ -612,15 +612,15 @@ try {
                 Expand-Archive -LiteralPath $downloadPath -DestinationPath $stagingDir
             } else {
                 New-Item -ItemType Directory -Force -Path $stagingDir | Out-Null
-                Copy-Item -LiteralPath $downloadPath -Destination (Join-Path $stagingDir "herdr.exe")
+                Copy-Item -LiteralPath $downloadPath -Destination (Join-Path $stagingDir "bora.exe")
             }
             if (-not (Test-HerdrReleaseComplete -ReleaseDir $stagingDir -Format $asset.Format)) {
-                throw "Downloaded Herdr package is incomplete or failed ConPTY verification."
+                throw "Downloaded bora package is incomplete or failed ConPTY verification."
             }
-            $stagedHerdr = Join-Path $stagingDir "herdr.exe"
+            $stagedHerdr = Join-Path $stagingDir "bora.exe"
             & $stagedHerdr --version *> $null
             if ($LASTEXITCODE -ne 0) {
-                throw "Downloaded Herdr command failed verification: $stagedHerdr --version"
+                throw "Downloaded bora command failed verification: $stagedHerdr --version"
             }
             $backupDir = $null
             if (Test-Path -LiteralPath $releaseDir) {
@@ -640,10 +640,10 @@ try {
             }
         }
 
-        $releaseHerdr = Join-Path $releaseDir "herdr.exe"
+        $releaseHerdr = Join-Path $releaseDir "bora.exe"
         & $releaseHerdr --version *> $null
         if ($LASTEXITCODE -ne 0) {
-            throw "Installed Herdr command failed verification: $releaseHerdr --version"
+            throw "Installed bora command failed verification: $releaseHerdr --version"
         }
         Get-ChildItem -LiteralPath $releasesDir -Force -Directory -Filter ".backup.$releaseName.*" -ErrorAction SilentlyContinue |
             Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
@@ -651,6 +651,11 @@ try {
         Set-ManagedJunction -LinkPath $currentDir -TargetPath $releaseDir -ManagedTargetPrefix $releasesDir
         Set-ManagedJunction -LinkPath $visibleBinDir -TargetPath $releaseDir -ManagedTargetPrefix $standaloneRoot -AllowLegacyHerdrBinMigration $allowLegacyVisibleBinMigration
 
+        $boraCommand = Join-Path $visibleBinDir "bora.exe"
+        & $boraCommand --version *> $null
+        if ($LASTEXITCODE -ne 0) {
+            throw "Installed bora command failed verification: $boraCommand --version"
+        }
         Remove-OldReleases -ReleasesDir $releasesDir -CurrentReleaseDir $releaseDir -Keep $Retain
     }
 } finally {
@@ -678,11 +683,11 @@ if ($newProcessPath -cne $env:Path) {
     $env:Path = $newProcessPath
 }
 
-$resolvedHerdr = Get-HerdrCommandSource
-if (-not (Test-PathStartsWith -Path $resolvedHerdr -Prefix $visibleBinDir)) {
-    Write-WarningStep "PowerShell still resolves herdr to $resolvedHerdr. Open a new PowerShell window or inspect PATH order manually."
+$resolvedBora = Get-BoraCommandSource
+if (-not (Test-PathStartsWith -Path $resolvedBora -Prefix $visibleBinDir)) {
+    Write-WarningStep "PowerShell still resolves bora to $resolvedBora. Open a new PowerShell window or inspect PATH order manually."
 }
 
-Write-Step "Current PowerShell session: herdr"
-Write-Step "Future PowerShell windows: open a new PowerShell window and run: herdr"
-Write-Host "Herdr $versionIdentity installed successfully."
+Write-Step "Current PowerShell session: bora"
+Write-Step "Future PowerShell windows: open a new PowerShell window and run: bora"
+Write-Host "bora $versionIdentity installed successfully."

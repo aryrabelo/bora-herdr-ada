@@ -1,7 +1,7 @@
 //! Self-update mechanism.
 //!
 //! Checks the hosted herdr.dev update manifest for newer versions.
-//! Manual `herdr update` downloads and installs the binary.
+//! Manual `bora update` downloads and installs the binary.
 //! Background checks only surface availability and release notes.
 //! Uses `curl` as a subprocess for HTTP — no additional Rust HTTP dependencies.
 //! JSON parsing uses serde_json (already in deps for persistence).
@@ -23,10 +23,12 @@ use std::time::{Duration, Instant};
 use interprocess::local_socket::traits::Stream as _;
 use serde::{Deserialize, Deserializer};
 
-const STABLE_UPDATE_MANIFEST_URL: &str = "https://herdr.dev/latest.json";
-const PREVIEW_UPDATE_MANIFEST_URL: &str = "https://herdr.dev/preview.json";
+const STABLE_UPDATE_MANIFEST_URL: &str =
+    "https://raw.githubusercontent.com/aryrabelo/bora-herdr-ada/main/website/latest.json";
+const PREVIEW_UPDATE_MANIFEST_URL: &str =
+    "https://raw.githubusercontent.com/aryrabelo/bora-herdr-ada/main/website/preview.json";
 const HOMEBREW_FORMULA_API_URL: &str = "https://formulae.brew.sh/api/formula/herdr.json";
-const HERDR_UPDATE_COMMAND: &str = "herdr update";
+const HERDR_UPDATE_COMMAND: &str = "bora update";
 const HOMEBREW_UPDATE_COMMAND: &str = "brew update && brew upgrade herdr";
 const MISE_UPDATE_COMMAND: &str = "mise upgrade herdr";
 const NIX_UPDATE_COMMAND: &str = "update through Nix";
@@ -639,7 +641,7 @@ fn install_windows_update_with_installer(
             "-ExecutionPolicy",
             "Bypass",
             "-Command",
-            "irm https://herdr.dev/install.ps1 | iex",
+            "irm https://raw.githubusercontent.com/aryrabelo/bora-herdr-ada/main/website/install.ps1 | iex",
         ])
         .env("HERDR_CHANNEL", channel.as_str())
         // Drop any inherited PSModulePath. When herdr is launched from
@@ -834,7 +836,7 @@ fn plan_running_server_updates(
         )
         .map_err(|err| {
             format!(
-                "failed to read status for herdr target {} at {}: {err}. stop it with `{}` and run `herdr update` again",
+                "failed to read status for herdr target {} at {}: {err}. stop it with `{}` and run `bora update` again",
                 target.label,
                 target.socket_path.display(),
                 target.stop_command
@@ -843,7 +845,7 @@ fn plan_running_server_updates(
             Some(server) => server,
             None if target.must_be_running => {
                 return Err(format!(
-                        "herdr target {} looked running, but its status API did not respond at {}. stop it with `{}` and run `herdr update` again",
+                        "herdr target {} looked running, but its status API did not respond at {}. stop it with `{}` and run `bora update` again",
                     target.label,
                     target.socket_path.display(),
                     target.stop_command
@@ -851,7 +853,7 @@ fn plan_running_server_updates(
             }
             None if client_protocol_server_is_running_at(&target.client_socket_path) => {
                 return Err(format!(
-                    "herdr target {} has a client socket, but its status API did not respond at {}. stop it with `{}` and run `herdr update` again",
+                    "herdr target {} has a client socket, but its status API did not respond at {}. stop it with `{}` and run `bora update` again",
                     target.label,
                     target.socket_path.display(),
                     target.stop_command
@@ -869,7 +871,7 @@ fn plan_running_server_updates(
 
     if plans.is_empty() && target_client_protocol_server_is_running()? {
         return Err(format!(
-            "a herdr server is listening, but its status API is unavailable; try `{}`, or stop the old server process manually, then run `herdr update` again",
+            "a herdr server is listening, but its status API is unavailable; try `{}`, or stop the old server process manually, then run `bora update` again",
             crate::session::local_stop_command()
         ));
     }
@@ -987,7 +989,7 @@ pub(crate) fn parse_self_update_args(args: &[String]) -> Result<SelfUpdateOption
         match arg.as_str() {
             "--handoff" => options.live_handoff = true,
             "--help" | "-h" => {
-                return Err("usage: herdr update [--handoff]".to_string());
+                return Err("usage: bora update [--handoff]".to_string());
             }
             _ => return Err(format!("unknown update option: {arg}")),
         }
@@ -1002,7 +1004,7 @@ fn prompt_to_stop_old_servers_before_update(
 ) -> Result<bool, String> {
     if !io::stdin().is_terminal() {
         return Err(
-            "one or more Herdr sessions must stop for this update. Stop running Herdr sessions when ready, then run `herdr update` again from an interactive terminal."
+            "one or more Herdr sessions must stop for this update. Stop running Herdr sessions when ready, then run `bora update` again from an interactive terminal."
                 .to_string(),
         );
     }
@@ -1746,7 +1748,7 @@ pub(crate) fn update_install_command() -> &'static str {
 pub(crate) fn update_install_instruction(install_command: &str) -> String {
     match install_command {
         HERDR_UPDATE_COMMAND => {
-            "detach, run `herdr update`, then follow its restart guidance".to_string()
+            "detach, run `bora update`, then follow its restart guidance".to_string()
         }
         HOMEBREW_UPDATE_COMMAND => {
             "detach, run `brew update && brew upgrade herdr`, then restart this Herdr session when ready".to_string()
@@ -1950,7 +1952,7 @@ fn homebrew_cellar_keg_root(path: &Path) -> Option<PathBuf> {
 // Public API
 // ---------------------------------------------------------------------------
 
-/// Manual self-update command (`herdr update`).
+/// Manual self-update command (`bora update`).
 pub fn self_update(options: SelfUpdateOptions) -> Result<Version, String> {
     let channel = UpdateChannel::configured();
     #[cfg(windows)]
@@ -1994,7 +1996,7 @@ pub fn self_update(options: SelfUpdateOptions) -> Result<Version, String> {
     }
 
     if running_inside_herdr() {
-        return Err("run `herdr update` outside herdr after detaching from the session".into());
+        return Err("run `bora update` outside herdr after detaching from the session".into());
     }
 
     eprintln!("checking {} channel for updates...", channel.as_str());
@@ -2051,7 +2053,7 @@ pub fn self_update(options: SelfUpdateOptions) -> Result<Version, String> {
             && !prompt_to_complete_plain_update(&server_update_decisions, &release)?
         {
             eprintln!("Herdr was not updated.");
-            eprintln!("Stop running Herdr sessions when ready, then run `herdr update` again.");
+            eprintln!("Stop running Herdr sessions when ready, then run `bora update` again.");
             return Ok(current);
         }
         install_downloaded_update(downloaded_update)?;
@@ -2597,7 +2599,7 @@ mod tests {
     fn update_install_instruction_distinguishes_install_from_restart() {
         assert_eq!(
             update_install_instruction(HERDR_UPDATE_COMMAND),
-            "detach, run `herdr update`, then follow its restart guidance"
+            "detach, run `bora update`, then follow its restart guidance"
         );
         assert_eq!(
             update_install_instruction(HOMEBREW_UPDATE_COMMAND),
@@ -2730,7 +2732,7 @@ mod tests {
             target: RunningUpdateTarget {
                 name: Some("work".to_string()),
                 label: "work".to_string(),
-                stop_command: "herdr session stop work".to_string(),
+                stop_command: "bora session stop work".to_string(),
                 attach_command: Some("herdr session attach work".to_string()),
                 socket_path: crate::session::api_socket_path_for(Some("work")),
                 client_socket_path: crate::session::client_socket_path_for(Some("work")),
@@ -2869,7 +2871,7 @@ mod tests {
             "unexpected error: {err}"
         );
         assert!(
-            err.contains("herdr session stop work"),
+            err.contains("bora session stop work"),
             "unexpected error: {err}"
         );
     }
@@ -2945,7 +2947,7 @@ mod tests {
             target: RunningUpdateTarget {
                 name: Some("work".to_string()),
                 label: "work".to_string(),
-                stop_command: "herdr session stop work".to_string(),
+                stop_command: "bora session stop work".to_string(),
                 attach_command: Some("herdr session attach work".to_string()),
                 socket_path: crate::session::api_socket_path_for(Some("work")),
                 client_socket_path: crate::session::client_socket_path_for(Some("work")),
