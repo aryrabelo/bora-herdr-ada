@@ -117,8 +117,8 @@ fn encode_mouse_cb(
         cb += 16;
     }
 
-    let column = column as u32 + 1;
-    let row = row as u32 + 1;
+    let column = u32::from(column) + 1;
+    let row = u32::from(row) + 1;
 
     match encoding {
         MouseProtocolEncoding::Sgr => Some(
@@ -137,7 +137,7 @@ fn encode_mouse_cb(
         MouseProtocolEncoding::Utf8 => {
             let mut bytes = Vec::with_capacity(16);
             bytes.extend_from_slice(b"\x1b[M");
-            push_mouse_codepoint(&mut bytes, cb as u32 + 32)?;
+            push_mouse_codepoint(&mut bytes, u32::from(cb) + 32)?;
             push_mouse_codepoint(&mut bytes, column + 32)?;
             push_mouse_codepoint(&mut bytes, row + 32)?;
             Some(bytes)

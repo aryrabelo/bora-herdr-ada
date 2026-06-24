@@ -1450,9 +1450,9 @@ impl GhosttyPaneTerminal {
         let Ok(core) = self.core.lock() else {
             return None;
         };
-        Some(crate::input::KeyboardProtocol::from_kitty_flags(
-            core.terminal.kitty_keyboard_flags().ok()? as u16,
-        ))
+        Some(crate::input::KeyboardProtocol::from_kitty_flags(u16::from(
+            core.terminal.kitty_keyboard_flags().ok()?,
+        )))
     }
 
     #[cfg(unix)]

@@ -71,7 +71,7 @@ pub(super) fn wait_for_output(
         };
         if value.get("error").is_some() {
             let mut value = value;
-            value["id"] = serde_json::Value::String(request_id.clone());
+            value["id"] = serde_json::Value::String(request_id);
             return Ok(Some(serde_json::to_string(&value).unwrap()));
         }
 

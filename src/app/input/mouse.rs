@@ -804,20 +804,20 @@ impl AppState {
                         } => {
                             let ratio = match direction {
                                 Direction::Horizontal => {
-                                    (mouse
-                                        .column
-                                        .saturating_add(*grab_offset)
-                                        .saturating_sub(area.x))
-                                        as f32
-                                        / area.width.max(1) as f32
+                                    f32::from(
+                                        mouse
+                                            .column
+                                            .saturating_add(*grab_offset)
+                                            .saturating_sub(area.x),
+                                    ) / f32::from(area.width.max(1))
                                 }
                                 Direction::Vertical => {
-                                    (mouse
-                                        .row
-                                        .saturating_add(*grab_offset)
-                                        .saturating_sub(area.y))
-                                        as f32
-                                        / area.height.max(1) as f32
+                                    f32::from(
+                                        mouse
+                                            .row
+                                            .saturating_add(*grab_offset)
+                                            .saturating_sub(area.y),
+                                    ) / f32::from(area.height.max(1))
                                 }
                             };
                             let ratio = ratio.clamp(0.1, 0.9);
@@ -1118,11 +1118,11 @@ impl AppState {
                     let tab_idx = self
                         .workspaces
                         .get(ws_idx)
-                        .map(|ws| ws.active_tab_index())?;
+                        .map(crate::workspace::Workspace::active_tab_index)?;
                     let previous_focused_pane_id = self
                         .workspaces
                         .get(ws_idx)
-                        .and_then(|ws| ws.focused_pane_id());
+                        .and_then(crate::workspace::Workspace::focused_pane_id);
                     let source_pane_id =
                         previous_focused_pane_id.filter(|pane_id| *pane_id != info.id);
                     let has_manual_label = self

@@ -6,7 +6,7 @@ use crate::api::schema::{
 };
 
 pub(super) fn run_agent_command(args: &[String]) -> std::io::Result<i32> {
-    let Some(subcommand) = args.first().map(|arg| arg.as_str()) else {
+    let Some(subcommand) = args.first().map(std::string::String::as_str) else {
         print_agent_help();
         return Ok(2);
     };
@@ -131,9 +131,7 @@ fn agent_explain(args: &[String]) -> std::io::Result<i32> {
 
         let response = super::send_request(&Request {
             id: "cli:agent:explain".into(),
-            method: Method::AgentExplain(AgentTarget {
-                target: target.to_owned(),
-            }),
+            method: Method::AgentExplain(AgentTarget { target }),
         })?;
         if response.get("error").is_some() {
             eprintln!("{}", serde_json::to_string(&response).unwrap());
@@ -170,7 +168,7 @@ fn print_agent_explain_text(explain: &serde_json::Value, verbose: bool) {
                 .and_then(|value| value.as_str())
                 .unwrap_or("-"),
             rule.get("priority")
-                .and_then(|value| value.as_i64())
+                .and_then(serde_json::Value::as_i64)
                 .unwrap_or(0),
         );
         if let Some(preview) = matched_rule_region_preview(explain, rule_id) {

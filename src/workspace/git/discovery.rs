@@ -35,7 +35,7 @@ pub fn derive_label_from_cwd(cwd: &Path) -> String {
     cwd.file_name()
         .and_then(|n| n.to_str())
         .filter(|s| !s.is_empty())
-        .map(|s| s.to_string())
+        .map(std::string::ToString::to_string)
         .unwrap_or_else(|| cwd.display().to_string())
 }
 

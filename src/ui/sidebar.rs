@@ -51,7 +51,7 @@ fn sidebar_section_heights(total_h: u16, split_ratio: f32) -> (u16, u16) {
     }
 
     let ratio = split_ratio.clamp(0.1, 0.9);
-    let ws_h = ((total_h as f32) * ratio).round() as u16;
+    let ws_h = (f32::from(total_h) * ratio).round() as u16;
     let ws_h = ws_h.clamp(3, total_h.saturating_sub(3));
     let detail_h = total_h.saturating_sub(ws_h);
     (ws_h, detail_h)

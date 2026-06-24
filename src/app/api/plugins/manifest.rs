@@ -523,7 +523,7 @@ fn normalize_command(command: Vec<String>) -> Result<Vec<String>, (&'static str,
         .into_iter()
         .map(|arg| arg.trim().to_string())
         .collect::<Vec<_>>();
-    if command.is_empty() || command.iter().any(|arg| arg.is_empty()) {
+    if command.is_empty() || command.iter().any(std::string::String::is_empty) {
         return Err((
             "invalid_plugin_command",
             "command must contain non-empty argv strings".to_string(),

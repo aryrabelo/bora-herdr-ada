@@ -378,13 +378,13 @@ fn opposite_direction(nav: NavDirection) -> NavDirection {
 
 fn split_edge_distance(split: &SplitBorder, focused: Rect, nav: NavDirection) -> u32 {
     match nav {
-        NavDirection::Left => (split.pos as i32 - focused.x as i32).unsigned_abs(),
+        NavDirection::Left => (i32::from(split.pos) - i32::from(focused.x)).unsigned_abs(),
         NavDirection::Right => {
-            (split.pos as i32 - (focused.x + focused.width) as i32).unsigned_abs()
+            (i32::from(split.pos) - i32::from(focused.x + focused.width)).unsigned_abs()
         }
-        NavDirection::Up => (split.pos as i32 - focused.y as i32).unsigned_abs(),
+        NavDirection::Up => (i32::from(split.pos) - i32::from(focused.y)).unsigned_abs(),
         NavDirection::Down => {
-            (split.pos as i32 - (focused.y + focused.height) as i32).unsigned_abs()
+            (i32::from(split.pos) - i32::from(focused.y + focused.height)).unsigned_abs()
         }
     }
 }
@@ -621,7 +621,7 @@ fn get_ratio_at(node: &Node, path: &[bool]) -> Option<f32> {
 fn split_rect(area: Rect, direction: Direction, ratio: f32) -> (Rect, Rect) {
     match direction {
         Direction::Horizontal => {
-            let first_w = ((area.width as f32) * ratio).round() as u16;
+            let first_w = (f32::from(area.width) * ratio).round() as u16;
             let second_w = area.width.saturating_sub(first_w);
             (
                 Rect::new(area.x, area.y, first_w, area.height),
@@ -629,7 +629,7 @@ fn split_rect(area: Rect, direction: Direction, ratio: f32) -> (Rect, Rect) {
             )
         }
         Direction::Vertical => {
-            let first_h = ((area.height as f32) * ratio).round() as u16;
+            let first_h = (f32::from(area.height) * ratio).round() as u16;
             let second_h = area.height.saturating_sub(first_h);
             (
                 Rect::new(area.x, area.y, area.width, first_h),

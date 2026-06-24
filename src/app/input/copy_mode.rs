@@ -43,7 +43,7 @@ impl AppState {
         let Some(pane_id) = self
             .workspaces
             .get(ws_idx)
-            .and_then(|ws| ws.focused_pane_id())
+            .and_then(crate::workspace::Workspace::focused_pane_id)
         else {
             return;
         };
