@@ -326,7 +326,7 @@ fn render_header_status(
             Style::default().fg(p.yellow),
         )
     } else {
-        state_dot(state, seen, p)
+        state_dot(state, seen, app.spinner_tick, p)
     };
     let tab_label = mobile_tab_status(ws);
     let row1 = Rect::new(area.x, area.y, area.width, 1);
@@ -576,7 +576,7 @@ fn render_mobile_switcher_content(
         let selected = *ws_idx == app.selected;
         let bg = mobile_item_bg(selected, active, p);
         let (state, seen) = ws.aggregate_state(&app.terminals);
-        let (dot, dot_style) = state_dot(state, seen, p);
+        let (dot, dot_style) = state_dot(state, seen, app.spinner_tick, p);
 
         let mut title_spans = vec![Span::styled("  ", Style::default().bg(bg))];
         // Worktrees of the same space render as branches off their parent, so a
