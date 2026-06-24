@@ -515,6 +515,7 @@ impl HeadlessServer {
             if self.handle_deferred_requests_headless() {
                 needs_render = true;
                 needs_full_render = true;
+
             }
 
             if latest_app_client(&self.clients).is_some() && self.app.ensure_default_workspace() {
@@ -691,6 +692,24 @@ impl HeadlessServer {
             self.app.open_remove_linked_worktree_confirmation(ws_idx);
             needs_render = true;
             crate::render_prof::event("full_render_cause.deferred_worktree_dialog");
+        }
+
+        if let Some(ws_idx) = self.app.state.request_merge_worktree_to_main.take() {
+            self.app.start_worktree_merge_to_main(ws_idx);
+            needs_render = true;
+            crate::render_prof::event("full_render_cause.deferred_worktree_merge");
+        }
+
+        if let Some(ws_idx) = self.app.state.request_open_worktree_pr.take() {
+            self.app.start_worktree_open_pr(ws_idx);
+            needs_render = true;
+            crate::render_prof::event("full_render_cause.deferred_worktree_pr");
+        }
+
+        if let Some(ws_idx) = self.app.state.request_sync_workspace_git.take() {
+            self.app.start_workspace_git_sync(ws_idx);
+            needs_render = true;
+            crate::render_prof::event("full_render_cause.deferred_worktree_sync");
         }
 
         if self.app.state.request_submit_worktree_create {

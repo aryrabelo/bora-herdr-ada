@@ -520,9 +520,13 @@ impl App {
             request_open_existing_worktree: None,
             request_new_workspace_cwd: None,
             request_remove_linked_worktree: None,
+            request_merge_worktree_to_main: None,
+            request_open_worktree_pr: None,
+            request_sync_workspace_git: None,
             request_submit_worktree_create: false,
             request_submit_worktree_open: false,
             request_submit_worktree_remove: false,
+            request_submit_worktree_merge: false,
             request_reload_config: false,
             request_client_config_reload: false,
             request_clipboard_write: None,
@@ -974,6 +978,21 @@ impl App {
                 needs_render = true;
             }
 
+            if let Some(ws_idx) = self.state.request_merge_worktree_to_main.take() {
+                self.start_worktree_merge_to_main(ws_idx);
+                needs_render = true;
+            }
+
+            if let Some(ws_idx) = self.state.request_open_worktree_pr.take() {
+                self.start_worktree_open_pr(ws_idx);
+                needs_render = true;
+            }
+
+            if let Some(ws_idx) = self.state.request_sync_workspace_git.take() {
+                self.start_workspace_git_sync(ws_idx);
+                needs_render = true;
+            }
+
             if self.state.request_submit_worktree_create {
                 self.state.request_submit_worktree_create = false;
                 self.submit_worktree_create_via_api();
@@ -989,6 +1008,12 @@ impl App {
             if self.state.request_submit_worktree_remove {
                 self.state.request_submit_worktree_remove = false;
                 self.submit_worktree_remove_via_api();
+                needs_render = true;
+            }
+
+            if self.state.request_submit_worktree_merge {
+                self.state.request_submit_worktree_merge = false;
+                self.start_worktree_merge_and_remove();
                 needs_render = true;
             }
 
@@ -1591,27 +1616,25 @@ impl App {
                 crate::raw_input::RawInputEvent::Paste(text) => {
                     if self.state.mode != Mode::Terminal {
                         self.paste_into_active_text_input(&text);
-                    } else {
-                        if let Some(ws_idx) = self.state.active {
-                            if let Some(ws) = self.state.workspaces.get(ws_idx) {
-                                if let Some(focused) = ws.focused_pane_id() {
-                                    if let Some(runtime) = self.state.runtime_for_pane_in_workspace(
-                                        &self.terminal_runtimes,
-                                        ws_idx,
-                                        focused,
-                                    ) {
-                                        let _ = runtime.try_send_bytes(bytes::Bytes::from(
-                                            if runtime
-                                                .input_state()
-                                                .map(|s| s.bracketed_paste)
-                                                .unwrap_or(false)
-                                            {
-                                                format!("\x1b[200~{text}\x1b[201~")
-                                            } else {
-                                                text
-                                            },
-                                        ));
-                                    }
+                    } else if let Some(ws_idx) = self.state.active {
+                        if let Some(ws) = self.state.workspaces.get(ws_idx) {
+                            if let Some(focused) = ws.focused_pane_id() {
+                                if let Some(runtime) = self.state.runtime_for_pane_in_workspace(
+                                    &self.terminal_runtimes,
+                                    ws_idx,
+                                    focused,
+                                ) {
+                                    let _ = runtime.try_send_bytes(bytes::Bytes::from(
+                                        if runtime
+                                            .input_state()
+                                            .map(|s| s.bracketed_paste)
+                                            .unwrap_or(false)
+                                        {
+                                            format!("\x1b[200~{text}\x1b[201~")
+                                        } else {
+                                            text
+                                        },
+                                    ));
                                 }
                             }
                         }

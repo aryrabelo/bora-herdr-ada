@@ -196,7 +196,6 @@ pub(crate) fn worktree_dirty_remove_message(path: &Path) -> String {
     )
 }
 
-#[cfg(any(windows, test))]
 pub(crate) fn checkout_has_dirty_files(path: &Path) -> Result<bool, String> {
     let path_arg = path.display().to_string();
     let output = std::process::Command::new("git")
@@ -303,6 +302,116 @@ pub(crate) fn run_worktree_add_command(
         build_worktree_add_new_branch_command(repo_root, path, branch, base)
     };
     run_worktree_command(&command)
+}
+
+pub(crate) fn build_worktree_merge_command(repo_root: &Path, branch: &str) -> WorktreeCommand {
+    WorktreeCommand {
+        program: "git".to_string(),
+        args: vec![
+            "-C".to_string(),
+            repo_root.display().to_string(),
+            "merge".to_string(),
+            "--no-ff".to_string(),
+            "--no-edit".to_string(),
+            branch.to_string(),
+        ],
+    }
+}
+
+/// Abort an in-progress merge in `repo_root` (used to clean up after a conflict).
+pub(crate) fn build_worktree_merge_abort_command(repo_root: &Path) -> WorktreeCommand {
+    WorktreeCommand {
+        program: "git".to_string(),
+        args: vec![
+            "-C".to_string(),
+            repo_root.display().to_string(),
+            "merge".to_string(),
+            "--abort".to_string(),
+        ],
+    }
+}
+
+/// Merge `branch` into the parent/main checkout, refusing if either side is
+/// dirty and aborting (no changes applied) on conflict. Shared by the
+/// merge-to-main and merge-and-remove flows.
+pub(crate) fn merge_branch_to_parent(
+    repo_root: &Path,
+    checkout_path: &Path,
+    branch: &str,
+) -> Result<(), String> {
+    if checkout_has_dirty_files(checkout_path)? {
+        return Err("worktree has uncommitted changes; commit them before merging".into());
+    }
+    if checkout_has_dirty_files(repo_root)? {
+        return Err("base checkout has uncommitted changes; commit or stash them first".into());
+    }
+    let merge = build_worktree_merge_command(repo_root, branch);
+    if let Err(err) = run_worktree_command(&merge) {
+        let abort = build_worktree_merge_abort_command(repo_root);
+        let _ = run_worktree_command(&abort);
+        return Err(format!("merge failed (no changes applied): {err}"));
+    }
+    Ok(())
+}
+
+/// Push `branch` to `origin` from the worktree checkout, setting upstream so a
+/// subsequent `gh pr create` has a remote head to open a PR from.
+pub(crate) fn build_worktree_push_command(checkout_path: &Path, branch: &str) -> WorktreeCommand {
+    WorktreeCommand {
+        program: "git".to_string(),
+        args: vec![
+            "-C".to_string(),
+            checkout_path.display().to_string(),
+            "push".to_string(),
+            "-u".to_string(),
+            "origin".to_string(),
+            branch.to_string(),
+        ],
+    }
+}
+
+/// Push the worktree branch and open a GitHub PR via `gh pr create --fill`,
+/// returning the PR URL printed on stdout. `gh` runs inside the checkout so it
+/// resolves the repo from the worktree's remote.
+pub(crate) fn open_pull_request(checkout_path: &Path, branch: &str) -> Result<String, String> {
+    run_worktree_command(&build_worktree_push_command(checkout_path, branch))?;
+    let output = std::process::Command::new("gh")
+        .current_dir(checkout_path)
+        .args(["pr", "create", "--fill"])
+        .output()
+        .map_err(|err| format!("failed to run gh: {err}"))?;
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        Err(if stderr.is_empty() {
+            "gh pr create failed".to_string()
+        } else {
+            stderr
+        })
+    }
+}
+
+/// A `git -C <checkout_path> <args...>` command.
+fn build_git_in_checkout_command(checkout_path: &Path, args: &[&str]) -> WorktreeCommand {
+    let mut full = vec!["-C".to_string(), checkout_path.display().to_string()];
+    full.extend(args.iter().map(|arg| arg.to_string()));
+    WorktreeCommand {
+        program: "git".to_string(),
+        args: full,
+    }
+}
+
+/// Sync the checkout's branch with its upstream: fast-forward in remote commits
+/// (`pull --ff-only`, never creating merge commits or conflicts), then push any
+/// local commits. A diverged branch fails the `--ff-only` pull cleanly without
+/// touching the tree.
+pub(crate) fn sync_branch_with_upstream(checkout_path: &Path) -> Result<(), String> {
+    run_worktree_command(&build_git_in_checkout_command(
+        checkout_path,
+        &["pull", "--ff-only"],
+    ))?;
+    run_worktree_command(&build_git_in_checkout_command(checkout_path, &["push"]))
 }
 
 pub(crate) fn run_worktree_command(command: &WorktreeCommand) -> Result<(), String> {
