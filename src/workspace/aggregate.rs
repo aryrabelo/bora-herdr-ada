@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::time::Instant;
 
 use crate::detect::{Agent, AgentState};
 use crate::layout::PaneId;
@@ -151,6 +152,27 @@ impl Workspace {
                 detail
             })
             .collect()
+    }
+
+    /// Update the idle-since timestamp.
+    ///
+    /// Call periodically from the tick loop.  When all panes are idle AND
+    /// seen, starts the timer (only sets it if not already running).  Any
+    /// other aggregate state clears the timer so the clock resets on activity.
+    pub(crate) fn update_idle_since(
+        &mut self,
+        terminals: &HashMap<TerminalId, TerminalState>,
+        now: Instant,
+    ) {
+        let (state, seen) = self.aggregate_display_state(terminals);
+        if state == AgentState::Idle && seen {
+            // Start the timer only when it isn't already running.
+            if self.last_activity_at.is_none() {
+                self.last_activity_at = Some(now);
+            }
+        } else {
+            self.last_activity_at = None;
+        }
     }
 }
 
