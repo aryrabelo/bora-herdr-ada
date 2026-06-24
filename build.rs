@@ -52,6 +52,31 @@ fn main() {
     let simd = env_bool("LIBGHOSTTY_VT_SIMD").unwrap_or(true);
     let target = env::var("TARGET").expect("TARGET");
     let zig_target = zig_target(&target);
+
+    // ponytail: prebuilt bypass — stopgap because vendored libghostty-vt requires zig 0.15.2
+    // which cannot link the macOS 26 SDK, and zig 0.16 is rejected by the vendored build.zig.
+    // Remove once upstream Ghostty's zig-0.16 migration (PR #12726) lands and we vendor-update;
+    // at that point delete this block and return to from-source build.
+    println!("cargo:rerun-if-env-changed=LIBGHOSTTY_VT_PREBUILT");
+    let prebuilt: Option<PathBuf> = if let Ok(p) = env::var("LIBGHOSTTY_VT_PREBUILT") {
+        Some(PathBuf::from(p))
+    } else {
+        let candidate = manifest_dir.join(format!("prebuilt/libghostty-vt-{zig_target}.a"));
+        if candidate.exists() {
+            Some(candidate)
+        } else {
+            None
+        }
+    };
+    if let Some(path) = prebuilt {
+        let path = path
+            .canonicalize()
+            .expect("failed to canonicalize prebuilt path");
+        let dir = path.parent().expect("prebuilt path has no parent");
+        println!("cargo:rustc-link-search=native={}", dir.display());
+        println!("cargo:rustc-link-arg={}", path.display());
+        return;
+    }
     let version_string = fs::read_to_string(vendored_dir.join("VERSION"))
         .expect("failed to read vendored libghostty-vt VERSION")
         .trim()

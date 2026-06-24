@@ -1,0 +1,103 @@
+name: libghostty-vt prebuilts
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - vendor/libghostty-vt.vendor.json
+      - "vendor/libghostty-vt/**"
+
+permissions:
+  contents: write
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+concurrency:
+  group: libghostty-vt-prebuilts-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-publish:
+    name: Build and publish prebuilts
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+
+      - name: Read vendor metadata
+        id: meta
+        run: |
+          set -euo pipefail
+          COMMIT8=$(python3 -c "import json; d=json.load(open('vendor/libghostty-vt.vendor.json')); print(d['source_commit'][:8])")
+          VERSION=$(cat vendor/libghostty-vt/VERSION)
+          echo "commit8=${COMMIT8}" >> "${GITHUB_OUTPUT}"
+          echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
+
+      - name: Install Zig 0.15.2
+        # Same action+SHA pinned in ci.yml and release.yml; version overridden to
+        # 0.15.2 (the vendored build.zig requirement) instead of the repo's mise
+        # 0.16 pin, which the vendored build.zig rejects.
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.15.2
+
+      - name: Build libghostty-vt for all targets
+        # Cross-building aarch64-macos and x86_64-macos from ubuntu-latest.
+        # Rationale: zig ships a bundled macOS sysroot that covers the libc/libc++
+        # headers used by a headless VT core; -Demit-lib-vt emits a static archive
+        # with no final link step, so no macOS SDK is required from the runner OS.
+        # If future libghostty-vt versions add @cImport of Apple framework headers
+        # (CoreFoundation, Metal, etc.) that zig does not bundle, the macos targets
+        # will fail here; in that case gate them to a separate job:
+        #   jobs.build-macos-native, runs-on: macos-latest, same zig build loop
+        #   scoped to [aarch64-macos, x86_64-macos].
+        # ponytail: serial loop on one runner; split into a parallel matrix if build
+        #           times grow beyond ~15 min or per-target caching matters.
+        env:
+          COMMIT8: ${{ steps.meta.outputs.commit8 }}
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          set -euo pipefail
+          for TARGET in aarch64-macos x86_64-macos aarch64-linux-musl x86_64-linux-musl; do
+            echo "::group::Build ${TARGET}"
+            rm -rf vendor/libghostty-vt/.zig-cache vendor/libghostty-vt/zig-out
+            (
+              cd vendor/libghostty-vt && \
+              zig build \
+                -Demit-lib-vt \
+                -Doptimize=ReleaseFast \
+                -Dsimd=true \
+                "-Dtarget=${TARGET}" \
+                "-Dversion-string=${VERSION}" \
+                -Demit-xcframework=false
+            )
+            cp vendor/libghostty-vt/zig-out/lib/libghostty-vt.a \
+               "libghostty-vt-${TARGET}-${COMMIT8}.a"
+            echo "::endgroup::"
+          done
+
+      - name: Ensure prebuilts release exists
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh release view libghostty-vt-prebuilts || \
+            gh release create libghostty-vt-prebuilts \
+              --title 'libghostty-vt prebuilts' \
+              --notes 'Prebuilt vendored libghostty-vt static libs, keyed by vendor commit.'
+
+      - name: Upload prebuilt assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          COMMIT8: ${{ steps.meta.outputs.commit8 }}
+        run: |
+          set -euo pipefail
+          gh release upload libghostty-vt-prebuilts \
+            "libghostty-vt-aarch64-macos-${COMMIT8}.a" \
+            "libghostty-vt-x86_64-macos-${COMMIT8}.a" \
+            "libghostty-vt-aarch64-linux-musl-${COMMIT8}.a" \
+            "libghostty-vt-x86_64-linux-musl-${COMMIT8}.a" \
+            --clobber
