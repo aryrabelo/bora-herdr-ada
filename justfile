@@ -47,6 +47,11 @@ website-build:
 build-libghostty-vt:
     scripts/build_vendored_libghostty_vt.sh
 
+# Fetch the prebuilt libghostty-vt static lib for this host into prebuilt/
+# (fallback when zig 0.15.2 cannot build locally — remove when upstream zig-0.16 port lands)
+fetch-libghostty-vt:
+    scripts/fetch_libghostty_vt_prebuilt.sh
+
 # Check that release docs and changelog have been finalized from docs/next before release
 release-docs-check:
     python3 scripts/agent_detection_manifest_check.py --require-website

@@ -32,16 +32,39 @@ scripts/bora run          # run it on the dedicated "bora" session (own socket)
 ```
 
 > [!NOTE]
-> On macOS 26 the local native build is currently blocked: the vendored
-> `libghostty-vt` requires zig 0.15.2, which cannot link against the macOS 26
-> SDK, while zig 0.16 is rejected by the vendored `build.zig`. Until the
-> toolchain is sorted, build on CI:
+> **macOS 26 — prebuilt fallback required.** The vendored `libghostty-vt`
+> requires zig 0.15.2, which cannot link against the macOS 26 SDK. zig 0.16 is
+> rejected by the vendored `build.zig`. Upstream Ghostty's zig-0.16 migration
+> ([PR #12726](https://github.com/ghostty-org/ghostty/pull/12726)) is still
+> open/WIP, so a vendor-update does not help yet.
+>
+> **Local builds now work via a prebuilt static lib:**
+>
+> ```sh
+> just fetch-libghostty-vt   # downloads prebuilt/libghostty-vt-<target>.a (gitignored)
+> scripts/bora build         # build.rs auto-detects the prebuilt; cargo build --release
+> ```
+>
+> `LIBGHOSTTY_VT_PREBUILT=<absolute path to .a>` overrides the cache path (highest priority).
+>
+> If you prefer a CI-built binary instead:
 >
 > ```sh
 > scripts/bora ci-build     # dispatch the GitHub Actions macOS build on the fork
 > gh run watch              # wait for it
 > scripts/bora ci-install   # download the artifact, install as herdr-bora
 > ```
+
+### Refreshing / producing prebuilts
+
+The `libghostty-vt-prebuilts` GitHub Actions workflow cross-builds `libghostty-vt.a`
+for each target using zig 0.15.2 and publishes them as assets on the
+`libghostty-vt-prebuilts` release, keyed by the vendored commit (8-char prefix).
+After a vendor update, re-run that workflow, then run `just fetch-libghostty-vt` again.
+
+**Removal condition:** when upstream's zig-0.16 port lands and we vendor-update to a
+0.16-capable commit, delete the prebuilt fallback in `build.rs`, the `fetch-libghostty-vt`
+just recipe, and the `libghostty-vt-prebuilts` workflow, and return to a pure from-source build.
 
 ## Keeping current with upstream
 
