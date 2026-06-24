@@ -1770,7 +1770,7 @@ impl AppState {
             selection_autoscroll: None,
             context_menu: None,
             update_available: None,
-            update_install_command: "herdr update".into(),
+            update_install_command: "bora update".into(),
             latest_release_notes_available: false,
             update_dismissed: false,
             config_diagnostic: None,

@@ -570,11 +570,11 @@ test "$sid" = "$$"
             "unexpected error: {message}"
         );
         assert!(
-            message.contains("Run `herdr session stop work`"),
+            message.contains("Run `bora session stop work`"),
             "unexpected error: {message}"
         );
         assert!(
-            message.contains("then run `herdr session attach work` again"),
+            message.contains("then run `bora session attach work` again"),
             "unexpected error: {message}"
         );
         std::env::remove_var("XDG_CONFIG_HOME");

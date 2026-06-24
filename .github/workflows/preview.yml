@@ -127,19 +127,19 @@ jobs:
         include:
           - target: x86_64-unknown-linux-musl
             os: ubuntu-latest
-            name: herdr-linux-x86_64
+            name: bora-linux-x86_64
           - target: aarch64-unknown-linux-musl
             os: ubuntu-latest
-            name: herdr-linux-aarch64
+            name: bora-linux-aarch64
           - target: x86_64-apple-darwin
             os: macos-latest
-            name: herdr-macos-x86_64
+            name: bora-macos-x86_64
           - target: aarch64-apple-darwin
             os: macos-latest
-            name: herdr-macos-aarch64
+            name: bora-macos-aarch64
           - target: x86_64-pc-windows-msvc
             os: windows-latest
-            name: herdr-windows-x86_64.exe
+            name: bora-windows-x86_64.exe
     runs-on: ${{ matrix.os }}
     env:
       LIBGHOSTTY_VT_OPTIMIZE: ReleaseFast
@@ -229,7 +229,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cp target/${{ matrix.target }}/release/herdr ${{ matrix.name }}
+          cp target/${{ matrix.target }}/release/bora ${{ matrix.name }}
           if [ "${{ runner.os }}" = "Linux" ]; then
             file ${{ matrix.name }} > BUILD_INFO.txt
             ldd ${{ matrix.name }} > LDD_INFO.txt 2>&1 || true
@@ -258,7 +258,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          Copy-Item target\${{ matrix.target }}\release\herdr.exe ${{ matrix.name }}
+          Copy-Item target\${{ matrix.target }}\release\bora.exe ${{ matrix.name }}
           $hash = (Get-FileHash -Algorithm SHA256 ${{ matrix.name }}).Hash.ToLowerInvariant()
           "$hash  ${{ matrix.name }}" | Out-File -Encoding ascii ${{ matrix.name }}.sha256
           "commit=${{ needs.preflight.outputs.commit }}" | Out-File -Encoding utf8 BUILD_INFO.txt
@@ -322,9 +322,9 @@ jobs:
           python3 - <<'PY'
           import json, pathlib
           result = {}
-          for path in pathlib.Path('artifacts').glob('herdr-*/*.sha256'):
+          for path in pathlib.Path('artifacts').glob('bora-*/*.sha256'):
               digest, name = path.read_text().split()[:2]
-              target = name.removeprefix('herdr-').removesuffix('.exe')
+              target = name.removeprefix('bora-').removesuffix('.exe')
               result[target] = digest
           pathlib.Path('preview-sha256.json').write_text(json.dumps(result, indent=2) + '\n')
           PY
@@ -340,11 +340,11 @@ jobs:
           overwrite_files: true
           target_commitish: ${{ needs.preflight.outputs.commit }}
           files: |
-            artifacts/herdr-linux-x86_64/herdr-linux-x86_64
-            artifacts/herdr-linux-aarch64/herdr-linux-aarch64
-            artifacts/herdr-macos-x86_64/herdr-macos-x86_64
-            artifacts/herdr-macos-aarch64/herdr-macos-aarch64
-            artifacts/herdr-windows-x86_64.exe/herdr-windows-x86_64.exe
+            artifacts/bora-linux-x86_64/bora-linux-x86_64
+            artifacts/bora-linux-aarch64/bora-linux-aarch64
+            artifacts/bora-macos-x86_64/bora-macos-x86_64
+            artifacts/bora-macos-aarch64/bora-macos-aarch64
+            artifacts/bora-windows-x86_64.exe/bora-windows-x86_64.exe
 
       - name: Update preview manifest
         run: |

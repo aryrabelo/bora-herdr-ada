@@ -20,9 +20,9 @@ const KNOWN_TOP_LEVEL_CONFIG_KEYS: &[&str] = &[
 
 pub fn app_dir_name() -> &'static str {
     if cfg!(debug_assertions) {
-        "herdr-dev"
+        "bora-dev"
     } else {
-        "herdr"
+        "bora"
     }
 }
 
@@ -582,6 +582,15 @@ fn upsert_section_raw(content: &str, section: &str, key: &str, value: &str) -> S
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn app_dir_name_is_bora_namespace() {
+        let name = super::app_dir_name();
+        assert!(
+            name == "bora" || name == "bora-dev",
+            "expected bora config namespace, got {name}"
+        );
+    }
 
     #[test]
     fn upsert_top_level_bool_replaces_existing_value() {

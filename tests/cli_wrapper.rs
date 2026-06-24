@@ -27,7 +27,7 @@ fn unique_test_dir() -> PathBuf {
 }
 
 fn managed_github_plugin_dir(config_home: &Path) -> PathBuf {
-    config_home.join("herdr-dev").join("plugins").join("github")
+    config_home.join("bora-dev").join("plugins").join("github")
 }
 
 fn path_missing_or_empty(path: &Path) -> bool {
@@ -145,9 +145,9 @@ fn spawn_herdr_with_pane_history(
 
 fn app_dir_name() -> &'static str {
     if cfg!(debug_assertions) {
-        "herdr-dev"
+        "bora-dev"
     } else {
-        "herdr"
+        "bora"
     }
 }
 
@@ -173,7 +173,7 @@ fn spawn_named_server(
     )
     .unwrap();
 
-    let mut command = Command::new(env!("CARGO_BIN_EXE_herdr"));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_bora"));
     command
         .args(["--session", session, "server"])
         .env("XDG_CONFIG_HOME", config_home)
@@ -219,7 +219,7 @@ fn run_named_cli_with_env_and_socket_override(
     envs: &[(&str, &Path)],
     socket_override: Option<&Path>,
 ) -> std::process::Output {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_herdr"));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_bora"));
     command
         .args(args)
         .env("XDG_CONFIG_HOME", config_home)
@@ -290,7 +290,7 @@ fn spawn_herdr_with_config(
         })
         .unwrap();
 
-    let mut cmd = CommandBuilder::new(env!("CARGO_BIN_EXE_herdr"));
+    let mut cmd = CommandBuilder::new(env!("CARGO_BIN_EXE_bora"));
     cmd.arg("server");
     cmd.env("XDG_CONFIG_HOME", config_home);
     cmd.env("XDG_RUNTIME_DIR", runtime_dir);
@@ -311,14 +311,14 @@ fn spawn_herdr_with_config(
 }
 
 fn run_cli(socket_path: &Path, args: &[&str]) -> std::process::Output {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_herdr"));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_bora"));
     command.args(args);
     command.env("HERDR_SOCKET_PATH", socket_path);
     command.output().unwrap()
 }
 
 fn run_cli_in_dir(socket_path: &Path, args: &[&str], current_dir: &Path) -> std::process::Output {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_herdr"));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_bora"));
     command.args(args);
     command.current_dir(current_dir);
     command.env("HERDR_SOCKET_PATH", socket_path);
@@ -1106,7 +1106,7 @@ fn help_commands_exit_successfully() {
     ];
 
     for args in help_cases {
-        let output = Command::new(env!("CARGO_BIN_EXE_herdr"))
+        let output = Command::new(env!("CARGO_BIN_EXE_bora"))
             .args(*args)
             .output()
             .unwrap();
@@ -1163,7 +1163,7 @@ fn completion_command_prints_zsh_script_without_session_startup() {
 
 #[test]
 fn root_help_hides_explicit_client_command() {
-    let output = Command::new(env!("CARGO_BIN_EXE_herdr"))
+    let output = Command::new(env!("CARGO_BIN_EXE_bora"))
         .arg("--help")
         .output()
         .unwrap();
@@ -1317,7 +1317,7 @@ fn explicit_client_command_respects_nested_guard() {
     let base = unique_test_dir();
     fs::create_dir_all(&base).unwrap();
 
-    let output = Command::new(env!("CARGO_BIN_EXE_herdr"))
+    let output = Command::new(env!("CARGO_BIN_EXE_bora"))
         .arg("client")
         .env("HERDR_ENV", "1")
         .env("XDG_CONFIG_HOME", &base)
@@ -1337,7 +1337,7 @@ fn explicit_client_command_respects_nested_guard() {
 
 #[test]
 fn removed_show_changelog_flag_fails_before_nested_guard() {
-    let output = Command::new(env!("CARGO_BIN_EXE_herdr"))
+    let output = Command::new(env!("CARGO_BIN_EXE_bora"))
         .arg("--show-changelog")
         .env("HERDR_ENV", "1")
         .output()
@@ -1557,7 +1557,7 @@ fn integration_commands_run_locally_when_server_is_missing() {
         "test setup should start without extension file"
     );
 
-    let workspace_list = Command::new(env!("CARGO_BIN_EXE_herdr"))
+    let workspace_list = Command::new(env!("CARGO_BIN_EXE_bora"))
         .args(["workspace", "list"])
         .env("HERDR_SOCKET_PATH", &missing_socket)
         .env("HOME", &home_dir)
@@ -1565,7 +1565,7 @@ fn integration_commands_run_locally_when_server_is_missing() {
         .unwrap();
     assert_eq!(workspace_list.status.code(), Some(1));
 
-    let integration_install = Command::new(env!("CARGO_BIN_EXE_herdr"))
+    let integration_install = Command::new(env!("CARGO_BIN_EXE_bora"))
         .args(["integration", "install", "pi"])
         .env("HERDR_SOCKET_PATH", &missing_socket)
         .env("HOME", &home_dir)
@@ -1577,7 +1577,7 @@ fn integration_commands_run_locally_when_server_is_missing() {
         "integration install should write local files without a server"
     );
 
-    let integration_status = Command::new(env!("CARGO_BIN_EXE_herdr"))
+    let integration_status = Command::new(env!("CARGO_BIN_EXE_bora"))
         .args(["integration", "status"])
         .env("HERDR_SOCKET_PATH", &missing_socket)
         .env("HOME", &home_dir)
@@ -1588,7 +1588,7 @@ fn integration_commands_run_locally_when_server_is_missing() {
     assert!(status_stdout.contains("pi: current (v5)"));
     assert!(status_stdout.contains("claude: not installed"));
 
-    let integration_uninstall = Command::new(env!("CARGO_BIN_EXE_herdr"))
+    let integration_uninstall = Command::new(env!("CARGO_BIN_EXE_bora"))
         .args(["integration", "uninstall", "pi"])
         .env("HERDR_SOCKET_PATH", &missing_socket)
         .env("HOME", &home_dir)
@@ -1620,7 +1620,7 @@ fn integration_status_outdated_only_prints_action_for_legacy_install() {
     register_runtime_dir(&runtime_dir);
     let missing_socket = runtime_dir.join("missing.sock");
 
-    let output = Command::new(env!("CARGO_BIN_EXE_herdr"))
+    let output = Command::new(env!("CARGO_BIN_EXE_bora"))
         .args(["integration", "status", "--outdated-only"])
         .env("HERDR_SOCKET_PATH", &missing_socket)
         .env("HOME", &home_dir)
@@ -1646,7 +1646,7 @@ fn integration_status_rejects_unknown_flags() {
     register_runtime_dir(&runtime_dir);
     let missing_socket = runtime_dir.join("missing.sock");
 
-    let output = Command::new(env!("CARGO_BIN_EXE_herdr"))
+    let output = Command::new(env!("CARGO_BIN_EXE_bora"))
         .args(["integration", "status", "--wat"])
         .env("HERDR_SOCKET_PATH", &missing_socket)
         .env("HOME", &home_dir)
@@ -3995,7 +3995,7 @@ command = ["sh", "-c", "echo new"]
     fs::create_dir_all(&config_home).unwrap();
     fs::create_dir_all(&runtime_dir).unwrap();
     let managed_checkout = config_home
-        .join("herdr-dev")
+        .join("bora-dev")
         .join("plugins")
         .join("github")
         .join(WORKTREE_BOOTSTRAP_MANAGED_COMPONENT);
@@ -4127,7 +4127,7 @@ command = ["sh", "-c", "echo install"]
     fs::create_dir_all(&config_home).unwrap();
     fs::create_dir_all(&runtime_dir).unwrap();
     let managed_checkout = config_home
-        .join("herdr-dev")
+        .join("bora-dev")
         .join("plugins")
         .join("github")
         .join(WORKTREE_BOOTSTRAP_MANAGED_COMPONENT);
@@ -4264,7 +4264,7 @@ command = ["sh", "-c", "echo install"]
     fs::create_dir_all(&config_home).unwrap();
     fs::create_dir_all(&runtime_dir).unwrap();
     let managed_checkout = config_home
-        .join("herdr-dev")
+        .join("bora-dev")
         .join("plugins")
         .join("github")
         .join(WORKTREE_BOOTSTRAP_MANAGED_COMPONENT);
