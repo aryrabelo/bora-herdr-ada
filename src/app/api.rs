@@ -100,6 +100,21 @@ impl App {
             return;
         }
 
+        if let AppEvent::WorktreeMergeToMainFinished { branch, result } = ev {
+            self.handle_worktree_merge_to_main_finished(branch, result);
+            return;
+        }
+
+        if let AppEvent::WorktreeOpenPrFinished { branch, result } = ev {
+            self.handle_worktree_open_pr_finished(branch, result);
+            return;
+        }
+
+        if let AppEvent::WorktreeSyncFinished { branch, result } = ev {
+            self.handle_worktree_sync_finished(branch, result);
+            return;
+        }
+
         if let AppEvent::PaneDied { pane_id } = &ev {
             let previous_toast = self.state.toast.clone();
             if let Some(update) = self.state.publish_pane_process_exit_if_agent(*pane_id) {
