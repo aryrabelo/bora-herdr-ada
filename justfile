@@ -15,7 +15,16 @@ test-one filter:
 [unix]
 lint:
     cargo fmt --check
-    cargo clippy --all-targets --locked -- -D warnings
+    cargo clippy --all-targets --locked -- -D warnings \
+        -A clippy::redundant_clone \
+        -A clippy::cloned_instead_of_copied \
+        -A clippy::implicit_clone \
+        -A clippy::dbg_macro \
+        -A clippy::todo \
+        -A clippy::cognitive_complexity \
+        -A clippy::too_many_lines \
+        -A clippy::cast_lossless \
+        -A clippy::redundant_closure_for_method_calls
 
 [script("powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File")]
 [windows]

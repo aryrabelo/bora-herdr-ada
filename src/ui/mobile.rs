@@ -113,7 +113,9 @@ pub(crate) fn mobile_switcher_workspace_doc_range(
     // in the entry list, not its raw array index.
     let pos = workspace_list_entries_expanded(app)
         .iter()
-        .position(|WorkspaceListEntry::Workspace { ws_idx, .. }| *ws_idx == idx)
+        .position(
+            |entry| matches!(entry, WorkspaceListEntry::Workspace { ws_idx, .. } if *ws_idx == idx),
+        )
         .unwrap_or(idx);
     // spaces sit after the agents block, then a title + "new workspace" row.
     let start = mobile_agents_block_height(app) + 2 + pos * 2;
@@ -176,9 +178,12 @@ pub(crate) fn mobile_switcher_target_at(
     let spaces_end = cursor + space_entries.len() * 2;
     if doc_row >= cursor && doc_row < spaces_end {
         let entry_idx = (doc_row - cursor) / 2;
-        return space_entries.get(entry_idx).map(
-            |WorkspaceListEntry::Workspace { ws_idx, .. }| MobileSwitcherTarget::Workspace(*ws_idx),
-        );
+        return space_entries.get(entry_idx).and_then(|entry| match entry {
+            WorkspaceListEntry::Workspace { ws_idx, .. } => {
+                Some(MobileSwitcherTarget::Workspace(*ws_idx))
+            }
+            WorkspaceListEntry::GroupHeader { .. } => None,
+        });
     }
     cursor = spaces_end;
 
@@ -326,7 +331,7 @@ fn render_header_status(
     };
 
     let (state, seen) = ws.aggregate_state(&app.terminals);
-    let (dot, dot_style) = state_dot(state, seen, p);
+    let (dot, dot_style) = state_dot(state, seen, p, false);
     let tab_label = mobile_tab_status(ws);
     let row1 = Rect::new(area.x, area.y, area.width, 1);
     let tab_w = display_width_u16(&tab_label)
@@ -532,7 +537,7 @@ fn render_mobile_switcher_content(
                 entry.ws_idx == ws_idx && entry.tab_idx == tab_idx && entry.pane_id == pane_id
             });
             let bg = mobile_item_bg(false, active, p);
-            let (icon, icon_style) = state_dot(entry.state, entry.seen, p);
+            let (icon, icon_style) = state_dot(entry.state, entry.seen, p, false);
             let title = Line::from(vec![
                 Span::styled("  ", Style::default().bg(bg)),
                 Span::styled(icon, icon_style.bg(bg)),
@@ -585,9 +590,10 @@ fn render_mobile_switcher_content(
     );
     doc_y += 1;
     let space_entries = workspace_list_entries_expanded(app);
-    for (entry_idx, WorkspaceListEntry::Workspace { ws_idx, indented }) in
-        space_entries.iter().enumerate()
-    {
+    for (entry_idx, entry) in space_entries.iter().enumerate() {
+        let WorkspaceListEntry::Workspace { ws_idx, indented } = entry else {
+            continue;
+        };
         let Some(ws) = app.workspaces.get(*ws_idx) else {
             continue;
         };
@@ -595,7 +601,7 @@ fn render_mobile_switcher_content(
         let selected = *ws_idx == app.selected;
         let bg = mobile_item_bg(selected, active, p);
         let (state, seen) = ws.aggregate_state(&app.terminals);
-        let (dot, dot_style) = state_dot(state, seen, p);
+        let (dot, dot_style) = state_dot(state, seen, p, false);
 
         let mut title_spans = vec![Span::styled("  ", Style::default().bg(bg))];
         // Worktrees of the same space render as branches off their parent, so a

@@ -1,1 +1,7 @@
+# ── Complexity thresholds ────────────────────────────────────
+# Tuned to catch god-functions without noise on idiomatic
+# match-heavy Rust.  Tighten as the codebase matures.
+
 too-many-arguments-threshold = 11
+cognitive-complexity-threshold = 25
+too-many-lines-threshold = 100

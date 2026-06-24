@@ -412,7 +412,10 @@ impl AppState {
 
                 if matches!(
                     self.mode,
-                    Mode::RenameWorkspace | Mode::RenameTab | Mode::RenamePane
+                    Mode::RenameWorkspace
+                        | Mode::RenameTab
+                        | Mode::RenamePane
+                        | Mode::SetWorkspaceGroup
                 ) {
                     let action = self
                         .rename_modal_inner()
@@ -589,6 +592,23 @@ impl AppState {
                     } else {
                         self.view.workspace_card_areas.clone()
                     };
+                    // Check for clicks on visual group headers.
+                    for header in &self.view.workspace_group_header_areas.clone() {
+                        if mouse.row == header.rect.y
+                            && mouse.column >= header.rect.x
+                            && mouse.column < header.rect.x + header.rect.width
+                        {
+                            let vg_key = format!("vg:{}", header.name);
+                            if self.collapsed_space_keys.contains(&vg_key) {
+                                self.collapsed_space_keys.remove(&vg_key);
+                            } else {
+                                self.collapsed_space_keys.insert(vg_key);
+                            }
+                            self.mark_session_dirty();
+                            return None;
+                        }
+                    }
+
                     if let Some(card) = cards.iter().find(|card| {
                         let chevron = crate::ui::workspace_group_chevron_rect(card);
                         mouse.row == chevron.y && mouse.column == chevron.x && chevron.width > 0

@@ -571,4 +571,12 @@ impl Tab {
             .get(terminal_id)
             .and_then(|rt| rt.foreground_cwd())
     }
+
+    pub fn has_working_pane(&self, terminals: &HashMap<TerminalId, TerminalState>) -> bool {
+        self.panes.values().any(|pane| {
+            terminals
+                .get(&pane.attached_terminal_id)
+                .is_some_and(|terminal| terminal.state == crate::detect::AgentState::Working)
+        })
+    }
 }

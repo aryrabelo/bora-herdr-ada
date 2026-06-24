@@ -1,0 +1,17 @@
+{
+  "$schema": "https://raw.githubusercontent.com/can1357/oh-my-pi/main/packages/coding-agent/src/config/mcp-schema.json",
+  "mcpServers": {
+    "honcho": {
+      "type": "http",
+      "url": "http://127.0.0.1:8788/",
+      "headers": {
+        "Authorization": "!honcho-token bora",
+        "X-Honcho-User-Name": "ary",
+        "X-Honcho-Workspace-ID": "bora",
+        "X-Honcho-Assistant-Name": "omp"
+      },
+      "enabled": true,
+      "timeout": 30000
+    }
+  }
+}

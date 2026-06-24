@@ -193,11 +193,17 @@ pub(super) fn render_config_diagnostic(frame: &mut Frame, area: Rect, message: &
     }
 }
 
-pub(super) fn state_dot(state: AgentState, seen: bool, p: &Palette) -> (&'static str, Style) {
+pub(super) fn state_dot(
+    state: AgentState,
+    seen: bool,
+    p: &Palette,
+    idle_stale: bool,
+) -> (&'static str, Style) {
     match (state, seen) {
         (AgentState::Blocked, _) => ("●", Style::default().fg(p.red)),
         (AgentState::Working, _) => ("●", Style::default().fg(p.yellow)),
         (AgentState::Idle, false) => ("●", Style::default().fg(p.teal)),
+        (AgentState::Idle, true) if idle_stale => ("●", Style::default().fg(p.red)),
         (AgentState::Idle, true) => ("○", Style::default().fg(p.green)),
         (AgentState::Unknown, _) => ("·", Style::default().fg(p.overlay0)),
     }
@@ -254,7 +260,7 @@ mod tests {
             (AgentState::Idle, true, "○", palette.green),
             (AgentState::Unknown, true, "·", palette.overlay0),
         ] {
-            let (actual_symbol, style) = state_dot(state, seen, &palette);
+            let (actual_symbol, style) = state_dot(state, seen, &palette, false);
             assert_eq!(actual_symbol, symbol);
             assert_eq!(style.fg, Some(color));
         }

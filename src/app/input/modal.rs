@@ -381,6 +381,19 @@ pub(super) fn open_rename_workspace(
     state.mode = Mode::RenameWorkspace;
 }
 
+pub(super) fn open_set_workspace_group(state: &mut AppState, ws_idx: usize) {
+    state.selected = ws_idx;
+    state.rename_pane_target = None;
+    // Pre-populate with the current group name, if any.
+    state.name_input = state
+        .workspaces
+        .get(ws_idx)
+        .and_then(|ws| ws.visual_group.clone())
+        .unwrap_or_default();
+    state.name_input_replace_on_type = false;
+    state.mode = Mode::SetWorkspaceGroup;
+}
+
 pub(crate) fn open_new_workspace_dialog(state: &mut AppState, cwd: std::path::PathBuf) {
     let suggested_name = crate::workspace::derive_label_from_cwd(&cwd);
     state.creating_new_tab = false;
@@ -577,6 +590,15 @@ pub(super) fn apply_rename_action(state: &mut AppState, action: ModalAction) {
                             }
                         }
                     }
+                }
+                Mode::SetWorkspaceGroup if !state.workspaces.is_empty() => {
+                    // Empty input clears the group (same as "Remove from group").
+                    if new_name.is_empty() {
+                        state.workspaces[state.selected].visual_group = None;
+                    } else {
+                        state.workspaces[state.selected].visual_group = Some(new_name);
+                    }
+                    state.mark_session_dirty();
                 }
                 _ => {}
             }
@@ -818,6 +840,22 @@ pub(super) fn apply_context_menu_action(
             Some("Rename"),
         ) => {
             open_rename_workspace(state, terminal_runtimes, ws_idx);
+        }
+        (
+            ContextMenuKind::Workspace { ws_idx } | ContextMenuKind::GitWorkspace { ws_idx, .. },
+            Some("New group\u{2026}" | "Move to group\u{2026}"),
+        ) => {
+            open_set_workspace_group(state, ws_idx);
+        }
+        (
+            ContextMenuKind::Workspace { ws_idx } | ContextMenuKind::GitWorkspace { ws_idx, .. },
+            Some("Remove from group"),
+        ) => {
+            if let Some(ws) = state.workspaces.get_mut(ws_idx) {
+                ws.visual_group = None;
+                state.mark_session_dirty();
+            }
+            leave_modal(state);
         }
         (
             ContextMenuKind::Workspace { ws_idx } | ContextMenuKind::GitWorkspace { ws_idx, .. },
@@ -1105,6 +1143,18 @@ impl App {
                         );
                     }
                 }
+            }
+            Mode::SetWorkspaceGroup if !self.state.workspaces.is_empty() => {
+                // visual_group is TUI presentation state, not a runtime
+                // mutation. Empty input clears the group (same as "Remove
+                // from group").
+                let selected = self.state.selected;
+                if new_name.trim().is_empty() {
+                    self.state.workspaces[selected].visual_group = None;
+                } else {
+                    self.state.workspaces[selected].visual_group = Some(new_name);
+                }
+                self.state.mark_session_dirty();
             }
             _ => {}
         }
