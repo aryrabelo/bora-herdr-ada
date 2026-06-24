@@ -7,9 +7,7 @@ use super::{
     state::{WorktreeCreateState, WorktreeOpenEntry, WorktreeOpenState, WorktreeRemoveState},
     App, Mode,
 };
-#[cfg(test)]
-use crate::events::AppEvent;
-use crate::events::{WorktreeAddResult, WorktreeRemoveResult};
+use crate::events::{AppEvent, WorktreeAddResult, WorktreeRemoveResult};
 
 impl App {
     fn worktree_source_metadata(
@@ -148,6 +146,7 @@ impl App {
             error: None,
             removing: false,
             force_confirmation: false,
+            branch: ws.branch(),
         });
         self.state.mode = Mode::ConfirmRemoveWorktree;
     }
@@ -629,6 +628,7 @@ impl App {
                 };
             }
             KeyCode::Enter => self.submit_worktree_remove_via_api(),
+            KeyCode::Char('m') => self.start_worktree_merge_and_remove(),
             _ => {}
         }
     }
@@ -776,6 +776,138 @@ impl App {
                 remove.error = Some(message);
             }
         }
+    }
+
+    /// Merge the worktree's branch into the base checkout, then remove it.
+    /// Aborts (no changes applied) if either side is dirty or the merge
+    /// conflicts; the resulting error is shown in the confirmation popup.
+    pub(crate) fn start_worktree_merge_and_remove(&mut self) {
+        let Some((workspace_id, repo_root, path, branch)) =
+            self.state.worktree_remove.as_mut().and_then(|remove| {
+                if remove.removing {
+                    return None;
+                }
+                let branch = remove.branch.clone()?;
+                remove.removing = true;
+                remove.error = None;
+                Some((
+                    remove.workspace_id.clone(),
+                    remove.repo_root.clone(),
+                    remove.path.clone(),
+                    branch,
+                ))
+            })
+        else {
+            return;
+        };
+
+        tracing::info!(workspace_id = %workspace_id, branch = %branch, "starting worktree merge-and-remove");
+        let event_tx = self.event_tx.clone();
+        std::thread::spawn(move || {
+            let result = (|| -> Result<(), String> {
+                crate::worktree::merge_branch_to_parent(&repo_root, &path, &branch)?;
+                let remove =
+                    crate::worktree::build_worktree_remove_command(&repo_root, &path, false);
+                crate::worktree::run_worktree_command(&remove)
+            })();
+            let _ = event_tx.blocking_send(AppEvent::WorktreeRemoveFinished(Box::new(
+                WorktreeRemoveResult {
+                    workspace_id,
+                    path,
+                    workspace: None,
+                    worktree: None,
+                    forced: false,
+                    api_request: None,
+                    result,
+                },
+            )));
+        });
+    }
+
+    /// Resolve a linked worktree's `(repo_root, checkout_path, branch)` for the
+    /// merge-to-main / open-PR background ops, or `None` if `ws_idx` is not a
+    /// Herdr-managed linked worktree.
+    fn linked_worktree_target(
+        &self,
+        ws_idx: usize,
+    ) -> Option<(std::path::PathBuf, std::path::PathBuf, Option<String>)> {
+        let ws = self.state.workspaces.get(ws_idx)?;
+        let space = ws
+            .worktree_space()
+            .filter(|space| space.is_linked_worktree)?;
+        Some((
+            space.repo_root.clone(),
+            space.checkout_path.clone(),
+            ws.branch(),
+        ))
+    }
+
+    /// Merge the linked worktree's branch into the parent/main checkout, keeping
+    /// the worktree. Runs in the background; result surfaces as a toast.
+    pub(crate) fn start_worktree_merge_to_main(&mut self, ws_idx: usize) {
+        let Some((repo_root, path, branch)) = self.linked_worktree_target(ws_idx) else {
+            self.state.config_diagnostic =
+                Some("This workspace is not a Herdr-managed worktree checkout.".into());
+            return;
+        };
+        let Some(branch) = branch else {
+            self.state.config_diagnostic = Some("Worktree has no branch to merge.".into());
+            return;
+        };
+        tracing::info!(ws_idx, branch = %branch, "starting worktree merge-to-main");
+        let event_tx = self.event_tx.clone();
+        std::thread::spawn(move || {
+            let result = crate::worktree::merge_branch_to_parent(&repo_root, &path, &branch);
+            let _ =
+                event_tx.blocking_send(AppEvent::WorktreeMergeToMainFinished { branch, result });
+        });
+    }
+
+    /// Push the linked worktree's branch and open a GitHub PR via `gh`. Runs in
+    /// the background; result (PR URL or error) surfaces as a toast.
+    pub(crate) fn start_worktree_open_pr(&mut self, ws_idx: usize) {
+        let Some((_repo_root, path, branch)) = self.linked_worktree_target(ws_idx) else {
+            self.state.config_diagnostic =
+                Some("This workspace is not a Herdr-managed worktree checkout.".into());
+            return;
+        };
+        let Some(branch) = branch else {
+            self.state.config_diagnostic = Some("Worktree has no branch to open a PR for.".into());
+            return;
+        };
+        tracing::info!(ws_idx, branch = %branch, "starting worktree open-pr");
+        let event_tx = self.event_tx.clone();
+        std::thread::spawn(move || {
+            let result = crate::worktree::open_pull_request(&path, &branch);
+            let _ = event_tx.blocking_send(AppEvent::WorktreeOpenPrFinished { branch, result });
+        });
+    }
+
+    /// Sync the workspace's git branch with its upstream (pull --ff-only + push).
+    /// Works for any git workspace (the parent/main checkout or a linked
+    /// worktree). Runs in the background; result surfaces as a toast.
+    pub(crate) fn start_workspace_git_sync(&mut self, ws_idx: usize) {
+        let Some(cwd) = self
+            .state
+            .workspaces
+            .get(ws_idx)
+            .and_then(|ws| ws.resolved_identity_cwd())
+        else {
+            self.state.config_diagnostic = Some("Workspace has no resolved git checkout.".into());
+            return;
+        };
+        let branch = self
+            .state
+            .workspaces
+            .get(ws_idx)
+            .and_then(|ws| ws.branch())
+            .unwrap_or_default();
+        tracing::info!(ws_idx, branch = %branch, "starting workspace git sync");
+        let event_tx = self.event_tx.clone();
+        std::thread::spawn(move || {
+            let result = crate::worktree::sync_branch_with_upstream(&cwd);
+            let _ = event_tx.blocking_send(AppEvent::WorktreeSyncFinished { branch, result });
+        });
     }
 
     pub(crate) fn handle_worktree_add_finished(&mut self, result: WorktreeAddResult) {
@@ -991,6 +1123,101 @@ impl App {
             return;
         };
         self.state.switch_workspace(parent_idx);
+    }
+
+    fn show_worktree_op_toast(
+        &mut self,
+        kind: crate::app::state::ToastKind,
+        title: &str,
+        context: String,
+    ) {
+        let previous_toast = self.state.toast.clone();
+        self.state.toast = Some(crate::app::state::ToastNotification {
+            kind,
+            title: title.to_string(),
+            context,
+            position: None,
+            target: None,
+        });
+        self.sync_toast_deadline(previous_toast);
+        self.render_dirty.store(true, Ordering::Release);
+        self.render_notify.notify_one();
+    }
+
+    pub(crate) fn handle_worktree_merge_to_main_finished(
+        &mut self,
+        branch: String,
+        result: Result<(), String>,
+    ) {
+        match result {
+            Ok(()) => {
+                tracing::info!(branch = %branch, "worktree merge-to-main completed");
+                self.show_worktree_op_toast(
+                    crate::app::state::ToastKind::Finished,
+                    "merged to main",
+                    branch,
+                );
+            }
+            Err(message) => {
+                tracing::warn!(branch = %branch, error = %message, "worktree merge-to-main failed");
+                self.show_worktree_op_toast(
+                    crate::app::state::ToastKind::NeedsAttention,
+                    "merge to main failed",
+                    message,
+                );
+            }
+        }
+    }
+
+    pub(crate) fn handle_worktree_open_pr_finished(
+        &mut self,
+        branch: String,
+        result: Result<String, String>,
+    ) {
+        match result {
+            Ok(url) => {
+                tracing::info!(branch = %branch, url = %url, "worktree open-pr completed");
+                let context = if url.is_empty() { branch } else { url };
+                self.show_worktree_op_toast(
+                    crate::app::state::ToastKind::Finished,
+                    "opened PR",
+                    context,
+                );
+            }
+            Err(message) => {
+                tracing::warn!(branch = %branch, error = %message, "worktree open-pr failed");
+                self.show_worktree_op_toast(
+                    crate::app::state::ToastKind::NeedsAttention,
+                    "open PR failed",
+                    message,
+                );
+            }
+        }
+    }
+
+    pub(crate) fn handle_worktree_sync_finished(
+        &mut self,
+        branch: String,
+        result: Result<(), String>,
+    ) {
+        match result {
+            Ok(()) => {
+                tracing::info!(branch = %branch, "workspace git sync completed");
+                self.show_worktree_op_toast(
+                    crate::app::state::ToastKind::Finished,
+                    "synced with upstream",
+                    branch,
+                );
+            }
+            Err(message) => {
+                tracing::warn!(branch = %branch, error = %message, "workspace git sync failed");
+                self.show_worktree_op_toast(
+                    crate::app::state::ToastKind::NeedsAttention,
+                    "sync failed",
+                    message,
+                );
+            }
+        }
     }
 
     pub(crate) fn shutdown_workspace_terminal_runtimes_for_worktree_remove(
@@ -2114,6 +2341,7 @@ mod tests {
             error: None,
             removing: true,
             force_confirmation: false,
+            branch: None,
         });
 
         app.handle_worktree_remove_finished(WorktreeRemoveResult {
@@ -2146,6 +2374,7 @@ mod tests {
             error: None,
             removing: true,
             force_confirmation: false,
+            branch: None,
         });
 
         app.handle_worktree_remove_finished(WorktreeRemoveResult {
@@ -2208,6 +2437,7 @@ mod tests {
             error: None,
             removing: true,
             force_confirmation: false,
+            branch: None,
         });
 
         app.handle_worktree_remove_finished(WorktreeRemoveResult {
@@ -2260,6 +2490,7 @@ mod tests {
             error: None,
             removing: true,
             force_confirmation: true,
+            branch: None,
         });
         app.state.workspaces.clear();
 

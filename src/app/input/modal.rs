@@ -684,6 +684,18 @@ pub(super) fn apply_context_menu_action(
             state.request_open_existing_worktree = Some(ws_idx);
             leave_modal(state);
         }
+        (ContextMenuKind::GitWorkspace { ws_idx, .. }, Some("Merge to main")) => {
+            state.request_merge_worktree_to_main = Some(ws_idx);
+            leave_modal(state);
+        }
+        (ContextMenuKind::GitWorkspace { ws_idx, .. }, Some("Open PR")) => {
+            state.request_open_worktree_pr = Some(ws_idx);
+            leave_modal(state);
+        }
+        (ContextMenuKind::GitWorkspace { ws_idx, .. }, Some("Sync")) => {
+            state.request_sync_workspace_git = Some(ws_idx);
+            leave_modal(state);
+        }
         (
             ContextMenuKind::GitWorkspace {
                 ws_idx, collapsed, ..
@@ -2038,5 +2050,142 @@ mod tests {
         assert_eq!(app.state.mode, Mode::ConfirmClose);
         assert_eq!(app.state.workspaces.len(), 2);
         assert!(app.state.context_menu.is_none());
+    }
+
+    #[test]
+    fn context_menu_linked_worktree_offers_merge_to_main() {
+        let mut state = state_with_workspaces(&["main", "issue"]);
+        state.active = Some(0);
+        state.selected = 1;
+        state.workspaces[1].worktree_space = Some(crate::workspace::WorktreeSpaceMembership {
+            key: "repo-key".into(),
+            label: "herdr".into(),
+            repo_root: "/repo/herdr".into(),
+            checkout_path: "/repo/herdr-issue".into(),
+            is_linked_worktree: true,
+        });
+        let menu = ContextMenuState {
+            kind: ContextMenuKind::GitWorkspace {
+                ws_idx: 1,
+                is_linked_worktree: true,
+                has_worktree_children: false,
+                collapsed: false,
+            },
+            x: 0,
+            y: 0,
+            list: MenuListState::new(0),
+        };
+        assert!(menu.items().contains(&"Merge to main"));
+        let merge_idx = menu
+            .items()
+            .iter()
+            .position(|item| *item == "Merge to main")
+            .expect("merge to main item");
+        let mut terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
+        apply_context_menu_action(&mut state, &mut terminal_runtimes, menu, merge_idx);
+        assert_eq!(state.request_merge_worktree_to_main, Some(1));
+        assert_ne!(state.mode, Mode::ContextMenu);
+    }
+
+    #[test]
+    fn context_menu_linked_worktree_offers_open_pr() {
+        let mut state = state_with_workspaces(&["main", "issue"]);
+        state.active = Some(0);
+        state.selected = 1;
+        state.workspaces[1].worktree_space = Some(crate::workspace::WorktreeSpaceMembership {
+            key: "repo-key".into(),
+            label: "herdr".into(),
+            repo_root: "/repo/herdr".into(),
+            checkout_path: "/repo/herdr-issue".into(),
+            is_linked_worktree: true,
+        });
+        let menu = ContextMenuState {
+            kind: ContextMenuKind::GitWorkspace {
+                ws_idx: 1,
+                is_linked_worktree: true,
+                has_worktree_children: false,
+                collapsed: false,
+            },
+            x: 0,
+            y: 0,
+            list: MenuListState::new(0),
+        };
+        assert!(menu.items().contains(&"Open PR"));
+        let pr_idx = menu
+            .items()
+            .iter()
+            .position(|item| *item == "Open PR")
+            .expect("open pr item");
+        let mut terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
+        apply_context_menu_action(&mut state, &mut terminal_runtimes, menu, pr_idx);
+        assert_eq!(state.request_open_worktree_pr, Some(1));
+    }
+
+    #[test]
+    fn context_menu_linked_worktree_offers_sync() {
+        let mut state = state_with_workspaces(&["main", "issue"]);
+        state.active = Some(0);
+        state.selected = 1;
+        state.workspaces[1].worktree_space = Some(crate::workspace::WorktreeSpaceMembership {
+            key: "repo-key".into(),
+            label: "herdr".into(),
+            repo_root: "/repo/herdr".into(),
+            checkout_path: "/repo/herdr-issue".into(),
+            is_linked_worktree: true,
+        });
+        let menu = ContextMenuState {
+            kind: ContextMenuKind::GitWorkspace {
+                ws_idx: 1,
+                is_linked_worktree: true,
+                has_worktree_children: false,
+                collapsed: false,
+            },
+            x: 0,
+            y: 0,
+            list: MenuListState::new(0),
+        };
+        assert!(menu.items().contains(&"Sync"));
+        let sync_idx = menu
+            .items()
+            .iter()
+            .position(|item| *item == "Sync")
+            .expect("sync item");
+        let mut terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
+        apply_context_menu_action(&mut state, &mut terminal_runtimes, menu, sync_idx);
+        assert_eq!(state.request_sync_workspace_git, Some(1));
+    }
+
+    #[test]
+    fn context_menu_non_worktree_git_workspace_offers_sync() {
+        let mut state = state_with_workspaces(&["main"]);
+        state.active = Some(0);
+        state.selected = 0;
+        state.workspaces[0].worktree_space = Some(crate::workspace::WorktreeSpaceMembership {
+            key: "repo-key".into(),
+            label: "herdr".into(),
+            repo_root: "/repo/herdr".into(),
+            checkout_path: "/repo/herdr".into(),
+            is_linked_worktree: false,
+        });
+        let menu = ContextMenuState {
+            kind: ContextMenuKind::GitWorkspace {
+                ws_idx: 0,
+                is_linked_worktree: false,
+                has_worktree_children: false,
+                collapsed: false,
+            },
+            x: 0,
+            y: 0,
+            list: MenuListState::new(0),
+        };
+        assert!(menu.items().contains(&"Sync"));
+        let sync_idx = menu
+            .items()
+            .iter()
+            .position(|item| *item == "Sync")
+            .expect("sync item");
+        let mut terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
+        apply_context_menu_action(&mut state, &mut terminal_runtimes, menu, sync_idx);
+        assert_eq!(state.request_sync_workspace_git, Some(0));
     }
 }

@@ -152,28 +152,55 @@ pub(crate) fn remove_worktree_popup_rect(area: Rect) -> Option<Rect> {
     centered_popup_rect(area, 72, 10)
 }
 
-pub(crate) fn remove_worktree_button_rects(inner: Rect, force_confirmation: bool) -> (Rect, Rect) {
+pub(crate) fn remove_worktree_button_rects(
+    inner: Rect,
+    force_confirmation: bool,
+    mergeable: bool,
+) -> (Option<Rect>, Rect, Rect) {
     let primary_label = if force_confirmation {
         "delete anyway"
     } else {
         "remove"
     };
-    let rects = action_button_row_rects(
-        inner,
-        &[
-            ActionButtonSpec {
-                hint: Some("↵"),
-                label: primary_label,
-            },
-            ActionButtonSpec {
-                hint: Some("esc"),
-                label: "cancel",
-            },
-        ],
-        2,
-        inner.height.saturating_sub(1),
-    );
-    (rects[0], rects[1])
+    if mergeable {
+        let rects = action_button_row_rects(
+            inner,
+            &[
+                ActionButtonSpec {
+                    hint: Some("m"),
+                    label: "merge & close",
+                },
+                ActionButtonSpec {
+                    hint: Some("↵"),
+                    label: primary_label,
+                },
+                ActionButtonSpec {
+                    hint: Some("esc"),
+                    label: "cancel",
+                },
+            ],
+            3,
+            inner.height.saturating_sub(1),
+        );
+        (Some(rects[0]), rects[1], rects[2])
+    } else {
+        let rects = action_button_row_rects(
+            inner,
+            &[
+                ActionButtonSpec {
+                    hint: Some("↵"),
+                    label: primary_label,
+                },
+                ActionButtonSpec {
+                    hint: Some("esc"),
+                    label: "cancel",
+                },
+            ],
+            2,
+            inner.height.saturating_sub(1),
+        );
+        (None, rects[0], rects[1])
+    }
 }
 
 pub(crate) fn open_existing_worktree_inner_rect(area: Rect, entry_count: usize) -> Option<Rect> {
@@ -391,7 +418,8 @@ pub(super) fn render_remove_worktree_overlay(app: &AppState, frame: &mut Frame, 
         );
     }
 
-    let (remove_rect, cancel_rect) = remove_worktree_button_rects(inner, remove.force_confirmation);
+    let (merge_rect, remove_rect, cancel_rect) =
+        remove_worktree_button_rects(inner, remove.force_confirmation, remove.branch.is_some());
     let remove_label = if remove.force_confirmation {
         "delete anyway"
     } else {
@@ -417,6 +445,18 @@ pub(super) fn render_remove_worktree_overlay(app: &AppState, frame: &mut Frame, 
             .bg(app.palette.surface0)
             .add_modifier(Modifier::BOLD),
     );
+    if let Some(merge_rect) = merge_rect {
+        render_action_button(
+            frame,
+            merge_rect,
+            Some("m"),
+            "merge & close",
+            Style::default()
+                .fg(panel_contrast_fg(&app.palette))
+                .bg(app.palette.green)
+                .add_modifier(Modifier::BOLD),
+        );
+    }
 }
 
 pub(super) fn render_open_existing_worktree_overlay(app: &AppState, frame: &mut Frame, area: Rect) {
