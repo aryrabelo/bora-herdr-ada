@@ -544,9 +544,13 @@ impl App {
             request_open_existing_worktree: None,
             request_new_workspace_cwd: None,
             request_remove_linked_worktree: None,
+            request_merge_worktree_to_main: None,
+            request_open_worktree_pr: None,
+            request_sync_workspace_git: None,
             request_submit_worktree_create: false,
             request_submit_worktree_open: false,
             request_submit_worktree_remove: false,
+            request_submit_worktree_merge: false,
             request_reload_config: false,
             request_client_config_reload: false,
             request_clipboard_write: None,
@@ -1012,6 +1016,21 @@ impl App {
                 needs_render = true;
             }
 
+            if let Some(ws_idx) = self.state.request_merge_worktree_to_main.take() {
+                self.start_worktree_merge_to_main(ws_idx);
+                needs_render = true;
+            }
+
+            if let Some(ws_idx) = self.state.request_open_worktree_pr.take() {
+                self.start_worktree_open_pr(ws_idx);
+                needs_render = true;
+            }
+
+            if let Some(ws_idx) = self.state.request_sync_workspace_git.take() {
+                self.start_workspace_git_sync(ws_idx);
+                needs_render = true;
+            }
+
             if self.state.request_submit_worktree_create {
                 self.state.request_submit_worktree_create = false;
                 self.submit_worktree_create_via_api();
@@ -1027,6 +1046,12 @@ impl App {
             if self.state.request_submit_worktree_remove {
                 self.state.request_submit_worktree_remove = false;
                 self.submit_worktree_remove_via_api();
+                needs_render = true;
+            }
+
+            if self.state.request_submit_worktree_merge {
+                self.state.request_submit_worktree_merge = false;
+                self.start_worktree_merge_and_remove();
                 needs_render = true;
             }
 
