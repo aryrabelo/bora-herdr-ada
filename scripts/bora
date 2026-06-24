@@ -6,16 +6,16 @@
 #   main    default branch = master + our features (squash-merged PRs).
 #           kept current by rebasing onto master (`scripts/bora sync`).
 #
-# The built binary is `bora`, installed under a distinct name (herdr-bora) on
-# its own named session so it coexists with a stock herdr from brew/mise.
+# The built binary is `bora` with its own config namespace (bora/bora-dev), so
+# it coexists with a stock herdr from brew/mise without overwriting it.
 #
 # Usage:
 #   scripts/bora sync       fast-forward master to upstream, then rebase main onto it
-#   scripts/bora build      cargo build --release, install bin as herdr-bora
+#   scripts/bora build      cargo build --release, install bin as bora
 #   scripts/bora ci-build   trigger the GitHub Actions macOS build on the fork (main)
 #   scripts/bora ci-install download the latest macOS CI artifact, install it
-#   scripts/bora install <file>  install an arbitrary binary as herdr-bora
-#   scripts/bora run [args]  run herdr-bora on the dedicated "bora" session
+#   scripts/bora install <file>  install an arbitrary binary as bora
+#   scripts/bora run [args]  run bora on the dedicated "bora" session
 #
 # ponytail: a thin sh wrapper, not a framework. Build needs a working zig
 # toolchain; on macOS 26 the vendored libghostty (zig 0.15.2) does not link
@@ -26,7 +26,7 @@ set -eu
 
 REPO_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 BIN_DIR="${HERDR_BORA_BIN_DIR:-$HOME/.local/bin}"
-BIN="$BIN_DIR/herdr-bora"
+BIN="$BIN_DIR/bora"
 SESSION="${HERDR_BORA_SESSION:-bora}"
 UPSTREAM_REMOTE="${HERDR_BORA_UPSTREAM:-origin}"
 UPSTREAM_BRANCH="${HERDR_BORA_UPSTREAM_BRANCH:-master}"
@@ -61,7 +61,7 @@ case "$cmd" in
     mkdir -p "$BIN_DIR"
     cp target/release/bora "$BIN"
     chmod +x "$BIN"
-    echo "bora: installed $("$BIN" --version 2>/dev/null || echo herdr-bora) -> $BIN"
+    echo "bora: installed $("$BIN" --version 2>/dev/null || echo bora) -> $BIN"
     ;;
   ci-build)
     cd "$REPO_DIR"
