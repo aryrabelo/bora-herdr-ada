@@ -1,22 +1,26 @@
 #!/usr/bin/env sh
-# herdr-bora — manage our herdr fork build with local improvements.
+# bora — manage the bora-herdr-ada fork build and upstream sync.
 #
-# herdr-bora is just our fork's `herdr` binary installed under a distinct name
-# and run on its own named session, so it coexists with a stock herdr from
-# brew/mise without overwriting it. We keep the fork on the `bora` branch and
-# merge upstream `master` into it from time to time.
+# Branch model:
+#   master  1:1 mirror of upstream ogulcancelik/herdr:master, only fast-forwarded.
+#   main    default branch = master + our features (squash-merged PRs).
+#           kept current by rebasing onto master (`scripts/bora sync`).
+#
+# The built binary is `bora`, installed under a distinct name (herdr-bora) on
+# its own named session so it coexists with a stock herdr from brew/mise.
 #
 # Usage:
-#   scripts/bora update     merge upstream master into the bora branch
+#   scripts/bora sync       fast-forward master to upstream, then rebase main onto it
 #   scripts/bora build      cargo build --release, install bin as herdr-bora
-#   scripts/bora ci-build   trigger the GitHub Actions macOS build on the fork
+#   scripts/bora ci-build   trigger the GitHub Actions macOS build on the fork (main)
 #   scripts/bora ci-install download the latest macOS CI artifact, install it
 #   scripts/bora install <file>  install an arbitrary binary as herdr-bora
 #   scripts/bora run [args]  run herdr-bora on the dedicated "bora" session
 #
 # ponytail: a thin sh wrapper, not a framework. Build needs a working zig
 # toolchain; on macOS 26 the vendored libghostty (zig 0.15.2) does not link
-# locally, so use `ci-build` + `ci-install` until the toolchain is fixed.
+# locally, so use the prebuilt (`just build-libghostty-vt-prebuilt`) or
+# `ci-build` + `ci-install` until the toolchain is fixed.
 
 set -eu
 
@@ -39,12 +43,17 @@ sign_bin() {
 }
 
 case "$cmd" in
-  update)
+  sync)
     cd "$REPO_DIR"
     git fetch "$UPSTREAM_REMOTE" "$UPSTREAM_BRANCH"
-    git checkout bora
-    git merge --no-edit "$UPSTREAM_REMOTE/$UPSTREAM_BRANCH"
-    echo "bora: merged $UPSTREAM_REMOTE/$UPSTREAM_BRANCH into bora. Rebuild with: scripts/bora build (or ci-build)."
+    # master mirrors upstream 1:1 — fast-forward only, never carries fork commits.
+    git push "$FORK_REMOTE" "$UPSTREAM_REMOTE/$UPSTREAM_BRANCH:refs/heads/master"
+    git fetch "$FORK_REMOTE" master
+    # replay main's feature commits on top of the refreshed master.
+    git checkout main
+    git rebase "$FORK_REMOTE/master"
+    echo "bora: master fast-forwarded to $UPSTREAM_REMOTE/$UPSTREAM_BRANCH and main rebased onto it."
+    echo "bora: review, then publish with: git push --force-with-lease $FORK_REMOTE main"
     ;;
   build)
     cd "$REPO_DIR"
@@ -56,10 +65,10 @@ case "$cmd" in
     ;;
   ci-build)
     cd "$REPO_DIR"
-    git push "$FORK_REMOTE" bora
+    git push "$FORK_REMOTE" main
     gh workflow run build-artifacts-manual.yml --repo "$(gh repo view --json nameWithOwner -q .nameWithOwner)" \
-      --ref bora -f build_group=macos -f libghostty_optimize=ReleaseFast -f libghostty_simd=false
-    echo "bora: dispatched macOS build for branch bora. Watch: gh run watch ; then: scripts/bora ci-install"
+      --ref main -f build_group=macos -f libghostty_optimize=ReleaseFast -f libghostty_simd=false
+    echo "bora: dispatched macOS build for branch main. Watch: gh run watch ; then: scripts/bora ci-install"
     ;;
   ci-install)
     cd "$REPO_DIR"
@@ -88,6 +97,6 @@ case "$cmd" in
     exec "$BIN" --session "$SESSION" "$@"
     ;;
   help|*)
-    sed -n '2,20p' "$0"
+    sed -n '2,24p' "$0"
     ;;
 esac
