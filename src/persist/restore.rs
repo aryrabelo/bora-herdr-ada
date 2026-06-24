@@ -1266,7 +1266,7 @@ mod tests {
                         (
                             20,
                             super::super::snapshot::PaneSnapshot {
-                                cwd: cwd.clone(),
+                                cwd,
                                 label: None,
                                 agent_name: None,
                                 agent_session: None,

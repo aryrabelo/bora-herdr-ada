@@ -4092,7 +4092,7 @@ mod tests {
         let names: Vec<_> = state
             .workspaces
             .iter()
-            .map(|ws| ws.display_name())
+            .map(crate::workspace::Workspace::display_name)
             .collect();
         assert_eq!(names, vec!["b", "a", "c"]);
         assert_eq!(state.active, Some(0));
@@ -4110,7 +4110,7 @@ mod tests {
         let names: Vec<_> = state
             .workspaces
             .iter()
-            .map(|ws| ws.display_name())
+            .map(crate::workspace::Workspace::display_name)
             .collect();
         assert_eq!(names, vec!["b", "c", "a"]);
     }

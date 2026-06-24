@@ -472,7 +472,7 @@ mod tests {
             .buffer()
             .content()
             .iter()
-            .map(|cell| cell.symbol())
+            .map(ratatui::buffer::Cell::symbol)
             .collect::<String>();
 
         assert!(rendered.contains("pane screen history [✓]"));
@@ -498,7 +498,7 @@ mod tests {
             .buffer()
             .content()
             .iter()
-            .map(|cell| cell.symbol())
+            .map(ratatui::buffer::Cell::symbol)
             .collect::<String>();
 
         assert!(rendered.contains("pane screen history [ ]"));
@@ -523,7 +523,7 @@ mod tests {
             .buffer()
             .content()
             .iter()
-            .map(|cell| cell.symbol())
+            .map(ratatui::buffer::Cell::symbol)
             .collect::<String>();
 
         assert!(rendered.contains("switch to ascii input source in prefix (macOS) [✓]"));

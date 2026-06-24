@@ -725,7 +725,7 @@ fn worktree_lifecycle_events_round_trip() {
                 workspace: Some(workspace.clone()),
                 worktree: WorktreeInfo {
                     open_workspace_id: None,
-                    ..worktree.clone()
+                    ..worktree
                 },
                 forced: false,
             },
@@ -734,7 +734,7 @@ fn worktree_lifecycle_events_round_trip() {
             event: EventKind::WorkspaceClosed,
             data: EventData::WorkspaceClosed {
                 workspace_id: "w_2".into(),
-                workspace: Some(workspace.clone()),
+                workspace: Some(workspace),
             },
         },
     ] {
@@ -843,7 +843,7 @@ fn plugin_link_list_unlink_round_trip() {
         SuccessResponse {
             id: "plugin_unlink".into(),
             result: ResponseResult::PluginUnlinked {
-                plugin_id: plugin.plugin_id.clone(),
+                plugin_id: plugin.plugin_id,
                 removed: true,
             },
         },

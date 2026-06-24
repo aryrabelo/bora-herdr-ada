@@ -967,7 +967,7 @@ mod tests {
             method: Method::WorkspaceList(crate::api::schema::EmptyParams::default()),
         };
 
-        let request_for_thread = request.clone();
+        let request_for_thread = request;
         let thread = std::thread::spawn(move || handle_request(request_for_thread, &tx, None));
 
         let msg = rx.blocking_recv().unwrap();
