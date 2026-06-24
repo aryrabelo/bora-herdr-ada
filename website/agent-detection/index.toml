@@ -65,6 +65,10 @@ id = "opencode"
 path = "opencode.toml"
 
 [[agents]]
+id = "omp"
+path = "omp.toml"
+
+[[agents]]
 id = "pi"
 path = "pi.toml"
 

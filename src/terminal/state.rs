@@ -375,7 +375,8 @@ impl TerminalState {
             let mut reset_sources = Vec::new();
             let mut stale_sessions = Vec::new();
             for (source, suppressed) in &mut self.suppressed_full_lifecycle_hook_reports {
-                if crate::detect::parse_agent_label(&suppressed.agent_label) != agent
+                if (agent.is_some()
+                    && crate::detect::parse_agent_label(&suppressed.agent_label) != agent)
                     || suppressed.reason == FullLifecycleHookSuppressionReason::HookClear
                 {
                     continue;
