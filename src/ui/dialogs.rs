@@ -863,7 +863,7 @@ mod tests {
             .buffer()
             .content()
             .iter()
-            .map(|cell| cell.symbol())
+            .map(ratatui::buffer::Cell::symbol)
             .collect::<String>();
 
         assert!(rendered.contains("fatal: a branch named 'foo' already exists"));

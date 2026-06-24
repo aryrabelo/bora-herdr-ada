@@ -35,7 +35,7 @@ pub fn unregister_spawned_herdr_pid(pid: Option<u32>) {
     if let Some(registry) = PID_REGISTRY.get() {
         let mut guard = registry
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         guard.remove(&pid);
     }
 }
@@ -57,7 +57,7 @@ pub fn unregister_runtime_dir(path: &Path) {
     if let Some(registry) = RUNTIME_DIR_REGISTRY.get() {
         let mut guard = registry
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         guard.remove(path);
     }
 }
@@ -145,7 +145,7 @@ pub fn decode_varint_u32(payload: &[u8], offset: usize) -> Result<(u32, usize), 
     }
     let first_byte = payload[offset];
     match first_byte {
-        0..=250 => Ok((first_byte as u32, 1)),
+        0..=250 => Ok((u32::from(first_byte), 1)),
         251 => {
             if offset + 3 > payload.len() {
                 return Err("payload too short for u16 varint".into());
@@ -155,7 +155,7 @@ pub fn decode_varint_u32(payload: &[u8], offset: usize) -> Result<(u32, usize), 
                     .try_into()
                     .map_err(|e: std::array::TryFromSliceError| e.to_string())?,
             );
-            Ok((v as u32, 3))
+            Ok((u32::from(v), 3))
         }
         252 => {
             if offset + 5 > payload.len() {
@@ -418,21 +418,21 @@ fn pid_registry_lock() -> std::sync::MutexGuard<'static, HashSet<u32>> {
     PID_REGISTRY
         .get_or_init(|| Mutex::new(HashSet::new()))
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 fn runtime_dir_registry_lock() -> std::sync::MutexGuard<'static, HashSet<PathBuf>> {
     RUNTIME_DIR_REGISTRY
         .get_or_init(|| Mutex::new(HashSet::new()))
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 fn registered_runtime_dirs_snapshot() -> HashSet<PathBuf> {
     if let Some(runtime_dirs) = RUNTIME_DIR_REGISTRY.get() {
         runtime_dirs
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
     } else {
         HashSet::new()

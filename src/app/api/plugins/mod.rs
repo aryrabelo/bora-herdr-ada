@@ -2705,7 +2705,7 @@ command = ["sh", "-c", "echo ok"]
 
         // link via load_plugin_manifest + save_to_path (simulating what the App does)
         let plugin = load_plugin_manifest(&root.display().to_string(), true).unwrap();
-        let plugins = vec![plugin.clone()];
+        let plugins = vec![plugin];
         crate::persist::plugin_registry::save_to_path(&registry_path, &plugins).unwrap();
         assert!(registry_path.exists());
 

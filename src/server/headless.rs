@@ -6783,7 +6783,7 @@ next_tab = ""
         assert!(
             server.handle_server_event(ServerEvent::ClientAttachTerminal {
                 client_id: 2,
-                terminal_id: terminal_id_string.clone(),
+                terminal_id: terminal_id_string,
                 takeover: false,
             })
         );
