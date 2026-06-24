@@ -1,0 +1,46 @@
+id = "omp"
+version = "2026.06.20.1"
+min_engine_version = 2
+updated_at = "2026-06-20T00:00:00Z"
+aliases = ["herdr:omp"]
+
+# omp (oh-my-pi) renders a "π  /" status bar in every frame and sets its OSC
+# title to "π" / "π: <session>", so the π marker is the reliable identity
+# anchor. It does NOT encode working/idle in the title (unlike claude/codex), so
+# state is read from the body: a turn in progress shows a braille spinner plus
+# the ⟦esc⟧ interrupt hint; at the prompt neither is present. An interactive
+# Ask/selection prompt is waiting on the human, so it must read as blocked even
+# while a spinner or interrupt hint from the in-progress turn is still on screen
+# — hence the selection rule outranks the working rule.
+
+[[rules]]
+id = "selection_prompt"
+state = "blocked"
+priority = 300
+region = "whole_recent"
+visible_blocker = true
+contains = ["enter select", "esc cancel"]
+
+[[rules]]
+id = "working"
+state = "working"
+priority = 100
+region = "whole_recent"
+visible_working = true
+line_regex = ['π\s+/']
+any = [
+  { contains = ["⟦esc⟧"] },
+  { line_regex = ['^\s*[\x{2800}-\x{28FF}]\s'] },
+]
+
+[[rules]]
+id = "idle"
+state = "idle"
+priority = 50
+region = "whole_recent"
+visible_idle = true
+line_regex = ['π\s+/']
+not = [
+  { contains = ["⟦esc⟧"] },
+  { line_regex = ['^\s*[\x{2800}-\x{28FF}]\s'] },
+]
