@@ -16,10 +16,12 @@ stock `herdr` install (brew/mise) instead of overwriting it.
 
 ## Branch layout
 
-- `origin` -> upstream `ogulcancelik/herdr` (`master`).
-- `fork`   -> our GitHub fork.
-- `bora`   -> long-lived branch = upstream `master` + our patches. We merge
-  upstream into it from time to time (`scripts/bora update`).
+- `origin` / `upstream` -> upstream `ogulcancelik/herdr`.
+- `fork`   -> our repo `aryrabelo/bora-herdr-ada`.
+- `master` -> 1:1 mirror of upstream `master`. Never carries fork commits;
+  only fast-forwarded (`scripts/bora sync`).
+- `main`   -> default branch = `master` + our features, each landed as a
+  squash-merged PR. Kept current by rebasing onto `master`.
 
 ## Build / install
 
@@ -83,18 +85,33 @@ workflow, and return to a pure from-source build.
 
 ## Keeping current with upstream
 
+`master` is a pristine mirror; `main` is rebased onto it.
+
 ```sh
-scripts/bora update       # git fetch origin + merge origin/master into bora
-scripts/bora build        # or ci-build, then ci-install
+scripts/bora sync   # fast-forward master to upstream, rebase main onto it
+# review the rebase, then publish:
+git push --force-with-lease fork main
 ```
 
-Resolve any merge conflicts (our patches are small and localized to
-`src/detect/*`, `src/config/sound.rs`, `src/terminal/state.rs`), then rebuild.
+Rebase conflicts are localized to the feature commits (`src/detect/*`,
+`src/config/sound.rs`, `src/terminal/state.rs`, the worktree-action files,
+`src/ui/sidebar.rs`, and the rebrand string changes). Resolve, finish the
+rebase, then rebuild (`scripts/bora build`).
+
+## Releases
+
+Releases are tag-driven off `main`. Tag a `main` commit `vX.Y.Z` and push the
+tag; `.github/workflows/release.yml` builds the four `bora-*` binaries
+(`bora-linux-x86_64`, `bora-linux-aarch64`, `bora-macos-x86_64`,
+`bora-macos-aarch64`), creates the GitHub release, and updates
+`website/latest.json`.
 
 ## Coexistence model
 
 - Distinct binary name (`herdr-bora`) — never overwrites stock `herdr`.
 - Dedicated named session (`--session bora`) — its own socket/server, so it runs
   our binary independently of any stock-`herdr` server on the default session.
-- Shared `~/.config/herdr/config.toml` (same themes/keys); override with
-  `HERDR_CONFIG_PATH` if you want fully separate config.
+- Own config namespace: config/state/sessions/sockets live under `bora` /
+  `bora-dev` (`app_dir_name`), so a bora install never clobbers a stock
+  `herdr`. The `HERDR_*` env var names (including `HERDR_CONFIG_PATH`) are
+  unchanged for plugin/agent compatibility.
