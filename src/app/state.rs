@@ -576,6 +576,13 @@ pub struct WorkspaceCardArea {
     pub indented: bool,
 }
 
+/// Layout area for a visual group header row in the sidebar workspace list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GroupHeaderCardArea {
+    pub name: String,
+    pub rect: Rect,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorktreeCreateState {
     pub source_workspace_id: String,
@@ -733,6 +740,7 @@ pub struct ViewState {
     pub layout: ViewLayout,
     pub sidebar_rect: Rect,
     pub workspace_card_areas: Vec<WorkspaceCardArea>,
+    pub workspace_group_header_areas: Vec<GroupHeaderCardArea>,
     pub tab_bar_rect: Rect,
     pub tab_hit_areas: Vec<Rect>,
     pub tab_scroll_left_hit_area: Rect,
@@ -758,6 +766,8 @@ pub enum Mode {
     RenameWorkspace,
     RenameTab,
     RenamePane,
+    /// User is typing a visual group name for a workspace.
+    SetWorkspaceGroup,
     NewLinkedWorktree,
     OpenExistingWorktree,
     ConfirmRemoveWorktree,
@@ -769,7 +779,6 @@ pub enum Mode {
     KeybindHelp,
     Navigator,
 }
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum NavigatorTarget {
     Workspace {
@@ -1093,7 +1102,13 @@ pub struct ContextMenuState {
 impl ContextMenuState {
     pub fn items(&self) -> &'static [&'static str] {
         match self.kind {
-            ContextMenuKind::Workspace { .. } => &["Rename", "Close"],
+            ContextMenuKind::Workspace { .. } => &[
+                "Rename",
+                "Close",
+                "New group\u{2026}",
+                "Move to group\u{2026}",
+                "Remove from group",
+            ],
             ContextMenuKind::GitWorkspace {
                 is_linked_worktree: false,
                 has_worktree_children: false,
@@ -1104,6 +1119,9 @@ impl ContextMenuState {
                 "New worktree",
                 "Open worktree...",
                 "Sync",
+                "New group\u{2026}",
+                "Move to group\u{2026}",
+                "Remove from group",
             ],
             ContextMenuKind::GitWorkspace {
                 is_linked_worktree: true,
@@ -1115,6 +1133,9 @@ impl ContextMenuState {
                 "Open PR",
                 "Sync",
                 "Delete worktree checkout...",
+                "New group\u{2026}",
+                "Move to group\u{2026}",
+                "Remove from group",
             ],
             ContextMenuKind::GitWorkspace {
                 is_linked_worktree: false,
@@ -1128,6 +1149,9 @@ impl ContextMenuState {
                 "Open worktree...",
                 "Sync",
                 "Expand",
+                "New group\u{2026}",
+                "Move to group\u{2026}",
+                "Remove from group",
             ],
             ContextMenuKind::GitWorkspace {
                 is_linked_worktree: false,
@@ -1141,6 +1165,9 @@ impl ContextMenuState {
                 "Open worktree...",
                 "Sync",
                 "Collapse",
+                "New group\u{2026}",
+                "Move to group\u{2026}",
+                "Remove from group",
             ],
             ContextMenuKind::Tab { .. } => &["New tab", "Rename", "Close"],
             ContextMenuKind::Pane {
@@ -1696,6 +1723,7 @@ impl AppState {
                 layout: ViewLayout::Desktop,
                 sidebar_rect: Rect::default(),
                 workspace_card_areas: Vec::new(),
+                workspace_group_header_areas: Vec::new(),
                 tab_bar_rect: Rect::default(),
                 tab_hit_areas: Vec::new(),
                 tab_scroll_left_hit_area: Rect::default(),
@@ -2244,7 +2272,10 @@ mod tests {
                 "Merge to main",
                 "Open PR",
                 "Sync",
-                "Delete worktree checkout..."
+                "Delete worktree checkout...",
+                "New group\u{2026}",
+                "Move to group\u{2026}",
+                "Remove from group",
             ]
         );
     }
@@ -2270,7 +2301,10 @@ mod tests {
                 "Close",
                 "New worktree",
                 "Open worktree...",
-                "Sync"
+                "Sync",
+                "New group\u{2026}",
+                "Move to group\u{2026}",
+                "Remove from group",
             ]
         );
     }
@@ -2288,7 +2322,6 @@ mod tests {
             y: 0,
             list: MenuListState::new(0),
         };
-
         assert_eq!(
             menu.items(),
             &[
@@ -2297,7 +2330,10 @@ mod tests {
                 "New worktree",
                 "Open worktree...",
                 "Sync",
-                "Collapse"
+                "Collapse",
+                "New group\u{2026}",
+                "Move to group\u{2026}",
+                "Remove from group",
             ]
         );
     }

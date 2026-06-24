@@ -11,6 +11,38 @@ keywords = ["terminal", "tui", "ai", "agents", "multiplexer"]
 categories = ["command-line-utilities"]
 include = ["src/**/*", "assets/sounds/*", "README.md", "LICENSE", "NOTICE", "Cargo.toml"]
 
+[lints.clippy]
+# ── AI anti-pattern prevention ──────────────────────────────
+# These lints are advisory (warn, not deny) because the upstream
+# codebase predates them.  They catch bad patterns in NEW code;
+# the existing `just lint` recipe still uses `cargo clippy -- -D warnings`
+# for the baseline clippy lints.  These new lints do NOT participate
+# in -D warnings — they show up in the build output so agents and
+# reviewers see them, but don't block the build.
+#
+# To make a lint blocking, promote it from "warn" to "deny" here
+# AFTER cleaning up existing violations.
+
+# Needless allocations — AI clones to satisfy the borrow checker.
+redundant_clone = "warn"
+cloned_instead_of_copied = "warn"
+implicit_clone = "warn"
+
+# Leftover debug macros — AI leaves dbg!() behind.
+dbg_macro = "warn"
+todo = "warn"
+
+# Complexity — keep functions and types manageable.
+cognitive_complexity = { level = "warn", priority = -1 }
+too_many_lines = { level = "warn", priority = -1 }
+
+# Correctness
+cast_lossless = "warn"
+redundant_closure_for_method_calls = "warn"
+
+[lints.rust]
+unused_must_use = "warn"
+
 [dependencies]
 base64 = "0.22.1"
 bincode = { version = "2", features = ["serde"] }

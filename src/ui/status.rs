@@ -195,11 +195,13 @@ pub(super) fn state_dot(
     seen: bool,
     tick: u32,
     p: &Palette,
+    idle_stale: bool,
 ) -> (&'static str, Style) {
     match (state, seen) {
         (AgentState::Blocked, _) => ("?", Style::default().fg(p.red)),
         (AgentState::Working, _) => (super::spinner_frame(tick), Style::default().fg(p.yellow)),
         (AgentState::Idle, false) => ("●", Style::default().fg(p.teal)),
+        (AgentState::Idle, true) if idle_stale => ("●", Style::default().fg(p.red)),
         (AgentState::Idle, true) => ("○", Style::default().fg(p.green)),
         (AgentState::Unknown, _) => ("·", Style::default().fg(p.overlay0)),
     }

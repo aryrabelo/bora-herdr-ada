@@ -3,6 +3,7 @@ use std::ops::{Deref, DerefMut};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Instant;
 
 use ratatui::layout::Direction;
 use tokio::sync::{mpsc, Notify};
@@ -157,6 +158,11 @@ pub struct Workspace {
     pub(crate) cached_git_space: Option<GitSpaceMetadata>,
     /// Explicit Herdr-managed worktree grouping provenance.
     pub worktree_space: Option<WorktreeSpaceMembership>,
+    /// User-defined visual group name for sidebar grouping.
+    pub visual_group: Option<String>,
+    /// Timestamp when the workspace entered the all-panes-idle+seen state.
+    /// `None` if the workspace has not yet been fully idle, or was recently active.
+    pub(crate) last_activity_at: Option<Instant>,
     /// Public pane numbers within this workspace. Closed pane numbers are not reused.
     pub public_pane_numbers: HashMap<PaneId, usize>,
     pub(crate) next_public_pane_number: usize,
@@ -216,6 +222,8 @@ impl Workspace {
             cached_git_ahead_behind: None,
             cached_git_space: git_space_metadata(&identity_cwd),
             worktree_space: None,
+            visual_group: None,
+            last_activity_at: None,
             public_pane_numbers,
             next_public_pane_number: 2,
             next_public_tab_number: 2,
@@ -397,6 +405,8 @@ impl Workspace {
                 cached_git_ahead_behind: None,
                 cached_git_space: None,
                 worktree_space: None,
+                visual_group: None,
+                last_activity_at: None,
                 public_pane_numbers,
                 next_public_pane_number: 2,
                 next_public_tab_number: 2,
@@ -1204,6 +1214,8 @@ impl Workspace {
             cached_git_ahead_behind: None,
             cached_git_space: None,
             worktree_space: None,
+            visual_group: None,
+            last_activity_at: None,
             public_pane_numbers,
             next_public_pane_number: 2,
             next_public_tab_number: 2,

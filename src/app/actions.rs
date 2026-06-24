@@ -953,6 +953,8 @@ impl AppState {
             self.mark_session_dirty();
             self.ensure_workspace_visible(idx);
             if let Some(ws) = self.workspaces.get_mut(idx) {
+                // User is focusing this workspace — reset idle timer (user interaction = not stale).
+                ws.last_activity_at = None;
                 let active_tab = ws.active_tab;
                 ws.switch_tab(active_tab);
                 let tab_id =
@@ -1124,8 +1126,9 @@ impl AppState {
     pub(crate) fn visible_workspace_order(&self) -> Vec<usize> {
         let order = crate::ui::workspace_list_entries(self)
             .into_iter()
-            .map(|entry| match entry {
-                crate::ui::WorkspaceListEntry::Workspace { ws_idx, .. } => ws_idx,
+            .filter_map(|entry| match entry {
+                crate::ui::WorkspaceListEntry::Workspace { ws_idx, .. } => Some(ws_idx),
+                crate::ui::WorkspaceListEntry::GroupHeader { .. } => None,
             })
             .collect::<Vec<_>>();
         if order.is_empty() {

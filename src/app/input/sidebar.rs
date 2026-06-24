@@ -335,6 +335,7 @@ impl AppState {
             self.mode,
             Mode::Navigate
                 | Mode::RenameWorkspace
+                | Mode::SetWorkspaceGroup
                 | Mode::Resize
                 | Mode::ConfirmClose
                 | Mode::ContextMenu
