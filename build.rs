@@ -62,10 +62,16 @@ fn main() {
         Some(PathBuf::from(p))
     } else {
         let candidate = manifest_dir.join(format!("prebuilt/libghostty-vt-{zig_target}.a"));
-        if candidate.exists() { Some(candidate) } else { None }
+        if candidate.exists() {
+            Some(candidate)
+        } else {
+            None
+        }
     };
     if let Some(path) = prebuilt {
-        let path = path.canonicalize().expect("failed to canonicalize prebuilt path");
+        let path = path
+            .canonicalize()
+            .expect("failed to canonicalize prebuilt path");
         let dir = path.parent().expect("prebuilt path has no parent");
         println!("cargo:rustc-link-search=native={}", dir.display());
         println!("cargo:rustc-link-arg={}", path.display());
