@@ -19,11 +19,24 @@ const KNOWN_TOP_LEVEL_CONFIG_KEYS: &[&str] = &[
 ];
 
 pub fn app_dir_name() -> &'static str {
-    if cfg!(debug_assertions) {
-        "bora-dev"
-    } else {
-        "bora"
-    }
+    use std::sync::OnceLock;
+    // `HERDR_NAMESPACE` overrides the config/state/session namespace directory,
+    // so a bora install can share an existing herdr namespace (e.g. point it at
+    // `~/.config/herdr`) for dogfooding instead of its own `~/.config/bora`.
+    static NS: OnceLock<&'static str> = OnceLock::new();
+    NS.get_or_init(|| {
+        if let Ok(v) = std::env::var("HERDR_NAMESPACE") {
+            let v = v.trim();
+            if !v.is_empty() {
+                return Box::leak(v.to_owned().into_boxed_str());
+            }
+        }
+        if cfg!(debug_assertions) {
+            "bora-dev"
+        } else {
+            "bora"
+        }
+    })
 }
 
 pub fn config_dir() -> PathBuf {
