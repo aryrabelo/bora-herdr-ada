@@ -1,0 +1,13 @@
+bora (bora-herdr-ada)
+Copyright (C) 2026 Ary Rabelo
+
+This program is a modified version of herdr
+(https://github.com/ogulcancelik/herdr), Copyright (C) the herdr authors.
+
+bora is distributed under the GNU Affero General Public License v3.0 or later
+(AGPL-3.0-or-later), the same license as herdr. See the LICENSE file for the
+full text. Source for this modified version is available at
+https://github.com/aryrabelo/bora-herdr-ada.
+
+"herdr" is used here descriptively to identify the upstream project; this
+distribution is not endorsed by or affiliated with the herdr authors.

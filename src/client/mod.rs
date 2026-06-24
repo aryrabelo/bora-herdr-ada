@@ -2073,7 +2073,7 @@ mod tests {
         };
         let msg = err.to_string();
         assert!(
-            msg.contains("Run `herdr` to reattach"),
+            msg.contains("Run `bora` to reattach"),
             "should suggest default reattach command: {msg}"
         );
     }
@@ -2088,7 +2088,7 @@ mod tests {
         };
         let msg = err.to_string();
         assert!(
-            msg.contains("Run `herdr session attach work` to reattach"),
+            msg.contains("Run `bora session attach work` to reattach"),
             "should suggest named session reattach command: {msg}"
         );
     }
