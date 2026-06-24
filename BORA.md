@@ -57,14 +57,29 @@ scripts/bora run          # run it on the dedicated "bora" session (own socket)
 
 ### Refreshing / producing prebuilts
 
-The `libghostty-vt-prebuilts` GitHub Actions workflow cross-builds `libghostty-vt.a`
-for each target using zig 0.15.2 and publishes them as assets on the
-`libghostty-vt-prebuilts` release, keyed by the vendored commit (8-char prefix).
-After a vendor update, re-run that workflow, then run `just fetch-libghostty-vt` again.
+**Local, no-CI (fast dev loop here).** `just build-libghostty-vt-prebuilt`
+cross-builds `prebuilt/libghostty-vt-<target>.a` for the macOS host target
+inside a Linux container with zig 0.15.2 (zig 0.15.2 cannot link its own build
+runner on macOS 26, but cross-builds the macOS `.a` fine from Linux). Requires
+Docker; no GitHub Actions, no network beyond the zig download. After a vendor
+update, just re-run it.
+
+```sh
+just build-libghostty-vt-prebuilt   # or: scripts/build_libghostty_vt_prebuilt.sh
+scripts/bora build                  # build.rs auto-detects the prebuilt
+```
+
+**CI (other contributors / non-macOS targets).** The `libghostty-vt-prebuilts`
+GitHub Actions workflow cross-builds `libghostty-vt.a` for each target using zig
+0.15.2 and publishes them as assets on the `libghostty-vt-prebuilts` release,
+keyed by the vendored commit (8-char prefix). After a vendor update, re-run that
+workflow, then run `just fetch-libghostty-vt`.
 
 **Removal condition:** when upstream's zig-0.16 port lands and we vendor-update to a
-0.16-capable commit, delete the prebuilt fallback in `build.rs`, the `fetch-libghostty-vt`
-just recipe, and the `libghostty-vt-prebuilts` workflow, and return to a pure from-source build.
+0.16-capable commit, delete the prebuilt fallback in `build.rs`, the
+`fetch-libghostty-vt` and `build-libghostty-vt-prebuilt` just recipes,
+`scripts/build_libghostty_vt_prebuilt.sh`, and the `libghostty-vt-prebuilts`
+workflow, and return to a pure from-source build.
 
 ## Keeping current with upstream
 

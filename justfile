@@ -52,6 +52,12 @@ build-libghostty-vt:
 fetch-libghostty-vt:
     scripts/fetch_libghostty_vt_prebuilt.sh
 
+# Cross-build prebuilt/libghostty-vt-<target>.a locally in a Linux container
+# (zig 0.15.2), no GitHub Actions. macOS 26 fast dev loop; remove with the rest
+# of the prebuilt fallback when upstream zig-0.16 port lands.
+build-libghostty-vt-prebuilt:
+    scripts/build_libghostty_vt_prebuilt.sh
+
 # Check that release docs and changelog have been finalized from docs/next before release
 release-docs-check:
     python3 scripts/agent_detection_manifest_check.py --require-website
