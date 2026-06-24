@@ -694,15 +694,15 @@ pub(super) fn apply_context_menu_action(
 ) {
     let item = menu.items().get(idx).copied();
     match (menu.kind, item) {
-        (ContextMenuKind::GitWorkspace { ws_idx, .. }, Some("New worktree")) => {
+        (ContextMenuKind::GitWorkspace { ws_idx, .. }, Some("New git worktree")) => {
             state.request_new_linked_worktree = Some(ws_idx);
             leave_modal(state);
         }
-        (ContextMenuKind::GitWorkspace { ws_idx, .. }, Some("Delete worktree checkout...")) => {
+        (ContextMenuKind::GitWorkspace { ws_idx, .. }, Some("Delete git worktree...")) => {
             state.request_remove_linked_worktree = Some(ws_idx);
             leave_modal(state);
         }
-        (ContextMenuKind::GitWorkspace { ws_idx, .. }, Some("Open worktree...")) => {
+        (ContextMenuKind::GitWorkspace { ws_idx, .. }, Some("Open git worktree...")) => {
             state.request_open_existing_worktree = Some(ws_idx);
             leave_modal(state);
         }
