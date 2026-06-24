@@ -1161,7 +1161,7 @@ mod tests {
             .state
             .workspaces
             .iter()
-            .map(|ws| ws.display_name())
+            .map(crate::workspace::Workspace::display_name)
             .collect();
         assert_eq!(names, vec!["b", "a", "c"]);
         assert_eq!(app.state.active, Some(0));
@@ -1459,7 +1459,7 @@ mod tests {
             .state
             .workspaces
             .iter()
-            .map(|ws| ws.display_name())
+            .map(crate::workspace::Workspace::display_name)
             .collect::<Vec<_>>();
         assert_eq!(names, vec!["main", "normal", "issue"]);
     }

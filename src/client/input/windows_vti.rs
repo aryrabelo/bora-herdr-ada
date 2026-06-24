@@ -622,11 +622,12 @@ impl WindowsInputMapper {
 
         let ch = if (0xdc00..=0xdfff).contains(&unit) {
             let high = pending_high_surrogate.take()?;
-            let codepoint = 0x10000 + (((high as u32 - 0xd800) << 10) | (unit as u32 - 0xdc00));
+            let codepoint =
+                0x10000 + (((u32::from(high) - 0xd800) << 10) | (u32::from(unit) - 0xdc00));
             char::from_u32(codepoint)?
         } else {
             *pending_high_surrogate = None;
-            char::from_u32(unit as u32)?
+            char::from_u32(u32::from(unit))?
         };
 
         Some(ch)
@@ -867,19 +868,19 @@ fn windows_virtual_key_to_char_code(
 ) -> Option<crate::protocol::ClientKeyCode> {
     use crate::protocol::ClientKeyCode;
 
-    if let Some(ch) = char::from_u32(unicode as u32).filter(|ch| !ch.is_control()) {
+    if let Some(ch) = char::from_u32(u32::from(unicode)).filter(|ch| !ch.is_control()) {
         return Some(ClientKeyCode::Char(ch));
     }
 
     let ch = match vk {
-        0x30..=0x39 => char::from_u32(vk as u32)?,
+        0x30..=0x39 => char::from_u32(u32::from(vk))?,
         0x41..=0x5a
             if modifiers.contains(crossterm::event::KeyModifiers::SHIFT)
                 && !modifiers.contains(crossterm::event::KeyModifiers::CONTROL) =>
         {
-            char::from_u32(vk as u32)?
+            char::from_u32(u32::from(vk))?
         }
-        0x41..=0x5a => char::from_u32(vk as u32 + 32)?,
+        0x41..=0x5a => char::from_u32(u32::from(vk) + 32)?,
         _ => return None,
     };
     Some(ClientKeyCode::Char(ch))

@@ -71,7 +71,7 @@ fn test_lock() -> MutexGuard<'static, ()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 fn wait_for_socket(path: &Path, timeout: Duration) {
@@ -250,7 +250,7 @@ fn decode_varint_u32(payload: &[u8], offset: usize) -> Result<(u32, usize), Stri
     }
     let first_byte = payload[offset];
     match first_byte {
-        0..=250 => Ok((first_byte as u32, 1)),
+        0..=250 => Ok((u32::from(first_byte), 1)),
         251 => {
             if offset + 3 > payload.len() {
                 return Err("payload too short for u16 varint".into());
@@ -260,7 +260,7 @@ fn decode_varint_u32(payload: &[u8], offset: usize) -> Result<(u32, usize), Stri
                     .try_into()
                     .map_err(|e: std::array::TryFromSliceError| e.to_string())?,
             );
-            Ok((v as u32, 3))
+            Ok((u32::from(v), 3))
         }
         252 => {
             if offset + 5 > payload.len() {
@@ -285,7 +285,7 @@ fn decode_varint_u16(payload: &[u8], offset: usize) -> Result<(u16, usize), Stri
     }
     let first_byte = payload[offset];
     match first_byte {
-        0..=250 => Ok((first_byte as u16, 1)),
+        0..=250 => Ok((u16::from(first_byte), 1)),
         251 => {
             if offset + 3 > payload.len() {
                 return Err("payload too short for u16 varint".into());

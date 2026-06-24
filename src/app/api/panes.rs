@@ -3225,7 +3225,7 @@ mod tests {
         };
         assert!(!focus.changed);
         assert_eq!(focus.reason, Some(PaneFocusDirectionReason::NoNeighbor));
-        assert_eq!(focus.source_pane_id, root_public.clone());
+        assert_eq!(focus.source_pane_id, root_public);
         assert_eq!(focus.focused_pane_id, Some(root_public));
         assert_eq!(app.state.workspaces[0].focused_pane_id(), Some(root));
     }

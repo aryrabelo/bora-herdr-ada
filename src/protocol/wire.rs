@@ -1229,7 +1229,7 @@ mod tests {
             hyperlinks: vec!["https://example.com".to_owned()],
             graphics: Vec::new(),
         };
-        let msg = ServerMessage::Frame(frame.clone());
+        let msg = ServerMessage::Frame(frame);
         let encoded = bincode::serde::encode_to_vec(&msg, bincode::config::standard()).unwrap();
         let (decoded, _): (ServerMessage, _) =
             bincode::serde::decode_from_slice(&encoded, bincode::config::standard()).unwrap();
