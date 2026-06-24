@@ -119,6 +119,7 @@ impl AgentSoundOverrides {
     pub fn for_agent(&self, agent: Option<Agent>) -> AgentSoundSetting {
         match agent {
             Some(Agent::Pi) => self.pi,
+            Some(Agent::Omp) => self.pi,
             Some(Agent::Claude) => self.claude,
             Some(Agent::Codex) => self.codex,
             Some(Agent::Gemini) => self.gemini,
@@ -126,7 +127,6 @@ impl AgentSoundOverrides {
             Some(Agent::Devin) => self.devin,
             Some(Agent::Antigravity) => self.agy,
             Some(Agent::Cline) => self.cline,
-            Some(Agent::Omp) => AgentSoundSetting::Default,
             Some(Agent::Mastracode) => AgentSoundSetting::Default,
             Some(Agent::OpenCode) => self.open_code,
             Some(Agent::GithubCopilot) => self.github_copilot,
