@@ -410,7 +410,7 @@ impl App {
                     .state
                     .selection
                     .as_ref()
-                    .is_some_and(|selection| selection.is_visible()) =>
+                    .is_some_and(super::super::selection::Selection::is_visible) =>
             {
                 self.last_pane_click = None;
                 return false;

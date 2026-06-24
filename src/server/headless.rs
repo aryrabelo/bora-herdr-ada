@@ -2395,8 +2395,7 @@ impl HeadlessServer {
         }
 
         info!(client_id, cols, rows, terminal_id = %terminal_id, "terminal attach client connected");
-        self.terminal_attach_owners
-            .insert(terminal_id.clone(), client_id);
+        self.terminal_attach_owners.insert(terminal_id, client_id);
         self.app
             .state
             .direct_attach_resize_locks

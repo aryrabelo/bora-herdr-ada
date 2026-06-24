@@ -515,7 +515,7 @@ impl AppState {
             let terminal = self.terminals.get(&pane.attached_terminal_id);
             let pane_number = ws.public_pane_number(pane_id).unwrap_or(0);
             let label = terminal
-                .and_then(|terminal| terminal.effective_title())
+                .and_then(super::super::terminal::state::TerminalState::effective_title)
                 .or_else(|| {
                     terminal
                         .and_then(|terminal| terminal.manual_label.as_deref().map(str::to_string))
@@ -531,13 +531,15 @@ impl AppState {
                     launch_label(terminal.and_then(|terminal| terminal.launch_argv.as_ref()))
                 })
                 .unwrap_or_else(|| format!("pane {pane_number}"));
-            let display_agent = terminal.and_then(|terminal| terminal.effective_display_agent());
+            let display_agent = terminal
+                .and_then(super::super::terminal::state::TerminalState::effective_display_agent);
             let agent_label = display_agent.as_deref().or_else(|| {
                 terminal
                     .and_then(|terminal| terminal.agent_name.as_deref())
                     .or_else(|| terminal.and_then(|terminal| terminal.effective_agent_label()))
             });
-            let custom_status = terminal.and_then(|terminal| terminal.effective_custom_status());
+            let custom_status = terminal
+                .and_then(super::super::terminal::state::TerminalState::effective_custom_status);
             let state = terminal
                 .map(|terminal| terminal.state)
                 .unwrap_or(AgentState::Unknown);
@@ -892,7 +894,7 @@ impl AppState {
     pub(crate) fn next_agent_metadata_expiry(&self) -> Option<std::time::Instant> {
         self.terminals
             .values()
-            .filter_map(|terminal| terminal.next_agent_metadata_expiry())
+            .filter_map(super::super::terminal::state::TerminalState::next_agent_metadata_expiry)
             .min()
     }
 
@@ -939,7 +941,7 @@ impl AppState {
                     known_agent: change.known_agent,
                     state: change.state,
                     seen,
-                    presentation: change.presentation.clone(),
+                    presentation: change.presentation,
                 };
                 Some(update)
             })
@@ -1833,12 +1835,16 @@ impl AppState {
             .into_iter()
             .collect::<Vec<_>>();
         let pane_ids = active
-            .and_then(|i| self.workspaces.get(i).and_then(|ws| ws.focused_pane_id()))
+            .and_then(|i| {
+                self.workspaces
+                    .get(i)
+                    .and_then(super::super::workspace::Workspace::focused_pane_id)
+            })
             .into_iter()
             .collect::<Vec<_>>();
         let should_close_workspace = active
             .and_then(|i| self.workspaces.get_mut(i))
-            .is_some_and(|ws| ws.close_focused());
+            .is_some_and(super::super::workspace::Workspace::close_focused);
         self.remove_plugin_pane_records(pane_ids);
         if should_close_workspace {
             if let Some(active) = active {

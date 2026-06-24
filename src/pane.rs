@@ -1704,9 +1704,7 @@ impl PaneRuntime {
 
         let io = {
             let terminal = terminal.clone();
-            let response_writer = response_tx.clone();
-            let render_notify = render_notify.clone();
-            let render_dirty = render_dirty.clone();
+            let response_writer = response_tx;
             let detection_content_seq = detection_content_seq.clone();
             let child_pid = child_pid.clone();
             let read_events = events.clone();
@@ -1836,7 +1834,6 @@ impl PaneRuntime {
         let detection_content_seq = Arc::new(AtomicU64::new(0));
         let full_lifecycle_authority_active = Arc::new(AtomicBool::new(false));
         {
-            let child_pid = child_pid.clone();
             let child_wait_completed = child_wait_completed.clone();
             let events = events.clone();
             let rt = tokio::runtime::Handle::current();
@@ -1863,7 +1860,7 @@ impl PaneRuntime {
 
         let io = {
             let terminal = terminal.clone();
-            let response_writer = response_tx.clone();
+            let response_writer = response_tx;
             let render_notify = render_notify.clone();
             let render_dirty = render_dirty.clone();
             let detection_content_seq = detection_content_seq.clone();
@@ -1928,11 +1925,9 @@ impl PaneRuntime {
 
             let child_pid = child_pid.clone();
             let terminal = terminal.clone();
-            let state_events = events.clone();
+            let state_events = events;
             let detection_content_seq = detection_content_seq.clone();
             let full_lifecycle_authority_active_for_task = full_lifecycle_authority_active.clone();
-            let render_notify = render_notify.clone();
-            let render_dirty = render_dirty.clone();
             let detect_reset_notify = Arc::new(Notify::new());
             let detect_reset = detect_reset_notify.clone();
             let pending_release = Arc::new(Mutex::new(None));

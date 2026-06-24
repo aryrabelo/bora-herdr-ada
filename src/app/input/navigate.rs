@@ -1634,7 +1634,7 @@ pub(super) fn execute_navigate_action_in_context(
             if let Some(pane_id) = state
                 .active
                 .and_then(|ws_idx| state.workspaces.get(ws_idx))
-                .and_then(|ws| ws.focused_pane_id())
+                .and_then(crate::workspace::Workspace::focused_pane_id)
             {
                 super::modal::open_rename_pane(state, pane_id);
             }

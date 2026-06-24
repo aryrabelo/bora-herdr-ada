@@ -62,7 +62,7 @@ pub(crate) fn install_pi() -> io::Result<PathBuf> {
 pub(crate) fn install_omp() -> io::Result<OmpInstallPaths> {
     let dir = omp_extension_dir()?;
     if !dir.is_dir() {
-        if dir.parent().is_some_and(|parent| parent.is_dir()) {
+        if dir.parent().is_some_and(std::path::Path::is_dir) {
             fs::create_dir_all(&dir)?;
         } else {
             return Err(io::Error::other(format!(

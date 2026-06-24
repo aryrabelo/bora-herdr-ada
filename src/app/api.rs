@@ -516,7 +516,7 @@ impl App {
         let (rows, cols) = self
             .terminal_runtimes
             .get(&terminal_id)
-            .map(|runtime| runtime.current_size())
+            .map(crate::terminal::TerminalRuntime::current_size)
             .unwrap_or_else(|| self.state.estimate_pane_size());
         let Some(launch_env) = self.pane_launch_env(ws_idx, pane_id, Vec::new()) else {
             return false;

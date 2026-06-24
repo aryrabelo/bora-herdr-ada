@@ -9,7 +9,7 @@ use crate::api::schema::{
 };
 
 pub(super) fn run_pane_command(args: &[String]) -> std::io::Result<i32> {
-    let Some(subcommand) = args.first().map(|arg| arg.as_str()) else {
+    let Some(subcommand) = args.first().map(std::string::String::as_str) else {
         print_pane_help();
         return Ok(2);
     };

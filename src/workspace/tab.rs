@@ -550,7 +550,7 @@ impl Tab {
         let terminal_id = self.terminal_id(pane_id)?;
         terminal_runtimes
             .get(terminal_id)
-            .and_then(|rt| rt.cwd())
+            .and_then(crate::terminal::TerminalRuntime::cwd)
             .or_else(|| {
                 terminals
                     .get(terminal_id)
@@ -566,6 +566,6 @@ impl Tab {
         let terminal_id = self.terminal_id(pane_id)?;
         terminal_runtimes
             .get(terminal_id)
-            .and_then(|rt| rt.foreground_cwd())
+            .and_then(crate::terminal::TerminalRuntime::foreground_cwd)
     }
 }

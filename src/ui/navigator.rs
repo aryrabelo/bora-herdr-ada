@@ -428,7 +428,7 @@ fn pane_detail(
                 parts.push("shell".to_string());
             }
             if let Some(status) = terminal.effective_custom_status() {
-                parts.push(status.to_string());
+                parts.push(status);
             }
         }
     }

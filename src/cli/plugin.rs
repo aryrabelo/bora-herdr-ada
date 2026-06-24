@@ -16,7 +16,7 @@ use crate::api::schema::{
 const PLUGIN_BUILD_OUTPUT_MAX_BYTES: usize = 64 * 1024;
 
 pub(super) fn run_plugin_command(args: &[String]) -> std::io::Result<i32> {
-    let Some(subcommand) = args.first().map(|arg| arg.as_str()) else {
+    let Some(subcommand) = args.first().map(std::string::String::as_str) else {
         print_plugin_help();
         return Ok(2);
     };
@@ -375,7 +375,7 @@ fn plugin_log_list(args: &[String]) -> std::io::Result<i32> {
 }
 
 fn run_plugin_action_command(args: &[String]) -> std::io::Result<i32> {
-    let Some(subcommand) = args.first().map(|arg| arg.as_str()) else {
+    let Some(subcommand) = args.first().map(std::string::String::as_str) else {
         print_plugin_action_help();
         return Ok(2);
     };
@@ -463,7 +463,7 @@ fn plugin_action_invoke(args: &[String]) -> std::io::Result<i32> {
 }
 
 fn run_plugin_pane_command(args: &[String]) -> std::io::Result<i32> {
-    let Some(subcommand) = args.first().map(|arg| arg.as_str()) else {
+    let Some(subcommand) = args.first().map(std::string::String::as_str) else {
         print_plugin_pane_help();
         return Ok(2);
     };

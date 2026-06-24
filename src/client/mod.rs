@@ -2066,8 +2066,8 @@ fn current_terminal_geometry(kitty_graphics_enabled: bool) -> (u16, u16, u32, u3
     (
         cols,
         rows,
-        (size.width as u32 / size.columns as u32).max(1),
-        (size.height as u32 / size.rows as u32).max(1),
+        (u32::from(size.width) / u32::from(size.columns)).max(1),
+        (u32::from(size.height) / u32::from(size.rows)).max(1),
     )
 }
 

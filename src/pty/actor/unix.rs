@@ -107,7 +107,7 @@ impl PtyIoActorHandle {
             let user_writes = self
                 .user_writes
                 .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if !user_writes.accepting {
                 return Err(mpsc::error::SendError(bytes));
             }
@@ -121,7 +121,7 @@ impl PtyIoActorHandle {
         let user_writes = self
             .user_writes
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if !user_writes.accepting {
             return Err(mpsc::error::SendError(bytes));
         }
@@ -137,7 +137,7 @@ impl PtyIoActorHandle {
         let user_writes = self
             .user_writes
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if !user_writes.accepting {
             return Err(mpsc::error::TrySendError::Closed(bytes));
         }
@@ -170,7 +170,7 @@ impl PtyIoActorHandle {
             let mut controls = self
                 .controls
                 .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             controls.resize = Some(PtyResizeRequest {
                 resize: PtyResize {
                     rows,
@@ -195,7 +195,7 @@ impl PtyIoActorHandle {
             let mut controls = self
                 .controls
                 .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             controls.nudge = Some(PtyResize {
                 rows,
                 cols,
@@ -212,7 +212,7 @@ impl PtyIoActorHandle {
             let mut user_writes = self
                 .user_writes
                 .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             user_writes.accepting = false;
             if self
                 .control_tx
@@ -282,7 +282,7 @@ impl PtyIoActorHandle {
             let mut user_writes = self
                 .user_writes
                 .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             user_writes.accepting = true;
         }
         result
@@ -293,7 +293,7 @@ impl PtyIoActorHandle {
             let mut user_writes = self
                 .user_writes
                 .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             user_writes.accepting = false;
         }
         let (reply_tx, reply_rx) = std_mpsc::channel();
@@ -314,7 +314,7 @@ impl PtyIoActorHandle {
             let mut user_writes = self
                 .user_writes
                 .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             user_writes.accepting = false;
         }
         if self.control_tx.send(PtyIoControlCommand::Shutdown).is_ok() {
@@ -609,7 +609,7 @@ impl PtyIoActorRunner {
             let mut controls = self
                 .controls
                 .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             (controls.resize.take(), controls.nudge.take())
         };
         if self.state == ActorState::Released {

@@ -146,7 +146,7 @@ impl App {
                     .is_none_or(|plugin_id| action.plugin_id == plugin_id)
             })
             .collect::<Vec<_>>();
-        actions.sort_by_key(|action| action.qualified_id());
+        actions.sort_by_key(crate::api::schema::plugins::PluginActionInfo::qualified_id);
         encode_success(id, ResponseResult::PluginActionList { actions })
     }
 

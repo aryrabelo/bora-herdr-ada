@@ -449,22 +449,22 @@ fn main() -> io::Result<()> {
     }
 
     // Subcommands and flags (no TUI, no logging needed)
-    if args.get(1).map(|s| s.as_str()) == Some("remote-client-bridge") {
+    if args.get(1).map(std::string::String::as_str) == Some("remote-client-bridge") {
         return remote::run_remote_client_bridge();
     }
 
-    if args.get(1).map(|s| s.as_str()) == Some("server") {
+    if args.get(1).map(std::string::String::as_str) == Some("server") {
         return server::headless::run_server();
     }
 
     // Hidden client mode: connect to an existing server's client socket.
-    if args.get(1).map(|s| s.as_str()) == Some("client") {
+    if args.get(1).map(std::string::String::as_str) == Some("client") {
         let loaded_config = config::Config::load();
         exit_if_nested_disabled(&loaded_config.config);
         return client::run_client();
     }
 
-    if args.get(1).map(|s| s.as_str()) == Some("update") {
+    if args.get(1).map(std::string::String::as_str) == Some("update") {
         let options = match update::parse_self_update_args(&args[2..]) {
             Ok(options) => options,
             Err(err) if err.starts_with("usage:") => {

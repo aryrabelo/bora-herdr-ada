@@ -567,8 +567,7 @@ fn validate_layout_node(
                 return Err(format!("layout has more than {} panes", MAX_LAYOUT_PANES));
             }
             layout_command(pane)?;
-            super::env::normalize_launch_env(pane.env.clone())
-                .map_err(|(_, message)| message.to_string())?;
+            super::env::normalize_launch_env(pane.env.clone()).map_err(|(_, message)| message)?;
             Ok(())
         }
         LayoutNode::Split {

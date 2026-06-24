@@ -240,7 +240,7 @@ impl App {
     ) -> String {
         let entrypoint = pane_manifest.id.clone();
         let mut terminal = new_pane.terminal;
-        terminal.set_manual_label(pane_manifest.title.clone());
+        terminal.set_manual_label(pane_manifest.title);
         let terminal_id = terminal.id.clone();
         self.terminal_runtimes
             .insert(terminal_id.clone(), new_pane.runtime);

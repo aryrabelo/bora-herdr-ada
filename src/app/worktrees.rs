@@ -891,7 +891,7 @@ impl App {
             .state
             .workspaces
             .get(ws_idx)
-            .and_then(|ws| ws.resolved_identity_cwd())
+            .and_then(super::super::workspace::Workspace::resolved_identity_cwd)
         else {
             self.state.config_diagnostic = Some("Workspace has no resolved git checkout.".into());
             return;
@@ -900,7 +900,7 @@ impl App {
             .state
             .workspaces
             .get(ws_idx)
-            .and_then(|ws| ws.branch())
+            .and_then(super::super::workspace::Workspace::branch)
             .unwrap_or_default();
         tracing::info!(ws_idx, branch = %branch, "starting workspace git sync");
         let event_tx = self.event_tx.clone();

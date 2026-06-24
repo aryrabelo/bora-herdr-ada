@@ -258,7 +258,7 @@ fn parse_default_color_event(body: &[u8]) -> Option<DefaultColorEvent> {
 
 fn parse_palette_color_query(body: &[u8]) -> Option<DefaultColorEvent> {
     let index = body.strip_prefix(b"4;")?.strip_suffix(b";?")?;
-    if index.is_empty() || index.len() > 3 || !index.iter().all(|byte| byte.is_ascii_digit()) {
+    if index.is_empty() || index.len() > 3 || !index.iter().all(u8::is_ascii_digit) {
         return None;
     }
     let mut value: u16 = 0;

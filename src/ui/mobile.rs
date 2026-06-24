@@ -106,13 +106,23 @@ fn mobile_agents_block_height(app: &AppState) -> usize {
     }
 }
 
+/// Mobile switcher space entries: workspaces only. The mobile switcher renders
+/// no visual-group header rows, so hit-test and row math must use the same
+/// header-free list as the render loop.
+fn mobile_space_entries(app: &AppState) -> Vec<WorkspaceListEntry> {
+    workspace_list_entries_expanded(app)
+        .into_iter()
+        .filter(|entry| matches!(entry, WorkspaceListEntry::Workspace { .. }))
+        .collect()
+}
+
 pub(crate) fn mobile_switcher_workspace_doc_range(
     app: &AppState,
     idx: usize,
 ) -> std::ops::Range<usize> {
     // Spaces render in grouped order, so a workspace's row position is its index
     // in the entry list, not its raw array index.
-    let pos = workspace_list_entries_expanded(app)
+    let pos = mobile_space_entries(app)
         .iter()
         .position(|entry| {
             matches!(entry, WorkspaceListEntry::Workspace { ws_idx, .. } if *ws_idx == idx)
@@ -168,7 +178,7 @@ pub(crate) fn mobile_switcher_target_at(
     cursor += 1;
     // Spaces render in grouped (worktree-tree) order, which differs from raw
     // array order, so map the clicked row to the entry's real workspace index.
-    let space_entries = workspace_list_entries_expanded(app);
+    let space_entries = mobile_space_entries(app);
     let spaces_end = cursor + space_entries.len() * 2;
     if doc_row >= cursor && doc_row < spaces_end {
         let entry_idx = (doc_row - cursor) / 2;
@@ -458,7 +468,7 @@ fn render_close_button(app: &AppState, frame: &mut Frame, area: Rect) {
 fn mobile_switcher_content_height(app: &AppState) -> usize {
     // Derive spaces height from the same entry list the render/hit-test use so
     // the three never disagree.
-    let spaces_h = 2 + workspace_list_entries_expanded(app).len() * 2;
+    let spaces_h = 2 + mobile_space_entries(app).len() * 2;
     let tabs_h = app
         .active
         .and_then(|idx| app.workspaces.get(idx))
@@ -570,7 +580,7 @@ fn render_mobile_switcher_content(
         p,
     );
     doc_y += 1;
-    let space_entries = workspace_list_entries_expanded(app);
+    let space_entries = mobile_space_entries(app);
     for (entry_idx, entry) in space_entries.iter().enumerate() {
         let WorkspaceListEntry::Workspace { ws_idx, indented } = entry else {
             continue;

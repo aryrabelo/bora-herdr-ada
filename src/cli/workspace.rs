@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use crate::api::schema::{WorkspaceCreateParams, WorkspaceRenameParams};
 
 pub(super) fn run_workspace_command(args: &[String]) -> std::io::Result<i32> {
-    let Some(subcommand) = args.first().map(|arg| arg.as_str()) else {
+    let Some(subcommand) = args.first().map(std::string::String::as_str) else {
         print_workspace_help();
         return Ok(2);
     };
