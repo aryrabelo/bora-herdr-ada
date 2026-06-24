@@ -312,8 +312,30 @@ impl AppState {
                             .worktree_remove
                             .as_ref()
                             .is_some_and(|remove| remove.force_confirmation);
-                        let (remove, cancel) =
-                            crate::ui::remove_worktree_button_rects(inner, force_confirmation);
+                        let mergeable = self
+                            .worktree_remove
+                            .as_ref()
+                            .is_some_and(|remove| remove.branch.is_some());
+                        let removing = self
+                            .worktree_remove
+                            .as_ref()
+                            .is_some_and(|remove| remove.removing);
+                        let (merge_rect, remove, cancel) = crate::ui::remove_worktree_button_rects(
+                            inner,
+                            force_confirmation,
+                            mergeable,
+                        );
+                        if let Some(merge_rect) = merge_rect {
+                            if !removing
+                                && mouse.column >= merge_rect.x
+                                && mouse.column < merge_rect.x.saturating_add(merge_rect.width)
+                                && mouse.row >= merge_rect.y
+                                && mouse.row < merge_rect.y.saturating_add(merge_rect.height)
+                            {
+                                self.request_submit_worktree_merge = true;
+                                return None;
+                            }
+                        }
                         match modal_action_from_buttons(
                             mouse.column,
                             mouse.row,
@@ -2471,6 +2493,7 @@ mod tests {
             error: None,
             removing: false,
             force_confirmation: false,
+            branch: None,
         });
         let popup = crate::ui::remove_worktree_popup_rect(app.state.screen_rect()).unwrap();
         let inner = Rect::new(
@@ -2479,7 +2502,7 @@ mod tests {
             popup.width.saturating_sub(2),
             popup.height.saturating_sub(2),
         );
-        let (remove, _) = crate::ui::remove_worktree_button_rects(inner, false);
+        let (_, remove, _) = crate::ui::remove_worktree_button_rects(inner, false, false);
 
         app.handle_mouse(mouse(
             MouseEventKind::Down(MouseButton::Left),
@@ -2499,6 +2522,7 @@ mod tests {
             error: None,
             removing: false,
             force_confirmation: false,
+            branch: None,
         });
         let popup = crate::ui::remove_worktree_popup_rect(app.state.screen_rect()).unwrap();
         let inner = Rect::new(
@@ -2507,7 +2531,7 @@ mod tests {
             popup.width.saturating_sub(2),
             popup.height.saturating_sub(2),
         );
-        let (_, cancel) = crate::ui::remove_worktree_button_rects(inner, false);
+        let (_, _, cancel) = crate::ui::remove_worktree_button_rects(inner, false, false);
 
         app.handle_mouse(mouse(
             MouseEventKind::Down(MouseButton::Left),

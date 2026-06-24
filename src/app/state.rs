@@ -598,6 +598,8 @@ pub struct WorktreeRemoveState {
     pub error: Option<String>,
     pub removing: bool,
     pub force_confirmation: bool,
+    /// Branch checked out in this worktree, when known — enables "merge & close".
+    pub branch: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1096,11 +1098,24 @@ impl ContextMenuState {
                 is_linked_worktree: false,
                 has_worktree_children: false,
                 ..
-            } => &["Rename", "Close", "New worktree", "Open worktree..."],
+            } => &[
+                "Rename",
+                "Close",
+                "New worktree",
+                "Open worktree...",
+                "Sync",
+            ],
             ContextMenuKind::GitWorkspace {
                 is_linked_worktree: true,
                 ..
-            } => &["Rename", "Close", "Delete worktree checkout..."],
+            } => &[
+                "Rename",
+                "Close",
+                "Merge to main",
+                "Open PR",
+                "Sync",
+                "Delete worktree checkout...",
+            ],
             ContextMenuKind::GitWorkspace {
                 is_linked_worktree: false,
                 has_worktree_children: true,
@@ -1111,6 +1126,7 @@ impl ContextMenuState {
                 "Close group",
                 "New worktree",
                 "Open worktree...",
+                "Sync",
                 "Expand",
             ],
             ContextMenuKind::GitWorkspace {
@@ -1123,6 +1139,7 @@ impl ContextMenuState {
                 "Close group",
                 "New worktree",
                 "Open worktree...",
+                "Sync",
                 "Collapse",
             ],
             ContextMenuKind::Tab { .. } => &["New tab", "Rename", "Close"],
@@ -1287,9 +1304,13 @@ pub struct AppState {
     pub request_open_existing_worktree: Option<usize>,
     pub request_new_workspace_cwd: Option<std::path::PathBuf>,
     pub request_remove_linked_worktree: Option<usize>,
+    pub request_merge_worktree_to_main: Option<usize>,
+    pub request_open_worktree_pr: Option<usize>,
+    pub request_sync_workspace_git: Option<usize>,
     pub request_submit_worktree_create: bool,
     pub request_submit_worktree_open: bool,
     pub request_submit_worktree_remove: bool,
+    pub request_submit_worktree_merge: bool,
     pub request_reload_config: bool,
     /// Set when the headless server should ask attached clients to reload
     /// their client-local sound config from disk.
@@ -1640,9 +1661,13 @@ impl AppState {
             request_open_existing_worktree: None,
             request_new_workspace_cwd: None,
             request_remove_linked_worktree: None,
+            request_merge_worktree_to_main: None,
+            request_open_worktree_pr: None,
+            request_sync_workspace_git: None,
             request_submit_worktree_create: false,
             request_submit_worktree_open: false,
             request_submit_worktree_remove: false,
+            request_submit_worktree_merge: false,
             request_reload_config: false,
             request_client_config_reload: false,
             request_clipboard_write: None,
@@ -2213,7 +2238,14 @@ mod tests {
 
         assert_eq!(
             menu.items(),
-            &["Rename", "Close", "Delete worktree checkout..."]
+            &[
+                "Rename",
+                "Close",
+                "Merge to main",
+                "Open PR",
+                "Sync",
+                "Delete worktree checkout..."
+            ]
         );
     }
 
@@ -2233,7 +2265,13 @@ mod tests {
 
         assert_eq!(
             menu.items(),
-            &["Rename", "Close", "New worktree", "Open worktree..."]
+            &[
+                "Rename",
+                "Close",
+                "New worktree",
+                "Open worktree...",
+                "Sync"
+            ]
         );
     }
 
@@ -2258,6 +2296,7 @@ mod tests {
                 "Close group",
                 "New worktree",
                 "Open worktree...",
+                "Sync",
                 "Collapse"
             ]
         );
