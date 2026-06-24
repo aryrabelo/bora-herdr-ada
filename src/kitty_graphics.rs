@@ -36,8 +36,8 @@ impl HostCellSize {
             return Self::fallback_for_area(area);
         }
         Self {
-            width_px: (size.width as u32 / size.columns as u32).max(1),
-            height_px: (size.height as u32 / size.rows as u32).max(1),
+            width_px: (u32::from(size.width) / u32::from(size.columns)).max(1),
+            height_px: (u32::from(size.height) / u32::from(size.rows)).max(1),
         }
         .for_area(area)
     }
@@ -616,22 +616,24 @@ fn clipped_placement(placement: &HostPlacement) -> Option<(ClippedPlacement, u32
         area_h = placement.area.height,
         scrollback_offset = placement.scrollback_offset,
         raw_viewport_row = render.viewport_row,
-        cond1 = viewport_col >= placement.area.width as u32,
-        cond2 = viewport_row >= placement.area.height as u32,
+        cond1 = viewport_col >= u32::from(placement.area.width),
+        cond2 = viewport_row >= u32::from(placement.area.height),
         "clipped_placement: viewport check"
     );
-    if viewport_col >= placement.area.width as u32 || viewport_row >= placement.area.height as u32 {
+    if viewport_col >= u32::from(placement.area.width)
+        || viewport_row >= u32::from(placement.area.height)
+    {
         return None;
     }
 
     let visible_cols = render
         .grid_cols
         .saturating_sub(left_clip_cells)
-        .min(placement.area.width as u32 - viewport_col);
+        .min(u32::from(placement.area.width) - viewport_col);
     let visible_rows = render
         .grid_rows
         .saturating_sub(top_clip_cells)
-        .min(placement.area.height as u32 - viewport_row);
+        .min(u32::from(placement.area.height) - viewport_row);
     tracing::debug!(
         visible_cols = visible_cols,
         visible_rows = visible_rows,
@@ -722,7 +724,8 @@ fn clipped_placement(placement: &HostPlacement) -> Option<(ClippedPlacement, u32
 }
 
 fn scale_pixels(value: u32, source: u32, dest: u32) -> u32 {
-    ((value as u64).saturating_mul(source as u64) / dest.max(1) as u64).min(u32::MAX as u64) as u32
+    (u64::from(value).saturating_mul(u64::from(source)) / u64::from(dest.max(1)))
+        .min(u64::from(u32::MAX)) as u32
 }
 
 fn image_signature(placement: &HostPlacement, format_code: u32) -> ImageSignature {

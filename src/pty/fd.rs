@@ -225,12 +225,12 @@ pub(crate) fn resize_pty_fd(
     let size = libc::winsize {
         ws_row: rows,
         ws_col: cols,
-        ws_xpixel: (cols as u32)
+        ws_xpixel: u32::from(cols)
             .saturating_mul(cell_width_px)
-            .min(u16::MAX as u32) as u16,
-        ws_ypixel: (rows as u32)
+            .min(u32::from(u16::MAX)) as u16,
+        ws_ypixel: u32::from(rows)
             .saturating_mul(cell_height_px)
-            .min(u16::MAX as u32) as u16,
+            .min(u32::from(u16::MAX)) as u16,
     };
     if unsafe { libc::ioctl(fd, libc::TIOCSWINSZ, &size) } < 0 {
         return Err(std::io::Error::last_os_error());

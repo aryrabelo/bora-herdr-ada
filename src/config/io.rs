@@ -381,7 +381,10 @@ fn load_live_section<T>(
 
 pub(crate) fn upsert_top_level_bool(content: &str, key: &str, value: bool) -> String {
     let replacement = format!("{key} = {value}");
-    let mut lines: Vec<String> = content.lines().map(|line| line.to_string()).collect();
+    let mut lines: Vec<String> = content
+        .lines()
+        .map(std::string::ToString::to_string)
+        .collect();
     let mut in_section = false;
 
     for line in &mut lines {
@@ -394,7 +397,7 @@ pub(crate) fn upsert_top_level_bool(content: &str, key: &str, value: bool) -> St
             continue;
         }
         if trimmed.starts_with(&format!("{key} ")) || trimmed.starts_with(&format!("{key}=")) {
-            *line = replacement.clone();
+            *line = replacement;
             return lines.join("\n") + "\n";
         }
     }

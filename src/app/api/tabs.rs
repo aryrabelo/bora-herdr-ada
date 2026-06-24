@@ -68,7 +68,7 @@ impl App {
             let follow_cwd = self
                 .state
                 .focused_runtime_in_workspace(&self.terminal_runtimes, ws_idx)
-                .and_then(|rt| rt.cwd());
+                .and_then(crate::terminal::TerminalRuntime::cwd);
             self.resolve_new_terminal_cwd(follow_cwd)
         });
         let (rows, cols) = self.state.estimate_pane_size();

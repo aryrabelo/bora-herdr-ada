@@ -655,7 +655,7 @@ fn confirm_close_overlay_text(app: &AppState) -> (String, String) {
     let ws_name = app
         .workspaces
         .get(app.selected)
-        .map(|ws| ws.display_name())
+        .map(super::super::workspace::Workspace::display_name)
         .unwrap_or_else(|| "?".to_string());
     let selected_space = app
         .workspaces

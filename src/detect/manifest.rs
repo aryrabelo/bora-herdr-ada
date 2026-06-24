@@ -272,7 +272,7 @@ pub(crate) fn reload_manifests() -> Vec<AgentManifestSummary> {
     let _reload_guard = MANIFEST_RELOAD_LOCK
         .get_or_init(|| Mutex::new(()))
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let cache = build_manifest_cache();
     let summaries = manifest_summaries_from_cache(&cache);
     let lock = MANIFEST_CACHE.get_or_init(|| RwLock::new(cache.clone()));
@@ -832,7 +832,7 @@ pub fn explain_to_json_value(explain: &DetectionExplain) -> serde_json::Value {
     serde_json::json!({
         "agent": explain.agent,
         "state": agent_state_label(explain.state),
-        "manifest_source": explain.source.as_ref().map(|source| source.label()),
+        "manifest_source": explain.source.as_ref().map(ManifestSource::label),
         "manifest_version": &explain.manifest_version,
         "cached_remote_version": &explain.cached_remote_version,
         "local_override_shadowing_remote": explain.local_override_shadowing_remote,

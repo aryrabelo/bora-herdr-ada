@@ -25,11 +25,11 @@ pub(super) fn match_output(
         crate::api::schema::OutputMatch::Substring { value } => text
             .lines()
             .find(|line| line.contains(value))
-            .map(|line| line.to_string()),
+            .map(std::string::ToString::to_string),
         crate::api::schema::OutputMatch::Regex { .. } => regex.and_then(|re| {
             text.lines()
                 .find(|line| re.is_match(line))
-                .map(|line| line.to_string())
+                .map(std::string::ToString::to_string)
         }),
     }
 }

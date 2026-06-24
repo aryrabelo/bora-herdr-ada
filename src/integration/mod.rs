@@ -429,7 +429,7 @@ fn extract_version_triple(text: &str) -> Option<(u64, u64, u64)> {
             .next()
             .map(|rest| {
                 rest.chars()
-                    .take_while(|c| c.is_ascii_digit())
+                    .take_while(char::is_ascii_digit)
                     .collect::<String>()
             })
             .and_then(|digits| digits.parse().ok())
@@ -1408,7 +1408,7 @@ pub(crate) fn install_pi() -> io::Result<PathBuf> {
 pub(crate) fn install_omp() -> io::Result<OmpInstallPaths> {
     let dir = omp_extension_dir()?;
     if !dir.is_dir() {
-        if dir.parent().is_some_and(|parent| parent.is_dir()) {
+        if dir.parent().is_some_and(std::path::Path::is_dir) {
             fs::create_dir_all(&dir)?;
         } else {
             return Err(io::Error::other(format!(

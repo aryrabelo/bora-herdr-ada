@@ -391,7 +391,7 @@ impl App {
             .state
             .selection
             .as_ref()
-            .is_some_and(|s| s.is_dragging())
+            .is_some_and(super::super::selection::Selection::is_dragging)
         {
             self.stop_selection_autoscroll();
             return;

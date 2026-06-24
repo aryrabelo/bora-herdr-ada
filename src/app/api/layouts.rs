@@ -316,7 +316,7 @@ impl App {
         self.resolve_new_terminal_cwd(follow_cwd.or_else(|| {
             self.state
                 .focused_runtime_in_workspace(&self.terminal_runtimes, ws_idx)
-                .and_then(|runtime| runtime.cwd())
+                .and_then(crate::terminal::TerminalRuntime::cwd)
         }))
     }
 
@@ -373,8 +373,8 @@ impl App {
                 )
             })
         });
-        let extra_env = super::env::normalize_launch_env(pane.env.clone())
-            .map_err(|(_, message)| message.to_string())?;
+        let extra_env =
+            super::env::normalize_launch_env(pane.env.clone()).map_err(|(_, message)| message)?;
         let direction = match direction {
             SplitDirection::Right => Direction::Horizontal,
             SplitDirection::Down => Direction::Vertical,
@@ -540,8 +540,7 @@ fn validate_layout_node(
                 return Err(format!("layout has more than {} panes", MAX_LAYOUT_PANES));
             }
             layout_command(pane)?;
-            super::env::normalize_launch_env(pane.env.clone())
-                .map_err(|(_, message)| message.to_string())?;
+            super::env::normalize_launch_env(pane.env.clone()).map_err(|(_, message)| message)?;
             Ok(())
         }
         LayoutNode::Split {

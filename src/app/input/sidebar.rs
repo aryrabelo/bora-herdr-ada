@@ -294,7 +294,7 @@ impl AppState {
             return;
         }
         let relative_y = row.saturating_sub(sidebar.y);
-        let ratio = (relative_y as f32) / (content_height as f32);
+        let ratio = f32::from(relative_y) / f32::from(content_height);
         self.sidebar_section_split = ratio.clamp(0.1, 0.9);
         self.mark_session_dirty();
     }

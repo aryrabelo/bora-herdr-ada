@@ -673,9 +673,9 @@ pub(crate) fn color_to_u32(color: ratatui::style::Color) -> u32 {
         ratatui::style::Color::LightMagenta => 0x00_00_00_0E,
         ratatui::style::Color::LightCyan => 0x00_00_00_0F,
         ratatui::style::Color::White => 0x00_00_00_10,
-        ratatui::style::Color::Indexed(i) => 0x01_00_00_00 | (i as u32),
+        ratatui::style::Color::Indexed(i) => 0x01_00_00_00 | u32::from(i),
         ratatui::style::Color::Rgb(r, g, b) => {
-            0x02_00_00_00 | ((r as u32) << 16) | ((g as u32) << 8) | (b as u32)
+            0x02_00_00_00 | (u32::from(r) << 16) | (u32::from(g) << 8) | u32::from(b)
         }
     }
 }

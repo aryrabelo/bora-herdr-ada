@@ -261,7 +261,7 @@ impl ClientWriterQueue {
             state = self
                 .ready
                 .wait(state)
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
         }
     }
 
@@ -274,7 +274,7 @@ impl ClientWriterQueue {
     fn lock_state(&self) -> std::sync::MutexGuard<'_, ClientWriterQueueState> {
         self.state
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 }
 
