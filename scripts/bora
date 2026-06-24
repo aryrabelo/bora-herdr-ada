@@ -35,8 +35,11 @@ FORK_REMOTE="${HERDR_BORA_FORK:-fork}"
 cmd=${1:-help}
 [ $# -gt 0 ] && shift || true
 
-# CI-downloaded macOS binaries are unsigned/quarantined; macOS kills them with
-# "killed: 9" until they are ad-hoc signed. Locally-built binaries don't need this.
+# macOS (Apple Silicon, esp. macOS 26) SIGKILLs binaries it deems invalidly
+# signed ("Code Signature Invalid" / taskgated). cargo emits a *linker-signed*
+# adhoc signature (flags 0x20002) that AMFI rejects, and CI-downloaded binaries
+# are quarantined. Re-signing ad-hoc (codesign --force --sign -, flags 0x2)
+# fixes both. Used by build, install, and ci-install.
 sign_bin() {
   xattr -cr "$BIN" 2>/dev/null || true
   command -v codesign >/dev/null 2>&1 && codesign --force --sign - "$BIN" 2>/dev/null || true
@@ -61,7 +64,11 @@ case "$cmd" in
     mkdir -p "$BIN_DIR"
     cp target/release/bora "$BIN"
     chmod +x "$BIN"
-    echo "bora: installed $("$BIN" --version 2>/dev/null || echo bora) -> $BIN"
+    sign_bin   # cargo's linker-signed adhoc sig is rejected on macOS 26 (SIGKILL); re-sign
+    if ! "$BIN" --version >/dev/null 2>&1; then
+      echo "bora: WARNING: installed binary will not run (code signing?). Try: codesign --force --sign - $BIN" >&2
+    fi
+    echo "bora: installed $("$BIN" --version 2>/dev/null || echo '(run failed)') -> $BIN"
     ;;
   ci-build)
     cd "$REPO_DIR"
