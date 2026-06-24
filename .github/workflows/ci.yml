@@ -136,9 +136,9 @@ jobs:
             }
           }
           Invoke-Checked cargo @("fmt", "--check")
-          Invoke-Checked cargo @("clippy", "--bin", "herdr", "--locked", "--target", "x86_64-pc-windows-msvc", "--", "-D", "warnings")
-          Invoke-Checked cargo @("test", "--locked", "--target", "x86_64-pc-windows-msvc", "--bin", "herdr", "windows_")
-          Invoke-Checked cargo @("test", "--locked", "--target", "x86_64-pc-windows-msvc", "--bin", "herdr", "server::client_transport::tests")
+          Invoke-Checked cargo @("clippy", "--bin", "bora", "--locked", "--target", "x86_64-pc-windows-msvc", "--", "-D", "warnings")
+          Invoke-Checked cargo @("test", "--locked", "--target", "x86_64-pc-windows-msvc", "--bin", "bora", "windows_")
+          Invoke-Checked cargo @("test", "--locked", "--target", "x86_64-pc-windows-msvc", "--bin", "bora", "server::client_transport::tests")
           Invoke-Checked cargo @("build", "--locked", "--target", "x86_64-pc-windows-msvc")
 
       - name: Smoke ConPTY pane
@@ -146,5 +146,5 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $exe = Join-Path $PWD "target\x86_64-pc-windows-msvc\debug\herdr.exe"
+          $exe = Join-Path $PWD "target\x86_64-pc-windows-msvc\debug\bora.exe"
           .\scripts\windows_smoke_conpty_path.ps1 -ExePath $exe -Session "ci-windows-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"

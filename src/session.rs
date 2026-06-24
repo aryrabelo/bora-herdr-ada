@@ -102,8 +102,8 @@ pub fn active_name() -> Option<String> {
 
 pub fn local_attach_command() -> String {
     match active_name() {
-        Some(name) => format!("herdr session attach {name}"),
-        None => "herdr".to_string(),
+        Some(name) => format!("bora session attach {name}"),
+        None => "bora".to_string(),
     }
 }
 
@@ -113,15 +113,15 @@ pub fn local_stop_command() -> String {
 
 pub fn stop_command_for(name: Option<&str>) -> String {
     match name {
-        Some(name) => format!("herdr session stop {name}"),
-        None => "herdr server stop".to_string(),
+        Some(name) => format!("bora session stop {name}"),
+        None => "bora server stop".to_string(),
     }
 }
 
 pub fn restart_after_update_guidance(stop_command: &str, attach_command: Option<&str>) -> String {
     let restart = match attach_command {
         Some(command) => format!("Run `{stop_command}`, then run `{command}` again."),
-        None => format!("Run `{stop_command}`, then restart Herdr with the same socket override."),
+        None => format!("Run `{stop_command}`, then restart Bora with the same socket override."),
     };
     format!(
         "Stop the old server to use the new version.\nStopping exits pane processes.\n{restart}"
@@ -133,7 +133,7 @@ pub fn active_restart_after_update_guidance() -> String {
         if let Ok(socket_path) = std::env::var(crate::api::SOCKET_PATH_ENV_VAR) {
             return restart_after_update_guidance(
                 &format!(
-                    "{}={} herdr server stop",
+                    "{}={} bora server stop",
                     crate::api::SOCKET_PATH_ENV_VAR,
                     socket_path
                 ),
@@ -618,7 +618,7 @@ mod tests {
         std::env::remove_var(SESSION_ENV_VAR);
         clear_explicit_session_for_test();
         let args = vec![
-            "herdr".to_string(),
+            "bora".to_string(),
             "--session".to_string(),
             "work".to_string(),
             "workspace".to_string(),
@@ -629,7 +629,7 @@ mod tests {
 
         assert_eq!(std::env::var(SESSION_ENV_VAR).as_deref(), Ok("work"));
         assert!(explicit_session_requested());
-        assert_eq!(cleaned, vec!["herdr", "workspace", "list"]);
+        assert_eq!(cleaned, vec!["bora", "workspace", "list"]);
         std::env::remove_var(SESSION_ENV_VAR);
         clear_explicit_session_for_test();
     }
@@ -640,7 +640,7 @@ mod tests {
         std::env::remove_var(SESSION_ENV_VAR);
         clear_explicit_session_for_test();
         let args = vec![
-            "herdr".to_string(),
+            "bora".to_string(),
             "server".to_string(),
             "stop".to_string(),
             "--session=api".to_string(),
@@ -650,7 +650,7 @@ mod tests {
 
         assert_eq!(std::env::var(SESSION_ENV_VAR).as_deref(), Ok("api"));
         assert!(explicit_session_requested());
-        assert_eq!(cleaned, vec!["herdr", "server", "stop"]);
+        assert_eq!(cleaned, vec!["bora", "server", "stop"]);
         std::env::remove_var(SESSION_ENV_VAR);
         clear_explicit_session_for_test();
     }
@@ -661,7 +661,7 @@ mod tests {
         std::env::remove_var(SESSION_ENV_VAR);
         clear_explicit_session_for_test();
         let args = vec![
-            "herdr".to_string(),
+            "bora".to_string(),
             "agent".to_string(),
             "start".to_string(),
             "repro".to_string(),
@@ -684,7 +684,7 @@ mod tests {
         std::env::remove_var(SESSION_ENV_VAR);
         clear_explicit_session_for_test();
         let args = vec![
-            "herdr".to_string(),
+            "bora".to_string(),
             "agent".to_string(),
             "start".to_string(),
             "repro".to_string(),
@@ -707,7 +707,7 @@ mod tests {
         std::env::set_var(crate::api::SOCKET_PATH_ENV_VAR, "/tmp/inherited.sock");
         clear_explicit_session_for_test();
         let args = vec![
-            "herdr".to_string(),
+            "bora".to_string(),
             "session".to_string(),
             "attach".to_string(),
             "work".to_string(),
@@ -717,7 +717,7 @@ mod tests {
 
         assert_eq!(std::env::var(SESSION_ENV_VAR).as_deref(), Ok("work"));
         assert!(explicit_session_requested());
-        assert_eq!(cleaned, vec!["herdr"]);
+        assert_eq!(cleaned, vec!["bora"]);
         std::env::remove_var(SESSION_ENV_VAR);
         std::env::remove_var(crate::api::SOCKET_PATH_ENV_VAR);
         clear_explicit_session_for_test();
@@ -729,7 +729,7 @@ mod tests {
         std::env::remove_var(SESSION_ENV_VAR);
         clear_explicit_session_for_test();
         let args = vec![
-            "herdr".to_string(),
+            "bora".to_string(),
             "session".to_string(),
             "attach".to_string(),
             "-h".to_string(),
@@ -751,7 +751,7 @@ mod tests {
         clear_explicit_session_for_test();
         std::env::set_var(crate::api::SOCKET_PATH_ENV_VAR, "/tmp/inherited.sock");
         let args = vec![
-            "herdr".to_string(),
+            "bora".to_string(),
             "--session".to_string(),
             DEFAULT_SESSION_NAME.to_string(),
             "workspace".to_string(),
@@ -760,7 +760,7 @@ mod tests {
 
         let cleaned = configure_from_args(&args).unwrap();
 
-        assert_eq!(cleaned, vec!["herdr", "workspace", "list"]);
+        assert_eq!(cleaned, vec!["bora", "workspace", "list"]);
         assert!(std::env::var(SESSION_ENV_VAR).is_err());
         assert!(explicit_session_requested());
         assert_eq!(
@@ -781,14 +781,14 @@ mod tests {
         std::env::set_var(SESSION_ENV_VAR, "env-session");
         EXPLICIT_SESSION_REQUESTED.store(true, Ordering::Relaxed);
         let args = vec![
-            "herdr".to_string(),
+            "bora".to_string(),
             "workspace".to_string(),
             "list".to_string(),
         ];
 
         let cleaned = configure_from_args(&args).unwrap();
 
-        assert_eq!(cleaned, vec!["herdr", "workspace", "list"]);
+        assert_eq!(cleaned, vec!["bora", "workspace", "list"]);
         assert_eq!(std::env::var(SESSION_ENV_VAR).as_deref(), Ok("env-session"));
         assert!(!explicit_session_requested());
         std::env::remove_var(SESSION_ENV_VAR);
@@ -804,14 +804,14 @@ mod tests {
         std::env::set_var(SESSION_ENV_VAR, DEFAULT_SESSION_NAME);
         EXPLICIT_SESSION_REQUESTED.store(true, Ordering::Relaxed);
         let args = vec![
-            "herdr".to_string(),
+            "bora".to_string(),
             "workspace".to_string(),
             "list".to_string(),
         ];
 
         let cleaned = configure_from_args(&args).unwrap();
 
-        assert_eq!(cleaned, vec!["herdr", "workspace", "list"]);
+        assert_eq!(cleaned, vec!["bora", "workspace", "list"]);
         assert!(std::env::var(SESSION_ENV_VAR).is_err());
         assert!(!explicit_session_requested());
         assert_eq!(
@@ -831,7 +831,7 @@ mod tests {
         let _guard = env_lock().lock().unwrap();
         std::env::remove_var(SESSION_ENV_VAR);
 
-        assert_eq!(local_attach_command(), "herdr");
+        assert_eq!(local_attach_command(), "bora");
     }
 
     #[test]
@@ -839,7 +839,7 @@ mod tests {
         let _guard = env_lock().lock().unwrap();
         std::env::set_var(SESSION_ENV_VAR, "work");
 
-        assert_eq!(local_attach_command(), "herdr session attach work");
+        assert_eq!(local_attach_command(), "bora session attach work");
 
         std::env::remove_var(SESSION_ENV_VAR);
     }
@@ -849,7 +849,7 @@ mod tests {
         let _guard = env_lock().lock().unwrap();
         std::env::remove_var(SESSION_ENV_VAR);
 
-        assert_eq!(local_stop_command(), "herdr server stop");
+        assert_eq!(local_stop_command(), "bora server stop");
 
         std::env::remove_var(SESSION_ENV_VAR);
     }
@@ -859,7 +859,7 @@ mod tests {
         let _guard = env_lock().lock().unwrap();
         std::env::set_var(SESSION_ENV_VAR, "work");
 
-        assert_eq!(local_stop_command(), "herdr session stop work");
+        assert_eq!(local_stop_command(), "bora session stop work");
 
         std::env::remove_var(SESSION_ENV_VAR);
     }
@@ -868,10 +868,10 @@ mod tests {
     fn restart_after_update_guidance_names_stop_and_attach_commands() {
         assert_eq!(
             restart_after_update_guidance(
-                "herdr session stop work",
-                Some("herdr session attach work")
+                "bora session stop work",
+                Some("bora session attach work")
             ),
-            "Stop the old server to use the new version.\nStopping exits pane processes.\nRun `herdr session stop work`, then run `herdr session attach work` again."
+            "Stop the old server to use the new version.\nStopping exits pane processes.\nRun `bora session stop work`, then run `bora session attach work` again."
         );
     }
 
@@ -884,7 +884,7 @@ mod tests {
 
         assert_eq!(
             active_restart_after_update_guidance(),
-            "Stop the old server to use the new version.\nStopping exits pane processes.\nRun `HERDR_SOCKET_PATH=/tmp/custom-herdr.sock herdr server stop`, then restart Herdr with the same socket override."
+            "Stop the old server to use the new version.\nStopping exits pane processes.\nRun `HERDR_SOCKET_PATH=/tmp/custom-herdr.sock bora server stop`, then restart Bora with the same socket override."
         );
 
         std::env::remove_var(crate::api::SOCKET_PATH_ENV_VAR);
@@ -940,14 +940,14 @@ mod tests {
         clear_explicit_session_for_test();
         std::env::set_var(crate::api::SOCKET_PATH_ENV_VAR, "/tmp/herdr.sock");
         let args = vec![
-            "herdr".to_string(),
+            "bora".to_string(),
             "workspace".to_string(),
             "list".to_string(),
         ];
 
         let cleaned = configure_from_args(&args).unwrap();
 
-        assert_eq!(cleaned, vec!["herdr", "workspace", "list"]);
+        assert_eq!(cleaned, vec!["bora", "workspace", "list"]);
         assert!(!explicit_session_requested());
         assert_eq!(active_api_socket_path(), PathBuf::from("/tmp/herdr.sock"));
         assert_eq!(std::env::var(SESSION_ENV_VAR).as_deref(), Ok("bad/name"));

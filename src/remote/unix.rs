@@ -1508,7 +1508,7 @@ fn preview_assets_for_build<'a>(
     }
     let build = manifest.builds.get(build_id).ok_or_else(|| {
         io::Error::other(format!(
-            "preview manifest no longer includes build {build_id}; run `herdr update` locally or set {REMOTE_BINARY_ENV_VAR}=target/release/herdr"
+            "preview manifest no longer includes build {build_id}; run `bora update` locally or set {REMOTE_BINARY_ENV_VAR}=target/release/herdr"
         ))
     })?;
     Ok((build.protocol, &build.assets))
