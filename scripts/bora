@@ -50,7 +50,7 @@ case "$cmd" in
     cd "$REPO_DIR"
     cargo build --release --locked
     mkdir -p "$BIN_DIR"
-    cp target/release/herdr "$BIN"
+    cp target/release/bora "$BIN"
     chmod +x "$BIN"
     echo "bora: installed $("$BIN" --version 2>/dev/null || echo herdr-bora) -> $BIN"
     ;;
@@ -66,8 +66,8 @@ case "$cmd" in
     tmp=$(mktemp -d)
     gh run download --repo "$(gh repo view --json nameWithOwner -q .nameWithOwner)" --dir "$tmp" \
       $( [ $# -gt 0 ] && echo "$1" )
-    found=$(find "$tmp" -type f -name 'herdr*' ! -name '*.txt' ! -name '*.json' | head -1)
-    [ -n "$found" ] || { echo "bora: no herdr binary found in artifacts under $tmp" >&2; exit 1; }
+    found=$(find "$tmp" -type f -name 'bora*' ! -name '*.txt' ! -name '*.json' | head -1)
+    [ -n "$found" ] || { echo "bora: no bora binary found in artifacts under $tmp" >&2; exit 1; }
     mkdir -p "$BIN_DIR"
     cp "$found" "$BIN"
     chmod +x "$BIN"
