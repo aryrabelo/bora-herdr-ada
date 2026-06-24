@@ -1822,7 +1822,7 @@ mod tests {
             key: crate::workspace::git_space_metadata(&repo).unwrap().key,
             label: "api-worktree-remove-event-repo".into(),
             repo_root: repo.clone(),
-            checkout_path: checkout.clone(),
+            checkout_path: checkout,
             is_linked_worktree: true,
         });
         let child_id = child.id.clone();
@@ -1906,7 +1906,7 @@ mod tests {
             key: crate::workspace::git_space_metadata(&repo).unwrap().key,
             label: "api-worktree-remove-deferred-repo".into(),
             repo_root: repo.clone(),
-            checkout_path: checkout.clone(),
+            checkout_path: checkout,
             is_linked_worktree: true,
         });
         let child_id = child.id.clone();
@@ -1921,7 +1921,7 @@ mod tests {
             Request {
                 id: "req".into(),
                 method: crate::api::schema::Method::WorktreeRemove(WorktreeRemoveParams {
-                    workspace_id: child_id.clone(),
+                    workspace_id: child_id,
                     force: false,
                 }),
             },
@@ -1981,7 +1981,7 @@ mod tests {
             key: crate::workspace::git_space_metadata(&repo).unwrap().key,
             label: "api-worktree-remove-duplicate-repo".into(),
             repo_root: repo.clone(),
-            checkout_path: checkout.clone(),
+            checkout_path: checkout,
             is_linked_worktree: true,
         });
         let child_id = child.id.clone();
@@ -2051,7 +2051,7 @@ mod tests {
         first.worktree_space = Some(membership.clone());
         let first_id = first.id.clone();
         let mut second = Workspace::test_new("second");
-        second.identity_cwd = checkout.clone();
+        second.identity_cwd = checkout;
         second.worktree_space = Some(membership);
         let second_id = second.id.clone();
         app.state.workspaces = vec![first, second];

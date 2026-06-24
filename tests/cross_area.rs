@@ -72,7 +72,7 @@ fn test_lock() -> MutexGuard<'static, ()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 fn wait_for_socket(path: &Path, timeout: Duration) {
@@ -203,7 +203,7 @@ fn workspace_list(socket_path: &Path) -> Value {
 fn workspace_count(socket_path: &Path) -> usize {
     workspace_list(socket_path)["result"]["workspaces"]
         .as_array()
-        .map(|workspaces| workspaces.len())
+        .map(std::vec::Vec::len)
         .unwrap_or(0)
 }
 
@@ -324,7 +324,7 @@ fn pane_agent_status(socket_path: &Path, pane_id: &str) -> Option<String> {
     );
     response["result"]["pane"]["agent_status"]
         .as_str()
-        .map(|status| status.to_string())
+        .map(std::string::ToString::to_string)
 }
 
 fn wait_for_agent_status(
@@ -383,7 +383,7 @@ fn decode_varint_u32(payload: &[u8], offset: usize) -> Result<(u32, usize), Stri
     }
     let first = payload[offset];
     match first {
-        0..=250 => Ok((first as u32, 1)),
+        0..=250 => Ok((u32::from(first), 1)),
         251 => {
             if offset + 3 > payload.len() {
                 return Err("payload too short for u16 varint".into());
@@ -393,7 +393,7 @@ fn decode_varint_u32(payload: &[u8], offset: usize) -> Result<(u32, usize), Stri
                     .try_into()
                     .map_err(|e: std::array::TryFromSliceError| e.to_string())?,
             );
-            Ok((v as u32, 3))
+            Ok((u32::from(v), 3))
         }
         252 => {
             if offset + 5 > payload.len() {
