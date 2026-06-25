@@ -1263,7 +1263,11 @@ pub fn build_context_menu_items(
             v
         }
         ContextMenuKind::Tab { .. } => {
-            vec!["New tab".to_string(), "Rename".to_string(), "Close".to_string()]
+            vec![
+                "New tab".to_string(),
+                "Rename".to_string(),
+                "Close".to_string(),
+            ]
         }
         ContextMenuKind::Pane {
             has_manual_label: true,
