@@ -361,6 +361,21 @@ impl App {
             self.selection_autoscroll_deadline =
                 Some(std::time::Instant::now() + super::SELECTION_AUTOSCROLL_INTERVAL);
         }
+
+        // Drain right-panel deferred actions
+        if self.state.right_panel_checks_requested {
+            self.state.right_panel_checks_requested = false;
+            if let Some(ws) = self.state.active.and_then(|i| self.state.workspaces.get(i)) {
+                let ws_id = ws.id.clone();
+                self.start_checks_fetch(&ws_id);
+            }
+        }
+        if self.state.right_panel_diff_requested {
+            self.state.right_panel_diff_requested = false;
+            if let Some((_, ref path)) = self.state.right_panel_selected_file {
+                self.open_right_panel_diff(path.clone());
+            }
+        }
     }
 
     fn handle_modified_url_click(&mut self, mouse: MouseEvent) -> bool {
@@ -649,6 +664,8 @@ fn capture_snapshot(state: &AppState) -> crate::persist::SessionSnapshot {
         state.sidebar_width,
         state.sidebar_section_split,
         state.collapsed_space_keys.clone(),
+        state.right_panel_width,
+        state.right_panel_collapsed,
     )
 }
 

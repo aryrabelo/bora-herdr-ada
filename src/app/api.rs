@@ -108,6 +108,24 @@ impl App {
             return;
         }
 
+        if let AppEvent::WorkspaceChecksRefreshed {
+            workspace_id,
+            result,
+        } = ev
+        {
+            if let Some(ws) = self
+                .state
+                .workspaces
+                .iter_mut()
+                .find(|ws| ws.id == workspace_id)
+            {
+                ws.cached_check_status = Some(result);
+                self.render_dirty.store(true, Ordering::Release);
+                self.render_notify.notify_one();
+            }
+            return;
+        }
+
         if let AppEvent::PluginCommandFinished {
             log_id,
             finished_unix_ms,

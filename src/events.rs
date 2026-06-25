@@ -7,7 +7,7 @@ use std::time::Instant;
 
 use crate::detect::{Agent, AgentState};
 use crate::layout::PaneId;
-use crate::workspace::{GitStatusCacheEntry, WorkspaceGitStatus};
+use crate::workspace::{GitStatusCacheEntry, WorkspaceCheckStatus, WorkspaceGitStatus};
 
 #[derive(Debug)]
 pub struct ApiWorktreeAddRequest {
@@ -173,5 +173,11 @@ pub enum AppEvent {
     WorktreeSyncFinished {
         branch: String,
         result: Result<(), String>,
+    },
+    /// Background `gh pr view` for a workspace branch completed.
+    #[allow(dead_code)] // sent by start_checks_fetch (slice 4 trigger)
+    WorkspaceChecksRefreshed {
+        workspace_id: String,
+        result: WorkspaceCheckStatus,
     },
 }
