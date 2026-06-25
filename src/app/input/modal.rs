@@ -1115,6 +1115,7 @@ impl App {
                             cwd: Some(cwd.display().to_string()),
                             focus: true,
                             label,
+                            group: None,
                             env: Default::default(),
                         },
                     );
