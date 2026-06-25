@@ -1199,7 +1199,10 @@ fn render_workspace_list(
                         row.push(Span::styled(icon, icon_style));
                         row.push(Span::styled(" ", Style::default()));
                     }
-                    row.push(Span::styled(branch_display, Style::default().fg(branch_color)));
+                    row.push(Span::styled(
+                        branch_display,
+                        Style::default().fg(branch_color),
+                    ));
                     row
                 };
                 if let Some(parts) = upstream_label {
