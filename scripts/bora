@@ -74,14 +74,14 @@ case "$cmd" in
   ci-build)
     cd "$REPO_DIR"
     git push "$FORK_REMOTE" main
-    gh workflow run build-artifacts-manual.yml --repo "$(gh repo view --json nameWithOwner -q .nameWithOwner)" \
+    gh workflow run build-artifacts-manual.yml --repo "$(git remote get-url "$FORK_REMOTE" | sed 's|.*github\.com[:/]\(.*\)\.git|\1|')" \
       --ref main -f build_group=macos -f libghostty_optimize=ReleaseFast -f libghostty_simd=false
     echo "bora: dispatched macOS build for branch main. Watch: gh run watch ; then: scripts/bora ci-install"
     ;;
   ci-install)
     cd "$REPO_DIR"
     tmp=$(mktemp -d)
-    gh run download --repo "$(gh repo view --json nameWithOwner -q .nameWithOwner)" --dir "$tmp" \
+    gh run download --repo "$(git remote get-url "$FORK_REMOTE" | sed 's|.*github\.com[:/]\(.*\)\.git|\1|')" --dir "$tmp" \
       $( [ $# -gt 0 ] && echo "$1" )
     found=$(find "$tmp" -type f -name 'bora*' ! -name '*.txt' ! -name '*.json' | head -1)
     [ -n "$found" ] || { echo "bora: no bora binary found in artifacts under $tmp" >&2; exit 1; }
