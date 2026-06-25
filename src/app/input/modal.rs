@@ -692,7 +692,8 @@ pub(super) fn apply_context_menu_action(
     menu: ContextMenuState,
     idx: usize,
 ) {
-    let item = menu.items().get(idx).copied();
+    let item_owned = menu.items.get(idx).cloned();
+    let item = item_owned.as_deref();
     match (menu.kind, item) {
         (ContextMenuKind::GitWorkspace { ws_idx, .. }, Some("New worktree")) => {
             state.request_new_linked_worktree = Some(ws_idx);
@@ -757,9 +758,20 @@ pub(super) fn apply_context_menu_action(
         }
         (
             ContextMenuKind::Workspace { ws_idx } | ContextMenuKind::GitWorkspace { ws_idx, .. },
-            Some("New group\u{2026}" | "Move to group\u{2026}"),
+            Some("New group\u{2026}"),
         ) => {
             open_set_workspace_group(state, ws_idx);
+        }
+        (
+            ContextMenuKind::Workspace { ws_idx } | ContextMenuKind::GitWorkspace { ws_idx, .. },
+            Some(item_str),
+        ) if item_str.starts_with("\u{2192} ") => {
+            let group_name = item_str["\u{2192} ".len()..].to_string();
+            if let Some(ws) = state.workspaces.get_mut(ws_idx) {
+                ws.visual_group = Some(group_name);
+                state.mark_session_dirty();
+            }
+            leave_modal(state);
         }
         (
             ContextMenuKind::Workspace { ws_idx } | ContextMenuKind::GitWorkspace { ws_idx, .. },
@@ -939,11 +951,10 @@ pub(crate) fn handle_context_menu_key(
         }
         KeyCode::Up => {
             if let Some(menu) = &mut state.context_menu {
-                let items = menu.items();
                 loop {
                     menu.list.move_prev();
-                    if items.get(menu.list.highlighted)
-                        != Some(&crate::app::state::CONTEXT_MENU_SEPARATOR)
+                    if menu.items.get(menu.list.highlighted).map(String::as_str)
+                        != Some(crate::app::state::CONTEXT_MENU_SEPARATOR)
                     {
                         break;
                     }
@@ -955,12 +966,11 @@ pub(crate) fn handle_context_menu_key(
         }
         KeyCode::Down => {
             if let Some(menu) = &mut state.context_menu {
-                let items = menu.items();
-                let len = items.len();
+                let len = menu.items.len();
                 loop {
                     menu.list.move_next(len);
-                    if items.get(menu.list.highlighted)
-                        != Some(&crate::app::state::CONTEXT_MENU_SEPARATOR)
+                    if menu.items.get(menu.list.highlighted).map(String::as_str)
+                        != Some(crate::app::state::CONTEXT_MENU_SEPARATOR)
                     {
                         break;
                     }
@@ -1002,6 +1012,7 @@ mod tests {
 
     use super::super::{capture_snapshot, state_with_workspaces};
     use super::*;
+    use crate::app::state::build_context_menu_items;
 
     fn config_env_lock() -> &'static std::sync::Mutex<()> {
         crate::config::test_config_env_lock()
@@ -1493,20 +1504,22 @@ mod tests {
             checkout_path: "/repo/herdr-issue".into(),
             is_linked_worktree: true,
         });
+        let kind = ContextMenuKind::GitWorkspace {
+            ws_idx: 0,
+            is_linked_worktree: false,
+            has_worktree_children: true,
+            collapsed: false,
+        };
         let menu = ContextMenuState {
-            kind: ContextMenuKind::GitWorkspace {
-                ws_idx: 0,
-                is_linked_worktree: false,
-                has_worktree_children: true,
-                collapsed: false,
-            },
+            items: build_context_menu_items(&kind, &[]),
+            kind,
             x: 0,
             y: 0,
             list: MenuListState::new(0),
         };
         let mut terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
 
-        apply_context_menu_action(&mut state, &mut terminal_runtimes, menu, 12);
+        apply_context_menu_action(&mut state, &mut terminal_runtimes, menu, 11);
 
         assert_eq!(state.selected, 0);
         assert_eq!(state.mode, Mode::ConfirmClose);
@@ -1537,14 +1550,16 @@ mod tests {
             is_linked_worktree: true,
         });
         let pane_id = state.workspaces[0].tabs[0].root_pane;
+        let kind = ContextMenuKind::Pane {
+            ws_idx: 0,
+            tab_idx: 0,
+            pane_id,
+            source_pane_id: None,
+            has_manual_label: false,
+        };
         let menu = ContextMenuState {
-            kind: ContextMenuKind::Pane {
-                ws_idx: 0,
-                tab_idx: 0,
-                pane_id,
-                source_pane_id: None,
-                has_manual_label: false,
-            },
+            items: build_context_menu_items(&kind, &[]),
+            kind,
             x: 0,
             y: 0,
             list: MenuListState::new(0),
@@ -1552,7 +1567,7 @@ mod tests {
         let idx = menu
             .items()
             .iter()
-            .position(|item| *item == "Close pane")
+            .position(|item| item.as_str() == "Close pane")
             .expect("close pane item");
         let mut terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
 
@@ -1575,22 +1590,24 @@ mod tests {
             checkout_path: "/repo/herdr-issue".into(),
             is_linked_worktree: true,
         });
+        let kind = ContextMenuKind::GitWorkspace {
+            ws_idx: 1,
+            is_linked_worktree: true,
+            has_worktree_children: false,
+            collapsed: false,
+        };
         let menu = ContextMenuState {
-            kind: ContextMenuKind::GitWorkspace {
-                ws_idx: 1,
-                is_linked_worktree: true,
-                has_worktree_children: false,
-                collapsed: false,
-            },
+            items: build_context_menu_items(&kind, &[]),
+            kind,
             x: 0,
             y: 0,
             list: MenuListState::new(0),
         };
-        assert!(menu.items().contains(&"Merge to main"));
+        assert!(menu.items().iter().any(|i| i.as_str() == "Merge to main"));
         let merge_idx = menu
             .items()
             .iter()
-            .position(|item| *item == "Merge to main")
+            .position(|item| item.as_str() == "Merge to main")
             .expect("merge to main item");
         let mut terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
         apply_context_menu_action(&mut state, &mut terminal_runtimes, menu, merge_idx);
@@ -1610,22 +1627,24 @@ mod tests {
             checkout_path: "/repo/herdr-issue".into(),
             is_linked_worktree: true,
         });
+        let kind = ContextMenuKind::GitWorkspace {
+            ws_idx: 1,
+            is_linked_worktree: true,
+            has_worktree_children: false,
+            collapsed: false,
+        };
         let menu = ContextMenuState {
-            kind: ContextMenuKind::GitWorkspace {
-                ws_idx: 1,
-                is_linked_worktree: true,
-                has_worktree_children: false,
-                collapsed: false,
-            },
+            items: build_context_menu_items(&kind, &[]),
+            kind,
             x: 0,
             y: 0,
             list: MenuListState::new(0),
         };
-        assert!(menu.items().contains(&"Open PR"));
+        assert!(menu.items().iter().any(|i| i.as_str() == "Open PR"));
         let pr_idx = menu
             .items()
             .iter()
-            .position(|item| *item == "Open PR")
+            .position(|item| item.as_str() == "Open PR")
             .expect("open pr item");
         let mut terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
         apply_context_menu_action(&mut state, &mut terminal_runtimes, menu, pr_idx);
@@ -1644,22 +1663,24 @@ mod tests {
             checkout_path: "/repo/herdr-issue".into(),
             is_linked_worktree: true,
         });
+        let kind = ContextMenuKind::GitWorkspace {
+            ws_idx: 1,
+            is_linked_worktree: true,
+            has_worktree_children: false,
+            collapsed: false,
+        };
         let menu = ContextMenuState {
-            kind: ContextMenuKind::GitWorkspace {
-                ws_idx: 1,
-                is_linked_worktree: true,
-                has_worktree_children: false,
-                collapsed: false,
-            },
+            items: build_context_menu_items(&kind, &[]),
+            kind,
             x: 0,
             y: 0,
             list: MenuListState::new(0),
         };
-        assert!(menu.items().contains(&"Sync"));
+        assert!(menu.items().iter().any(|i| i.as_str() == "Sync"));
         let sync_idx = menu
             .items()
             .iter()
-            .position(|item| *item == "Sync")
+            .position(|item| item.as_str() == "Sync")
             .expect("sync item");
         let mut terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
         apply_context_menu_action(&mut state, &mut terminal_runtimes, menu, sync_idx);
@@ -1678,22 +1699,24 @@ mod tests {
             checkout_path: "/repo/herdr".into(),
             is_linked_worktree: false,
         });
+        let kind = ContextMenuKind::GitWorkspace {
+            ws_idx: 0,
+            is_linked_worktree: false,
+            has_worktree_children: false,
+            collapsed: false,
+        };
         let menu = ContextMenuState {
-            kind: ContextMenuKind::GitWorkspace {
-                ws_idx: 0,
-                is_linked_worktree: false,
-                has_worktree_children: false,
-                collapsed: false,
-            },
+            items: build_context_menu_items(&kind, &[]),
+            kind,
             x: 0,
             y: 0,
             list: MenuListState::new(0),
         };
-        assert!(menu.items().contains(&"Sync"));
+        assert!(menu.items().iter().any(|i| i.as_str() == "Sync"));
         let sync_idx = menu
             .items()
             .iter()
-            .position(|item| *item == "Sync")
+            .position(|item| item.as_str() == "Sync")
             .expect("sync item");
         let mut terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
         apply_context_menu_action(&mut state, &mut terminal_runtimes, menu, sync_idx);
