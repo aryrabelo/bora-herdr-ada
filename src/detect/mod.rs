@@ -63,8 +63,9 @@ pub enum Agent {
 }
 
 impl Agent {
-    pub const SCREEN_MANIFEST_AGENTS: [Self; 18] = [
+    pub const SCREEN_MANIFEST_AGENTS: [Self; 19] = [
         Self::Pi,
+        Self::Omp,
         Self::Claude,
         Self::Codex,
         Self::Gemini,
