@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use crate::api::schema::{
     EventData, EventEnvelope, EventKind, ResponseResult, WorkspaceCreateParams,
-    WorkspaceRenameParams, WorkspaceTarget,
+    WorkspaceRenameParams, WorkspaceSetGroupParams, WorkspaceTarget,
 };
 use crate::app::App;
 
@@ -123,6 +123,31 @@ impl App {
                 label: params.label,
             },
         });
+
+        encode_success(
+            id,
+            ResponseResult::WorkspaceInfo {
+                workspace: self.workspace_info(index),
+            },
+        )
+    }
+
+    pub(super) fn handle_workspace_set_group(
+        &mut self,
+        id: String,
+        params: WorkspaceSetGroupParams,
+    ) -> String {
+        let Some(index) = self.parse_workspace_id(&params.workspace_id) else {
+            return workspace_not_found(id, &params.workspace_id);
+        };
+        let Some(ws) = self.state.workspaces.get_mut(index) else {
+            return workspace_not_found(id, &params.workspace_id);
+        };
+        ws.visual_group = params
+            .group
+            .map(|g| g.trim().to_string())
+            .filter(|g| !g.is_empty());
+        self.schedule_session_save();
 
         encode_success(
             id,
@@ -290,5 +315,64 @@ mod tests {
         for (_, runtime) in app.terminal_runtimes.drain() {
             runtime.shutdown();
         }
+    }
+
+    #[test]
+    fn api_workspace_set_group_sets_and_clears() {
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(
+            &Config::default(),
+            true,
+            None,
+            api_rx,
+            crate::api::EventHub::default(),
+        );
+        app.state.workspaces = vec![Workspace::test_new("flat")];
+        let wsid = app.state.workspaces[0].id.clone();
+
+        // setting a non-empty group records it
+        let resp = app.handle_workspace_set_group(
+            "r1".into(),
+            WorkspaceSetGroupParams {
+                workspace_id: wsid.clone(),
+                group: Some("batch".into()),
+            },
+        );
+        let _: SuccessResponse = serde_json::from_str(&resp).unwrap();
+        assert_eq!(
+            app.state.workspaces[0].visual_group.as_deref(),
+            Some("batch")
+        );
+
+        // a blank group clears it
+        let _ = app.handle_workspace_set_group(
+            "r2".into(),
+            WorkspaceSetGroupParams {
+                workspace_id: wsid.clone(),
+                group: Some("   ".into()),
+            },
+        );
+        assert_eq!(app.state.workspaces[0].visual_group, None);
+
+        // an explicit None also clears it
+        app.state.workspaces[0].visual_group = Some("x".into());
+        let _ = app.handle_workspace_set_group(
+            "r3".into(),
+            WorkspaceSetGroupParams {
+                workspace_id: wsid,
+                group: None,
+            },
+        );
+        assert_eq!(app.state.workspaces[0].visual_group, None);
+
+        // unknown workspace -> error response, no panic
+        let err = app.handle_workspace_set_group(
+            "r4".into(),
+            WorkspaceSetGroupParams {
+                workspace_id: "wZ".into(),
+                group: Some("batch".into()),
+            },
+        );
+        assert!(err.contains("workspace_not_found"));
     }
 }
