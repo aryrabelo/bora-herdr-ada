@@ -2328,6 +2328,10 @@ impl AppState {
                 ws.cached_git_space = result.space;
                 changed = true;
             }
+            if ws.cached_change_set != result.change_set {
+                ws.cached_change_set = result.change_set;
+                changed = true;
+            }
         }
         changed
     }
@@ -2553,6 +2557,14 @@ impl AppState {
             } => {
                 let _ = results;
                 let _ = cache_updates;
+                Vec::new()
+            }
+            AppEvent::WorkspaceChecksRefreshed {
+                workspace_id,
+                result,
+            } => {
+                let _ = workspace_id;
+                let _ = result;
                 Vec::new()
             }
             AppEvent::WorktreeAddFinished(_) => Vec::new(),

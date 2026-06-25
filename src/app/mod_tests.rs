@@ -250,6 +250,7 @@ fn git_status_event_marks_render_dirty_when_status_changes() {
             branch: Some("render-dirty-test".into()),
             ahead_behind: Some((1, 0)),
             space: None,
+            change_set: None,
         }],
         cache_updates: Vec::new(),
     });

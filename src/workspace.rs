@@ -25,10 +25,12 @@ pub(crate) use self::tab::MovedPane;
 pub use self::{
     git::{
         derive_label_from_cwd, git_branch, git_space_metadata, git_status_cache_key,
-        GitSpaceMetadata, GitStatusCacheEntry,
+        ChangeSectionKind, ChangeStatus, GitSpaceMetadata, GitStatusCacheEntry,
+        WorkspaceChangeSet, WorkspaceCheckStatus,
     },
     tab::{NewPane, Tab},
 };
+pub(crate) use self::git::fetch_check_status;
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct WorktreeSpaceMembership {
@@ -46,6 +48,7 @@ pub struct WorkspaceGitStatus {
     pub branch: Option<String>,
     pub ahead_behind: Option<(usize, usize)>,
     pub space: Option<GitSpaceMetadata>,
+    pub change_set: Option<WorkspaceChangeSet>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -53,6 +56,7 @@ pub struct WorkspaceGitStatusSnapshot {
     pub branch: Option<String>,
     pub ahead_behind: Option<(usize, usize)>,
     pub space: Option<GitSpaceMetadata>,
+    pub change_set: Option<WorkspaceChangeSet>,
 }
 
 impl WorkspaceGitStatusSnapshot {
@@ -67,6 +71,7 @@ impl WorkspaceGitStatusSnapshot {
             branch: self.branch,
             ahead_behind: self.ahead_behind,
             space: self.space,
+            change_set: self.change_set,
         }
     }
 }
@@ -156,6 +161,10 @@ pub struct Workspace {
     pub(crate) cached_git_ahead_behind: Option<(usize, usize)>,
     /// Cached derived Git repo metadata for worktree actions and status display.
     pub(crate) cached_git_space: Option<GitSpaceMetadata>,
+    /// Cached git change set (unstaged/staged/committed files) for the workspace.
+    pub(crate) cached_change_set: Option<WorkspaceChangeSet>,
+    /// Cached PR + CI check status for the workspace branch.
+    pub(crate) cached_check_status: Option<WorkspaceCheckStatus>,
     /// Explicit Herdr-managed worktree grouping provenance.
     pub worktree_space: Option<WorktreeSpaceMembership>,
     /// User-defined visual group name for sidebar grouping.
@@ -221,6 +230,8 @@ impl Workspace {
             cached_git_branch: git_branch(&identity_cwd),
             cached_git_ahead_behind: None,
             cached_git_space: git_space_metadata(&identity_cwd),
+            cached_change_set: None,
+            cached_check_status: None,
             worktree_space: None,
             visual_group: None,
             last_activity_at: None,
@@ -404,6 +415,8 @@ impl Workspace {
                 cached_git_branch: git_branch(&initial_cwd),
                 cached_git_ahead_behind: None,
                 cached_git_space: None,
+                cached_change_set: None,
+                cached_check_status: None,
                 worktree_space: None,
                 visual_group: None,
                 last_activity_at: None,
@@ -1213,6 +1226,8 @@ impl Workspace {
             cached_git_branch: git_branch(&identity_cwd),
             cached_git_ahead_behind: None,
             cached_git_space: None,
+            cached_change_set: None,
+            cached_check_status: None,
             worktree_space: None,
             visual_group: None,
             last_activity_at: None,

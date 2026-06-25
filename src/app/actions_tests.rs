@@ -536,6 +536,7 @@ fn apply_workspace_git_statuses_updates_matching_workspace() {
             branch: Some("main".into()),
             ahead_behind: Some((2, 1)),
             space: None,
+            change_set: None,
         }],
     );
 
@@ -562,6 +563,7 @@ fn apply_workspace_git_statuses_ignores_stale_cwd() {
             branch: Some("main".into()),
             ahead_behind: Some((0, 1)),
             space: None,
+            change_set: None,
         }],
     );
 
@@ -587,6 +589,7 @@ fn apply_workspace_git_statuses_clears_missing_git_status() {
             branch: None,
             ahead_behind: None,
             space: None,
+            change_set: None,
         }],
     );
 
@@ -618,6 +621,7 @@ fn apply_workspace_git_statuses_does_not_change_worktree_membership() {
                 repo_root: "/other/repo".into(),
                 is_linked_worktree: false,
             }),
+            change_set: None,
         }],
     );
 
