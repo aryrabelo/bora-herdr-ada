@@ -1111,7 +1111,10 @@ fn render_workspace_list(
         } else {
             line1.push(Span::styled(" ", Style::default()));
         }
-        if show_workspace_icon {
+        // When the card has a branch line (row 2), show the agent dot there
+        // instead of on the name line so status lives at the workspace/branch level.
+        let dot_on_branch_line = show_workspace_icon && row_height > 1 && ws.branch().is_some();
+        if show_workspace_icon && !dot_on_branch_line {
             line1.push(Span::styled(icon, icon_style));
             line1.push(Span::styled(" ", Style::default()));
         }
@@ -1166,28 +1169,39 @@ fn render_workspace_list(
                     p.overlay0
                 };
                 let mut spans = if is_vg_member {
-                    // Visual group member: dynamic status icon before branch name.
-                    let (status_icon, status_style) = branch_status_icon(ws, p);
+                    // Visual group member: agent state dot before branch name.
+                    let (dot_icon, dot_style) = if dot_on_branch_line {
+                        (icon, icon_style)
+                    } else {
+                        branch_status_icon(ws, p)
+                    };
                     let indent_len = 6; // "    X " = 4 spaces + icon + space
                     let max_branch_len =
                         (card.rect.width as usize).saturating_sub(indent_len + reserved);
                     let branch_display = truncate_text(&branch, max_branch_len);
                     vec![
                         Span::styled("    ", Style::default()),
-                        Span::styled(status_icon, status_style),
+                        Span::styled(dot_icon, dot_style),
                         Span::styled(" ", Style::default()),
                         Span::styled(branch_display, Style::default().fg(branch_color)),
                     ]
                 } else {
                     let branch_indent = if card.indented { "     " } else { "   " };
-                    let indent_len = branch_indent.len();
+                    let indent_len = if dot_on_branch_line {
+                        branch_indent.len() + 2 // dot + space
+                    } else {
+                        branch_indent.len()
+                    };
                     let max_branch_len =
                         (card.rect.width as usize).saturating_sub(indent_len + reserved);
                     let branch_display = truncate_text(&branch, max_branch_len);
-                    vec![
-                        Span::styled(branch_indent, Style::default()),
-                        Span::styled(branch_display, Style::default().fg(branch_color)),
-                    ]
+                    let mut row = vec![Span::styled(branch_indent, Style::default())];
+                    if dot_on_branch_line {
+                        row.push(Span::styled(icon, icon_style));
+                        row.push(Span::styled(" ", Style::default()));
+                    }
+                    row.push(Span::styled(branch_display, Style::default().fg(branch_color)));
+                    row
                 };
                 if let Some(parts) = upstream_label {
                     spans.push(Span::styled(" ", Style::default()));

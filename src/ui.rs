@@ -286,6 +286,8 @@ fn compute_view_internal(
         terminal_area,
         mobile_header_rect: Rect::default(),
         mobile_menu_hit_area: Rect::default(),
+        mobile_prev_tab_hit_area: Rect::default(),
+        mobile_next_tab_hit_area: Rect::default(),
         toast_hit_area,
         pane_infos,
         split_borders,
@@ -362,6 +364,8 @@ fn compute_mobile_view(
         terminal_area,
         mobile_header_rect: header_rect,
         mobile_menu_hit_area: header_hits.menu,
+        mobile_prev_tab_hit_area: header_hits.prev_tab,
+        mobile_next_tab_hit_area: header_hits.next_tab,
         toast_hit_area,
         pane_infos,
         split_borders,
@@ -650,7 +654,7 @@ mod tests {
         assert_eq!(app.view.terminal_area, Rect::new(0, 2, 44, 18));
         assert_eq!(app.view.mobile_menu_hit_area.height, 2);
         assert_eq!(
-            app.view.mobile_menu_hit_area.x + app.view.mobile_menu_hit_area.width,
+            app.view.mobile_next_tab_hit_area.x + app.view.mobile_next_tab_hit_area.width,
             44
         );
     }
@@ -843,9 +847,9 @@ mod tests {
         let line1 = buffer_row_text(buffer, card, card.y);
         let line2 = buffer_row_text(buffer, card, card.y + 1);
 
-        assert!(line1.starts_with(" · one"));
+        assert!(line1.starts_with(" one"), "expected name without dot on row 1, got: {line1:?}");
         assert!(!line1.contains("1 one"));
-        assert_eq!(line2, "   main");
+        assert!(line2.starts_with("   · main"), "expected dot on branch line, got: {line2:?}");
 
         std::fs::remove_dir_all(repo).ok();
     }
