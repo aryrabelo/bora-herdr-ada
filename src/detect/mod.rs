@@ -91,6 +91,7 @@ impl Agent {
 
     pub const SCREEN_MANIFEST_AGENTS: [Self; 19] = [
         Self::Pi,
+        Self::Omp,
         Self::Claude,
         Self::Codex,
         Self::Gemini,

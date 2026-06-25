@@ -154,6 +154,38 @@ line_regex = ["^exact line$"]
 }
 
 #[test]
+fn omp_manifest_detects_working_idle_and_blocked_from_screen() {
+    with_manifest_dirs("omp-states", || {
+        // Working: π status bar + braille spinner line + ⟦esc⟧ interrupt hint.
+        let working = " ⠸ doing a thing ⟦esc⟧\n╭── π  / ⬢ Opus 4.8 · ◒ med ─╮\n";
+        let w = explain(Agent::Omp, working);
+        assert_eq!(
+            w.state,
+            AgentState::Working,
+            "pi bar + spinner + interrupt hint should read working"
+        );
+
+        // Idle: status bar present, no spinner and no interrupt hint.
+        let idle = "prior output\n╭── π  / ⬢ Opus 4.8 ─╮\n";
+        let i = explain(Agent::Omp, idle);
+        assert_eq!(
+            i.state,
+            AgentState::Idle,
+            "pi bar without spinner/interrupt hint should read idle"
+        );
+
+        // Blocked: an interactive selection prompt outranks the in-progress spinner.
+        let blocked = " ⠸ choosing ⟦esc⟧\n  enter select   esc cancel\n╭── π  / ─╮\n";
+        let b = explain(Agent::Omp, blocked);
+        assert_eq!(
+            b.state,
+            AgentState::Blocked,
+            "selection prompt should outrank working and read blocked"
+        );
+    });
+}
+
+#[test]
 fn remote_manifest_loads_between_local_override_and_bundled() {
     with_manifest_dirs("remote-source", || {
         write_remote_codex(&remote_manifest("9999.01.01.1", "blocked", "remote-ready"));
