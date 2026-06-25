@@ -101,6 +101,7 @@ pub fn git_status_snapshot_for_cwd_with_demand(
             branch: None,
             ahead_behind: None,
             space: None,
+            change_set: None,
         };
         return (
             snapshot.clone(),
@@ -130,6 +131,7 @@ pub fn git_status_snapshot_for_cwd_with_demand(
                 branch,
                 ahead_behind: None,
                 space: Some(space),
+                change_set: None,
             },
             None,
         );
@@ -142,6 +144,7 @@ pub fn git_status_snapshot_for_cwd_with_demand(
                 branch: None,
                 ahead_behind: None,
                 space: Some(space),
+                change_set: None,
             },
             None,
         );
@@ -154,6 +157,7 @@ pub fn git_status_snapshot_for_cwd_with_demand(
             branch,
             ahead_behind: cached.snapshot.ahead_behind,
             space: Some(space),
+            change_set: cached.snapshot.change_set.clone(),
         };
         return (
             snapshot.clone(),
@@ -165,15 +169,18 @@ pub fn git_status_snapshot_for_cwd_with_demand(
         );
     }
 
+    let upstream_full_ref = fingerprint.upstream.as_ref().map(|u| u.full_ref.as_str());
     let ahead_behind = fingerprint
         .head_oid()
         .zip(fingerprint.upstream_oid())
         .and_then(|(head_oid, upstream_oid)| git_ahead_behind_between(cwd, head_oid, upstream_oid));
+    let change_set = super::change_set::compute_change_set(cwd, upstream_full_ref);
     let snapshot = WorkspaceGitStatusSnapshot {
         auto_label,
         branch,
         ahead_behind,
         space: Some(space),
+        change_set,
     };
     (
         snapshot.clone(),
@@ -436,6 +443,7 @@ mod tests {
                 branch: Some("main".into()),
                 ahead_behind: Some((2, 1)),
                 space: git_space_metadata(&root),
+                change_set: None,
             },
         };
 
@@ -461,6 +469,7 @@ mod tests {
                 branch: Some("main".into()),
                 ahead_behind: Some((4, 0)),
                 space: git_space_metadata(&root),
+                change_set: None,
             },
         };
         std::fs::write(root.join(".git/HEAD"), "ref: refs/heads/feature\n").unwrap();
@@ -496,6 +505,7 @@ mod tests {
                 branch: Some("main".into()),
                 ahead_behind: Some((0, 3)),
                 space: git_space_metadata(&root),
+                change_set: None,
             },
         };
         std::fs::write(root.join(".git/config"), "").unwrap();

@@ -803,6 +803,14 @@ pub struct ViewState {
     pub toast_hit_area: Rect,
     pub pane_infos: Vec<PaneInfo>,
     pub split_borders: Vec<SplitBorder>,
+    pub right_panel_rect: Rect,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RightPanelTab {
+    #[default]
+    Changes,
+    Checks,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1606,6 +1614,17 @@ pub struct AppState {
     pub sidebar_collapsed_mode: crate::config::SidebarCollapsedModeConfig,
     /// Ratio of sidebar height allocated to the workspaces section.
     pub sidebar_section_split: f32,
+    pub right_panel_collapsed: bool,
+    pub right_panel_width: u16,
+    pub right_panel_min_width: u16,
+    pub right_panel_max_width: u16,
+    pub right_panel_active_tab: RightPanelTab,
+    pub right_panel_scroll: u16,
+    pub right_panel_selected_file: Option<(crate::workspace::ChangeSectionKind, String)>,
+    /// Set by mouse click on a file row; drained by App to spawn gitui/diff pane.
+    pub right_panel_diff_requested: bool,
+    /// Set when Checks tab is activated; drained by App to call start_checks_fetch.
+    pub right_panel_checks_requested: bool,
     pub agent_panel_sort: AgentPanelSort,
     /// Transient session-wide projection override for the built-in Agents view.
     pub agent_view_override: Option<crate::api::schema::AgentViewSetParams>,
@@ -1963,6 +1982,7 @@ impl AppState {
                 toast_hit_area: Rect::default(),
                 pane_infos: Vec::new(),
                 split_borders: Vec::new(),
+                right_panel_rect: Rect::default(),
             },
             drag: None,
             workspace_press: None,
@@ -1991,6 +2011,15 @@ impl AppState {
             sidebar_collapsed: false,
             sidebar_collapsed_mode: crate::config::SidebarCollapsedModeConfig::Compact,
             sidebar_section_split: 0.5,
+            right_panel_collapsed: true,
+            right_panel_width: 30,
+            right_panel_min_width: 20,
+            right_panel_max_width: 50,
+            right_panel_active_tab: RightPanelTab::default(),
+            right_panel_scroll: 0,
+            right_panel_selected_file: None,
+            right_panel_diff_requested: false,
+            right_panel_checks_requested: false,
             agent_panel_sort: AgentPanelSort::Spaces,
             agent_view_override: None,
             sidebar_agents: crate::config::AgentsSidebarConfig::default(),

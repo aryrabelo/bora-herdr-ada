@@ -16,6 +16,7 @@ mod release_notes;
 mod scrollbar;
 mod settings;
 mod sidebar;
+pub(crate) mod right_panel;
 mod status;
 mod tab_surface;
 mod tabs;
@@ -55,6 +56,7 @@ use self::settings::render_settings_overlay;
 #[cfg(test)]
 pub(crate) use self::sidebar::workspace_drop_indicator_row;
 use self::sidebar::{render_sidebar, render_sidebar_collapsed};
+use self::right_panel::render_right_panel;
 use self::status::{
     copy_feedback_rect, render_config_diagnostic, render_copy_feedback, render_toast_notification,
     toast_notification_rect,
@@ -233,9 +235,24 @@ fn compute_view_internal(
         app.sidebar_width
             .clamp(app.sidebar_min_width, app.sidebar_max_width)
     };
-
-    let [sidebar_area, main_area] =
-        Layout::horizontal([Constraint::Length(sidebar_w), Constraint::Min(1)]).areas(area);
+    let right_w = if app.right_panel_collapsed {
+        0
+    } else {
+        app.right_panel_width
+            .clamp(app.right_panel_min_width, app.right_panel_max_width)
+    };
+    let [sidebar_area, main_area, right_panel_area] = if right_w > 0 {
+        Layout::horizontal([
+            Constraint::Length(sidebar_w),
+            Constraint::Min(1),
+            Constraint::Length(right_w),
+        ])
+        .areas(area)
+    } else {
+        let [sidebar_area, main_area] =
+            Layout::horizontal([Constraint::Length(sidebar_w), Constraint::Min(1)]).areas(area);
+        [sidebar_area, main_area, Rect::default()]
+    };
 
     let (tab_bar_rect, terminal_area) = app
         .active
@@ -322,6 +339,7 @@ fn compute_view_internal(
         toast_hit_area,
         pane_infos,
         split_borders,
+        right_panel_rect: right_panel_area,
     };
     app.sync_copy_mode_search_geometry();
 }
@@ -388,6 +406,7 @@ fn compute_mobile_view(
         toast_hit_area,
         pane_infos,
         split_borders,
+        right_panel_rect: Rect::default(),
     };
     app.sync_copy_mode_search_geometry();
 }
@@ -419,6 +438,11 @@ pub fn render_with_runtime_registry(
         render_tab_surface(app, terminal_runtimes, app.view.tab_surface(), frame);
     } else {
         render_empty(app, frame, terminal_area);
+    }
+    if app.view.layout != ViewLayout::Mobile && !app.right_panel_collapsed {
+        render_right_panel(app, frame, app.view.right_panel_rect);
+    } else if app.view.layout != ViewLayout::Mobile && app.right_panel_collapsed {
+        right_panel::render_right_panel_collapsed_toggle(app, frame, terminal_area);
     }
 
     // Ambient notifications sit above panes, but below interactive overlays.

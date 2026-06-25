@@ -26,6 +26,10 @@ pub struct SessionSnapshot {
     pub sidebar_section_split: Option<f32>,
     #[serde(default)]
     pub collapsed_space_keys: std::collections::HashSet<String>,
+    #[serde(default)]
+    pub right_panel_width: Option<u16>,
+    #[serde(default)]
+    pub right_panel_collapsed: Option<bool>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -187,6 +191,10 @@ struct RawSessionSnapshot {
     sidebar_section_split: Option<f32>,
     #[serde(default)]
     collapsed_space_keys: std::collections::HashSet<String>,
+    #[serde(default)]
+    right_panel_width: Option<u16>,
+    #[serde(default)]
+    right_panel_collapsed: Option<bool>,
 }
 
 fn migrate_snapshot(raw: RawSessionSnapshot) -> Result<SessionSnapshot, String> {
@@ -202,6 +210,8 @@ fn migrate_snapshot(raw: RawSessionSnapshot) -> Result<SessionSnapshot, String> 
         sidebar_width: raw.sidebar_width,
         sidebar_section_split: raw.sidebar_section_split,
         collapsed_space_keys: raw.collapsed_space_keys,
+        right_panel_width: raw.right_panel_width,
+        right_panel_collapsed: raw.right_panel_collapsed,
     })
 }
 
@@ -264,6 +274,8 @@ pub fn capture(
     sidebar_width: u16,
     sidebar_section_split: f32,
     collapsed_space_keys: std::collections::HashSet<String>,
+    right_panel_width: u16,
+    right_panel_collapsed: bool,
 ) -> SessionSnapshot {
     SessionSnapshot {
         version: SNAPSHOT_VERSION,
@@ -276,6 +288,8 @@ pub fn capture(
         sidebar_width: Some(sidebar_width),
         sidebar_section_split: Some(sidebar_section_split),
         collapsed_space_keys,
+        right_panel_width: Some(right_panel_width),
+        right_panel_collapsed: Some(right_panel_collapsed),
     }
 }
 
@@ -545,6 +559,8 @@ mod tests {
             state.sidebar_width,
             state.sidebar_section_split,
             state.collapsed_space_keys.clone(),
+            state.right_panel_width,
+            state.right_panel_collapsed,
         )
     }
 
@@ -609,6 +625,8 @@ mod tests {
             sidebar_width: Some(26),
             sidebar_section_split: Some(0.5),
             collapsed_space_keys: std::collections::HashSet::new(),
+            right_panel_width: None,
+            right_panel_collapsed: None,
         };
         let json = serde_json::to_string(&snap).unwrap();
         let restored = parse_snapshot(&json).unwrap();
@@ -698,6 +716,8 @@ mod tests {
             sidebar_section_split: Some(0.5),
             collapsed_space_keys: std::collections::HashSet::new(),
             version: SNAPSHOT_VERSION,
+            right_panel_width: None,
+            right_panel_collapsed: None,
         };
 
         let json = serde_json::to_string_pretty(&snap).unwrap();
@@ -1260,6 +1280,8 @@ mod tests {
             sidebar_width: Some(26),
             sidebar_section_split: Some(0.5),
             collapsed_space_keys: std::collections::HashSet::new(),
+            right_panel_width: None,
+            right_panel_collapsed: None,
         };
 
         let json = serde_json::to_string(&snap).unwrap();

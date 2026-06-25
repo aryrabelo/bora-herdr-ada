@@ -225,7 +225,7 @@ fn strip_git_config_comment(value: &str) -> &str {
     value
 }
 
-fn git_trimmed_stdout(repo_root: &Path, args: &[&str]) -> Option<String> {
+pub(super) fn git_trimmed_stdout(repo_root: &Path, args: &[&str]) -> Option<String> {
     let output = crate::noninteractive_process::command("git")
         .arg("-C")
         .arg(repo_root)

@@ -387,6 +387,10 @@ impl App {
                 self.state.sidebar_collapsed = !self.state.sidebar_collapsed;
                 leave_navigate_mode(&mut self.state);
             }
+            NavigateAction::ToggleRightPanel => {
+                self.state.right_panel_collapsed = !self.state.right_panel_collapsed;
+                leave_navigate_mode(&mut self.state);
+            }
             NavigateAction::CyclePaneNext => {
                 self.cycle_pane_via_api(false);
                 leave_navigate_mode(&mut self.state);
@@ -1041,6 +1045,28 @@ impl App {
         Ok(())
     }
 
+    /// Open a diff viewer for a file clicked in the right panel.
+    /// Tries gitui first; falls back to `git diff | less` if gitui is not installed.
+    pub(super) fn open_right_panel_diff(&mut self, path: String) {
+        // ponytail: probe gitui existence without adding `which` dep
+        let has_gitui = std::process::Command::new("gitui")
+            .arg("--version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok();
+        let command = if has_gitui {
+            "gitui".to_string()
+        } else {
+            // Single-quote the path to handle spaces; strip existing quotes
+            let safe = path.replace('\'', "'\\''");
+            format!("git diff -- '{safe}' | less -R")
+        };
+        if let Err(err) = self.spawn_pane_command(&command, Vec::new()) {
+            tracing::warn!("right panel diff: failed to open: {err}");
+        }
+    }
+
     pub(crate) fn spawn_overlay_argv_command(
         &mut self,
         argv: &[String],
@@ -1360,6 +1386,7 @@ pub(crate) enum NavigateAction {
     Zoom,
     EnterResizeMode,
     ToggleSidebar,
+    ToggleRightPanel,
     CyclePaneNext,
     CyclePanePrevious,
     LastPane,
@@ -1504,6 +1531,7 @@ fn non_indexed_action_for_key(
         (&kb.zoom, NavigateAction::Zoom),
         (&kb.resize_mode, NavigateAction::EnterResizeMode),
         (&kb.toggle_sidebar, NavigateAction::ToggleSidebar),
+        (&kb.toggle_right_panel, NavigateAction::ToggleRightPanel),
         (&kb.reload_config, NavigateAction::ReloadConfig),
         (
             &kb.open_notification_target,
@@ -1738,6 +1766,11 @@ pub(super) fn execute_navigate_action_in_context(
             state.sidebar_collapsed = !state.sidebar_collapsed;
             leave_navigate_mode(state);
         }
+        NavigateAction::ToggleRightPanel => {
+            // ponytail: wire keybind in config when user demand exists
+            state.right_panel_collapsed = !state.right_panel_collapsed;
+            leave_navigate_mode(state);
+        }
         NavigateAction::CyclePaneNext => {
             state.cycle_pane(false);
             leave_navigate_mode(state);
@@ -1908,7 +1941,7 @@ mod tests {
         state.workspaces[ws_idx].cached_git_space = Some(crate::workspace::GitSpaceMetadata {
             key: key.into(),
             checkout_key: format!("/repo/worktree-{ws_idx}"),
-            label: "herdr".into(),
+            repo_name: "herdr".into(),
             repo_root: "/repo/herdr".into(),
             is_linked_worktree: ws_idx != 0,
         });

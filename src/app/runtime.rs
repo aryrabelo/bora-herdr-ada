@@ -4,6 +4,7 @@ use std::time::Instant;
 use std::time::Duration;
 
 use crossterm::terminal;
+use crate::events::AppEvent;
 
 use super::{
     background_update_check_enabled, pressed_key_identity, App, AUTO_UPDATE_CHECK_INTERVAL,
@@ -597,6 +598,33 @@ impl App {
             changed |= self.handle_internal_event_with_prefix_sync(ev);
         }
         (had_event, changed)
+    }
+
+    /// Trigger a lazy background fetch of PR + CI check status for a workspace.
+    ///
+    /// The result is delivered via `AppEvent::WorkspaceChecksRefreshed`.
+    /// No-op if the workspace has no resolved cwd or no git branch.
+    #[allow(dead_code)] // called by Checks tab open / refresh button (slice 4)
+    pub(crate) fn start_checks_fetch(&self, workspace_id: &str) {
+        let ws = self.state.workspaces.iter().find(|ws| ws.id == workspace_id);
+        let Some(ws) = ws else { return };
+
+        let cwd = ws
+            .resolved_identity_cwd_from(&self.state.terminals, &self.terminal_runtimes);
+        let Some(cwd) = cwd else { return };
+
+        let branch = ws.cached_git_branch.clone();
+        let Some(branch) = branch else { return };
+
+        let workspace_id = workspace_id.to_string();
+        let event_tx = self.event_tx.clone();
+        std::thread::spawn(move || {
+            let result = crate::workspace::fetch_check_status(&cwd, &branch);
+            let _ = event_tx.blocking_send(AppEvent::WorkspaceChecksRefreshed {
+                workspace_id,
+                result,
+            });
+        });
     }
 }
 

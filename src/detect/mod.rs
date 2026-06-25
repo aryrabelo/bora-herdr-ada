@@ -89,7 +89,7 @@ impl Agent {
         Self::Maki,
     ];
 
-    pub const SCREEN_MANIFEST_AGENTS: [Self; 19] = [
+    pub const SCREEN_MANIFEST_AGENTS: [Self; 20] = [
         Self::Pi,
         Self::Omp,
         Self::Claude,

@@ -495,7 +495,7 @@ fn workspace_list_entries_inner(app: &AppState, force_expanded: bool) -> Vec<Wor
                 // open checkout of the repo underneath it.
                 let collapsed = app.collapsed_space_keys.contains(&space.key);
                 entries.push(WorkspaceListEntry::GroupHeader {
-                    name: space.label.clone(),
+                    name: space.repo_name.clone(),
                     collapse_key: space.key.clone(),
                 });
                 if collapsed {
@@ -1653,7 +1653,7 @@ fn render_workspace_list(
         // collapsed, mirroring a worktree parent row. Visual-group headers do not.
         if collapsed && !header.collapse_key.starts_with("vg:") {
             let (state, seen) = space_aggregate_display_state(app, &header.collapse_key);
-            let (dot, dot_style) = state_dot(state, seen, app.spinner_tick, p, false);
+            let (dot, dot_style) = state_dot(state, seen, p, false);
             spans.push(Span::styled(" ", Style::default()));
             spans.push(Span::styled(dot, dot_style));
         }
@@ -2674,7 +2674,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
             ws.cached_git_space = Some(crate::workspace::GitSpaceMetadata {
                 key: key.into(),
                 checkout_key: checkout_key.into(),
-                label: "herdr".into(),
+                repo_name: "herdr".into(),
                 repo_root: std::path::PathBuf::from("/repo/herdr"),
                 is_linked_worktree: is_linked,
             });
@@ -2703,7 +2703,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
         ws.cached_git_space = Some(crate::workspace::GitSpaceMetadata {
             key: key.into(),
             checkout_key: format!("/repo/{name}"),
-            label: "herdr".into(),
+            repo_name: "herdr".into(),
             repo_root: std::path::PathBuf::from("/repo/herdr"),
             is_linked_worktree,
         });

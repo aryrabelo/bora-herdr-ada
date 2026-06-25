@@ -606,6 +606,7 @@ impl App {
                 toast_hit_area: Rect::default(),
                 pane_infos: Vec::new(),
                 split_borders: Vec::new(),
+                right_panel_rect: Rect::default(),
             },
             drag: None,
             workspace_press: None,
@@ -634,6 +635,16 @@ impl App {
             sidebar_collapsed: config.ui.sidebar_start_collapsed,
             sidebar_collapsed_mode: config.ui.sidebar_collapsed_mode,
             sidebar_section_split,
+            // ponytail: promote to UiConfig when user demand exists
+            right_panel_collapsed: true,
+            right_panel_width: 30,
+            right_panel_min_width: 20,
+            right_panel_max_width: 50,
+            right_panel_active_tab: state::RightPanelTab::default(),
+            right_panel_scroll: 0,
+            right_panel_selected_file: None,
+            right_panel_diff_requested: false,
+            right_panel_checks_requested: false,
             agent_panel_sort,
             agent_view_override: None,
             sidebar_agents: config.ui.sidebar.agents.clone(),
@@ -852,6 +863,12 @@ impl App {
             app.state.sidebar_section_split = split;
         }
         app.state.collapsed_space_keys = snapshot.collapsed_space_keys.clone();
+        if let Some(width) = snapshot.right_panel_width {
+            app.state.right_panel_width = width;
+        }
+        if let Some(collapsed) = snapshot.right_panel_collapsed {
+            app.state.right_panel_collapsed = collapsed;
+        }
         app.state.mode = if app.state.active.is_some() {
             state::Mode::Terminal
         } else {
@@ -2218,6 +2235,7 @@ mod tests {
                 branch: Some("render-dirty-test".into()),
                 ahead_behind: Some((1, 0)),
                 space: None,
+                change_set: None,
             }],
             cache_updates: Vec::new(),
         });

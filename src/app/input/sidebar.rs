@@ -288,6 +288,64 @@ impl AppState {
             && row < rect.y + rect.height
     }
 
+    pub(super) fn on_right_panel_divider(&self, col: u16, _row: u16) -> bool {
+        if self.right_panel_collapsed {
+            return false;
+        }
+        let rect = self.view.right_panel_rect;
+        rect.width > 0 && col == rect.x
+    }
+
+    pub(super) fn on_right_panel_toggle(&self, col: u16, row: u16) -> bool {
+        let rect = if self.right_panel_collapsed {
+            crate::ui::right_panel::collapsed_right_panel_toggle_rect(self.view.terminal_area)
+        } else {
+            crate::ui::right_panel::expanded_right_panel_toggle_rect(self.view.right_panel_rect)
+        };
+        rect.width > 0
+            && col >= rect.x
+            && col < rect.x + rect.width
+            && row >= rect.y
+            && row < rect.y + rect.height
+    }
+
+    /// Map a screen row in the right panel Changes tab to a `(ChangeSectionKind, file_path)`.
+    ///
+    /// Returns `None` if the row is a section header, out of range, or there's no change set.
+    pub(super) fn right_panel_file_at_row(
+        &self,
+        screen_row: u16,
+    ) -> Option<(crate::workspace::ChangeSectionKind, String)> {
+        let rp = self.view.right_panel_rect;
+        // Body starts after separator column (row rp.y) + tab header (row rp.y+1, content row 0)
+        // so body row 0 is at screen rp.y + 1 (the tab header occupies the first content row)
+        // But the content area is rp.y with the separator drawn at rp.x, tab header at rp.y,
+        // body at rp.y + 1. The click is on screen_row, body starts at rp.y + 1.
+        let body_start = rp.y + 1; // tab header is row rp.y
+        if screen_row < body_start {
+            return None;
+        }
+        let row_in_body = (screen_row - body_start) as usize;
+        let scroll = self.right_panel_scroll as usize;
+        let flat_index = row_in_body + scroll;
+
+        let ws = self.active.and_then(|i| self.workspaces.get(i))?;
+        let cs = ws.cached_change_set.as_ref()?;
+
+        // Walk the same flat layout as render_changes_tab
+        let mut idx = 0;
+        for section in &cs.sections {
+            idx += 1; // section header line
+            for file in &section.files {
+                if idx == flat_index {
+                    return Some((section.kind.clone(), file.path.clone()));
+                }
+                idx += 1;
+            }
+        }
+        None
+    }
+
     pub(super) fn set_sidebar_section_split(&mut self, row: u16) {
         let sidebar = self.view.sidebar_rect;
         let content_height = sidebar.height;
@@ -1247,7 +1305,7 @@ mod tests {
             app.state.workspaces[idx].cached_git_space = Some(crate::workspace::GitSpaceMetadata {
                 key: "repo-key".into(),
                 checkout_key: checkout_path.to_string(),
-                label: "herdr".into(),
+                repo_name: "herdr".into(),
                 repo_root: "/repo/herdr".into(),
                 is_linked_worktree: idx > 0,
             });
@@ -1288,7 +1346,7 @@ mod tests {
             app.state.workspaces[idx].cached_git_space = Some(crate::workspace::GitSpaceMetadata {
                 key: "repo-key".into(),
                 checkout_key: checkout_path.to_string(),
-                label: "herdr".into(),
+                repo_name: "herdr".into(),
                 repo_root: "/repo/herdr".into(),
                 is_linked_worktree: idx > 0,
             });
@@ -1338,7 +1396,7 @@ mod tests {
             app.state.workspaces[idx].cached_git_space = Some(crate::workspace::GitSpaceMetadata {
                 key: "repo-key".into(),
                 checkout_key: checkout_path.to_string(),
-                label: "herdr".into(),
+                repo_name: "herdr".into(),
                 repo_root: "/repo/herdr".into(),
                 is_linked_worktree: idx != 0,
             });
@@ -1588,7 +1646,7 @@ mod tests {
         ws.cached_git_space = Some(crate::workspace::GitSpaceMetadata {
             key: key.into(),
             checkout_key: format!("/repo/{name}"),
-            label: "herdr".into(),
+            repo_name: "herdr".into(),
             repo_root: "/repo/herdr".into(),
             is_linked_worktree: name != "main",
         });
