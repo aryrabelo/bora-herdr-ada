@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 
 use crate::api::schema::{
-    Method, WorkspaceCreateParams, WorkspaceRenameParams, WorkspaceReportMetadataParams,
+    Method, Request, WorkspaceCreateParams, WorkspaceRenameParams, WorkspaceReportMetadataParams,
+    WorkspaceSetGroupParams,
 };
 
 pub(super) fn run_workspace_command(args: &[String]) -> std::io::Result<i32> {
@@ -17,6 +18,7 @@ pub(super) fn run_workspace_command(args: &[String]) -> std::io::Result<i32> {
         "focus" => workspace_focus(&args[1..]),
         "rename" => workspace_rename(&args[1..]),
         "report-metadata" => workspace_report_metadata(&args[1..]),
+        "set-group" => workspace_set_group(&args[1..]),
         "close" => workspace_close(&args[1..]),
         "help" | "--help" | "-h" => {
             print_workspace_help();
@@ -234,6 +236,32 @@ fn workspace_report_metadata(args: &[String]) -> std::io::Result<i32> {
     ))
 }
 
+fn workspace_set_group(args: &[String]) -> std::io::Result<i32> {
+    let Some(raw_workspace_id) = args.first() else {
+        eprintln!("usage: bora workspace set-group <workspace_id> [name]");
+        return Ok(2);
+    };
+    let group = if args.len() > 1 {
+        let name = args[1..].join(" ");
+        let trimmed = name.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    } else {
+        None
+    };
+
+    super::print_response(&super::send_request(&Request {
+        id: "cli:workspace:set-group".into(),
+        method: Method::WorkspaceSetGroup(WorkspaceSetGroupParams {
+            workspace_id: super::normalize_workspace_id(raw_workspace_id),
+            group,
+        }),
+    })?)
+}
+
 fn workspace_close(args: &[String]) -> std::io::Result<i32> {
     let Some(raw_workspace_id) = args.first() else {
         eprintln!("usage: herdr workspace close <workspace_id>");
@@ -254,6 +282,7 @@ fn print_workspace_help() {
     eprintln!("  herdr workspace get <workspace_id>");
     eprintln!("  herdr workspace focus <workspace_id>");
     eprintln!("  herdr workspace rename <workspace_id> <label>");
-    eprintln!("  herdr workspace report-metadata <workspace_id> --source ID [--token NAME=VALUE] [--clear-token NAME] [--seq N] [--ttl-ms N]");
+    eprintln!("  bora workspace report-metadata <workspace_id> --source ID [--token NAME=VALUE] [--clear-token NAME] [--seq N] [--ttl-ms N]");
+    eprintln!("  bora workspace set-group <workspace_id> [name]   (omit name to ungroup)");
     eprintln!("  herdr workspace close <workspace_id>");
 }

@@ -490,7 +490,6 @@ fn pane_detail(
             } else {
                 parts.push("shell".to_string());
             }
-
         }
     }
     parts.join(" · ")
