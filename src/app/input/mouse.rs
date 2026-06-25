@@ -185,8 +185,15 @@ impl AppState {
             && mouse.column < sidebar.x + sidebar.width
             && mouse.row >= sidebar.y
             && mouse.row < sidebar.y + sidebar.height;
+        let right_panel = self.view.right_panel_rect;
+        let in_right_panel = right_panel.width > 0
+            && mouse.column >= right_panel.x
+            && mouse.column < right_panel.x + right_panel.width
+            && mouse.row >= right_panel.y
+            && mouse.row < right_panel.y + right_panel.height;
 
-        if self.handle_right_click_passthrough(terminal_runtimes, mouse, in_sidebar) {
+
+        if self.handle_right_click_passthrough(terminal_runtimes, mouse, in_sidebar || in_right_panel) {
             return None;
         }
 
@@ -459,7 +466,49 @@ impl AppState {
                     return None;
                 }
 
-                if !in_sidebar {
+                if self.on_right_panel_divider(mouse.column, mouse.row) {
+                    // ponytail: divider hit consumed; resize drag deferred until config supports it
+                    return None;
+                }
+
+                // Right panel toggle — works when expanded OR collapsed
+                if self.on_right_panel_toggle(mouse.column, mouse.row) {
+                    self.right_panel_collapsed = !self.right_panel_collapsed;
+                    return None;
+                }
+
+                if in_right_panel {
+                    let rp = self.view.right_panel_rect;
+                    // Content starts 1 col after the left separator
+                    let content_y = rp.y;
+                    if mouse.row == content_y {
+                        // Tab header click — rough midpoint split between Changes and Checks
+                        let mid = rp.x + rp.width / 2;
+                        let previous_tab = self.right_panel_active_tab;
+                        if mouse.column < mid {
+                            self.right_panel_active_tab =
+                                crate::app::state::RightPanelTab::Changes;
+                        } else {
+                            self.right_panel_active_tab =
+                                crate::app::state::RightPanelTab::Checks;
+                            if previous_tab != crate::app::state::RightPanelTab::Checks {
+                                self.right_panel_checks_requested = true;
+                            }
+                        }
+                    } else if mouse.row > content_y
+                        && self.right_panel_active_tab == crate::app::state::RightPanelTab::Changes
+                    {
+                        // File row click — resolve which file was clicked
+                        if let Some(file_path) = self.right_panel_file_at_row(mouse.row) {
+                            self.right_panel_selected_file = Some(file_path);
+                            self.right_panel_diff_requested = true;
+                        }
+                    }
+                    return None;
+                }
+
+
+                if !in_sidebar && !in_right_panel {
                     if let Some(border) = self.find_border_at(mouse.column, mouse.row) {
                         let grab_offset = match border.direction {
                             Direction::Horizontal => border.pos.saturating_sub(mouse.column),
@@ -939,7 +988,7 @@ impl AppState {
             }
 
             MouseEventKind::Up(MouseButton::Middle) | MouseEventKind::Drag(MouseButton::Middle)
-                if !in_sidebar =>
+                if !in_sidebar && !in_right_panel =>
             {
                 if let Some(info) = self.pane_mouse_target(mouse.column, mouse.row).cloned() {
                     let _ = self.forward_pane_mouse_button(terminal_runtimes, &info, mouse);
@@ -974,10 +1023,17 @@ impl AppState {
                 }
             }
 
-            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
-                if !in_sidebar && self.scroll_selection_with_wheel(terminal_runtimes, mouse) => {}
+            MouseEventKind::ScrollUp if in_right_panel => {
+                self.right_panel_scroll = self.right_panel_scroll.saturating_sub(1);
+            }
+            MouseEventKind::ScrollDown if in_right_panel => {
+                self.right_panel_scroll = self.right_panel_scroll.saturating_add(1);
+            }
 
-            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown if !in_sidebar => {
+            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+                if !in_sidebar && !in_right_panel && self.scroll_selection_with_wheel(terminal_runtimes, mouse) => {}
+
+            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown if !in_sidebar && !in_right_panel => {
                 self.selection = None;
                 self.selection_autoscroll = None;
                 self.handle_terminal_wheel(terminal_runtimes, mouse);
@@ -1037,7 +1093,7 @@ impl AppState {
                 }
             }
 
-            MouseEventKind::Moved if self.mode == Mode::Terminal && !in_sidebar => {
+            MouseEventKind::Moved if self.mode == Mode::Terminal && !in_sidebar && !in_right_panel => {
                 if let Some(info) = self.pane_at(mouse.column, mouse.row).cloned() {
                     let _ = self.forward_pane_mouse_motion(terminal_runtimes, &info, mouse);
                 }
@@ -1115,7 +1171,7 @@ impl AppState {
                 }
             }
 
-            MouseEventKind::Down(MouseButton::Right) if !in_sidebar => {
+            MouseEventKind::Down(MouseButton::Right) if !in_sidebar && !in_right_panel => {
                 if let Some(info) = self.pane_mouse_target(mouse.column, mouse.row).cloned() {
                     let ws_idx = self.active?;
                     let tab_idx = self
@@ -2857,7 +2913,7 @@ mod tests {
         app.state.confirm_close = false;
         let kind = ContextMenuKind::Workspace { ws_idx: 1 };
         app.state.context_menu = Some(ContextMenuState {
-            items: crate::app::state::build_context_menu_items(&kind, &[]),
+            items: build_context_menu_items(&kind, &[]),
             kind,
             x: 2,
             y: 2,

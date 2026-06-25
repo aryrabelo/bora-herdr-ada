@@ -2,11 +2,15 @@ mod config;
 #[cfg(test)]
 mod config_tests;
 mod discovery;
+mod change_set;
+mod check_status;
 mod status;
 #[cfg(test)]
 mod test_support;
 
 pub use self::{
+    change_set::{ChangeSectionKind, ChangeStatus, WorkspaceChangeSet},
+    check_status::{fetch_check_status, WorkspaceCheckStatus},
     discovery::{derive_label_from_cwd, git_branch, git_space_metadata, GitSpaceMetadata},
     status::{git_status_cache_key, git_status_snapshot_for_cwd, GitStatusCacheEntry},
 };
