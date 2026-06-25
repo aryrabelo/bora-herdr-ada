@@ -1149,150 +1149,172 @@ pub struct ContextMenuState {
     pub x: u16,
     pub y: u16,
     pub list: MenuListState,
+    pub items: Vec<String>,
 }
 
 /// Menu separator: rendered as a dim line, not selectable.
 pub const CONTEXT_MENU_SEPARATOR: &str = "─";
 
-impl ContextMenuState {
-    pub fn items(&self) -> &'static [&'static str] {
-        match self.kind {
-            ContextMenuKind::Workspace { .. } => &[
-                "Rename",
-                "Copy path",
-                CONTEXT_MENU_SEPARATOR,
-                "New group\u{2026}",
-                "Move to group\u{2026}",
-                "Remove from group",
-                CONTEXT_MENU_SEPARATOR,
-                "Close",
-            ],
-            ContextMenuKind::GitWorkspace {
-                is_linked_worktree: false,
-                has_worktree_children: false,
-                ..
-            } => &[
-                "Rename",
-                "Copy path",
-                CONTEXT_MENU_SEPARATOR,
-                "New worktree",
-                "Open worktree\u{2026}",
-                "Sync",
-                CONTEXT_MENU_SEPARATOR,
-                "New group\u{2026}",
-                "Move to group\u{2026}",
-                "Remove from group",
-                CONTEXT_MENU_SEPARATOR,
-                "Close",
-            ],
-            ContextMenuKind::GitWorkspace {
-                is_linked_worktree: true,
-                ..
-            } => &[
-                "Rename",
-                "Copy path",
-                CONTEXT_MENU_SEPARATOR,
-                "Merge to main",
-                "Open PR",
-                "Sync",
-                CONTEXT_MENU_SEPARATOR,
-                "New group\u{2026}",
-                "Move to group\u{2026}",
-                "Remove from group",
-                CONTEXT_MENU_SEPARATOR,
-                "Close",
-                "Delete worktree\u{2026}",
-            ],
-            ContextMenuKind::GitWorkspace {
-                is_linked_worktree: false,
-                has_worktree_children: true,
-                collapsed: true,
-                ..
-            } => &[
-                "Rename",
-                "Copy path",
-                CONTEXT_MENU_SEPARATOR,
-                "New worktree",
-                "Open worktree\u{2026}",
-                "Sync",
-                "Expand",
-                CONTEXT_MENU_SEPARATOR,
-                "New group\u{2026}",
-                "Move to group\u{2026}",
-                "Remove from group",
-                CONTEXT_MENU_SEPARATOR,
-                "Close group",
-            ],
-            ContextMenuKind::GitWorkspace {
-                is_linked_worktree: false,
-                has_worktree_children: true,
-                collapsed: false,
-                ..
-            } => &[
-                "Rename",
-                "Copy path",
-                CONTEXT_MENU_SEPARATOR,
-                "New worktree",
-                "Open worktree\u{2026}",
-                "Sync",
-                "Collapse",
-                CONTEXT_MENU_SEPARATOR,
-                "New group\u{2026}",
-                "Move to group\u{2026}",
-                "Remove from group",
-                CONTEXT_MENU_SEPARATOR,
-                "Close group",
-            ],
-            ContextMenuKind::Tab { .. } => &["New tab", "Rename", "Close"],
-            ContextMenuKind::Pane {
-                has_manual_label: true,
-                source_pane_id: Some(_),
-                ..
-            } => &[
-                "Rename pane",
-                "Clear pane name",
-                "Swap with focused pane",
-                "Split right",
-                "Split down",
-                "Zoom",
-                "Close pane",
-            ],
-            ContextMenuKind::Pane {
-                has_manual_label: false,
-                source_pane_id: Some(_),
-                ..
-            } => &[
-                "Rename pane",
-                "Swap with focused pane",
-                "Split right",
-                "Split down",
-                "Zoom",
-                "Close pane",
-            ],
-            ContextMenuKind::Pane {
-                has_manual_label: true,
-                source_pane_id: None,
-                ..
-            } => &[
-                "Rename pane",
-                "Clear pane name",
-                "Split right",
-                "Split down",
-                "Zoom",
-                "Close pane",
-            ],
-            ContextMenuKind::Pane {
-                has_manual_label: false,
-                source_pane_id: None,
-                ..
-            } => &[
-                "Rename pane",
-                "Split right",
-                "Split down",
-                "Zoom",
-                "Close pane",
-            ],
+pub fn build_context_menu_items(
+    kind: &ContextMenuKind,
+    workspaces: &[crate::workspace::Workspace],
+) -> Vec<String> {
+    let groups: Vec<String> = {
+        let mut set = std::collections::BTreeSet::new();
+        for ws in workspaces {
+            if let Some(g) = &ws.visual_group {
+                set.insert(g.clone());
+            }
         }
+        set.into_iter().collect()
+    };
+    let sep = || CONTEXT_MENU_SEPARATOR.to_string();
+    let push_groups = |v: &mut Vec<String>| {
+        v.push("New group\u{2026}".to_string());
+        for g in &groups {
+            v.push(format!("\u{2192} {g}"));
+        }
+        v.push("Remove from group".to_string());
+    };
+    match kind {
+        ContextMenuKind::Workspace { .. } => {
+            let mut v = vec!["Rename".to_string(), "Copy path".to_string(), sep()];
+            push_groups(&mut v);
+            v.push(sep());
+            v.push("Close".to_string());
+            v
+        }
+        ContextMenuKind::GitWorkspace {
+            is_linked_worktree: false,
+            has_worktree_children: false,
+            ..
+        } => {
+            let mut v = vec![
+                "Rename".to_string(),
+                "Copy path".to_string(),
+                sep(),
+                "New worktree".to_string(),
+                "Open worktree\u{2026}".to_string(),
+                "Sync".to_string(),
+                sep(),
+            ];
+            push_groups(&mut v);
+            v.push(sep());
+            v.push("Close".to_string());
+            v
+        }
+        ContextMenuKind::GitWorkspace {
+            is_linked_worktree: true,
+            ..
+        } => {
+            let mut v = vec![
+                "Rename".to_string(),
+                "Copy path".to_string(),
+                sep(),
+                "Merge to main".to_string(),
+                "Open PR".to_string(),
+                "Sync".to_string(),
+                sep(),
+            ];
+            push_groups(&mut v);
+            v.push(sep());
+            v.push("Close".to_string());
+            v.push("Delete worktree\u{2026}".to_string());
+            v
+        }
+        ContextMenuKind::GitWorkspace {
+            has_worktree_children: true,
+            collapsed: true,
+            ..
+        } => {
+            let mut v = vec![
+                "Rename".to_string(),
+                "Copy path".to_string(),
+                sep(),
+                "New worktree".to_string(),
+                "Open worktree\u{2026}".to_string(),
+                "Sync".to_string(),
+                "Expand".to_string(),
+                sep(),
+            ];
+            push_groups(&mut v);
+            v.push(sep());
+            v.push("Close group".to_string());
+            v
+        }
+        ContextMenuKind::GitWorkspace {
+            has_worktree_children: true,
+            collapsed: false,
+            ..
+        } => {
+            let mut v = vec![
+                "Rename".to_string(),
+                "Copy path".to_string(),
+                sep(),
+                "New worktree".to_string(),
+                "Open worktree\u{2026}".to_string(),
+                "Sync".to_string(),
+                "Collapse".to_string(),
+                sep(),
+            ];
+            push_groups(&mut v);
+            v.push(sep());
+            v.push("Close group".to_string());
+            v
+        }
+        ContextMenuKind::Tab { .. } => {
+            vec!["New tab".to_string(), "Rename".to_string(), "Close".to_string()]
+        }
+        ContextMenuKind::Pane {
+            has_manual_label: true,
+            source_pane_id: Some(_),
+            ..
+        } => vec![
+            "Rename pane".to_string(),
+            "Clear pane name".to_string(),
+            "Swap with focused pane".to_string(),
+            "Split right".to_string(),
+            "Split down".to_string(),
+            "Zoom".to_string(),
+            "Close pane".to_string(),
+        ],
+        ContextMenuKind::Pane {
+            has_manual_label: false,
+            source_pane_id: Some(_),
+            ..
+        } => vec![
+            "Rename pane".to_string(),
+            "Swap with focused pane".to_string(),
+            "Split right".to_string(),
+            "Split down".to_string(),
+            "Zoom".to_string(),
+            "Close pane".to_string(),
+        ],
+        ContextMenuKind::Pane {
+            has_manual_label: true,
+            source_pane_id: None,
+            ..
+        } => vec![
+            "Rename pane".to_string(),
+            "Clear pane name".to_string(),
+            "Split right".to_string(),
+            "Split down".to_string(),
+            "Zoom".to_string(),
+            "Close pane".to_string(),
+        ],
+        ContextMenuKind::Pane { .. } => vec![
+            "Rename pane".to_string(),
+            "Split right".to_string(),
+            "Split down".to_string(),
+            "Zoom".to_string(),
+            "Close pane".to_string(),
+        ],
+    }
+}
+
+impl ContextMenuState {
+    pub fn items(&self) -> &[String] {
+        &self.items
     }
 }
 
@@ -2338,21 +2360,23 @@ mod tests {
 
     #[test]
     fn linked_worktree_context_menu_keeps_safe_close_and_explicit_remove() {
+        let kind = ContextMenuKind::GitWorkspace {
+            ws_idx: 0,
+            is_linked_worktree: true,
+            has_worktree_children: false,
+            collapsed: false,
+        };
         let menu = ContextMenuState {
-            kind: ContextMenuKind::GitWorkspace {
-                ws_idx: 0,
-                is_linked_worktree: true,
-                has_worktree_children: false,
-                collapsed: false,
-            },
+            items: build_context_menu_items(&kind, &[]),
+            kind,
             x: 0,
             y: 0,
             list: MenuListState::new(0),
         };
 
         assert_eq!(
-            menu.items(),
-            &[
+            menu.items().iter().map(String::as_str).collect::<Vec<_>>(),
+            [
                 "Rename",
                 "Copy path",
                 CONTEXT_MENU_SEPARATOR,
@@ -2361,7 +2385,6 @@ mod tests {
                 "Sync",
                 CONTEXT_MENU_SEPARATOR,
                 "New group\u{2026}",
-                "Move to group\u{2026}",
                 "Remove from group",
                 CONTEXT_MENU_SEPARATOR,
                 "Close",
@@ -2372,21 +2395,23 @@ mod tests {
 
     #[test]
     fn git_workspace_context_menu_keeps_remove_for_managed_worktrees_only() {
+        let kind = ContextMenuKind::GitWorkspace {
+            ws_idx: 0,
+            is_linked_worktree: false,
+            has_worktree_children: false,
+            collapsed: false,
+        };
         let menu = ContextMenuState {
-            kind: ContextMenuKind::GitWorkspace {
-                ws_idx: 0,
-                is_linked_worktree: false,
-                has_worktree_children: false,
-                collapsed: false,
-            },
+            items: build_context_menu_items(&kind, &[]),
+            kind,
             x: 0,
             y: 0,
             list: MenuListState::new(0),
         };
 
         assert_eq!(
-            menu.items(),
-            &[
+            menu.items().iter().map(String::as_str).collect::<Vec<_>>(),
+            [
                 "Rename",
                 "Copy path",
                 CONTEXT_MENU_SEPARATOR,
@@ -2395,7 +2420,6 @@ mod tests {
                 "Sync",
                 CONTEXT_MENU_SEPARATOR,
                 "New group\u{2026}",
-                "Move to group\u{2026}",
                 "Remove from group",
                 CONTEXT_MENU_SEPARATOR,
                 "Close",
@@ -2405,20 +2429,22 @@ mod tests {
 
     #[test]
     fn parent_worktree_context_menu_uses_repo_actions() {
+        let kind = ContextMenuKind::GitWorkspace {
+            ws_idx: 0,
+            is_linked_worktree: false,
+            has_worktree_children: true,
+            collapsed: false,
+        };
         let menu = ContextMenuState {
-            kind: ContextMenuKind::GitWorkspace {
-                ws_idx: 0,
-                is_linked_worktree: false,
-                has_worktree_children: true,
-                collapsed: false,
-            },
+            items: build_context_menu_items(&kind, &[]),
+            kind,
             x: 0,
             y: 0,
             list: MenuListState::new(0),
         };
         assert_eq!(
-            menu.items(),
-            &[
+            menu.items().iter().map(String::as_str).collect::<Vec<_>>(),
+            [
                 "Rename",
                 "Copy path",
                 CONTEXT_MENU_SEPARATOR,
@@ -2428,7 +2454,6 @@ mod tests {
                 "Collapse",
                 CONTEXT_MENU_SEPARATOR,
                 "New group\u{2026}",
-                "Move to group\u{2026}",
                 "Remove from group",
                 CONTEXT_MENU_SEPARATOR,
                 "Close group",

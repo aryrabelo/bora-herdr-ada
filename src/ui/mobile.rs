@@ -244,6 +244,14 @@ pub(crate) fn render_mobile_header(
 
     render_header_status(app, terminal_runtimes, frame, status);
     render_nav_button(frame, switcher, "«", p.text, p.surface0, p.surface_dim);
+    // Attention badge: a blocked agent anywhere makes the switcher button read
+    // as "tap me" without the user reading the summary row.
+    if global_agent_counts(app).blocked > 0 && switcher.width > 0 && switcher.height > 0 {
+        let bx = switcher.x + switcher.width.saturating_sub(1);
+        frame.buffer_mut()[(bx, switcher.y)]
+            .set_symbol("●")
+            .set_style(Style::default().fg(p.red).bg(p.surface0));
+    }
     render_nav_button(
         frame,
         app.view.mobile_prev_tab_hit_area,
@@ -450,15 +458,6 @@ fn render_nav_button(
             .alignment(Alignment::Center),
         Rect::new(area.x + 1, label_y, area.width.saturating_sub(1), 1),
     );
-
-    // Attention badge: a blocked agent anywhere makes the button itself read as
-    // "tap me" without the user reading the summary row.
-    if global_agent_counts(app).blocked > 0 {
-        let bx = area.x + area.width.saturating_sub(1);
-        frame.buffer_mut()[(bx, area.y)]
-            .set_symbol("●")
-            .set_style(Style::default().fg(p.red).bg(p.surface0));
-    }
 }
 
 fn render_close_button(app: &AppState, frame: &mut Frame, area: Rect) {
