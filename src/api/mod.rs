@@ -28,6 +28,7 @@ pub(crate) fn request_changes_ui(request: &Request) -> bool {
             | Method::WorkspaceFocus(_)
             | Method::WorkspaceRename(_)
             | Method::WorkspaceMove(_)
+            | Method::WorkspaceSetGroup(_)
             | Method::WorkspaceClose(_)
             | Method::WorktreeCreate(_)
             | Method::WorktreeOpen(_)

@@ -1190,8 +1190,9 @@ impl App {
     }
 
     pub(crate) fn apply_context_menu_action_via_api(&mut self, menu: ContextMenuState, idx: usize) {
-        let item = menu.items().get(idx).cloned();
-        match (menu.kind, item.as_deref()) {
+        let item_owned = menu.items.get(idx).cloned();
+        let item = item_owned.as_deref();
+        match (menu.kind, item) {
             (ContextMenuKind::GitWorkspace { ws_idx, .. }, Some("New worktree")) => {
                 self.state.request_new_linked_worktree = Some(ws_idx);
                 leave_modal(&mut self.state);
