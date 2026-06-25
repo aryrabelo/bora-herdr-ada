@@ -5,9 +5,9 @@ use tracing::warn;
 
 use crate::{
     app::state::{
-        AgentPanelSort, AppState, ContextMenuKind, ContextMenuState, DragState, DragTarget,
-        MenuListState, Mode, RightClickPassthroughGesture, TabPressState, ViewLayout,
-        WorkspacePressState,
+        build_context_menu_items, AgentPanelSort, AppState, ContextMenuKind, ContextMenuState,
+        DragState, DragTarget, MenuListState, Mode, RightClickPassthroughGesture, TabPressState,
+        ViewLayout, WorkspacePressState,
     },
     layout::{PaneInfo, SplitBorder},
     selection::Selection,
@@ -1077,6 +1077,7 @@ impl AppState {
                         })
                         .unwrap_or(ContextMenuKind::Workspace { ws_idx: idx });
                     self.context_menu = Some(ContextMenuState {
+                        items: build_context_menu_items(&kind, &self.workspaces),
                         kind,
                         x: mouse.column,
                         y: mouse.row,
@@ -1092,8 +1093,10 @@ impl AppState {
                 if let (Some(ws_idx), Some(tab_idx)) =
                     (self.active, self.tab_at(mouse.column, mouse.row))
                 {
+                    let kind = ContextMenuKind::Tab { ws_idx, tab_idx };
                     self.context_menu = Some(ContextMenuState {
-                        kind: ContextMenuKind::Tab { ws_idx, tab_idx },
+                        items: build_context_menu_items(&kind, &self.workspaces),
+                        kind,
                         x: mouse.column,
                         y: mouse.row,
                         list: MenuListState::new(0),
@@ -1122,14 +1125,16 @@ impl AppState {
                         .and_then(|pane| self.terminals.get(&pane.attached_terminal_id))
                         .and_then(|terminal| terminal.manual_label.as_ref())
                         .is_some();
+                    let kind = ContextMenuKind::Pane {
+                        ws_idx,
+                        tab_idx,
+                        pane_id: info.id,
+                        source_pane_id,
+                        has_manual_label,
+                    };
                     self.context_menu = Some(ContextMenuState {
-                        kind: ContextMenuKind::Pane {
-                            ws_idx,
-                            tab_idx,
-                            pane_id: info.id,
-                            source_pane_id,
-                            has_manual_label,
-                        },
+                        items: build_context_menu_items(&kind, &self.workspaces),
+                        kind,
                         x: mouse.column,
                         y: mouse.row,
                         list: MenuListState::new(0),
@@ -1896,7 +1901,10 @@ mod tests {
     use super::*;
     use crate::app::input::modal::handle_context_menu_key;
     use crate::{
-        app::state::{ContextMenuKind, ContextMenuState, MenuListState, Mode, ViewLayout},
+        app::state::{
+            build_context_menu_items, ContextMenuKind, ContextMenuState, MenuListState, Mode,
+            ViewLayout,
+        },
         detect::{Agent, AgentState},
         workspace::Workspace,
     };
@@ -2400,8 +2408,10 @@ mod tests {
     #[test]
     fn hovering_context_menu_updates_highlight() {
         let mut app = app_for_mouse_test();
+        let kind = ContextMenuKind::Workspace { ws_idx: 0 };
         app.state.context_menu = Some(ContextMenuState {
-            kind: ContextMenuKind::Workspace { ws_idx: 0 },
+            items: build_context_menu_items(&kind, &[]),
+            kind,
             x: 2,
             y: 2,
             list: MenuListState::new(0),
@@ -2696,11 +2706,13 @@ mod tests {
         app.state.selected = 0;
         app.state.mode = Mode::Terminal;
 
+        let kind = ContextMenuKind::Workspace { ws_idx: 1 };
         app.state.context_menu = Some(ContextMenuState {
-            kind: ContextMenuKind::Workspace { ws_idx: 1 },
+            items: build_context_menu_items(&kind, &[]),
+            kind,
             x: 2,
             y: 2,
-            list: MenuListState::new(7),
+            list: MenuListState::new(6),
         });
         app.state.mode = Mode::ContextMenu;
         handle_context_menu_key(
@@ -2736,8 +2748,10 @@ mod tests {
         app.state.active = Some(0);
         app.state.selected = 0;
         app.state.confirm_close = false;
+        let kind = ContextMenuKind::Workspace { ws_idx: 1 };
         app.state.context_menu = Some(ContextMenuState {
-            kind: ContextMenuKind::Workspace { ws_idx: 1 },
+            items: crate::app::state::build_context_menu_items(&kind, &[]),
+            kind,
             x: 2,
             y: 2,
             list: MenuListState::new(1),
@@ -2782,14 +2796,16 @@ mod tests {
         app.state.selected = 0;
         let pane_id = app.state.workspaces[0].tabs[0].root_pane;
         let runtime_count = app.terminal_runtimes.len();
+        let kind = ContextMenuKind::Pane {
+            ws_idx: 0,
+            tab_idx: 0,
+            pane_id,
+            source_pane_id: None,
+            has_manual_label: false,
+        };
         app.state.context_menu = Some(ContextMenuState {
-            kind: ContextMenuKind::Pane {
-                ws_idx: 0,
-                tab_idx: 0,
-                pane_id,
-                source_pane_id: None,
-                has_manual_label: false,
-            },
+            items: build_context_menu_items(&kind, &[]),
+            kind,
             x: 2,
             y: 2,
             list: MenuListState::new(1),

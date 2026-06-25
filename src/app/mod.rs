@@ -4647,8 +4647,10 @@ last_pane = "prefix+tab"
         app.state.active = Some(0);
         app.state.selected = 0;
         app.state.confirm_close = false;
+        let kind = state::ContextMenuKind::Workspace { ws_idx: 1 };
         app.state.context_menu = Some(state::ContextMenuState {
-            kind: state::ContextMenuKind::Workspace { ws_idx: 1 },
+            items: state::build_context_menu_items(&kind, &[]),
+            kind,
             x: 2,
             y: 2,
             list: state::MenuListState::new(1),
