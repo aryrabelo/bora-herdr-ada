@@ -308,7 +308,10 @@ pub(super) fn render_context_menu(app: &AppState, frame: &mut Frame) {
                     Style::default().fg(p.surface1),
                 )))
             } else if item == "Close" || item == "Close group" || item.starts_with("Delete") {
-                ListItem::new(Line::from(Span::styled(item.as_str(), Style::default().fg(p.red))))
+                ListItem::new(Line::from(Span::styled(
+                    item.as_str(),
+                    Style::default().fg(p.red),
+                )))
             } else {
                 ListItem::new(Line::from(item.as_str()))
             }
