@@ -16,6 +16,7 @@
 #   scripts/bora ci-install download the latest macOS CI artifact, install it
 #   scripts/bora install <file>  install an arbitrary binary as bora
 #   scripts/bora run [args]  run bora on the dedicated "bora" session
+#   scripts/bora reload      live-handoff the running server to the installed binary
 #
 # ponytail: a thin sh wrapper, not a framework. Build needs a working zig
 # toolchain; on macOS 26 the vendored libghostty (zig 0.15.2) does not link
@@ -98,6 +99,32 @@ case "$cmd" in
     chmod +x "$BIN"
     sign_bin
     echo "bora: installed $1 -> $BIN"
+    ;;
+  reload)
+    [ -x "$BIN" ] || { echo "bora: $BIN not installed; run scripts/bora build or ci-install" >&2; exit 1; }
+    SOCK="$HOME/.config/bora/herdr.sock"
+    [ -S "$SOCK" ] || { echo "bora: no running server at $SOCK" >&2; exit 1; }
+    REQ="{\"id\":\"reload\",\"method\":\"server.live_handoff\",\"params\":{\"import_exe\":\"$BIN\"}}"
+    python3 -c "
+import socket, sys, json
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+s.connect('$SOCK')
+s.sendall(json.dumps(json.loads(sys.argv[1])).encode() + b'\n')
+s.settimeout(10)
+buf = b''
+while b'\n' not in buf:
+    chunk = s.recv(4096)
+    if not chunk: break
+    buf += chunk
+s.close()
+resp = json.loads(buf)
+if 'error' in resp:
+    print('bora: handoff failed:', resp['error'].get('message', resp['error']), file=sys.stderr)
+    sys.exit(1)
+print('bora: live handoff requested')
+" "$REQ"
+    sleep 2
+    echo "bora: $("$BIN" --version 2>/dev/null || echo 'server restarting...')"
     ;;
   run)
     [ -x "$BIN" ] || { echo "bora: $BIN not installed; run scripts/bora build or ci-install" >&2; exit 1; }
