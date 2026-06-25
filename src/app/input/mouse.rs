@@ -1171,6 +1171,14 @@ impl AppState {
                 self.mode = Mode::Navigate;
                 return MobileMouseResult::Consumed;
             }
+            if rect_contains(self.view.mobile_prev_tab_hit_area, mouse.column, mouse.row) {
+                self.previous_tab();
+                return MobileMouseResult::Consumed;
+            }
+            if rect_contains(self.view.mobile_next_tab_hit_area, mouse.column, mouse.row) {
+                self.next_tab();
+                return MobileMouseResult::Consumed;
+            }
             return MobileMouseResult::Ignored;
         }
 
@@ -2692,7 +2700,7 @@ mod tests {
             kind: ContextMenuKind::Workspace { ws_idx: 1 },
             x: 2,
             y: 2,
-            list: MenuListState::new(1),
+            list: MenuListState::new(7),
         });
         app.state.mode = Mode::ContextMenu;
         handle_context_menu_key(

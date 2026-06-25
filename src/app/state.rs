@@ -749,6 +749,8 @@ pub struct ViewState {
     pub terminal_area: Rect,
     pub mobile_header_rect: Rect,
     pub mobile_menu_hit_area: Rect,
+    pub mobile_prev_tab_hit_area: Rect,
+    pub mobile_next_tab_hit_area: Rect,
     pub toast_hit_area: Rect,
     pub pane_infos: Vec<PaneInfo>,
     pub split_borders: Vec<SplitBorder>,
@@ -1126,15 +1128,21 @@ pub struct ContextMenuState {
     pub list: MenuListState,
 }
 
+/// Menu separator: rendered as a dim line, not selectable.
+pub const CONTEXT_MENU_SEPARATOR: &str = "─";
+
 impl ContextMenuState {
     pub fn items(&self) -> &'static [&'static str] {
         match self.kind {
             ContextMenuKind::Workspace { .. } => &[
                 "Rename",
-                "Close",
+                "Copy path",
+                CONTEXT_MENU_SEPARATOR,
                 "New group\u{2026}",
                 "Move to group\u{2026}",
                 "Remove from group",
+                CONTEXT_MENU_SEPARATOR,
+                "Close",
             ],
             ContextMenuKind::GitWorkspace {
                 is_linked_worktree: false,
@@ -1142,27 +1150,35 @@ impl ContextMenuState {
                 ..
             } => &[
                 "Rename",
-                "Close",
-                "New git worktree",
-                "Open git worktree...",
+                "Copy path",
+                CONTEXT_MENU_SEPARATOR,
+                "New worktree",
+                "Open worktree\u{2026}",
                 "Sync",
+                CONTEXT_MENU_SEPARATOR,
                 "New group\u{2026}",
                 "Move to group\u{2026}",
                 "Remove from group",
+                CONTEXT_MENU_SEPARATOR,
+                "Close",
             ],
             ContextMenuKind::GitWorkspace {
                 is_linked_worktree: true,
                 ..
             } => &[
                 "Rename",
-                "Close",
+                "Copy path",
+                CONTEXT_MENU_SEPARATOR,
                 "Merge to main",
                 "Open PR",
                 "Sync",
-                "Delete git worktree...",
+                CONTEXT_MENU_SEPARATOR,
                 "New group\u{2026}",
                 "Move to group\u{2026}",
                 "Remove from group",
+                CONTEXT_MENU_SEPARATOR,
+                "Close",
+                "Delete worktree\u{2026}",
             ],
             ContextMenuKind::GitWorkspace {
                 is_linked_worktree: false,
@@ -1171,14 +1187,18 @@ impl ContextMenuState {
                 ..
             } => &[
                 "Rename",
-                "Close group",
-                "New git worktree",
-                "Open git worktree...",
+                "Copy path",
+                CONTEXT_MENU_SEPARATOR,
+                "New worktree",
+                "Open worktree\u{2026}",
                 "Sync",
                 "Expand",
+                CONTEXT_MENU_SEPARATOR,
                 "New group\u{2026}",
                 "Move to group\u{2026}",
                 "Remove from group",
+                CONTEXT_MENU_SEPARATOR,
+                "Close group",
             ],
             ContextMenuKind::GitWorkspace {
                 is_linked_worktree: false,
@@ -1187,14 +1207,18 @@ impl ContextMenuState {
                 ..
             } => &[
                 "Rename",
-                "Close group",
-                "New git worktree",
-                "Open git worktree...",
+                "Copy path",
+                CONTEXT_MENU_SEPARATOR,
+                "New worktree",
+                "Open worktree\u{2026}",
                 "Sync",
                 "Collapse",
+                CONTEXT_MENU_SEPARATOR,
                 "New group\u{2026}",
                 "Move to group\u{2026}",
                 "Remove from group",
+                CONTEXT_MENU_SEPARATOR,
+                "Close group",
             ],
             ContextMenuKind::Tab { .. } => &["New tab", "Rename", "Close"],
             ContextMenuKind::Pane {
@@ -1761,6 +1785,8 @@ impl AppState {
                 terminal_area: Rect::default(),
                 mobile_header_rect: Rect::default(),
                 mobile_menu_hit_area: Rect::default(),
+                mobile_prev_tab_hit_area: Rect::default(),
+                mobile_next_tab_hit_area: Rect::default(),
                 toast_hit_area: Rect::default(),
                 pane_infos: Vec::new(),
                 split_borders: Vec::new(),
@@ -2299,14 +2325,18 @@ mod tests {
             menu.items(),
             &[
                 "Rename",
-                "Close",
+                "Copy path",
+                CONTEXT_MENU_SEPARATOR,
                 "Merge to main",
                 "Open PR",
                 "Sync",
-                "Delete git worktree...",
+                CONTEXT_MENU_SEPARATOR,
                 "New group\u{2026}",
                 "Move to group\u{2026}",
                 "Remove from group",
+                CONTEXT_MENU_SEPARATOR,
+                "Close",
+                "Delete worktree\u{2026}",
             ]
         );
     }
@@ -2329,13 +2359,17 @@ mod tests {
             menu.items(),
             &[
                 "Rename",
-                "Close",
-                "New git worktree",
-                "Open git worktree...",
+                "Copy path",
+                CONTEXT_MENU_SEPARATOR,
+                "New worktree",
+                "Open worktree\u{2026}",
                 "Sync",
+                CONTEXT_MENU_SEPARATOR,
                 "New group\u{2026}",
                 "Move to group\u{2026}",
                 "Remove from group",
+                CONTEXT_MENU_SEPARATOR,
+                "Close",
             ]
         );
     }
@@ -2357,14 +2391,18 @@ mod tests {
             menu.items(),
             &[
                 "Rename",
-                "Close group",
-                "New git worktree",
-                "Open git worktree...",
+                "Copy path",
+                CONTEXT_MENU_SEPARATOR,
+                "New worktree",
+                "Open worktree\u{2026}",
                 "Sync",
                 "Collapse",
+                CONTEXT_MENU_SEPARATOR,
                 "New group\u{2026}",
                 "Move to group\u{2026}",
                 "Remove from group",
+                CONTEXT_MENU_SEPARATOR,
+                "Close group",
             ]
         );
     }

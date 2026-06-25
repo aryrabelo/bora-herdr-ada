@@ -694,15 +694,15 @@ pub(super) fn apply_context_menu_action(
 ) {
     let item = menu.items().get(idx).copied();
     match (menu.kind, item) {
-        (ContextMenuKind::GitWorkspace { ws_idx, .. }, Some("New git worktree")) => {
+        (ContextMenuKind::GitWorkspace { ws_idx, .. }, Some("New worktree")) => {
             state.request_new_linked_worktree = Some(ws_idx);
             leave_modal(state);
         }
-        (ContextMenuKind::GitWorkspace { ws_idx, .. }, Some("Delete git worktree...")) => {
+        (ContextMenuKind::GitWorkspace { ws_idx, .. }, Some("Delete worktree\u{2026}")) => {
             state.request_remove_linked_worktree = Some(ws_idx);
             leave_modal(state);
         }
-        (ContextMenuKind::GitWorkspace { ws_idx, .. }, Some("Open git worktree...")) => {
+        (ContextMenuKind::GitWorkspace { ws_idx, .. }, Some("Open worktree\u{2026}")) => {
             state.request_open_existing_worktree = Some(ws_idx);
             leave_modal(state);
         }
@@ -736,6 +736,16 @@ pub(super) fn apply_context_menu_action(
                     state.collapsed_space_keys.insert(key);
                 }
                 state.mark_session_dirty();
+            }
+            leave_modal(state);
+        }
+        (
+            ContextMenuKind::Workspace { ws_idx } | ContextMenuKind::GitWorkspace { ws_idx, .. },
+            Some("Copy path"),
+        ) => {
+            if let Some(ws) = state.workspaces.get(ws_idx) {
+                let path = ws.identity_cwd.display().to_string();
+                state.request_clipboard_write = Some(path.into_bytes());
             }
             leave_modal(state);
         }
@@ -930,12 +940,31 @@ pub(crate) fn handle_context_menu_key(
         }
         KeyCode::Up => {
             if let Some(menu) = &mut state.context_menu {
-                menu.list.move_prev();
+                let items = menu.items();
+                loop {
+                    menu.list.move_prev();
+                    if items.get(menu.list.highlighted) != Some(&crate::app::state::CONTEXT_MENU_SEPARATOR) {
+                        break;
+                    }
+                    if menu.list.highlighted == 0 {
+                        break;
+                    }
+                }
             }
         }
         KeyCode::Down => {
             if let Some(menu) = &mut state.context_menu {
-                menu.list.move_next(menu.items().len());
+                let items = menu.items();
+                let len = items.len();
+                loop {
+                    menu.list.move_next(len);
+                    if items.get(menu.list.highlighted) != Some(&crate::app::state::CONTEXT_MENU_SEPARATOR) {
+                        break;
+                    }
+                    if menu.list.highlighted >= len.saturating_sub(1) {
+                        break;
+                    }
+                }
             }
         }
         KeyCode::Enter => {
@@ -1978,7 +2007,7 @@ mod tests {
         };
         let mut terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
 
-        apply_context_menu_action(&mut state, &mut terminal_runtimes, menu, 1);
+        apply_context_menu_action(&mut state, &mut terminal_runtimes, menu, 12);
 
         assert_eq!(state.selected, 0);
         assert_eq!(state.mode, Mode::ConfirmClose);
