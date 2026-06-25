@@ -52,11 +52,22 @@ impl App {
         };
         match self.create_workspace_with_launch_env(cwd, params.focus, extra_env) {
             Ok(index) => {
-                if let Some(label) = params.label {
-                    if let Some(workspace) = self.state.workspaces.get_mut(index) {
+                let group = params
+                    .group
+                    .map(|g| g.trim().to_string())
+                    .filter(|g| !g.is_empty());
+                let group_set = group.is_some();
+                if let Some(workspace) = self.state.workspaces.get_mut(index) {
+                    if let Some(label) = params.label {
                         workspace.set_custom_name(label);
                         crate::logging::workspace_renamed(&workspace.id);
                     }
+                    if let Some(group) = group {
+                        workspace.visual_group = Some(group);
+                    }
+                }
+                if group_set {
+                    self.state.mark_session_dirty();
                 }
                 self.emit_workspace_open_events(index);
                 encode_success(
@@ -271,6 +282,7 @@ mod tests {
                 cwd: None,
                 focus: false,
                 label: None,
+                group: None,
                 env: Default::default(),
             },
         );
@@ -427,5 +439,44 @@ mod tests {
         };
         assert_eq!(workspaces[0].workspace_id, moved_id);
         assert!(event_hub.events_after(0).is_empty());
+    }
+
+    #[tokio::test]
+    async fn api_workspace_create_applies_visual_group() {
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(
+            &Config::default(),
+            true,
+            None,
+            api_rx,
+            crate::api::EventHub::default(),
+        );
+
+        let make = |group: Option<&str>| WorkspaceCreateParams {
+            cwd: Some(std::env::temp_dir().display().to_string()),
+            focus: false,
+            label: None,
+            group: group.map(str::to_string),
+            env: Default::default(),
+        };
+
+        let _ = app.handle_workspace_create("a".into(), make(Some("batch")));
+        let idx = app.state.workspaces.len() - 1;
+        assert_eq!(
+            app.state.workspaces[idx].visual_group.as_deref(),
+            Some("batch")
+        );
+        assert_eq!(
+            app.workspace_info(idx).visual_group.as_deref(),
+            Some("batch")
+        );
+
+        let _ = app.handle_workspace_create("b".into(), make(Some("   ")));
+        let idx2 = app.state.workspaces.len() - 1;
+        assert_eq!(app.state.workspaces[idx2].visual_group, None);
+
+        for (_, runtime) in app.terminal_runtimes.drain() {
+            runtime.shutdown();
+        }
     }
 }

@@ -190,6 +190,7 @@ impl App {
                         cwd: None,
                         focus: true,
                         label: None,
+                        group: None,
                         env: Default::default(),
                     },
                 );
