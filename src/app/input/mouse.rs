@@ -591,11 +591,11 @@ impl AppState {
                             && mouse.column >= header.rect.x
                             && mouse.column < header.rect.x + header.rect.width
                         {
-                            let vg_key = format!("vg:{}", header.name);
-                            if self.collapsed_space_keys.contains(&vg_key) {
-                                self.collapsed_space_keys.remove(&vg_key);
+                            let key = header.collapse_key.clone();
+                            if self.collapsed_space_keys.contains(&key) {
+                                self.collapsed_space_keys.remove(&key);
                             } else {
-                                self.collapsed_space_keys.insert(vg_key);
+                                self.collapsed_space_keys.insert(key);
                             }
                             self.mark_session_dirty();
                             return None;
