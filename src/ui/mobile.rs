@@ -458,7 +458,6 @@ fn render_nav_button(
             .alignment(Alignment::Center),
         Rect::new(area.x + 1, label_y, area.width.saturating_sub(1), 1),
     );
-
 }
 
 fn render_close_button(app: &AppState, frame: &mut Frame, area: Rect) {
