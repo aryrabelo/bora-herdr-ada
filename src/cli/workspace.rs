@@ -45,6 +45,7 @@ fn workspace_create(args: &[String]) -> std::io::Result<i32> {
     let mut focus = false;
     let mut label = None;
     let mut env = HashMap::new();
+    let mut group = None;
 
     let mut index = 0;
     while index < args.len() {
@@ -63,6 +64,14 @@ fn workspace_create(args: &[String]) -> std::io::Result<i32> {
                     return Ok(2);
                 };
                 label = Some(value.clone());
+                index += 2;
+            }
+            "--group" => {
+                let Some(value) = args.get(index + 1) else {
+                    eprintln!("missing value for --group");
+                    return Ok(2);
+                };
+                group = Some(value.clone());
                 index += 2;
             }
             "--focus" => {
@@ -102,6 +111,7 @@ fn workspace_create(args: &[String]) -> std::io::Result<i32> {
             focus,
             label,
             env,
+            group,
         }),
     })?)
 }
@@ -178,7 +188,7 @@ fn workspace_close(args: &[String]) -> std::io::Result<i32> {
 fn print_workspace_help() {
     eprintln!("herdr workspace commands:");
     eprintln!("  herdr workspace list");
-    eprintln!("  herdr workspace create [--cwd PATH] [--label TEXT] [--env KEY=VALUE] [--focus] [--no-focus]");
+    eprintln!("  herdr workspace create [--cwd PATH] [--label TEXT] [--group NAME] [--env KEY=VALUE] [--focus] [--no-focus]");
     eprintln!("  herdr workspace get <workspace_id>");
     eprintln!("  herdr workspace focus <workspace_id>");
     eprintln!("  herdr workspace rename <workspace_id> <label>");
