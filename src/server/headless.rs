@@ -754,6 +754,7 @@ impl HeadlessServer {
                 cwd,
                 focus: true,
                 label,
+                group: None,
                 env: Default::default(),
             }),
         )
