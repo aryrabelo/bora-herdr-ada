@@ -54,6 +54,7 @@ impl App {
             .map_or(git_space, |membership| {
                 Some(crate::workspace::GitSpaceMetadata {
                     key: membership.key.clone(),
+                    repo_identity: membership.key.clone(),
                     checkout_key: membership.checkout_path.display().to_string(),
                     label: membership.label.clone(),
                     repo_root: membership.repo_root.clone(),

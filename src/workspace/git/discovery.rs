@@ -3,6 +3,10 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GitSpaceMetadata {
     pub key: String,
+    /// Stable grouping identity (normalized `origin` remote, `host/owner/repo`),
+    /// shared by clones and worktrees of the same repository. Falls back to
+    /// `key` when there is no `origin` remote.
+    pub repo_identity: String,
     pub checkout_key: String,
     pub label: String,
     pub repo_root: PathBuf,
@@ -62,6 +66,10 @@ pub fn git_space_metadata(cwd: &Path) -> Option<GitSpaceMetadata> {
     let key = canonicalize_best_effort_path(&info.git_common_dir)
         .display()
         .to_string();
+    let repo_identity = read_origin_url(&info.git_common_dir.join("config"))
+        .as_deref()
+        .and_then(normalize_repo_identity)
+        .unwrap_or_else(|| key.clone());
     let checkout_key = canonicalize_best_effort_path(&info.repo_root)
         .display()
         .to_string();
@@ -82,6 +90,7 @@ pub fn git_space_metadata(cwd: &Path) -> Option<GitSpaceMetadata> {
         .to_string();
     Some(GitSpaceMetadata {
         key,
+        repo_identity,
         checkout_key,
         label,
         repo_root: info.repo_root,
@@ -213,6 +222,80 @@ fn strip_git_config_comment(value: &str) -> &str {
         }
     }
     value
+}
+
+/// Read the `origin` remote URL from a git config file. Handles the
+/// `[remote "origin"]` subsection that `read_git_config_value` skips.
+fn read_origin_url(config_path: &Path) -> Option<String> {
+    let contents = std::fs::read_to_string(config_path).ok()?;
+    let mut in_origin = false;
+    for raw_line in contents.lines() {
+        let line = raw_line.trim();
+        if line.is_empty() || line.starts_with('#') || line.starts_with(';') {
+            continue;
+        }
+        if line.starts_with('[') {
+            in_origin = config_subsection(line).is_some_and(|(section, name)| {
+                section.eq_ignore_ascii_case("remote") && name == "origin"
+            });
+            continue;
+        }
+        if !in_origin {
+            continue;
+        }
+        if let Some((name, value)) = line.split_once('=') {
+            if name.trim().eq_ignore_ascii_case("url") {
+                let url = strip_git_config_comment(value).trim().to_string();
+                if !url.is_empty() {
+                    return Some(url);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Parse a `[section "name"]` config header into `(section, name)`.
+fn config_subsection(line: &str) -> Option<(&str, &str)> {
+    let inner = line.strip_prefix('[')?.split_once(']')?.0.trim();
+    let (section, rest) = inner.split_once('"')?;
+    let name = rest.strip_suffix('"')?;
+    Some((section.trim(), name))
+}
+
+/// Normalize a git remote URL into a stable `host/owner/repo` identity so that
+/// clones and worktrees of the same repository share one grouping key.
+fn normalize_repo_identity(url: &str) -> Option<String> {
+    let url = url.trim();
+    if url.is_empty() {
+        return None;
+    }
+    let (host, path) = if let Some(rest) = url
+        .strip_prefix("ssh://")
+        .or_else(|| url.strip_prefix("https://"))
+        .or_else(|| url.strip_prefix("http://"))
+        .or_else(|| url.strip_prefix("git://"))
+    {
+        let (authority, path) = rest.split_once('/')?;
+        let host = authority.rsplit('@').next().unwrap_or(authority);
+        let host = host.split(':').next().unwrap_or(host);
+        (host, path)
+    } else {
+        let (authority, path) = url.split_once(':')?;
+        // Reject non-host:path forms such as Windows drive paths (`C:\...`).
+        if !authority.contains('@') && !authority.contains('.') {
+            return None;
+        }
+        let host = authority.rsplit('@').next().unwrap_or(authority);
+        (host, path)
+    };
+    let host = host.trim().trim_matches('/');
+    let path = path.trim().trim_matches('/');
+    let path = path.strip_suffix(".git").unwrap_or(path).trim_matches('/');
+    if host.is_empty() || path.is_empty() {
+        return None;
+    }
+    Some(format!("{host}/{path}").to_lowercase())
 }
 
 pub(super) fn git_trimmed_stdout(repo_root: &Path, args: &[&str]) -> Option<String> {
@@ -470,6 +553,123 @@ mod tests {
             Some(head_oid.as_str())
         );
 
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn normalize_repo_identity_unifies_clone_url_forms() {
+        let canonical = Some("github.com/owner/repo".to_string());
+        assert_eq!(
+            normalize_repo_identity("git@github.com:owner/repo.git"),
+            canonical
+        );
+        assert_eq!(
+            normalize_repo_identity("https://github.com/owner/repo.git"),
+            canonical
+        );
+        assert_eq!(
+            normalize_repo_identity("https://github.com/owner/repo"),
+            canonical
+        );
+        assert_eq!(
+            normalize_repo_identity("ssh://git@github.com/owner/repo.git"),
+            canonical
+        );
+        assert_eq!(
+            normalize_repo_identity("git://github.com/owner/repo.git"),
+            canonical
+        );
+        // Host and owner are case-insensitive on GitHub; normalize so casing never splits a group.
+        assert_eq!(
+            normalize_repo_identity("https://GitHub.com/Owner/Repo"),
+            canonical
+        );
+        // user@ and port are stripped from the authority.
+        assert_eq!(
+            normalize_repo_identity("ssh://git@github.com:22/owner/repo.git"),
+            canonical
+        );
+    }
+
+    #[test]
+    fn normalize_repo_identity_rejects_non_remote_strings() {
+        assert_eq!(normalize_repo_identity(""), None);
+        assert_eq!(normalize_repo_identity("   "), None);
+        // Windows drive path, not a host:path remote.
+        assert_eq!(normalize_repo_identity(r"C:\repos\thing"), None);
+        // Bare local path with no host.
+        assert_eq!(normalize_repo_identity("/srv/git/repo.git"), None);
+    }
+
+    #[test]
+    fn read_origin_url_extracts_origin_section_only() {
+        let root = temp_test_dir("origin-url");
+        let config = root.join("config");
+        std::fs::write(
+            &config,
+            "[core]\n\tbare = false\n[remote \"upstream\"]\n\turl = https://example.com/up/stream.git\n[remote \"origin\"]\n\turl = git@github.com:owner/repo.git\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n",
+        )
+        .unwrap();
+
+        assert_eq!(
+            read_origin_url(&config).as_deref(),
+            Some("git@github.com:owner/repo.git")
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn read_origin_url_returns_none_without_origin() {
+        let root = temp_test_dir("origin-url-missing");
+        let config = root.join("config");
+        std::fs::write(
+            &config,
+            "[remote \"fork\"]\n\turl = git@github.com:owner/repo.git\n",
+        )
+        .unwrap();
+        assert_eq!(read_origin_url(&config), None);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn git_space_metadata_groups_clones_by_origin_identity() {
+        // Two independent clones (distinct git dirs) of the same remote must share repo_identity.
+        let origin = "git@github.com:owner/resume-builder.git";
+        let make = |name: &str| {
+            let root = temp_test_dir(name);
+            run_git(&root, &["init", "-b", "main", "."]);
+            run_git(&root, &["remote", "add", "origin", origin]);
+            root
+        };
+        let clone_a = make("clone-a");
+        let clone_b = make("clone-b");
+
+        let meta_a = git_space_metadata(&clone_a).expect("metadata a");
+        let meta_b = git_space_metadata(&clone_b).expect("metadata b");
+
+        assert_eq!(meta_a.repo_identity, "github.com/owner/resume-builder");
+        assert_eq!(
+            meta_a.repo_identity, meta_b.repo_identity,
+            "clones of one remote must share repo_identity"
+        );
+        assert_ne!(
+            meta_a.key, meta_b.key,
+            "distinct clones still have distinct worktree keys"
+        );
+
+        std::fs::remove_dir_all(clone_a).unwrap();
+        std::fs::remove_dir_all(clone_b).unwrap();
+    }
+
+    #[test]
+    fn git_space_metadata_falls_back_to_key_without_origin() {
+        let root = temp_test_dir("no-origin");
+        run_git(&root, &["init", "-b", "main", "."]);
+        let meta = git_space_metadata(&root).expect("metadata");
+        assert_eq!(
+            meta.repo_identity, meta.key,
+            "no origin remote -> identity falls back to key"
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 }
