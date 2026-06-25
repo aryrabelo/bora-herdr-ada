@@ -296,10 +296,23 @@ pub(super) fn render_context_menu(app: &AppState, frame: &mut Frame) {
         return;
     };
 
+    let separator = crate::app::state::CONTEXT_MENU_SEPARATOR;
+    let sep_width = inner.width as usize;
     let items: Vec<ListItem> = menu
         .items()
         .iter()
-        .map(|item| ListItem::new(Line::from(*item)))
+        .map(|item| {
+            if *item == separator {
+                ListItem::new(Line::from(Span::styled(
+                    "─".repeat(sep_width),
+                    Style::default().fg(p.surface1),
+                )))
+            } else if *item == "Close" || *item == "Close group" || item.starts_with("Delete") {
+                ListItem::new(Line::from(Span::styled(*item, Style::default().fg(p.red))))
+            } else {
+                ListItem::new(Line::from(*item))
+            }
+        })
         .collect();
     let list = List::new(items)
         .style(Style::default().fg(p.text))
