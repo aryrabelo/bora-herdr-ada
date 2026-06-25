@@ -942,7 +942,9 @@ pub(crate) fn handle_context_menu_key(
                 let items = menu.items();
                 loop {
                     menu.list.move_prev();
-                    if items.get(menu.list.highlighted) != Some(&crate::app::state::CONTEXT_MENU_SEPARATOR) {
+                    if items.get(menu.list.highlighted)
+                        != Some(&crate::app::state::CONTEXT_MENU_SEPARATOR)
+                    {
                         break;
                     }
                     if menu.list.highlighted == 0 {
@@ -957,7 +959,9 @@ pub(crate) fn handle_context_menu_key(
                 let len = items.len();
                 loop {
                     menu.list.move_next(len);
-                    if items.get(menu.list.highlighted) != Some(&crate::app::state::CONTEXT_MENU_SEPARATOR) {
+                    if items.get(menu.list.highlighted)
+                        != Some(&crate::app::state::CONTEXT_MENU_SEPARATOR)
+                    {
                         break;
                     }
                     if menu.list.highlighted >= len.saturating_sub(1) {

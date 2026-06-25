@@ -847,9 +847,15 @@ mod tests {
         let line1 = buffer_row_text(buffer, card, card.y);
         let line2 = buffer_row_text(buffer, card, card.y + 1);
 
-        assert!(line1.starts_with(" one"), "expected name without dot on row 1, got: {line1:?}");
+        assert!(
+            line1.starts_with(" one"),
+            "expected name without dot on row 1, got: {line1:?}"
+        );
         assert!(!line1.contains("1 one"));
-        assert!(line2.starts_with("   · main"), "expected dot on branch line, got: {line2:?}");
+        assert!(
+            line2.starts_with("   · main"),
+            "expected dot on branch line, got: {line2:?}"
+        );
 
         std::fs::remove_dir_all(repo).ok();
     }
