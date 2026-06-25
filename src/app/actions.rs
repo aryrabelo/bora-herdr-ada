@@ -1249,7 +1249,6 @@ impl AppState {
             .min(crate::ui::mobile_switcher_max_scroll(self));
     }
 
-    #[cfg(test)]
     pub fn switch_tab(&mut self, idx: usize) {
         if let Some(ws_idx) = self.active {
             let previous_focus = self.current_pane_focus_target();
@@ -1474,7 +1473,6 @@ impl AppState {
         self.refresh_tab_bar_view();
     }
 
-    #[cfg(test)]
     pub fn next_tab(&mut self) {
         if let Some(ws) = self.active.and_then(|i| self.workspaces.get(i)) {
             if !ws.tabs.is_empty() {
@@ -1484,7 +1482,6 @@ impl AppState {
         }
     }
 
-    #[cfg(test)]
     pub fn previous_tab(&mut self) {
         if let Some(ws) = self.active.and_then(|i| self.workspaces.get(i)) {
             if !ws.tabs.is_empty() {

@@ -302,15 +302,15 @@ pub(super) fn render_context_menu(app: &AppState, frame: &mut Frame) {
         .items()
         .iter()
         .map(|item| {
-            if *item == separator {
+            if item.as_str() == separator {
                 ListItem::new(Line::from(Span::styled(
                     "─".repeat(sep_width),
                     Style::default().fg(p.surface1),
                 )))
-            } else if *item == "Close" || *item == "Close group" || item.starts_with("Delete") {
-                ListItem::new(Line::from(Span::styled(*item, Style::default().fg(p.red))))
+            } else if item == "Close" || item == "Close group" || item.starts_with("Delete") {
+                ListItem::new(Line::from(Span::styled(item.as_str(), Style::default().fg(p.red))))
             } else {
-                ListItem::new(Line::from(*item))
+                ListItem::new(Line::from(item.as_str()))
             }
         })
         .collect();
