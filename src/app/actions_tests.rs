@@ -616,6 +616,7 @@ fn apply_workspace_git_statuses_does_not_change_worktree_membership() {
             ahead_behind: None,
             space: Some(crate::workspace::GitSpaceMetadata {
                 key: "other-repo-key".into(),
+                repo_identity: "other-repo-key".into(),
                 checkout_key: "/other/checkout".into(),
                 label: "other".into(),
                 repo_root: "/other/repo".into(),

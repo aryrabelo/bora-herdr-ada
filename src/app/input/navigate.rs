@@ -1130,6 +1130,7 @@ mod tests {
         });
         state.workspaces[ws_idx].cached_git_space = Some(crate::workspace::GitSpaceMetadata {
             key: key.into(),
+            repo_identity: key.into(),
             checkout_key: format!("/repo/worktree-{ws_idx}"),
             label: "herdr".into(),
             repo_root: "/repo/herdr".into(),
