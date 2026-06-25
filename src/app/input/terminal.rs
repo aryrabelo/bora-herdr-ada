@@ -911,7 +911,10 @@ mod tests {
         assert_eq!(app.state.workspaces[0].tabs[0].layout.focused(), first_pane);
         assert_eq!(app.state.mode, Mode::ContextMenu);
         let menu = app.state.context_menu.as_ref().expect("pane context menu");
-        assert!(menu.items().iter().any(|i| i.as_str() == "Swap with focused pane"));
+        assert!(menu
+            .items()
+            .iter()
+            .any(|i| i.as_str() == "Swap with focused pane"));
     }
 
     #[tokio::test]
