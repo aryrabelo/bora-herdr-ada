@@ -14,11 +14,14 @@ use crate::detect::AgentState;
 use crate::layout::PaneId;
 use crate::terminal::TerminalRuntimeRegistry;
 
-const SWITCH_BUTTON_WIDTH: u16 = 10;
+const NAV_BUTTON_WIDTH: u16 = 4;
+const SWITCHER_BUTTON_WIDTH: u16 = 5;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct MobileHeaderHitAreas {
     pub menu: Rect,
+    pub prev_tab: Rect,
+    pub next_tab: Rect,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -50,15 +53,28 @@ pub(crate) fn compute_mobile_header_hit_areas(_app: &AppState, area: Rect) -> Mo
         return MobileHeaderHitAreas::default();
     }
 
-    let width = SWITCH_BUTTON_WIDTH.min(area.width);
-    let switch = Rect::new(
-        area.x + area.width.saturating_sub(width),
+    let total_w = (SWITCHER_BUTTON_WIDTH + NAV_BUTTON_WIDTH * 2).min(area.width);
+    let base_x = area.x + area.width.saturating_sub(total_w);
+
+    let switcher = Rect::new(
+        base_x,
         area.y,
-        width,
+        SWITCHER_BUTTON_WIDTH.min(total_w),
         area.height,
     );
+    let prev = Rect::new(
+        switcher.x + switcher.width,
+        area.y,
+        NAV_BUTTON_WIDTH,
+        area.height,
+    );
+    let next = Rect::new(prev.x + prev.width, area.y, NAV_BUTTON_WIDTH, area.height);
 
-    MobileHeaderHitAreas { menu: switch }
+    MobileHeaderHitAreas {
+        menu: switcher,
+        prev_tab: prev,
+        next_tab: next,
+    }
 }
 
 pub(crate) fn mobile_switcher_areas(app: &AppState) -> MobileSwitcherAreas {
@@ -169,12 +185,28 @@ pub(crate) fn render_mobile_header(
     let p = &app.palette;
     fill_rect(frame, area, Style::default().bg(p.panel_bg));
 
-    let switch = app.view.mobile_menu_hit_area;
-    let status_w = switch.x.saturating_sub(area.x).saturating_sub(1);
+    let switcher = app.view.mobile_menu_hit_area;
+    let status_w = switcher.x.saturating_sub(area.x).saturating_sub(1);
     let status = Rect::new(area.x, area.y, status_w, area.height);
 
     render_header_status(app, terminal_runtimes, frame, status);
-    render_switch_button(app, frame, switch);
+    render_nav_button(frame, switcher, "«", p.text, p.surface0, p.surface_dim);
+    render_nav_button(
+        frame,
+        app.view.mobile_prev_tab_hit_area,
+        "‹",
+        p.text,
+        p.surface0,
+        p.surface_dim,
+    );
+    render_nav_button(
+        frame,
+        app.view.mobile_next_tab_hit_area,
+        "›",
+        p.text,
+        p.surface0,
+        p.surface_dim,
+    );
 }
 
 pub(crate) fn mobile_toast_banner_rect(area: Rect, offset_for_warning: bool) -> Rect {
@@ -340,26 +372,27 @@ fn mobile_tab_status(ws: &crate::workspace::Workspace) -> String {
     }
 }
 
-fn render_switch_button(app: &AppState, frame: &mut Frame, area: Rect) {
+fn render_nav_button(
+    frame: &mut Frame,
+    area: Rect,
+    label: &str,
+    fg: ratatui::style::Color,
+    bg: ratatui::style::Color,
+    border_fg: ratatui::style::Color,
+) {
     if area.width == 0 || area.height == 0 {
         return;
     }
-    let p = &app.palette;
-    fill_rect(frame, area, Style::default().bg(p.surface0));
+    fill_rect(frame, area, Style::default().bg(bg));
     for y in area.y..area.y + area.height {
         frame.buffer_mut()[(area.x, y)]
             .set_symbol("│")
-            .set_style(Style::default().fg(p.surface_dim).bg(p.surface0));
+            .set_style(Style::default().fg(border_fg).bg(bg));
     }
     let label_y = if area.height > 1 { area.y + 1 } else { area.y };
     frame.render_widget(
-        Paragraph::new("switch")
-            .style(
-                Style::default()
-                    .fg(p.text)
-                    .bg(p.surface0)
-                    .add_modifier(Modifier::BOLD),
-            )
+        Paragraph::new(label)
+            .style(Style::default().fg(fg).bg(bg).add_modifier(Modifier::BOLD))
             .alignment(Alignment::Center),
         Rect::new(area.x + 1, label_y, area.width.saturating_sub(1), 1),
     );
@@ -1102,5 +1135,28 @@ mod tests {
             !row.contains("issue-264-nix-support"),
             "header row: {row:?}"
         );
+    }
+
+    #[test]
+    fn mobile_header_renders_three_nav_buttons() {
+        let mut app = crate::app::state::AppState::test_new();
+        app.workspaces = vec![crate::workspace::Workspace::test_new("test")];
+        app.active = Some(0);
+        app.selected = 0;
+        crate::ui::compute_view(&mut app, Rect::new(0, 0, 44, 20));
+
+        let backend = ratatui::backend::TestBackend::new(44, 2);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let registry = crate::terminal::TerminalRuntimeRegistry::new();
+        terminal
+            .draw(|frame| render_mobile_header(&app, &registry, frame, Rect::new(0, 0, 44, 2)))
+            .unwrap();
+        let row: String = (0..44)
+            .map(|x| terminal.backend().buffer()[(x, 1)].symbol().to_string())
+            .collect::<Vec<_>>()
+            .join("");
+        assert!(row.contains("«"), "missing switcher button: {row}");
+        assert!(row.contains("‹"), "missing prev tab button: {row}");
+        assert!(row.contains("›"), "missing next tab button: {row}");
     }
 }
