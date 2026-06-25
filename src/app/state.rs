@@ -576,10 +576,12 @@ pub struct WorkspaceCardArea {
     pub indented: bool,
 }
 
-/// Layout area for a visual group header row in the sidebar workspace list.
+/// Layout area for a collapsible group header row in the sidebar workspace list
+/// (a visual group, or a synthesized repo header).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GroupHeaderCardArea {
     pub name: String,
+    pub collapse_key: String,
     pub rect: Rect,
 }
 
