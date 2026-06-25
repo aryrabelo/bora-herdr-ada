@@ -287,7 +287,7 @@ fn workspace_display_priority(state: AgentState, seen: bool) -> u8 {
 fn space_aggregate_display_state(app: &AppState, key: &str) -> (AgentState, bool) {
     app.workspaces
         .iter()
-        .filter(|ws| ws.worktree_space().is_some_and(|space| space.key == key))
+        .filter(|ws| ws.git_space().is_some_and(|space| space.key == key))
         .map(|ws| ws.aggregate_display_state(&app.terminals))
         .max_by_key(|(state, seen)| workspace_display_priority(*state, *seen))
         .unwrap_or((AgentState::Unknown, true))
@@ -297,17 +297,14 @@ pub(crate) fn workspace_parent_group_state(
     app: &AppState,
     ws_idx: usize,
 ) -> Option<(String, bool)> {
-    let space = app.workspaces.get(ws_idx)?.worktree_space()?;
+    let space = app.workspaces.get(ws_idx)?.git_space()?;
     if space.is_linked_worktree {
         return None;
     }
     let member_count = app
         .workspaces
         .iter()
-        .filter(|ws| {
-            ws.worktree_space()
-                .is_some_and(|member| member.key == space.key)
-        })
+        .filter(|ws| ws.git_space().is_some_and(|member| member.key == space.key))
         .count();
     (member_count >= 2).then(|| {
         (
@@ -336,9 +333,11 @@ pub(crate) enum WorkspaceListEntry {
         ws_idx: usize,
         indented: bool,
     },
-    /// A user-defined visual group header row.
+    /// A collapsible group header row: a user-defined visual group, or a
+    /// synthesized repo header when no main checkout of the repo is open.
     GroupHeader {
         name: String,
+        collapse_key: String,
     },
 }
 
@@ -368,7 +367,7 @@ pub(crate) fn workspace_list_entries(app: &AppState) -> Vec<WorkspaceListEntry> 
     // --- Worktree group setup ---
     let mut members_by_key = std::collections::HashMap::<String, Vec<usize>>::new();
     for (ws_idx, ws) in app.workspaces.iter().enumerate() {
-        if let Some(space) = ws.worktree_space() {
+        if let Some(space) = ws.git_space() {
             members_by_key
                 .entry(space.key.clone())
                 .or_default()
@@ -377,15 +376,7 @@ pub(crate) fn workspace_list_entries(app: &AppState) -> Vec<WorkspaceListEntry> 
     }
     let grouped_keys = members_by_key
         .iter()
-        .filter(|(_, members)| {
-            members.len() >= 2
-                && members.iter().any(|idx| {
-                    app.workspaces
-                        .get(*idx)
-                        .and_then(|ws| ws.worktree_space())
-                        .is_some_and(|space| !space.is_linked_worktree)
-                })
-        })
+        .filter(|(_, members)| members.len() >= 2)
         .map(|(key, _)| key.clone())
         .collect::<std::collections::HashSet<_>>();
 
@@ -397,7 +388,7 @@ pub(crate) fn workspace_list_entries(app: &AppState) -> Vec<WorkspaceListEntry> 
     let active_group = visible_group_idx.and_then(|idx| {
         app.workspaces
             .get(idx)
-            .and_then(|ws| ws.worktree_space())
+            .and_then(|ws| ws.git_space())
             .map(|space| space.key.clone())
     });
 
@@ -423,7 +414,7 @@ pub(crate) fn workspace_list_entries(app: &AppState) -> Vec<WorkspaceListEntry> 
     for (ws_idx, ws) in app.workspaces.iter().enumerate() {
         if ws.visual_group.is_some() {
             if let Some(space) = ws
-                .worktree_space()
+                .git_space()
                 .filter(|s| grouped_keys.contains(&s.key) && !s.is_linked_worktree)
             {
                 if let Some(members) = members_by_key.get(&space.key) {
@@ -449,12 +440,12 @@ pub(crate) fn workspace_list_entries(app: &AppState) -> Vec<WorkspaceListEntry> 
 
         // --- Worktree group handling ---
         let in_worktree_group = ws
-            .worktree_space()
+            .git_space()
             .filter(|space| grouped_keys.contains(&space.key))
             .is_some();
 
         if in_worktree_group && !in_visual_group.contains(&ws_idx) {
-            let space = ws.worktree_space().unwrap();
+            let space = ws.git_space().unwrap();
             if emitted_worktree_groups.contains(&space.key) {
                 continue;
             }
@@ -467,14 +458,34 @@ pub(crate) fn workspace_list_entries(app: &AppState) -> Vec<WorkspaceListEntry> 
             let parent_idx = members.iter().copied().find(|idx| {
                 app.workspaces
                     .get(*idx)
-                    .and_then(|w| w.worktree_space())
+                    .and_then(|w| w.git_space())
                     .is_some_and(|s| !s.is_linked_worktree)
             });
             let Some(parent_idx) = parent_idx else {
-                entries.push(WorkspaceListEntry::Workspace {
-                    ws_idx,
-                    indented: false,
+                // No main checkout open: synthesize a repo header and nest every
+                // open checkout of the repo underneath it.
+                let collapsed = app.collapsed_space_keys.contains(&space.key);
+                entries.push(WorkspaceListEntry::GroupHeader {
+                    name: space.label.clone(),
+                    collapse_key: space.key.clone(),
                 });
+                if collapsed {
+                    if let Some(active_idx) = visible_group_idx
+                        .filter(|_| active_group.as_deref() == Some(space.key.as_str()))
+                    {
+                        entries.push(WorkspaceListEntry::Workspace {
+                            ws_idx: active_idx,
+                            indented: true,
+                        });
+                    }
+                } else {
+                    for member_idx in members {
+                        entries.push(WorkspaceListEntry::Workspace {
+                            ws_idx: *member_idx,
+                            indented: true,
+                        });
+                    }
+                }
                 continue;
             };
             let collapsed = app.collapsed_space_keys.contains(&space.key);
@@ -509,7 +520,7 @@ pub(crate) fn workspace_list_entries(app: &AppState) -> Vec<WorkspaceListEntry> 
 
         // Worktree child in a group that's already been emitted — skip.
         if in_worktree_group {
-            let space = ws.worktree_space().unwrap();
+            let space = ws.git_space().unwrap();
             if emitted_worktree_groups.contains(&space.key) {
                 continue;
             }
@@ -526,6 +537,7 @@ pub(crate) fn workspace_list_entries(app: &AppState) -> Vec<WorkspaceListEntry> 
                 let collapsed = app.collapsed_space_keys.contains(&vg_key);
                 entries.push(WorkspaceListEntry::GroupHeader {
                     name: group_name.to_owned(),
+                    collapse_key: vg_key,
                 });
                 if !collapsed {
                     if let Some(vg_members) = visual_group_members.get(group_name) {
@@ -534,7 +546,7 @@ pub(crate) fn workspace_list_entries(app: &AppState) -> Vec<WorkspaceListEntry> 
 
                             // Check if this member is a worktree parent with children.
                             let wt_key = member_ws
-                                .worktree_space()
+                                .git_space()
                                 .filter(|s| grouped_keys.contains(&s.key) && !s.is_linked_worktree)
                                 .map(|s| s.key.clone());
 
@@ -753,13 +765,14 @@ pub(crate) fn compute_workspace_list_areas(
     let entries = workspace_list_entries(app);
     for (entry_idx, entry) in entries.iter().enumerate().skip(scroll) {
         match entry {
-            WorkspaceListEntry::GroupHeader { name } => {
+            WorkspaceListEntry::GroupHeader { name, collapse_key } => {
                 // One row for the header; one gap row after (not occupying body space).
                 if row_y >= body_bottom {
                     break;
                 }
                 headers.push(crate::app::state::GroupHeaderCardArea {
                     name: name.clone(),
+                    collapse_key: collapse_key.clone(),
                     rect: Rect::new(body.x, row_y, body.width, 1),
                 });
                 row_y = row_y.saturating_add(2); // header row + gap
@@ -1259,18 +1272,25 @@ fn render_workspace_list(
         if header.rect.y >= list_bottom {
             continue;
         }
-        let vg_key = format!("vg:{}", header.name);
-        let collapsed = app.collapsed_space_keys.contains(&vg_key);
+        let collapsed = app.collapsed_space_keys.contains(&header.collapse_key);
         let chevron = if collapsed { "▸" } else { "▾" };
-        let line = Line::from(vec![
+        let mut spans = vec![
             Span::styled(chevron, Style::default().fg(p.accent)),
             Span::styled(" ", Style::default()),
             Span::styled(
                 header.name.clone(),
                 Style::default().fg(p.overlay0).add_modifier(Modifier::BOLD),
             ),
-        ]);
-        frame.render_widget(Paragraph::new(line), header.rect);
+        ];
+        // Synthesized repo headers show the repo's aggregate agent status when
+        // collapsed, mirroring a worktree parent row. Visual-group headers do not.
+        if collapsed && !header.collapse_key.starts_with("vg:") {
+            let (state, seen) = space_aggregate_display_state(app, &header.collapse_key);
+            let (dot, dot_style) = state_dot(state, seen, app.spinner_tick, p, false);
+            spans.push(Span::styled(" ", Style::default()));
+            spans.push(Span::styled(dot, dot_style));
+        }
+        frame.render_widget(Paragraph::new(Line::from(spans)), header.rect);
     }
 
     if let Some(y) = insertion_row.filter(|y| *y < list_bottom) {
@@ -1775,12 +1795,20 @@ mod tests {
     ) -> crate::workspace::Workspace {
         let mut ws = crate::workspace::Workspace::test_new(name);
         if let Some(key) = key {
+            let is_linked = name != "main";
             ws.worktree_space = Some(crate::workspace::WorktreeSpaceMembership {
                 key: key.into(),
                 label: "herdr".into(),
                 repo_root: std::path::PathBuf::from("/repo/herdr"),
                 checkout_path: std::path::PathBuf::from(checkout_key),
-                is_linked_worktree: name != "main",
+                is_linked_worktree: is_linked,
+            });
+            ws.cached_git_space = Some(crate::workspace::GitSpaceMetadata {
+                key: key.into(),
+                checkout_key: checkout_key.into(),
+                label: "herdr".into(),
+                repo_root: std::path::PathBuf::from("/repo/herdr"),
+                is_linked_worktree: is_linked,
             });
         }
         ws
@@ -1794,6 +1822,22 @@ mod tests {
             label: "herdr".into(),
             repo_root: std::path::PathBuf::from(format!("/repo/{name}")),
             is_linked_worktree: false,
+        });
+        ws
+    }
+
+    fn git_space_member(
+        name: &str,
+        key: &str,
+        is_linked_worktree: bool,
+    ) -> crate::workspace::Workspace {
+        let mut ws = crate::workspace::Workspace::test_new(name);
+        ws.cached_git_space = Some(crate::workspace::GitSpaceMetadata {
+            key: key.into(),
+            checkout_key: format!("/repo/{name}"),
+            label: "herdr".into(),
+            repo_root: std::path::PathBuf::from("/repo/herdr"),
+            is_linked_worktree,
         });
         ws
     }
@@ -1817,25 +1861,29 @@ mod tests {
     }
 
     #[test]
-    fn linked_only_worktree_members_do_not_form_parentless_group() {
+    fn linked_only_worktree_members_get_synthetic_repo_header() {
+        // Option C: with no main checkout open, linked worktrees of the same repo
+        // group under a synthesized repo header instead of rendering flat.
         let mut app = AppState::test_new();
         app.workspaces = vec![
             workspace_with_worktree_space("issue", Some("repo-key"), "/repo/herdr-issue"),
             workspace_with_worktree_space("review", Some("repo-key"), "/repo/herdr-review"),
         ];
 
-        let entries = workspace_list_entries(&app);
-
         assert_eq!(
-            entries,
+            workspace_list_entries(&app),
             vec![
+                WorkspaceListEntry::GroupHeader {
+                    name: "herdr".into(),
+                    collapse_key: "repo-key".into(),
+                },
                 WorkspaceListEntry::Workspace {
                     ws_idx: 0,
-                    indented: false
+                    indented: true,
                 },
                 WorkspaceListEntry::Workspace {
                     ws_idx: 1,
-                    indented: false
+                    indented: true,
                 },
             ]
         );
@@ -1951,7 +1999,9 @@ mod tests {
     }
 
     #[test]
-    fn workspace_list_entries_do_not_group_normal_git_workspaces() {
+    fn workspace_list_entries_group_same_repo_git_workspaces() {
+        // Option A: plain checkouts sharing a repo (git_space) group together,
+        // with the first non-linked checkout as the visual parent.
         let mut app = AppState::test_new();
         app.workspaces = vec![
             workspace_with_git_space("one", "repo-key"),
@@ -1967,14 +2017,16 @@ mod tests {
                 },
                 WorkspaceListEntry::Workspace {
                     ws_idx: 1,
-                    indented: false,
+                    indented: true,
                 },
             ]
         );
     }
 
     #[test]
-    fn workspace_list_entries_do_not_auto_attach_normal_git_workspace_to_group() {
+    fn workspace_list_entries_attach_same_repo_git_workspace_to_group() {
+        // Option A: a plain same-repo checkout attaches to the repo group as a child,
+        // even without explicit Herdr worktree membership.
         let mut app = AppState::test_new();
         app.workspaces = vec![
             workspace_with_worktree_space("main", Some("repo-key"), "/repo/herdr"),
@@ -1990,7 +2042,43 @@ mod tests {
                     indented: false,
                 },
                 WorkspaceListEntry::Workspace {
+                    ws_idx: 1,
+                    indented: true,
+                },
+                WorkspaceListEntry::Workspace {
                     ws_idx: 2,
+                    indented: true,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn workspace_list_entries_group_non_adjacent_repo_checkouts_without_membership() {
+        // Live scenario: a non-linked main checkout plus externally-created linked
+        // worktrees of the same repo (git_space only, no worktree_space membership),
+        // interleaved with an unrelated workspace, all nest under the main checkout.
+        let mut app = AppState::test_new();
+        app.workspaces = vec![
+            git_space_member("herdr", "repo-key", false),
+            git_space_member("unrelated", "other-key", false),
+            git_space_member("right-sidebar", "repo-key", true),
+            git_space_member("ajusta", "repo-key", true),
+        ];
+
+        assert_eq!(
+            workspace_list_entries(&app),
+            vec![
+                WorkspaceListEntry::Workspace {
+                    ws_idx: 0,
+                    indented: false,
+                },
+                WorkspaceListEntry::Workspace {
+                    ws_idx: 2,
+                    indented: true,
+                },
+                WorkspaceListEntry::Workspace {
+                    ws_idx: 3,
                     indented: true,
                 },
                 WorkspaceListEntry::Workspace {
@@ -1998,6 +2086,56 @@ mod tests {
                     indented: false,
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn workspace_list_entries_synthesize_header_when_no_main_checkout_open() {
+        // Option C: only linked worktrees of a repo are open (no main checkout).
+        // A synthetic repo header is emitted with all worktrees nested under it.
+        let mut app = AppState::test_new();
+        app.workspaces = vec![
+            git_space_member("right-sidebar", "repo-key", true),
+            git_space_member("ajusta", "repo-key", true),
+        ];
+
+        assert_eq!(
+            workspace_list_entries(&app),
+            vec![
+                WorkspaceListEntry::GroupHeader {
+                    name: "herdr".into(),
+                    collapse_key: "repo-key".into(),
+                },
+                WorkspaceListEntry::Workspace {
+                    ws_idx: 0,
+                    indented: true,
+                },
+                WorkspaceListEntry::Workspace {
+                    ws_idx: 1,
+                    indented: true,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn workspace_list_entries_collapsed_synthetic_repo_header_hides_children() {
+        // Collapsing a synthetic repo header leaves only the header row.
+        let mut app = AppState::test_new();
+        app.workspaces = vec![
+            git_space_member("right-sidebar", "repo-key", true),
+            git_space_member("ajusta", "repo-key", true),
+        ];
+        app.collapsed_space_keys.insert("repo-key".into());
+        app.active = None;
+        app.mode = Mode::Terminal;
+
+        assert_eq!(
+            workspace_list_entries(&app),
+            vec![WorkspaceListEntry::GroupHeader {
+                name: "herdr".into(),
+                collapse_key: "repo-key".into(),
+            }]
         );
     }
 
@@ -2101,7 +2239,10 @@ mod tests {
         assert_eq!(
             entries,
             vec![
-                WorkspaceListEntry::GroupHeader { name: "g1".into() },
+                WorkspaceListEntry::GroupHeader {
+                    name: "g1".into(),
+                    collapse_key: "vg:g1".into()
+                },
                 WorkspaceListEntry::Workspace {
                     ws_idx: 0,
                     indented: false,
@@ -2124,7 +2265,10 @@ mod tests {
         assert_eq!(
             entries,
             vec![
-                WorkspaceListEntry::GroupHeader { name: "g1".into() },
+                WorkspaceListEntry::GroupHeader {
+                    name: "g1".into(),
+                    collapse_key: "vg:g1".into()
+                },
                 WorkspaceListEntry::Workspace {
                     ws_idx: 0,
                     indented: false,
@@ -2151,7 +2295,10 @@ mod tests {
 
         assert_eq!(
             entries,
-            vec![WorkspaceListEntry::GroupHeader { name: "g1".into() },]
+            vec![WorkspaceListEntry::GroupHeader {
+                name: "g1".into(),
+                collapse_key: "vg:g1".into()
+            },]
         );
     }
 
@@ -2170,7 +2317,10 @@ mod tests {
         assert_eq!(
             entries,
             vec![
-                WorkspaceListEntry::GroupHeader { name: "g1".into() },
+                WorkspaceListEntry::GroupHeader {
+                    name: "g1".into(),
+                    collapse_key: "vg:g1".into()
+                },
                 WorkspaceListEntry::Workspace {
                     ws_idx: 0,
                     indented: false,

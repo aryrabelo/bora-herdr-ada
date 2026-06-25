@@ -1026,6 +1026,13 @@ mod tests {
                     checkout_path: checkout_path.into(),
                     is_linked_worktree: idx > 0,
                 });
+            app.state.workspaces[idx].cached_git_space = Some(crate::workspace::GitSpaceMetadata {
+                key: "repo-key".into(),
+                checkout_key: checkout_path.to_string(),
+                label: "herdr".into(),
+                repo_root: "/repo/herdr".into(),
+                is_linked_worktree: idx > 0,
+            });
         }
         app.state.active = None;
         app.state.mode = Mode::Terminal;
@@ -1060,6 +1067,13 @@ mod tests {
                     checkout_path: checkout_path.into(),
                     is_linked_worktree: idx > 0,
                 });
+            app.state.workspaces[idx].cached_git_space = Some(crate::workspace::GitSpaceMetadata {
+                key: "repo-key".into(),
+                checkout_key: checkout_path.to_string(),
+                label: "herdr".into(),
+                repo_root: "/repo/herdr".into(),
+                is_linked_worktree: idx > 0,
+            });
         }
         app.state.active = None;
         app.state.mode = Mode::Terminal;
@@ -1102,6 +1116,13 @@ mod tests {
                     checkout_path: checkout_path.into(),
                     is_linked_worktree: idx != 0,
                 });
+            app.state.workspaces[idx].cached_git_space = Some(crate::workspace::GitSpaceMetadata {
+                key: "repo-key".into(),
+                checkout_key: checkout_path.to_string(),
+                label: "herdr".into(),
+                repo_root: "/repo/herdr".into(),
+                is_linked_worktree: idx != 0,
+            });
         }
         app.state.active = Some(0);
         app.state.selected = 0;
@@ -1325,6 +1346,13 @@ mod tests {
             label: "herdr".into(),
             repo_root: "/repo/herdr".into(),
             checkout_path: format!("/repo/{name}").into(),
+            is_linked_worktree: name != "main",
+        });
+        ws.cached_git_space = Some(crate::workspace::GitSpaceMetadata {
+            key: key.into(),
+            checkout_key: format!("/repo/{name}"),
+            label: "herdr".into(),
+            repo_root: "/repo/herdr".into(),
             is_linked_worktree: name != "main",
         });
         ws
