@@ -660,10 +660,10 @@ fn agent_wait_probe_error(response: ErrorResponse) -> std::io::Result<String> {
 
 pub(super) fn wait_for_event(
     request_id: String,
-    params: EventsWaitParams,
+    params: crate::api::schema::EventsWaitParams,
     stream: &mut LocalStream,
     api_tx: &ApiRequestSender,
-    event_hub: &EventHub,
+    event_hub: &crate::api::EventHub,
     running: &Arc<AtomicBool>,
 ) -> std::io::Result<Option<String>> {
     let deadline = params
