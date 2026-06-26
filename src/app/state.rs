@@ -1260,6 +1260,8 @@ pub struct ContextMenuState {
     pub y: u16,
     pub list: MenuListState,
     pub items: Vec<String>,
+    pub bora_commands: Vec<crate::bora_config::BoraCommand>,
+    pub bora_port: Option<u16>,
 }
 
 /// Menu separator: rendered as a dim line, not selectable.
@@ -1268,6 +1270,7 @@ pub const CONTEXT_MENU_SEPARATOR: &str = "─";
 pub fn build_context_menu_items(
     kind: &ContextMenuKind,
     workspaces: &[crate::workspace::Workspace],
+    custom_commands: &[String],
 ) -> Vec<String> {
     let groups: Vec<String> = {
         let mut set = std::collections::BTreeSet::new();
@@ -1290,6 +1293,10 @@ pub fn build_context_menu_items(
         ContextMenuKind::Workspace { .. } => {
             let mut v = vec!["Rename".to_string(), "Copy path".to_string(), sep()];
             push_groups(&mut v);
+            if !custom_commands.is_empty() {
+                v.push(sep());
+                v.extend(custom_commands.iter().cloned());
+            }
             v.push(sep());
             v.push("Close".to_string());
             v
@@ -1309,6 +1316,10 @@ pub fn build_context_menu_items(
                 sep(),
             ];
             push_groups(&mut v);
+            if !custom_commands.is_empty() {
+                v.push(sep());
+                v.extend(custom_commands.iter().cloned());
+            }
             v.push(sep());
             v.push("Close".to_string());
             v
@@ -1327,6 +1338,10 @@ pub fn build_context_menu_items(
                 sep(),
             ];
             push_groups(&mut v);
+            if !custom_commands.is_empty() {
+                v.push(sep());
+                v.extend(custom_commands.iter().cloned());
+            }
             v.push(sep());
             v.push("Close".to_string());
             v.push("Delete worktree\u{2026}".to_string());
@@ -1348,6 +1363,10 @@ pub fn build_context_menu_items(
                 sep(),
             ];
             push_groups(&mut v);
+            if !custom_commands.is_empty() {
+                v.push(sep());
+                v.extend(custom_commands.iter().cloned());
+            }
             v.push(sep());
             v.push("Close group".to_string());
             v
@@ -1368,6 +1387,10 @@ pub fn build_context_menu_items(
                 sep(),
             ];
             push_groups(&mut v);
+            if !custom_commands.is_empty() {
+                v.push(sep());
+                v.extend(custom_commands.iter().cloned());
+            }
             v.push(sep());
             v.push("Close group".to_string());
             v
@@ -1430,6 +1453,14 @@ impl ContextMenuState {
     pub fn items(&self) -> &[String] {
         &self.items
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct PendingBoraCommand {
+    pub ws_idx: usize,
+    pub command: String,
+    pub mode: crate::bora_config::BoraCommandMode,
+    pub port: Option<u16>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1558,6 +1589,9 @@ pub struct AppState {
     /// Set when UI interaction requested a clipboard write that must be
     /// handled by the outer App/event loop instead of directly from AppState.
     pub request_clipboard_write: Option<Vec<u8>>,
+    pub pending_bora_command: Option<PendingBoraCommand>,
+    /// Transient port override consumed by custom_command_env for pane commands.
+    pub bora_port_override: Option<u16>,
     pub creating_new_tab: bool,
     pub requested_new_tab_name: Option<String>,
     pub pending_workspace_create_cwd: Option<std::path::PathBuf>,
@@ -1942,6 +1976,8 @@ impl AppState {
             request_reload_config: false,
             request_client_config_reload: false,
             request_clipboard_write: None,
+            pending_bora_command: None,
+            bora_port_override: None,
             creating_new_tab: false,
             requested_new_tab_name: None,
             pending_workspace_create_cwd: None,
@@ -2611,11 +2647,13 @@ mod tests {
             collapsed: false,
         };
         let menu = ContextMenuState {
-            items: build_context_menu_items(&kind, &[]),
+            items: build_context_menu_items(&kind, &[], &[]),
             kind,
             x: 0,
             y: 0,
             list: MenuListState::new(0),
+            bora_commands: vec![],
+            bora_port: None,
         };
 
         assert_eq!(
@@ -2646,11 +2684,13 @@ mod tests {
             collapsed: false,
         };
         let menu = ContextMenuState {
-            items: build_context_menu_items(&kind, &[]),
+            items: build_context_menu_items(&kind, &[], &[]),
             kind,
             x: 0,
             y: 0,
             list: MenuListState::new(0),
+            bora_commands: vec![],
+            bora_port: None,
         };
 
         assert_eq!(
@@ -2680,11 +2720,13 @@ mod tests {
             collapsed: false,
         };
         let menu = ContextMenuState {
-            items: build_context_menu_items(&kind, &[]),
+            items: build_context_menu_items(&kind, &[], &[]),
             kind,
             x: 0,
             y: 0,
             list: MenuListState::new(0),
+            bora_commands: vec![],
+            bora_port: None,
         };
         assert_eq!(
             menu.items().iter().map(String::as_str).collect::<Vec<_>>(),

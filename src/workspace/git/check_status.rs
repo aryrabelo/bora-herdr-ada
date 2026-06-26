@@ -218,10 +218,7 @@ mod tests {
         assert_eq!(status.checks.len(), 2);
         assert_eq!(status.checks[0].name, "build");
         assert_eq!(status.checks[0].status, "COMPLETED");
-        assert_eq!(
-            status.checks[0].conclusion.as_deref(),
-            Some("SUCCESS")
-        );
+        assert_eq!(status.checks[0].conclusion.as_deref(), Some("SUCCESS"));
         assert!(status.error.is_none());
     }
 

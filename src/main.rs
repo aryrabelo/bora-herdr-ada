@@ -57,6 +57,7 @@ fn set_host_color_scheme_reports(enabled: bool) -> io::Result<()> {
 mod agent_resume;
 mod api;
 mod app;
+mod bora_config;
 mod build_info;
 #[cfg(not(windows))]
 mod checksum;

@@ -121,7 +121,10 @@ fn render_changes_tab(app: &AppState, frame: &mut Frame, area: Rect) {
             };
             let filename = file.path.rsplit('/').next().unwrap_or(&file.path);
             lines.push(Line::from(vec![
-                Span::styled(format!("  {status_char} "), Style::default().fg(status_color)),
+                Span::styled(
+                    format!("  {status_char} "),
+                    Style::default().fg(status_color),
+                ),
                 Span::styled(filename.to_string(), Style::default().fg(p.text)),
                 Span::styled(delta, Style::default().fg(p.subtext0)),
             ]));
@@ -141,7 +144,10 @@ fn render_checks_tab(app: &AppState, frame: &mut Frame, area: Rect) {
 
     let Some(cs) = check_status else {
         frame.render_widget(
-            Line::from(Span::styled(" no check data", Style::default().fg(p.subtext0))),
+            Line::from(Span::styled(
+                " no check data",
+                Style::default().fg(p.subtext0),
+            )),
             area,
         );
         return;
@@ -159,7 +165,10 @@ fn render_checks_tab(app: &AppState, frame: &mut Frame, area: Rect) {
 
     if let Some(pr) = &cs.pr {
         lines.push(Line::from(vec![
-            Span::styled(format!(" #{} ", pr.number), Style::default().fg(p.accent).bold()),
+            Span::styled(
+                format!(" #{} ", pr.number),
+                Style::default().fg(p.accent).bold(),
+            ),
             Span::styled(pr.title.clone(), Style::default().fg(p.text)),
         ]));
         let state_color = match pr.state.as_str() {

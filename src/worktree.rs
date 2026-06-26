@@ -607,6 +607,39 @@ pub(crate) fn worktree_list_contains_path(repo_root: &Path, path: &Path) -> Resu
         .any(|entry| canonical_or_original(&entry.path) == expected))
 }
 
+/// Copy files listed in `.worktreeinclude` from the source repo root to a new
+/// worktree checkout. Each line is a relative path; missing source files are
+/// silently skipped. Parent directories are created as needed.
+pub(crate) fn copy_worktree_includes(repo_root: &Path, checkout_path: &Path) {
+    let include_path = repo_root.join(".worktreeinclude");
+    let content = match std::fs::read_to_string(&include_path) {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let src = repo_root.join(line);
+        let dst = checkout_path.join(line);
+        if !src.is_file() {
+            tracing::debug!(path = %src.display(), "worktreeinclude: source file not found, skipping");
+            continue;
+        }
+        if let Some(parent) = dst.parent() {
+            if let Err(err) = std::fs::create_dir_all(parent) {
+                tracing::warn!(path = %parent.display(), "worktreeinclude: failed to create parent dir: {err}");
+                continue;
+            }
+        }
+        if let Err(err) = std::fs::copy(&src, &dst) {
+            tracing::warn!(src = %src.display(), dst = %dst.display(), "worktreeinclude: copy failed: {err}");
+        } else {
+            tracing::info!(file = line, "worktreeinclude: copied to new worktree");
+        }
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1018,5 +1051,39 @@ prunable stale
         assert!(checkout.join("unrelated").exists());
         let _ = std::fs::remove_dir_all(checkout);
         let _ = std::fs::remove_dir_all(repo);
+    }
+
+    #[test]
+    fn copy_worktree_includes_copies_listed_files() {
+        let src = unique_temp_path("worktree-include-src");
+        let dst = unique_temp_path("worktree-include-dst");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::create_dir_all(&dst).unwrap();
+
+        // Create .worktreeinclude and source files.
+        std::fs::write(
+            src.join(".worktreeinclude"),
+            ".env\nsub/config.toml\nmissing\n",
+        )
+        .unwrap();
+        std::fs::write(src.join(".env"), "SECRET=42\n").unwrap();
+        std::fs::create_dir_all(src.join("sub")).unwrap();
+        std::fs::write(src.join("sub/config.toml"), "[app]\nport = 3000\n").unwrap();
+
+        copy_worktree_includes(&src, &dst);
+
+        assert_eq!(
+            std::fs::read_to_string(dst.join(".env")).unwrap(),
+            "SECRET=42\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dst.join("sub/config.toml")).unwrap(),
+            "[app]\nport = 3000\n"
+        );
+        // Missing source file is silently skipped.
+        assert!(!dst.join("missing").exists());
+
+        let _ = std::fs::remove_dir_all(src);
+        let _ = std::fs::remove_dir_all(dst);
     }
 }
