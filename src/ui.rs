@@ -1014,9 +1014,10 @@ mod tests {
         let line1 = buffer_row_text(buffer, card, card.y);
         let line2 = buffer_row_text(buffer, card, card.y + 1);
 
-        // New layout: line 1 = workspace name, line 2 = tab dots (one dot per tab).
+        // New layout: workspace is git so line 1 has a rail prefix ("│ one").
+        // Assert the name is present and there's no leading number like "1 one".
         assert!(
-            line1.starts_with(" one"),
+            line1.trim_start_matches(['│', ' ']).starts_with("one"),
             "expected name on row 1, got: {line1:?}"
         );
         assert!(!line1.contains("1 one"));

@@ -105,6 +105,7 @@ impl App {
                 self.render_dirty.store(true, Ordering::Release);
                 self.render_notify.notify_one();
             }
+            self.start_checks_refresh_if_due(Instant::now());
             return;
         }
 

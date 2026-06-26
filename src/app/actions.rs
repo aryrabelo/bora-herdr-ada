@@ -1152,6 +1152,7 @@ impl AppState {
             .filter_map(|entry| match entry {
                 crate::ui::WorkspaceListEntry::Workspace { ws_idx, .. } => Some(ws_idx),
                 crate::ui::WorkspaceListEntry::GroupHeader { .. }
+                | crate::ui::WorkspaceListEntry::ProjectHeader { .. }
                 | crate::ui::WorkspaceListEntry::BranchHeader { .. } => None,
             })
             .collect::<Vec<_>>();

@@ -202,9 +202,9 @@ pub(crate) fn mobile_switcher_target_at(
             WorkspaceListEntry::Workspace { ws_idx, .. } => {
                 Some(MobileSwitcherTarget::Workspace(*ws_idx))
             }
-            WorkspaceListEntry::GroupHeader { .. } | WorkspaceListEntry::BranchHeader { .. } => {
-                None
-            }
+            // Headers are filtered out of mobile_space_entries; be tolerant of
+            // new non-workspace entry kinds regardless.
+            _ => None,
         });
     }
     cursor = spaces_end;
