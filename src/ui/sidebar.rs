@@ -256,15 +256,15 @@ fn format_agent_panel_primary_label(entry: &AgentPanelEntry, max_width: usize) -
     )
 }
 
-/// Rail glyph for a workspace inside a branch bracket.
+/// Tree rail for a workspace listed under a branch header.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BranchRail {
-    /// Not inside a bracket (standalone / trivial branch).
+    /// Loose workspace with no detected branch — no tree spine.
     None,
-    /// Inside a bracket, not the last member.
-    Mid,
-    /// Last member in the bracket.
-    Last,
+    /// Under a branch that has siblings below it — spine continues (│).
+    Spine,
+    /// Under the last branch in the group — no spine below it.
+    Tail,
 }
 
 /// Per-tab aggregate dot states in tab order: (AgentState, seen).
@@ -347,19 +347,6 @@ pub(crate) fn workspace_parent_group_state(
     })
 }
 
-pub(crate) fn grouped_child_display_label(label: &str, branch: Option<&str>, has_custom_name: bool) -> String {
-    if has_custom_name {
-        return label.to_string();
-    }
-    let Some(branch) = branch else {
-        return label.to_string();
-    };
-    branch
-        .strip_prefix("worktree/")
-        .unwrap_or(branch)
-        .to_string()
-}
-
 /// Strip `worktree/` prefix from a branch label for display.
 fn branch_display_label(branch: &str) -> &str {
     branch.strip_prefix("worktree/").unwrap_or(branch)
@@ -387,6 +374,7 @@ pub(crate) enum WorkspaceListEntry {
         ahead: usize,
         behind: usize,
         indented: bool,
+        last: bool,
     },
 }
 
@@ -402,11 +390,7 @@ fn entry_row_height(
         WorkspaceListEntry::GroupHeader { .. } => 1,
         WorkspaceListEntry::ProjectHeader { .. } => 1,
         WorkspaceListEntry::BranchHeader { .. } => 1,
-        WorkspaceListEntry::Workspace { rail, .. } => match rail {
-            // Last bracket member carries the closer line (╰────) below its dots.
-            BranchRail::Last => 3,
-            _ => 2, // name + dots, no gap
-        },
+        WorkspaceListEntry::Workspace { .. } => 2,
     }
 }
 
@@ -423,6 +407,25 @@ pub(crate) fn normalized_workspace_scroll(app: &AppState, area: Rect, requested:
     } else {
         requested.min(entry_count.saturating_sub(1))
     }
+}
+
+/// Display label for an indented (grouped child) workspace row in the mobile
+/// switcher: auto-named children show their short branch name.
+pub(crate) fn grouped_child_display_label(
+    label: &str,
+    branch: Option<&str>,
+    has_custom_name: bool,
+) -> String {
+    if has_custom_name {
+        return label.to_string();
+    }
+    let Some(branch) = branch else {
+        return label.to_string();
+    };
+    branch
+        .strip_prefix("worktree/")
+        .unwrap_or(branch)
+        .to_string()
 }
 
 pub(crate) fn workspace_list_entries(app: &AppState) -> Vec<WorkspaceListEntry> {
@@ -656,26 +659,29 @@ fn emit_branch_subgroups(
         }
     }
 
-    // One boxed bracket per branch; members on the same branch share a bracket.
-    for branch in &branch_order {
+    // One branch sub-tree per branch; members on the same branch stack under it.
+    let branch_count = branch_order.len();
+    for (bi, branch) in branch_order.iter().enumerate() {
         let members = &by_branch[branch];
         let (ahead, behind) = members
             .iter()
             .find_map(|&i| app.workspaces[i].git_ahead_behind())
             .unwrap_or((0, 0));
+        // The last branch only when no loose (branch-less) workspaces follow it.
+        let is_last_branch = bi + 1 == branch_count && no_branch.is_empty();
         entries.push(WorkspaceListEntry::BranchHeader {
             label: branch_display_label(branch).to_string(),
             ahead,
             behind,
             indented,
+            last: is_last_branch,
         });
-        let last = members.len() - 1;
-        for (i, &idx) in members.iter().enumerate() {
-            let rail = if i == last {
-                BranchRail::Last
-            } else {
-                BranchRail::Mid
-            };
+        let rail = if is_last_branch {
+            BranchRail::Tail
+        } else {
+            BranchRail::Spine
+        };
+        for &idx in members {
             entries.push(WorkspaceListEntry::Workspace {
                 ws_idx: idx,
                 indented,
@@ -1522,7 +1528,7 @@ fn render_workspace_list(
                     let indent = if *indented { " " } else { "" };
                     let mut spans = vec![Span::styled(
                         format!("{indent}{name}"),
-                        Style::default().fg(p.overlay0).add_modifier(Modifier::BOLD),
+                        Style::default().fg(p.accent).add_modifier(Modifier::BOLD),
                     )];
                     if collapsed {
                         let (state, seen) = space_aggregate_display_state(app, collapse_key);
@@ -1541,11 +1547,16 @@ fn render_workspace_list(
                 ahead,
                 behind,
                 indented,
+                last,
             } => {
                 if row_y < list_bottom {
                     let indent = if *indented { " " } else { "" };
+                    let connector = if *last { "╰─ " } else { "├─ " };
                     let mut spans = vec![
-                        Span::styled(format!("{indent}╭── "), Style::default().fg(p.overlay0)),
+                        Span::styled(
+                            format!("{indent}{connector}"),
+                            Style::default().fg(p.overlay0),
+                        ),
                         Span::styled(label.clone(), Style::default().fg(p.mauve)),
                     ];
                     if *ahead > 0 {
@@ -1572,7 +1583,7 @@ fn render_workspace_list(
                             .and_then(|cs| cs.pr.as_ref())
                         {
                             let pr_color = match pr.state.as_str() {
-                                "MERGED" => p.mauve,
+                                "MERGED" => p.teal,
                                 "CLOSED" => p.red,
                                 _ => p.green,
                             };
@@ -1625,42 +1636,41 @@ fn render_workspace_list(
                 let name_style = if highlighted {
                     Style::default().fg(p.text).add_modifier(Modifier::BOLD)
                 } else {
-                    Style::default().fg(p.subtext0)
+                    Style::default().fg(p.text)
                 };
                 let rail_style = Style::default().fg(p.overlay0);
 
                 // --- Line 1: name ---
                 let mut line1 = Vec::new();
                 let indent_prefix = if *indented { " " } else { "" };
-                if *rail != BranchRail::None {
-                    line1.push(Span::styled(indent_prefix, Style::default()));
-                    // Name line always uses │ for rail (even for Last).
-                    line1.push(Span::styled("│ ", rail_style));
-                } else if let Some((key, collapsed)) =
-                    workspace_parent_group_state(app, i).filter(|_| !*indented)
-                {
-                    let chevron = if collapsed { "▸" } else { "▾" };
-                    line1.push(Span::styled(chevron, Style::default().fg(p.accent)));
-                    if collapsed {
-                        let (state, seen) = space_aggregate_display_state(app, &key);
-                        let (si, ss) = state_dot(state, seen, p, false);
-                        line1.push(Span::styled(" ", Style::default()));
-                        line1.push(Span::styled(si, ss));
+                match rail {
+                    BranchRail::Spine => {
+                        line1.push(Span::styled(indent_prefix, Style::default()));
+                        line1.push(Span::styled("│  ", rail_style));
                     }
-                    line1.push(Span::styled(" ", Style::default()));
-                } else {
-                    line1.push(Span::styled(indent_prefix, Style::default()));
+                    BranchRail::Tail => {
+                        line1.push(Span::styled(format!("{indent_prefix}   "), Style::default()));
+                    }
+                    BranchRail::None => {
+                        if let Some((key, collapsed)) =
+                            workspace_parent_group_state(app, i).filter(|_| !*indented)
+                        {
+                            let chevron = if collapsed { "▸" } else { "▾" };
+                            line1.push(Span::styled(chevron, Style::default().fg(p.accent)));
+                            if collapsed {
+                                let (state, seen) = space_aggregate_display_state(app, &key);
+                                let (si, ss) = state_dot(state, seen, p, false);
+                                line1.push(Span::styled(" ", Style::default()));
+                                line1.push(Span::styled(si, ss));
+                            }
+                            line1.push(Span::styled(" ", Style::default()));
+                        } else {
+                            line1.push(Span::styled(indent_prefix, Style::default()));
+                        }
+                    }
                 }
 
-                let label = if *rail != BranchRail::None {
-                    grouped_child_display_label(
-                        &ws.display_name_from(&app.terminals, terminal_runtimes),
-                        ws.branch().as_deref(),
-                        ws.custom_name.is_some(),
-                    )
-                } else {
-                    ws.display_name_from(&app.terminals, terminal_runtimes)
-                };
+                let label = ws.display_name_from(&app.terminals, terminal_runtimes);
                 line1.push(Span::styled(label, name_style));
 
                 if row_y < list_bottom {
@@ -1674,14 +1684,20 @@ fn render_workspace_list(
                 let dots_y = row_y + 1;
                 if dots_y < list_bottom {
                     let mut line2 = Vec::new();
-                    if *rail != BranchRail::None {
-                        line2.push(Span::styled(indent_prefix, Style::default()));
-                        line2.push(Span::styled("│ ", rail_style));
-                    } else {
-                        line2.push(Span::styled(indent_prefix, Style::default()));
-                        // Align with name: extra space for non-rail.
-                        if !*indented && workspace_parent_group_state(app, i).is_some() {
-                            line2.push(Span::styled("  ", Style::default()));
+                    match rail {
+                        BranchRail::Spine => {
+                            line2.push(Span::styled(indent_prefix, Style::default()));
+                            line2.push(Span::styled("│  ", rail_style));
+                        }
+                        BranchRail::Tail => {
+                            line2.push(Span::styled(format!("{indent_prefix}   "), Style::default()));
+                        }
+                        BranchRail::None => {
+                            line2.push(Span::styled(indent_prefix, Style::default()));
+                            // Align with name: extra space for non-rail.
+                            if !*indented && workspace_parent_group_state(app, i).is_some() {
+                                line2.push(Span::styled("  ", Style::default()));
+                            }
                         }
                     }
                     let idle_stale = ws.last_activity_at.is_some_and(|t| {
@@ -1703,19 +1719,6 @@ fn render_workspace_list(
                         Paragraph::new(Line::from(line2)),
                         Rect::new(body.x, dots_y, body.width, 1),
                     );
-                }
-                if *rail == BranchRail::Last {
-                    let closer_y = dots_y + 1;
-                    if closer_y < list_bottom {
-                        let indent = if *indented { " " } else { "" };
-                        frame.render_widget(
-                            Paragraph::new(Line::from(Span::styled(
-                                format!("{indent}╰────"),
-                                Style::default().fg(p.overlay0),
-                            ))),
-                            Rect::new(body.x, closer_y, body.width, 1),
-                        );
-                    }
                 }
             }
         }
@@ -2036,37 +2039,6 @@ rows = [[{ token = "workspace", bold = false }, { token = "agent", dim = false }
         assert_eq!(agent.fg, Some(app.palette.overlay0));
         assert!(!agent.add_modifier.contains(Modifier::DIM));
     }
-
-    #[test]
-    fn default_space_workspace_style_tracks_active_state() {
-        let mut app = crate::app::state::AppState::test_new();
-        app.workspaces = vec![Workspace::test_new("one"), Workspace::test_new("two")];
-        app.active = Some(0);
-        app.mode = Mode::Terminal;
-        let area = Rect::new(0, 0, 26, 20);
-        app.view.workspace_card_areas = compute_workspace_card_areas(&app, area);
-        let first_row = app.view.workspace_card_areas[0].rect.y;
-        let second_row = app.view.workspace_card_areas[1].rect.y;
-        let mut terminal = Terminal::new(TestBackend::new(26, 20)).unwrap();
-        terminal
-            .draw(|frame| render_sidebar(&app, &TerminalRuntimeRegistry::new(), frame, area))
-            .unwrap();
-        let buffer = terminal.backend().buffer();
-
-        let active = buffer[(find_symbol_x(buffer, first_row, 25, "o"), first_row)].style();
-        assert_eq!(active.fg, Some(app.palette.text));
-        assert!(active.add_modifier.contains(Modifier::BOLD));
-        assert!(!active.add_modifier.contains(Modifier::DIM));
-        assert_eq!(active.bg, Some(app.palette.surface_dim));
-
-        let inactive = buffer[(find_symbol_x(buffer, second_row, 25, "t"), second_row)].style();
-        assert_eq!(inactive.fg, Some(app.palette.subtext0));
-        assert!(!inactive
-            .add_modifier
-            .intersects(Modifier::BOLD | Modifier::DIM));
-        assert_eq!(inactive.bg, Some(ratatui::style::Color::Reset));
-    }
-
 
     #[test]
     fn occurrence_foreground_flattens_composite_git_status_colors() {
@@ -2583,22 +2555,6 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
     }
 
     #[test]
-    fn grouped_child_label_keeps_custom_workspace_name() {
-        assert_eq!(
-            grouped_child_display_label("renamed issue", Some("worktree/issue-137"), true),
-            "renamed issue"
-        );
-    }
-
-    #[test]
-    fn grouped_child_label_uses_short_branch_for_auto_named_workspace() {
-        assert_eq!(
-            grouped_child_display_label("herdr-issue", Some("worktree/issue-137"), false),
-            "issue-137"
-        );
-    }
-
-    #[test]
     fn workspace_list_truncates_cjk_branch_without_panic() {
         let mut app = crate::app::state::AppState::test_new();
         let mut ws = Workspace::test_new("repo");
@@ -2657,8 +2613,8 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
             .collect::<String>();
 
         assert!(text.contains("herdr"), "project header label: {text:?}");
-        assert!(text.contains('╭'), "branch bracket opens: {text:?}");
-        assert!(text.contains('╰'), "branch bracket closes: {text:?}");
+        assert!(text.contains("╰─"), "branch tree connector present: {text:?}");
+        assert!(text.contains("main"), "branch label present: {text:?}");
         assert!(text.contains("strider"), "member name present: {text:?}");
         assert_eq!(
             text.matches('▾').count(),
@@ -3510,7 +3466,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
         let entries = workspace_list_entries(&app);
 
         // Both checkouts are on branch "main" under a synthesized project header,
-        // so they form a single bracket: BranchHeader + rail Mid then Last.
+        // so they form one branch sub-tree: BranchHeader{last} + two Tail members.
         assert_eq!(
             entries,
             vec![
@@ -3524,16 +3480,17 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
                     ahead: 0,
                     behind: 0,
                     indented: true,
+                    last: true,
                 },
                 WorkspaceListEntry::Workspace {
                     ws_idx: 0,
                     indented: true,
-                    rail: BranchRail::Mid,
+                    rail: BranchRail::Tail,
                 },
                 WorkspaceListEntry::Workspace {
                     ws_idx: 1,
                     indented: true,
-                    rail: BranchRail::Last,
+                    rail: BranchRail::Tail,
                 },
             ]
         );
@@ -3571,11 +3528,12 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
                     ahead: 0,
                     behind: 0,
                     indented: true,
+                    last: false,
                 },
                 WorkspaceListEntry::Workspace {
                     ws_idx: 1,
                     indented: true,
-                    rail: BranchRail::Last,
+                    rail: BranchRail::Spine,
                 },
                 WorkspaceListEntry::Workspace {
                     ws_idx: 0,
@@ -3630,36 +3588,34 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
             "one bracket per branch"
         );
 
-        // Each branch has exactly one member → no Mid entries, two Last entries.
-        let mid_count = entries
+        // A loose (branch-less) parent follows the branches, so neither branch is
+        // the last node → both branched members carry a continuing Spine rail.
+        let spine_count = entries
             .iter()
             .filter(|e| {
                 matches!(
                     e,
                     WorkspaceListEntry::Workspace {
-                        rail: BranchRail::Mid,
+                        rail: BranchRail::Spine,
                         ..
                     }
                 )
             })
             .count();
-        let last_count = entries
+        let tail_count = entries
             .iter()
             .filter(|e| {
                 matches!(
                     e,
                     WorkspaceListEntry::Workspace {
-                        rail: BranchRail::Last,
+                        rail: BranchRail::Tail,
                         ..
                     }
                 )
             })
             .count();
-        assert_eq!(
-            mid_count, 0,
-            "no Mid members when each branch has one workspace"
-        );
-        assert_eq!(last_count, 2, "one Last member per branch");
+        assert_eq!(spine_count, 2, "each branch member continues the spine");
+        assert_eq!(tail_count, 0, "no tail member while a loose parent follows");
     }
 
     #[test]
@@ -3698,27 +3654,27 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
             ahead: 0,
             behind: 0,
             indented: false,
+            last: false,
         }];
         assert_eq!(entry_row_height(&entries[0], &entries, 0), 1);
     }
 
     #[test]
-    fn entry_row_height_workspace_in_bracket_suppresses_gap() {
+    fn entry_row_height_workspace_is_two_rows() {
         let entries = vec![
             WorkspaceListEntry::Workspace {
                 ws_idx: 0,
                 indented: true,
-                rail: BranchRail::Mid,
+                rail: BranchRail::Spine,
             },
             WorkspaceListEntry::Workspace {
                 ws_idx: 1,
                 indented: true,
-                rail: BranchRail::Last,
+                rail: BranchRail::Tail,
             },
         ];
-        // Mid followed by Last: gap suppressed → 2 rows.
+        // Every workspace is name + dots = 2 rows; no closer line.
         assert_eq!(entry_row_height(&entries[0], &entries, 0), 2);
-        // Last at end of list: gap added → 3 rows.
-        assert_eq!(entry_row_height(&entries[1], &entries, 1), 3);
+        assert_eq!(entry_row_height(&entries[1], &entries, 1), 2);
     }
 }

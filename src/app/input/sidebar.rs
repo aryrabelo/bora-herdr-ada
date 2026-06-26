@@ -1728,7 +1728,10 @@ mod tests {
             Workspace::test_new("b"),
             Workspace::test_new("c"),
         ];
-        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 24));
+        for ws in &mut app.state.workspaces {
+            ws.cached_git_branch = None;
+        }
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 30));
 
         let cards = &app.state.view.workspace_card_areas;
         let bottom_slot = crate::ui::workspace_drop_indicator_row(
