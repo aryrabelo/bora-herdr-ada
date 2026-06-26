@@ -926,6 +926,10 @@ impl App {
         match result.result {
             Ok(()) => {
                 tracing::info!(checkout_path = %create.checkout_path.display(), "git worktree add completed");
+                crate::worktree::copy_worktree_includes(
+                    &create.source_repo_root,
+                    &create.checkout_path,
+                );
                 let path = create.checkout_path.clone();
                 let source_workspace_id = create.source_workspace_id.clone();
                 let source_checkout_path = create.source_checkout_path.clone();
