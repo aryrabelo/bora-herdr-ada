@@ -336,7 +336,7 @@ export default function (pi) {
   function resetSessionState() {
     clearPendingTimers();
     clearFailureState();
-    agentActive = false;
+    agentActiveCount = 0;
     blockedCount = 0;
     blockedMessage = undefined;
   }
@@ -373,7 +373,7 @@ export default function (pi) {
       return;
     }
     // A reload can replace this extension mid-run without emitting another agent_start.
-    agentActive = ctx?.isIdle?.() === false;
+    agentActiveCount = ctx?.isIdle?.() === false ? 1 : 0;
     publishState(true);
   });
 
