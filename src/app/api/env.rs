@@ -58,4 +58,36 @@ mod tests {
 
         assert_eq!(normalize_launch_env(env).unwrap_err().0, "invalid_env");
     }
+
+    #[test]
+    fn normalize_launch_env_preserves_trace_context_entries() {
+        // OTEL_*/traceparent must pass through untouched so child agent traces
+        // correlate with the orchestrator task trace. Header values carry '='.
+        let env = HashMap::from([
+            (
+                "traceparent".to_string(),
+                "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01".to_string(),
+            ),
+            (
+                "OTEL_EXPORTER_OTLP_HEADERS".to_string(),
+                "Authorization=Bearer token".to_string(),
+            ),
+        ]);
+
+        let normalized = normalize_launch_env(env).unwrap();
+
+        assert_eq!(
+            normalized,
+            vec![
+                (
+                    "OTEL_EXPORTER_OTLP_HEADERS".to_string(),
+                    "Authorization=Bearer token".to_string(),
+                ),
+                (
+                    "traceparent".to_string(),
+                    "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01".to_string(),
+                ),
+            ]
+        );
+    }
 }
