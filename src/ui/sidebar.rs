@@ -1136,7 +1136,7 @@ fn render_workspace_list(
             } => {
                 if row_y < list_bottom {
                     let indent = if *indented { " " } else { "" };
-                    let connector = "├─ ";
+                    let connector = "├── ";
                     let mut spans = vec![
                         Span::styled(
                             format!("{indent}{connector}"),
@@ -1231,7 +1231,7 @@ fn render_workspace_list(
                 match rail {
                     BranchRail::Spine => {
                         line1.push(Span::styled(indent_prefix, Style::default()));
-                        line1.push(Span::styled("│  ", rail_style));
+                        line1.push(Span::styled("│ ", rail_style));
                     }
                     BranchRail::None => {
                         if let Some((key, collapsed)) =
@@ -1269,7 +1269,7 @@ fn render_workspace_list(
                     match rail {
                         BranchRail::Spine => {
                             line2.push(Span::styled(indent_prefix, Style::default()));
-                            line2.push(Span::styled("│  ", rail_style));
+                            line2.push(Span::styled("│ ", rail_style));
                         }
                         BranchRail::None => {
                             line2.push(Span::styled(indent_prefix, Style::default()));
