@@ -128,33 +128,34 @@ pub(super) fn wait_for_output(
 
 pub(super) fn wait_for_event(
     request_id: String,
-    params: EventsWaitParams,
+    params: crate::api::schema::EventsWaitParams,
     stream: &mut LocalStream,
-    api_tx: &ApiRequestSender,
-    event_hub: &EventHub,
+    event_hub: &crate::api::EventHub,
     running: &Arc<AtomicBool>,
 ) -> std::io::Result<Option<String>> {
     let deadline = params
         .timeout_ms
         .map(|ms| std::time::Instant::now() + std::time::Duration::from_millis(ms));
-
-    let subscription = match event_match_subscription(&request_id, params.match_event) {
-        Ok(subscription) => subscription,
-        Err(response) => return Ok(Some(serde_json::to_string(&response).unwrap())),
-    };
-    let mut active = match ActiveSubscription::new(subscription, &request_id, 0, api_tx, event_hub)
-    {
-        Ok(active) => active,
-        Err(response) => return Ok(Some(serde_json::to_string(&response).unwrap())),
-    };
+    // Start at 0 so a result posted just before the wait (the common
+    // post-then-wait orchestration order) is still observed from the buffer.
+    let mut last_sequence = 0u64;
 
     loop {
         if should_stop_connection(stream, running)? {
             return Ok(None);
         }
 
-        if let Some(event) = active.poll(api_tx, event_hub) {
-            return Ok(Some(wait_matched_response(&request_id, event)));
+        for (sequence, envelope) in event_hub.events_after(last_sequence) {
+            last_sequence = sequence;
+            if crate::api::schema::event_matches(&params.match_event, &envelope) {
+                return Ok(Some(
+                    serde_json::to_string(&SuccessResponse {
+                        id: request_id,
+                        result: ResponseResult::WaitMatched { event: envelope },
+                    })
+                    .unwrap(),
+                ));
+            }
         }
 
         if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {

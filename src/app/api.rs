@@ -1053,6 +1053,9 @@ impl App {
             Method::PaneReportAgent(params) => {
                 return self.handle_pane_report_agent(request.id, params);
             }
+            Method::PaneReportResult(params) => {
+                return self.handle_pane_report_result(request.id, params);
+            }
             Method::PaneReportAgentSession(params) => {
                 return self.handle_pane_report_agent_session(request.id, params);
             }

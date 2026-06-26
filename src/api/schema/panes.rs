@@ -273,6 +273,15 @@ pub struct PaneReportAgentParams {
     pub agent_session_path: Option<String>,
 }
 
+/// Structured, opaque attestation posted by an agent/orchestrator about a pane's
+/// task result. Bora does not interpret `result`; it carries the JSON through to
+/// an event verbatim (runtime fact, not persisted task-state).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct PaneReportResultParams {
+    pub pane_id: String,
+    pub result: serde_json::Value,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct PaneReportAgentSessionParams {
     pub pane_id: String,
