@@ -4,8 +4,8 @@ use crossterm::terminal;
 
 use super::{
     background_update_check_enabled, repeat_key_identity, App, Mode, ANIMATION_INTERVAL,
-    AUTO_UPDATE_CHECK_INTERVAL, GIT_REMOTE_STATUS_REFRESH_INTERVAL, MIN_RENDER_INTERVAL,
-    RESIZE_POLL_INTERVAL, SELECTION_AUTOSCROLL_INTERVAL,
+    AUTO_UPDATE_CHECK_INTERVAL, CHECKS_REFRESH_INTERVAL, GIT_REMOTE_STATUS_REFRESH_INTERVAL,
+    MIN_RENDER_INTERVAL, RESIZE_POLL_INTERVAL, SELECTION_AUTOSCROLL_INTERVAL,
 };
 use crate::events::AppEvent;
 use crate::workspace::{GitStatusCacheEntry, Workspace, WorkspaceGitStatus};
@@ -637,11 +637,14 @@ impl App {
     /// No-op if the workspace has no resolved cwd or no git branch.
     #[allow(dead_code)] // called by Checks tab open / refresh button (slice 4)
     pub(crate) fn start_checks_fetch(&self, workspace_id: &str) {
-        let ws = self.state.workspaces.iter().find(|ws| ws.id == workspace_id);
+        let ws = self
+            .state
+            .workspaces
+            .iter()
+            .find(|ws| ws.id == workspace_id);
         let Some(ws) = ws else { return };
 
-        let cwd = ws
-            .resolved_identity_cwd_from(&self.state.terminals, &self.terminal_runtimes);
+        let cwd = ws.resolved_identity_cwd_from(&self.state.terminals, &self.terminal_runtimes);
         let Some(cwd) = cwd else { return };
 
         let branch = ws.cached_git_branch.clone();
@@ -655,6 +658,40 @@ impl App {
                 workspace_id,
                 result,
             });
+        });
+    }
+
+    /// Periodically fetch PR/CI check status for every branched workspace so the
+    /// sidebar can show a PR badge without the user opening the Checks tab.
+    /// Throttled to `CHECKS_REFRESH_INTERVAL`; one background thread fetches all.
+    pub(crate) fn start_checks_refresh_if_due(&mut self, now: Instant) {
+        if now.duration_since(self.last_checks_refresh) < CHECKS_REFRESH_INTERVAL {
+            return;
+        }
+        self.last_checks_refresh = now;
+        let jobs: Vec<(String, std::path::PathBuf, String)> = self
+            .state
+            .workspaces
+            .iter()
+            .filter_map(|ws| {
+                let cwd =
+                    ws.resolved_identity_cwd_from(&self.state.terminals, &self.terminal_runtimes)?;
+                let branch = ws.cached_git_branch.clone()?;
+                Some((ws.id.clone(), cwd, branch))
+            })
+            .collect();
+        if jobs.is_empty() {
+            return;
+        }
+        let event_tx = self.event_tx.clone();
+        std::thread::spawn(move || {
+            for (workspace_id, cwd, branch) in jobs {
+                let result = crate::workspace::fetch_check_status(&cwd, &branch);
+                let _ = event_tx.blocking_send(AppEvent::WorkspaceChecksRefreshed {
+                    workspace_id,
+                    result,
+                });
+            }
         });
     }
 }
