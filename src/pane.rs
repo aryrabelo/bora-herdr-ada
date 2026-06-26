@@ -2769,6 +2769,92 @@ mod tests {
         assert!(!process_alive_for_shutdown(43, 42, false, |_| false));
     }
 
+    #[test]
+    fn apply_pane_launch_env_propagates_trace_context_to_child_env() {
+        // The orchestrator (bora-flow) sends OTEL_*/traceparent in the agent.start
+        // request env so the child agent's traces correlate with the task trace.
+        // The server must hand those variables to the spawned child's environment.
+        let mut cmd = CommandBuilder::new("true");
+        let traceparent = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01";
+        let launch_env = PaneLaunchEnv::from_extra(vec![
+            ("traceparent".to_string(), traceparent.to_string()),
+            (
+                "OTEL_EXPORTER_OTLP_ENDPOINT".to_string(),
+                "http://127.0.0.1:4318".to_string(),
+            ),
+            // Header values legitimately contain '=' and must survive intact.
+            (
+                "OTEL_EXPORTER_OTLP_HEADERS".to_string(),
+                "Authorization=Bearer token".to_string(),
+            ),
+        ]);
+        apply_pane_launch_env(&mut cmd, &launch_env);
+        assert_eq!(
+            cmd.get_env("traceparent").and_then(std::ffi::OsStr::to_str),
+            Some(traceparent)
+        );
+        assert_eq!(
+            cmd.get_env("OTEL_EXPORTER_OTLP_ENDPOINT")
+                .and_then(std::ffi::OsStr::to_str),
+            Some("http://127.0.0.1:4318")
+        );
+        assert_eq!(
+            cmd.get_env("OTEL_EXPORTER_OTLP_HEADERS")
+                .and_then(std::ffi::OsStr::to_str),
+            Some("Authorization=Bearer token")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn agent_launch_env_delivers_traceparent_to_spawned_process() {
+        // End-to-end: the traceparent supplied for spawn reaches the live child's
+        // real environment, not just the command builder.
+        let pair = native_pty_system()
+            .openpty(PtySize {
+                rows: 24,
+                cols: 80,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .unwrap();
+        let output_path = std::env::temp_dir().join(format!(
+            "herdr-trace-context-test-{}-{}.txt",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let traceparent = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01";
+        let endpoint = "http://127.0.0.1:4318";
+        let mut cmd = CommandBuilder::new("/bin/sh");
+        cmd.arg("-c");
+        cmd.arg(format!(
+            "printf '%s\\n%s\\n' \"$traceparent\" \"$OTEL_EXPORTER_OTLP_ENDPOINT\" > '{}'",
+            output_path.display()
+        ));
+        cmd.cwd(std::env::current_dir().unwrap());
+        let launch_env = PaneLaunchEnv::from_extra(vec![
+            ("traceparent".to_string(), traceparent.to_string()),
+            (
+                "OTEL_EXPORTER_OTLP_ENDPOINT".to_string(),
+                endpoint.to_string(),
+            ),
+        ]);
+        apply_pane_launch_env(&mut cmd, &launch_env);
+
+        let mut child = pair.slave.spawn_command(cmd).unwrap();
+        let status = child.wait().unwrap();
+        assert!(status.success(), "child shell failed: {status:?}");
+
+        let output = std::fs::read_to_string(&output_path).unwrap();
+        let _ = std::fs::remove_file(output_path);
+        let mut lines = output.lines();
+        assert_eq!(lines.next(), Some(traceparent));
+        assert_eq!(lines.next(), Some(endpoint));
+    }
+
     #[cfg(unix)]
     fn capture_shell_output(command: &str, extra_env: &[(&str, &str)]) -> String {
         let pair = native_pty_system()
