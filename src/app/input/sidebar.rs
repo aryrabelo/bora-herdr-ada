@@ -1162,6 +1162,9 @@ mod tests {
     fn clicking_workspace_switches_on_mouse_up() {
         let mut app = app_for_mouse_test();
         app.state.workspaces = vec![Workspace::test_new("a"), Workspace::test_new("b")];
+        for ws in &mut app.state.workspaces {
+            ws.cached_git_branch = None;
+        }
         app.state.active = Some(0);
         app.state.selected = 0;
         crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 20));
@@ -1317,6 +1320,9 @@ mod tests {
             Workspace::test_new("b"),
             Workspace::test_new("c"),
         ];
+        for ws in &mut app.state.workspaces {
+            ws.cached_git_branch = None;
+        }
         let active_id = app.state.workspaces[1].id.clone();
         let selected_id = app.state.workspaces[2].id.clone();
         app.state.active = Some(1);
@@ -1530,7 +1536,7 @@ mod tests {
     }
 
     #[test]
-    fn top_drop_slot_is_distinct_from_gap_below_first_workspace() {
+    fn top_drop_slot_maps_to_first_workspace() {
         let mut app = app_for_mouse_test();
         let first_repo = temp_git_repo("main");
         let second_repo = temp_git_repo("main");
@@ -1561,10 +1567,13 @@ mod tests {
             .cwd = second_repo.clone();
         crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 20));
 
+        // Layout (gapless brackets, each workspace gets ProjectHeader + BranchHeader + card):
+        // rows 0-4 are closest to the slot above the first card (row 3) → insert_idx 0
+        // rows 5+ are closest to the slot below the first card (row 6) → insert_idx 1
         assert_eq!(app.state.workspace_drop_index_at_row(0), Some(0));
-        assert_eq!(app.state.workspace_drop_index_at_row(1), Some(0));
-        assert_eq!(app.state.workspace_drop_index_at_row(2), Some(0));
-        assert_eq!(app.state.workspace_drop_index_at_row(3), Some(1));
+        assert_eq!(app.state.workspace_drop_index_at_row(3), Some(0));
+        assert_eq!(app.state.workspace_drop_index_at_row(4), Some(0));
+        assert_eq!(app.state.workspace_drop_index_at_row(5), Some(1));
 
         let _ = fs::remove_dir_all(first_repo);
         let _ = fs::remove_dir_all(second_repo);
