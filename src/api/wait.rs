@@ -122,3 +122,52 @@ pub(super) fn wait_for_output(
         std::thread::sleep(CONNECTION_POLL_INTERVAL);
     }
 }
+
+pub(super) fn wait_for_event(
+    request_id: String,
+    params: crate::api::schema::EventsWaitParams,
+    stream: &mut LocalStream,
+    event_hub: &crate::api::EventHub,
+    running: &Arc<AtomicBool>,
+) -> std::io::Result<Option<String>> {
+    let deadline = params
+        .timeout_ms
+        .map(|ms| std::time::Instant::now() + std::time::Duration::from_millis(ms));
+    // Start at 0 so a result posted just before the wait (the common
+    // post-then-wait orchestration order) is still observed from the buffer.
+    let mut last_sequence = 0u64;
+
+    loop {
+        if should_stop_connection(stream, running)? {
+            return Ok(None);
+        }
+
+        for (sequence, envelope) in event_hub.events_after(last_sequence) {
+            last_sequence = sequence;
+            if crate::api::schema::event_matches(&params.match_event, &envelope) {
+                return Ok(Some(
+                    serde_json::to_string(&SuccessResponse {
+                        id: request_id,
+                        result: ResponseResult::WaitMatched { event: envelope },
+                    })
+                    .unwrap(),
+                ));
+            }
+        }
+
+        if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
+            return Ok(Some(
+                serde_json::to_string(&ErrorResponse {
+                    id: request_id,
+                    error: ErrorBody {
+                        code: "timeout".into(),
+                        message: "timed out waiting for event match".into(),
+                    },
+                })
+                .unwrap(),
+            ));
+        }
+
+        std::thread::sleep(CONNECTION_POLL_INTERVAL);
+    }
+}
