@@ -1107,6 +1107,12 @@
               },
               "type": "object"
             },
+            "visual_group": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "workspace_id": {
               "type": "string"
             },
@@ -4117,6 +4123,12 @@
               "default": false,
               "type": "boolean"
             },
+            "group": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "label": {
               "type": [
                 "string",
@@ -4221,6 +4233,23 @@
             "workspace_id",
             "source",
             "tokens"
+          ],
+          "type": "object"
+        },
+        "WorkspaceSetGroupParams": {
+          "properties": {
+            "group": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "workspace_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "workspace_id"
           ],
           "type": "object"
         },
@@ -4661,6 +4690,22 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/WorkspaceReportMetadataParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "workspace.set_group",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/WorkspaceSetGroupParams"
             }
           },
           "required": [
@@ -9823,6 +9868,12 @@
                 "pattern": "^[A-Za-z0-9_-]{1,32}$"
               },
               "type": "object"
+            },
+            "visual_group": {
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "workspace_id": {
               "type": "string"

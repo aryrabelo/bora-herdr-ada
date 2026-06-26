@@ -88,7 +88,6 @@ impl Agent {
         Self::Qodercli,
         Self::Maki,
     ];
-
     pub const SCREEN_MANIFEST_AGENTS: [Self; 20] = [
         Self::Pi,
         Self::Omp,

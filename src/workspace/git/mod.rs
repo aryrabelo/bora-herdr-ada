@@ -1,15 +1,17 @@
+mod change_set;
+mod check_status;
 mod config;
 #[cfg(test)]
 mod config_tests;
 mod discovery;
-mod change_set;
-mod check_status;
 mod status;
 #[cfg(test)]
 pub(super) mod test_support;
 
 pub(crate) use self::discovery::automatic_workspace_label;
 
+#[cfg(test)]
+pub(crate) use self::check_status::PrSummary;
 pub use self::{
     change_set::{ChangeSectionKind, ChangeStatus, WorkspaceChangeSet},
     check_status::{fetch_check_status, WorkspaceCheckStatus},

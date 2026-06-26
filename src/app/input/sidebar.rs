@@ -476,9 +476,12 @@ impl AppState {
                 crate::ui::WorkspaceListEntry::Workspace {
                     ws_idx,
                     indented: false,
+                    ..
                 } => Some(ws_idx),
                 crate::ui::WorkspaceListEntry::Workspace { .. } => None,
-                crate::ui::WorkspaceListEntry::GroupHeader { .. } => None,
+                crate::ui::WorkspaceListEntry::GroupHeader { .. }
+                | crate::ui::WorkspaceListEntry::ProjectHeader { .. }
+                | crate::ui::WorkspaceListEntry::BranchHeader { .. } => None,
             })
             .collect::<Vec<_>>();
         let source_pos = roots.iter().position(|ws_idx| *ws_idx == source_ws_idx)?;
@@ -1267,6 +1270,9 @@ mod tests {
     fn clicking_workspace_switches_on_mouse_up() {
         let mut app = app_for_mouse_test();
         app.state.workspaces = vec![Workspace::test_new("a"), Workspace::test_new("b")];
+        for ws in &mut app.state.workspaces {
+            ws.cached_git_branch = None;
+        }
         app.state.active = Some(0);
         app.state.selected = 0;
         crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 20));
@@ -1304,6 +1310,7 @@ mod tests {
                 });
             app.state.workspaces[idx].cached_git_space = Some(crate::workspace::GitSpaceMetadata {
                 key: "repo-key".into(),
+                repo_identity: "repo-key".into(),
                 checkout_key: checkout_path.to_string(),
                 repo_name: "herdr".into(),
                 repo_root: "/repo/herdr".into(),
@@ -1345,6 +1352,7 @@ mod tests {
                 });
             app.state.workspaces[idx].cached_git_space = Some(crate::workspace::GitSpaceMetadata {
                 key: "repo-key".into(),
+                repo_identity: "repo-key".into(),
                 checkout_key: checkout_path.to_string(),
                 repo_name: "herdr".into(),
                 repo_root: "/repo/herdr".into(),
@@ -1395,6 +1403,7 @@ mod tests {
                 });
             app.state.workspaces[idx].cached_git_space = Some(crate::workspace::GitSpaceMetadata {
                 key: "repo-key".into(),
+                repo_identity: "repo-key".into(),
                 checkout_key: checkout_path.to_string(),
                 repo_name: "herdr".into(),
                 repo_root: "/repo/herdr".into(),
@@ -1425,6 +1434,9 @@ mod tests {
         ];
         app.state.sidebar_spaces.rows = vec![vec![crate::config::SpaceSidebarToken::Workspace]];
         app.state.sidebar_spaces.row_gap = 0;
+        for ws in &mut app.state.workspaces {
+            ws.cached_git_branch = None;
+        }
         let active_id = app.state.workspaces[1].id.clone();
         let selected_id = app.state.workspaces[2].id.clone();
         app.state.active = Some(1);
@@ -1645,6 +1657,7 @@ mod tests {
         });
         ws.cached_git_space = Some(crate::workspace::GitSpaceMetadata {
             key: key.into(),
+            repo_identity: key.into(),
             checkout_key: format!("/repo/{name}"),
             repo_name: "herdr".into(),
             repo_root: "/repo/herdr".into(),
@@ -1654,7 +1667,7 @@ mod tests {
     }
 
     #[test]
-    fn top_drop_slot_is_distinct_from_gap_below_first_workspace() {
+    fn top_drop_slot_maps_to_first_workspace() {
         let mut app = app_for_mouse_test();
         let first_repo = temp_git_repo("main");
         let second_repo = temp_git_repo("main");

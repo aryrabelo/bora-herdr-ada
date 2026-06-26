@@ -1301,7 +1301,9 @@ impl AppState {
             .into_iter()
             .filter_map(|entry| match entry {
                 crate::ui::WorkspaceListEntry::Workspace { ws_idx, .. } => Some(ws_idx),
-                crate::ui::WorkspaceListEntry::GroupHeader { .. } => None,
+                crate::ui::WorkspaceListEntry::GroupHeader { .. }
+                | crate::ui::WorkspaceListEntry::ProjectHeader { .. }
+                | crate::ui::WorkspaceListEntry::BranchHeader { .. } => None,
             })
             .collect::<Vec<_>>();
         if order.is_empty() {
@@ -4160,6 +4162,7 @@ mod tests {
                 ahead_behind: None,
                 space: Some(crate::workspace::GitSpaceMetadata {
                     key: "other-repo-key".into(),
+                    repo_identity: "other-repo-key".into(),
                     checkout_key: "/other/checkout".into(),
                     repo_name: "other".into(),
                     repo_root: "/other/repo".into(),

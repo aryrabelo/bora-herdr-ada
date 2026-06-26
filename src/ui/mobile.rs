@@ -208,7 +208,9 @@ pub(crate) fn mobile_switcher_target_at(
             WorkspaceListEntry::Workspace { ws_idx, .. } => {
                 Some(MobileSwitcherTarget::Workspace(*ws_idx))
             }
-            WorkspaceListEntry::GroupHeader { .. } => None,
+            // Headers are filtered out of mobile_space_entries; be tolerant of
+            // new non-workspace entry kinds regardless.
+            _ => None,
         });
     }
     cursor = spaces_end;
@@ -633,7 +635,7 @@ fn render_mobile_switcher_content(
     doc_y += 1;
     let space_entries = mobile_space_entries(app);
     for (entry_idx, entry) in space_entries.iter().enumerate() {
-        let WorkspaceListEntry::Workspace { ws_idx, indented } = entry else {
+        let WorkspaceListEntry::Workspace { ws_idx, indented, .. } = entry else {
             continue;
         };
         let Some(ws) = app.workspaces.get(*ws_idx) else {
@@ -1212,6 +1214,7 @@ mod tests {
             state: AgentState::Idle,
             seen: true,
             last_agent_state_change_seq: None,
+            custom_status: None,
             state_labels: std::collections::HashMap::new(),
             tokens: std::collections::HashMap::new(),
         }

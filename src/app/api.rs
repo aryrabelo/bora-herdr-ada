@@ -128,6 +128,7 @@ impl App {
         } = ev
         {
             self.handle_git_status_refreshed(results, cache_updates);
+            self.start_checks_refresh_if_due(Instant::now());
             return;
         }
 
