@@ -345,7 +345,7 @@ export default function (pi) {
     updateSessionRef(ctx);
     await reportSession(event?.reason);
     // A reload can replace this extension mid-run without emitting another agent_start.
-    agentActive = ctx?.isIdle?.() === false;
+    agentActiveCount = ctx?.isIdle?.() === false ? 1 : 0;
     publishState(true);
   });
 

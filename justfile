@@ -59,6 +59,7 @@ integration-assets-test:
 plugin-marketplace-test:
     cd workers/plugin-marketplace && bun test
 
+
 # Build the vendored libghostty-vt source dist
 build-libghostty-vt:
     scripts/build_vendored_libghostty_vt.sh

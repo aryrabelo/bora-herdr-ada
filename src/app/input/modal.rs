@@ -2119,11 +2119,13 @@ mod tests {
             tab_idx: 0,
         };
         let menu = ContextMenuState {
-            items: build_context_menu_items(&kind, &[]),
+            items: build_context_menu_items(&kind, &[], &[]),
             kind,
             x: 0,
             y: 0,
             list: MenuListState::new(0),
+            bora_commands: vec![],
+            bora_port: None,
         };
         let idx = menu
             .items()
@@ -2155,11 +2157,13 @@ mod tests {
             has_manual_label: false,
         };
         let mut menu = ContextMenuState {
-            items: build_context_menu_items(&kind, &[]),
+            items: build_context_menu_items(&kind, &[], &[]),
             kind,
             x: 0,
             y: 0,
             list: MenuListState::new(0),
+            bora_commands: vec![],
+            bora_port: None,
         };
         let close_idx = menu
             .items()
