@@ -378,6 +378,7 @@ impl App {
             );
             return;
         }
+        crate::worktree::copy_worktree_includes(&api.source_repo_root, &result.path);
 
         let source_workspace_idx = self.api_create_source_workspace_idx(&api);
         let mut source = WorktreeSource {

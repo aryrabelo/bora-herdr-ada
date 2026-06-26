@@ -803,7 +803,7 @@ impl App {
         }
     }
 
-    fn custom_command_env(&self) -> (Vec<(String, String)>, Option<std::path::PathBuf>) {
+    pub(crate) fn custom_command_env(&self) -> (Vec<(String, String)>, Option<std::path::PathBuf>) {
         let mut env = vec![(
             crate::api::SOCKET_PATH_ENV_VAR.to_string(),
             crate::api::socket_path().display().to_string(),
@@ -843,6 +843,9 @@ impl App {
                     }
                 }
             }
+        }
+        if let Some(port) = self.state.bora_port_override {
+            env.push(("BORA_PORT".to_string(), port.to_string()));
         }
         (env, cwd)
     }
@@ -937,7 +940,7 @@ impl App {
         Ok(())
     }
 
-    fn spawn_pane_command(
+    pub(crate) fn spawn_pane_command(
         &mut self,
         command: &str,
         temp_files: Vec<std::path::PathBuf>,
