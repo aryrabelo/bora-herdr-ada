@@ -2,13 +2,18 @@
 // managed by herdr; reinstalling or updating the integration overwrites this file.
 // add custom hooks/plugins beside this file instead of editing it.
 // HERDR_INTEGRATION_ID=kilo
-// HERDR_INTEGRATION_VERSION=2
+// HERDR_INTEGRATION_VERSION=3
 
 import net from "node:net";
 
 const SOURCE = "herdr:kilo";
 const AGENT = "kilo";
 let reportSeq = Date.now() * 1000;
+
+// Subagent (task tool) sessions carry a parentID; the main agent session does
+// not. Their lifecycle events would otherwise clobber the pane's real state, so
+// learn child session ids from session.created/updated and drop their reports.
+const childSessions = new Set();
 
 function nextReportSeq() {
   reportSeq += 1;
@@ -107,12 +112,23 @@ export const HerdrAgentStatePlugin = async () => {
 
   return {
     "chat.message": async ({ sessionID }) => {
+      if (sessionID && childSessions.has(sessionID)) {
+        return;
+      }
       await reportState("working", sessionID);
     },
     event: async ({ event }) => {
       const type = event?.type;
       const properties = event?.properties ?? {};
       const sessionID = sessionIDFromProperties(properties);
+
+      const info = properties.info;
+      if (info?.id && info.parentID) {
+        childSessions.add(info.id);
+      }
+      if (sessionID && childSessions.has(sessionID)) {
+        return;
+      }
 
       switch (type) {
         case "session.created":
