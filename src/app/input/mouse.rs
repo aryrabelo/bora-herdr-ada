@@ -1075,9 +1075,7 @@ impl AppState {
                                     .commands
                                     .into_iter()
                                     .filter(|c| {
-                                        c.branch
-                                            .as_ref()
-                                            .map_or(true, |b| branch == Some(b.as_str()))
+                                        c.branch.as_ref().is_none_or(|b| branch == Some(b.as_str()))
                                     })
                                     .collect();
                                 let labels: Vec<String> =

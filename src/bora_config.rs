@@ -233,7 +233,7 @@ branch refs/heads/feature-a
 
         // Port math: primary=3000, feature-a=3010, feature-b=3020
         assert_eq!(config.base, 3000);
-        assert_eq!(config.base + 1 * config.per_worktree, 3010);
+        assert_eq!(config.base + config.per_worktree, 3010);
         assert_eq!(config.base + 2 * config.per_worktree, 3020);
     }
 
@@ -267,7 +267,7 @@ max = 3050
             max: Some(3015),
         };
         // index 1 is within bounds
-        let port1 = config.base + 1 * config.per_worktree;
+        let port1 = config.base + config.per_worktree;
         assert_eq!(port1, 3010);
         assert!(port1 <= 3015);
         // index 2 exceeds max
