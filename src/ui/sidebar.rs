@@ -261,10 +261,8 @@ fn format_agent_panel_primary_label(entry: &AgentPanelEntry, max_width: usize) -
 pub(crate) enum BranchRail {
     /// Loose workspace with no detected branch — no tree spine.
     None,
-    /// Under a branch that has siblings below it — spine continues (│).
+    /// Under a branch; the project spine continues down to the closer (│).
     Spine,
-    /// Under the last branch in the group — no spine below it.
-    Tail,
 }
 
 /// Per-tab aggregate dot states in tab order: (AgentState, seen).
@@ -374,8 +372,9 @@ pub(crate) enum WorkspaceListEntry {
         ahead: usize,
         behind: usize,
         indented: bool,
-        last: bool,
     },
+    /// Closing line for a project's branch sub-tree (╰───).
+    ProjectFooter { indented: bool },
 }
 
 /// Shared row-height for a single entry. ALL three lockstep passes
@@ -390,6 +389,7 @@ fn entry_row_height(
         WorkspaceListEntry::GroupHeader { .. } => 1,
         WorkspaceListEntry::ProjectHeader { .. } => 1,
         WorkspaceListEntry::BranchHeader { .. } => 1,
+        WorkspaceListEntry::ProjectFooter { .. } => 1,
         WorkspaceListEntry::Workspace { .. } => 2,
     }
 }
@@ -659,33 +659,25 @@ fn emit_branch_subgroups(
         }
     }
 
-    // One branch sub-tree per branch; members on the same branch stack under it.
-    let branch_count = branch_order.len();
-    for (bi, branch) in branch_order.iter().enumerate() {
+    // One branch sub-tree per branch; members stack under it on the spine.
+    let has_branches = !branch_order.is_empty();
+    for branch in &branch_order {
         let members = &by_branch[branch];
         let (ahead, behind) = members
             .iter()
             .find_map(|&i| app.workspaces[i].git_ahead_behind())
             .unwrap_or((0, 0));
-        // The last branch only when no loose (branch-less) workspaces follow it.
-        let is_last_branch = bi + 1 == branch_count && no_branch.is_empty();
         entries.push(WorkspaceListEntry::BranchHeader {
             label: branch_display_label(branch).to_string(),
             ahead,
             behind,
             indented,
-            last: is_last_branch,
         });
-        let rail = if is_last_branch {
-            BranchRail::Tail
-        } else {
-            BranchRail::Spine
-        };
         for &idx in members {
             entries.push(WorkspaceListEntry::Workspace {
                 ws_idx: idx,
                 indented,
-                rail,
+                rail: BranchRail::Spine,
             });
         }
     }
@@ -696,6 +688,11 @@ fn emit_branch_subgroups(
             indented,
             rail: BranchRail::None,
         });
+    }
+
+    // Close the project's branch sub-tree with a footer line.
+    if has_branches {
+        entries.push(WorkspaceListEntry::ProjectFooter { indented });
     }
 }
 
@@ -939,6 +936,9 @@ pub(crate) fn compute_workspace_list_areas(
             }
             WorkspaceListEntry::BranchHeader { .. } => {
                 // BranchHeader is a non-clickable label — no card or header area.
+            }
+            WorkspaceListEntry::ProjectFooter { .. } => {
+                // ProjectFooter is a non-clickable closer line — no card.
             }
             WorkspaceListEntry::Workspace {
                 ws_idx, indented, ..
@@ -1547,17 +1547,16 @@ fn render_workspace_list(
                 ahead,
                 behind,
                 indented,
-                last,
             } => {
                 if row_y < list_bottom {
                     let indent = if *indented { " " } else { "" };
-                    let connector = if *last { "╰─ " } else { "├─ " };
+                    let connector = "├─ ";
                     let mut spans = vec![
                         Span::styled(
                             format!("{indent}{connector}"),
                             Style::default().fg(p.overlay0),
                         ),
-                        Span::styled(label.clone(), Style::default().fg(p.mauve)),
+                        Span::styled(label.clone(), Style::default().fg(p.overlay1)),
                     ];
                     if *ahead > 0 {
                         spans.push(Span::styled(" ", Style::default()));
@@ -1648,9 +1647,6 @@ fn render_workspace_list(
                         line1.push(Span::styled(indent_prefix, Style::default()));
                         line1.push(Span::styled("│  ", rail_style));
                     }
-                    BranchRail::Tail => {
-                        line1.push(Span::styled(format!("{indent_prefix}   "), Style::default()));
-                    }
                     BranchRail::None => {
                         if let Some((key, collapsed)) =
                             workspace_parent_group_state(app, i).filter(|_| !*indented)
@@ -1689,9 +1685,6 @@ fn render_workspace_list(
                             line2.push(Span::styled(indent_prefix, Style::default()));
                             line2.push(Span::styled("│  ", rail_style));
                         }
-                        BranchRail::Tail => {
-                            line2.push(Span::styled(format!("{indent_prefix}   "), Style::default()));
-                        }
                         BranchRail::None => {
                             line2.push(Span::styled(indent_prefix, Style::default()));
                             // Align with name: extra space for non-rail.
@@ -1718,6 +1711,18 @@ fn render_workspace_list(
                     frame.render_widget(
                         Paragraph::new(Line::from(line2)),
                         Rect::new(body.x, dots_y, body.width, 1),
+                    );
+                }
+            }
+            WorkspaceListEntry::ProjectFooter { indented } => {
+                if row_y < list_bottom {
+                    let indent = if *indented { " " } else { "" };
+                    frame.render_widget(
+                        Paragraph::new(Line::from(Span::styled(
+                            format!("{indent}╰───────"),
+                            Style::default().fg(p.overlay0),
+                        ))),
+                        Rect::new(body.x, row_y, body.width, 1),
                     );
                 }
             }
@@ -2613,7 +2618,10 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
             .collect::<String>();
 
         assert!(text.contains("herdr"), "project header label: {text:?}");
-        assert!(text.contains("╰─"), "branch tree connector present: {text:?}");
+        assert!(
+            text.contains("╰─"),
+            "branch tree connector present: {text:?}"
+        );
         assert!(text.contains("main"), "branch label present: {text:?}");
         assert!(text.contains("strider"), "member name present: {text:?}");
         assert_eq!(
@@ -2812,8 +2820,8 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
         let metrics = workspace_list_scroll_metrics(&app, ws_area);
 
         assert_eq!(metrics.viewport_rows, 2);
-        assert_eq!(metrics.max_offset_from_bottom, 1);
-        assert_eq!(metrics.offset_from_bottom, 1);
+        assert_eq!(metrics.max_offset_from_bottom, 2);
+        assert_eq!(metrics.offset_from_bottom, 2);
     }
 
     #[test]
@@ -3466,7 +3474,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
         let entries = workspace_list_entries(&app);
 
         // Both checkouts are on branch "main" under a synthesized project header,
-        // so they form one branch sub-tree: BranchHeader{last} + two Tail members.
+        // so they form one branch sub-tree: BranchHeader + two Spine members + footer.
         assert_eq!(
             entries,
             vec![
@@ -3480,18 +3488,18 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
                     ahead: 0,
                     behind: 0,
                     indented: true,
-                    last: true,
                 },
                 WorkspaceListEntry::Workspace {
                     ws_idx: 0,
                     indented: true,
-                    rail: BranchRail::Tail,
+                    rail: BranchRail::Spine,
                 },
                 WorkspaceListEntry::Workspace {
                     ws_idx: 1,
                     indented: true,
-                    rail: BranchRail::Tail,
+                    rail: BranchRail::Spine,
                 },
+                WorkspaceListEntry::ProjectFooter { indented: true },
             ]
         );
     }
@@ -3528,7 +3536,6 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
                     ahead: 0,
                     behind: 0,
                     indented: true,
-                    last: false,
                 },
                 WorkspaceListEntry::Workspace {
                     ws_idx: 1,
@@ -3540,6 +3547,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
                     indented: true,
                     rail: BranchRail::None,
                 },
+                WorkspaceListEntry::ProjectFooter { indented: true },
             ]
         );
     }
@@ -3588,8 +3596,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
             "one bracket per branch"
         );
 
-        // A loose (branch-less) parent follows the branches, so neither branch is
-        // the last node → both branched members carry a continuing Spine rail.
+        // All branch members ride the project spine down to the closer line.
         let spine_count = entries
             .iter()
             .filter(|e| {
@@ -3602,20 +3609,12 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
                 )
             })
             .count();
-        let tail_count = entries
+        let footer_count = entries
             .iter()
-            .filter(|e| {
-                matches!(
-                    e,
-                    WorkspaceListEntry::Workspace {
-                        rail: BranchRail::Tail,
-                        ..
-                    }
-                )
-            })
+            .filter(|e| matches!(e, WorkspaceListEntry::ProjectFooter { .. }))
             .count();
-        assert_eq!(spine_count, 2, "each branch member continues the spine");
-        assert_eq!(tail_count, 0, "no tail member while a loose parent follows");
+        assert_eq!(spine_count, 2, "each branch member is on the spine");
+        assert_eq!(footer_count, 1, "one closer line per project");
     }
 
     #[test]
@@ -3654,7 +3653,6 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
             ahead: 0,
             behind: 0,
             indented: false,
-            last: false,
         }];
         assert_eq!(entry_row_height(&entries[0], &entries, 0), 1);
     }
@@ -3670,7 +3668,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
             WorkspaceListEntry::Workspace {
                 ws_idx: 1,
                 indented: true,
-                rail: BranchRail::Tail,
+                rail: BranchRail::None,
             },
         ];
         // Every workspace is name + dots = 2 rows; no closer line.
