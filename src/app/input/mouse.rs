@@ -2864,11 +2864,13 @@ mod tests {
         app.state.confirm_close = false;
         let kind = ContextMenuKind::Workspace { ws_idx: 1 };
         app.state.context_menu = Some(ContextMenuState {
-            items: build_context_menu_items(&kind, &[]),
+            items: build_context_menu_items(&kind, &[], &[]),
             kind,
             x: 2,
             y: 2,
             list: MenuListState::new(1),
+            bora_commands: vec![],
+            bora_port: None,
         });
         app.state.mode = Mode::ContextMenu;
 
