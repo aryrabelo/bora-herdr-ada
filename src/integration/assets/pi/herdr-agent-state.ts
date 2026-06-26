@@ -177,7 +177,10 @@ export default function (pi) {
     return;
   }
 
-  let agentActive = false;
+  let agentActiveCount = 0;
+  let retryHoldActive = false;
+  let failureBlocked = false;
+  let failureMessage: string | undefined;
   let blockedCount = 0;
   let blockedMessage: string | undefined;
   let lastState: AgentState | undefined;
@@ -188,7 +191,10 @@ export default function (pi) {
     if (blockedCount > 0) {
       return { state: "blocked" as const, message: blockedMessage };
     }
-    if (agentActive) {
+    if (failureBlocked) {
+      return { state: "blocked" as const, message: failureMessage };
+    }
+    if (agentActiveCount > 0 || retryHoldActive) {
       return { state: "working" as const, message: undefined };
     }
     return { state: "idle" as const, message: undefined };
@@ -230,7 +236,7 @@ export default function (pi) {
     updateSessionRef(ctx);
     await reportSession(event?.reason);
     // A reload can replace this extension mid-run without emitting another agent_start.
-    agentActive = ctx?.isIdle?.() === false;
+    agentActiveCount = ctx?.isIdle?.() === false ? 1 : 0;
     publishState(true);
   });
 
@@ -240,16 +246,47 @@ export default function (pi) {
     }
     updateSessionRef(ctx);
     void reportSession();
-    agentActive = true;
+    clearPendingTimers();
+    clearFailureState();
+    agentActiveCount += 1;
     publishState();
   });
 
-  pi.on("agent_settled", (_event, ctx) => {
-    if (!rootSession || ctx?.isIdle?.() !== true) {
+  pi.on("agent_end", (event) => {
+    if (!rootSession) {
+      return;
+    }
+    if (agentActiveCount === 0) {
+      // Pi can emit duplicate/late end events while auto-retry is already
+      // holding the pane in Working, and a concurrent subagent's end can
+      // arrive after the count already drained. Ignore unmatched ends so they
+      // cannot cancel a retry hold or publish a false Idle.
       return;
     }
 
-    agentActive = false;
-    publishState();
+    agentActiveCount -= 1;
+    if (agentActiveCount > 0) {
+      // Other concurrent agents (e.g. parallel subagents) are still running;
+      // stay Working until the last one ends.
+      return;
+    }
+
+    const retryableMessage = retryableErrorMessage(event);
+    if (retryableMessage) {
+      holdForRetry(retryableMessage);
+      return;
+    }
+
+    scheduleIdle();
+  });
+
+  pi.on("session_shutdown", async (event) => {
+    if (!rootSession) {
+      return;
+    }
+    clearPendingTimers();
+    if (shouldReleaseOnSessionShutdown(event)) {
+      await releaseAgent();
+    }
   });
 }

@@ -1145,7 +1145,8 @@ pub(crate) fn workspace_drop_slots(
                 WorkspaceListEntry::Workspace { .. } => None,
                 WorkspaceListEntry::GroupHeader { .. }
                 | WorkspaceListEntry::ProjectHeader { .. }
-                | WorkspaceListEntry::BranchHeader { .. } => None,
+                | WorkspaceListEntry::BranchHeader { .. }
+                | WorkspaceListEntry::ProjectFooter { .. } => None,
             })
     };
 
@@ -1190,7 +1191,8 @@ pub(crate) fn workspace_drop_slots(
         Some(
             WorkspaceListEntry::GroupHeader { .. }
             | WorkspaceListEntry::ProjectHeader { .. }
-            | WorkspaceListEntry::BranchHeader { .. },
+            | WorkspaceListEntry::BranchHeader { .. }
+            | WorkspaceListEntry::ProjectFooter { .. },
         )
         | None => crate::app::state::WorkspaceDropTarget::End,
     };
