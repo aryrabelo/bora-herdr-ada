@@ -1174,6 +1174,17 @@ impl App {
         }
     }
 
+    /// Workspace ids whose cached branch equals `branch`. Targets an immediate
+    /// checks refresh when a PR is opened for that branch.
+    pub(crate) fn workspace_ids_on_branch(&self, branch: &str) -> Vec<String> {
+        self.state
+            .workspaces
+            .iter()
+            .filter(|ws| ws.cached_git_branch.as_deref() == Some(branch))
+            .map(|ws| ws.id.clone())
+            .collect()
+    }
+
     pub(crate) fn handle_worktree_open_pr_finished(
         &mut self,
         branch: String,
@@ -1182,6 +1193,11 @@ impl App {
         match result {
             Ok(url) => {
                 tracing::info!(branch = %branch, url = %url, "worktree open-pr completed");
+                // Refresh checks now for any workspace on this branch so the sidebar
+                // PR badge appears immediately instead of after the periodic refresh.
+                for id in self.workspace_ids_on_branch(&branch) {
+                    self.start_checks_fetch(&id);
+                }
                 let context = if url.is_empty() { branch } else { url };
                 self.show_worktree_op_toast(
                     crate::app::state::ToastKind::Finished,
@@ -1396,6 +1412,22 @@ mod tests {
                 .map(|create| create.branch.as_str()),
             Some("feature/linear-302")
         );
+    }
+
+    #[test]
+    fn workspace_ids_on_branch_selects_matching_workspaces() {
+        let mut app = app_for_worktree_tests();
+        let mut ws_a = crate::workspace::Workspace::test_new("a");
+        ws_a.cached_git_branch = Some("feat-x".into());
+        let mut ws_b = crate::workspace::Workspace::test_new("b");
+        ws_b.cached_git_branch = Some("main".into());
+        let id_a = ws_a.id.clone();
+        app.state.workspaces.push(ws_a);
+        app.state.workspaces.push(ws_b);
+
+        assert_eq!(app.workspace_ids_on_branch("feat-x"), vec![id_a]);
+        assert!(app.workspace_ids_on_branch("absent").is_empty());
+        shutdown_test_runtimes(&mut app);
     }
 
     #[test]
