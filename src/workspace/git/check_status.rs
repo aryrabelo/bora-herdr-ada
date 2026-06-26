@@ -54,7 +54,7 @@ pub(super) fn parse_gh_pr_json(json_str: &str) -> Result<WorkspaceCheckStatus, S
 
     let number = obj
         .get("number")
-        .and_then(|v| v.as_u64())
+        .and_then(serde_json::Value::as_u64)
         .ok_or_else(|| "missing or invalid 'number' field".to_string())?;
 
     let title = obj
