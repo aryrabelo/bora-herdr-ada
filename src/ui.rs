@@ -13,10 +13,10 @@ mod navigator;
 mod onboarding;
 mod panes;
 mod release_notes;
+pub(crate) mod right_panel;
 mod scrollbar;
 mod settings;
 mod sidebar;
-pub(crate) mod right_panel;
 mod status;
 mod tabs;
 mod widgets;
@@ -45,13 +45,13 @@ pub(crate) use self::release_notes::{
     RELEASE_NOTES_MODAL_SIZE,
 };
 use self::release_notes::{render_product_announcement_overlay, render_release_notes_overlay};
+use self::right_panel::render_right_panel;
 pub(crate) use self::scrollbar::{
     pane_scrollbar_rect, release_notes_scrollbar_rect, scrollbar_offset_from_drag_row,
     scrollbar_offset_from_row, scrollbar_thumb_grab_offset, should_show_scrollbar,
 };
 use self::settings::render_settings_overlay;
 use self::sidebar::{render_sidebar, render_sidebar_collapsed};
-use self::right_panel::render_right_panel;
 use self::status::{
     copy_feedback_rect, render_config_diagnostic, render_copy_feedback, render_toast_notification,
     toast_notification_rect,

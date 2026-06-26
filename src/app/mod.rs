@@ -526,6 +526,8 @@ impl App {
             request_reload_config: false,
             request_client_config_reload: false,
             request_clipboard_write: None,
+            pending_bora_command: None,
+            bora_port_override: None,
             creating_new_tab: false,
             requested_new_tab_name: None,
             rename_pane_target: None,
@@ -990,6 +992,11 @@ impl App {
             if self.state.request_reload_config {
                 self.state.request_reload_config = false;
                 self.reload_config();
+                needs_render = true;
+            }
+
+            if let Some(bora_cmd) = self.state.pending_bora_command.take() {
+                self.execute_bora_command(bora_cmd);
                 needs_render = true;
             }
 
@@ -1507,6 +1514,60 @@ impl App {
         crate::config::ConfigReloadReport {
             status,
             diagnostics,
+        }
+    }
+
+    fn execute_bora_command(&mut self, cmd: state::PendingBoraCommand) {
+        // Substitute $BORA_PORT / ${BORA_PORT} in the command string.
+        let command = if let Some(port) = cmd.port {
+            cmd.command
+                .replace("$BORA_PORT", &port.to_string())
+                .replace("${BORA_PORT}", &port.to_string())
+        } else {
+            cmd.command
+        };
+
+        match cmd.mode {
+            crate::bora_config::BoraCommandMode::Shell => {
+                let (env, cwd) = self.custom_command_env();
+                let mut proc = std::process::Command::new("/bin/sh");
+                proc.arg("-lc")
+                    .arg(&command)
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null());
+                proc.envs(env);
+                if let Some(port) = cmd.port {
+                    proc.env("BORA_PORT", port.to_string());
+                }
+                if let Some(cwd) = cwd {
+                    proc.current_dir(cwd);
+                }
+                if let Err(err) = proc.spawn() {
+                    self.state.toast = Some(state::ToastNotification {
+                        kind: state::ToastKind::NeedsAttention,
+                        title: "bora command failed".to_string(),
+                        context: err.to_string(),
+                        position: None,
+                        target: None,
+                    });
+                }
+            }
+            crate::bora_config::BoraCommandMode::Pane => {
+                self.state.selected = cmd.ws_idx;
+                self.state.active = Some(cmd.ws_idx);
+                self.state.bora_port_override = cmd.port;
+                if let Err(err) = self.spawn_pane_command(&command, vec![]) {
+                    self.state.toast = Some(state::ToastNotification {
+                        kind: state::ToastKind::NeedsAttention,
+                        title: "bora command failed".to_string(),
+                        context: err.to_string(),
+                        position: None,
+                        target: None,
+                    });
+                }
+                self.state.bora_port_override = None;
+            }
         }
     }
 }

@@ -150,8 +150,11 @@ impl AppState {
             && mouse.row >= right_panel.y
             && mouse.row < right_panel.y + right_panel.height;
 
-
-        if self.handle_right_click_passthrough(terminal_runtimes, mouse, in_sidebar || in_right_panel) {
+        if self.handle_right_click_passthrough(
+            terminal_runtimes,
+            mouse,
+            in_sidebar || in_right_panel,
+        ) {
             return None;
         }
 
@@ -443,11 +446,9 @@ impl AppState {
                         let mid = rp.x + rp.width / 2;
                         let previous_tab = self.right_panel_active_tab;
                         if mouse.column < mid {
-                            self.right_panel_active_tab =
-                                crate::app::state::RightPanelTab::Changes;
+                            self.right_panel_active_tab = crate::app::state::RightPanelTab::Changes;
                         } else {
-                            self.right_panel_active_tab =
-                                crate::app::state::RightPanelTab::Checks;
+                            self.right_panel_active_tab = crate::app::state::RightPanelTab::Checks;
                             if previous_tab != crate::app::state::RightPanelTab::Checks {
                                 self.right_panel_checks_requested = true;
                             }
@@ -463,7 +464,6 @@ impl AppState {
                     }
                     return None;
                 }
-
 
                 if !in_sidebar && !in_right_panel {
                     if let Some(border) = self.find_border_at(mouse.column, mouse.row) {
@@ -948,9 +948,13 @@ impl AppState {
             }
 
             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
-                if !in_sidebar && !in_right_panel && self.scroll_selection_with_wheel(terminal_runtimes, mouse) => {}
+                if !in_sidebar
+                    && !in_right_panel
+                    && self.scroll_selection_with_wheel(terminal_runtimes, mouse) => {}
 
-            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown if !in_sidebar && !in_right_panel => {
+            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+                if !in_sidebar && !in_right_panel =>
+            {
                 self.selection = None;
                 self.selection_autoscroll = None;
                 self.handle_terminal_wheel(terminal_runtimes, mouse);
@@ -1002,7 +1006,9 @@ impl AppState {
                 }
             }
 
-            MouseEventKind::Moved if self.mode == Mode::Terminal && !in_sidebar && !in_right_panel => {
+            MouseEventKind::Moved
+                if self.mode == Mode::Terminal && !in_sidebar && !in_right_panel =>
+            {
                 if let Some(info) = self.pane_at(mouse.column, mouse.row).cloned() {
                     let _ = self.forward_pane_mouse_motion(terminal_runtimes, &info, mouse);
                 }
@@ -1051,12 +1057,56 @@ impl AppState {
                             })
                         })
                         .unwrap_or(ContextMenuKind::Workspace { ws_idx: idx });
+                    // Load .bora.toml commands for workspace context menus.
+                    let (bora_labels, bora_commands, bora_port) = if matches!(
+                        kind,
+                        ContextMenuKind::Workspace { .. } | ContextMenuKind::GitWorkspace { .. }
+                    ) {
+                        let ws = &self.workspaces[idx];
+                        let repo_root = ws
+                            .worktree_space()
+                            .map(|s| &s.repo_root)
+                            .or_else(|| ws.git_space().map(|s| &s.repo_root));
+                        if let Some(root) = repo_root {
+                            let config = crate::bora_config::load_bora_config(root);
+                            if let Some(cfg) = config {
+                                let branch = ws.cached_git_branch.as_deref();
+                                let filtered: Vec<_> = cfg
+                                    .commands
+                                    .into_iter()
+                                    .filter(|c| {
+                                        c.branch
+                                            .as_ref()
+                                            .map_or(true, |b| branch == Some(b.as_str()))
+                                    })
+                                    .collect();
+                                let labels: Vec<String> =
+                                    filtered.iter().map(|c| c.label.clone()).collect();
+                                let checkout_path = ws
+                                    .worktree_space()
+                                    .map(|s| s.checkout_path.as_path())
+                                    .unwrap_or(&ws.identity_cwd);
+                                let port = cfg.ports.as_ref().and_then(|p| {
+                                    crate::bora_config::port_for_checkout(p, root, checkout_path)
+                                });
+                                (labels, filtered, port)
+                            } else {
+                                (vec![], vec![], None)
+                            }
+                        } else {
+                            (vec![], vec![], None)
+                        }
+                    } else {
+                        (vec![], vec![], None)
+                    };
                     self.context_menu = Some(ContextMenuState {
-                        items: build_context_menu_items(&kind, &self.workspaces),
+                        items: build_context_menu_items(&kind, &self.workspaces, &bora_labels),
                         kind,
                         x: mouse.column,
                         y: mouse.row,
                         list: MenuListState::new(0),
+                        bora_commands,
+                        bora_port,
                     });
                     self.mode = Mode::ContextMenu;
                 }
@@ -1070,11 +1120,13 @@ impl AppState {
                 {
                     let kind = ContextMenuKind::Tab { ws_idx, tab_idx };
                     self.context_menu = Some(ContextMenuState {
-                        items: build_context_menu_items(&kind, &self.workspaces),
+                        items: build_context_menu_items(&kind, &self.workspaces, &[]),
                         kind,
                         x: mouse.column,
                         y: mouse.row,
                         list: MenuListState::new(0),
+                        bora_commands: vec![],
+                        bora_port: None,
                     });
                     self.mode = Mode::ContextMenu;
                 }
@@ -1108,11 +1160,13 @@ impl AppState {
                         has_manual_label,
                     };
                     self.context_menu = Some(ContextMenuState {
-                        items: build_context_menu_items(&kind, &self.workspaces),
+                        items: build_context_menu_items(&kind, &self.workspaces, &[]),
                         kind,
                         x: mouse.column,
                         y: mouse.row,
                         list: MenuListState::new(0),
+                        bora_commands: vec![],
+                        bora_port: None,
                     });
                     self.mode = Mode::ContextMenu;
                 }
@@ -2374,11 +2428,13 @@ mod tests {
         let mut app = app_for_mouse_test();
         let kind = ContextMenuKind::Workspace { ws_idx: 0 };
         app.state.context_menu = Some(ContextMenuState {
-            items: build_context_menu_items(&kind, &[]),
+            items: build_context_menu_items(&kind, &[], &[]),
             kind,
             x: 2,
             y: 2,
             list: MenuListState::new(0),
+            bora_commands: vec![],
+            bora_port: None,
         });
         app.state.mode = Mode::ContextMenu;
 
@@ -2647,11 +2703,13 @@ mod tests {
 
         let kind = ContextMenuKind::Workspace { ws_idx: 1 };
         app.state.context_menu = Some(ContextMenuState {
-            items: build_context_menu_items(&kind, &[]),
+            items: build_context_menu_items(&kind, &[], &[]),
             kind,
             x: 2,
             y: 2,
             list: MenuListState::new(6),
+            bora_commands: vec![],
+            bora_port: None,
         });
         app.state.mode = Mode::ContextMenu;
         handle_context_menu_key(
@@ -2712,11 +2770,13 @@ mod tests {
             has_manual_label: false,
         };
         app.state.context_menu = Some(ContextMenuState {
-            items: build_context_menu_items(&kind, &[]),
+            items: build_context_menu_items(&kind, &[], &[]),
             kind,
             x: 2,
             y: 2,
             list: MenuListState::new(1),
+            bora_commands: vec![],
+            bora_port: None,
         });
         app.state.mode = Mode::ContextMenu;
 

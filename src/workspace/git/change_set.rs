@@ -173,7 +173,12 @@ fn merge_numstat_with_status(
                 .get(&path)
                 .cloned()
                 .unwrap_or(ChangeStatus::Modified);
-            ChangedFile { path, added, removed, status }
+            ChangedFile {
+                path,
+                added,
+                removed,
+                status,
+            }
         })
         .collect()
 }
@@ -191,8 +196,7 @@ pub(super) fn build_change_sections(
 
     let mut sections = Vec::new();
 
-    let unstaged_files =
-        merge_numstat_with_status(parse_numstat(unstaged_numstat), &status_map);
+    let unstaged_files = merge_numstat_with_status(parse_numstat(unstaged_numstat), &status_map);
     if !unstaged_files.is_empty() {
         sections.push(ChangeSection {
             kind: ChangeSectionKind::Unstaged,
@@ -245,7 +249,10 @@ pub(super) fn compute_change_set(
 
     let staged =
         git_stdout_or_empty(cwd, &["diff", "--cached", "--numstat"]).unwrap_or_else(|| {
-            tracing::debug!("change_set: git diff --cached --numstat failed for {:?}", cwd);
+            tracing::debug!(
+                "change_set: git diff --cached --numstat failed for {:?}",
+                cwd
+            );
             String::new()
         });
 
@@ -273,12 +280,7 @@ pub(super) fn compute_change_set(
         }
     };
 
-    let sections = build_change_sections(
-        &unstaged,
-        &staged,
-        committed.as_deref(),
-        &porcelain,
-    );
+    let sections = build_change_sections(&unstaged, &staged, committed.as_deref(), &porcelain);
 
     Some(WorkspaceChangeSet {
         sections,
@@ -341,7 +343,10 @@ mod tests {
         let input = " M src/lib.rs\n";
         let result = parse_porcelain_status(input);
         assert_eq!(result.len(), 1);
-        assert_eq!(result[0], ("src/lib.rs".to_string(), ChangeStatus::Modified));
+        assert_eq!(
+            result[0],
+            ("src/lib.rs".to_string(), ChangeStatus::Modified)
+        );
     }
 
     #[test]
@@ -357,7 +362,10 @@ mod tests {
         let input = "D  src/gone.rs\n";
         let result = parse_porcelain_status(input);
         assert_eq!(result.len(), 1);
-        assert_eq!(result[0], ("src/gone.rs".to_string(), ChangeStatus::Deleted));
+        assert_eq!(
+            result[0],
+            ("src/gone.rs".to_string(), ChangeStatus::Deleted)
+        );
     }
 
     #[test]
