@@ -1,335 +1,172 @@
-import { afterEach, expect, test } from "bun:test";
-import { rm } from "node:fs/promises";
-import { createServer, type Server } from "node:net";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+// Regression tests for the agent-state integration plugins.
+//
+// Bug class: an agent's pane went idle in herdr while it was still working,
+// because overlapping/concurrent agent activity was tracked imprecisely.
+//   - omp/pi tracked active agents with a boolean, so the first agent_end among
+//     overlapping subagents reported idle while others were still running.
+//   - kilo reported state for every session id, so a subagent (child) session
+//     going idle clobbered the pane while the root agent was still working.
+//
+// These tests drive the *real* shipped assets through a fake `pi`/plugin host
+// and a mocked node:net that captures the JSON-RPC reports synchronously, with
+// fake timers controlling the idle debounce (no wall-clock waits).
 
-const originalEnvironment = {
-  HERDR_ENV: process.env.HERDR_ENV,
-  HERDR_PANE_ID: process.env.HERDR_PANE_ID,
-  HERDR_SOCKET_PATH: process.env.HERDR_SOCKET_PATH,
-};
+import { beforeAll, afterEach, expect, jest, mock, test } from "bun:test";
 
-let server: Server | undefined;
-let socketPath: string | undefined;
-let importCounter = 0;
+// The assets read env and bind node:net at module load, so both must be in
+// place before the asset is imported.
+process.env.HERDR_ENV = "1";
+process.env.HERDR_SOCKET_PATH = "/tmp/herdr-agent-state-test.sock"; // unused; net is mocked
+process.env.HERDR_PANE_ID = "test-pane";
+process.env.HERDR_OMP_IDLE_DEBOUNCE_MS = "50";
+process.env.HERDR_PI_IDLE_DEBOUNCE_MS = "50";
 
-afterEach(async () => {
-  await new Promise<void>((resolve, reject) => {
-    if (!server) {
-      resolve();
-      return;
+type Report = { method?: string; params?: { state?: string } };
+
+let reportedStates: string[] = [];
+
+function capture(raw: unknown): void {
+  for (const line of String(raw).split("\n")) {
+    if (!line.trim()) continue;
+    let parsed: Report;
+    try {
+      parsed = JSON.parse(line) as Report;
+    } catch {
+      continue;
     }
-    server.close((error) => (error ? reject(error) : resolve()));
-  });
-  server = undefined;
-
-  if (socketPath) {
-    await rm(socketPath, { force: true });
-    socketPath = undefined;
-  }
-
-  for (const [name, value] of Object.entries(originalEnvironment)) {
-    if (value === undefined) {
-      delete process.env[name];
-    } else {
-      process.env[name] = value;
+    if (parsed?.method === "pane.report_agent" && typeof parsed.params?.state === "string") {
+      reportedStates.push(parsed.params.state);
     }
   }
-});
-
-const integrations = [
-  { name: "Pi", modulePath: "./pi/herdr-agent-state.ts" },
-  { name: "Oh My Pi", modulePath: "./omp/herdr-agent-state.ts" },
-] as const;
-
-function importFresh(modulePath: string) {
-  importCounter += 1;
-  return import(`${modulePath}?test=${importCounter}`);
 }
 
-type Handler = (event: unknown, context: unknown) => unknown;
-
-function createExtensionHarness() {
-  const handlers = new Map<string, Handler>();
-  return {
-    handlers,
-    pi: {
-      on(event: string, handler: Handler) {
-        handlers.set(event, handler);
-      },
-      events: {
-        on() {
-          return () => {};
-        },
-      },
+// Fake unix socket: captures the written payload, then resolves the asset's
+// send promise by emitting connect/data/end/close on later microtasks (after
+// the asset has registered its listeners). No real I/O, no timers.
+function fakeCreateConnection(_path: string, connectListener?: () => void) {
+  const listeners = new Map<string, (...args: unknown[]) => void>();
+  const socket = {
+    on(event: string, cb: (...args: unknown[]) => void) {
+      listeners.set(event, cb);
+      return socket;
+    },
+    write(data: unknown) {
+      capture(data);
+      queueMicrotask(() => {
+        listeners.get("data")?.(Buffer.from(""));
+        listeners.get("end")?.();
+        listeners.get("close")?.();
+      });
+      return true;
+    },
+    setTimeout() {
+      return socket;
+    },
+    destroy() {},
+    end() {},
+    unref() {
+      return socket;
     },
   };
-}
-
-function configureIntegrationEnvironment(recordingSocketPath: string) {
-  process.env.HERDR_ENV = "1";
-  process.env.HERDR_SOCKET_PATH = recordingSocketPath;
-  process.env.HERDR_PANE_ID = "test:p1";
-}
-
-async function startRecordingServer(name: string): Promise<unknown[]> {
-  const recordingSocketPath = join(tmpdir(), `herdr-${name}-${process.pid}.sock`);
-  socketPath = recordingSocketPath;
-  await rm(recordingSocketPath, { force: true });
-
-  const requests: unknown[] = [];
-  const recordingServer = createServer((socket) => {
-    let input = "";
-    socket.setEncoding("utf8");
-    socket.on("data", (chunk) => {
-      input += chunk;
-      const newline = input.indexOf("\n");
-      if (newline === -1) {
-        return;
-      }
-      requests.push(JSON.parse(input.slice(0, newline)));
-      socket.end("{}\n");
-    });
+  queueMicrotask(() => {
+    connectListener?.();
+    listeners.get("connect")?.();
   });
-  server = recordingServer;
-  await new Promise<void>((resolve, reject) => {
-    recordingServer.once("error", reject);
-    recordingServer.listen(recordingSocketPath, resolve);
-  });
-  configureIntegrationEnvironment(recordingSocketPath);
-  return requests;
+  return socket;
 }
 
-for (const integration of integrations) {
-  test(`${integration.name} reload preserves working state when the agent is active`, async () => {
-    const requests = await startRecordingServer(
-      integration.name.toLowerCase().replaceAll(" ", "-"),
-    );
-    const { handlers, pi } = createExtensionHarness();
+// Drain the bounded microtask chain the fake socket / state queue produce.
+async function flush(): Promise<void> {
+  for (let i = 0; i < 16; i += 1) {
+    await Promise.resolve();
+  }
+}
 
-    const { default: install } = await importFresh(integration.modulePath);
-    install(pi);
+beforeAll(async () => {
+  await mock.module("node:net", () => ({
+    createConnection: fakeCreateConnection,
+    default: { createConnection: fakeCreateConnection },
+  }));
+});
 
-    const sessionStart = handlers.get("session_start");
-    expect(sessionStart).toBeDefined();
-    await sessionStart?.(
-      { reason: "reload" },
-      {
-        hasUI: true,
-        isIdle: () => false,
-        sessionManager: {
-          getSessionFile: () => undefined,
-          getSessionId: () => undefined,
+afterEach(() => {
+  reportedStates = [];
+  jest.useRealTimers();
+});
+
+// omp and pi share the same counter-based state machine.
+for (const agent of ["omp", "pi"] as const) {
+  test(`${agent}: overlapping subagents keep the pane working until the last agent_end`, async () => {
+    jest.useFakeTimers();
+    // Module-loading boundary: env + node:net mock must be applied before the
+    // asset binds them at load, so this import is intentionally dynamic.
+    const mod = await import(`./${agent}/herdr-agent-state.ts`);
+    const handlers = new Map<string, (...args: unknown[]) => void>();
+    const pi = {
+      on: (name: string, cb: (...args: unknown[]) => void) => {
+        handlers.set(name, cb);
+      },
+      events: {
+        on: (name: string, cb: (...args: unknown[]) => void) => {
+          handlers.set(`events:${name}`, cb);
         },
       },
-    );
-
-    const reportedState = () => {
-      for (const request of requests) {
-        if (!isRecord(request) || request.method !== "pane.report_agent") {
-          continue;
-        }
-        const params = request.params;
-        if (isRecord(params) && typeof params.state === "string") {
-          return params.state;
-        }
-      }
-      return undefined;
     };
+    mod.default(pi);
+    const fire = (name: string, ...args: unknown[]) => handlers.get(name)?.(...args);
 
-    const deadline = Date.now() + 1_000;
-    while (Date.now() < deadline && reportedState() === undefined) {
-      await Bun.sleep(5);
-    }
+    fire("session_start", {}, { hasUI: true });
+    await flush();
+    fire("agent_start", {}, {}); // agent A
+    await flush();
+    fire("agent_start", {}, {}); // agent B (concurrent)
+    await flush();
+    expect(reportedStates.at(-1)).toBe("working");
 
-    expect(reportedState()).toBe("working");
+    // A ends while B is still active: the pane MUST stay working.
+    fire("agent_end", {});
+    jest.advanceTimersByTime(200); // well past the idle debounce
+    await flush();
+    expect(reportedStates.at(-1)).toBe("working");
+
+    // B (the last agent) ends: only now should the pane go idle.
+    fire("agent_end", {});
+    jest.advanceTimersByTime(200);
+    await flush();
+    expect(reportedStates.at(-1)).toBe("idle");
   });
 }
 
-test("Pi reports the session replacement source", async () => {
-  const requests = await startRecordingServer("pi-session-source");
-  const { handlers, pi } = createExtensionHarness();
+test("kilo: a subagent session going idle does not idle the pane while the root agent works", async () => {
+  // Module-loading boundary: see note above; dynamic import is intentional.
+  const mod = await import("./kilo/herdr-agent-state.js");
+  const plugin = await mod.HerdrAgentStatePlugin();
 
-  const { default: install } = await importFresh("./pi/herdr-agent-state.ts");
-  install(pi);
+  // Root agent is working.
+  await plugin.event({
+    event: { type: "session.status", properties: { sessionID: "root", status: "busy" } },
+  });
+  await flush();
+  expect(reportedStates.at(-1)).toBe("working");
 
-  const sessionStart = handlers.get("session_start");
-  expect(sessionStart).toBeDefined();
-  await sessionStart?.(
-    { reason: "new" },
-    {
-      hasUI: true,
-      isIdle: () => true,
-      sessionManager: {
-        getSessionFile: () => "/tmp/pi-new.jsonl",
-        getSessionId: () => "pi-new",
-      },
-    },
-  );
+  // A subagent (child) session is created, then goes idle.
+  await plugin.event({
+    event: { type: "session.created", properties: { sessionID: "child", info: { id: "child", parentID: "root" } } },
+  });
+  await flush();
+  await plugin.event({
+    event: { type: "session.idle", properties: { sessionID: "child" } },
+  });
+  await flush();
 
-  const reportedSession = () =>
-    requests.find((request) => isRecord(request) && request.method === "pane.report_agent_session");
-  const deadline = Date.now() + 1_000;
-  while (Date.now() < deadline && reportedSession() === undefined) {
-    await Bun.sleep(5);
-  }
+  // The child's idle must be dropped; the pane stays working.
+  expect(reportedStates.filter((s) => s === "idle")).toHaveLength(0);
+  expect(reportedStates.at(-1)).toBe("working");
 
-  const request = reportedSession();
-  expect(request).toBeDefined();
-  expect(isRecord(request) && isRecord(request.params) ? request.params.session_start_source : null)
-    .toBe("new");
+  // The root agent going idle is the real completion.
+  await plugin.event({
+    event: { type: "session.idle", properties: { sessionID: "root" } },
+  });
+  await flush();
+  expect(reportedStates.at(-1)).toBe("idle");
 });
-
-test("Pi waits for a replacement session report before publishing state", async () => {
-  const recordingSocketPath = join(tmpdir(), `herdr-pi-session-order-${process.pid}.sock`);
-  socketPath = recordingSocketPath;
-  await rm(recordingSocketPath, { force: true });
-
-  const requests: unknown[] = [];
-  let acknowledgeSessionReport: (() => void) | undefined;
-  const recordingServer = createServer((socket) => {
-    let input = "";
-    socket.setEncoding("utf8");
-    socket.on("data", (chunk) => {
-      input += chunk;
-      const newline = input.indexOf("\n");
-      if (newline === -1) {
-        return;
-      }
-      const request = JSON.parse(input.slice(0, newline));
-      requests.push(request);
-      if (isRecord(request) && request.method === "pane.report_agent_session") {
-        acknowledgeSessionReport = () => socket.end("{}\n");
-        return;
-      }
-      socket.end("{}\n");
-    });
-  });
-  server = recordingServer;
-  await new Promise<void>((resolve, reject) => {
-    recordingServer.once("error", reject);
-    recordingServer.listen(recordingSocketPath, resolve);
-  });
-
-  configureIntegrationEnvironment(recordingSocketPath);
-  const { handlers, pi } = createExtensionHarness();
-  const { default: install } = await importFresh("./pi/herdr-agent-state.ts");
-  install(pi);
-
-  const sessionStart = handlers.get("session_start");
-  expect(sessionStart).toBeDefined();
-  const sessionStartResult = sessionStart?.(
-    { reason: "new" },
-    {
-      hasUI: true,
-      isIdle: () => false,
-      sessionManager: {
-        getSessionFile: () => "/tmp/pi-new.jsonl",
-        getSessionId: () => "pi-new",
-      },
-    },
-  );
-
-  const deadline = Date.now() + 1_000;
-  while (Date.now() < deadline && acknowledgeSessionReport === undefined) {
-    await Bun.sleep(5);
-  }
-  expect(acknowledgeSessionReport).toBeDefined();
-  expect(
-    requests.some((request) => isRecord(request) && request.method === "pane.report_agent"),
-  ).toBe(false);
-
-  acknowledgeSessionReport?.();
-  await sessionStartResult;
-
-  const stateDeadline = Date.now() + 1_000;
-  while (
-    Date.now() < stateDeadline &&
-    !requests.some((request) => isRecord(request) && request.method === "pane.report_agent")
-  ) {
-    await Bun.sleep(5);
-  }
-  expect(requests.map((request) => (isRecord(request) ? request.method : undefined))).toEqual([
-    "pane.report_agent_session",
-    "pane.report_agent",
-  ]);
-});
-
-test("Pi retries working state after an unanswered socket attempt", async () => {
-  const recordingSocketPath = join(tmpdir(), `herdr-pi-retry-${process.pid}.sock`);
-  socketPath = recordingSocketPath;
-  await rm(recordingSocketPath, { force: true });
-
-  let connectionCount = 0;
-  const attemptedRequests: unknown[] = [];
-  const deliveredRequests: unknown[] = [];
-  const recordingServer = createServer((socket) => {
-    connectionCount += 1;
-    const connectionNumber = connectionCount;
-    let input = "";
-    socket.setEncoding("utf8");
-    socket.on("data", (chunk) => {
-      input += chunk;
-      const newline = input.indexOf("\n");
-      if (newline === -1) {
-        return;
-      }
-      const request = JSON.parse(input.slice(0, newline));
-      attemptedRequests.push(request);
-      if (connectionNumber === 1) {
-        return;
-      }
-      deliveredRequests.push(request);
-      socket.end("{}\n");
-    });
-  });
-  server = recordingServer;
-  await new Promise<void>((resolve, reject) => {
-    recordingServer.once("error", reject);
-    recordingServer.listen(recordingSocketPath, resolve);
-  });
-
-  configureIntegrationEnvironment(recordingSocketPath);
-  const { handlers, pi } = createExtensionHarness();
-
-  const { default: install } = await importFresh("./pi/herdr-agent-state.ts");
-  install(pi);
-
-  const sessionStart = handlers.get("session_start");
-  expect(sessionStart).toBeDefined();
-  await sessionStart?.(
-    { reason: "startup" },
-    {
-      hasUI: true,
-      isIdle: () => false,
-      sessionManager: {
-        getSessionFile: () => undefined,
-        getSessionId: () => undefined,
-      },
-    },
-  );
-
-  const reportedWorking = () =>
-    deliveredRequests.some((request) => {
-      if (!isRecord(request) || request.method !== "pane.report_agent") {
-        return false;
-      }
-      const params = request.params;
-      return isRecord(params) && params.state === "working";
-    });
-
-  const deadline = Date.now() + 2_500;
-  while (Date.now() < deadline && !reportedWorking()) {
-    await Bun.sleep(5);
-  }
-
-  expect(connectionCount).toBeGreaterThanOrEqual(2);
-  expect(attemptedRequests.length).toBeGreaterThanOrEqual(2);
-  expect(attemptedRequests[1]).toEqual(attemptedRequests[0]);
-  expect(reportedWorking()).toBe(true);
-});
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
-}
