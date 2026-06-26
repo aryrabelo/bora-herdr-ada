@@ -1244,6 +1244,29 @@ impl App {
         encode_success(id, ResponseResult::Ok {})
     }
 
+    pub(super) fn handle_pane_report_result(
+        &mut self,
+        id: String,
+        params: crate::api::schema::PaneReportResultParams,
+    ) -> String {
+        let Some((ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
+            return pane_not_found(id, &params.pane_id);
+        };
+        let Some(public_pane_id) = self.public_pane_id(ws_idx, pane_id) else {
+            return pane_not_found(id, &params.pane_id);
+        };
+        let workspace_id = self.public_workspace_id(ws_idx);
+        self.emit_event(EventEnvelope {
+            event: EventKind::PaneResultReported,
+            data: EventData::PaneResultReported {
+                pane_id: public_pane_id,
+                workspace_id,
+                result: params.result,
+            },
+        });
+        encode_success(id, ResponseResult::Ok {})
+    }
+
     pub(super) fn handle_pane_report_agent_session(
         &mut self,
         id: String,
@@ -2708,6 +2731,55 @@ mod tests {
             EventData::LayoutUpdated { layout }
                 if layout.tab_id == app.public_tab_id(0, 1).unwrap()
         ));
+    }
+
+    #[test]
+    fn report_result_emits_result_reported_event_with_blob() {
+        let mut app = app_with_linked_worktree();
+        let source = app.state.workspaces[0].tabs[0].root_pane;
+        let pane_id = app.public_pane_id(0, source).unwrap();
+        let workspace_id = app.public_workspace_id(0);
+
+        let response = app.handle_pane_report_result(
+            "req".into(),
+            crate::api::schema::PaneReportResultParams {
+                pane_id: pane_id.clone(),
+                result: serde_json::json!({"status": "succeeded", "score": 0.95}),
+            },
+        );
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        assert!(matches!(success.result, ResponseResult::Ok {}));
+
+        let envelopes = app.event_hub.events_after(0);
+        let matched = envelopes
+            .iter()
+            .find_map(|(_, envelope)| match &envelope.data {
+                EventData::PaneResultReported {
+                    pane_id: p,
+                    workspace_id: w,
+                    result,
+                } => Some((p.clone(), w.clone(), result.clone())),
+                _ => None,
+            });
+        let (p, w, result) = matched.expect("expected pane_result_reported event");
+        assert_eq!(p, pane_id);
+        assert_eq!(w, workspace_id);
+        assert_eq!(result["status"], "succeeded");
+        assert_eq!(result["score"], 0.95);
+    }
+
+    #[test]
+    fn report_result_unknown_pane_errors() {
+        let mut app = app_with_linked_worktree();
+        let response = app.handle_pane_report_result(
+            "req".into(),
+            crate::api::schema::PaneReportResultParams {
+                pane_id: "pane_does_not_exist".into(),
+                result: serde_json::json!({}),
+            },
+        );
+        let value: serde_json::Value = serde_json::from_str(&response).unwrap();
+        assert!(value.get("error").is_some());
     }
 
     #[test]

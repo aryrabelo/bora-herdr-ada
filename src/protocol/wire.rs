@@ -13,6 +13,9 @@ use serde::{Deserialize, Serialize};
 // ---------------------------------------------------------------------------
 
 /// Current protocol version. Bumped when wire format changes incompatibly.
+// Fork note: bora 0.10.1 released protocol 15 without upstream's 14->15 wire
+// changes (session control/observe). The merged source must therefore exceed
+// the released fork protocol so stale clients are rejected cleanly.
 pub const PROTOCOL_VERSION: u32 = 16;
 
 /// Maximum allowed frame payload size (2 MB). Frames larger than this are

@@ -3,9 +3,9 @@ use crate::api::schema::{
     PaneLayoutParams, PaneListParams, PaneMoveDestination, PaneMoveParams, PaneNeighborParams,
     PaneProcessInfoParams, PaneReadParams, PaneReleaseAgentParams, PaneRenameParams,
     PaneReportAgentParams, PaneReportAgentSessionParams, PaneReportMetadataParams,
-    PaneResizeParams, PaneSendInputParams, PaneSendKeysParams, PaneSendTextParams, PaneSplitParams,
-    PaneSwapParams, PaneTarget, PaneZoomMode, PaneZoomParams, ReadFormat, ReadSource, Request,
-    SplitDirection,
+    PaneReportResultParams, PaneResizeParams, PaneSendInputParams, PaneSendKeysParams,
+    PaneSendTextParams, PaneSplitParams, PaneSwapParams, PaneTarget, PaneZoomMode, PaneZoomParams,
+    ReadFormat, ReadSource, Request, SplitDirection,
 };
 
 pub(super) fn run_pane_command(args: &[String]) -> std::io::Result<i32> {
@@ -34,6 +34,7 @@ pub(super) fn run_pane_command(args: &[String]) -> std::io::Result<i32> {
         "send-text" => pane_send_text(&args[1..]),
         "send-keys" => pane_send_keys(&args[1..]),
         "report-agent" => pane_report_agent(&args[1..]),
+        "report-result" => pane_report_result(&args[1..]),
         "report-agent-session" => pane_report_agent_session(&args[1..]),
         "release-agent" => pane_release_agent(&args[1..]),
         "report-metadata" => pane_report_metadata(&args[1..]),
@@ -1060,6 +1061,55 @@ fn pane_report_agent(args: &[String]) -> std::io::Result<i32> {
     }))
 }
 
+fn pane_report_result(args: &[String]) -> std::io::Result<i32> {
+    let Some(raw_pane_id) = args.first() else {
+        eprintln!("usage: herdr pane report-result <pane_id> --json '<json-blob>'");
+        return Ok(2);
+    };
+
+    let pane_id = super::normalize_pane_id(raw_pane_id);
+    let mut json = None;
+
+    let mut index = 1;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--json" => {
+                let Some(value) = args.get(index + 1) else {
+                    eprintln!("missing value for --json");
+                    return Ok(2);
+                };
+                json = Some(value.clone());
+                index += 2;
+            }
+            "help" | "--help" | "-h" => {
+                eprintln!("usage: herdr pane report-result <pane_id> --json '<json-blob>'");
+                return Ok(0);
+            }
+            other => {
+                eprintln!("unknown option: {other}");
+                return Ok(2);
+            }
+        }
+    }
+
+    let Some(json) = json else {
+        eprintln!("missing required --json");
+        return Ok(2);
+    };
+    let result = match serde_json::from_str::<serde_json::Value>(&json) {
+        Ok(value) => value,
+        Err(err) => {
+            eprintln!("invalid --json: {err}");
+            return Ok(2);
+        }
+    };
+
+    super::send_ok_request(Method::PaneReportResult(PaneReportResultParams {
+        pane_id,
+        result,
+    }))
+}
+
 fn pane_report_agent_session(args: &[String]) -> std::io::Result<i32> {
     let Some(raw_pane_id) = args.first() else {
         eprintln!("usage: herdr pane report-agent-session <pane_id> --source ID --agent LABEL [--seq N] [--agent-session-id ID] [--agent-session-path PATH] [--session-start-source SOURCE]");
@@ -1434,6 +1484,7 @@ fn print_pane_help() {
     eprintln!("  herdr pane send-text <pane_id> <text>");
     eprintln!("  herdr pane send-keys <pane_id> <key> [key ...]");
     eprintln!("  herdr pane report-agent <pane_id> --source ID --agent LABEL --state idle|working|blocked|unknown [--message TEXT] [--custom-status TEXT] [--seq N] [--agent-session-id ID] [--agent-session-path PATH]");
+    eprintln!("  herdr pane report-result <pane_id> --json '<json-blob>'");
     eprintln!("  herdr pane report-agent-session <pane_id> --source ID --agent LABEL [--seq N] [--agent-session-id ID] [--agent-session-path PATH]");
     eprintln!("  herdr pane release-agent <pane_id> --source ID --agent LABEL [--seq N]");
     eprintln!("  herdr pane report-metadata <pane_id> --source ID [--agent LABEL] [--applies-to-source ID] [--title TEXT|--clear-title] [--display-agent TEXT|--clear-display-agent] [--custom-status TEXT|--clear-custom-status] [--state-label STATUS=TEXT] [--clear-state-labels] [--seq N] [--ttl-ms N]");

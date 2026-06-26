@@ -202,7 +202,6 @@ fn handle_connection(
                 request_id.clone(),
                 params,
                 &mut stream,
-                api_tx,
                 event_hub,
                 running,
             )?
@@ -232,6 +231,32 @@ fn handle_connection(
         Method::PaneWaitForOutput(params) => {
             let Some(response) =
                 wait_for_output(request_id.clone(), params, &mut stream, api_tx, running)?
+            else {
+                crate::logging::api_request_completed(
+                    &request_id,
+                    method,
+                    "client_disconnected",
+                    changes_ui,
+                );
+                return Ok(());
+            };
+            let result = write_text_line_allow_disconnect(&mut stream, &response);
+            match &result {
+                Ok(()) => crate::logging::api_request_completed(
+                    &request_id,
+                    method,
+                    api_response_outcome(&response),
+                    changes_ui,
+                ),
+                Err(err) => {
+                    crate::logging::api_request_failed(&request_id, method, &err.to_string())
+                }
+            }
+            result
+        }
+        Method::EventsWait(params) => {
+            let Some(response) =
+                wait_for_event(request_id.clone(), params, &mut stream, event_hub, running)?
             else {
                 crate::logging::api_request_completed(
                     &request_id,
@@ -365,6 +390,7 @@ fn api_method_name(method: &Method) -> &'static str {
         Method::PaneSendInput(_) => "pane.send_input",
         Method::PaneRead(_) => "pane.read",
         Method::PaneReportAgent(_) => "pane.report_agent",
+        Method::PaneReportResult(_) => "pane.report_result",
         Method::PaneReportAgentSession(_) => "pane.report_agent_session",
         Method::PaneReportMetadata(_) => "pane.report_metadata",
         Method::PaneClearAgentAuthority(_) => "pane.clear_agent_authority",
@@ -957,6 +983,49 @@ mod tests {
         server_thread.join().unwrap();
         drop(running);
         responder.join().unwrap();
+    }
+
+    #[test]
+    fn events_wait_returns_matching_result_reported_event() {
+        let (api_tx, _api_rx) = mpsc::unbounded_channel::<ApiRequestMessage>();
+        let event_hub = EventHub::default();
+        event_hub.push(crate::api::schema::EventEnvelope {
+            event: crate::api::schema::EventKind::PaneResultReported,
+            data: crate::api::schema::EventData::PaneResultReported {
+                pane_id: "pane_1".into(),
+                workspace_id: "ws_1".into(),
+                result: serde_json::json!({"status": "succeeded", "score": 1.0}),
+            },
+        });
+
+        let (mut client, server, _path) = local_stream_pair("api-events-wait-result");
+        client
+            .write_all(br#"{"id":"req_wait_evt","method":"events.wait","params":{"match_event":{"event":"pane_result_reported","pane_id":"pane_1"},"timeout_ms":2000}}"#)
+            .unwrap();
+        client.write_all(b"\n").unwrap();
+        client.flush().unwrap();
+
+        let running = Arc::new(AtomicBool::new(true));
+        let server_running = Arc::clone(&running);
+        let server_thread = std::thread::spawn(move || {
+            handle_connection(server, &api_tx, &event_hub, &server_running, None)
+        });
+
+        let response = read_line(&mut client);
+        let value: serde_json::Value = serde_json::from_str(&response).unwrap();
+        assert_eq!(value["id"], "req_wait_evt");
+        assert_eq!(value["result"]["type"], "wait_matched");
+        assert_eq!(value["result"]["event"]["event"], "pane_result_reported");
+        assert_eq!(value["result"]["event"]["data"]["pane_id"], "pane_1");
+        assert_eq!(
+            value["result"]["event"]["data"]["result"]["status"],
+            "succeeded"
+        );
+
+        drop(client);
+        let result = server_thread.join().unwrap();
+        assert!(result.is_ok());
+        drop(running);
     }
 
     #[test]

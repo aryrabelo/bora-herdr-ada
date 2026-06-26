@@ -56,6 +56,8 @@ pub enum Subscription {
     PaneExited {},
     #[serde(rename = "pane.agent_detected")]
     PaneAgentDetected {},
+    #[serde(rename = "pane.result_reported")]
+    PaneResultReported {},
     #[serde(rename = "pane.output_matched")]
     PaneOutputMatched {
         pane_id: String,
@@ -181,6 +183,9 @@ pub enum EventMatch {
         pane_id: String,
         agent_status: AgentStatus,
     },
+    PaneResultReported {
+        pane_id: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -209,6 +214,7 @@ pub enum EventKind {
     PaneAgentDetected,
     PaneAgentStatusChanged,
     LayoutUpdated,
+    PaneResultReported,
 }
 
 impl EventKind {
@@ -237,6 +243,7 @@ impl EventKind {
             EventKind::PaneAgentDetected => "pane.agent_detected",
             EventKind::PaneAgentStatusChanged => "pane.agent_status_changed",
             EventKind::LayoutUpdated => "layout.updated",
+            EventKind::PaneResultReported => "pane.result_reported",
         }
     }
 }
@@ -266,6 +273,7 @@ pub const KNOWN_EVENT_KINDS: &[EventKind] = &[
     EventKind::PaneAgentDetected,
     EventKind::PaneAgentStatusChanged,
     EventKind::LayoutUpdated,
+    EventKind::PaneResultReported,
 ];
 
 pub const PLUGIN_HOOK_EVENT_KINDS: &[EventKind] = &[
@@ -290,6 +298,7 @@ pub const PLUGIN_HOOK_EVENT_KINDS: &[EventKind] = &[
     EventKind::PaneExited,
     EventKind::PaneAgentDetected,
     EventKind::PaneAgentStatusChanged,
+    EventKind::PaneResultReported,
 ];
 
 #[cfg(test)]
@@ -400,7 +409,6 @@ pub struct PaneScrollChangedEvent {
     pub workspace_id: String,
     pub scroll: PaneScrollInfo,
 }
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum EventData {
@@ -523,4 +531,190 @@ pub enum EventData {
     LayoutUpdated {
         layout: super::panes::PaneLayoutSnapshot,
     },
+    PaneResultReported {
+        pane_id: String,
+        workspace_id: String,
+        result: serde_json::Value,
+    },
+}
+
+/// Returns whether an emitted `EventEnvelope` satisfies an `events.wait` filter.
+pub fn event_matches(filter: &EventMatch, envelope: &EventEnvelope) -> bool {
+    match (filter, &envelope.data) {
+        (
+            EventMatch::WorkspaceCreated { workspace_id },
+            EventData::WorkspaceCreated { workspace },
+        ) => workspace_id
+            .as_ref()
+            .is_none_or(|id| *id == workspace.workspace_id),
+        (
+            EventMatch::WorkspaceUpdated { workspace_id },
+            EventData::WorkspaceUpdated { workspace },
+        ) => *workspace_id == workspace.workspace_id,
+        (
+            EventMatch::WorkspaceClosed { workspace_id },
+            EventData::WorkspaceClosed {
+                workspace_id: actual,
+                ..
+            },
+        ) => workspace_id == actual,
+        (
+            EventMatch::WorkspaceRenamed {
+                workspace_id,
+                label,
+            },
+            EventData::WorkspaceRenamed {
+                workspace_id: actual,
+                label: actual_label,
+            },
+        ) => workspace_id == actual && label.as_ref().is_none_or(|l| l == actual_label),
+        (
+            EventMatch::WorkspaceFocused { workspace_id },
+            EventData::WorkspaceFocused {
+                workspace_id: actual,
+            },
+        ) => workspace_id == actual,
+        (
+            EventMatch::TabCreated {
+                tab_id,
+                workspace_id,
+            },
+            EventData::TabCreated { tab },
+        ) => {
+            tab_id.as_ref().is_none_or(|id| *id == tab.tab_id)
+                && workspace_id
+                    .as_ref()
+                    .is_none_or(|id| *id == tab.workspace_id)
+        }
+        (EventMatch::TabClosed { tab_id }, EventData::TabClosed { tab_id: actual, .. }) => {
+            tab_id == actual
+        }
+        (
+            EventMatch::TabRenamed { tab_id, label },
+            EventData::TabRenamed {
+                tab_id: actual,
+                label: actual_label,
+                ..
+            },
+        ) => tab_id == actual && label.as_ref().is_none_or(|l| l == actual_label),
+        (EventMatch::TabFocused { tab_id }, EventData::TabFocused { tab_id: actual, .. }) => {
+            tab_id == actual
+        }
+        (
+            EventMatch::PaneCreated {
+                pane_id,
+                workspace_id,
+            },
+            EventData::PaneCreated { pane },
+        ) => {
+            pane_id.as_ref().is_none_or(|id| *id == pane.pane_id)
+                && workspace_id
+                    .as_ref()
+                    .is_none_or(|id| *id == pane.workspace_id)
+        }
+        (
+            EventMatch::PaneClosed { pane_id },
+            EventData::PaneClosed {
+                pane_id: actual, ..
+            },
+        ) => pane_id == actual,
+        (
+            EventMatch::PaneFocused { pane_id },
+            EventData::PaneFocused {
+                pane_id: actual, ..
+            },
+        ) => pane_id == actual,
+        (EventMatch::PaneMoved { pane_id }, EventData::PaneMoved { pane, .. }) => {
+            *pane_id == pane.pane_id
+        }
+        (
+            EventMatch::PaneOutputChanged {
+                pane_id,
+                min_revision,
+            },
+            EventData::PaneOutputChanged {
+                pane_id: actual,
+                revision,
+                ..
+            },
+        ) => pane_id == actual && min_revision.is_none_or(|min| *revision >= min),
+        (
+            EventMatch::PaneExited { pane_id },
+            EventData::PaneExited {
+                pane_id: actual, ..
+            },
+        ) => pane_id == actual,
+        (
+            EventMatch::PaneAgentDetected { pane_id, agent },
+            EventData::PaneAgentDetected {
+                pane_id: actual,
+                agent: actual_agent,
+                ..
+            },
+        ) => {
+            pane_id == actual
+                && agent
+                    .as_ref()
+                    .is_none_or(|a| Some(a) == actual_agent.as_ref())
+        }
+        (
+            EventMatch::PaneAgentStatusChanged {
+                pane_id,
+                agent_status,
+            },
+            EventData::PaneAgentStatusChanged {
+                pane_id: actual,
+                agent_status: actual_status,
+                ..
+            },
+        ) => pane_id == actual && agent_status == actual_status,
+        (
+            EventMatch::PaneResultReported { pane_id },
+            EventData::PaneResultReported {
+                pane_id: actual, ..
+            },
+        ) => pane_id == actual,
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+mod event_matches_tests {
+    use super::*;
+
+    fn result_envelope(pane_id: &str) -> EventEnvelope {
+        EventEnvelope {
+            event: EventKind::PaneResultReported,
+            data: EventData::PaneResultReported {
+                pane_id: pane_id.into(),
+                workspace_id: "ws_1".into(),
+                result: serde_json::json!({"ok": true}),
+            },
+        }
+    }
+
+    #[test]
+    fn result_reported_matches_same_pane() {
+        let filter = EventMatch::PaneResultReported {
+            pane_id: "pane_1".into(),
+        };
+        assert!(event_matches(&filter, &result_envelope("pane_1")));
+    }
+
+    #[test]
+    fn result_reported_rejects_other_pane_and_kinds() {
+        let filter = EventMatch::PaneResultReported {
+            pane_id: "pane_1".into(),
+        };
+        assert!(!event_matches(&filter, &result_envelope("pane_2")));
+
+        let other = EventEnvelope {
+            event: EventKind::PaneExited,
+            data: EventData::PaneExited {
+                pane_id: "pane_1".into(),
+                workspace_id: "ws_1".into(),
+            },
+        };
+        assert!(!event_matches(&filter, &other));
+    }
 }
