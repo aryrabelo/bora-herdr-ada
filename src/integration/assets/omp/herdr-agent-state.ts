@@ -257,7 +257,7 @@ export default function (pi) {
     return;
   }
 
-  let agentActive = false;
+  let agentActiveCount = 0;
   let retryHoldActive = false;
   let failureBlocked = false;
   let failureMessage: string | undefined;
@@ -295,7 +295,7 @@ export default function (pi) {
     if (failureBlocked) {
       return { state: "blocked" as const, message: failureMessage };
     }
-    if (agentActive || retryHoldActive) {
+    if (agentActiveCount > 0 || retryHoldActive) {
       return { state: "working" as const, message: undefined };
     }
     return { state: "idle" as const, message: undefined };
@@ -407,7 +407,7 @@ export default function (pi) {
     void reportSession();
     clearPendingTimers();
     clearFailureState();
-    agentActive = true;
+    agentActiveCount += 1;
     publishState();
   });
 
@@ -450,14 +450,20 @@ export default function (pi) {
     if (!rootSession) {
       return;
     }
-    if (!agentActive) {
+    if (agentActiveCount === 0) {
       // OMP can emit duplicate/late end events while auto-retry is already
-      // holding the pane in Working. Do not let an unqualified duplicate end
-      // cancel the retry hold and publish a false Idle.
+      // holding the pane in Working, and a concurrent subagent's end can
+      // arrive after the count already drained. Ignore unmatched ends so they
+      // cannot cancel a retry hold or publish a false Idle.
       return;
     }
 
-    agentActive = false;
+    agentActiveCount -= 1;
+    if (agentActiveCount > 0) {
+      // Other concurrent agents (e.g. parallel subagents) are still running;
+      // stay Working until the last one ends.
+      return;
+    }
 
     const retryableMessage = retryableErrorMessage(event);
     if (retryableMessage) {
