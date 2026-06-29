@@ -44,7 +44,6 @@ const SIDEBAR_DOUBLE_CLICK_WINDOW: Duration = Duration::from_millis(350);
 const PANE_DOUBLE_CLICK_WINDOW: Duration = Duration::from_millis(350);
 const PANE_COPY_HIGHLIGHT_DURATION: Duration = Duration::from_millis(500);
 const COPY_FEEDBACK_DURATION: Duration = Duration::from_secs(2);
-pub(crate) const WORKSPACE_IDLE_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 const WORKSPACE_IDLE_CHECK_INTERVAL: Duration = Duration::from_secs(5);
 
 use crossterm::{

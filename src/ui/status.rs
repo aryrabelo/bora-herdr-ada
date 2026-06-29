@@ -6,6 +6,8 @@ use ratatui::{
     Frame,
 };
 
+use std::time::Duration;
+
 use super::text::display_width_u16;
 use super::widgets::panel_contrast_fg;
 use crate::{
@@ -193,20 +195,34 @@ pub(super) fn render_config_diagnostic(frame: &mut Frame, area: Rect, message: &
     }
 }
 
+/// Idle age -> color ramp. `None` (no age data) reads as freshest. The hottest
+/// (red) color marks the oldest unseen idle.
+pub(super) fn idle_age_color(age: Option<Duration>, p: &Palette) -> Color {
+    match age {
+        Some(d) if d >= Duration::from_secs(3600) => p.red, // > 60 min
+        Some(d) if d >= Duration::from_secs(1800) => p.yellow, // 30–60 min
+        Some(d) if d >= Duration::from_secs(600) => p.teal, // 10–30 min
+        Some(d) if d >= Duration::from_secs(120) => p.text, // 2–10 min
+        _ => p.overlay0,                                    // 0–2 min / none
+    }
+}
+
 pub(super) fn state_dot(
     state: AgentState,
     seen: bool,
     tick: u32,
     p: &Palette,
-    idle_stale: bool,
+    idle_age: Option<Duration>,
 ) -> (&'static str, Style) {
     match (state, seen) {
-        (AgentState::Blocked, _) => ("?", Style::default().fg(p.red)),
         (AgentState::Working, _) => (super::spinner_frame(tick), Style::default().fg(p.yellow)),
-        (AgentState::Idle, false) => ("●", Style::default().fg(p.teal)),
-        (AgentState::Idle, true) if idle_stale => ("●", Style::default().fg(p.red)),
-        (AgentState::Idle, true) => ("○", Style::default().fg(p.green)),
-        (AgentState::Unknown, _) => ("·", Style::default().fg(p.overlay0)),
+        (AgentState::Idle, false) => (
+            super::sand_frame(tick),
+            Style::default().fg(idle_age_color(idle_age, p)),
+        ),
+        (AgentState::Idle, true) => ("○", Style::default().fg(p.overlay0)),
+        (AgentState::Blocked, _) => ("◆", Style::default().fg(p.red)),
+        (AgentState::Unknown, _) => ("◰", Style::default().fg(p.overlay0)),
     }
 }
 
@@ -215,12 +231,16 @@ pub(super) fn agent_icon(
     seen: bool,
     tick: u32,
     p: &Palette,
+    idle_age: Option<Duration>,
 ) -> (&'static str, Style) {
     match (state, seen) {
-        (AgentState::Blocked, _) => ("◉", Style::default().fg(p.red)),
         (AgentState::Working, _) => (super::spinner_frame(tick), Style::default().fg(p.yellow)),
-        (AgentState::Idle, false) => ("●", Style::default().fg(p.teal)),
-        (AgentState::Idle, true) => ("✓", Style::default().fg(p.green)),
+        (AgentState::Idle, false) => (
+            super::sand_frame(tick),
+            Style::default().fg(idle_age_color(idle_age, p)),
+        ),
+        (AgentState::Idle, true) => ("○", Style::default().fg(p.overlay0)),
+        (AgentState::Blocked, _) => ("◆", Style::default().fg(p.red)),
         (AgentState::Unknown, _) => ("○", Style::default().fg(p.overlay0)),
     }
 }
@@ -240,7 +260,7 @@ pub(super) fn state_label_color(state: AgentState, seen: bool, p: &Palette) -> C
         (AgentState::Blocked, _) => p.red,
         (AgentState::Working, _) => p.yellow,
         (AgentState::Idle, false) => p.teal,
-        (AgentState::Idle, true) => p.green,
+        (AgentState::Idle, true) => p.overlay0,
         (AgentState::Unknown, _) => p.overlay0,
     }
 }
@@ -328,5 +348,40 @@ mod tests {
             bottom_center.x,
             area.x + area.width.saturating_sub(bottom_center.width) / 2
         );
+    }
+
+    #[test]
+    fn idle_age_color_buckets() {
+        let p = Palette::catppuccin();
+        assert_eq!(idle_age_color(Some(Duration::from_secs(0)), &p), p.overlay0);
+        assert_eq!(idle_age_color(None, &p), p.overlay0);
+        assert_eq!(idle_age_color(Some(Duration::from_secs(180)), &p), p.text); // 3 min
+        assert_eq!(idle_age_color(Some(Duration::from_secs(900)), &p), p.teal); // 15 min
+        assert_eq!(
+            idle_age_color(Some(Duration::from_secs(2700)), &p),
+            p.yellow
+        ); // 45 min
+        assert_eq!(idle_age_color(Some(Duration::from_secs(7200)), &p), p.red); // 2 h
+    }
+
+    #[test]
+    fn state_dot_idle_unseen_uses_sand_and_age_color() {
+        let p = Palette::catppuccin();
+        let (glyph, style) = state_dot(
+            AgentState::Idle,
+            false,
+            0,
+            &p,
+            Some(Duration::from_secs(7200)),
+        );
+        assert_eq!(glyph, super::super::sand_frame(0));
+        assert_eq!(style.fg, Some(p.red));
+    }
+
+    #[test]
+    fn state_dot_blocked_and_unknown_glyphs() {
+        let p = Palette::catppuccin();
+        assert_eq!(state_dot(AgentState::Blocked, false, 0, &p, None).0, "◆");
+        assert_eq!(state_dot(AgentState::Unknown, true, 0, &p, None).0, "◰");
     }
 }
