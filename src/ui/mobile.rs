@@ -11,7 +11,7 @@ use super::sidebar::{
     next_entry_is_indented_workspace, workspace_list_entries_expanded, AgentPanelEntry,
     WorkspaceListEntry,
 };
-use super::status::state_dot;
+use super::status::{agent_icon, state_dot};
 use super::text::{display_width_u16, truncate_end};
 use crate::app::state::{Palette, ToastKind, ToastNotification};
 use crate::app::AppState;
@@ -383,7 +383,14 @@ fn render_header_status(
     };
 
     let (state, seen) = ws.aggregate_state(&app.terminals);
-    let (dot, dot_style) = state_dot(state, seen, p, false);
+    let (dot, dot_style) = if matches!(state, AgentState::Working) {
+        (
+            super::spinner_frame(app.spinner_tick),
+            Style::default().fg(p.yellow),
+        )
+    } else {
+        state_dot(state, seen, app.spinner_tick, p, None)
+    };
     let tab_label = mobile_tab_status(ws);
     let row1 = Rect::new(area.x, area.y, area.width, 1);
     let tab_w = display_width_u16(&tab_label)
@@ -581,7 +588,7 @@ fn render_mobile_switcher_content(
                 entry.ws_idx == ws_idx && entry.tab_idx == tab_idx && entry.pane_id == pane_id
             });
             let bg = mobile_item_bg(false, active, p);
-            let (icon, icon_style) = state_dot(entry.state, entry.seen, p, false);
+            let (icon, icon_style) = agent_icon(entry.state, entry.seen, app.spinner_tick, p, None);
             let title = Line::from(vec![
                 Span::styled("  ", Style::default().bg(bg)),
                 Span::styled(icon, icon_style.bg(bg)),
@@ -645,7 +652,7 @@ fn render_mobile_switcher_content(
         let selected = *ws_idx == app.selected;
         let bg = mobile_item_bg(selected, active, p);
         let (state, seen) = ws.aggregate_state(&app.terminals);
-        let (dot, dot_style) = state_dot(state, seen, p, false);
+        let (dot, dot_style) = state_dot(state, seen, app.spinner_tick, p, None);
 
         let mut title_spans = vec![Span::styled("  ", Style::default().bg(bg))];
         // Worktrees of the same space render as branches off their parent, so a
@@ -760,6 +767,7 @@ fn render_mobile_switcher_content(
             doc_y += 1;
         }
     }
+
 
     render_section_title_at(
         frame,
@@ -1213,6 +1221,7 @@ mod tests {
             agent: agent_label.and_then(crate::detect::parse_agent_label),
             state: AgentState::Idle,
             seen: true,
+            idle_since: None,
             last_agent_state_change_seq: None,
             custom_status: None,
             state_labels: std::collections::HashMap::new(),

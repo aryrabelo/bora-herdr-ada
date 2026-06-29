@@ -12,7 +12,7 @@ use ratatui::{
 
 use self::tokens::{ResolvedToken, ResolvedTokenKind, SpaceTokenContext};
 use super::scrollbar::{render_scrollbar, should_show_scrollbar};
-use super::status::{state_dot, state_label, state_label_color};
+use super::status::{agent_icon, state_dot, state_label, state_label_color};
 use super::text::{display_width, display_width_u16, truncate_end};
 use crate::app::state::{AgentPanelSort, Palette};
 use crate::app::{AppState, Mode};
@@ -36,6 +36,7 @@ pub(crate) struct AgentPanelEntry {
     pub agent: Option<crate::detect::Agent>,
     pub state: AgentState,
     pub seen: bool,
+    pub idle_since: Option<std::time::Instant>,
     pub last_agent_state_change_seq: Option<u64>,
     pub custom_status: Option<String>,
     pub state_labels: std::collections::HashMap<String, String>,
@@ -177,8 +178,9 @@ fn collect_agent_panel_entries_with_runtimes(
                         agent: detail.agent,
                         state: detail.state,
                         seen: detail.seen,
+                        idle_since: detail.idle_since,
                         last_agent_state_change_seq: detail.last_agent_state_change_seq,
-                        custom_status: None,
+                        custom_status: detail.custom_status,
                         state_labels: detail.state_labels,
                         tokens: detail.tokens,
                     }
@@ -1031,10 +1033,8 @@ pub(super) fn render_sidebar_collapsed(app: &AppState, frame: &mut Frame, area: 
             break;
         }
         let (agg_state, agg_seen) = ws.aggregate_display_state(&app.terminals);
-        let idle_stale = ws.last_activity_at.is_some_and(|t| {
-            Instant::now().duration_since(t) >= crate::app::WORKSPACE_IDLE_TIMEOUT
-        });
-        let (icon, icon_style) = state_dot(agg_state, agg_seen, p, idle_stale);
+        let idle_age = ws.oldest_unseen_idle_age(&app.terminals, Instant::now());
+        let (icon, icon_style) = state_dot(agg_state, agg_seen, app.spinner_tick, p, idle_age);
         let is_selected = visible_idx == app.selected && is_navigating;
         let is_active = Some(visible_idx) == app.active;
         let row_style = if is_selected {
@@ -1082,6 +1082,11 @@ pub(super) fn render_sidebar_collapsed(app: &AppState, frame: &mut Frame, area: 
         }
     }
 
+    let detail_ws_idx = if is_navigating {
+        Some(app.selected)
+    } else {
+        app.active
+    };
     let detail_content_area = Rect::new(
         detail_area.x,
         detail_area.y,
@@ -1089,22 +1094,32 @@ pub(super) fn render_sidebar_collapsed(app: &AppState, frame: &mut Frame, area: 
         detail_area.height.saturating_sub(1),
     );
     if detail_content_area != Rect::default() {
-        for (detail_idx, detail) in agent_panel_entries(app).iter().enumerate() {
-            let y = detail_content_area.y + detail_idx as u16;
-            if y >= detail_content_area.y + detail_content_area.height {
-                break;
+        if let Some(ws_idx) = detail_ws_idx {
+            if let Some(ws) = app.workspaces.get(ws_idx) {
+                for (detail_idx, detail) in ws.pane_details(&app.terminals).iter().enumerate() {
+                    let y = detail_content_area.y + detail_idx as u16;
+                    if y >= detail_content_area.y + detail_content_area.height {
+                        break;
+                    }
+                    let pane_num = ws
+                        .public_pane_number(detail.pane_id)
+                        .unwrap_or(detail_idx + 1);
+                    let pane_style = Style::default().fg(p.overlay0);
+                    let idle_age = detail
+                        .idle_since
+                        .map(|since| Instant::now().saturating_duration_since(since));
+                    let (icon, icon_style) =
+                        agent_icon(detail.state, detail.seen, app.spinner_tick, p, idle_age);
+                    frame.render_widget(
+                        Paragraph::new(Line::from(vec![
+                            Span::styled(format!("{pane_num}"), pane_style),
+                            Span::styled(" ", pane_style),
+                            Span::styled(icon, icon_style),
+                        ])),
+                        Rect::new(detail_content_area.x, y, detail_content_area.width, 1),
+                    );
+                }
             }
-            let position = detail_idx + 1;
-            let position_style = Style::default().fg(p.overlay0);
-            let (icon, icon_style) = state_dot(detail.state, detail.seen, p, false);
-            frame.render_widget(
-                Paragraph::new(Line::from(vec![
-                    Span::styled(format!("{position}"), position_style),
-                    Span::styled(" ", position_style),
-                    Span::styled(icon, icon_style),
-                ])),
-                Rect::new(detail_content_area.x, y, detail_content_area.width, 1),
-            );
         }
     }
 
@@ -1482,7 +1497,6 @@ fn render_workspace_list(
 
     let metrics = workspace_list_scroll_metrics(app, area);
     let scrollbar_rect = workspace_list_scrollbar_rect(app, area);
-    let now = Instant::now();
 
     // --- Render entries using the same lockstep iteration ---
     let entries = workspace_list_entries(app);
@@ -1510,7 +1524,7 @@ fn render_workspace_list(
                     ];
                     if collapsed && !collapse_key.starts_with("vg:") {
                         let (state, seen) = space_aggregate_display_state(app, collapse_key);
-                        let (dot, dot_style) = state_dot(state, seen, p, false);
+                        let (dot, dot_style) = state_dot(state, seen, app.spinner_tick, p, None);
                         spans.push(Span::styled(" ", Style::default()));
                         spans.push(Span::styled(dot, dot_style));
                     }
@@ -1534,7 +1548,7 @@ fn render_workspace_list(
                     )];
                     if collapsed {
                         let (state, seen) = space_aggregate_display_state(app, collapse_key);
-                        let (dot, dot_style) = state_dot(state, seen, p, false);
+                        let (dot, dot_style) = state_dot(state, seen, app.spinner_tick, p, None);
                         spans.push(Span::styled(" ", Style::default()));
                         spans.push(Span::styled(dot, dot_style));
                     }
@@ -1657,7 +1671,7 @@ fn render_workspace_list(
                             line1.push(Span::styled(chevron, Style::default().fg(p.accent)));
                             if collapsed {
                                 let (state, seen) = space_aggregate_display_state(app, &key);
-                                let (si, ss) = state_dot(state, seen, p, false);
+                                let (si, ss) = state_dot(state, seen, app.spinner_tick, p, None);
                                 line1.push(Span::styled(" ", Style::default()));
                                 line1.push(Span::styled(si, ss));
                             }
@@ -1695,13 +1709,10 @@ fn render_workspace_list(
                             }
                         }
                     }
-                    let idle_stale = ws.last_activity_at.is_some_and(|t| {
-                        now.duration_since(t) >= crate::app::WORKSPACE_IDLE_TIMEOUT
-                    });
                     let dots = tab_dot_states(ws, &app.terminals);
                     for (tab_idx, &(state, seen)) in dots.iter().enumerate() {
                         let (dot_glyph, mut dot_style) =
-                            state_dot(state, seen, p, idle_stale);
+                            state_dot(state, seen, app.spinner_tick, p, None);
                         if tab_idx == ws.active_tab {
                             dot_style = dot_style.add_modifier(Modifier::BOLD);
                         }
@@ -1845,6 +1856,7 @@ fn render_agent_detail(
         }
 
         let is_active = app.is_active_pane(detail.ws_idx, detail.tab_idx, detail.pane_id);
+
         let row_style = if is_active {
             Style::default().bg(p.surface_dim)
         } else {
@@ -1861,7 +1873,10 @@ fn render_agent_detail(
             Style::default().fg(label_color).add_modifier(Modifier::DIM)
         };
         let agent_style = Style::default().fg(p.overlay0).add_modifier(Modifier::DIM);
-        let state_icon = state_dot(detail.state, detail.seen, p, false);
+        let idle_age = detail
+            .idle_since
+            .map(|since| Instant::now().saturating_duration_since(since));
+        let state_icon = state_dot(detail.state, detail.seen, app.spinner_tick, p, idle_age);
 
         for (row_index, resolved) in rows.iter().take(height as usize).enumerate() {
             let mut spans = vec![Span::raw(if row_index == 0 { " " } else { "   " })];
@@ -2385,45 +2400,6 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
         assert_eq!(labels, ["four", "two", "one", "three"]);
     }
 
-    #[test]
-    fn collapsed_sidebar_uses_all_workspaces_agent_panel_order() {
-        let mut app = crate::app::state::AppState::test_new();
-        app.workspaces = vec![Workspace::test_new("one"), Workspace::test_new("two")];
-        app.ensure_test_terminals();
-        app.active = Some(0);
-        app.selected = 0;
-        app.agent_panel_sort = crate::app::state::AgentPanelSort::Priority;
-
-        let set_state = |app: &mut crate::app::state::AppState, ws_idx: usize, state| {
-            let pane = app.workspaces[ws_idx].tabs[0].root_pane;
-            let terminal_id = app.workspaces[ws_idx].tabs[0].panes[&pane]
-                .attached_terminal_id
-                .clone();
-            let terminal = app.terminals.get_mut(&terminal_id).unwrap();
-            terminal.detected_agent = Some(Agent::Claude);
-            terminal.state = state;
-        };
-        set_state(&mut app, 0, AgentState::Working);
-        set_state(&mut app, 1, AgentState::Blocked);
-
-        let area = Rect::new(0, 0, 5, 12);
-        let (_, _, detail_area) = collapsed_sidebar_sections(area);
-        let first_detail_y = detail_area.y;
-        let mut terminal = Terminal::new(TestBackend::new(area.width, area.height))
-            .expect("test terminal should initialize");
-
-        terminal
-            .draw(|frame| render_sidebar_collapsed(&app, frame, area))
-            .expect("collapsed sidebar should render");
-
-        let buffer = terminal.backend().buffer();
-        assert_eq!(buffer[(detail_area.x + 2, first_detail_y)].symbol(), "●");
-        assert_eq!(
-            buffer[(detail_area.x + 2, first_detail_y)].style().fg,
-            Some(app.palette.red)
-        );
-    }
-
     #[cfg(unix)]
     #[tokio::test]
     async fn all_workspaces_agent_panel_entries_use_live_root_runtime_cwd_for_workspace_label() {
@@ -2535,6 +2511,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
             agent: None,
             state: AgentState::Idle,
             seen: true,
+            idle_since: None,
             last_agent_state_change_seq: None,
             custom_status: None,
             state_labels: std::collections::HashMap::new(),

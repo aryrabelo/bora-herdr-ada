@@ -107,6 +107,26 @@ use crate::terminal::TerminalRuntimeRegistry;
 
 const COLLAPSED_WIDTH: u16 = 4; // num + space + dot + separator
 
+// Braille spinner frames — smooth rotation
+const SPINNERS: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+/// Map spinner_tick (incremented every frame at ~60fps) to a spinner frame.
+/// We want ~8 updates/sec so divide by 8.
+pub(super) fn spinner_frame(tick: u32) -> &'static str {
+    SPINNERS[(tick as usize / 8) % SPINNERS.len()]
+}
+
+// Braille "sand" frames (cli-spinners `sand`) — fills then drains, reads as an hourglass.
+const SAND: &[&str] = &[
+    "⠁", "⠂", "⠄", "⡀", "⡈", "⡐", "⡠", "⣀", "⣁", "⣂", "⣄", "⣌", "⣔", "⣤", "⣥", "⣦", "⣮", "⣶", "⣷",
+    "⣿", "⡿", "⠿", "⢟", "⠟", "⡛", "⠛", "⠫", "⢋", "⠋", "⠍", "⡉", "⠉", "⠑", "⠡", "⢁",
+];
+
+/// Idle "sand" animation — deliberately slower than the working spinner
+/// (~2 fps at the 16ms tick) since it is ambient. Tunable via the divisor.
+pub(super) fn sand_frame(tick: u32) -> &'static str {
+    SAND[(tick as usize / 30) % SAND.len()]
+}
 /// Compute view geometry and reconcile pane sizes.
 /// Called before render to separate mutation from drawing.
 #[cfg_attr(not(test), allow(dead_code))]
@@ -1142,7 +1162,7 @@ mod tests {
         );
         assert!(!line1.contains("1 one"));
         assert!(
-            line2.trim_start_matches(['│', ' ']).starts_with('·'),
+            line2.trim_start_matches(['│', ' ']).starts_with('◰'),
             "expected dot on branch line, got: {line2:?}"
         );
 

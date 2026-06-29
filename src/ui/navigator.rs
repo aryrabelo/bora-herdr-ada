@@ -8,7 +8,7 @@ use ratatui::{
 
 use super::{
     scrollbar::{render_scrollbar, should_show_scrollbar},
-    status::{state_dot, state_label_color},
+    status::{agent_icon, state_label_color},
     text::{display_width_u16, middle_elide, truncate_end},
     widgets::{panel_contrast_fg, render_panel_shell},
 };
@@ -66,6 +66,7 @@ fn render_search(app: &AppState, frame: &mut Frame, area: Rect) {
             &mut spans,
             crate::detect::AgentState::Blocked,
             true,
+            app.spinner_tick,
             "blocked",
             app,
         ),
@@ -73,6 +74,7 @@ fn render_search(app: &AppState, frame: &mut Frame, area: Rect) {
             &mut spans,
             crate::detect::AgentState::Working,
             true,
+            app.spinner_tick,
             "working",
             app,
         ),
@@ -80,6 +82,7 @@ fn render_search(app: &AppState, frame: &mut Frame, area: Rect) {
             &mut spans,
             crate::detect::AgentState::Idle,
             true,
+            app.spinner_tick,
             "idle",
             app,
         ),
@@ -87,6 +90,7 @@ fn render_search(app: &AppState, frame: &mut Frame, area: Rect) {
             &mut spans,
             crate::detect::AgentState::Idle,
             false,
+            app.spinner_tick,
             "done",
             app,
         ),
@@ -110,10 +114,11 @@ fn push_state_chip(
     spans: &mut Vec<Span<'static>>,
     state: crate::detect::AgentState,
     seen: bool,
+    tick: u32,
     label: &'static str,
     app: &AppState,
 ) {
-    let (icon, icon_style) = state_dot(state, seen, &app.palette, false);
+    let (icon, icon_style) = agent_icon(state, seen, tick, &app.palette, None);
     spans.push(Span::styled(icon, icon_style.add_modifier(Modifier::BOLD)));
     spans.push(Span::raw(" "));
     spans.push(Span::styled(
@@ -201,7 +206,7 @@ fn render_row(
     } else {
         Style::default().fg(p.subtext0).bg(p.panel_bg)
     };
-    let (status_icon, status_style) = state_dot(row.status, row.seen, p, false);
+    let (status_icon, status_style) = agent_icon(row.status, row.seen, app.spinner_tick, p, None);
     let status_style = if selected {
         base_style.add_modifier(Modifier::BOLD)
     } else if context_only {
