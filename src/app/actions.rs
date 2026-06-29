@@ -2753,6 +2753,11 @@ impl AppState {
             self.next_agent_state_change_seq += 1;
             if let Some(terminal) = self.terminals.get_mut(&terminal_id) {
                 terminal.last_agent_state_change_seq = Some(self.next_agent_state_change_seq);
+                terminal.idle_since = if change.state == crate::detect::AgentState::Idle {
+                    Some(std::time::Instant::now())
+                } else {
+                    None
+                };
             }
         }
         let seen = self.apply_pane_state_change(ws_idx, pane_id, &change)?;
