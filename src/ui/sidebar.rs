@@ -27,6 +27,7 @@ pub(crate) struct AgentPanelEntry {
     pub agent_label: Option<String>,
     pub state: AgentState,
     pub seen: bool,
+    pub idle_since: Option<std::time::Instant>,
     pub last_agent_state_change_seq: Option<u64>,
     pub custom_status: Option<String>,
     pub state_labels: std::collections::HashMap<String, String>,
@@ -135,6 +136,7 @@ fn agent_panel_entries_with_runtimes(
                     agent_label: Some(detail.agent_label),
                     state: detail.state,
                     seen: detail.seen,
+                    idle_since: detail.idle_since,
                     last_agent_state_change_seq: detail.last_agent_state_change_seq,
                     custom_status: detail.custom_status,
                     state_labels: detail.state_labels,
@@ -880,10 +882,8 @@ pub(super) fn render_sidebar_collapsed(app: &AppState, frame: &mut Frame, area: 
             break;
         }
         let (agg_state, agg_seen) = ws.aggregate_display_state(&app.terminals);
-        let idle_stale = ws.last_activity_at.is_some_and(|t| {
-            Instant::now().duration_since(t) >= crate::app::WORKSPACE_IDLE_TIMEOUT
-        });
-        let (icon, icon_style) = state_dot(agg_state, agg_seen, app.spinner_tick, p, idle_stale);
+        let idle_age = ws.oldest_unseen_idle_age(&app.terminals, Instant::now());
+        let (icon, icon_style) = state_dot(agg_state, agg_seen, app.spinner_tick, p, idle_age);
         let is_selected = visible_idx == app.selected && is_navigating;
         let is_active = Some(visible_idx) == app.active;
         let row_style = if is_selected {
@@ -949,8 +949,11 @@ pub(super) fn render_sidebar_collapsed(app: &AppState, frame: &mut Frame, area: 
                         .public_pane_number(detail.pane_id)
                         .unwrap_or(detail_idx + 1);
                     let pane_style = Style::default().fg(p.overlay0);
+                    let idle_age = detail
+                        .idle_since
+                        .map(|since| Instant::now().saturating_duration_since(since));
                     let (icon, icon_style) =
-                        agent_icon(detail.state, detail.seen, app.spinner_tick, p);
+                        agent_icon(detail.state, detail.seen, app.spinner_tick, p, idle_age);
                     frame.render_widget(
                         Paragraph::new(Line::from(vec![
                             Span::styled(format!("{pane_num}"), pane_style),
@@ -1066,7 +1069,6 @@ fn render_workspace_list(
 
     let metrics = workspace_list_scroll_metrics(app, area);
     let scrollbar_rect = workspace_list_scrollbar_rect(app, area);
-    let now = Instant::now();
 
     // --- Render entries using the same lockstep iteration ---
     let entries = workspace_list_entries(app);
@@ -1094,7 +1096,7 @@ fn render_workspace_list(
                     ];
                     if collapsed && !collapse_key.starts_with("vg:") {
                         let (state, seen) = space_aggregate_display_state(app, collapse_key);
-                        let (dot, dot_style) = state_dot(state, seen, app.spinner_tick, p, false);
+                        let (dot, dot_style) = state_dot(state, seen, app.spinner_tick, p, None);
                         spans.push(Span::styled(" ", Style::default()));
                         spans.push(Span::styled(dot, dot_style));
                     }
@@ -1118,7 +1120,7 @@ fn render_workspace_list(
                     )];
                     if collapsed {
                         let (state, seen) = space_aggregate_display_state(app, collapse_key);
-                        let (dot, dot_style) = state_dot(state, seen, app.spinner_tick, p, false);
+                        let (dot, dot_style) = state_dot(state, seen, app.spinner_tick, p, None);
                         spans.push(Span::styled(" ", Style::default()));
                         spans.push(Span::styled(dot, dot_style));
                     }
@@ -1241,7 +1243,7 @@ fn render_workspace_list(
                             line1.push(Span::styled(chevron, Style::default().fg(p.accent)));
                             if collapsed {
                                 let (state, seen) = space_aggregate_display_state(app, &key);
-                                let (si, ss) = state_dot(state, seen, app.spinner_tick, p, false);
+                                let (si, ss) = state_dot(state, seen, app.spinner_tick, p, None);
                                 line1.push(Span::styled(" ", Style::default()));
                                 line1.push(Span::styled(si, ss));
                             }
@@ -1279,13 +1281,10 @@ fn render_workspace_list(
                             }
                         }
                     }
-                    let idle_stale = ws.last_activity_at.is_some_and(|t| {
-                        now.duration_since(t) >= crate::app::WORKSPACE_IDLE_TIMEOUT
-                    });
                     let dots = tab_dot_states(ws, &app.terminals);
                     for (tab_idx, &(state, seen)) in dots.iter().enumerate() {
                         let (dot_glyph, mut dot_style) =
-                            state_dot(state, seen, app.spinner_tick, p, idle_stale);
+                            state_dot(state, seen, app.spinner_tick, p, None);
                         if tab_idx == ws.active_tab {
                             dot_style = dot_style.add_modifier(Modifier::BOLD);
                         }
@@ -1412,7 +1411,11 @@ fn render_agent_detail(
         // Check if this agent entry corresponds to the active session
         let is_active = app.is_active_pane(detail.ws_idx, detail.tab_idx, detail.pane_id);
 
-        let (icon, icon_style) = agent_icon(detail.state, detail.seen, app.spinner_tick, p);
+        let idle_age = detail
+            .idle_since
+            .map(|since| Instant::now().saturating_duration_since(since));
+        let (icon, icon_style) =
+            agent_icon(detail.state, detail.seen, app.spinner_tick, p, idle_age);
         let label_color = state_label_color(detail.state, detail.seen, p);
         let label = detail
             .state_labels
@@ -1745,6 +1748,7 @@ mod tests {
             agent_label: Some("claude".into()),
             state: AgentState::Idle,
             seen: true,
+            idle_since: None,
             last_agent_state_change_seq: None,
             custom_status: None,
             state_labels: std::collections::HashMap::new(),

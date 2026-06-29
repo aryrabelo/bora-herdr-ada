@@ -104,6 +104,18 @@ pub(super) fn spinner_frame(tick: u32) -> &'static str {
     SPINNERS[(tick as usize / 8) % SPINNERS.len()]
 }
 
+// Braille "sand" frames (cli-spinners `sand`) — fills then drains, reads as an hourglass.
+const SAND: &[&str] = &[
+    "⠁", "⠂", "⠄", "⡀", "⡈", "⡐", "⡠", "⣀", "⣁", "⣂", "⣄", "⣌", "⣔", "⣤", "⣥", "⣦", "⣮", "⣶", "⣷",
+    "⣿", "⡿", "⠿", "⢟", "⠟", "⡛", "⠛", "⠫", "⢋", "⠋", "⠍", "⡉", "⠉", "⠑", "⠡", "⢁",
+];
+
+/// Idle "sand" animation — deliberately slower than the working spinner
+/// (~2 fps at the 16ms tick) since it is ambient. Tunable via the divisor.
+pub(super) fn sand_frame(tick: u32) -> &'static str {
+    SAND[(tick as usize / 30) % SAND.len()]
+}
+
 /// Compute view geometry and reconcile pane sizes.
 /// Called before render to separate mutation from drawing.
 #[cfg_attr(not(test), allow(dead_code))]

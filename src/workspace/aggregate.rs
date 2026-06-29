@@ -19,6 +19,7 @@ pub struct PaneDetail {
     pub state: AgentState,
     pub seen: bool,
     pub last_agent_state_change_seq: Option<u64>,
+    pub idle_since: Option<std::time::Instant>,
     pub custom_status: Option<String>,
     pub state_labels: HashMap<String, String>,
 }
@@ -63,6 +64,7 @@ impl Tab {
                     state: terminal.state,
                     seen: pane.seen,
                     last_agent_state_change_seq: terminal.last_agent_state_change_seq,
+                    idle_since: terminal.idle_since,
                     custom_status: presentation.custom_status,
                     state_labels: presentation.state_labels,
                 })
@@ -173,6 +175,33 @@ impl Workspace {
         } else {
             self.last_activity_at = None;
         }
+    }
+
+    pub fn has_unseen_idle_pane(&self, terminals: &HashMap<TerminalId, TerminalState>) -> bool {
+        self.tabs.iter().any(|tab| {
+            tab.panes.values().any(|pane| {
+                !pane.seen
+                    && terminals
+                        .get(&pane.attached_terminal_id)
+                        .is_some_and(|t| t.state == AgentState::Idle)
+            })
+        })
+    }
+
+    pub fn oldest_unseen_idle_age(
+        &self,
+        terminals: &HashMap<TerminalId, TerminalState>,
+        now: std::time::Instant,
+    ) -> Option<std::time::Duration> {
+        self.tabs
+            .iter()
+            .flat_map(|tab| tab.panes.values())
+            .filter(|pane| !pane.seen)
+            .filter_map(|pane| terminals.get(&pane.attached_terminal_id))
+            .filter(|t| t.state == AgentState::Idle)
+            .filter_map(|t| t.idle_since)
+            .map(|since| now.saturating_duration_since(since))
+            .max()
     }
 }
 
@@ -366,5 +395,66 @@ mod tests {
 
         assert_eq!(ws.tabs[1].number, 3);
         assert_eq!(survivor.tab_idx, 1);
+    }
+
+    #[test]
+    fn has_unseen_idle_pane_tracks_seen_flips() {
+        use std::time::Instant;
+
+        let mut ws = Workspace::test_new("test");
+        let root_id = ws.tabs[0].root_pane;
+        let mut terminals = HashMap::new();
+        let mut terminal = terminal_for_pane(&ws, root_id);
+        terminal.state = AgentState::Idle;
+        terminal.idle_since = Some(Instant::now());
+        terminals.insert(terminal.id.clone(), terminal);
+
+        // Fresh pane is seen by default -> no unseen idle.
+        assert!(!ws.has_unseen_idle_pane(&terminals));
+
+        // Mark the pane unseen -> unseen idle now present.
+        ws.tabs[0].panes.get_mut(&root_id).unwrap().seen = false;
+        assert!(ws.has_unseen_idle_pane(&terminals));
+
+        // Mark it seen again -> back to false.
+        ws.tabs[0].panes.get_mut(&root_id).unwrap().seen = true;
+        assert!(!ws.has_unseen_idle_pane(&terminals));
+    }
+
+    #[test]
+    fn oldest_unseen_idle_age_returns_largest_duration() {
+        use std::time::{Duration, Instant};
+
+        let mut ws = Workspace::test_new("test");
+        let id2 = ws.test_split(Direction::Horizontal);
+        let root_id = ws.tabs[0]
+            .panes
+            .keys()
+            .find(|id| **id != id2)
+            .copied()
+            .unwrap();
+        let now = Instant::now();
+        let mut terminals = HashMap::new();
+
+        // No unseen idle -> None.
+        let mut root_terminal = terminal_for_pane(&ws, root_id);
+        root_terminal.state = AgentState::Idle;
+        root_terminal.idle_since = Some(now - Duration::from_secs(60));
+        terminals.insert(root_terminal.id.clone(), root_terminal);
+        let mut second_terminal = terminal_for_pane(&ws, id2);
+        second_terminal.state = AgentState::Idle;
+        second_terminal.idle_since = Some(now - Duration::from_secs(300));
+        terminals.insert(second_terminal.id.clone(), second_terminal);
+
+        // Both panes seen -> no unseen idle.
+        assert_eq!(ws.oldest_unseen_idle_age(&terminals, now), None);
+
+        // Mark both unseen -> returns the larger (older) age.
+        ws.tabs[0].panes.get_mut(&root_id).unwrap().seen = false;
+        ws.tabs[0].panes.get_mut(&id2).unwrap().seen = false;
+        assert_eq!(
+            ws.oldest_unseen_idle_age(&terminals, now),
+            Some(Duration::from_secs(300))
+        );
     }
 }
