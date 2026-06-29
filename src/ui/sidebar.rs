@@ -255,6 +255,28 @@ fn tab_dot_states(
         .collect()
 }
 
+/// Per-tab oldest unseen-idle age in tab order, parallel to `tab_dot_states`.
+fn tab_dot_idle_ages(
+    ws: &crate::workspace::Workspace,
+    terminals: &std::collections::HashMap<
+        crate::terminal::TerminalId,
+        crate::terminal::TerminalState,
+    >,
+    now: std::time::Instant,
+) -> Vec<Option<std::time::Duration>> {
+    let details = ws.pane_details(terminals);
+    (0..ws.tabs.len())
+        .map(|t| {
+            details
+                .iter()
+                .filter(|d| d.tab_idx == t && !d.seen && d.state == AgentState::Idle)
+                .filter_map(|d| d.idle_since)
+                .map(|since| now.saturating_duration_since(since))
+                .max()
+        })
+        .collect()
+}
+
 fn workspace_attention_priority(state: AgentState, seen: bool) -> u8 {
     match (state, seen) {
         (AgentState::Blocked, _) => 4,
@@ -288,6 +310,23 @@ fn space_aggregate_display_state(app: &AppState, key: &str) -> (AgentState, bool
         .map(|ws| ws.aggregate_display_state(&app.terminals))
         .max_by_key(|(state, seen)| workspace_display_priority(*state, *seen))
         .unwrap_or((AgentState::Unknown, true))
+}
+
+/// Oldest unseen-idle age across a space's workspaces, parallel to
+/// `space_aggregate_display_state`. Drives the age color of a collapsed group.
+fn space_aggregate_idle_age(
+    app: &AppState,
+    key: &str,
+    now: std::time::Instant,
+) -> Option<std::time::Duration> {
+    app.workspaces
+        .iter()
+        .filter(|ws| {
+            ws.git_space()
+                .is_some_and(|space| space.repo_identity == key)
+        })
+        .filter_map(|ws| ws.oldest_unseen_idle_age(&app.terminals, now))
+        .max()
 }
 
 pub(crate) fn workspace_parent_group_state(
@@ -1111,6 +1150,7 @@ fn render_workspace_list(
     let scroll = app.workspace_scroll;
     let body = workspace_list_body_rect(area, scrollbar_rect.is_some());
     let mut row_y = body.y;
+    let now = Instant::now();
 
     for (entry_idx, entry) in entries.iter().enumerate().skip(scroll) {
         let needed = entry_row_height(entry, &entries, entry_idx);
@@ -1132,7 +1172,8 @@ fn render_workspace_list(
                     ];
                     if collapsed && !collapse_key.starts_with("vg:") {
                         let (state, seen) = space_aggregate_display_state(app, collapse_key);
-                        let (dot, dot_style) = state_dot(state, seen, app.spinner_tick, p, None);
+                        let age = space_aggregate_idle_age(app, collapse_key, now);
+                        let (dot, dot_style) = state_dot(state, seen, app.spinner_tick, p, age);
                         spans.push(Span::styled(" ", Style::default()));
                         spans.push(Span::styled(dot, dot_style));
                     }
@@ -1156,7 +1197,8 @@ fn render_workspace_list(
                     )];
                     if collapsed {
                         let (state, seen) = space_aggregate_display_state(app, collapse_key);
-                        let (dot, dot_style) = state_dot(state, seen, app.spinner_tick, p, None);
+                        let age = space_aggregate_idle_age(app, collapse_key, now);
+                        let (dot, dot_style) = state_dot(state, seen, app.spinner_tick, p, age);
                         spans.push(Span::styled(" ", Style::default()));
                         spans.push(Span::styled(dot, dot_style));
                     }
@@ -1279,7 +1321,8 @@ fn render_workspace_list(
                             line1.push(Span::styled(chevron, Style::default().fg(p.accent)));
                             if collapsed {
                                 let (state, seen) = space_aggregate_display_state(app, &key);
-                                let (si, ss) = state_dot(state, seen, app.spinner_tick, p, None);
+                                let age = space_aggregate_idle_age(app, &key, now);
+                                let (si, ss) = state_dot(state, seen, app.spinner_tick, p, age);
                                 line1.push(Span::styled(" ", Style::default()));
                                 line1.push(Span::styled(si, ss));
                             }
@@ -1318,9 +1361,15 @@ fn render_workspace_list(
                         }
                     }
                     let dots = tab_dot_states(ws, &app.terminals);
+                    let dot_ages = tab_dot_idle_ages(ws, &app.terminals, now);
                     for (tab_idx, &(state, seen)) in dots.iter().enumerate() {
-                        let (dot_glyph, mut dot_style) =
-                            state_dot(state, seen, app.spinner_tick, p, None);
+                        let (dot_glyph, mut dot_style) = state_dot(
+                            state,
+                            seen,
+                            app.spinner_tick,
+                            p,
+                            dot_ages.get(tab_idx).copied().flatten(),
+                        );
                         if tab_idx == ws.active_tab {
                             dot_style = dot_style.add_modifier(Modifier::BOLD);
                         }
