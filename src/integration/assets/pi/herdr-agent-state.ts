@@ -2,15 +2,13 @@
 // managed by herdr; reinstalling or updating the integration overwrites this file.
 // add custom hooks/plugins beside this file instead of editing it.
 // HERDR_INTEGRATION_ID=pi
-// HERDR_INTEGRATION_VERSION=7
+// HERDR_INTEGRATION_VERSION=5
 // @ts-nocheck
 
-import net from "node:net";
+import { createConnection } from "node:net";
 
 const HERDR_ENV = process.env.HERDR_ENV;
 const socketPath = process.env.HERDR_SOCKET_PATH;
-const socketEndpoint =
-  process.platform === "win32" && socketPath ? `\\\\.\\pipe\\${socketPath}` : socketPath;
 const paneId = process.env.HERDR_PANE_ID;
 const source = "herdr:pi";
 
@@ -36,7 +34,7 @@ function sendRequestAttempt(request: unknown, timeoutMs: number): Promise<boolea
       resolve(delivered);
     };
 
-    const socket = net.createConnection(socketEndpoint!);
+    const socket = createConnection(socketPath!);
     socket.on("error", () => finish(false));
     socket.on("connect", () => socket.write(`${JSON.stringify(request)}\n`));
     socket.on("data", () => finish(true));
@@ -61,6 +59,10 @@ type QueuedState = {
   seq: number;
 };
 
+const idleDebounceMs = parseDurationEnv("HERDR_PI_IDLE_DEBOUNCE_MS", 250);
+const retryGraceMs = parseDurationEnv("HERDR_PI_RETRY_GRACE_MS", 2500);
+const retryableErrorPattern =
+  /overloaded|provider.?returned.?error|rate.?limit|too many requests|429|500|502|503|504|service.?unavailable|server.?error|internal.?error|network.?error|connection.?error|connection.?refused|connection.?lost|websocket.?closed|websocket.?error|other side closed|fetch failed|upstream.?connect|reset before headers|socket hang up|ended without|http2 request did not get a response|timed? out|timeout|terminated|retry delay/i;
 let reportSeq = Date.now() * 1000;
 let currentAgentSessionId: string | undefined;
 let currentAgentSessionPath: string | undefined;
@@ -68,6 +70,18 @@ let currentAgentSessionPath: string | undefined;
 function nextReportSeq(): number {
   reportSeq += 1;
   return reportSeq;
+}
+
+function parseDurationEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (!raw) {
+    return fallback;
+  }
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return fallback;
+  }
+  return parsed;
 }
 
 function updateSessionRef(ctx: any): void {
@@ -142,6 +156,29 @@ function sendState(state: AgentState, message?: string, seq = nextReportSeq()): 
   });
 }
 
+function releaseAgent(): Promise<void> {
+  return sendRequest({
+    id: `${source}:release:${Date.now()}:${Math.random().toString(36).slice(2)}`,
+    method: "pane.release_agent",
+    params: {
+      pane_id: paneId,
+      source,
+      agent: "pi",
+      seq: nextReportSeq(),
+    },
+  });
+}
+
+function shouldReleaseOnSessionShutdown(event: any): boolean {
+  // Pi tears down and rebinds extension runtimes for internal lifecycle actions
+  // such as /reload, /new, /resume, and /fork. Those do not mean the pane's
+  // agent process has exited, and releasing hook authority there can suppress
+  // legitimate reports from the replacement runtime. Only a user/process quit
+  // should release Herdr's full-lifecycle authority.
+  const reason = event?.reason;
+  return reason === "quit";
+}
+
 let sendInFlight = false;
 let queuedState: QueuedState | undefined;
 
@@ -172,6 +209,30 @@ async function drainStateQueue(): Promise<void> {
   }
 }
 
+function lastAssistantMessage(messages: unknown[]): any | undefined {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i] as any;
+    if (message?.role === "assistant") {
+      return message;
+    }
+  }
+  return undefined;
+}
+
+function retryableErrorMessage(event: any): string | undefined {
+  const messages = Array.isArray(event?.messages) ? event.messages : [];
+  const assistant = lastAssistantMessage(messages);
+  if (assistant?.stopReason !== "error") {
+    return undefined;
+  }
+
+  const errorMessage = String(assistant.errorMessage ?? "");
+  if (!retryableErrorPattern.test(errorMessage)) {
+    return undefined;
+  }
+  return errorMessage || "retryable provider error";
+}
+
 export default function (pi) {
   if (!enabled()) {
     return;
@@ -185,7 +246,29 @@ export default function (pi) {
   let blockedMessage: string | undefined;
   let lastState: AgentState | undefined;
   let lastMessage: string | undefined;
+  let idleTimer: ReturnType<typeof setTimeout> | undefined;
+  let retryTimer: ReturnType<typeof setTimeout> | undefined;
   let rootSession = false;
+  let turnRepairHold = false;
+
+  function clearTimer(timer: ReturnType<typeof setTimeout> | undefined) {
+    if (timer) {
+      clearTimeout(timer);
+    }
+  }
+
+  function clearPendingTimers() {
+    clearTimer(idleTimer);
+    clearTimer(retryTimer);
+    idleTimer = undefined;
+    retryTimer = undefined;
+  }
+
+  function clearFailureState() {
+    retryHoldActive = false;
+    failureBlocked = false;
+    failureMessage = undefined;
+  }
 
   function desiredState() {
     if (blockedCount > 0) {
@@ -194,7 +277,7 @@ export default function (pi) {
     if (failureBlocked) {
       return { state: "blocked" as const, message: failureMessage };
     }
-    if (agentActiveCount > 0 || retryHoldActive) {
+    if (agentActiveCount > 0 || retryHoldActive || turnRepairHold) {
       return { state: "working" as const, message: undefined };
     }
     return { state: "idle" as const, message: undefined };
@@ -210,6 +293,32 @@ export default function (pi) {
     queueState(next.state, next.message);
   }
 
+  function scheduleIdle() {
+    clearPendingTimers();
+    clearFailureState();
+    idleTimer = setTimeout(() => {
+      idleTimer = undefined;
+      publishState();
+    }, idleDebounceMs);
+    idleTimer.unref?.();
+  }
+
+  function holdForRetry(message: string) {
+    clearPendingTimers();
+    retryHoldActive = true;
+    failureBlocked = false;
+    failureMessage = message;
+    publishState();
+
+    retryTimer = setTimeout(() => {
+      retryTimer = undefined;
+      retryHoldActive = false;
+      failureBlocked = true;
+      publishState();
+    }, retryGraceMs);
+    retryTimer.unref?.();
+  }
+
   pi.events.on("herdr:blocked", (data) => {
     if (!rootSession) {
       return;
@@ -223,6 +332,7 @@ export default function (pi) {
       return;
     }
 
+    clearPendingTimers();
     blockedCount += 1;
     blockedMessage = data.label;
     publishState();
@@ -248,6 +358,7 @@ export default function (pi) {
     void reportSession();
     clearPendingTimers();
     clearFailureState();
+    turnRepairHold = false;
     agentActiveCount += 1;
     publishState();
   });
@@ -257,6 +368,14 @@ export default function (pi) {
       return;
     }
     if (agentActiveCount === 0) {
+      if (turnRepairHold) {
+        // The loop we were holding Working for has ended (or a late duplicate
+        // end arrived mid-turn; the next turn_start re-holds). Release the
+        // repair hold and go idle normally.
+        turnRepairHold = false;
+        scheduleIdle();
+        return;
+      }
       // Pi can emit duplicate/late end events while auto-retry is already
       // holding the pane in Working, and a concurrent subagent's end can
       // arrive after the count already drained. Ignore unmatched ends so they
@@ -278,6 +397,31 @@ export default function (pi) {
     }
 
     scheduleIdle();
+  });
+
+  pi.on("turn_start", (_event, ctx) => {
+    if (!rootSession) {
+      // A runtime rebound by /reload, /new, /resume, or /fork can miss the
+      // original session_start; a turn with UI proves this is the
+      // interactive root runtime.
+      if (ctx?.hasUI !== true) {
+        return;
+      }
+      rootSession = true;
+      updateSessionRef(ctx);
+      void reportSession();
+    }
+    // A turn proves the agent loop is alive: duplicate/late agent_end events
+    // can drain agentActiveCount mid-run (e.g. concurrent subagent fan-out),
+    // and a fire-and-forget report can be dropped. Hold Working until real
+    // bookkeeping resumes (agent_start) or the loop ends (agent_end), and
+    // force a re-publish so the pane self-heals on every turn.
+    if (agentActiveCount === 0 && !turnRepairHold) {
+      clearPendingTimers();
+      clearFailureState();
+      turnRepairHold = true;
+    }
+    publishState(true);
   });
 
   pi.on("session_shutdown", async (event) => {
