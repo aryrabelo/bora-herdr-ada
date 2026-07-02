@@ -1268,7 +1268,7 @@ pub fn build_context_menu_items(
                 v.extend(custom_commands.iter().cloned());
             }
             v.push(sep());
-            v.push("Close group".to_string());
+            v.push("Close workspace".to_string());
             v
         }
         ContextMenuKind::GitWorkspace {
@@ -1292,7 +1292,7 @@ pub fn build_context_menu_items(
                 v.extend(custom_commands.iter().cloned());
             }
             v.push(sep());
-            v.push("Close group".to_string());
+            v.push("Close workspace".to_string());
             v
         }
         ContextMenuKind::Tab { .. } => {
@@ -2533,7 +2533,7 @@ mod tests {
                 "New group\u{2026}",
                 "Remove from group",
                 CONTEXT_MENU_SEPARATOR,
-                "Close group",
+                "Close workspace",
             ]
         );
     }
