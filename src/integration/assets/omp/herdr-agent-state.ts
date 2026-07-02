@@ -268,6 +268,7 @@ export default function (pi) {
   let idleTimer: ReturnType<typeof setTimeout> | undefined;
   let retryTimer: ReturnType<typeof setTimeout> | undefined;
   let rootSession = false;
+  let turnRepairHold = false;
 
   function clearTimer(timer: ReturnType<typeof setTimeout> | undefined) {
     if (timer) {
@@ -295,7 +296,7 @@ export default function (pi) {
     if (failureBlocked) {
       return { state: "blocked" as const, message: failureMessage };
     }
-    if (agentActiveCount > 0 || retryHoldActive) {
+    if (agentActiveCount > 0 || retryHoldActive || turnRepairHold) {
       return { state: "working" as const, message: undefined };
     }
     return { state: "idle" as const, message: undefined };
@@ -407,6 +408,7 @@ export default function (pi) {
     void reportSession();
     clearPendingTimers();
     clearFailureState();
+    turnRepairHold = false;
     agentActiveCount += 1;
     publishState();
   });
@@ -451,6 +453,14 @@ export default function (pi) {
       return;
     }
     if (agentActiveCount === 0) {
+      if (turnRepairHold) {
+        // The loop we were holding Working for has ended (or a late duplicate
+        // end arrived mid-turn; the next turn_start re-holds). Release the
+        // repair hold and go idle normally.
+        turnRepairHold = false;
+        scheduleIdle();
+        return;
+      }
       // OMP can emit duplicate/late end events while auto-retry is already
       // holding the pane in Working, and a concurrent subagent's end can
       // arrive after the count already drained. Ignore unmatched ends so they
@@ -472,6 +482,31 @@ export default function (pi) {
     }
 
     scheduleIdle();
+  });
+
+  pi.on("turn_start", (_event, ctx) => {
+    if (!rootSession) {
+      // A runtime rebound by /reload, /new, /resume, or /fork can miss the
+      // original session_start; a turn with UI proves this is the
+      // interactive root runtime.
+      if (ctx?.hasUI !== true) {
+        return;
+      }
+      rootSession = true;
+      updateSessionRef(ctx);
+      void reportSession();
+    }
+    // A turn proves the agent loop is alive: duplicate/late agent_end events
+    // can drain agentActiveCount mid-run (e.g. concurrent subagent fan-out),
+    // and a fire-and-forget report can be dropped. Hold Working until real
+    // bookkeeping resumes (agent_start) or the loop ends (agent_end), and
+    // force a re-publish so the pane self-heals on every turn.
+    if (agentActiveCount === 0 && !turnRepairHold) {
+      clearPendingTimers();
+      clearFailureState();
+      turnRepairHold = true;
+    }
+    publishState(true);
   });
 
   pi.on("session_shutdown", async (event) => {
