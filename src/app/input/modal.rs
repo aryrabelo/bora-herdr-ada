@@ -787,7 +787,7 @@ pub(super) fn apply_context_menu_action(
         }
         (
             ContextMenuKind::Workspace { ws_idx } | ContextMenuKind::GitWorkspace { ws_idx, .. },
-            Some("Close" | "Close group"),
+            Some("Close" | "Close workspace"),
         ) => {
             state.selected = ws_idx;
             if state.confirm_close {
