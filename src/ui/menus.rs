@@ -307,7 +307,7 @@ pub(super) fn render_context_menu(app: &AppState, frame: &mut Frame) {
                     "─".repeat(sep_width),
                     Style::default().fg(p.surface1),
                 )))
-            } else if item == "Close" || item == "Close group" || item.starts_with("Delete") {
+            } else if item == "Close" || item == "Close workspace" || item.starts_with("Delete") {
                 ListItem::new(Line::from(Span::styled(
                     item.as_str(),
                     Style::default().fg(p.red),
