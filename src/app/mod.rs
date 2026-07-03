@@ -37,6 +37,9 @@ pub(crate) const SELECTION_AUTOSCROLL_INTERVAL: Duration = Duration::from_millis
 const RESIZE_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const GIT_REMOTE_STATUS_REFRESH_INTERVAL: Duration = Duration::from_millis(1500);
 const CHECKS_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
+/// Default period between background open-PR refreshes; overridable via
+/// `[github] refresh_interval_secs`.
+const OPEN_PRS_REFRESH_INTERVAL: Duration = Duration::from_secs(120);
 const AUTO_UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(30 * 60);
 const PENDING_AGENT_RESUME_THEME_WAIT: Duration = Duration::from_millis(750);
 const SESSION_SAVE_DEBOUNCE: Duration = Duration::from_secs(5);
@@ -111,6 +114,16 @@ pub struct App {
     pub(crate) last_api_notification_at: Option<Instant>,
     pub(crate) last_git_remote_status_refresh: Instant,
     pub(crate) last_checks_refresh: Instant,
+    pub(crate) last_open_prs_refresh: Instant,
+    /// True while a background open-PR refresh batch is running; cleared when
+    /// all its per-repo results have arrived.
+    pub(crate) open_prs_refresh_in_flight: bool,
+    /// Per-repo results still expected from the in-flight open-PR batch.
+    pub(crate) open_prs_refresh_results_pending: usize,
+    /// `[github] enabled` — gates all background GitHub data fetches.
+    pub(crate) github_fetch_enabled: bool,
+    /// `[github] refresh_interval_secs` as a Duration.
+    pub(crate) github_refresh_interval: Duration,
     pub(crate) git_refresh_in_flight: bool,
     pub(crate) git_refresh_due_after_in_flight: bool,
     pub(crate) git_status_cache: HashMap<std::path::PathBuf, crate::workspace::GitStatusCacheEntry>,
@@ -211,6 +224,16 @@ fn auto_updates_enabled(no_session: bool) -> bool {
 
 fn background_update_check_enabled(no_session: bool, check_enabled: bool) -> bool {
     auto_updates_enabled(no_session) && check_enabled
+}
+
+/// `[github] refresh_interval_secs` as a Duration; `0` falls back to the
+/// default so a misconfigured value cannot schedule gh on every git tick.
+fn github_refresh_interval_from_config(config: &Config) -> Duration {
+    if config.github.refresh_interval_secs == 0 {
+        OPEN_PRS_REFRESH_INTERVAL
+    } else {
+        Duration::from_secs(config.github.refresh_interval_secs)
+    }
 }
 
 fn load_plugin_registry(no_session: bool) -> crate::app::state::InstalledPluginRegistry {
@@ -681,6 +704,8 @@ impl App {
             global_menu: state::MenuListState::new(0),
             host_terminal_theme: crate::terminal_theme::TerminalTheme::default(),
             session_dirty: false,
+            repo_open_prs: HashMap::new(),
+            repo_issues: HashMap::new(),
             terminal_runtime_shutdowns: Vec::new(),
         };
 
@@ -718,6 +743,8 @@ impl App {
                 .and_then(|ws| ws.focused_pane_id().map(|pane_id| (idx, pane_id)))
         });
 
+        let github_refresh_interval = github_refresh_interval_from_config(config);
+
         Self {
             config_diagnostic_deadline: None,
             toast_deadline: None,
@@ -729,6 +756,15 @@ impl App {
             event_rx,
             last_git_remote_status_refresh: Instant::now() - GIT_REMOTE_STATUS_REFRESH_INTERVAL,
             last_checks_refresh: Instant::now() - CHECKS_REFRESH_INTERVAL,
+            // checked_sub: the interval is user-configurable and subtracting a
+            // huge Duration from Instant::now() would panic.
+            last_open_prs_refresh: Instant::now()
+                .checked_sub(github_refresh_interval)
+                .unwrap_or_else(Instant::now),
+            open_prs_refresh_in_flight: false,
+            open_prs_refresh_results_pending: 0,
+            github_fetch_enabled: config.github.enabled,
+            github_refresh_interval,
             git_refresh_in_flight: false,
             git_refresh_due_after_in_flight: false,
             git_status_cache: HashMap::new(),
@@ -1544,6 +1580,14 @@ impl App {
                 crate::worktree::expand_tilde_absolute_path(&config.worktrees.directory);
         }
 
+        if !invalid_section("github") {
+            // No armed deadline to adjust: the open-PR refresh uses a
+            // last+interval throttle, so disabling simply skips future fetches
+            // and re-enabling picks the schedule back up.
+            self.github_fetch_enabled = config.github.enabled;
+            self.github_refresh_interval = github_refresh_interval_from_config(config);
+        }
+
         if !invalid_section("theme") {
             self.state.theme_runtime = theme_runtime_config(config, !invalid_section("ui"));
             self.refresh_effective_app_theme();
@@ -2193,6 +2237,149 @@ mod tests {
         assert!(app.render_dirty.load(Ordering::Acquire));
     }
 
+    fn test_git_space(repo_identity: &str) -> crate::workspace::GitSpaceMetadata {
+        crate::workspace::GitSpaceMetadata {
+            key: repo_identity.to_string(),
+            repo_identity: repo_identity.to_string(),
+            checkout_key: repo_identity.to_string(),
+            label: "repo".to_string(),
+            repo_root: std::path::PathBuf::from("/tmp/repo"),
+            is_linked_worktree: false,
+        }
+    }
+
+    #[test]
+    fn repo_prs_event_updates_cache_and_clears_in_flight_batch() {
+        let mut app = test_app();
+        app.open_prs_refresh_in_flight = true;
+        app.open_prs_refresh_results_pending = 2;
+        app.render_dirty.store(false, Ordering::Release);
+
+        app.handle_internal_event(AppEvent::RepoPrsRefreshed {
+            repo_identity: "github.com/owner/repo".into(),
+            result: crate::workspace::RepoOpenPrs {
+                prs: vec![crate::workspace::OpenPr {
+                    number: 42,
+                    title: "feat: widget".into(),
+                    url: "https://github.com/owner/repo/pull/42".into(),
+                    head_ref_name: "feat/widget".into(),
+                    is_draft: false,
+                }],
+                error: None,
+            },
+        });
+
+        assert!(app.open_prs_refresh_in_flight);
+        assert_eq!(app.open_prs_refresh_results_pending, 1);
+        assert!(app.render_dirty.load(Ordering::Acquire));
+        let cached = &app.state.repo_open_prs["github.com/owner/repo"];
+        assert_eq!(cached.prs.len(), 1);
+        assert_eq!(cached.prs[0].number, 42);
+        assert!(cached.error.is_none());
+
+        app.handle_internal_event(AppEvent::RepoPrsRefreshed {
+            repo_identity: "github.com/owner/other".into(),
+            result: crate::workspace::RepoOpenPrs {
+                prs: Vec::new(),
+                error: Some("gh CLI not found".into()),
+            },
+        });
+
+        assert!(!app.open_prs_refresh_in_flight);
+        assert_eq!(app.open_prs_refresh_results_pending, 0);
+        assert_eq!(
+            app.state.repo_open_prs["github.com/owner/other"]
+                .error
+                .as_deref(),
+            Some("gh CLI not found")
+        );
+    }
+
+    #[test]
+    fn repo_issues_event_updates_cache() {
+        let mut app = test_app();
+        app.render_dirty.store(false, Ordering::Release);
+
+        app.handle_internal_event(AppEvent::RepoIssuesRefreshed {
+            repo_identity: "github.com/owner/repo".into(),
+            result: crate::workspace::RepoIssues {
+                issues: vec![crate::workspace::RepoIssue {
+                    number: 12,
+                    title: "bug: crash".into(),
+                    url: "https://github.com/owner/repo/issues/12".into(),
+                }],
+                error: None,
+            },
+        });
+
+        assert!(app.render_dirty.load(Ordering::Acquire));
+        let cached = &app.state.repo_issues["github.com/owner/repo"];
+        assert_eq!(cached.issues.len(), 1);
+        assert_eq!(cached.issues[0].number, 12);
+    }
+
+    #[test]
+    fn open_prs_refresh_skipped_when_github_disabled() {
+        let mut app = test_app();
+        app.github_fetch_enabled = false;
+        let before = app.last_open_prs_refresh;
+
+        app.start_open_prs_refresh_if_due(Instant::now());
+
+        assert_eq!(app.last_open_prs_refresh, before);
+        assert!(!app.open_prs_refresh_in_flight);
+    }
+
+    #[test]
+    fn open_prs_refresh_throttled_until_interval_elapses() {
+        let mut app = test_app();
+        let now = Instant::now();
+        app.last_open_prs_refresh = now;
+
+        app.start_open_prs_refresh_if_due(now + Duration::from_secs(1));
+        assert_eq!(app.last_open_prs_refresh, now);
+
+        // Due once the configured interval has elapsed (no workspaces, so no
+        // batch is spawned, but the throttle timestamp advances).
+        let due_at = now + app.github_refresh_interval;
+        app.start_open_prs_refresh_if_due(due_at);
+        assert_eq!(app.last_open_prs_refresh, due_at);
+        assert!(!app.open_prs_refresh_in_flight);
+    }
+
+    #[test]
+    fn open_prs_refresh_skipped_while_batch_in_flight() {
+        let mut app = test_app();
+        app.open_prs_refresh_in_flight = true;
+        let before = app.last_open_prs_refresh;
+
+        app.start_open_prs_refresh_if_due(Instant::now() + app.github_refresh_interval);
+
+        assert_eq!(app.last_open_prs_refresh, before);
+    }
+
+    #[test]
+    fn open_prs_refresh_jobs_dedupe_workspaces_by_repo_identity() {
+        let mut app = test_app();
+        let mut ws_a = Workspace::test_new("a");
+        ws_a.cached_git_space = Some(test_git_space("github.com/owner/repo"));
+        let mut ws_b = Workspace::test_new("b");
+        ws_b.cached_git_space = Some(test_git_space("github.com/owner/repo"));
+        let mut ws_c = Workspace::test_new("c");
+        ws_c.cached_git_space = Some(test_git_space("github.com/owner/other"));
+        // No git space (e.g. non-git workspace): contributes no job.
+        let ws_d = Workspace::test_new("d");
+        app.state.workspaces.extend([ws_a, ws_b, ws_c, ws_d]);
+
+        let jobs = app.open_prs_refresh_jobs();
+
+        let identities: Vec<&str> = jobs.iter().map(|(identity, _)| identity.as_str()).collect();
+        assert_eq!(
+            identities,
+            vec!["github.com/owner/repo", "github.com/owner/other"]
+        );
+    }
+
     #[test]
     fn clipboard_write_event_shows_feedback_toast() {
         let mut app = test_app();
@@ -2760,6 +2947,55 @@ mod tests {
         assert_eq!(toast.kind, crate::app::state::ToastKind::UpdateInstalled);
         assert_eq!(toast.title, "reloaded config");
         assert_eq!(toast.context, "using config.toml");
+
+        std::env::remove_var(crate::config::CONFIG_PATH_ENV_VAR);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn github_refresh_interval_zero_falls_back_to_default() {
+        let config = Config::default();
+        assert_eq!(
+            github_refresh_interval_from_config(&config),
+            OPEN_PRS_REFRESH_INTERVAL
+        );
+
+        let config: Config =
+            toml::from_str("[github]\nrefresh_interval_secs = 0\n").expect("valid config");
+        assert_eq!(
+            github_refresh_interval_from_config(&config),
+            OPEN_PRS_REFRESH_INTERVAL
+        );
+
+        let config: Config =
+            toml::from_str("[github]\nrefresh_interval_secs = 300\n").expect("valid config");
+        assert_eq!(
+            github_refresh_interval_from_config(&config),
+            Duration::from_secs(300)
+        );
+    }
+
+    #[test]
+    fn reload_config_updates_github_settings() {
+        let _guard = config_env_lock().lock().unwrap();
+        let path = temp_config_path("reload-config-github");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            "[github]\nenabled = false\nrefresh_interval_secs = 300\n",
+        )
+        .unwrap();
+        std::env::set_var(crate::config::CONFIG_PATH_ENV_VAR, &path);
+
+        let mut app = test_app();
+        assert!(app.github_fetch_enabled);
+        assert_eq!(app.github_refresh_interval, OPEN_PRS_REFRESH_INTERVAL);
+
+        let report = app.reload_config();
+
+        assert_eq!(report.status, crate::config::ConfigReloadStatus::Applied);
+        assert!(!app.github_fetch_enabled);
+        assert_eq!(app.github_refresh_interval, Duration::from_secs(300));
 
         std::env::remove_var(crate::config::CONFIG_PATH_ENV_VAR);
         let _ = std::fs::remove_dir_all(path.parent().unwrap());

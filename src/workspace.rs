@@ -24,15 +24,20 @@ pub(crate) use self::git::fetch_check_status;
 use self::git::git_ahead_behind;
 #[cfg(test)]
 pub(crate) use self::git::PrSummary;
+pub(crate) use self::git::{fetch_my_issues, fetch_my_open_prs};
 pub(crate) use self::tab::MovedPane;
 pub use self::{
     git::{
         derive_label_from_cwd, git_branch, git_space_metadata, git_status_cache_key,
-        ChangeSectionKind, ChangeStatus, GitSpaceMetadata, GitStatusCacheEntry, WorkspaceChangeSet,
-        WorkspaceCheckStatus,
+        ChangeSectionKind, ChangeStatus, GitSpaceMetadata, GitStatusCacheEntry, RepoIssues,
+        RepoOpenPrs, WorkspaceChangeSet, WorkspaceCheckStatus,
     },
     tab::{NewPane, Tab},
 };
+// Entry types inside the RepoOpenPrs/RepoIssues caches; consumed by UI/API
+// surfaces in later phases.
+#[allow(unused_imports)]
+pub use self::git::{OpenPr, RepoIssue};
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct WorktreeSpaceMembership {

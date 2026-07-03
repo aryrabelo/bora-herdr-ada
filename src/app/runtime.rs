@@ -733,6 +733,87 @@ impl App {
             }
         });
     }
+
+    /// Periodically fetch the current user's open PRs per repo so UI/API
+    /// surfaces can read them from the `repo_open_prs` cache. Workspaces on
+    /// the same repo (`GitSpaceMetadata.repo_identity`) are deduplicated to
+    /// one representative resolved cwd. Throttled to the configured
+    /// `[github] refresh_interval_secs`; one background thread fetches all
+    /// repos sequentially and delivers one `AppEvent::RepoPrsRefreshed` per
+    /// repo. Skipped entirely while a previous batch is still in flight or
+    /// when `[github] enabled` is false.
+    pub(crate) fn start_open_prs_refresh_if_due(&mut self, now: Instant) {
+        if !self.github_fetch_enabled {
+            return;
+        }
+        if self.open_prs_refresh_in_flight {
+            return;
+        }
+        if now.duration_since(self.last_open_prs_refresh) < self.github_refresh_interval {
+            return;
+        }
+        self.last_open_prs_refresh = now;
+        let jobs = self.open_prs_refresh_jobs();
+        if jobs.is_empty() {
+            return;
+        }
+        self.open_prs_refresh_in_flight = true;
+        self.open_prs_refresh_results_pending = jobs.len();
+        let event_tx = self.event_tx.clone();
+        std::thread::spawn(move || {
+            for (repo_identity, cwd) in jobs {
+                let result = crate::workspace::fetch_my_open_prs(&cwd);
+                let _ = event_tx.blocking_send(AppEvent::RepoPrsRefreshed {
+                    repo_identity,
+                    result,
+                });
+            }
+        });
+    }
+
+    /// One `(repo_identity, cwd)` fetch job per distinct repo across all
+    /// workspaces: workspaces sharing a `GitSpaceMetadata.repo_identity` are
+    /// deduplicated to the first one with a resolvable identity cwd.
+    pub(crate) fn open_prs_refresh_jobs(&self) -> Vec<(String, std::path::PathBuf)> {
+        let mut seen = std::collections::HashSet::new();
+        let mut jobs: Vec<(String, std::path::PathBuf)> = Vec::new();
+        for ws in &self.state.workspaces {
+            let Some(repo_identity) = ws.git_space().map(|space| space.repo_identity.clone())
+            else {
+                continue;
+            };
+            if seen.contains(&repo_identity) {
+                continue;
+            }
+            let Some(cwd) =
+                ws.resolved_identity_cwd_from(&self.state.terminals, &self.terminal_runtimes)
+            else {
+                continue;
+            };
+            seen.insert(repo_identity.clone());
+            jobs.push((repo_identity, cwd));
+        }
+        jobs
+    }
+
+    /// Trigger a lazy background fetch of the current user's open issues for
+    /// one repo. The result is delivered via `AppEvent::RepoIssuesRefreshed`
+    /// into the `repo_issues` cache. No periodic scheduling — callers request
+    /// a refresh explicitly. No-op when `[github] enabled` is false.
+    #[allow(dead_code)] // called by the Issues tab (later phase trigger)
+    pub(crate) fn start_issues_fetch(&self, repo_identity: String, cwd: std::path::PathBuf) {
+        if !self.github_fetch_enabled {
+            return;
+        }
+        let event_tx = self.event_tx.clone();
+        std::thread::spawn(move || {
+            let result = crate::workspace::fetch_my_issues(&cwd);
+            let _ = event_tx.blocking_send(AppEvent::RepoIssuesRefreshed {
+                repo_identity,
+                result,
+            });
+        });
+    }
 }
 
 pub(crate) fn deduplicate_git_refresh_items(

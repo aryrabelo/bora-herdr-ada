@@ -54,6 +54,26 @@ fn default_update_channel() -> UpdateChannelConfig {
     }
 }
 
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(default)]
+pub struct GithubConfig {
+    /// Enable background GitHub data fetches (open PRs, issues) via the gh
+    /// CLI. Default: true.
+    pub enabled: bool,
+    /// Seconds between periodic background open-PR refreshes. Default: 120.
+    /// `0` falls back to the default interval.
+    pub refresh_interval_secs: u64,
+}
+
+impl Default for GithubConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            refresh_interval_secs: 120,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum ToastDelivery {
@@ -292,6 +312,7 @@ pub struct Config {
     pub terminal: TerminalConfig,
     pub session: SessionConfig,
     pub update: UpdateConfig,
+    pub github: GithubConfig,
     pub keys: KeysConfig,
     pub ui: UiConfig,
     pub worktrees: WorktreesConfig,
@@ -1145,6 +1166,33 @@ manifest_check = false
             without_update_channel.update.channel,
             UpdateChannelConfig::Preview
         );
+    }
+
+    #[test]
+    fn github_config_defaults_and_parses() {
+        let default_config = Config::default();
+        assert!(default_config.github.enabled);
+        assert_eq!(default_config.github.refresh_interval_secs, 120);
+
+        let toml = r#"
+[github]
+enabled = false
+refresh_interval_secs = 300
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert!(!config.github.enabled);
+        assert_eq!(config.github.refresh_interval_secs, 300);
+    }
+
+    #[test]
+    fn github_config_partial_section_keeps_other_defaults() {
+        let toml = r#"
+[github]
+refresh_interval_secs = 60
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert!(config.github.enabled);
+        assert_eq!(config.github.refresh_interval_secs, 60);
     }
 
     #[test]
