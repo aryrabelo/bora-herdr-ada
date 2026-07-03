@@ -1304,7 +1304,9 @@ impl AppState {
                 crate::ui::WorkspaceListEntry::GroupHeader { .. }
                 | crate::ui::WorkspaceListEntry::ProjectHeader { .. }
                 | crate::ui::WorkspaceListEntry::BranchHeader { .. }
-                | crate::ui::WorkspaceListEntry::ProjectFooter { .. } => None,
+                | crate::ui::WorkspaceListEntry::ProjectFooter { .. }
+                | crate::ui::WorkspaceListEntry::PrSectionHeader { .. }
+                | crate::ui::WorkspaceListEntry::PrRow { .. } => None,
             })
             .collect::<Vec<_>>();
         if order.is_empty() {
