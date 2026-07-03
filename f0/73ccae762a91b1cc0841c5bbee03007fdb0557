@@ -1,0 +1,19 @@
+scripts/bora
+  s_f9cc257ce18206::t_4b434e3fcb275c 32-35,37
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.9",
+  "base_commit_sha": "f073ccae762a91b1cc0841c5bbee03007fdb0557",
+  "prompts": {},
+  "sessions": {
+    "s_f9cc257ce18206": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2125ebf9-1a25-44cd-9752-6f394779d50a",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Ary Rabelo <aryrabelo@gmail.com>"
+    }
+  }
+}
