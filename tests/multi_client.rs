@@ -246,7 +246,7 @@ fn create_workspace_and_root_pane(socket_path: &Path, label: &str) -> (String, S
     let response = send_json_request(
         socket_path,
         &format!(
-            "{{\"id\":\"ws_create\",\"method\":\"workspace.create\",\"params\":{{\"label\":\"{label}\"}}}}"
+            "{{\"id\":\"ws_create\",\"method\":\"workspace.create\",\"params\":{{\"label\":\"{label}\",\"focus\":true}}}}"
         ),
     );
 
