@@ -11,6 +11,7 @@ mod api;
 mod api_helpers;
 mod config_io;
 mod creation;
+pub(crate) mod flow;
 mod ids;
 mod input;
 mod runtime;
@@ -557,6 +558,7 @@ impl App {
             request_clipboard_write: None,
             request_open_url: None,
             request_open_pr_worktree: None,
+            request_flow_run: None,
             pending_bora_command: None,
             bora_port_override: None,
             creating_new_tab: false,
@@ -566,6 +568,7 @@ impl App {
             worktree_open: None,
             worktree_remove: None,
             worktree_directory,
+            flow_command_template: config.flow.command.clone(),
             collapsed_space_keys,
             request_complete_onboarding: false,
             name_input: String::new(),
@@ -1056,6 +1059,11 @@ impl App {
 
             if let Some((ws_idx, number)) = self.state.request_open_pr_worktree.take() {
                 self.start_pr_worktree_create(ws_idx, number);
+                needs_render = true;
+            }
+
+            if let Some(request) = self.state.request_flow_run.take() {
+                self.start_flow_run(request);
                 needs_render = true;
             }
 
@@ -1588,6 +1596,10 @@ impl App {
             self.github_refresh_interval = github_refresh_interval_from_config(config);
         }
 
+        if !invalid_section("flow") {
+            self.state.flow_command_template = config.flow.command.clone();
+        }
+
         if !invalid_section("theme") {
             self.state.theme_runtime = theme_runtime_config(config, !invalid_section("ui"));
             self.refresh_effective_app_theme();
@@ -1628,6 +1640,83 @@ impl App {
         crate::config::ConfigReloadReport {
             status,
             diagnostics,
+        }
+    }
+
+    /// Run the configured flow command for a GitHub issue in a new agent
+    /// pane of the active workspace. The pane inherits the session env, so
+    /// the spawned process can drive this Herdr session via the JSON API.
+    fn start_flow_run(&mut self, request: state::FlowRunRequest) {
+        let Some(ws_idx) = self.state.active else {
+            tracing::warn!("flow run requested without an active workspace; skipping");
+            return;
+        };
+        let Some(ws) = self.state.workspaces.get(ws_idx) else {
+            return;
+        };
+        let Some(git_space) = ws.git_space().cloned() else {
+            tracing::warn!("flow run requested without git workspace metadata; skipping");
+            return;
+        };
+        let repo_path = ws
+            .resolved_identity_cwd_from(&self.state.terminals, &self.terminal_runtimes)
+            .unwrap_or_else(|| git_space.repo_root.clone());
+
+        let per_repo = crate::bora_config::load_bora_config(&git_space.repo_root)
+            .and_then(|config| config.flow)
+            .and_then(|flow| flow.command);
+        let Some(template) = flow::resolve_flow_template(
+            per_repo.as_deref(),
+            self.state.flow_command_template.as_deref(),
+        ) else {
+            tracing::warn!(
+                repo = %git_space.repo_identity,
+                "no flow command template configured; skipping flow run"
+            );
+            self.state.toast = Some(state::ToastNotification {
+                kind: state::ToastKind::NeedsAttention,
+                title: "flow command not configured".to_string(),
+                context: "configure [flow] command to run bora-flow".to_string(),
+                position: None,
+                target: None,
+            });
+            return;
+        };
+
+        let context = flow::FlowCommandContext {
+            issue_ref: flow::issue_ref_from_repo_identity(&git_space.repo_identity, request.number),
+            number: request.number,
+            url: request.url,
+            repo_path: repo_path.display().to_string(),
+        };
+        let command = flow::render_flow_command(&template, &context);
+        let workspace_id = self.public_workspace_id(ws_idx);
+        let response = self.dispatch_runtime_mutation(
+            "tui.flow.start",
+            crate::api::schema::Method::AgentStart(crate::api::schema::AgentStartParams {
+                name: format!("flow #{}", request.number),
+                cwd: Some(repo_path.display().to_string()),
+                workspace_id: Some(workspace_id),
+                tab_id: None,
+                split: None,
+                focus: true,
+                argv: vec!["sh".to_string(), "-lc".to_string(), command],
+                env: Default::default(),
+            }),
+        );
+        if let Ok(error) = serde_json::from_str::<crate::api::schema::ErrorResponse>(&response) {
+            tracing::warn!(
+                code = %error.error.code,
+                message = %error.error.message,
+                "flow agent start failed"
+            );
+            self.state.toast = Some(state::ToastNotification {
+                kind: state::ToastKind::NeedsAttention,
+                title: "bora-flow failed to start".to_string(),
+                context: error.error.message,
+                position: None,
+                target: None,
+            });
         }
     }
 
@@ -2996,6 +3085,63 @@ mod tests {
 
         std::env::remove_var(crate::config::CONFIG_PATH_ENV_VAR);
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn reload_config_updates_flow_template() {
+        let _guard = config_env_lock().lock().unwrap();
+        let path = temp_config_path("reload-config-flow");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "[flow]\ncommand = \"bora-flow run {issue}\"\n").unwrap();
+        std::env::set_var(crate::config::CONFIG_PATH_ENV_VAR, &path);
+
+        let mut app = test_app();
+        assert!(app.state.flow_command_template.is_none());
+
+        let report = app.reload_config();
+
+        assert_eq!(report.status, crate::config::ConfigReloadStatus::Applied);
+        assert_eq!(
+            app.state.flow_command_template.as_deref(),
+            Some("bora-flow run {issue}")
+        );
+
+        std::env::remove_var(crate::config::CONFIG_PATH_ENV_VAR);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn flow_run_without_template_shows_needs_attention_toast() {
+        let mut app = test_app();
+        app.state.workspaces.push(Workspace::test_new("one"));
+        app.state.active = Some(0);
+        let mut git_space = test_git_space("github.com/owner/repo");
+        // A repo root that cannot hold a stray `.bora.toml`, so only the
+        // (unset) global template participates in resolution.
+        git_space.repo_root = std::path::PathBuf::from("/nonexistent/bora-flow-run-test");
+        app.state.workspaces[0].cached_git_space = Some(git_space);
+
+        app.start_flow_run(state::FlowRunRequest {
+            number: 12,
+            url: "https://github.com/owner/repo/issues/12".into(),
+        });
+
+        let toast = app.state.toast.as_ref().expect("toast");
+        assert_eq!(toast.kind, state::ToastKind::NeedsAttention);
+        assert_eq!(toast.title, "flow command not configured");
+        assert_eq!(toast.context, "configure [flow] command to run bora-flow");
+    }
+
+    #[test]
+    fn flow_run_without_active_workspace_is_a_quiet_no_op() {
+        let mut app = test_app();
+
+        app.start_flow_run(state::FlowRunRequest {
+            number: 12,
+            url: "https://github.com/owner/repo/issues/12".into(),
+        });
+
+        assert!(app.state.toast.is_none());
     }
 
     #[test]
