@@ -67,6 +67,7 @@ fn worktree_create(args: &[String]) -> std::io::Result<i32> {
     let mut cwd = None;
     let mut branch = None;
     let mut base = None;
+    let mut pr = None;
     let mut path = None;
     let mut label = None;
     let mut focus = false;
@@ -106,6 +107,18 @@ fn worktree_create(args: &[String]) -> std::io::Result<i32> {
                 base = Some(value.clone());
                 index += 2;
             }
+            "--pr" => {
+                let Some(value) = args.get(index + 1) else {
+                    eprintln!("missing value for --pr");
+                    return Ok(2);
+                };
+                let Ok(number) = value.parse::<u64>() else {
+                    eprintln!("invalid value for --pr: {value}");
+                    return Ok(2);
+                };
+                pr = Some(number);
+                index += 2;
+            }
             "--path" => {
                 let Some(value) = args.get(index + 1) else {
                     eprintln!("missing value for --path");
@@ -137,9 +150,11 @@ fn worktree_create(args: &[String]) -> std::io::Result<i32> {
             }
         }
     }
-    if workspace_id.is_some() && cwd.is_some() {
+    if workspace_id.is_some() && cwd.is_some()
+        || pr.is_some() && (branch.is_some() || base.is_some())
+    {
         eprintln!(
-            "usage: herdr worktree create [--workspace ID | --cwd PATH] [--branch NAME] [--base REF] [--path PATH] [--label TEXT] [--focus] [--no-focus] [--json]"
+            "usage: herdr worktree create [--workspace ID | --cwd PATH] [--branch NAME] [--base REF] [--pr NUMBER] [--path PATH] [--label TEXT] [--focus] [--no-focus] [--json] (--pr is mutually exclusive with --branch/--base)"
         );
         return Ok(2);
     }
@@ -149,6 +164,7 @@ fn worktree_create(args: &[String]) -> std::io::Result<i32> {
         cwd,
         branch,
         base,
+        pr,
         path,
         label,
         focus,
@@ -286,7 +302,7 @@ fn print_worktree_help() {
     eprintln!("herdr worktree commands:");
     eprintln!("  herdr worktree list [--workspace ID | --cwd PATH] [--json]");
     eprintln!(
-        "  herdr worktree create [--workspace ID | --cwd PATH] [--branch NAME] [--base REF] [--path PATH] [--label TEXT] [--focus] [--no-focus] [--json]"
+        "  herdr worktree create [--workspace ID | --cwd PATH] [--branch NAME] [--base REF] [--pr NUMBER] [--path PATH] [--label TEXT] [--focus] [--no-focus] [--json]"
     );
     eprintln!(
         "  herdr worktree open [--workspace ID | --cwd PATH] (--path PATH | --branch NAME) [--label TEXT] [--focus] [--no-focus] [--json]"

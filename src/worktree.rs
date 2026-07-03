@@ -304,6 +304,184 @@ pub(crate) fn run_worktree_add_command(
     run_worktree_command(&command)
 }
 
+/// Head metadata for a pull request, resolved authoritatively via `gh pr view`
+/// in the source checkout (never from the UI cache).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PullRequestHead {
+    pub head_ref_name: String,
+    pub is_cross_repository: bool,
+    pub state: String,
+}
+
+pub(crate) fn parse_gh_pr_view_json(json_str: &str) -> Result<PullRequestHead, String> {
+    let value: serde_json::Value =
+        serde_json::from_str(json_str).map_err(|e| format!("invalid JSON from gh: {e}"))?;
+    let head_ref_name = value
+        .get("headRefName")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    if head_ref_name.is_empty() {
+        return Err("gh pr view returned no head branch".into());
+    }
+    let is_cross_repository = value
+        .get("isCrossRepository")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let state = value
+        .get("state")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    Ok(PullRequestHead {
+        head_ref_name,
+        is_cross_repository,
+        state,
+    })
+}
+
+fn resolve_pull_request_head(
+    source_checkout: &Path,
+    pr_number: u64,
+) -> Result<PullRequestHead, String> {
+    let output = std::process::Command::new("gh")
+        .current_dir(source_checkout)
+        .args([
+            "pr",
+            "view",
+            &pr_number.to_string(),
+            "--json",
+            "number,headRefName,isCrossRepository,state",
+        ])
+        .output()
+        .map_err(|err| {
+            if err.kind() == std::io::ErrorKind::NotFound {
+                "gh CLI not found".to_string()
+            } else {
+                format!("failed to run gh: {err}")
+            }
+        })?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(
+            if stderr.contains("authentication") || stderr.contains("auth") {
+                "gh not authenticated".to_string()
+            } else if stderr.is_empty() {
+                format!("gh pr view {pr_number} failed")
+            } else {
+                stderr
+            },
+        );
+    }
+    let head = parse_gh_pr_view_json(&String::from_utf8_lossy(&output.stdout))?;
+    if !head.state.eq_ignore_ascii_case("open") {
+        return Err(format!(
+            "PR #{pr_number} is {}; only open PRs can be checked out",
+            head.state.to_ascii_lowercase()
+        ));
+    }
+    Ok(head)
+}
+
+/// `git fetch origin <branch>` so the tracking worktree add below sees an
+/// up-to-date `origin/<branch>`.
+pub(crate) fn build_pr_branch_fetch_command(
+    source_checkout: &Path,
+    head_ref_name: &str,
+) -> WorktreeCommand {
+    WorktreeCommand {
+        program: "git".to_string(),
+        args: vec![
+            "-C".to_string(),
+            source_checkout.display().to_string(),
+            "fetch".to_string(),
+            "origin".to_string(),
+            head_ref_name.to_string(),
+        ],
+    }
+}
+
+/// Worktree add creating local `branch` from `origin/<branch>` with upstream
+/// tracking so a later push from the checkout works without extra setup.
+pub(crate) fn build_worktree_add_tracking_branch_command(
+    repo_root: &Path,
+    path: &Path,
+    branch: &str,
+) -> WorktreeCommand {
+    WorktreeCommand {
+        program: "git".to_string(),
+        args: vec![
+            "-C".to_string(),
+            repo_root.display().to_string(),
+            "worktree".to_string(),
+            "add".to_string(),
+            "--track".to_string(),
+            "-b".to_string(),
+            branch.to_string(),
+            path.display().to_string(),
+            format!("origin/{branch}"),
+        ],
+    }
+}
+
+/// Local branch name used for a fork (cross-repository) PR checkout.
+pub(crate) fn pr_fork_branch_name(pr_number: u64) -> String {
+    format!("pr/{pr_number}")
+}
+
+/// `git fetch origin +refs/pull/<N>/head:pr/<N>`. The `+` force prefix lets a
+/// re-run update an existing `pr/<N>` branch left by an earlier checkout even
+/// when the fork force-pushed (non-fast-forward) in between.
+pub(crate) fn build_pr_fork_fetch_command(
+    source_checkout: &Path,
+    pr_number: u64,
+) -> WorktreeCommand {
+    WorktreeCommand {
+        program: "git".to_string(),
+        args: vec![
+            "-C".to_string(),
+            source_checkout.display().to_string(),
+            "fetch".to_string(),
+            "origin".to_string(),
+            format!(
+                "+refs/pull/{pr_number}/head:{}",
+                pr_fork_branch_name(pr_number)
+            ),
+        ],
+    }
+}
+
+/// Create a linked worktree at `path` checked out to the head of PR
+/// `pr_number`, resolving the PR via `gh` in `source_checkout`. Same-repo PRs
+/// check out the head branch (with upstream tracking so push works); fork PRs
+/// check out a read-only local `pr/<N>` branch fetched from the PR ref.
+pub(crate) fn run_worktree_add_for_pull_request(
+    source_checkout: &Path,
+    path: &Path,
+    pr_number: u64,
+) -> Result<(), String> {
+    let head = resolve_pull_request_head(source_checkout, pr_number)?;
+    if head.is_cross_repository {
+        run_worktree_command(&build_pr_fork_fetch_command(source_checkout, pr_number))?;
+        let branch = pr_fork_branch_name(pr_number);
+        return run_worktree_command(&build_worktree_add_existing_branch_command(
+            source_checkout,
+            path,
+            &branch,
+        ));
+    }
+    run_worktree_command(&build_pr_branch_fetch_command(
+        source_checkout,
+        &head.head_ref_name,
+    ))?;
+    let command = if local_branch_exists(source_checkout, &head.head_ref_name)? {
+        build_worktree_add_existing_branch_command(source_checkout, path, &head.head_ref_name)
+    } else {
+        build_worktree_add_tracking_branch_command(source_checkout, path, &head.head_ref_name)
+    };
+    run_worktree_command(&command)
+}
+
 pub(crate) fn build_worktree_merge_command(repo_root: &Path, branch: &str) -> WorktreeCommand {
     WorktreeCommand {
         program: "git".to_string(),
@@ -975,6 +1153,89 @@ prunable stale
                 "worktree/brave-river"
             ]
         );
+    }
+
+    #[test]
+    fn pr_branch_fetch_command_fetches_head_from_origin() {
+        let command = build_pr_branch_fetch_command(Path::new("/repo/herdr"), "feature/pr-head");
+        assert_eq!(command.program, "git");
+        assert_eq!(
+            command.args,
+            vec!["-C", "/repo/herdr", "fetch", "origin", "feature/pr-head"]
+        );
+    }
+
+    #[test]
+    fn worktree_add_tracking_branch_command_tracks_origin_branch() {
+        let command = build_worktree_add_tracking_branch_command(
+            Path::new("/repo/herdr"),
+            Path::new("/w/herdr/pr-42"),
+            "feature/pr-head",
+        );
+        assert_eq!(command.program, "git");
+        assert_eq!(
+            command.args,
+            vec![
+                "-C",
+                "/repo/herdr",
+                "worktree",
+                "add",
+                "--track",
+                "-b",
+                "feature/pr-head",
+                "/w/herdr/pr-42",
+                "origin/feature/pr-head"
+            ]
+        );
+    }
+
+    #[test]
+    fn pr_fork_fetch_command_force_fetches_pull_ref_into_local_branch() {
+        let command = build_pr_fork_fetch_command(Path::new("/repo/herdr"), 42);
+        assert_eq!(command.program, "git");
+        assert_eq!(
+            command.args,
+            vec![
+                "-C",
+                "/repo/herdr",
+                "fetch",
+                "origin",
+                "+refs/pull/42/head:pr/42"
+            ]
+        );
+        assert_eq!(pr_fork_branch_name(42), "pr/42");
+    }
+
+    #[test]
+    fn parse_gh_pr_view_json_reads_head_metadata() {
+        let head = parse_gh_pr_view_json(
+            r#"{"number":42,"headRefName":"feature/pr-head","isCrossRepository":false,"state":"OPEN"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            head,
+            PullRequestHead {
+                head_ref_name: "feature/pr-head".into(),
+                is_cross_repository: false,
+                state: "OPEN".into(),
+            }
+        );
+
+        let fork = parse_gh_pr_view_json(
+            r#"{"number":7,"headRefName":"fork-branch","isCrossRepository":true,"state":"MERGED"}"#,
+        )
+        .unwrap();
+        assert!(fork.is_cross_repository);
+        assert_eq!(fork.state, "MERGED");
+    }
+
+    #[test]
+    fn parse_gh_pr_view_json_rejects_missing_head_and_invalid_json() {
+        let missing = parse_gh_pr_view_json(r#"{"number":42,"state":"OPEN"}"#);
+        assert!(missing.unwrap_err().contains("no head branch"));
+
+        let invalid = parse_gh_pr_view_json("not json");
+        assert!(invalid.unwrap_err().contains("invalid JSON"));
     }
 
     #[test]

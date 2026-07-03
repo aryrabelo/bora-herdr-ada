@@ -654,6 +654,35 @@ fn worktree_request_and_response_round_trip() {
 }
 
 #[test]
+fn worktree_create_pr_param_round_trips_and_is_omitted_when_absent() {
+    let request = Request {
+        id: "req_worktree_pr".into(),
+        method: Method::WorktreeCreate(WorktreeCreateParams {
+            workspace_id: Some("1".into()),
+            pr: Some(42),
+            focus: true,
+            ..WorktreeCreateParams::default()
+        }),
+    };
+    let json = serde_json::to_string(&request).unwrap();
+    assert!(json.contains("\"pr\":42"));
+    let restored: Request = serde_json::from_str(&json).unwrap();
+    assert_eq!(restored, request);
+
+    let without_pr = Request {
+        id: "req_worktree_no_pr".into(),
+        method: Method::WorktreeCreate(WorktreeCreateParams {
+            branch: Some("worktree/api".into()),
+            ..WorktreeCreateParams::default()
+        }),
+    };
+    let json = serde_json::to_string(&without_pr).unwrap();
+    assert!(!json.contains("\"pr\""));
+    let restored: Request = serde_json::from_str(&json).unwrap();
+    assert_eq!(restored, without_pr);
+}
+
+#[test]
 fn worktree_lifecycle_events_round_trip() {
     let subscription = Request {
         id: "sub_worktrees".into(),
