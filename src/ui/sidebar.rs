@@ -199,30 +199,15 @@ pub(super) fn agent_panel_status_key(state: AgentState, seen: bool) -> &'static 
     }
 }
 
-fn truncate_text(text: &str, max_width: usize) -> String {
-    let len = text.chars().count();
-    if len <= max_width {
-        return text.to_string();
-    }
-    if max_width == 0 {
-        return String::new();
-    }
-    if max_width == 1 {
-        return "…".to_string();
-    }
-    let prefix: String = text.chars().take(max_width.saturating_sub(1)).collect();
-    format!("{prefix}…")
-}
-
 fn format_agent_panel_primary_label(entry: &AgentPanelEntry, max_width: usize) -> String {
     let Some(tab_label) = entry.primary_tab_label.as_deref() else {
-        return truncate_text(&entry.primary_label, max_width);
+        return truncate_end(&entry.primary_label, max_width);
     };
 
     let separator = " · ";
     let separator_width = separator.chars().count();
     if max_width <= separator_width + 2 {
-        return truncate_text(
+        return truncate_end(
             &format!("{}{}{}", entry.primary_label, separator, tab_label),
             max_width,
         );
@@ -236,8 +221,8 @@ fn format_agent_panel_primary_label(entry: &AgentPanelEntry, max_width: usize) -
         .max(1);
     let mut tab_budget = available.saturating_sub(workspace_budget);
 
-    let workspace_len = entry.primary_label.chars().count();
-    let tab_len = tab_label.chars().count();
+    let workspace_len = display_width(&entry.primary_label);
+    let tab_len = display_width(tab_label);
 
     if workspace_len < workspace_budget {
         let spare = workspace_budget - workspace_len;
@@ -252,9 +237,9 @@ fn format_agent_panel_primary_label(entry: &AgentPanelEntry, max_width: usize) -
 
     format!(
         "{}{}{}",
-        truncate_text(&entry.primary_label, workspace_budget),
+        truncate_end(&entry.primary_label, workspace_budget),
         separator,
-        truncate_text(tab_label, tab_budget)
+        truncate_end(tab_label, tab_budget)
     )
 }
 
@@ -581,7 +566,8 @@ fn workspace_list_entries_inner(app: &AppState, force_expanded: bool) -> Vec<Wor
             };
             // Always synthesize a project header (the repo label); every checkout
             // of the repo becomes a member inside a branch bracket beneath it.
-            let collapsed = !force_expanded && app.collapsed_space_keys.contains(&space.repo_identity);
+            let collapsed =
+                !force_expanded && app.collapsed_space_keys.contains(&space.repo_identity);
             entries.push(WorkspaceListEntry::ProjectHeader {
                 name: space.repo_name.clone(),
                 collapse_key: space.repo_identity.clone(),
@@ -638,7 +624,8 @@ fn workspace_list_entries_inner(app: &AppState, force_expanded: bool) -> Vec<Wor
                                 if !emitted_worktree_groups.insert(repo_id.clone()) {
                                     continue;
                                 }
-                                let wt_collapsed = !force_expanded && app.collapsed_space_keys.contains(&repo_id);
+                                let wt_collapsed =
+                                    !force_expanded && app.collapsed_space_keys.contains(&repo_id);
                                 entries.push(WorkspaceListEntry::ProjectHeader {
                                     name: label,
                                     collapse_key: repo_id.clone(),
@@ -1045,6 +1032,10 @@ pub(crate) fn collapsed_sidebar_sections(area: Rect) -> (Rect, Option<u16>, Rect
 
 /// Collapsed sidebar: workspace glance on top, compact agent list below.
 pub(super) fn render_sidebar_collapsed(app: &AppState, frame: &mut Frame, area: Rect) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+
     let is_navigating = matches!(app.mode, Mode::Navigate);
 
     let p = &app.palette;
