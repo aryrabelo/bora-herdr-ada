@@ -1385,11 +1385,7 @@ impl AppState {
             .active
             .and_then(|idx| self.workspaces.get(idx))
             .and_then(|ws| {
-                let repo_root = ws
-                    .worktree_space()
-                    .map(|space| &space.repo_root)
-                    .or_else(|| ws.git_space().map(|space| &space.repo_root))?;
-                crate::bora_config::load_bora_config(repo_root)?
+                crate::bora_config::load_bora_config(ws.bora_config_root()?)?
                     .flow?
                     .command
             });

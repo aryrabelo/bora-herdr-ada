@@ -1180,11 +1180,7 @@ impl AppState {
                         ContextMenuKind::Workspace { .. } | ContextMenuKind::GitWorkspace { .. }
                     ) {
                         let ws = &self.workspaces[idx];
-                        let repo_root = ws
-                            .worktree_space()
-                            .map(|s| &s.repo_root)
-                            .or_else(|| ws.git_space().map(|s| &s.repo_root));
-                        if let Some(root) = repo_root {
+                        if let Some(root) = ws.bora_config_root() {
                             let config = crate::bora_config::load_bora_config(root);
                             if let Some(cfg) = config {
                                 let branch = ws.cached_git_branch.as_deref();
