@@ -516,7 +516,12 @@ impl AppState {
                     {
                         // Issue row click — open the issue context menu
                         if let Some((number, url)) = self.right_panel_issue_at_row(mouse.row) {
-                            let kind = ContextMenuKind::RepoIssue { number, url };
+                            let flow_available = self.repo_issue_flow_template().is_some();
+                            let kind = ContextMenuKind::RepoIssue {
+                                number,
+                                url,
+                                flow_available,
+                            };
                             self.context_menu = Some(ContextMenuState {
                                 items: build_context_menu_items(&kind, &self.workspaces, &[]),
                                 kind,
@@ -4445,13 +4450,60 @@ mod tests {
         assert_eq!(app.state.mode, Mode::ContextMenu);
         let menu = app.state.context_menu.as_ref().expect("context menu open");
         match &menu.kind {
-            crate::app::state::ContextMenuKind::RepoIssue { number, url } => {
+            crate::app::state::ContextMenuKind::RepoIssue {
+                number,
+                url,
+                flow_available,
+            } => {
                 assert_eq!(*number, 12);
                 assert_eq!(url, "https://github.com/owner/proj/issues/12");
+                assert!(
+                    !flow_available,
+                    "no flow template configured in this fixture"
+                );
             }
             other => panic!("expected RepoIssue context menu, got {other:?}"),
         }
         assert_eq!(menu.items, ["Open in browser", "Copy URL"]);
+
+        app.state.assert_invariants_for_test();
+    }
+
+    #[tokio::test]
+    async fn right_panel_issue_menu_offers_flow_run_when_template_configured() {
+        let (mut app, _identity) = app_with_issues_cache();
+        app.state.flow_command_template = Some("bora-flow run {issue}".into());
+        app.state.right_panel_active_tab = crate::app::state::RightPanelTab::Issues;
+        let rp = app.state.view.right_panel_rect;
+        let body_start = rp.y + 1;
+
+        app.state.handle_mouse(
+            &mut app.terminal_runtimes,
+            mouse(
+                MouseEventKind::Down(MouseButton::Left),
+                rp.x + 2,
+                body_start,
+            ),
+        );
+
+        assert_eq!(app.state.mode, Mode::ContextMenu);
+        let menu = app.state.context_menu.as_ref().expect("context menu open");
+        assert!(matches!(
+            menu.kind,
+            crate::app::state::ContextMenuKind::RepoIssue {
+                flow_available: true,
+                ..
+            }
+        ));
+        assert_eq!(
+            menu.items,
+            [
+                "Run with bora-flow",
+                crate::app::state::CONTEXT_MENU_SEPARATOR,
+                "Open in browser",
+                "Copy URL",
+            ]
+        );
 
         app.state.assert_invariants_for_test();
     }

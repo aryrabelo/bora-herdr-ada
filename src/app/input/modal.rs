@@ -949,6 +949,10 @@ pub(super) fn apply_context_menu_action(
             state.request_clipboard_write = Some(url.into_bytes());
             leave_modal(state);
         }
+        (ContextMenuKind::RepoIssue { number, url, .. }, Some("Run with bora-flow")) => {
+            state.request_flow_run = Some(crate::app::state::FlowRunRequest { number, url });
+            leave_modal(state);
+        }
         (ContextMenuKind::RepoIssue { url, .. }, Some("Open in browser")) => {
             state.request_open_url = Some(url);
             leave_modal(state);
@@ -1458,6 +1462,11 @@ impl App {
             }
             (ContextMenuKind::RepoPr { url, .. }, Some("Copy URL")) => {
                 self.state.request_clipboard_write = Some(url.into_bytes());
+                leave_modal(&mut self.state);
+            }
+            (ContextMenuKind::RepoIssue { number, url, .. }, Some("Run with bora-flow")) => {
+                self.state.request_flow_run =
+                    Some(crate::app::state::FlowRunRequest { number, url });
                 leave_modal(&mut self.state);
             }
             (ContextMenuKind::RepoIssue { url, .. }, Some("Open in browser")) => {
@@ -2523,10 +2532,11 @@ mod tests {
         );
     }
 
-    fn repo_issue_menu() -> ContextMenuState {
+    fn repo_issue_menu_with_flow(flow_available: bool) -> ContextMenuState {
         let kind = ContextMenuKind::RepoIssue {
             number: 12,
             url: "https://github.com/owner/proj/issues/12".into(),
+            flow_available,
         };
         ContextMenuState {
             items: build_context_menu_items(&kind, &[], &[]),
@@ -2537,6 +2547,10 @@ mod tests {
             bora_commands: vec![],
             bora_port: None,
         }
+    }
+
+    fn repo_issue_menu() -> ContextMenuState {
+        repo_issue_menu_with_flow(false)
     }
 
     #[test]
@@ -2576,6 +2590,41 @@ mod tests {
         assert_eq!(
             state.request_clipboard_write.as_deref(),
             Some("https://github.com/owner/proj/issues/12".as_bytes())
+        );
+        assert_ne!(state.mode, Mode::ContextMenu, "menu closed after action");
+    }
+
+    #[test]
+    fn repo_issue_context_menu_offers_flow_run_only_when_template_resolves() {
+        assert_eq!(
+            repo_issue_menu_with_flow(true).items,
+            [
+                "Run with bora-flow",
+                crate::app::state::CONTEXT_MENU_SEPARATOR,
+                "Open in browser",
+                "Copy URL",
+            ]
+        );
+        assert_eq!(
+            repo_issue_menu_with_flow(false).items,
+            ["Open in browser", "Copy URL"]
+        );
+
+        let mut terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
+        let mut state = state_with_workspaces(&["proj"]);
+        let menu = repo_issue_menu_with_flow(true);
+        let idx = menu
+            .items
+            .iter()
+            .position(|item| item == "Run with bora-flow")
+            .expect("menu item");
+        apply_context_menu_action(&mut state, &mut terminal_runtimes, menu, idx);
+        assert_eq!(
+            state.request_flow_run,
+            Some(crate::app::state::FlowRunRequest {
+                number: 12,
+                url: "https://github.com/owner/proj/issues/12".into(),
+            })
         );
         assert_ne!(state.mode, Mode::ContextMenu, "menu closed after action");
     }

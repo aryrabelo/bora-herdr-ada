@@ -74,6 +74,17 @@ impl Default for GithubConfig {
     }
 }
 
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct FlowConfig {
+    /// Shell command template used to run a flow for a GitHub issue from the
+    /// Issues tab. Placeholders: `{issue}` = `owner/repo#N`, `{number}` = N,
+    /// `{url}` = issue URL, `{repo}` = absolute repo checkout path. `None`
+    /// disables the action. A repo can override this via `[flow]` in its
+    /// `.bora.toml`.
+    pub command: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum ToastDelivery {
@@ -313,6 +324,7 @@ pub struct Config {
     pub session: SessionConfig,
     pub update: UpdateConfig,
     pub github: GithubConfig,
+    pub flow: FlowConfig,
     pub keys: KeysConfig,
     pub ui: UiConfig,
     pub worktrees: WorktreesConfig,
@@ -1193,6 +1205,31 @@ refresh_interval_secs = 60
         let config: Config = toml::from_str(toml).unwrap();
         assert!(config.github.enabled);
         assert_eq!(config.github.refresh_interval_secs, 60);
+    }
+
+    #[test]
+    fn flow_config_defaults_and_parses() {
+        let default_config = Config::default();
+        assert!(default_config.flow.command.is_none());
+
+        let toml = r#"
+[flow]
+command = "bora-flow run {issue} --repo {repo}"
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert_eq!(
+            config.flow.command.as_deref(),
+            Some("bora-flow run {issue} --repo {repo}")
+        );
+    }
+
+    #[test]
+    fn flow_config_empty_section_keeps_defaults() {
+        let toml = r#"
+[flow]
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert!(config.flow.command.is_none());
     }
 
     #[test]

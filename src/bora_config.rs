@@ -7,6 +7,15 @@ pub(crate) struct BoraConfig {
     pub ports: Option<BoraPortsConfig>,
     #[serde(default)]
     pub commands: Vec<BoraCommand>,
+    pub flow: Option<BoraFlowConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(default)]
+pub(crate) struct BoraFlowConfig {
+    /// Per-repo override for the global `[flow]` command template used to run
+    /// a flow for a GitHub issue. Same placeholders as the global template.
+    pub command: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -242,6 +251,26 @@ branch refs/heads/feature-a
         let config: BoraConfig = toml::from_str("").unwrap();
         assert!(config.ports.is_none());
         assert!(config.commands.is_empty());
+        assert!(config.flow.is_none());
+    }
+
+    #[test]
+    fn parse_flow_section() {
+        let toml_str = r#"
+[flow]
+command = "uv run flow.py --issue {issue}"
+"#;
+        let config: BoraConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(
+            config.flow.unwrap().command.as_deref(),
+            Some("uv run flow.py --issue {issue}")
+        );
+    }
+
+    #[test]
+    fn parse_empty_flow_section() {
+        let config: BoraConfig = toml::from_str("[flow]\n").unwrap();
+        assert!(config.flow.unwrap().command.is_none());
     }
 
     #[test]

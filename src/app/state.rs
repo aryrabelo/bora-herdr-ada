@@ -1169,10 +1169,13 @@ pub enum ContextMenuKind {
         url: String,
         head_ref: String,
     },
-    /// An issue row in the right-panel Issues tab.
+    /// An issue row in the right-panel Issues tab. `flow_available` is
+    /// resolved at menu-open time from the per-repo `.bora.toml` `[flow]`
+    /// override and the global `[flow]` config template.
     RepoIssue {
         number: u64,
         url: String,
+        flow_available: bool,
     },
 }
 
@@ -1375,8 +1378,15 @@ pub fn build_context_menu_items(
             "Open in browser".to_string(),
             "Copy URL".to_string(),
         ],
-        ContextMenuKind::RepoIssue { .. } => {
-            vec!["Open in browser".to_string(), "Copy URL".to_string()]
+        ContextMenuKind::RepoIssue { flow_available, .. } => {
+            let mut v = Vec::new();
+            if *flow_available {
+                v.push("Run with bora-flow".to_string());
+                v.push(sep());
+            }
+            v.push("Open in browser".to_string());
+            v.push("Copy URL".to_string());
+            v
         }
     }
 }
@@ -1385,6 +1395,40 @@ impl ContextMenuState {
     pub fn items(&self) -> &[String] {
         &self.items
     }
+}
+
+impl AppState {
+    /// Resolve the effective flow command template for the active workspace's
+    /// repo: the `.bora.toml` `[flow]` override wins over the global `[flow]`
+    /// config template. `None` means the "Run with bora-flow" action is
+    /// unavailable. Reads `.bora.toml` per call, matching the workspace
+    /// context menu's per-click `.bora.toml` read.
+    pub(crate) fn repo_issue_flow_template(&self) -> Option<String> {
+        let per_repo = self
+            .active
+            .and_then(|idx| self.workspaces.get(idx))
+            .and_then(|ws| {
+                let repo_root = ws
+                    .worktree_space()
+                    .map(|space| &space.repo_root)
+                    .or_else(|| ws.git_space().map(|space| &space.repo_root))?;
+                crate::bora_config::load_bora_config(repo_root)?
+                    .flow?
+                    .command
+            });
+        crate::app::flow::resolve_flow_template(
+            per_repo.as_deref(),
+            self.flow_command_template.as_deref(),
+        )
+    }
+}
+
+/// A request to run the configured flow command for a GitHub issue, set by
+/// the Issues tab context menu and drained by the App event loop.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FlowRunRequest {
+    pub number: u64,
+    pub url: String,
 }
 
 #[derive(Debug, Clone)]
@@ -1523,6 +1567,9 @@ pub struct AppState {
     /// Set when UI interaction asked to open a PR in a new worktree:
     /// (representative workspace index of the repo group, PR number).
     pub request_open_pr_worktree: Option<(usize, u64)>,
+    /// Set when UI interaction asked to run the configured flow command for
+    /// a GitHub issue; drained by App to spawn the flow pane.
+    pub request_flow_run: Option<FlowRunRequest>,
     pub pending_bora_command: Option<PendingBoraCommand>,
     /// Transient port override consumed by custom_command_env for pane commands.
     pub bora_port_override: Option<u16>,
@@ -1533,6 +1580,9 @@ pub struct AppState {
     pub worktree_open: Option<WorktreeOpenState>,
     pub worktree_remove: Option<WorktreeRemoveState>,
     pub worktree_directory: std::path::PathBuf,
+    /// Global `[flow]` command template from config.toml. Repos can override
+    /// it via `[flow]` in their `.bora.toml`; see `repo_issue_flow_template`.
+    pub flow_command_template: Option<String>,
     pub collapsed_space_keys: std::collections::HashSet<String>,
     pub request_complete_onboarding: bool,
     pub name_input: String,
@@ -1911,6 +1961,7 @@ impl AppState {
             request_clipboard_write: None,
             request_open_url: None,
             request_open_pr_worktree: None,
+            request_flow_run: None,
             pending_bora_command: None,
             bora_port_override: None,
             creating_new_tab: false,
@@ -1920,6 +1971,7 @@ impl AppState {
             worktree_open: None,
             worktree_remove: None,
             worktree_directory: std::path::PathBuf::from("/tmp/herdr-worktrees"),
+            flow_command_template: None,
             collapsed_space_keys: std::collections::HashSet::new(),
             request_complete_onboarding: false,
             name_input: String::new(),
