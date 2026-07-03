@@ -1064,7 +1064,7 @@ impl App {
                 let keep_auto_name = self.state.workspaces[ws_idx]
                     .tabs
                     .get(tab_idx)
-                    .is_some_and(|tab| tab.is_auto_named())
+                    .is_some_and(crate::workspace::Tab::is_auto_named)
                     && self.state.workspaces[ws_idx]
                         .tab_display_name(tab_idx)
                         .is_some_and(|name| new_name == name);
@@ -1210,17 +1210,31 @@ impl App {
     pub(crate) fn apply_context_menu_action_via_api(&mut self, menu: ContextMenuState, idx: usize) {
         let item_owned = menu.items.get(idx).cloned();
         let item = item_owned.as_deref();
+        let bora_commands = menu.bora_commands;
+        let bora_port = menu.bora_port;
         match (menu.kind, item) {
             (ContextMenuKind::GitWorkspace { ws_idx, .. }, Some("New worktree")) => {
                 self.state.request_new_linked_worktree = Some(ws_idx);
                 leave_modal(&mut self.state);
             }
-            (ContextMenuKind::GitWorkspace { ws_idx, .. }, Some("Delete worktree checkout...")) => {
+            (ContextMenuKind::GitWorkspace { ws_idx, .. }, Some("Delete worktree\u{2026}")) => {
                 self.state.request_remove_linked_worktree = Some(ws_idx);
                 leave_modal(&mut self.state);
             }
-            (ContextMenuKind::GitWorkspace { ws_idx, .. }, Some("Open worktree...")) => {
+            (ContextMenuKind::GitWorkspace { ws_idx, .. }, Some("Open worktree\u{2026}")) => {
                 self.state.request_open_existing_worktree = Some(ws_idx);
+                leave_modal(&mut self.state);
+            }
+            (ContextMenuKind::GitWorkspace { ws_idx, .. }, Some("Merge to main")) => {
+                self.state.request_merge_worktree_to_main = Some(ws_idx);
+                leave_modal(&mut self.state);
+            }
+            (ContextMenuKind::GitWorkspace { ws_idx, .. }, Some("Open PR")) => {
+                self.state.request_open_worktree_pr = Some(ws_idx);
+                leave_modal(&mut self.state);
+            }
+            (ContextMenuKind::GitWorkspace { ws_idx, .. }, Some("Sync")) => {
+                self.state.request_sync_workspace_git = Some(ws_idx);
                 leave_modal(&mut self.state);
             }
             (
@@ -1253,7 +1267,49 @@ impl App {
             (
                 ContextMenuKind::Workspace { ws_idx }
                 | ContextMenuKind::GitWorkspace { ws_idx, .. },
-                Some("Close" | "Close group"),
+                Some("Copy path"),
+            ) => {
+                if let Some(ws) = self.state.workspaces.get(ws_idx) {
+                    let path = ws.identity_cwd.display().to_string();
+                    self.state.request_clipboard_write = Some(path.into_bytes());
+                }
+                leave_modal(&mut self.state);
+            }
+            (
+                ContextMenuKind::Workspace { ws_idx }
+                | ContextMenuKind::GitWorkspace { ws_idx, .. },
+                Some("New group\u{2026}"),
+            ) => {
+                open_set_workspace_group(&mut self.state, ws_idx);
+            }
+            (
+                ContextMenuKind::Workspace { ws_idx }
+                | ContextMenuKind::GitWorkspace { ws_idx, .. },
+                Some(item_str),
+            ) if item_str.starts_with("\u{2192} ") => {
+                // visual_group is TUI presentation state, not a runtime mutation.
+                let group_name = item_str["\u{2192} ".len()..].to_string();
+                if let Some(ws) = self.state.workspaces.get_mut(ws_idx) {
+                    ws.visual_group = Some(group_name);
+                    self.state.mark_session_dirty();
+                }
+                leave_modal(&mut self.state);
+            }
+            (
+                ContextMenuKind::Workspace { ws_idx }
+                | ContextMenuKind::GitWorkspace { ws_idx, .. },
+                Some("Remove from group"),
+            ) => {
+                if let Some(ws) = self.state.workspaces.get_mut(ws_idx) {
+                    ws.visual_group = None;
+                    self.state.mark_session_dirty();
+                }
+                leave_modal(&mut self.state);
+            }
+            (
+                ContextMenuKind::Workspace { ws_idx }
+                | ContextMenuKind::GitWorkspace { ws_idx, .. },
+                Some("Close" | "Close workspace"),
             ) => {
                 self.state.selected = ws_idx;
                 if self.state.confirm_close {
@@ -1371,6 +1427,23 @@ impl App {
                         Mode::Navigate
                     };
                 }
+            }
+            (
+                ContextMenuKind::Workspace { ws_idx }
+                | ContextMenuKind::GitWorkspace { ws_idx, .. },
+                Some(label),
+            ) if bora_commands.iter().any(|c| c.label == label) => {
+                let cmd = bora_commands
+                    .iter()
+                    .find(|c| c.label == label)
+                    .expect("guard guarantees match");
+                self.state.pending_bora_command = Some(crate::app::state::PendingBoraCommand {
+                    ws_idx,
+                    command: cmd.command.clone(),
+                    mode: cmd.mode.clone(),
+                    port: bora_port,
+                });
+                leave_modal(&mut self.state);
             }
             _ => leave_modal(&mut self.state),
         }

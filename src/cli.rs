@@ -526,7 +526,7 @@ fn terminal_attach(args: &[String]) -> std::io::Result<i32> {
 }
 
 fn terminal_session(args: &[String]) -> std::io::Result<i32> {
-    match args.first().map(|arg| arg.as_str()) {
+    match args.first().map(String::as_str) {
         Some("control") => terminal_session_control(&args[1..]),
         Some("observe") => terminal_session_observe(&args[1..]),
         Some("help" | "--help" | "-h") => {
@@ -591,7 +591,7 @@ fn parse_terminal_session_options(
     allow_takeover: bool,
 ) -> std::io::Result<Result<TerminalSessionOptions, i32>> {
     if matches!(
-        args.first().map(|arg| arg.as_str()),
+        args.first().map(String::as_str),
         Some("help" | "--help" | "-h")
     ) {
         eprintln!("{usage}");

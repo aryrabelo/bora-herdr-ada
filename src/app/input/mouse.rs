@@ -2968,12 +2968,14 @@ mod tests {
         app.state.selected = 0;
         app.state.confirm_close = false;
         let kind = ContextMenuKind::Workspace { ws_idx: 1 };
+        let items = build_context_menu_items(&kind, &[], &[]);
+        let close_idx = items.iter().position(|i| i == "Close").unwrap() as u16;
         app.state.context_menu = Some(ContextMenuState {
-            items: build_context_menu_items(&kind, &[], &[]),
+            items,
             kind,
             x: 2,
             y: 2,
-            list: MenuListState::new(1),
+            list: MenuListState::new(close_idx as usize),
             bora_commands: vec![],
             bora_port: None,
         });
@@ -2983,7 +2985,7 @@ mod tests {
         app.handle_mouse(mouse(
             MouseEventKind::Down(MouseButton::Left),
             menu.x + 2,
-            menu.y + 2,
+            menu.y + 1 + close_idx,
         ));
 
         assert_eq!(app.state.workspaces.len(), 1);

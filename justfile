@@ -29,7 +29,7 @@ ci filter='all()': lint
 # Run Windows target lint from Unix/macOS to catch cfg(windows) compile and clippy failures before CI
 windows-lint:
     rustup target add x86_64-pc-windows-msvc
-    LIBGHOSTTY_VT_SIMD=false cargo clippy --bin herdr --locked --target x86_64-pc-windows-msvc -- -D warnings
+    LIBGHOSTTY_VT_SIMD=false cargo clippy --bin bora --locked --target x86_64-pc-windows-msvc -- -D warnings
 
 # Check formatting + run unit tests + Windows target lint + maintenance script tests
 check: ci windows-lint
@@ -153,7 +153,7 @@ release-prepare version:
     python3 scripts/changelog.py prepare --version {{version}}
     cp CHANGELOG.md docs/next/CHANGELOG.md
     sed -i.bak 's/^version = ".*"/version = "{{version}}"/' Cargo.toml && rm -f Cargo.toml.bak
-    cargo update -p herdr --offline
+    cargo update -p bora --offline
     just check
     git add CHANGELOG.md docs/next/CHANGELOG.md Cargo.toml Cargo.lock
     git diff --cached --quiet || git commit -m "release: v{{version}}"

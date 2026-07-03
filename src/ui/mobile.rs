@@ -616,7 +616,10 @@ fn render_mobile_switcher_content(
     doc_y += 1;
     let space_entries = mobile_space_entries(app);
     for (entry_idx, entry) in space_entries.iter().enumerate() {
-        let WorkspaceListEntry::Workspace { ws_idx, indented, .. } = entry else {
+        let WorkspaceListEntry::Workspace {
+            ws_idx, indented, ..
+        } = entry
+        else {
             continue;
         };
         let Some(ws) = app.workspaces.get(*ws_idx) else {
@@ -741,7 +744,6 @@ fn render_mobile_switcher_content(
             doc_y += 1;
         }
     }
-
 
     render_section_title_at(
         frame,
@@ -1320,6 +1322,16 @@ mod tests {
             label: "herdr".into(),
             repo_root: std::path::PathBuf::from("/repo/herdr"),
             checkout_path: std::path::PathBuf::from(format!("/repo/{name}")),
+            is_linked_worktree: linked,
+        });
+        // Fork grouping keys on repo identity, so grouped-order tests need the
+        // git-space metadata too.
+        ws.cached_git_space = Some(crate::workspace::GitSpaceMetadata {
+            key: key.into(),
+            repo_identity: key.into(),
+            checkout_key: format!("/repo/{name}"),
+            label: "herdr".into(),
+            repo_root: std::path::PathBuf::from("/repo/herdr"),
             is_linked_worktree: linked,
         });
         ws
