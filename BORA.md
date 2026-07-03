@@ -16,8 +16,8 @@ stock `herdr` install (brew/mise) instead of overwriting it.
 
 ## Branch layout
 
-- `origin` / `upstream` -> upstream `ogulcancelik/herdr`.
-- `fork`   -> our repo `aryrabelo/bora-herdr-ada`.
+- `upstream` -> upstream `ogulcancelik/herdr`.
+- `origin`   -> our repo `aryrabelo/bora-herdr-ada`.
 - `master` -> 1:1 mirror of upstream `master`. Never carries fork commits;
   only fast-forwarded (`scripts/bora sync`).
 - `main`   -> default branch = `master` + our features, each landed as a
@@ -90,7 +90,7 @@ workflow, and return to a pure from-source build.
 ```sh
 scripts/bora sync   # fast-forward master to upstream, rebase main onto it
 # review the rebase, then publish:
-git push --force-with-lease fork main
+git push --force-with-lease origin main
 ```
 
 Rebase conflicts are localized to the feature commits (`src/detect/*`,

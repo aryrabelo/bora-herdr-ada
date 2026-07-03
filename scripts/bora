@@ -29,9 +29,12 @@ REPO_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 BIN_DIR="${HERDR_BORA_BIN_DIR:-$HOME/.local/bin}"
 BIN="$BIN_DIR/bora"
 SESSION="${HERDR_BORA_SESSION:-bora}"
-UPSTREAM_REMOTE="${HERDR_BORA_UPSTREAM:-origin}"
+# Remote names match the actual checkout: `upstream` -> ogulcancelik/herdr,
+# `origin` -> aryrabelo/bora-herdr-ada (the fork). Override via env if a
+# checkout uses different names.
+UPSTREAM_REMOTE="${HERDR_BORA_UPSTREAM:-upstream}"
 UPSTREAM_BRANCH="${HERDR_BORA_UPSTREAM_BRANCH:-master}"
-FORK_REMOTE="${HERDR_BORA_FORK:-fork}"
+FORK_REMOTE="${HERDR_BORA_FORK:-origin}"
 
 cmd=${1:-help}
 [ $# -gt 0 ] && shift || true
