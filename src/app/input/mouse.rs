@@ -3904,4 +3904,143 @@ mod tests {
 
         assert_eq!(wheel_routing(input_state), WheelRouting::HostScroll);
     }
+
+    /// Characterization helper for the right-panel tab-header tests: an app
+    /// with one workspace and an expanded right panel with real geometry.
+    fn app_with_expanded_right_panel() -> crate::app::App {
+        let mut app = app_for_mouse_test();
+        app.state.workspaces = vec![Workspace::test_new("test")];
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.ensure_test_terminals();
+        app.state.right_panel_collapsed = false;
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 120, 20));
+        assert!(
+            app.state.view.right_panel_rect.width > 0,
+            "expanded right panel must have geometry"
+        );
+        app
+    }
+
+    // Characterization: pins the current 2-way midpoint split of the
+    // right-panel tab header (row rp.y). Columns strictly left of
+    // `rp.x + rp.width / 2` select Changes; the midpoint column and everything
+    // right of it select Checks.
+    #[tokio::test]
+    async fn right_panel_tab_header_click_splits_changes_and_checks_at_midpoint() {
+        use crate::app::state::RightPanelTab;
+
+        let mut app = app_with_expanded_right_panel();
+        let rp = app.state.view.right_panel_rect;
+        let header_row = rp.y;
+        let mid = rp.x + rp.width / 2;
+
+        assert_eq!(app.state.right_panel_active_tab, RightPanelTab::Changes);
+
+        // The midpoint column itself already selects Checks (split is `< mid`).
+        let action = app.state.handle_mouse(
+            &mut app.terminal_runtimes,
+            mouse(MouseEventKind::Down(MouseButton::Left), mid, header_row),
+        );
+        assert!(action.is_none(), "tab header click is consumed");
+        assert_eq!(app.state.right_panel_active_tab, RightPanelTab::Checks);
+
+        // One column left of the midpoint selects Changes again.
+        app.state.handle_mouse(
+            &mut app.terminal_runtimes,
+            mouse(MouseEventKind::Down(MouseButton::Left), mid - 1, header_row),
+        );
+        assert_eq!(app.state.right_panel_active_tab, RightPanelTab::Changes);
+
+        // The last header column still selects Checks.
+        app.state.handle_mouse(
+            &mut app.terminal_runtimes,
+            mouse(
+                MouseEventKind::Down(MouseButton::Left),
+                rp.x + rp.width - 1,
+                header_row,
+            ),
+        );
+        assert_eq!(app.state.right_panel_active_tab, RightPanelTab::Checks);
+
+        // A column just right of the panel divider selects Changes. (The
+        // divider column rp.x itself is consumed by the resize hit-test.)
+        app.state.handle_mouse(
+            &mut app.terminal_runtimes,
+            mouse(
+                MouseEventKind::Down(MouseButton::Left),
+                rp.x + 1,
+                header_row,
+            ),
+        );
+        assert_eq!(app.state.right_panel_active_tab, RightPanelTab::Changes);
+
+        app.state.assert_invariants_for_test();
+    }
+
+    // Characterization: `right_panel_checks_requested` is set only on a
+    // transition INTO Checks; re-clicking Checks or switching back to Changes
+    // does not set it.
+    #[tokio::test]
+    async fn right_panel_checks_request_flag_set_only_when_switching_into_checks() {
+        use crate::app::state::RightPanelTab;
+
+        let mut app = app_with_expanded_right_panel();
+        let rp = app.state.view.right_panel_rect;
+        let header_row = rp.y;
+        let checks_col = rp.x + rp.width / 2;
+        let changes_col = rp.x + 1;
+
+        assert!(!app.state.right_panel_checks_requested);
+
+        // Changes -> Checks requests a checks fetch.
+        app.state.handle_mouse(
+            &mut app.terminal_runtimes,
+            mouse(
+                MouseEventKind::Down(MouseButton::Left),
+                checks_col,
+                header_row,
+            ),
+        );
+        assert_eq!(app.state.right_panel_active_tab, RightPanelTab::Checks);
+        assert!(app.state.right_panel_checks_requested);
+
+        // Re-clicking Checks while already on Checks does not re-request.
+        app.state.right_panel_checks_requested = false;
+        app.state.handle_mouse(
+            &mut app.terminal_runtimes,
+            mouse(
+                MouseEventKind::Down(MouseButton::Left),
+                checks_col,
+                header_row,
+            ),
+        );
+        assert_eq!(app.state.right_panel_active_tab, RightPanelTab::Checks);
+        assert!(!app.state.right_panel_checks_requested);
+
+        // Switching back to Changes never requests checks.
+        app.state.handle_mouse(
+            &mut app.terminal_runtimes,
+            mouse(
+                MouseEventKind::Down(MouseButton::Left),
+                changes_col,
+                header_row,
+            ),
+        );
+        assert_eq!(app.state.right_panel_active_tab, RightPanelTab::Changes);
+        assert!(!app.state.right_panel_checks_requested);
+
+        // A fresh Changes -> Checks transition requests again.
+        app.state.handle_mouse(
+            &mut app.terminal_runtimes,
+            mouse(
+                MouseEventKind::Down(MouseButton::Left),
+                checks_col,
+                header_row,
+            ),
+        );
+        assert!(app.state.right_panel_checks_requested);
+
+        app.state.assert_invariants_for_test();
+    }
 }
