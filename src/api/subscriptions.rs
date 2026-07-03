@@ -293,6 +293,14 @@ impl ActiveSubscription {
                     request_prefix: format!("{request_id}:sub:{index}"),
                 }))
             }
+            Subscription::GithubPrsRefreshed {} => Ok(Self::Event(ActiveEventSubscription {
+                event_kind: crate::api::schema::EventKind::GithubPrsRefreshed,
+                last_sequence: 0,
+            })),
+            Subscription::GithubIssuesRefreshed {} => Ok(Self::Event(ActiveEventSubscription {
+                event_kind: crate::api::schema::EventKind::GithubIssuesRefreshed,
+                last_sequence: 0,
+            })),
         }
     }
 

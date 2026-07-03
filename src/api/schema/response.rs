@@ -232,6 +232,12 @@ pub enum ResponseResult {
         diagnostics: Vec<String>,
     },
     Ok {},
+    GithubPullsList {
+        repos: Vec<super::github::GithubRepoPrs>,
+    },
+    GithubIssuesList {
+        repos: Vec<super::github::GithubRepoIssues>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

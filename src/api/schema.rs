@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 pub mod agents;
 pub mod common;
 pub mod events;
+pub mod github;
 pub mod integrations;
 pub mod panes;
 pub mod plugins;
@@ -16,6 +17,7 @@ pub mod worktrees;
 pub use agents::*;
 pub use common::*;
 pub use events::*;
+pub use github::*;
 pub use integrations::*;
 pub use panes::*;
 pub use plugins::*;
@@ -209,6 +211,10 @@ pub enum Method {
     PluginPaneFocus(PluginPaneFocusParams),
     #[serde(rename = "plugin.pane.close")]
     PluginPaneClose(PluginPaneCloseParams),
+    #[serde(rename = "github.pulls.list")]
+    GithubPullsList(GithubPullsListParams),
+    #[serde(rename = "github.issues.list")]
+    GithubIssuesList(GithubIssuesListParams),
 }
 
 #[cfg(test)]
