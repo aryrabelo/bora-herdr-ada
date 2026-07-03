@@ -4327,6 +4327,14 @@
                 "null"
               ]
             },
+            "pr": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
             "workspace_id": {
               "type": [
                 "string",

@@ -97,17 +97,34 @@ impl App {
         params: WorktreeCreateParams,
         respond_to: std::sync::mpsc::Sender<String>,
     ) {
-        let branch = params
-            .branch
-            .unwrap_or_else(|| {
-                let seed = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .map(|duration| duration.as_micros().min(u128::from(u64::MAX)) as u64)
-                    .unwrap_or(0);
-                crate::worktree::generated_branch_slug(seed)
-            })
-            .trim()
-            .to_string();
+        if params.pr.is_some() && (params.branch.is_some() || params.base.is_some()) {
+            Self::send_api_response(
+                respond_to,
+                encode_error(
+                    id,
+                    "invalid_request",
+                    "pr is mutually exclusive with branch and base",
+                ),
+            );
+            return;
+        }
+        let pr = params.pr;
+        // For PR creates the real branch is only known after `gh` resolution in
+        // the worker; `pr-<N>` names the checkout path (and the dedupe key).
+        let branch = match pr {
+            Some(number) => format!("pr-{number}"),
+            None => params
+                .branch
+                .unwrap_or_else(|| {
+                    let seed = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .map(|duration| duration.as_micros().min(u128::from(u64::MAX)) as u64)
+                        .unwrap_or(0);
+                    crate::worktree::generated_branch_slug(seed)
+                })
+                .trim()
+                .to_string(),
+        };
         if branch.is_empty() {
             Self::send_api_response(
                 respond_to,
@@ -193,13 +210,18 @@ impl App {
             } else {
                 Ok(())
             }
-            .and_then(|()| {
-                crate::worktree::run_worktree_add_command(
+            .and_then(|()| match pr {
+                Some(number) => crate::worktree::run_worktree_add_for_pull_request(
+                    &source_checkout_path,
+                    &path,
+                    number,
+                ),
+                None => crate::worktree::run_worktree_add_command(
                     &source_checkout_path,
                     &path,
                     &branch,
                     &base,
-                )
+                ),
             });
             let _ = event_tx.blocking_send(AppEvent::WorktreeAddFinished(Box::new(
                 crate::events::WorktreeAddResult {
@@ -371,6 +393,15 @@ impl App {
                     create.creating = false;
                     create.error = Some(err.clone());
                 }
+            }
+            // The sidebar PR action has no modal and drops its responder after
+            // dispatch, so surface the failure as a toast.
+            if api.id == crate::app::worktrees::TUI_WORKTREE_CREATE_FROM_PR_REQUEST_ID {
+                self.show_worktree_op_toast(
+                    crate::app::state::ToastKind::NeedsAttention,
+                    "open PR in worktree failed",
+                    err.clone(),
+                );
             }
             Self::send_api_response(
                 api.respond_to,
