@@ -446,7 +446,7 @@ mod tests {
             key: "key-p".into(),
             repo_identity: TEST_REPO.into(),
             checkout_key: "/repo/proj".into(),
-            label: "proj".into(),
+            repo_name: "proj".into(),
             repo_root: std::path::PathBuf::from("/repo/proj"),
             is_linked_worktree: false,
         });

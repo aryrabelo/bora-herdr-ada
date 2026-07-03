@@ -506,6 +506,8 @@ impl AppState {
                 crate::ui::WorkspaceListEntry::GroupHeader { .. }
                 | crate::ui::WorkspaceListEntry::ProjectHeader { .. }
                 | crate::ui::WorkspaceListEntry::BranchHeader { .. }
+                | crate::ui::WorkspaceListEntry::PrSectionHeader { .. }
+                | crate::ui::WorkspaceListEntry::PrRow { .. }
                 | crate::ui::WorkspaceListEntry::ProjectFooter { .. } => None,
             })
             .collect::<Vec<_>>();

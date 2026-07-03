@@ -1272,6 +1272,8 @@ pub(crate) fn workspace_drop_slots(
                 WorkspaceListEntry::GroupHeader { .. }
                 | WorkspaceListEntry::ProjectHeader { .. }
                 | WorkspaceListEntry::BranchHeader { .. }
+                | WorkspaceListEntry::PrSectionHeader { .. }
+                | WorkspaceListEntry::PrRow { .. }
                 | WorkspaceListEntry::ProjectFooter { .. } => None,
             })
     };
@@ -1318,6 +1320,8 @@ pub(crate) fn workspace_drop_slots(
             WorkspaceListEntry::GroupHeader { .. }
             | WorkspaceListEntry::ProjectHeader { .. }
             | WorkspaceListEntry::BranchHeader { .. }
+            | WorkspaceListEntry::PrSectionHeader { .. }
+            | WorkspaceListEntry::PrRow { .. }
             | WorkspaceListEntry::ProjectFooter { .. },
         )
         | None => crate::app::state::WorkspaceDropTarget::End,
@@ -2432,7 +2436,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
         let body = workspace_list_body_rect(workspace_area, false);
 
         let metrics = workspace_list_scroll_metrics(&app, workspace_area);
-        let (cards, _) = compute_workspace_list_areas(&app, area);
+        let (cards, _, _) = compute_workspace_list_areas(&app, area);
 
         assert_eq!(metrics.viewport_rows, 1);
         assert_eq!(cards.len(), 1);
