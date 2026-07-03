@@ -1121,6 +1121,16 @@ impl Workspace {
         self.worktree_space.as_ref()
     }
 
+    /// Repo root that owns this workspace's `.bora.toml`: the parent repo
+    /// root for worktree-space members, else the git space's repo root.
+    /// Single source of truth for every `.bora.toml` lookup so menu-time and
+    /// run-time resolution can never disagree.
+    pub fn bora_config_root(&self) -> Option<&std::path::Path> {
+        self.worktree_space()
+            .map(|space| space.repo_root.as_path())
+            .or_else(|| self.git_space().map(|space| space.repo_root.as_path()))
+    }
+
     #[cfg(test)]
     pub fn refresh_git_ahead_behind(&mut self) {
         let cwd = self.resolved_identity_cwd();

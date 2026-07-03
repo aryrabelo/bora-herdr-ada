@@ -81,6 +81,14 @@ pub(crate) struct OverlayPaneState {
     temp_files: Vec<std::path::PathBuf>,
 }
 
+/// Why a requested Issues-tab flow run was not dispatched.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FlowRunSkip {
+    NoActiveWorkspace,
+    NoGitMetadata,
+    TemplateNotConfigured,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct PaneClickState {
     pane_id: crate::layout::PaneId,
@@ -1662,66 +1670,91 @@ impl App {
         }
     }
 
+    /// Build the `agent.start` params for a flow run, or report why the run
+    /// cannot proceed. Pure over `&self` so the dispatch payload is testable
+    /// without spawning a PTY. Template resolution reads `.bora.toml` from
+    /// `Workspace::bora_config_root()` — the same root the Issues context
+    /// menu used to decide the item's visibility — and `{repo}`/cwd use the
+    /// stable repo checkout root, not any pane's live cwd.
+    fn prepare_flow_agent_start(
+        &self,
+        request: &state::FlowRunRequest,
+    ) -> Result<crate::api::schema::AgentStartParams, FlowRunSkip> {
+        let ws_idx = self.state.active.ok_or(FlowRunSkip::NoActiveWorkspace)?;
+        let ws = self
+            .state
+            .workspaces
+            .get(ws_idx)
+            .ok_or(FlowRunSkip::NoActiveWorkspace)?;
+        let git_space = ws.git_space().ok_or(FlowRunSkip::NoGitMetadata)?;
+
+        let per_repo = ws
+            .bora_config_root()
+            .and_then(crate::bora_config::load_bora_config)
+            .and_then(|config| config.flow)
+            .and_then(|flow| flow.command);
+        let template = flow::resolve_flow_template(
+            per_repo.as_deref(),
+            self.state.flow_command_template.as_deref(),
+        )
+        .ok_or(FlowRunSkip::TemplateNotConfigured)?;
+
+        let repo_path = git_space.repo_root.display().to_string();
+        let context = flow::FlowCommandContext {
+            issue_ref: flow::issue_ref_from_repo_identity(&git_space.repo_identity, request.number),
+            number: request.number,
+            url: request.url.clone(),
+            repo_path: repo_path.clone(),
+        };
+        let command = flow::render_flow_command(&template, &context);
+        Ok(crate::api::schema::AgentStartParams {
+            name: format!("flow #{}", request.number),
+            cwd: Some(repo_path),
+            workspace_id: Some(self.public_workspace_id(ws_idx)),
+            tab_id: None,
+            split: None,
+            focus: true,
+            argv: vec!["sh".to_string(), "-lc".to_string(), command],
+            env: Default::default(),
+        })
+    }
+
     /// Run the configured flow command for a GitHub issue in a new agent
     /// pane of the active workspace. The pane inherits the session env, so
     /// the spawned process can drive this Herdr session via the JSON API.
     fn start_flow_run(&mut self, request: state::FlowRunRequest) {
-        let Some(ws_idx) = self.state.active else {
-            tracing::warn!("flow run requested without an active workspace; skipping");
-            return;
+        let params = match self.prepare_flow_agent_start(&request) {
+            Ok(params) => params,
+            Err(FlowRunSkip::NoActiveWorkspace) => {
+                tracing::warn!("flow run requested without an active workspace; skipping");
+                return;
+            }
+            Err(FlowRunSkip::NoGitMetadata) => {
+                tracing::warn!("flow run requested without git workspace metadata; skipping");
+                self.state.toast = Some(state::ToastNotification {
+                    kind: state::ToastKind::NeedsAttention,
+                    title: "cannot run bora-flow".to_string(),
+                    context: "workspace git metadata is not ready yet".to_string(),
+                    position: None,
+                    target: None,
+                });
+                return;
+            }
+            Err(FlowRunSkip::TemplateNotConfigured) => {
+                tracing::warn!("no flow command template configured; skipping flow run");
+                self.state.toast = Some(state::ToastNotification {
+                    kind: state::ToastKind::NeedsAttention,
+                    title: "flow command not configured".to_string(),
+                    context: "configure [flow] command to run bora-flow".to_string(),
+                    position: None,
+                    target: None,
+                });
+                return;
+            }
         };
-        let Some(ws) = self.state.workspaces.get(ws_idx) else {
-            return;
-        };
-        let Some(git_space) = ws.git_space().cloned() else {
-            tracing::warn!("flow run requested without git workspace metadata; skipping");
-            return;
-        };
-        let repo_path = ws
-            .resolved_identity_cwd_from(&self.state.terminals, &self.terminal_runtimes)
-            .unwrap_or_else(|| git_space.repo_root.clone());
-
-        let per_repo = crate::bora_config::load_bora_config(&git_space.repo_root)
-            .and_then(|config| config.flow)
-            .and_then(|flow| flow.command);
-        let Some(template) = flow::resolve_flow_template(
-            per_repo.as_deref(),
-            self.state.flow_command_template.as_deref(),
-        ) else {
-            tracing::warn!(
-                repo = %git_space.repo_identity,
-                "no flow command template configured; skipping flow run"
-            );
-            self.state.toast = Some(state::ToastNotification {
-                kind: state::ToastKind::NeedsAttention,
-                title: "flow command not configured".to_string(),
-                context: "configure [flow] command to run bora-flow".to_string(),
-                position: None,
-                target: None,
-            });
-            return;
-        };
-
-        let context = flow::FlowCommandContext {
-            issue_ref: flow::issue_ref_from_repo_identity(&git_space.repo_identity, request.number),
-            number: request.number,
-            url: request.url,
-            repo_path: repo_path.display().to_string(),
-        };
-        let command = flow::render_flow_command(&template, &context);
-        let workspace_id = self.public_workspace_id(ws_idx);
         let response = self.dispatch_runtime_mutation(
             "tui.flow.start",
-            crate::api::schema::Method::AgentStart(crate::api::schema::AgentStartParams {
-                name: format!("flow #{}", request.number),
-                cwd: Some(repo_path.display().to_string()),
-                workspace_id: Some(workspace_id),
-                tab_id: None,
-                split: None,
-                focus: true,
-                argv: vec!["sh".to_string(), "-lc".to_string(), command],
-                env: Default::default(),
-            }),
+            crate::api::schema::Method::AgentStart(params),
         );
         if let Ok(error) = serde_json::from_str::<crate::api::schema::ErrorResponse>(&response) {
             tracing::warn!(
@@ -3194,6 +3227,62 @@ mod tests {
         assert_eq!(toast.kind, state::ToastKind::NeedsAttention);
         assert_eq!(toast.title, "flow command not configured");
         assert_eq!(toast.context, "configure [flow] command to run bora-flow");
+    }
+
+    #[test]
+    fn flow_run_without_git_metadata_shows_needs_attention_toast() {
+        let mut app = test_app();
+        app.state.workspaces.push(Workspace::test_new("one"));
+        app.state.active = Some(0);
+        app.state.flow_command_template = Some("bora-flow run {issue}".into());
+
+        app.start_flow_run(state::FlowRunRequest {
+            number: 12,
+            url: "https://github.com/owner/repo/issues/12".into(),
+        });
+
+        let toast = app.state.toast.as_ref().expect("toast");
+        assert_eq!(toast.kind, state::ToastKind::NeedsAttention);
+        assert_eq!(toast.title, "cannot run bora-flow");
+        assert_eq!(toast.context, "workspace git metadata is not ready yet");
+    }
+
+    #[test]
+    fn flow_run_builds_agent_start_params_from_template() {
+        let mut app = test_app();
+        app.state.workspaces.push(Workspace::test_new("one"));
+        app.state.active = Some(0);
+        let mut git_space = test_git_space("github.com/owner/repo");
+        git_space.repo_root = std::path::PathBuf::from("/nonexistent/bora-flow-params-test");
+        app.state.workspaces[0].cached_git_space = Some(git_space);
+        app.state.flow_command_template = Some("bora-flow run {issue} --repo {repo}".into());
+
+        let params = app
+            .prepare_flow_agent_start(&state::FlowRunRequest {
+                number: 12,
+                url: "https://github.com/owner/repo/issues/12".into(),
+            })
+            .expect("agent start params");
+
+        assert_eq!(params.name, "flow #12");
+        assert_eq!(
+            params.cwd.as_deref(),
+            Some("/nonexistent/bora-flow-params-test"),
+            "cwd is the stable repo checkout root, not a pane's live cwd"
+        );
+        assert_eq!(
+            params.workspace_id.as_deref(),
+            Some(app.state.workspaces[0].id.as_str())
+        );
+        assert!(params.focus);
+        assert_eq!(
+            params.argv,
+            [
+                "sh",
+                "-lc",
+                "bora-flow run 'owner/repo#12' --repo '/nonexistent/bora-flow-params-test'",
+            ]
+        );
     }
 
     #[test]
