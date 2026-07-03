@@ -949,6 +949,14 @@ pub(super) fn apply_context_menu_action(
             state.request_clipboard_write = Some(url.into_bytes());
             leave_modal(state);
         }
+        (ContextMenuKind::RepoIssue { url, .. }, Some("Open in browser")) => {
+            state.request_open_url = Some(url);
+            leave_modal(state);
+        }
+        (ContextMenuKind::RepoIssue { url, .. }, Some("Copy URL")) => {
+            state.request_clipboard_write = Some(url.into_bytes());
+            leave_modal(state);
+        }
         (
             ContextMenuKind::Workspace { ws_idx } | ContextMenuKind::GitWorkspace { ws_idx, .. },
             Some(label),
@@ -1449,6 +1457,14 @@ impl App {
                 leave_modal(&mut self.state);
             }
             (ContextMenuKind::RepoPr { url, .. }, Some("Copy URL")) => {
+                self.state.request_clipboard_write = Some(url.into_bytes());
+                leave_modal(&mut self.state);
+            }
+            (ContextMenuKind::RepoIssue { url, .. }, Some("Open in browser")) => {
+                self.state.request_open_url = Some(url);
+                leave_modal(&mut self.state);
+            }
+            (ContextMenuKind::RepoIssue { url, .. }, Some("Copy URL")) => {
                 self.state.request_clipboard_write = Some(url.into_bytes());
                 leave_modal(&mut self.state);
             }
@@ -2505,5 +2521,62 @@ mod tests {
             state.request_clipboard_write.as_deref(),
             Some("https://github.com/owner/proj/pull/42".as_bytes())
         );
+    }
+
+    fn repo_issue_menu() -> ContextMenuState {
+        let kind = ContextMenuKind::RepoIssue {
+            number: 12,
+            url: "https://github.com/owner/proj/issues/12".into(),
+        };
+        ContextMenuState {
+            items: build_context_menu_items(&kind, &[], &[]),
+            kind,
+            x: 0,
+            y: 0,
+            list: MenuListState::new(0),
+            bora_commands: vec![],
+            bora_port: None,
+        }
+    }
+
+    #[test]
+    fn repo_issue_context_menu_actions_set_request_fields() {
+        let menu = repo_issue_menu();
+        assert_eq!(menu.items, ["Open in browser", "Copy URL"]);
+
+        let mut terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
+        let idx = |label: &str| {
+            repo_issue_menu()
+                .items
+                .iter()
+                .position(|item| item == label)
+                .expect("menu item")
+        };
+
+        let mut state = state_with_workspaces(&["proj"]);
+        apply_context_menu_action(
+            &mut state,
+            &mut terminal_runtimes,
+            repo_issue_menu(),
+            idx("Open in browser"),
+        );
+        assert_eq!(
+            state.request_open_url.as_deref(),
+            Some("https://github.com/owner/proj/issues/12")
+        );
+        assert_ne!(state.mode, Mode::ContextMenu, "menu closed after action");
+
+        let mut state = state_with_workspaces(&["proj"]);
+        apply_context_menu_action(
+            &mut state,
+            &mut terminal_runtimes,
+            repo_issue_menu(),
+            idx("Copy URL"),
+        );
+        assert_eq!(
+            state.request_clipboard_write.as_deref(),
+            Some("https://github.com/owner/proj/issues/12".as_bytes())
+        );
+        assert_ne!(state.mode, Mode::ContextMenu, "menu closed after action");
     }
 }

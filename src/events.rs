@@ -188,8 +188,6 @@ pub enum AppEvent {
         result: RepoOpenPrs,
     },
     /// Background `gh issue list` for a repo completed.
-    #[allow(dead_code)]
-    // sent by start_issues_fetch (Issues tab trigger lands in a later phase)
     RepoIssuesRefreshed {
         repo_identity: String,
         result: RepoIssues,

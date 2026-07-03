@@ -149,6 +149,7 @@ impl App {
             result,
         } = ev
         {
+            self.state.issues_fetch_in_flight.remove(&repo_identity);
             self.state.repo_issues.insert(repo_identity, result);
             self.render_dirty.store(true, Ordering::Release);
             self.render_notify.notify_one();
