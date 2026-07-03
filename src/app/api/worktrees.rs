@@ -864,6 +864,42 @@ mod tests {
             .expect("deferred API request should respond after completion event")
     }
 
+    #[test]
+    fn deferred_api_worktree_create_rejects_pr_combined_with_branch_or_base() {
+        let mut app = test_app();
+        for params in [
+            WorktreeCreateParams {
+                pr: Some(42),
+                branch: Some("feature/x".into()),
+                ..WorktreeCreateParams::default()
+            },
+            WorktreeCreateParams {
+                pr: Some(42),
+                base: Some("HEAD".into()),
+                ..WorktreeCreateParams::default()
+            },
+        ] {
+            let (respond_to, response_rx) = response_channel();
+            assert!(app.handle_deferred_worktree_api_request(
+                Request {
+                    id: "req".into(),
+                    method: crate::api::schema::Method::WorktreeCreate(params),
+                },
+                respond_to,
+            ));
+            let response = response_rx
+                .try_recv()
+                .expect("invalid pr combination should respond immediately");
+            let error: ErrorResponse = serde_json::from_str(&response).unwrap();
+            assert_eq!(error.error.code, "invalid_request");
+            assert_eq!(
+                error.error.message,
+                "pr is mutually exclusive with branch and base"
+            );
+        }
+        assert!(app.pending_api_worktree_creates.is_empty());
+    }
+
     #[tokio::test]
     async fn api_worktree_create_opens_workspace_and_marks_membership() {
         let repo = create_committed_repo("api-worktree-create-repo");
@@ -2106,6 +2142,7 @@ mod tests {
                     cwd: Some(repo.display().to_string()),
                     branch: Some("worktree/create-remove-in-flight".into()),
                     base: None,
+                    pr: None,
                     path: Some(checkout.display().to_string()),
                     label: None,
                     focus: false,

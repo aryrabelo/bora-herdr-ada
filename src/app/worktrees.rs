@@ -9,6 +9,11 @@ use super::{
 };
 use crate::events::{AppEvent, WorktreeAddResult, WorktreeRemoveResult};
 
+/// Request id for the sidebar "open PR in worktree" deferred create; the API
+/// error path keys a toast off it because this flow has no modal to surface
+/// failures in.
+pub(crate) const TUI_WORKTREE_CREATE_FROM_PR_REQUEST_ID: &str = "tui.worktree.create_from_pr";
+
 impl App {
     fn worktree_source_metadata(
         &self,
@@ -598,6 +603,7 @@ impl App {
                 branch: Some(branch),
                 path: Some(checkout_path),
                 base: Some("HEAD".into()),
+                pr: None,
                 focus: true,
                 label: None,
             },
@@ -1130,7 +1136,7 @@ impl App {
         self.state.switch_workspace(parent_idx);
     }
 
-    fn show_worktree_op_toast(
+    pub(crate) fn show_worktree_op_toast(
         &mut self,
         kind: crate::app::state::ToastKind,
         title: &str,
@@ -1174,15 +1180,29 @@ impl App {
         }
     }
 
-    /// Open a PR from the sidebar PR section in a new worktree.
-    // Phase 3 replaces this body with a worktree.create dispatch carrying the PR.
+    /// Open a PR from the sidebar PR section in a new worktree via the
+    /// deferred worktree.create API path.
     pub(crate) fn start_pr_worktree_create(&mut self, ws_idx: usize, number: u64) {
-        tracing::warn!(ws_idx, number, "worktree.create pr param not wired yet");
-        self.show_worktree_op_toast(
-            crate::app::state::ToastKind::NeedsAttention,
-            "open PR in worktree",
-            format!("#{number}: not available yet"),
+        let Some(workspace_id) = self.state.workspaces.get(ws_idx).map(|ws| ws.id.clone()) else {
+            return;
+        };
+        tracing::info!(ws_idx, number, "starting PR worktree create");
+        let immediate_response = self.dispatch_deferred_runtime_mutation(
+            TUI_WORKTREE_CREATE_FROM_PR_REQUEST_ID,
+            crate::api::schema::Method::WorktreeCreate(crate::api::schema::WorktreeCreateParams {
+                workspace_id: Some(workspace_id),
+                pr: Some(number),
+                focus: true,
+                ..Default::default()
+            }),
         );
+        if let Some(message) = immediate_api_error_message(immediate_response.as_deref()) {
+            self.show_worktree_op_toast(
+                crate::app::state::ToastKind::NeedsAttention,
+                "open PR in worktree failed",
+                message,
+            );
+        }
     }
 
     /// Workspace ids whose cached branch equals `branch`. Targets an immediate
