@@ -172,6 +172,7 @@ impl App {
             result,
         } = ev
         {
+            self.state.issues_fetch_in_flight.remove(&repo_identity);
             self.state.repo_issues.insert(repo_identity, result);
             self.render_dirty.request_generic();
             self.render_notify.notify_one();
