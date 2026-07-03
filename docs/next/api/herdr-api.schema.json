@@ -652,6 +652,28 @@
                 "layout"
               ],
               "type": "object"
+            },
+            {
+              "properties": {
+                "pane_id": {
+                  "type": "string"
+                },
+                "result": true,
+                "type": {
+                  "const": "pane_result_reported",
+                  "type": "string"
+                },
+                "workspace_id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "pane_id",
+                "workspace_id",
+                "result"
+              ],
+              "type": "object"
             }
           ]
         },
@@ -679,7 +701,8 @@
             "pane_exited",
             "pane_agent_detected",
             "pane_agent_status_changed",
-            "layout_updated"
+            "layout_updated",
+            "pane_result_reported"
           ],
           "type": "string"
         },
@@ -1006,6 +1029,12 @@
               "format": "uint",
               "minimum": 0,
               "type": "integer"
+            },
+            "visual_group": {
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "workspace_id": {
               "type": "string"
@@ -1627,6 +1656,22 @@
                 "event",
                 "pane_id",
                 "agent_status"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "event": {
+                  "const": "pane_result_reported",
+                  "type": "string"
+                },
+                "pane_id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "event",
+                "pane_id"
               ],
               "type": "object"
             }
@@ -2430,6 +2475,20 @@
           "required": [
             "pane_id",
             "source"
+          ],
+          "type": "object"
+        },
+        "PaneReportResultParams": {
+          "description": "Structured, opaque attestation posted by an agent/orchestrator about a pane's\ntask result. Bora does not interpret `result`; it carries the JSON through to\nan event verbatim (runtime fact, not persisted task-state).",
+          "properties": {
+            "pane_id": {
+              "type": "string"
+            },
+            "result": true
+          },
+          "required": [
+            "pane_id",
+            "result"
           ],
           "type": "object"
         },
@@ -3329,6 +3388,18 @@
             },
             {
               "properties": {
+                "type": {
+                  "const": "pane.result_reported",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
                 "lines": {
                   "format": "uint32",
                   "minimum": 0,
@@ -3533,6 +3604,12 @@
               "default": false,
               "type": "boolean"
             },
+            "group": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "label": {
               "type": [
                 "string",
@@ -3571,6 +3648,23 @@
           "required": [
             "workspace_id",
             "label"
+          ],
+          "type": "object"
+        },
+        "WorkspaceSetGroupParams": {
+          "properties": {
+            "group": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "workspace_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "workspace_id"
           ],
           "type": "object"
         },
@@ -3979,6 +4073,22 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/WorkspaceMoveParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "workspace.set_group",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/WorkspaceSetGroupParams"
             }
           },
           "required": [
@@ -4667,6 +4777,22 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/PaneReportAgentParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "pane.report_result",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/PaneReportResultParams"
             }
           },
           "required": [
@@ -6032,6 +6158,28 @@
                 "layout"
               ],
               "type": "object"
+            },
+            {
+              "properties": {
+                "pane_id": {
+                  "type": "string"
+                },
+                "result": true,
+                "type": {
+                  "const": "pane_result_reported",
+                  "type": "string"
+                },
+                "workspace_id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "pane_id",
+                "workspace_id",
+                "result"
+              ],
+              "type": "object"
             }
           ]
         },
@@ -6074,7 +6222,8 @@
             "pane_exited",
             "pane_agent_detected",
             "pane_agent_status_changed",
-            "layout_updated"
+            "layout_updated",
+            "pane_result_reported"
           ],
           "type": "string"
         },
@@ -8757,6 +8906,12 @@
               "format": "uint",
               "minimum": 0,
               "type": "integer"
+            },
+            "visual_group": {
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "workspace_id": {
               "type": "string"

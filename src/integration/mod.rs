@@ -201,6 +201,5 @@ const INTEGRATION_VERSION_MARKER: &str = "HERDR_INTEGRATION_VERSION=";
 
 pub(crate) const INSTALL_WARNING_PREFIX: &str = "warning:";
 
-
 #[cfg(test)]
 mod tests;

@@ -4731,12 +4731,14 @@ last_pane = "prefix+tab"
         app.state.selected = 0;
         app.state.confirm_close = false;
         let kind = state::ContextMenuKind::Workspace { ws_idx: 1 };
+        let items = state::build_context_menu_items(&kind, &[], &[]);
+        let close_idx = items.iter().position(|i| i == "Close").unwrap();
         app.state.context_menu = Some(state::ContextMenuState {
-            items: state::build_context_menu_items(&kind, &[], &[]),
+            items,
             kind,
             x: 2,
             y: 2,
-            list: state::MenuListState::new(1),
+            list: state::MenuListState::new(close_idx),
             bora_commands: vec![],
             bora_port: None,
         });

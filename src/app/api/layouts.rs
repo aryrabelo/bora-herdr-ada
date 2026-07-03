@@ -400,8 +400,8 @@ impl App {
             .as_ref()
             .map(PathBuf::from)
             .or_else(|| self.cwd_for_pane_in_workspace(ws_idx, target_pane_id));
-        let extra_env = super::env::normalize_launch_env(pane.env.clone())
-            .map_err(|(_, message)| message.to_string())?;
+        let extra_env =
+            super::env::normalize_launch_env(pane.env.clone()).map_err(|(_, message)| message)?;
         let direction = match direction {
             SplitDirection::Right => Direction::Horizontal,
             SplitDirection::Down => Direction::Vertical,

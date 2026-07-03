@@ -503,7 +503,6 @@ impl HeadlessServer {
             if self.handle_deferred_requests_headless() {
                 needs_render = true;
                 needs_full_render = true;
-
             }
 
             if latest_app_client(&self.clients).is_some() && self.app.ensure_default_workspace() {
@@ -5068,7 +5067,7 @@ next_tab = ""
             assert!(
                 !server.handle_server_event(ServerEvent::ClientObserveTerminal {
                     client_id: 7,
-                    target: terminal_id_string.clone(),
+                    target: terminal_id_string,
                 })
             );
 
