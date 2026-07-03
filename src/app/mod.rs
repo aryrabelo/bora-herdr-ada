@@ -649,6 +649,7 @@ impl App {
             right_panel_selected_file: None,
             right_panel_diff_requested: false,
             right_panel_checks_requested: false,
+            right_panel_issues_requested: false,
             agent_panel_sort,
             sidebar_agents: config.ui.sidebar.agents.clone(),
             sidebar_spaces: config.ui.sidebar.spaces.clone(),
@@ -709,6 +710,7 @@ impl App {
             session_dirty: false,
             repo_open_prs: HashMap::new(),
             repo_issues: HashMap::new(),
+            issues_fetch_in_flight: std::collections::HashSet::new(),
             terminal_runtime_shutdowns: Vec::new(),
         };
 
@@ -2333,6 +2335,48 @@ mod tests {
         let cached = &app.state.repo_issues["github.com/owner/repo"];
         assert_eq!(cached.issues.len(), 1);
         assert_eq!(cached.issues[0].number, 12);
+    }
+
+    #[test]
+    fn issues_fetch_skipped_when_github_disabled() {
+        let mut app = test_app();
+        app.github_fetch_enabled = false;
+
+        app.start_issues_fetch(
+            "github.com/owner/repo".into(),
+            std::path::PathBuf::from("/nonexistent"),
+        );
+
+        assert!(app.state.issues_fetch_in_flight.is_empty());
+    }
+
+    #[test]
+    fn issues_fetch_in_flight_guard_dedupes_and_clears_on_event() {
+        let mut app = test_app();
+        let identity = "github.com/owner/repo".to_string();
+        let cwd = std::path::PathBuf::from("/nonexistent/bora-issues-fetch-test");
+
+        app.start_issues_fetch(identity.clone(), cwd.clone());
+        assert!(app.state.issues_fetch_in_flight.contains(&identity));
+
+        // A second request for the same repo while the first is pending is a
+        // no-op: only the first fetch delivers a result event.
+        app.start_issues_fetch(identity.clone(), cwd);
+
+        let first = app.event_rx.blocking_recv().expect("fetch result event");
+        assert!(matches!(first, AppEvent::RepoIssuesRefreshed { .. }));
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(
+            matches!(
+                app.event_rx.try_recv(),
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+            ),
+            "deduplicated second call must not spawn another fetch"
+        );
+
+        // Delivering the result clears the guard so later requests fetch again.
+        app.handle_internal_event(first);
+        assert!(!app.state.issues_fetch_in_flight.contains(&identity));
     }
 
     #[test]

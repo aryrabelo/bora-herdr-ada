@@ -346,6 +346,30 @@ impl AppState {
         None
     }
 
+    /// Map a screen row in the right panel Issues tab to `(issue number, url)`.
+    ///
+    /// Walks the same flat layout as `render_issues_tab` (one row per issue,
+    /// offset by `right_panel_scroll`). Returns `None` when the row is out of
+    /// range, the cache is missing/errored, or the workspace has no repo.
+    pub(super) fn right_panel_issue_at_row(&self, screen_row: u16) -> Option<(u64, String)> {
+        let rp = self.view.right_panel_rect;
+        let body_start = rp.y + 1; // tab header is row rp.y
+        if screen_row < body_start {
+            return None;
+        }
+        let row_in_body = (screen_row - body_start) as usize;
+        let flat_index = row_in_body + self.right_panel_scroll as usize;
+
+        let ws = self.active.and_then(|i| self.workspaces.get(i))?;
+        let repo_identity = ws.git_space().map(|space| space.repo_identity.clone())?;
+        let cache = self.repo_issues.get(&repo_identity)?;
+        if cache.error.is_some() {
+            return None;
+        }
+        let issue = cache.issues.get(flat_index)?;
+        Some((issue.number, issue.url.clone()))
+    }
+
     pub(super) fn set_sidebar_section_split(&mut self, row: u16) {
         let sidebar = self.view.sidebar_rect;
         let content_height = sidebar.height;

@@ -485,15 +485,22 @@ impl AppState {
                     // Content starts 1 col after the left separator
                     let content_y = rp.y;
                     if mouse.row == content_y {
-                        // Tab header click — rough midpoint split between Changes and Checks
-                        let mid = rp.x + rp.width / 2;
-                        let previous_tab = self.right_panel_active_tab;
-                        if mouse.column < mid {
-                            self.right_panel_active_tab = crate::app::state::RightPanelTab::Changes;
-                        } else {
-                            self.right_panel_active_tab = crate::app::state::RightPanelTab::Checks;
-                            if previous_tab != crate::app::state::RightPanelTab::Checks {
-                                self.right_panel_checks_requested = true;
+                        // Tab header click — segment hit-test shared with the renderer
+                        if let Some(tab) =
+                            crate::ui::right_panel::right_panel_tab_hit(mouse.column, rp)
+                        {
+                            if tab != self.right_panel_active_tab {
+                                self.right_panel_active_tab = tab;
+                                self.right_panel_scroll = 0;
+                                match tab {
+                                    crate::app::state::RightPanelTab::Changes => {}
+                                    crate::app::state::RightPanelTab::Checks => {
+                                        self.right_panel_checks_requested = true;
+                                    }
+                                    crate::app::state::RightPanelTab::Issues => {
+                                        self.right_panel_issues_requested = true;
+                                    }
+                                }
                             }
                         }
                     } else if mouse.row > content_y
@@ -503,6 +510,23 @@ impl AppState {
                         if let Some(file_path) = self.right_panel_file_at_row(mouse.row) {
                             self.right_panel_selected_file = Some(file_path);
                             self.right_panel_diff_requested = true;
+                        }
+                    } else if mouse.row > content_y
+                        && self.right_panel_active_tab == crate::app::state::RightPanelTab::Issues
+                    {
+                        // Issue row click — open the issue context menu
+                        if let Some((number, url)) = self.right_panel_issue_at_row(mouse.row) {
+                            let kind = ContextMenuKind::RepoIssue { number, url };
+                            self.context_menu = Some(ContextMenuState {
+                                items: build_context_menu_items(&kind, &self.workspaces, &[]),
+                                kind,
+                                x: mouse.column,
+                                y: mouse.row,
+                                list: MenuListState::new(0),
+                                bora_commands: vec![],
+                                bora_port: None,
+                            });
+                            self.mode = Mode::ContextMenu;
                         }
                     }
                     return None;
@@ -4083,38 +4107,81 @@ mod tests {
         app
     }
 
-    // Characterization: pins the current 2-way midpoint split of the
-    // right-panel tab header (row rp.y). Columns strictly left of
-    // `rp.x + rp.width / 2` select Changes; the midpoint column and everything
-    // right of it select Checks.
+    /// Columns of the tab header row (rp.y) that hit `tab`, resolved from the
+    /// shared `right_panel_tab_hit` helper so the test cannot drift from the
+    /// renderer's segment layout.
+    fn tab_segment_cols(
+        rp: ratatui::layout::Rect,
+        tab: crate::app::state::RightPanelTab,
+    ) -> Vec<u16> {
+        (rp.x..rp.x + rp.width)
+            .filter(|&col| crate::ui::right_panel::right_panel_tab_hit(col, rp) == Some(tab))
+            .collect()
+    }
+
+    // Pins the 3-segment tab header layout (row rp.y): the first and last
+    // column of each label segment select its tab, divider and past-end
+    // columns leave the active tab unchanged, and every header click is
+    // consumed.
     #[tokio::test]
-    async fn right_panel_tab_header_click_splits_changes_and_checks_at_midpoint() {
+    async fn right_panel_tab_header_click_selects_tab_by_label_segment() {
         use crate::app::state::RightPanelTab;
 
         let mut app = app_with_expanded_right_panel();
         let rp = app.state.view.right_panel_rect;
         let header_row = rp.y;
-        let mid = rp.x + rp.width / 2;
+
+        let changes_cols = tab_segment_cols(rp, RightPanelTab::Changes);
+        let checks_cols = tab_segment_cols(rp, RightPanelTab::Checks);
+        let issues_cols = tab_segment_cols(rp, RightPanelTab::Issues);
+
+        // Segments are laid out left-to-right starting one column after the
+        // panel separator, with one divider column between segments.
+        assert_eq!(changes_cols.len(), " Changes ".len());
+        assert_eq!(checks_cols.len(), " Checks ".len());
+        assert_eq!(issues_cols.len(), " Issues ".len());
+        assert_eq!(changes_cols[0], rp.x + 1);
+        assert_eq!(
+            checks_cols[0],
+            changes_cols.last().copied().expect("cols") + 2
+        );
+        assert_eq!(
+            issues_cols[0],
+            checks_cols.last().copied().expect("cols") + 2
+        );
 
         assert_eq!(app.state.right_panel_active_tab, RightPanelTab::Changes);
 
-        // The midpoint column itself already selects Checks (split is `< mid`).
+        for (tab, cols) in [
+            (RightPanelTab::Checks, &checks_cols),
+            (RightPanelTab::Issues, &issues_cols),
+            (RightPanelTab::Changes, &changes_cols),
+        ] {
+            for &col in &[cols[0], cols.last().copied().expect("cols")] {
+                let action = app.state.handle_mouse(
+                    &mut app.terminal_runtimes,
+                    mouse(MouseEventKind::Down(MouseButton::Left), col, header_row),
+                );
+                assert!(action.is_none(), "tab header click is consumed");
+                assert_eq!(app.state.right_panel_active_tab, tab);
+            }
+        }
+
+        // Divider column between Changes and Checks: no tab change, consumed.
+        let divider_col = changes_cols.last().copied().expect("cols") + 1;
         let action = app.state.handle_mouse(
             &mut app.terminal_runtimes,
-            mouse(MouseEventKind::Down(MouseButton::Left), mid, header_row),
+            mouse(
+                MouseEventKind::Down(MouseButton::Left),
+                divider_col,
+                header_row,
+            ),
         );
         assert!(action.is_none(), "tab header click is consumed");
-        assert_eq!(app.state.right_panel_active_tab, RightPanelTab::Checks);
-
-        // One column left of the midpoint selects Changes again.
-        app.state.handle_mouse(
-            &mut app.terminal_runtimes,
-            mouse(MouseEventKind::Down(MouseButton::Left), mid - 1, header_row),
-        );
         assert_eq!(app.state.right_panel_active_tab, RightPanelTab::Changes);
 
-        // The last header column still selects Checks.
-        app.state.handle_mouse(
+        // Past the last label: no tab change, consumed.
+        let action = app.state.handle_mouse(
             &mut app.terminal_runtimes,
             mouse(
                 MouseEventKind::Down(MouseButton::Left),
@@ -4122,19 +4189,46 @@ mod tests {
                 header_row,
             ),
         );
-        assert_eq!(app.state.right_panel_active_tab, RightPanelTab::Checks);
+        assert!(action.is_none(), "tab header click is consumed");
+        assert_eq!(app.state.right_panel_active_tab, RightPanelTab::Changes);
 
-        // A column just right of the panel divider selects Changes. (The
-        // divider column rp.x itself is consumed by the resize hit-test.)
+        app.state.assert_invariants_for_test();
+    }
+
+    // Switching tabs resets the shared right-panel scroll; re-clicking the
+    // already-active tab keeps it.
+    #[tokio::test]
+    async fn right_panel_tab_switch_resets_scroll() {
+        use crate::app::state::RightPanelTab;
+
+        let mut app = app_with_expanded_right_panel();
+        let rp = app.state.view.right_panel_rect;
+        let header_row = rp.y;
+        let checks_col = tab_segment_cols(rp, RightPanelTab::Checks)[0];
+
+        app.state.right_panel_scroll = 5;
         app.state.handle_mouse(
             &mut app.terminal_runtimes,
             mouse(
                 MouseEventKind::Down(MouseButton::Left),
-                rp.x + 1,
+                checks_col,
                 header_row,
             ),
         );
-        assert_eq!(app.state.right_panel_active_tab, RightPanelTab::Changes);
+        assert_eq!(app.state.right_panel_active_tab, RightPanelTab::Checks);
+        assert_eq!(app.state.right_panel_scroll, 0);
+
+        // Re-clicking the active tab is not a switch: scroll is kept.
+        app.state.right_panel_scroll = 3;
+        app.state.handle_mouse(
+            &mut app.terminal_runtimes,
+            mouse(
+                MouseEventKind::Down(MouseButton::Left),
+                checks_col,
+                header_row,
+            ),
+        );
+        assert_eq!(app.state.right_panel_scroll, 3);
 
         app.state.assert_invariants_for_test();
     }
@@ -4149,8 +4243,8 @@ mod tests {
         let mut app = app_with_expanded_right_panel();
         let rp = app.state.view.right_panel_rect;
         let header_row = rp.y;
-        let checks_col = rp.x + rp.width / 2;
-        let changes_col = rp.x + 1;
+        let checks_col = tab_segment_cols(rp, RightPanelTab::Checks)[0];
+        let changes_col = tab_segment_cols(rp, RightPanelTab::Changes)[0];
 
         assert!(!app.state.right_panel_checks_requested);
 
@@ -4201,6 +4295,163 @@ mod tests {
             ),
         );
         assert!(app.state.right_panel_checks_requested);
+
+        app.state.assert_invariants_for_test();
+    }
+
+    // Mirror of the checks-flag test: `right_panel_issues_requested` is set
+    // only on a transition INTO Issues.
+    #[tokio::test]
+    async fn right_panel_issues_request_flag_set_only_when_switching_into_issues() {
+        use crate::app::state::RightPanelTab;
+
+        let mut app = app_with_expanded_right_panel();
+        let rp = app.state.view.right_panel_rect;
+        let header_row = rp.y;
+        let issues_col = tab_segment_cols(rp, RightPanelTab::Issues)[0];
+        let changes_col = tab_segment_cols(rp, RightPanelTab::Changes)[0];
+
+        assert!(!app.state.right_panel_issues_requested);
+
+        // Changes -> Issues requests an issues fetch.
+        app.state.handle_mouse(
+            &mut app.terminal_runtimes,
+            mouse(
+                MouseEventKind::Down(MouseButton::Left),
+                issues_col,
+                header_row,
+            ),
+        );
+        assert_eq!(app.state.right_panel_active_tab, RightPanelTab::Issues);
+        assert!(app.state.right_panel_issues_requested);
+
+        // Re-clicking Issues while already on Issues does not re-request.
+        app.state.right_panel_issues_requested = false;
+        app.state.handle_mouse(
+            &mut app.terminal_runtimes,
+            mouse(
+                MouseEventKind::Down(MouseButton::Left),
+                issues_col,
+                header_row,
+            ),
+        );
+        assert_eq!(app.state.right_panel_active_tab, RightPanelTab::Issues);
+        assert!(!app.state.right_panel_issues_requested);
+
+        // Switching back to Changes never requests issues.
+        app.state.handle_mouse(
+            &mut app.terminal_runtimes,
+            mouse(
+                MouseEventKind::Down(MouseButton::Left),
+                changes_col,
+                header_row,
+            ),
+        );
+        assert_eq!(app.state.right_panel_active_tab, RightPanelTab::Changes);
+        assert!(!app.state.right_panel_issues_requested);
+
+        app.state.assert_invariants_for_test();
+    }
+
+    /// App with an expanded right panel whose active workspace belongs to a
+    /// repo with a populated issues cache.
+    fn app_with_issues_cache() -> (crate::app::App, String) {
+        let mut app = app_with_expanded_right_panel();
+        let identity = "github.com/owner/proj".to_string();
+        app.state.workspaces[0].cached_git_space = Some(crate::workspace::GitSpaceMetadata {
+            key: "key-p".into(),
+            repo_identity: identity.clone(),
+            checkout_key: "/repo/proj".into(),
+            label: "proj".into(),
+            repo_root: std::path::PathBuf::from("/repo/proj"),
+            is_linked_worktree: false,
+        });
+        app.state.repo_issues.insert(
+            identity.clone(),
+            crate::workspace::RepoIssues {
+                issues: vec![
+                    crate::workspace::RepoIssue {
+                        number: 7,
+                        title: "bug: first".into(),
+                        url: "https://github.com/owner/proj/issues/7".into(),
+                    },
+                    crate::workspace::RepoIssue {
+                        number: 12,
+                        title: "feat: second".into(),
+                        url: "https://github.com/owner/proj/issues/12".into(),
+                    },
+                ],
+                error: None,
+            },
+        );
+        (app, identity)
+    }
+
+    #[tokio::test]
+    async fn right_panel_issue_at_row_walks_flat_layout_with_scroll() {
+        let (app, identity) = app_with_issues_cache();
+        let rp = app.state.view.right_panel_rect;
+        let body_start = rp.y + 1;
+
+        assert_eq!(
+            app.state.right_panel_issue_at_row(body_start),
+            Some((7, "https://github.com/owner/proj/issues/7".to_string()))
+        );
+        assert_eq!(
+            app.state.right_panel_issue_at_row(body_start + 1),
+            Some((12, "https://github.com/owner/proj/issues/12".to_string()))
+        );
+        // Header row and rows past the list resolve to nothing.
+        assert_eq!(app.state.right_panel_issue_at_row(rp.y), None);
+        assert_eq!(app.state.right_panel_issue_at_row(body_start + 2), None);
+
+        // Nonzero scroll shifts the flat index.
+        let mut app = app;
+        app.state.right_panel_scroll = 1;
+        assert_eq!(
+            app.state.right_panel_issue_at_row(body_start),
+            Some((12, "https://github.com/owner/proj/issues/12".to_string()))
+        );
+        assert_eq!(app.state.right_panel_issue_at_row(body_start + 1), None);
+
+        // An errored cache never resolves rows.
+        app.state.right_panel_scroll = 0;
+        app.state
+            .repo_issues
+            .get_mut(&identity)
+            .expect("cache")
+            .error = Some("gh failed".into());
+        assert_eq!(app.state.right_panel_issue_at_row(body_start), None);
+    }
+
+    #[tokio::test]
+    async fn right_panel_issue_row_click_opens_repo_issue_context_menu() {
+        let (mut app, _identity) = app_with_issues_cache();
+        app.state.right_panel_active_tab = crate::app::state::RightPanelTab::Issues;
+        app.state.right_panel_scroll = 1;
+        let rp = app.state.view.right_panel_rect;
+        let body_start = rp.y + 1;
+
+        // With scroll 1, the first body row is the second issue.
+        app.state.handle_mouse(
+            &mut app.terminal_runtimes,
+            mouse(
+                MouseEventKind::Down(MouseButton::Left),
+                rp.x + 2,
+                body_start,
+            ),
+        );
+
+        assert_eq!(app.state.mode, Mode::ContextMenu);
+        let menu = app.state.context_menu.as_ref().expect("context menu open");
+        match &menu.kind {
+            crate::app::state::ContextMenuKind::RepoIssue { number, url } => {
+                assert_eq!(*number, 12);
+                assert_eq!(url, "https://github.com/owner/proj/issues/12");
+            }
+            other => panic!("expected RepoIssue context menu, got {other:?}"),
+        }
+        assert_eq!(menu.items, ["Open in browser", "Copy URL"]);
 
         app.state.assert_invariants_for_test();
     }

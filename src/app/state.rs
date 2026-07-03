@@ -773,6 +773,7 @@ pub enum RightPanelTab {
     #[default]
     Changes,
     Checks,
+    Issues,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1168,6 +1169,11 @@ pub enum ContextMenuKind {
         url: String,
         head_ref: String,
     },
+    /// An issue row in the right-panel Issues tab.
+    RepoIssue {
+        number: u64,
+        url: String,
+    },
 }
 
 /// Right-click context menu state.
@@ -1369,6 +1375,9 @@ pub fn build_context_menu_items(
             "Open in browser".to_string(),
             "Copy URL".to_string(),
         ],
+        ContextMenuKind::RepoIssue { .. } => {
+            vec!["Open in browser".to_string(), "Copy URL".to_string()]
+        }
     }
 }
 
@@ -1583,6 +1592,8 @@ pub struct AppState {
     pub right_panel_diff_requested: bool,
     /// Set when Checks tab is activated; drained by App to call start_checks_fetch.
     pub right_panel_checks_requested: bool,
+    /// Set when Issues tab is activated; drained by App to call start_issues_fetch.
+    pub right_panel_issues_requested: bool,
     pub agent_panel_sort: AgentPanelSort,
     pub sidebar_agents: crate::config::AgentsSidebarConfig,
     pub sidebar_spaces: crate::config::SpacesSidebarConfig,
@@ -1671,6 +1682,10 @@ pub struct AppState {
     /// (`GitSpaceMetadata.repo_identity`). Written by on-demand background
     /// fetches; read by UI/API surfaces in later phases.
     pub repo_issues: std::collections::HashMap<String, crate::workspace::RepoIssues>,
+    /// Repo identities with an issues fetch currently in flight. Guards
+    /// against overlapping fetches from rapid tab toggling and lets the
+    /// Issues tab render a loading state; cleared on `RepoIssuesRefreshed`.
+    pub issues_fetch_in_flight: std::collections::HashSet<String>,
     /// Terminal runtimes that should be shut down by the app/runtime layer
     /// after state has detached their terminal metadata.
     pub(crate) terminal_runtime_shutdowns: Vec<crate::terminal::TerminalId>,
@@ -1976,6 +1991,7 @@ impl AppState {
             right_panel_selected_file: None,
             right_panel_diff_requested: false,
             right_panel_checks_requested: false,
+            right_panel_issues_requested: false,
             agent_panel_sort: AgentPanelSort::Spaces,
             sidebar_agents: crate::config::AgentsSidebarConfig::default(),
             sidebar_spaces: crate::config::SpacesSidebarConfig::default(),
@@ -2045,6 +2061,7 @@ impl AppState {
             session_dirty: false,
             repo_open_prs: std::collections::HashMap::new(),
             repo_issues: std::collections::HashMap::new(),
+            issues_fetch_in_flight: std::collections::HashSet::new(),
             terminal_runtime_shutdowns: Vec::new(),
         }
     }
@@ -2365,6 +2382,8 @@ impl AppState {
                 ContextMenuKind::RepoPr { ws_idx, .. } => {
                     assert_workspace_index(ws_idx, "context menu repo pr")
                 }
+                // No index to check — the menu carries only the issue number/URL.
+                ContextMenuKind::RepoIssue { .. } => {}
             }
         }
     }

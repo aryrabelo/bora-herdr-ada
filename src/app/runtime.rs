@@ -799,10 +799,17 @@ impl App {
     /// Trigger a lazy background fetch of the current user's open issues for
     /// one repo. The result is delivered via `AppEvent::RepoIssuesRefreshed`
     /// into the `repo_issues` cache. No periodic scheduling — callers request
-    /// a refresh explicitly. No-op when `[github] enabled` is false.
-    #[allow(dead_code)] // called by the Issues tab (later phase trigger)
-    pub(crate) fn start_issues_fetch(&self, repo_identity: String, cwd: std::path::PathBuf) {
+    /// a refresh explicitly. No-op when `[github] enabled` is false or while
+    /// a fetch for the same repo is already in flight.
+    pub(crate) fn start_issues_fetch(&mut self, repo_identity: String, cwd: std::path::PathBuf) {
         if !self.github_fetch_enabled {
+            return;
+        }
+        if !self
+            .state
+            .issues_fetch_in_flight
+            .insert(repo_identity.clone())
+        {
             return;
         }
         let event_tx = self.event_tx.clone();
