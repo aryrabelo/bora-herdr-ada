@@ -7,7 +7,9 @@ use std::time::Instant;
 
 use crate::detect::{Agent, AgentState};
 use crate::layout::PaneId;
-use crate::workspace::{GitStatusCacheEntry, WorkspaceCheckStatus, WorkspaceGitStatus};
+use crate::workspace::{
+    GitStatusCacheEntry, RepoIssues, RepoOpenPrs, WorkspaceCheckStatus, WorkspaceGitStatus,
+};
 
 #[derive(Debug)]
 pub struct ApiWorktreeAddRequest {
@@ -176,5 +178,17 @@ pub enum AppEvent {
     WorkspaceChecksRefreshed {
         workspace_id: String,
         result: WorkspaceCheckStatus,
+    },
+    /// Background `gh pr list` for a repo completed.
+    RepoPrsRefreshed {
+        repo_identity: String,
+        result: RepoOpenPrs,
+    },
+    /// Background `gh issue list` for a repo completed.
+    #[allow(dead_code)]
+    // sent by start_issues_fetch (Issues tab trigger lands in a later phase)
+    RepoIssuesRefreshed {
+        repo_identity: String,
+        result: RepoIssues,
     },
 }
