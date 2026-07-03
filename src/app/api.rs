@@ -106,6 +106,7 @@ impl App {
                 self.render_notify.notify_one();
             }
             self.start_checks_refresh_if_due(Instant::now());
+            self.start_open_prs_refresh_if_due(Instant::now());
             return;
         }
 
@@ -124,6 +125,33 @@ impl App {
                 self.render_dirty.store(true, Ordering::Release);
                 self.render_notify.notify_one();
             }
+            return;
+        }
+
+        if let AppEvent::RepoPrsRefreshed {
+            repo_identity,
+            result,
+        } = ev
+        {
+            self.open_prs_refresh_results_pending =
+                self.open_prs_refresh_results_pending.saturating_sub(1);
+            if self.open_prs_refresh_results_pending == 0 {
+                self.open_prs_refresh_in_flight = false;
+            }
+            self.state.repo_open_prs.insert(repo_identity, result);
+            self.render_dirty.store(true, Ordering::Release);
+            self.render_notify.notify_one();
+            return;
+        }
+
+        if let AppEvent::RepoIssuesRefreshed {
+            repo_identity,
+            result,
+        } = ev
+        {
+            self.state.repo_issues.insert(repo_identity, result);
+            self.render_dirty.store(true, Ordering::Release);
+            self.render_notify.notify_one();
             return;
         }
 

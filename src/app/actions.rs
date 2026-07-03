@@ -2719,6 +2719,8 @@ impl AppState {
                 let _ = result;
                 Vec::new()
             }
+            AppEvent::RepoPrsRefreshed { .. } => Vec::new(),
+            AppEvent::RepoIssuesRefreshed { .. } => Vec::new(),
             AppEvent::WorktreeAddFinished(_) => Vec::new(),
             AppEvent::WorktreeRemoveFinished(_) => Vec::new(),
             AppEvent::WorktreeMergeToMainFinished { .. } => Vec::new(),

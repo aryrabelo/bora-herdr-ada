@@ -1609,6 +1609,14 @@ pub struct AppState {
     pub host_terminal_theme: TerminalTheme,
     /// Set when a persisted session snapshot would change.
     pub session_dirty: bool,
+    /// Cached open PRs authored by the current user, keyed by repo identity
+    /// (`GitSpaceMetadata.repo_identity`). Written by the periodic background
+    /// refresh; read by UI/API surfaces in later phases.
+    pub repo_open_prs: std::collections::HashMap<String, crate::workspace::RepoOpenPrs>,
+    /// Cached open issues relevant to the current user, keyed by repo identity
+    /// (`GitSpaceMetadata.repo_identity`). Written by on-demand background
+    /// fetches; read by UI/API surfaces in later phases.
+    pub repo_issues: std::collections::HashMap<String, crate::workspace::RepoIssues>,
     /// Terminal runtimes that should be shut down by the app/runtime layer
     /// after state has detached their terminal metadata.
     pub(crate) terminal_runtime_shutdowns: Vec<crate::terminal::TerminalId>,
@@ -1975,6 +1983,8 @@ impl AppState {
             global_menu: MenuListState::new(0),
             host_terminal_theme: TerminalTheme::default(),
             session_dirty: false,
+            repo_open_prs: std::collections::HashMap::new(),
+            repo_issues: std::collections::HashMap::new(),
             terminal_runtime_shutdowns: Vec::new(),
         }
     }
