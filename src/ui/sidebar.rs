@@ -369,6 +369,20 @@ pub(crate) enum WorkspaceListEntry {
     },
     /// Closing line for a project's branch sub-tree (╰───).
     ProjectFooter { indented: bool },
+    /// Collapsible "pull requests" section header under a repo group.
+    PrSectionHeader { collapse_key: String, count: usize },
+    /// One open PR row under a PrSectionHeader; `pr_idx` indexes into
+    /// `app.repo_open_prs[repo_identity].prs`.
+    PrRow {
+        repo_identity: String,
+        pr_idx: usize,
+    },
+}
+
+/// Collapse key for a repo group's "pull requests" section in
+/// `collapsed_space_keys` (absent = expanded).
+pub(crate) fn pr_section_collapse_key(repo_identity: &str) -> String {
+    format!("prs:{repo_identity}")
 }
 
 /// Shared row-height for a single entry. ALL three lockstep passes
@@ -384,6 +398,8 @@ fn entry_row_height(
         WorkspaceListEntry::ProjectHeader { .. } => 1,
         WorkspaceListEntry::BranchHeader { .. } => 1,
         WorkspaceListEntry::ProjectFooter { .. } => 1,
+        WorkspaceListEntry::PrSectionHeader { .. } => 1,
+        WorkspaceListEntry::PrRow { .. } => 1,
         WorkspaceListEntry::Workspace { .. } => 2,
     }
 }
@@ -553,6 +569,7 @@ fn workspace_list_entries_inner(app: &AppState, force_expanded: bool) -> Vec<Wor
                 }
             } else {
                 emit_branch_subgroups(app, members, true, &mut entries);
+                emit_pr_section(app, &space.repo_identity, force_expanded, &mut entries);
             }
             continue;
         }
@@ -603,8 +620,12 @@ fn workspace_list_entries_inner(app: &AppState, force_expanded: bool) -> Vec<Wor
                                     if let Some(members) = members_by_key.get(&repo_id) {
                                         emit_branch_subgroups(app, members, true, &mut entries);
                                     }
+                                    emit_pr_section(app, &repo_id, force_expanded, &mut entries);
                                 }
                             } else {
+                                let repo_id = member_ws
+                                    .git_space()
+                                    .map(|space| space.repo_identity.clone());
                                 if let Some(space) = member_ws.git_space() {
                                     entries.push(WorkspaceListEntry::ProjectHeader {
                                         name: space.label.clone(),
@@ -613,6 +634,9 @@ fn workspace_list_entries_inner(app: &AppState, force_expanded: bool) -> Vec<Wor
                                     });
                                 }
                                 emit_branch_subgroups(app, &[member_idx], true, &mut entries);
+                                if let Some(repo_id) = repo_id {
+                                    emit_pr_section(app, &repo_id, force_expanded, &mut entries);
+                                }
                             }
                         }
                     }
@@ -622,6 +646,7 @@ fn workspace_list_entries_inner(app: &AppState, force_expanded: bool) -> Vec<Wor
         }
 
         // --- Flat (ungrouped) workspace: project header (if git) + branch bracket ---
+        let repo_id = ws.git_space().map(|space| space.repo_identity.clone());
         if let Some(space) = ws.git_space() {
             entries.push(WorkspaceListEntry::ProjectHeader {
                 name: space.label.clone(),
@@ -630,8 +655,43 @@ fn workspace_list_entries_inner(app: &AppState, force_expanded: bool) -> Vec<Wor
             });
         }
         emit_branch_subgroups(app, &[ws_idx], false, &mut entries);
+        if let Some(repo_id) = repo_id {
+            emit_pr_section(app, &repo_id, force_expanded, &mut entries);
+        }
     }
     entries
+}
+
+/// Emit the "pull requests" section for a repo group, after its members.
+/// Nothing is emitted when the cache is missing, errored, or empty; when the
+/// section is collapsed only the header row is emitted.
+fn emit_pr_section(
+    app: &AppState,
+    repo_identity: &str,
+    force_expanded: bool,
+    entries: &mut Vec<WorkspaceListEntry>,
+) {
+    let Some(cache) = app.repo_open_prs.get(repo_identity) else {
+        return;
+    };
+    if cache.error.is_some() || cache.prs.is_empty() {
+        return;
+    }
+    let collapse_key = pr_section_collapse_key(repo_identity);
+    let collapsed = !force_expanded && app.collapsed_space_keys.contains(&collapse_key);
+    entries.push(WorkspaceListEntry::PrSectionHeader {
+        collapse_key,
+        count: cache.prs.len(),
+    });
+    if collapsed {
+        return;
+    }
+    for pr_idx in 0..cache.prs.len() {
+        entries.push(WorkspaceListEntry::PrRow {
+            repo_identity: repo_identity.to_string(),
+            pr_idx,
+        });
+    }
 }
 
 /// Emit branch sub-groups for a list of project-group member indices.
@@ -821,16 +881,17 @@ pub(crate) fn compute_workspace_list_areas(
 ) -> (
     Vec<crate::app::state::WorkspaceCardArea>,
     Vec<crate::app::state::GroupHeaderCardArea>,
+    Vec<crate::app::state::SidebarPrRowArea>,
 ) {
     let ws_area = workspace_list_rect(area, app.sidebar_section_split);
     if ws_area == Rect::default() {
-        return (Vec::new(), Vec::new());
+        return (Vec::new(), Vec::new(), Vec::new());
     }
 
     let metrics = workspace_list_scroll_metrics(app, ws_area);
     let body = workspace_list_body_rect(ws_area, should_show_scrollbar(metrics));
     if body.width == 0 || body.height == 0 {
-        return (Vec::new(), Vec::new());
+        return (Vec::new(), Vec::new(), Vec::new());
     }
 
     let scroll = app.workspace_scroll;
@@ -838,6 +899,7 @@ pub(crate) fn compute_workspace_list_areas(
     let body_bottom = body.y + body.height;
     let mut cards = Vec::new();
     let mut headers: Vec<crate::app::state::GroupHeaderCardArea> = Vec::new();
+    let mut pr_rows: Vec<crate::app::state::SidebarPrRowArea> = Vec::new();
 
     let entries = workspace_list_entries(app);
     for (entry_idx, entry) in entries.iter().enumerate().skip(scroll) {
@@ -862,6 +924,25 @@ pub(crate) fn compute_workspace_list_areas(
                     rect: Rect::new(body.x, row_y, body.width, 1),
                 });
             }
+            WorkspaceListEntry::PrSectionHeader { collapse_key, .. } => {
+                // Reuses the group-header hit path: clicking toggles the
+                // `prs:` collapse key with no dedicated input code.
+                headers.push(crate::app::state::GroupHeaderCardArea {
+                    name: "pull requests".to_string(),
+                    collapse_key: collapse_key.clone(),
+                    rect: Rect::new(body.x, row_y, body.width, 1),
+                });
+            }
+            WorkspaceListEntry::PrRow {
+                repo_identity,
+                pr_idx,
+            } => {
+                pr_rows.push(crate::app::state::SidebarPrRowArea {
+                    rect: Rect::new(body.x, row_y, body.width, 1),
+                    repo_identity: repo_identity.clone(),
+                    pr_idx: *pr_idx,
+                });
+            }
             WorkspaceListEntry::BranchHeader { .. } => {
                 // BranchHeader is a non-clickable label — no card or header area.
             }
@@ -882,7 +963,7 @@ pub(crate) fn compute_workspace_list_areas(
         row_y = row_y.saturating_add(needed);
     }
 
-    (cards, headers)
+    (cards, headers, pr_rows)
 }
 
 pub(crate) fn compute_workspace_card_areas(
@@ -1386,6 +1467,59 @@ fn render_workspace_list(
                         ))),
                         Rect::new(body.x, row_y, body.width, 1),
                     );
+                }
+            }
+            WorkspaceListEntry::PrSectionHeader {
+                collapse_key,
+                count,
+            } => {
+                if row_y < list_bottom {
+                    let collapsed = app.collapsed_space_keys.contains(collapse_key);
+                    let chevron = if collapsed { "▸" } else { "▾" };
+                    frame.render_widget(
+                        Paragraph::new(Line::from(vec![
+                            Span::styled(chevron, Style::default().fg(p.accent)),
+                            Span::styled(" ", Style::default()),
+                            Span::styled(
+                                format!("pull requests ({count})"),
+                                Style::default().fg(p.overlay0).add_modifier(Modifier::BOLD),
+                            ),
+                        ])),
+                        Rect::new(body.x, row_y, body.width, 1),
+                    );
+                }
+            }
+            WorkspaceListEntry::PrRow {
+                repo_identity,
+                pr_idx,
+            } => {
+                if row_y < list_bottom {
+                    if let Some(pr) = app
+                        .repo_open_prs
+                        .get(repo_identity)
+                        .and_then(|cache| cache.prs.get(*pr_idx))
+                    {
+                        let number = format!("#{}", pr.number);
+                        let draft_prefix = if pr.is_draft { "◌ " } else { "" };
+                        let title_budget = (body.width as usize)
+                            .saturating_sub(2 + display_width(draft_prefix) + number.len() + 1);
+                        let title = truncate_end(&pr.title, title_budget);
+                        let (number_style, title_style) = if pr.is_draft {
+                            let dim = Style::default().fg(p.overlay1);
+                            (dim, dim)
+                        } else {
+                            (Style::default().fg(p.green), Style::default().fg(p.text))
+                        };
+                        frame.render_widget(
+                            Paragraph::new(Line::from(vec![
+                                Span::styled(format!("  {draft_prefix}"), title_style),
+                                Span::styled(number, number_style),
+                                Span::styled(" ", Style::default()),
+                                Span::styled(title, title_style),
+                            ])),
+                            Rect::new(body.x, row_y, body.width, 1),
+                        );
+                    }
                 }
             }
         }
@@ -2032,7 +2166,7 @@ mod tests {
             workspace_with_worktree_space("issue", Some("repo-key"), "/repo/herdr-issue"),
         ];
 
-        let (cards, headers) = compute_workspace_list_areas(&app, Rect::new(0, 0, 30, 40));
+        let (cards, headers, _) = compute_workspace_list_areas(&app, Rect::new(0, 0, 30, 40));
 
         assert_eq!(headers.len(), 1);
         assert_eq!(headers[0].name, "herdr");
@@ -2086,7 +2220,7 @@ mod tests {
         let area = Rect::new(0, 0, 30, 20);
         app.workspace_scroll = normalized_workspace_scroll(&app, area, 2);
 
-        let (cards, headers) = compute_workspace_list_areas(&app, area);
+        let (cards, headers, _) = compute_workspace_list_areas(&app, area);
 
         assert!(headers.is_empty());
         assert_eq!(cards.len(), 2);
@@ -2129,7 +2263,7 @@ mod tests {
         app.mode = Mode::Terminal;
         app.workspace_scroll = 1;
 
-        let (cards, headers) = compute_workspace_list_areas(&app, Rect::new(0, 0, 30, 12));
+        let (cards, headers, _) = compute_workspace_list_areas(&app, Rect::new(0, 0, 30, 12));
 
         assert!(headers.is_empty());
         assert_eq!(cards.len(), 1);
@@ -2723,7 +2857,7 @@ mod tests {
         ws1.cached_git_branch = None;
         app.workspaces = vec![ws0, ws1];
 
-        let (cards, headers) = compute_workspace_list_areas(&app, Rect::new(0, 0, 30, 40));
+        let (cards, headers, _) = compute_workspace_list_areas(&app, Rect::new(0, 0, 30, 40));
 
         assert_eq!(headers.len(), 1);
         assert_eq!(headers[0].name, "mygroup");
@@ -2847,7 +2981,7 @@ mod tests {
         let mut app = AppState::test_new();
         app.workspaces = vec![Workspace::test_new("alpha")];
 
-        let (cards, _) = compute_workspace_list_areas(&app, Rect::new(0, 0, 30, 20));
+        let (cards, _, _) = compute_workspace_list_areas(&app, Rect::new(0, 0, 30, 20));
 
         assert_eq!(cards.len(), 1);
         assert_eq!(
@@ -2999,6 +3133,8 @@ mod tests {
                 WorkspaceListEntry::BranchHeader { .. } => "BranchHeader",
                 WorkspaceListEntry::ProjectFooter { .. } => "ProjectFooter",
                 WorkspaceListEntry::Workspace { .. } => "Workspace",
+                WorkspaceListEntry::PrSectionHeader { .. } => "PrSectionHeader",
+                WorkspaceListEntry::PrRow { .. } => "PrRow",
             })
             .collect();
         assert_eq!(
@@ -3035,7 +3171,7 @@ mod tests {
         // Geometry pass agrees: card/header rects sit at the prefix sums of
         // `entry_row_height` when the body is tall enough for everything.
         let sidebar = Rect::new(0, 0, 30, 40);
-        let (cards, headers) = compute_workspace_list_areas(&app, sidebar);
+        let (cards, headers, _) = compute_workspace_list_areas(&app, sidebar);
         let ws_area = workspace_list_rect(sidebar, app.sidebar_section_split);
         let body = workspace_list_body_rect(ws_area, false);
         let mut expected_card_ys = Vec::new();
@@ -3045,9 +3181,11 @@ mod tests {
             match entry {
                 WorkspaceListEntry::Workspace { .. } => expected_card_ys.push(y),
                 WorkspaceListEntry::GroupHeader { .. }
-                | WorkspaceListEntry::ProjectHeader { .. } => expected_header_ys.push(y),
+                | WorkspaceListEntry::ProjectHeader { .. }
+                | WorkspaceListEntry::PrSectionHeader { .. } => expected_header_ys.push(y),
                 WorkspaceListEntry::BranchHeader { .. }
-                | WorkspaceListEntry::ProjectFooter { .. } => {}
+                | WorkspaceListEntry::ProjectFooter { .. }
+                | WorkspaceListEntry::PrRow { .. } => {}
             }
             y += entry_row_height(entry, &entries, idx);
         }
@@ -3099,5 +3237,195 @@ mod tests {
         for ws in &app.workspaces {
             ws.assert_invariants_for_test();
         }
+    }
+
+    fn open_pr(number: u64, title: &str, is_draft: bool) -> crate::workspace::OpenPr {
+        crate::workspace::OpenPr {
+            number,
+            title: title.into(),
+            url: format!("https://github.com/owner/proj/pull/{number}"),
+            head_ref_name: format!("branch-{number}"),
+            is_draft,
+        }
+    }
+
+    fn app_with_pr_repo(prs: Vec<crate::workspace::OpenPr>) -> (AppState, String) {
+        let identity = "github.com/owner/proj".to_string();
+        let mut app = AppState::test_new();
+        let mut ws = git_space_member("proj", "key-p", false);
+        ws.cached_git_space.as_mut().unwrap().repo_identity = identity.clone();
+        app.workspaces = vec![ws];
+        app.active = Some(0);
+        app.repo_open_prs.insert(
+            identity.clone(),
+            crate::workspace::RepoOpenPrs { prs, error: None },
+        );
+        (app, identity)
+    }
+
+    #[test]
+    fn pr_section_emitted_after_repo_group_with_count_and_rows() {
+        let (mut app, _identity) = app_with_pr_repo(vec![
+            open_pr(7, "fix focus", false),
+            open_pr(9, "draft work", true),
+        ]);
+        app.ensure_test_terminals();
+
+        let entries = workspace_list_entries(&app);
+
+        let header_idx = entries
+            .iter()
+            .position(|e| matches!(e, WorkspaceListEntry::PrSectionHeader { .. }))
+            .expect("pr section header emitted");
+        let last_ws_idx = entries
+            .iter()
+            .rposition(|e| matches!(e, WorkspaceListEntry::Workspace { .. }))
+            .expect("workspace entry present");
+        assert!(
+            header_idx > last_ws_idx,
+            "pr section comes after the repo group members: {entries:?}"
+        );
+        match &entries[header_idx] {
+            WorkspaceListEntry::PrSectionHeader {
+                count,
+                collapse_key,
+            } => {
+                assert_eq!(*count, 2);
+                assert_eq!(collapse_key, "prs:github.com/owner/proj");
+            }
+            _ => unreachable!(),
+        }
+        let rows: Vec<usize> = entries
+            .iter()
+            .filter_map(|e| match e {
+                WorkspaceListEntry::PrRow { pr_idx, .. } => Some(*pr_idx),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(rows, vec![0, 1], "one row per PR, in cache order");
+
+        // Lockstep: visible-count pass agrees with entry_row_height totals.
+        let total_height: u16 = entries
+            .iter()
+            .enumerate()
+            .map(|(idx, e)| entry_row_height(e, &entries, idx))
+            .sum();
+        let exact = Rect::new(0, 0, 30, total_height + WORKSPACE_SECTION_HEADER_ROWS + 1);
+        assert_eq!(
+            workspace_list_visible_count(&app, exact, 0),
+            entries.len(),
+            "all entries visible at exact-fit height"
+        );
+
+        app.assert_invariants_for_test();
+    }
+
+    #[test]
+    fn pr_section_collapse_key_hides_rows_keeps_header() {
+        let (mut app, identity) = app_with_pr_repo(vec![open_pr(7, "fix focus", false)]);
+        app.collapsed_space_keys
+            .insert(pr_section_collapse_key(&identity));
+
+        let entries = workspace_list_entries(&app);
+
+        assert!(
+            entries
+                .iter()
+                .any(|e| matches!(e, WorkspaceListEntry::PrSectionHeader { count: 1, .. })),
+            "collapsed section keeps its header with count"
+        );
+        assert!(
+            !entries
+                .iter()
+                .any(|e| matches!(e, WorkspaceListEntry::PrRow { .. })),
+            "collapsed section emits no rows"
+        );
+    }
+
+    #[test]
+    fn pr_section_absent_when_cache_empty_or_errored() {
+        let (mut app, identity) = app_with_pr_repo(Vec::new());
+        let has_section = |app: &AppState| {
+            workspace_list_entries(app).iter().any(|e| {
+                matches!(
+                    e,
+                    WorkspaceListEntry::PrSectionHeader { .. } | WorkspaceListEntry::PrRow { .. }
+                )
+            })
+        };
+        assert!(!has_section(&app), "no section for empty pr list");
+
+        app.repo_open_prs.insert(
+            identity,
+            crate::workspace::RepoOpenPrs {
+                prs: vec![open_pr(7, "fix focus", false)],
+                error: Some("gh not authenticated".into()),
+            },
+        );
+        assert!(!has_section(&app), "no section when fetch errored");
+    }
+
+    #[test]
+    fn pr_section_areas_track_entry_geometry() {
+        let (app, identity) = app_with_pr_repo(vec![
+            open_pr(7, "fix focus", false),
+            open_pr(9, "draft work", true),
+        ]);
+        let sidebar = Rect::new(0, 0, 28, 20);
+
+        let (_cards, headers, pr_rows) = compute_workspace_list_areas(&app, sidebar);
+
+        let section_header = headers
+            .iter()
+            .find(|h| h.collapse_key == pr_section_collapse_key(&identity))
+            .expect("pr section header pushed into group header areas");
+        assert_eq!(pr_rows.len(), 2);
+        assert_eq!(pr_rows[0].rect.y, section_header.rect.y + 1);
+        assert_eq!(pr_rows[1].rect.y, section_header.rect.y + 2);
+        assert_eq!(pr_rows[0].repo_identity, identity);
+        assert_eq!(pr_rows[0].pr_idx, 0);
+        assert_eq!(pr_rows[1].pr_idx, 1);
+    }
+
+    #[test]
+    fn pr_rows_render_number_title_and_draft_marker() {
+        let (mut app, _identity) = app_with_pr_repo(vec![
+            open_pr(7, "fix focus", false),
+            open_pr(9, "draft work", true),
+        ]);
+        app.ensure_test_terminals();
+        let width = 30u16;
+        let height = 20u16;
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("test terminal");
+        let runtimes = TerminalRuntimeRegistry::new();
+        terminal
+            .draw(|frame| {
+                render_workspace_list(
+                    &app,
+                    &runtimes,
+                    frame,
+                    Rect::new(0, 0, width, height),
+                    false,
+                )
+            })
+            .expect("workspace list should render");
+        let buffer = terminal.backend().buffer().clone();
+        let mut content = String::new();
+        for y in 0..height {
+            for x in 0..width {
+                content.push_str(buffer[(x, y)].symbol());
+            }
+            content.push('\n');
+        }
+        assert!(
+            content.contains("pull requests (2)"),
+            "section header rendered: {content}"
+        );
+        assert!(content.contains("#7"), "pr number rendered: {content}");
+        assert!(
+            content.contains("fix focus"),
+            "pr title rendered: {content}"
+        );
+        assert!(content.contains('◌'), "draft marker rendered: {content}");
     }
 }

@@ -651,6 +651,10 @@ impl AppState {
                         }
                     }
 
+                    if self.open_pr_row_context_menu_at(mouse.column, mouse.row) {
+                        return None;
+                    }
+
                     if let Some(card) = cards.iter().find(|card| {
                         mouse.row == card.rect.y
                             && mouse.column == card.rect.x
@@ -1104,6 +1108,9 @@ impl AppState {
                 {
                     return None;
                 }
+                if self.open_pr_row_context_menu_at(mouse.column, mouse.row) {
+                    return None;
+                }
                 if let Some(idx) = self.workspace_at_row(mouse.row) {
                     self.selected = idx;
                     let kind = self
@@ -1348,6 +1355,53 @@ impl AppState {
             delta.saturating_mul(2),
             max_scroll,
         );
+    }
+
+    /// Open the PR context menu when (col, row) hits a sidebar PR row.
+    /// Returns true when a menu was opened. Used by both mouse buttons.
+    fn open_pr_row_context_menu_at(&mut self, col: u16, row: u16) -> bool {
+        let Some(hit) = self
+            .view
+            .sidebar_pr_row_areas
+            .iter()
+            .find(|area| {
+                row == area.rect.y && col >= area.rect.x && col < area.rect.x + area.rect.width
+            })
+            .cloned()
+        else {
+            return false;
+        };
+        let Some(ws_idx) = self.workspaces.iter().position(|ws| {
+            ws.git_space()
+                .is_some_and(|space| space.repo_identity == hit.repo_identity)
+        }) else {
+            return false;
+        };
+        let Some(pr) = self
+            .repo_open_prs
+            .get(&hit.repo_identity)
+            .and_then(|cache| cache.prs.get(hit.pr_idx))
+            .cloned()
+        else {
+            return false;
+        };
+        let kind = ContextMenuKind::RepoPr {
+            ws_idx,
+            number: pr.number,
+            url: pr.url,
+            head_ref: pr.head_ref_name,
+        };
+        self.context_menu = Some(ContextMenuState {
+            items: build_context_menu_items(&kind, &self.workspaces, &[]),
+            kind,
+            x: col,
+            y: row,
+            list: MenuListState::new(0),
+            bora_commands: vec![],
+            bora_port: None,
+        });
+        self.mode = Mode::ContextMenu;
+        true
     }
 
     pub(super) fn screen_rect(&self) -> Rect {
@@ -4040,6 +4094,69 @@ mod tests {
             ),
         );
         assert!(app.state.right_panel_checks_requested);
+
+        app.state.assert_invariants_for_test();
+    }
+
+    #[tokio::test]
+    async fn sidebar_pr_row_click_opens_repo_pr_context_menu() {
+        let mut app = app_for_mouse_test();
+        let identity = "github.com/owner/proj".to_string();
+        app.state
+            .workspaces
+            .push(crate::workspace::Workspace::test_new("proj"));
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.ensure_test_terminals();
+        app.state.workspaces[0].cached_git_space = Some(crate::workspace::GitSpaceMetadata {
+            key: "key-p".into(),
+            repo_identity: identity.clone(),
+            checkout_key: "/repo/proj".into(),
+            label: "proj".into(),
+            repo_root: std::path::PathBuf::from("/repo/proj"),
+            is_linked_worktree: false,
+        });
+        app.state.repo_open_prs.insert(
+            identity.clone(),
+            crate::workspace::RepoOpenPrs {
+                prs: vec![crate::workspace::OpenPr {
+                    number: 42,
+                    title: "fix focus".into(),
+                    url: "https://github.com/owner/proj/pull/42".into(),
+                    head_ref_name: "fix/focus".into(),
+                    is_draft: false,
+                }],
+                error: None,
+            },
+        );
+        let row_rect = ratatui::layout::Rect::new(0, 5, 26, 1);
+        app.state.view.sidebar_pr_row_areas = vec![crate::app::state::SidebarPrRowArea {
+            rect: row_rect,
+            repo_identity: identity,
+            pr_idx: 0,
+        }];
+
+        app.state.handle_mouse(
+            &mut app.terminal_runtimes,
+            mouse(MouseEventKind::Down(MouseButton::Left), 3, row_rect.y),
+        );
+
+        assert_eq!(app.state.mode, Mode::ContextMenu);
+        let menu = app.state.context_menu.as_ref().expect("context menu open");
+        match &menu.kind {
+            crate::app::state::ContextMenuKind::RepoPr {
+                ws_idx,
+                number,
+                url,
+                head_ref,
+            } => {
+                assert_eq!(*ws_idx, 0);
+                assert_eq!(*number, 42);
+                assert_eq!(url, "https://github.com/owner/proj/pull/42");
+                assert_eq!(head_ref, "fix/focus");
+            }
+            other => panic!("expected RepoPr context menu, got {other:?}"),
+        }
 
         app.state.assert_invariants_for_test();
     }

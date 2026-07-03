@@ -937,6 +937,18 @@ pub(super) fn apply_context_menu_action(
                 };
             }
         }
+        (ContextMenuKind::RepoPr { ws_idx, number, .. }, Some("Open in worktree")) => {
+            state.request_open_pr_worktree = Some((ws_idx, number));
+            leave_modal(state);
+        }
+        (ContextMenuKind::RepoPr { url, .. }, Some("Open in browser")) => {
+            state.request_open_url = Some(url);
+            leave_modal(state);
+        }
+        (ContextMenuKind::RepoPr { url, .. }, Some("Copy URL")) => {
+            state.request_clipboard_write = Some(url.into_bytes());
+            leave_modal(state);
+        }
         (
             ContextMenuKind::Workspace { ws_idx } | ContextMenuKind::GitWorkspace { ws_idx, .. },
             Some(label),
@@ -1427,6 +1439,18 @@ impl App {
                         Mode::Navigate
                     };
                 }
+            }
+            (ContextMenuKind::RepoPr { ws_idx, number, .. }, Some("Open in worktree")) => {
+                self.state.request_open_pr_worktree = Some((ws_idx, number));
+                leave_modal(&mut self.state);
+            }
+            (ContextMenuKind::RepoPr { url, .. }, Some("Open in browser")) => {
+                self.state.request_open_url = Some(url);
+                leave_modal(&mut self.state);
+            }
+            (ContextMenuKind::RepoPr { url, .. }, Some("Copy URL")) => {
+                self.state.request_clipboard_write = Some(url.into_bytes());
+                leave_modal(&mut self.state);
             }
             (
                 ContextMenuKind::Workspace { ws_idx }
@@ -2405,5 +2429,81 @@ mod tests {
         let mut terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
         apply_context_menu_action(&mut state, &mut terminal_runtimes, menu, sync_idx);
         assert_eq!(state.request_sync_workspace_git, Some(0));
+    }
+
+    fn repo_pr_menu() -> ContextMenuState {
+        let kind = ContextMenuKind::RepoPr {
+            ws_idx: 0,
+            number: 42,
+            url: "https://github.com/owner/proj/pull/42".into(),
+            head_ref: "fix/focus".into(),
+        };
+        ContextMenuState {
+            items: build_context_menu_items(&kind, &[], &[]),
+            kind,
+            x: 0,
+            y: 0,
+            list: MenuListState::new(0),
+            bora_commands: vec![],
+            bora_port: None,
+        }
+    }
+
+    #[test]
+    fn repo_pr_context_menu_actions_set_request_fields() {
+        let menu = repo_pr_menu();
+        assert_eq!(
+            menu.items,
+            [
+                "Open in worktree",
+                crate::app::state::CONTEXT_MENU_SEPARATOR,
+                "Open in browser",
+                "Copy URL",
+            ]
+        );
+
+        let mut terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
+
+        let mut state = state_with_workspaces(&["proj"]);
+        let idx = |label: &str| {
+            repo_pr_menu()
+                .items
+                .iter()
+                .position(|item| item == label)
+                .expect("menu item")
+        };
+
+        apply_context_menu_action(
+            &mut state,
+            &mut terminal_runtimes,
+            repo_pr_menu(),
+            idx("Open in worktree"),
+        );
+        assert_eq!(state.request_open_pr_worktree, Some((0, 42)));
+        assert_ne!(state.mode, Mode::ContextMenu, "menu closed after action");
+
+        let mut state = state_with_workspaces(&["proj"]);
+        apply_context_menu_action(
+            &mut state,
+            &mut terminal_runtimes,
+            repo_pr_menu(),
+            idx("Open in browser"),
+        );
+        assert_eq!(
+            state.request_open_url.as_deref(),
+            Some("https://github.com/owner/proj/pull/42")
+        );
+
+        let mut state = state_with_workspaces(&["proj"]);
+        apply_context_menu_action(
+            &mut state,
+            &mut terminal_runtimes,
+            repo_pr_menu(),
+            idx("Copy URL"),
+        );
+        assert_eq!(
+            state.request_clipboard_write.as_deref(),
+            Some("https://github.com/owner/proj/pull/42".as_bytes())
+        );
     }
 }
