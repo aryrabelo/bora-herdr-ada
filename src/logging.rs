@@ -19,8 +19,10 @@ pub(crate) fn init_file_logging(file_name: &str) {
         return;
     };
 
+    // The crate is `bora` after the fork rebrand; a `herdr=` filter matches no
+    // tracing target and silently disables all default logging.
     let filter =
-        EnvFilter::try_from_env("HERDR_LOG").unwrap_or_else(|_| EnvFilter::new("herdr=info"));
+        EnvFilter::try_from_env("HERDR_LOG").unwrap_or_else(|_| EnvFilter::new("bora=info"));
 
     let _ = tracing_subscriber::fmt()
         .with_env_filter(filter)

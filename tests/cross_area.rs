@@ -192,7 +192,7 @@ fn workspace_create(socket_path: &Path, label: &str) -> Value {
         socket_path,
         "workspace_create",
         "workspace.create",
-        json!({ "label": label }),
+        json!({ "label": label, "focus": true }),
     )
 }
 
