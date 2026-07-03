@@ -1,0 +1,30 @@
+src/workspace.rs
+  s_f4b63c53a51064::t_b0f6f14eb26beb 1115-1124
+src/app/state.rs
+  s_f4b63c53a51064::t_7d90fe636c8f00 1361
+src/app/input/mouse.rs
+  s_f4b63c53a51064::t_8c1954029a8cc8 1183
+src/app/mod.rs
+  s_f4b63c53a51064::t_9f21af99d7839d 1727
+  s_f4b63c53a51064::t_b628c8d9ab8b75 1643-1663,1666,1669,1672,1676-1677,1680-1712,1714-1724
+  s_f4b63c53a51064::t_96fa4784e5a534 3063-3118
+  s_f4b63c53a51064::t_e84fb2ca8c7265 88
+  s_f4b63c53a51064::t_7809f7bf9f278d 1670,1713
+  s_f4b63c53a51064::t_84c6968a080a9d 83-87,89-90
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.9",
+  "base_commit_sha": "9998491881ef32bbd479fee448b504669faf75e8",
+  "prompts": {},
+  "sessions": {
+    "s_f4b63c53a51064": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a9343042-8c45-4055-bb27-ab3c022fce0c",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Ary Rabelo <aryrabelo@gmail.com>"
+    }
+  }
+}
