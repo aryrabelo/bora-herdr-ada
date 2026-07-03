@@ -674,6 +674,38 @@
                 "result"
               ],
               "type": "object"
+            },
+            {
+              "properties": {
+                "repo_identity": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "github_prs_refreshed",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "repo_identity"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "repo_identity": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "github_issues_refreshed",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "repo_identity"
+              ],
+              "type": "object"
             }
           ]
         },
@@ -702,7 +734,9 @@
             "pane_agent_detected",
             "pane_agent_status_changed",
             "layout_updated",
-            "pane_result_reported"
+            "pane_result_reported",
+            "github_prs_refreshed",
+            "github_issues_refreshed"
           ],
           "type": "string"
         },
@@ -1708,6 +1742,28 @@
           "required": [
             "match_event"
           ],
+          "type": "object"
+        },
+        "GithubIssuesListParams": {
+          "properties": {
+            "repo_identity": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        },
+        "GithubPullsListParams": {
+          "properties": {
+            "repo_identity": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
           "type": "object"
         },
         "IntegrationInstallParams": {
@@ -3487,6 +3543,30 @@
                 "type"
               ],
               "type": "object"
+            },
+            {
+              "properties": {
+                "type": {
+                  "const": "github.prs_refreshed",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "type": {
+                  "const": "github.issues_refreshed",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object"
             }
           ]
         },
@@ -5144,6 +5224,38 @@
             "params"
           ],
           "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "github.pulls.list",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/GithubPullsListParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "github.issues.list",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/GithubIssuesListParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
         }
       ],
       "properties": {
@@ -6188,6 +6300,38 @@
                 "result"
               ],
               "type": "object"
+            },
+            {
+              "properties": {
+                "repo_identity": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "github_prs_refreshed",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "repo_identity"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "repo_identity": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "github_issues_refreshed",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "repo_identity"
+              ],
+              "type": "object"
             }
           ]
         },
@@ -6231,9 +6375,109 @@
             "pane_agent_detected",
             "pane_agent_status_changed",
             "layout_updated",
-            "pane_result_reported"
+            "pane_result_reported",
+            "github_prs_refreshed",
+            "github_issues_refreshed"
           ],
           "type": "string"
+        },
+        "GithubIssueInfo": {
+          "properties": {
+            "number": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "title": {
+              "type": "string"
+            },
+            "url": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "number",
+            "title",
+            "url"
+          ],
+          "type": "object"
+        },
+        "GithubPullInfo": {
+          "properties": {
+            "head_ref_name": {
+              "type": "string"
+            },
+            "is_draft": {
+              "type": "boolean"
+            },
+            "number": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "title": {
+              "type": "string"
+            },
+            "url": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "number",
+            "title",
+            "url",
+            "head_ref_name",
+            "is_draft"
+          ],
+          "type": "object"
+        },
+        "GithubRepoIssues": {
+          "properties": {
+            "error": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "issues": {
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/GithubIssueInfo"
+              },
+              "type": "array"
+            },
+            "repo_identity": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "repo_identity",
+            "issues"
+          ],
+          "type": "object"
+        },
+        "GithubRepoPrs": {
+          "properties": {
+            "error": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "prs": {
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/GithubPullInfo"
+              },
+              "type": "array"
+            },
+            "repo_identity": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "repo_identity",
+            "prs"
+          ],
+          "type": "object"
         },
         "InstalledPluginInfo": {
           "properties": {
@@ -8750,6 +8994,44 @@
               },
               "required": [
                 "type"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "repos": {
+                  "items": {
+                    "$ref": "#/schemas/success_response/$defs/GithubRepoPrs"
+                  },
+                  "type": "array"
+                },
+                "type": {
+                  "const": "github_pulls_list",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "repos"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "repos": {
+                  "items": {
+                    "$ref": "#/schemas/success_response/$defs/GithubRepoIssues"
+                  },
+                  "type": "array"
+                },
+                "type": {
+                  "const": "github_issues_list",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "repos"
               ],
               "type": "object"
             }

@@ -29,6 +29,7 @@
 - Added `herdr terminal session control` for bridge processes that need live ANSI frames plus input, resize, scroll, release, and takeover authority.
 - Added `ui.hide_tab_bar_when_single_tab` to hide the tab row when a workspace has one tab. (#448)
 - Added Japanese and Simplified Chinese website docs.
+- Added `github.pulls.list` and `github.issues.list` socket API methods to read cached open pull requests and issues per repo, plus `github.prs_refreshed` and `github.issues_refreshed` events.
 
 ### Changed
 - The mobile switcher now starts from an agents-first summary and renders worktrees as a tree, making narrow terminals easier to scan.

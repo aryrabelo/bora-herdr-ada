@@ -78,8 +78,11 @@ pub enum Subscription {
     PaneScrollChanged { pane_id: String },
     #[serde(rename = "layout.updated")]
     LayoutUpdated {},
+    #[serde(rename = "github.prs_refreshed")]
+    GithubPrsRefreshed {},
+    #[serde(rename = "github.issues_refreshed")]
+    GithubIssuesRefreshed {},
 }
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct EventsWaitParams {
     pub match_event: EventMatch,
@@ -215,6 +218,8 @@ pub enum EventKind {
     PaneAgentStatusChanged,
     LayoutUpdated,
     PaneResultReported,
+    GithubPrsRefreshed,
+    GithubIssuesRefreshed,
 }
 
 impl EventKind {
@@ -244,6 +249,8 @@ impl EventKind {
             EventKind::PaneAgentStatusChanged => "pane.agent_status_changed",
             EventKind::LayoutUpdated => "layout.updated",
             EventKind::PaneResultReported => "pane.result_reported",
+            EventKind::GithubPrsRefreshed => "github.prs_refreshed",
+            EventKind::GithubIssuesRefreshed => "github.issues_refreshed",
         }
     }
 }
@@ -274,6 +281,8 @@ pub const KNOWN_EVENT_KINDS: &[EventKind] = &[
     EventKind::PaneAgentStatusChanged,
     EventKind::LayoutUpdated,
     EventKind::PaneResultReported,
+    EventKind::GithubPrsRefreshed,
+    EventKind::GithubIssuesRefreshed,
 ];
 
 pub const PLUGIN_HOOK_EVENT_KINDS: &[EventKind] = &[
@@ -536,8 +545,13 @@ pub enum EventData {
         workspace_id: String,
         result: serde_json::Value,
     },
+    GithubPrsRefreshed {
+        repo_identity: String,
+    },
+    GithubIssuesRefreshed {
+        repo_identity: String,
+    },
 }
-
 /// Returns whether an emitted `EventEnvelope` satisfies an `events.wait` filter.
 pub fn event_matches(filter: &EventMatch, envelope: &EventEnvelope) -> bool {
     match (filter, &envelope.data) {

@@ -109,6 +109,7 @@ Raw socket method names use dot notation:
 | Events | `events.subscribe`, `events.wait` |
 | Integrations | `integration.install`, `integration.uninstall` |
 | Plugins | `plugin.link`, `plugin.list`, `plugin.unlink`, `plugin.enable`, `plugin.disable`, `plugin.action.list`, `plugin.action.invoke`, `plugin.log.list`, `plugin.pane.open`, `plugin.pane.focus`, `plugin.pane.close` |
+| GitHub | `github.pulls.list`, `github.issues.list` |
 
 Some CLI commands are conveniences around these methods. For example, `herdr agent wait` resolves an agent target and then subscribes to pane agent state events.
 
@@ -654,6 +655,27 @@ updated `PaneLayoutSnapshot` for one tab. Clients that bootstrap with
 Worktree event subscriptions include `worktree.created`, `worktree.opened`, and `worktree.removed`. Worktree events describe Git checkout lifecycle. `worktree.created` includes the opened `workspace` and created `worktree`. `worktree.opened` includes the target `workspace`, opened `worktree`, and `already_open`. `worktree.removed` includes the `workspace_id`, removed `worktree`, and `forced`.
 
 Use `events.subscribe` for lifecycle events. Dedicated wait helpers are documented separately when a one-shot wait is supported.
+
+## GitHub data
+
+Herdr periodically fetches the current user's open pull requests per repo in the background when `[github] enabled = true` (default). Issues are fetched on demand. `github.pulls.list` and `github.issues.list` expose the cached data through the socket API.
+
+List open PRs across all repos:
+
+```json
+{"id":"req_1","method":"github.pulls.list","params":{}}
+```
+
+Filter by a specific repo identity:
+
+```json
+{"id":"req_1","method":"github.pulls.list","params":{"repo_identity":"github.com/owner/repo"}}
+```
+
+Each response returns a `repos` array. Each repo entry includes `repo_identity`, a `prs` (or `issues`) array with `number`, `title`, `url`, and for PRs `head_ref_name` and `is_draft`, plus an optional `error` field when the `gh` CLI failed for that repo. When no data is cached, `repos` is an empty array.
+
+Subscribe to `github.prs_refreshed` and `github.issues_refreshed` to be notified when a background refresh completes. Each event includes the `repo_identity` that was refreshed.
+
 
 ## Reading panes
 
