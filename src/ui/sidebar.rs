@@ -2965,4 +2965,139 @@ mod tests {
         assert_eq!(entry_row_height(&entries[0], &entries, 0), 2);
         assert_eq!(entry_row_height(&entries[1], &entries, 1), 2);
     }
+
+    // Characterization: pins the lockstep entries system for a git repo group
+    // (synthesized project header + branch bracket + members + footer)
+    // followed by a flat workspace. All three lockstep passes (visible-count,
+    // geometry, render) must agree with `entry_row_height` applied to the
+    // same `workspace_list_entries` sequence.
+    #[test]
+    fn workspace_list_lockstep_passes_agree_for_git_repo_group() {
+        let mut app = AppState::test_new();
+        let identity = "github.com/owner/herdr";
+        let mut main = git_space_member("main", "key-main", false);
+        let mut issue = git_space_member("issue", "key-issue", true);
+        for ws in [&mut main, &mut issue] {
+            ws.cached_git_space.as_mut().unwrap().repo_identity = identity.into();
+            ws.cached_git_branch = Some("main".into());
+        }
+        let mut notes = Workspace::test_new("notes");
+        notes.cached_git_branch = None;
+        app.workspaces = vec![main, issue, notes];
+        app.active = Some(0);
+        app.selected = 0;
+        app.mode = Mode::Terminal;
+        app.ensure_test_terminals();
+
+        // Pin the entry variant sequence.
+        let entries = workspace_list_entries(&app);
+        let variants: Vec<&str> = entries
+            .iter()
+            .map(|entry| match entry {
+                WorkspaceListEntry::GroupHeader { .. } => "GroupHeader",
+                WorkspaceListEntry::ProjectHeader { .. } => "ProjectHeader",
+                WorkspaceListEntry::BranchHeader { .. } => "BranchHeader",
+                WorkspaceListEntry::ProjectFooter { .. } => "ProjectFooter",
+                WorkspaceListEntry::Workspace { .. } => "Workspace",
+            })
+            .collect();
+        assert_eq!(
+            variants,
+            [
+                "ProjectHeader",
+                "BranchHeader",
+                "Workspace",
+                "Workspace",
+                "ProjectFooter",
+                "Workspace",
+            ]
+        );
+
+        // Height pass: total rows from the shared per-entry height helper.
+        let total_height: u16 = entries
+            .iter()
+            .enumerate()
+            .map(|(idx, entry)| entry_row_height(entry, &entries, idx))
+            .sum();
+        assert_eq!(total_height, 9, "1+1+2+2+1+2 rows for the pinned sequence");
+
+        // Visible-count pass agrees: a body exactly `total_height` rows tall
+        // shows every entry; one row less drops exactly the last (2-row)
+        // entry. Section area height = body + header rows + footer row.
+        let exact = Rect::new(0, 0, 30, total_height + WORKSPACE_SECTION_HEADER_ROWS + 1);
+        assert_eq!(workspace_list_visible_count(&app, exact, 0), entries.len());
+        let short = Rect::new(0, 0, 30, total_height + WORKSPACE_SECTION_HEADER_ROWS);
+        assert_eq!(
+            workspace_list_visible_count(&app, short, 0),
+            entries.len() - 1
+        );
+
+        // Geometry pass agrees: card/header rects sit at the prefix sums of
+        // `entry_row_height` when the body is tall enough for everything.
+        let sidebar = Rect::new(0, 0, 30, 40);
+        let (cards, headers) = compute_workspace_list_areas(&app, sidebar);
+        let ws_area = workspace_list_rect(sidebar, app.sidebar_section_split);
+        let body = workspace_list_body_rect(ws_area, false);
+        let mut expected_card_ys = Vec::new();
+        let mut expected_header_ys = Vec::new();
+        let mut y = body.y;
+        for (idx, entry) in entries.iter().enumerate() {
+            match entry {
+                WorkspaceListEntry::Workspace { .. } => expected_card_ys.push(y),
+                WorkspaceListEntry::GroupHeader { .. }
+                | WorkspaceListEntry::ProjectHeader { .. } => expected_header_ys.push(y),
+                WorkspaceListEntry::BranchHeader { .. }
+                | WorkspaceListEntry::ProjectFooter { .. } => {}
+            }
+            y += entry_row_height(entry, &entries, idx);
+        }
+        assert_eq!(y - body.y, total_height);
+        assert_eq!(
+            cards.iter().map(|card| card.rect.y).collect::<Vec<_>>(),
+            expected_card_ys
+        );
+        assert_eq!(
+            cards.iter().map(|card| card.ws_idx).collect::<Vec<_>>(),
+            [0, 1, 2]
+        );
+        assert_eq!(
+            headers
+                .iter()
+                .map(|header| header.rect.y)
+                .collect::<Vec<_>>(),
+            expected_header_ys
+        );
+
+        // Render pass agrees: labels land on the same prefix-sum rows in an
+        // exact-fit section area.
+        let mut terminal =
+            Terminal::new(TestBackend::new(exact.width, exact.height)).expect("test terminal");
+        let runtimes = TerminalRuntimeRegistry::new();
+        terminal
+            .draw(|frame| render_workspace_list(&app, &runtimes, frame, exact, false))
+            .expect("workspace list should render");
+        let row_text = |row: u16| -> String {
+            (0..exact.width)
+                .map(|col| terminal.backend().buffer()[(col, row)].symbol().to_string())
+                .collect()
+        };
+        let body_y = WORKSPACE_SECTION_HEADER_ROWS; // exact rect starts at y = 0
+        assert!(
+            row_text(body_y).contains("herdr"),
+            "project header row: {:?}",
+            row_text(body_y)
+        );
+        assert!(
+            row_text(body_y + 7).contains("notes"),
+            "flat workspace card first row: {:?}",
+            row_text(body_y + 7)
+        );
+
+        // Invariants gate for the state used above, so later field additions
+        // keep passing through this check.
+        app.assert_invariants_for_test();
+        for ws in &app.workspaces {
+            ws.assert_invariants_for_test();
+        }
+    }
 }
