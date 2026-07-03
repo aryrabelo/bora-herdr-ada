@@ -1174,6 +1174,17 @@ impl App {
         }
     }
 
+    /// Open a PR from the sidebar PR section in a new worktree.
+    // Phase 3 replaces this body with a worktree.create dispatch carrying the PR.
+    pub(crate) fn start_pr_worktree_create(&mut self, ws_idx: usize, number: u64) {
+        tracing::warn!(ws_idx, number, "worktree.create pr param not wired yet");
+        self.show_worktree_op_toast(
+            crate::app::state::ToastKind::NeedsAttention,
+            "open PR in worktree",
+            format!("#{number}: not available yet"),
+        );
+    }
+
     /// Workspace ids whose cached branch equals `branch`. Targets an immediate
     /// checks refresh when a PR is opened for that branch.
     pub(crate) fn workspace_ids_on_branch(&self, branch: &str) -> Vec<String> {

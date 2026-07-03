@@ -585,6 +585,14 @@ pub struct GroupHeaderCardArea {
     pub rect: Rect,
 }
 
+/// Layout area for an open-PR row in the sidebar workspace list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SidebarPrRowArea {
+    pub rect: Rect,
+    pub repo_identity: String,
+    pub pr_idx: usize,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorktreeCreateState {
     pub source_workspace_id: String,
@@ -743,6 +751,7 @@ pub struct ViewState {
     pub sidebar_rect: Rect,
     pub workspace_card_areas: Vec<WorkspaceCardArea>,
     pub workspace_group_header_areas: Vec<GroupHeaderCardArea>,
+    pub sidebar_pr_row_areas: Vec<SidebarPrRowArea>,
     pub tab_bar_rect: Rect,
     pub tab_hit_areas: Vec<Rect>,
     pub tab_scroll_left_hit_area: Rect,
@@ -1151,6 +1160,14 @@ pub enum ContextMenuKind {
         source_pane_id: Option<PaneId>,
         has_manual_label: bool,
     },
+    /// An open PR row in the sidebar. `ws_idx` is a representative workspace
+    /// of the repo group, resolved at click time.
+    RepoPr {
+        ws_idx: usize,
+        number: u64,
+        url: String,
+        head_ref: String,
+    },
 }
 
 /// Right-click context menu state.
@@ -1346,6 +1363,12 @@ pub fn build_context_menu_items(
             "Zoom".to_string(),
             "Close pane".to_string(),
         ],
+        ContextMenuKind::RepoPr { .. } => vec![
+            "Open in worktree".to_string(),
+            sep(),
+            "Open in browser".to_string(),
+            "Copy URL".to_string(),
+        ],
     }
 }
 
@@ -1486,6 +1509,11 @@ pub struct AppState {
     /// Set when UI interaction requested a clipboard write that must be
     /// handled by the outer App/event loop instead of directly from AppState.
     pub request_clipboard_write: Option<Vec<u8>>,
+    /// Set when UI interaction asked to open a URL in the system browser.
+    pub request_open_url: Option<String>,
+    /// Set when UI interaction asked to open a PR in a new worktree:
+    /// (representative workspace index of the repo group, PR number).
+    pub request_open_pr_worktree: Option<(usize, u64)>,
     pub pending_bora_command: Option<PendingBoraCommand>,
     /// Transient port override consumed by custom_command_env for pane commands.
     pub bora_port_override: Option<u16>,
@@ -1866,6 +1894,8 @@ impl AppState {
             request_reload_config: false,
             request_client_config_reload: false,
             request_clipboard_write: None,
+            request_open_url: None,
+            request_open_pr_worktree: None,
             pending_bora_command: None,
             bora_port_override: None,
             creating_new_tab: false,
@@ -1894,6 +1924,7 @@ impl AppState {
                 sidebar_rect: Rect::default(),
                 workspace_card_areas: Vec::new(),
                 workspace_group_header_areas: Vec::new(),
+                sidebar_pr_row_areas: Vec::new(),
                 tab_bar_rect: Rect::default(),
                 tab_hit_areas: Vec::new(),
                 tab_scroll_left_hit_area: Rect::default(),
@@ -2330,6 +2361,9 @@ impl AppState {
                     if let Some(source_pane_id) = source_pane_id {
                         assert_live_pane(source_pane_id, "context menu source pane");
                     }
+                }
+                ContextMenuKind::RepoPr { ws_idx, .. } => {
+                    assert_workspace_index(ws_idx, "context menu repo pr")
                 }
             }
         }

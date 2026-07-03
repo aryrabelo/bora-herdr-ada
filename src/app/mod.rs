@@ -557,6 +557,8 @@ impl App {
             request_reload_config: false,
             request_client_config_reload: false,
             request_clipboard_write: None,
+            request_open_url: None,
+            request_open_pr_worktree: None,
             pending_bora_command: None,
             bora_port_override: None,
             creating_new_tab: false,
@@ -594,6 +596,7 @@ impl App {
                 sidebar_rect: Rect::default(),
                 workspace_card_areas: Vec::new(),
                 workspace_group_header_areas: Vec::new(),
+                sidebar_pr_row_areas: Vec::new(),
                 tab_bar_rect: Rect::default(),
                 tab_hit_areas: Vec::new(),
                 tab_scroll_left_hit_area: Rect::default(),
@@ -1051,6 +1054,20 @@ impl App {
 
             if let Some(ws_idx) = self.state.request_open_worktree_pr.take() {
                 self.start_worktree_open_pr(ws_idx);
+                needs_render = true;
+            }
+
+            if let Some(url) = self.state.request_open_url.take() {
+                // Client-bound behavior: opening a browser must move to a
+                // client-forwarded action when remote TUI clients land.
+                if let Err(error) = crate::platform::open_url(&url) {
+                    tracing::warn!(%url, %error, "failed to open url in browser");
+                }
+                needs_render = true;
+            }
+
+            if let Some((ws_idx, number)) = self.state.request_open_pr_worktree.take() {
+                self.start_pr_worktree_create(ws_idx, number);
                 needs_render = true;
             }
 
