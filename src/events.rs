@@ -8,7 +8,8 @@ use std::time::Instant;
 use crate::detect::{Agent, AgentState};
 use crate::layout::PaneId;
 use crate::workspace::{
-    GitStatusCacheEntry, RepoIssues, RepoOpenPrs, WorkspaceCheckStatus, WorkspaceGitStatus,
+    GitStatusCacheEntry, RepoBranches, RepoIssues, RepoOpenPrs, WorkspaceCheckStatus,
+    WorkspaceGitStatus,
 };
 
 #[derive(Debug)]
@@ -188,5 +189,10 @@ pub enum AppEvent {
     RepoIssuesRefreshed {
         repo_identity: String,
         result: RepoIssues,
+    },
+    /// Background `git for-each-ref` for a repo completed.
+    RepoBranchesRefreshed {
+        repo_identity: String,
+        result: RepoBranches,
     },
 }
