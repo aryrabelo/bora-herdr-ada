@@ -766,6 +766,10 @@ mod tests {
             checkout_path: "/repo/herdr-generated-branch".into(),
             error: None,
             creating: false,
+            active_tab: crate::app::state::WorktreeCreateTab::Name,
+            repo_identity: String::new(),
+            github_pick: crate::app::state::WorktreeListPick::default(),
+            branch_pick: crate::app::state::WorktreeListPick::default(),
         });
 
         app.handle_paste("feature/linear-302".into()).await;

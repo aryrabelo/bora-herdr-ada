@@ -782,6 +782,29 @@ impl App {
             });
         });
     }
+
+    /// Trigger a lazy background fetch of local branches for one repo. The
+    /// result is delivered via `AppEvent::RepoBranchesRefreshed` into the
+    /// `repo_branches` cache. No-op while a fetch for the same repo is already
+    /// in flight. Unlike PR/issue fetches this is a pure local git fact and is
+    /// not gated on `[github] enabled`.
+    pub(crate) fn start_branches_fetch(&mut self, repo_identity: String, cwd: std::path::PathBuf) {
+        if !self
+            .state
+            .branches_fetch_in_flight
+            .insert(repo_identity.clone())
+        {
+            return;
+        }
+        let event_tx = self.event_tx.clone();
+        std::thread::spawn(move || {
+            let result = crate::workspace::fetch_local_branches(&cwd);
+            let _ = event_tx.blocking_send(AppEvent::RepoBranchesRefreshed {
+                repo_identity,
+                result,
+            });
+        });
+    }
 }
 
 pub(crate) fn deduplicate_git_refresh_items(

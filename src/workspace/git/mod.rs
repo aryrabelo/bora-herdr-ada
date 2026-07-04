@@ -1,3 +1,4 @@
+mod branches;
 mod change_set;
 mod check_status;
 mod config;
@@ -13,6 +14,7 @@ mod test_support;
 #[cfg(test)]
 pub(crate) use self::check_status::PrSummary;
 pub use self::{
+    branches::{fetch_local_branches, RepoBranch, RepoBranches},
     change_set::{ChangeSectionKind, ChangeStatus, WorkspaceChangeSet},
     check_status::{fetch_check_status, WorkspaceCheckStatus},
     discovery::{derive_label_from_cwd, git_branch, git_space_metadata, GitSpaceMetadata},

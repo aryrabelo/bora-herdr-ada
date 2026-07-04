@@ -262,6 +262,79 @@ impl AppState {
                     if let Some(inner) =
                         crate::ui::new_linked_worktree_inner_rect(self.screen_rect())
                     {
+                        use crate::app::state::WorktreeCreateTab;
+                        // Tab-strip click switches the active tab.
+                        let tab_rects = crate::ui::create_worktree_tab_rects(inner);
+                        for (rect, tab) in tab_rects.iter().zip([
+                            WorktreeCreateTab::Github,
+                            WorktreeCreateTab::Branch,
+                            WorktreeCreateTab::Name,
+                        ]) {
+                            if mouse.row == rect.y
+                                && mouse.column >= rect.x
+                                && mouse.column < rect.x + rect.width
+                            {
+                                if let Some(create) = self.worktree_create.as_mut() {
+                                    create.active_tab = tab;
+                                }
+                                return None;
+                            }
+                        }
+                        // List-row click selects the row on the list tabs.
+                        if let Some(tab) = self.worktree_create.as_ref().map(|c| c.active_tab) {
+                            let entries_len = match tab {
+                                WorktreeCreateTab::Github => {
+                                    self.create_worktree_github_entries().len()
+                                }
+                                WorktreeCreateTab::Branch => {
+                                    self.create_worktree_branch_entries().len()
+                                }
+                                WorktreeCreateTab::Name => 0,
+                            };
+                            if entries_len > 0 {
+                                let selected = self
+                                    .worktree_create
+                                    .as_ref()
+                                    .map(|c| match tab {
+                                        WorktreeCreateTab::Github => c.github_pick.selected,
+                                        WorktreeCreateTab::Branch => c.branch_pick.selected,
+                                        WorktreeCreateTab::Name => 0,
+                                    })
+                                    .unwrap_or(0)
+                                    .min(entries_len - 1);
+                                let max_rows = crate::ui::create_worktree_list_visible_rows(inner);
+                                let start = crate::ui::create_worktree_list_start(
+                                    selected,
+                                    entries_len,
+                                    max_rows,
+                                );
+                                let visible = max_rows.min(entries_len - start);
+                                for visible_idx in 0..visible {
+                                    let row = crate::ui::create_worktree_list_row_rect(
+                                        inner,
+                                        visible_idx,
+                                    );
+                                    if mouse.row == row.y
+                                        && mouse.column >= row.x
+                                        && mouse.column < row.x + row.width
+                                    {
+                                        let idx = start + visible_idx;
+                                        if let Some(create) = self.worktree_create.as_mut() {
+                                            match tab {
+                                                WorktreeCreateTab::Github => {
+                                                    create.github_pick.selected = idx
+                                                }
+                                                WorktreeCreateTab::Branch => {
+                                                    create.branch_pick.selected = idx
+                                                }
+                                                WorktreeCreateTab::Name => {}
+                                            }
+                                        }
+                                        return None;
+                                    }
+                                }
+                            }
+                        }
                         let (create, cancel) = crate::ui::new_linked_worktree_button_rects(inner);
                         match modal_action_from_buttons(
                             mouse.column,
@@ -663,6 +736,18 @@ impl AppState {
                     } else {
                         self.view.workspace_card_areas.clone()
                     };
+                    // The "+" affordance on a repo header row opens the Create
+                    // worktree modal; checked before the header collapse hit so
+                    // it wins over toggling the row's collapse state.
+                    for hit in &self.view.worktree_new_hit_areas.clone() {
+                        if mouse.row == hit.rect.y
+                            && mouse.column >= hit.rect.x
+                            && mouse.column < hit.rect.x + hit.rect.width
+                        {
+                            self.request_open_create_worktree = Some(hit.repo_identity.clone());
+                            return None;
+                        }
+                    }
                     // Check for clicks on visual group headers.
                     for header in &self.view.workspace_group_header_areas.clone() {
                         if mouse.row == header.rect.y
@@ -4457,6 +4542,43 @@ mod tests {
             other => panic!("expected RepoPr context menu, got {other:?}"),
         }
 
+        app.state.assert_invariants_for_test();
+    }
+
+    #[tokio::test]
+    async fn sidebar_repo_header_plus_click_requests_create_worktree_modal() {
+        let mut app = app_for_mouse_test();
+        let identity = "github.com/owner/proj".to_string();
+        app.state
+            .workspaces
+            .push(crate::workspace::Workspace::test_new("proj"));
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.ensure_test_terminals();
+        app.state.workspaces[0].cached_git_space = Some(crate::workspace::GitSpaceMetadata {
+            key: "key-p".into(),
+            repo_identity: identity.clone(),
+            checkout_key: "/repo/proj".into(),
+            label: "proj".into(),
+            repo_root: std::path::PathBuf::from("/repo/proj"),
+            is_linked_worktree: false,
+        });
+        let plus_rect = ratatui::layout::Rect::new(3, 5, 3, 1);
+        app.state.view.worktree_new_hit_areas = vec![crate::app::state::WorktreeNewHitArea {
+            repo_identity: identity.clone(),
+            rect: plus_rect,
+        }];
+
+        app.state.handle_mouse(
+            &mut app.terminal_runtimes,
+            mouse(
+                MouseEventKind::Down(MouseButton::Left),
+                plus_rect.x + 1,
+                plus_rect.y,
+            ),
+        );
+
+        assert_eq!(app.state.request_open_create_worktree, Some(identity));
         app.state.assert_invariants_for_test();
     }
 }

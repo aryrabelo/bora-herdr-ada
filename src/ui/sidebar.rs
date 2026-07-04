@@ -385,6 +385,26 @@ pub(crate) fn pr_section_collapse_key(repo_identity: &str) -> String {
     format!("prs:{repo_identity}")
 }
 
+/// Derive the repo-header "+" (create worktree) hit areas from the sidebar
+/// group-header areas: only headers whose collapse key is a raw repo identity
+/// (not a `vg:` visual group or `prs:` PR section) get a 3-cell "+" at the
+/// row's trailing edge. Shared by `compute_view` and mouse hit-testing.
+pub(crate) fn worktree_new_hit_areas_from_headers(
+    headers: &[crate::app::state::GroupHeaderCardArea],
+) -> Vec<crate::app::state::WorktreeNewHitArea> {
+    headers
+        .iter()
+        .filter(|header| {
+            !header.collapse_key.starts_with("vg:") && !header.collapse_key.starts_with("prs:")
+        })
+        .filter(|header| header.rect.width >= 3)
+        .map(|header| crate::app::state::WorktreeNewHitArea {
+            repo_identity: header.collapse_key.clone(),
+            rect: Rect::new(header.rect.x + header.rect.width - 3, header.rect.y, 3, 1),
+        })
+        .collect()
+}
+
 /// Shared row-height for a single entry. ALL three lockstep passes
 /// (`workspace_list_visible_count`, `compute_workspace_list_areas`,
 /// `render_workspace_list`) MUST call this. Never duplicate height logic.
@@ -1254,6 +1274,16 @@ fn render_workspace_list(
                         Paragraph::new(Line::from(spans)),
                         Rect::new(body.x, row_y, body.width, 1),
                     );
+                    if app.mouse_capture
+                        && body.width >= 3
+                        && !collapse_key.starts_with("vg:")
+                        && !collapse_key.starts_with("prs:")
+                    {
+                        frame.render_widget(
+                            Paragraph::new(" + ").style(Style::default().fg(p.overlay1)),
+                            Rect::new(body.x + body.width - 3, row_y, 3, 1),
+                        );
+                    }
                 }
             }
             WorkspaceListEntry::ProjectHeader {
@@ -1279,6 +1309,12 @@ fn render_workspace_list(
                         Paragraph::new(Line::from(spans)),
                         Rect::new(body.x, row_y, body.width, 1),
                     );
+                    if app.mouse_capture && body.width >= 3 {
+                        frame.render_widget(
+                            Paragraph::new(" + ").style(Style::default().fg(p.overlay1)),
+                            Rect::new(body.x + body.width - 3, row_y, 3, 1),
+                        );
+                    }
                 }
             }
             WorkspaceListEntry::BranchHeader {
@@ -1745,6 +1781,31 @@ mod tests {
     use super::*;
     use crate::{detect::Agent, workspace::Workspace};
     use ratatui::{backend::TestBackend, Terminal};
+
+    #[test]
+    fn worktree_new_hit_areas_only_for_repo_headers() {
+        let headers = vec![
+            crate::app::state::GroupHeaderCardArea {
+                name: "herdr".into(),
+                collapse_key: "github.com/owner/herdr".into(),
+                rect: Rect::new(0, 0, 26, 1),
+            },
+            crate::app::state::GroupHeaderCardArea {
+                name: "mygroup".into(),
+                collapse_key: "vg:mygroup".into(),
+                rect: Rect::new(0, 1, 26, 1),
+            },
+            crate::app::state::GroupHeaderCardArea {
+                name: "pull requests".into(),
+                collapse_key: "prs:github.com/owner/herdr".into(),
+                rect: Rect::new(0, 2, 26, 1),
+            },
+        ];
+        let hits = worktree_new_hit_areas_from_headers(&headers);
+        assert_eq!(hits.len(), 1, "only the repo ProjectHeader gets a +");
+        assert_eq!(hits[0].repo_identity, "github.com/owner/herdr");
+        assert_eq!(hits[0].rect, Rect::new(23, 0, 3, 1));
+    }
 
     #[test]
     fn render_sidebar_toggle_draws_expanded_collapse_icon() {

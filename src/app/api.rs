@@ -166,6 +166,18 @@ impl App {
             return;
         }
 
+        if let AppEvent::RepoBranchesRefreshed {
+            repo_identity,
+            result,
+        } = ev
+        {
+            self.state.branches_fetch_in_flight.remove(&repo_identity);
+            self.state.repo_branches.insert(repo_identity, result);
+            self.render_dirty.store(true, Ordering::Release);
+            self.render_notify.notify_one();
+            return;
+        }
+
         if let AppEvent::PluginCommandFinished {
             log_id,
             finished_unix_ms,

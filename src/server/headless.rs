@@ -651,6 +651,12 @@ impl HeadlessServer {
             crate::render_prof::event("full_render_cause.deferred_worktree_dialog");
         }
 
+        if let Some(repo_identity) = self.app.state.request_open_create_worktree.take() {
+            self.app.open_create_worktree_modal(&repo_identity);
+            needs_render = true;
+            crate::render_prof::event("full_render_cause.deferred_worktree_dialog");
+        }
+
         if let Some(ws_idx) = self.app.state.request_open_existing_worktree.take() {
             self.app.open_existing_worktree_dialog(ws_idx);
             needs_render = true;
@@ -701,7 +707,7 @@ impl HeadlessServer {
 
         if self.app.state.request_submit_worktree_create {
             self.app.state.request_submit_worktree_create = false;
-            self.app.submit_worktree_create_via_api();
+            self.app.submit_worktree_create_current();
             needs_render = true;
             crate::render_prof::event("full_render_cause.deferred_worktree_submit");
         }
