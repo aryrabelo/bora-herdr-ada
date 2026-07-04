@@ -60,11 +60,12 @@ use self::status::{
 use self::tabs::render_tab_bar;
 pub(crate) use self::{
     dialogs::{
-        confirm_close_button_rects, confirm_close_popup_rect, new_linked_worktree_button_rects,
-        new_linked_worktree_inner_rect, open_existing_worktree_button_rects,
-        open_existing_worktree_inner_rect, open_existing_worktree_max_visible_rows,
-        open_existing_worktree_visible_start, remove_worktree_button_rects,
-        remove_worktree_popup_rect, rename_button_rects,
+        confirm_close_button_rects, confirm_close_popup_rect, create_worktree_list_row_rect,
+        create_worktree_list_start, create_worktree_list_visible_rows, create_worktree_tab_rects,
+        new_linked_worktree_button_rects, new_linked_worktree_inner_rect,
+        open_existing_worktree_button_rects, open_existing_worktree_inner_rect,
+        open_existing_worktree_max_visible_rows, open_existing_worktree_visible_start,
+        remove_worktree_button_rects, remove_worktree_popup_rect, rename_button_rects,
     },
     settings::{
         settings_button_rects, settings_popup_height, settings_show_primary_action,
@@ -331,12 +332,16 @@ fn compute_view_internal(
         })
         .unwrap_or_default();
 
+    let worktree_new_hit_areas =
+        sidebar::worktree_new_hit_areas_from_headers(&workspace_group_header_areas);
+
     app.view = crate::app::ViewState {
         layout: ViewLayout::Desktop,
         sidebar_rect: sidebar_area,
         workspace_card_areas,
         workspace_group_header_areas,
         sidebar_pr_row_areas,
+        worktree_new_hit_areas,
         tab_bar_rect,
         tab_hit_areas: tab_bar_view.tab_hit_areas,
         tab_scroll_left_hit_area: tab_bar_view.scroll_left_hit_area,
@@ -413,6 +418,7 @@ fn compute_mobile_view(
         workspace_card_areas: Vec::new(),
         workspace_group_header_areas: Vec::new(),
         sidebar_pr_row_areas: Vec::new(),
+        worktree_new_hit_areas: Vec::new(),
         tab_bar_rect: Rect::default(),
         tab_hit_areas: Vec::new(),
         tab_scroll_left_hit_area: Rect::default(),

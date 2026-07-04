@@ -569,6 +569,7 @@ impl App {
             request_open_url: None,
             request_open_pr_worktree: None,
             request_flow_run: None,
+            request_open_create_worktree: None,
             pending_bora_command: None,
             bora_port_override: None,
             creating_new_tab: false,
@@ -608,6 +609,7 @@ impl App {
                 workspace_card_areas: Vec::new(),
                 workspace_group_header_areas: Vec::new(),
                 sidebar_pr_row_areas: Vec::new(),
+                worktree_new_hit_areas: Vec::new(),
                 tab_bar_rect: Rect::default(),
                 tab_hit_areas: Vec::new(),
                 tab_scroll_left_hit_area: Rect::default(),
@@ -722,6 +724,8 @@ impl App {
             repo_open_prs: HashMap::new(),
             repo_issues: HashMap::new(),
             issues_fetch_in_flight: std::collections::HashSet::new(),
+            repo_branches: HashMap::new(),
+            branches_fetch_in_flight: std::collections::HashSet::new(),
             terminal_runtime_shutdowns: Vec::new(),
         };
 
@@ -1036,6 +1040,11 @@ impl App {
                 needs_render = true;
             }
 
+            if let Some(repo_identity) = self.state.request_open_create_worktree.take() {
+                self.open_create_worktree_modal(&repo_identity);
+                needs_render = true;
+            }
+
             if let Some(ws_idx) = self.state.request_open_existing_worktree.take() {
                 self.open_existing_worktree_dialog(ws_idx);
                 needs_render = true;
@@ -1096,7 +1105,7 @@ impl App {
 
             if self.state.request_submit_worktree_create {
                 self.state.request_submit_worktree_create = false;
-                self.submit_worktree_create_via_api();
+                self.submit_worktree_create_current();
                 needs_render = true;
             }
 
@@ -5532,6 +5541,10 @@ last_pane = "prefix+tab"
             checkout_path: "/repo/herdr-generated-branch".into(),
             error: None,
             creating: false,
+            active_tab: crate::app::state::WorktreeCreateTab::Name,
+            repo_identity: String::new(),
+            github_pick: crate::app::state::WorktreeListPick::default(),
+            branch_pick: crate::app::state::WorktreeListPick::default(),
         });
 
         app.route_client_events(

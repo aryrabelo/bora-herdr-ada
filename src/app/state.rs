@@ -593,6 +593,33 @@ pub struct SidebarPrRowArea {
     pub pr_idx: usize,
 }
 
+/// Layout area for the "+" (create worktree) affordance on a repo header row
+/// in the sidebar workspace list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorktreeNewHitArea {
+    pub repo_identity: String,
+    pub rect: Rect,
+}
+
+/// Which tab the Create worktree modal is showing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WorktreeCreateTab {
+    #[default]
+    Github,
+    Branch,
+    Name,
+}
+
+/// Filter query + selection index for one of the modal's derived lists
+/// (GitHub picks, local branches). The entries themselves are derived at
+/// render/input time from the repo caches, so only the query and cursor live
+/// here.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WorktreeListPick {
+    pub query: String,
+    pub selected: usize,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorktreeCreateState {
     pub source_workspace_id: String,
@@ -605,6 +632,37 @@ pub struct WorktreeCreateState {
     pub checkout_path: std::path::PathBuf,
     pub error: Option<String>,
     pub creating: bool,
+    /// Which tab is active in the Create worktree modal.
+    pub active_tab: WorktreeCreateTab,
+    /// Repo identity (`GitSpaceMetadata.repo_identity`) used to key the
+    /// `repo_open_prs` / `repo_issues` / `repo_branches` caches for this modal.
+    pub repo_identity: String,
+    /// Query + selection for the GitHub tab's merged PR/issue list.
+    pub github_pick: WorktreeListPick,
+    /// Query + selection for the Branch tab's local-branch list.
+    pub branch_pick: WorktreeListPick,
+}
+
+/// Whether a GitHub pick row is a pull request or an issue.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GithubPickKind {
+    Pr,
+    Issue,
+}
+
+/// A row in the Create worktree modal's GitHub tab — derived by merging the
+/// repo's cached open PRs (first) and issues (second).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GithubPickEntry {
+    pub kind: GithubPickKind,
+    pub number: u64,
+    pub title: String,
+    pub url: String,
+    /// PR head branch, when known (PRs only).
+    pub head_ref: Option<String>,
+    /// Whether selecting the row does anything. Issue rows are disabled when
+    /// no `[flow]` command is configured.
+    pub enabled: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -752,6 +810,7 @@ pub struct ViewState {
     pub workspace_card_areas: Vec<WorkspaceCardArea>,
     pub workspace_group_header_areas: Vec<GroupHeaderCardArea>,
     pub sidebar_pr_row_areas: Vec<SidebarPrRowArea>,
+    pub worktree_new_hit_areas: Vec<WorktreeNewHitArea>,
     pub tab_bar_rect: Rect,
     pub tab_hit_areas: Vec<Rect>,
     pub tab_scroll_left_hit_area: Rect,
@@ -1417,6 +1476,74 @@ impl AppState {
             self.flow_command_template.as_deref(),
         )
     }
+
+    /// Merged GitHub picks for the Create worktree modal: open PRs first, then
+    /// issues, filtered by the GitHub tab query (case-insensitive over
+    /// `#<number>` and title). Empty when no modal is open. Issue rows are only
+    /// enabled when a `[flow]` command is configured.
+    pub(crate) fn create_worktree_github_entries(&self) -> Vec<GithubPickEntry> {
+        let Some(create) = self.worktree_create.as_ref() else {
+            return Vec::new();
+        };
+        let query = create.github_pick.query.trim().to_lowercase();
+        let matches = |number: u64, title: &str| {
+            query.is_empty()
+                || format!("#{number}").contains(&query)
+                || title.to_lowercase().contains(&query)
+        };
+        let issues_enabled = self.repo_issue_flow_template().is_some();
+        let mut entries = Vec::new();
+        if let Some(prs) = self.repo_open_prs.get(&create.repo_identity) {
+            for pr in &prs.prs {
+                if matches(pr.number, &pr.title) {
+                    entries.push(GithubPickEntry {
+                        kind: GithubPickKind::Pr,
+                        number: pr.number,
+                        title: pr.title.clone(),
+                        url: pr.url.clone(),
+                        head_ref: Some(pr.head_ref_name.clone()),
+                        enabled: true,
+                    });
+                }
+            }
+        }
+        if let Some(issues) = self.repo_issues.get(&create.repo_identity) {
+            for issue in &issues.issues {
+                if matches(issue.number, &issue.title) {
+                    entries.push(GithubPickEntry {
+                        kind: GithubPickKind::Issue,
+                        number: issue.number,
+                        title: issue.title.clone(),
+                        url: issue.url.clone(),
+                        head_ref: None,
+                        enabled: issues_enabled,
+                    });
+                }
+            }
+        }
+        entries
+    }
+
+    /// Local branches for the Create worktree modal's Branch tab, filtered by
+    /// the Branch tab query (case-insensitive substring over the name). Empty
+    /// when no modal is open or the branch cache is unpopulated.
+    pub(crate) fn create_worktree_branch_entries(&self) -> Vec<crate::workspace::RepoBranch> {
+        let Some(create) = self.worktree_create.as_ref() else {
+            return Vec::new();
+        };
+        let query = create.branch_pick.query.trim().to_lowercase();
+        self.repo_branches
+            .get(&create.repo_identity)
+            .map(|branches| {
+                branches
+                    .branches
+                    .iter()
+                    .filter(|b| query.is_empty() || b.name.to_lowercase().contains(&query))
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
 }
 
 /// A request to run the configured flow command for a GitHub issue, set by
@@ -1566,6 +1693,10 @@ pub struct AppState {
     /// Set when UI interaction asked to run the configured flow command for
     /// a GitHub issue; drained by App to spawn the flow pane.
     pub request_flow_run: Option<FlowRunRequest>,
+    /// Set when the sidebar "+" affordance asked to open the Create worktree
+    /// modal for a repo (by `repo_identity`); drained by App to trigger fetches
+    /// and open the modal so the mouse handler stays side-effect-light.
+    pub request_open_create_worktree: Option<String>,
     pub pending_bora_command: Option<PendingBoraCommand>,
     /// Transient port override consumed by custom_command_env for pane commands.
     pub bora_port_override: Option<u16>,
@@ -1732,6 +1863,13 @@ pub struct AppState {
     /// against overlapping fetches from rapid tab toggling and lets the
     /// Issues tab render a loading state; cleared on `RepoIssuesRefreshed`.
     pub issues_fetch_in_flight: std::collections::HashSet<String>,
+    /// Cached local branches per repo identity
+    /// (`GitSpaceMetadata.repo_identity`). Written by on-demand background
+    /// fetches; read by the Create worktree modal's Branch tab.
+    pub repo_branches: std::collections::HashMap<String, crate::workspace::RepoBranches>,
+    /// Repo identities with a branch fetch currently in flight. Guards against
+    /// overlapping fetches; cleared on `RepoBranchesRefreshed`.
+    pub branches_fetch_in_flight: std::collections::HashSet<String>,
     /// Terminal runtimes that should be shut down by the app/runtime layer
     /// after state has detached their terminal metadata.
     pub(crate) terminal_runtime_shutdowns: Vec<crate::terminal::TerminalId>,
@@ -1958,6 +2096,7 @@ impl AppState {
             request_open_url: None,
             request_open_pr_worktree: None,
             request_flow_run: None,
+            request_open_create_worktree: None,
             pending_bora_command: None,
             bora_port_override: None,
             creating_new_tab: false,
@@ -1988,6 +2127,7 @@ impl AppState {
                 workspace_card_areas: Vec::new(),
                 workspace_group_header_areas: Vec::new(),
                 sidebar_pr_row_areas: Vec::new(),
+                worktree_new_hit_areas: Vec::new(),
                 tab_bar_rect: Rect::default(),
                 tab_hit_areas: Vec::new(),
                 tab_scroll_left_hit_area: Rect::default(),
@@ -2110,6 +2250,8 @@ impl AppState {
             repo_open_prs: std::collections::HashMap::new(),
             repo_issues: std::collections::HashMap::new(),
             issues_fetch_in_flight: std::collections::HashSet::new(),
+            repo_branches: std::collections::HashMap::new(),
+            branches_fetch_in_flight: std::collections::HashSet::new(),
             terminal_runtime_shutdowns: Vec::new(),
         }
     }

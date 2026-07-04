@@ -92,6 +92,14 @@ Herdr creates checkouts under `<directory>/<repo>/<branch-slug>`. For sibling-st
 
 Worktree actions are available from Git workspace rows. `New worktree` creates a checkout, checks out an existing local branch when the entered branch already exists, otherwise creates the branch, opens it as a new Herdr workspace, and groups it under the source workspace. `Open worktree...` lists existing Git worktree checkouts for that repo; choosing an already-open checkout focuses it, and choosing a closed checkout opens it in the same group.
 
+Each repo header row in the sidebar shows a `+` (create worktree) button. Clicking it opens the **Create worktree** modal, the primary way to start a worktree. The modal has **GitHub / Branch / Name** tabs (switch by clicking a tab or pressing `Tab`):
+
+- **GitHub** lists the repo's open pull requests and issues. Choosing a pull request creates or opens its worktree; choosing an issue runs the configured `[flow]` command. Issue rows are disabled with a hint when no `[flow]` command is set.
+- **Branch** checks out an existing local branch into a new worktree.
+- **Name** creates a fresh branch — the classic single-field behavior.
+
+The `new_worktree` keybind and the Git workspace context-menu `New worktree` entry still open the same modal.
+
 Grouped worktrees still behave like normal Herdr workspaces: they can be focused, renamed, closed, and contain their own tabs and panes. The parent row is the original workspace. Closing the parent row closes the whole Herdr group, but it does not delete checkout folders or branches.
 
 Deleting a worktree checkout is explicit. Use `Delete worktree checkout...` on a grouped child workspace to run `git worktree remove`. Herdr first asks Git to remove safely. If Git refuses because the checkout has modified or untracked files, Herdr asks again before running the forced remove. Branches are not deleted.
