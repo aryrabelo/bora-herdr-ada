@@ -719,6 +719,7 @@ impl App {
             repo_open_prs: HashMap::new(),
             repo_issues: HashMap::new(),
             issues_fetch_in_flight: std::collections::HashSet::new(),
+            prs_fetch_in_flight: std::collections::HashSet::new(),
             repo_branches: HashMap::new(),
             branches_fetch_in_flight: std::collections::HashSet::new(),
             terminal_runtime_shutdowns: Vec::new(),
@@ -2485,6 +2486,37 @@ mod tests {
         // Delivering the result clears the guard so later requests fetch again.
         app.handle_internal_event(first);
         assert!(!app.state.issues_fetch_in_flight.contains(&identity));
+    }
+
+    #[test]
+    fn prs_fetch_in_flight_guard_dedupes_and_clears_on_event() {
+        let mut app = test_app();
+        let identity = "github.com/owner/repo".to_string();
+        let cwd = std::path::PathBuf::from("/nonexistent/bora-prs-fetch-test");
+
+        app.start_open_prs_fetch(identity.clone(), cwd.clone());
+        assert!(app.state.prs_fetch_in_flight.contains(&identity));
+
+        // A second request for the same repo while the first is pending is a
+        // no-op: only the first fetch delivers a result event.
+        app.start_open_prs_fetch(identity.clone(), cwd);
+
+        let first = app.event_rx.blocking_recv().expect("fetch result event");
+        assert!(matches!(first, AppEvent::RepoPrsRefreshed { .. }));
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(
+            matches!(
+                app.event_rx.try_recv(),
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+            ),
+            "deduplicated second call must not spawn another fetch"
+        );
+
+        // Delivering the result clears the guard without corrupting the batch
+        // flag (never set for this on-demand fetch).
+        app.handle_internal_event(first);
+        assert!(!app.state.prs_fetch_in_flight.contains(&identity));
+        assert!(!app.open_prs_refresh_in_flight);
     }
 
     #[test]

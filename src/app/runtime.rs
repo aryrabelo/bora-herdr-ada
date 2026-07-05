@@ -783,6 +783,29 @@ impl App {
         });
     }
 
+    /// Force an immediate background fetch of the current user's open PRs for
+    /// one repo, bypassing the periodic throttle and batch flag. Used when the
+    /// Create worktree modal opens so its GitHub tab reflects current open PRs
+    /// instead of a possibly-stale periodic snapshot. Guarded per repo by
+    /// `prs_fetch_in_flight` so rapid reopens don't stack fetches; the guard
+    /// clears on `RepoPrsRefreshed`. No-op when `[github] enabled` is false.
+    pub(crate) fn start_open_prs_fetch(&mut self, repo_identity: String, cwd: std::path::PathBuf) {
+        if !self.github_fetch_enabled {
+            return;
+        }
+        if !self.state.prs_fetch_in_flight.insert(repo_identity.clone()) {
+            return;
+        }
+        let event_tx = self.event_tx.clone();
+        std::thread::spawn(move || {
+            let result = crate::workspace::fetch_my_open_prs(&cwd);
+            let _ = event_tx.blocking_send(AppEvent::RepoPrsRefreshed {
+                repo_identity,
+                result,
+            });
+        });
+    }
+
     /// Trigger a lazy background fetch of local branches for one repo. The
     /// result is delivered via `AppEvent::RepoBranchesRefreshed` into the
     /// `repo_branches` cache. No-op while a fetch for the same repo is already

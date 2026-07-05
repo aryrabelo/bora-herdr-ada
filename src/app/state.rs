@@ -1837,6 +1837,10 @@ pub struct AppState {
     /// against overlapping fetches from rapid tab toggling and lets the
     /// Issues tab render a loading state; cleared on `RepoIssuesRefreshed`.
     pub issues_fetch_in_flight: std::collections::HashSet<String>,
+    /// Repo identities with an on-demand open-PR fetch currently in flight.
+    /// Guards against overlapping fetches and lets the Create worktree modal's
+    /// GitHub tab render a loading state; cleared on `RepoPrsRefreshed`.
+    pub prs_fetch_in_flight: std::collections::HashSet<String>,
     /// Cached local branches per repo identity
     /// (`GitSpaceMetadata.repo_identity`). Written by on-demand background
     /// fetches; read by the Create worktree modal's Branch tab.
@@ -2221,6 +2225,7 @@ impl AppState {
             repo_open_prs: std::collections::HashMap::new(),
             repo_issues: std::collections::HashMap::new(),
             issues_fetch_in_flight: std::collections::HashSet::new(),
+            prs_fetch_in_flight: std::collections::HashSet::new(),
             repo_branches: std::collections::HashMap::new(),
             branches_fetch_in_flight: std::collections::HashSet::new(),
             terminal_runtime_shutdowns: Vec::new(),

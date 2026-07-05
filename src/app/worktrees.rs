@@ -190,10 +190,10 @@ impl App {
         });
         self.state.mode = Mode::NewLinkedWorktree;
 
-        // Populate the tab lists. PRs come from the throttled periodic refresh
-        // (already cached in the common case); issues and branches fetch on
-        // demand for this repo.
-        self.start_open_prs_refresh_if_due(std::time::Instant::now());
+        // Populate the tab lists. Force a fresh PR fetch for this repo so the
+        // GitHub tab reflects current open PRs instead of a stale periodic
+        // snapshot; issues and branches fetch on demand.
+        self.start_open_prs_fetch(repo_identity.clone(), source_checkout_path.clone());
         self.start_issues_fetch(repo_identity.clone(), source_checkout_path.clone());
         self.start_branches_fetch(repo_identity, source_checkout_path);
     }
@@ -1466,6 +1466,12 @@ impl App {
                 crate::app::state::ToastKind::NeedsAttention,
                 "open PR in worktree failed",
                 message,
+            );
+        } else {
+            self.show_worktree_op_toast(
+                crate::app::state::ToastKind::Finished,
+                "opening PR in worktree",
+                format!("#{number}"),
             );
         }
     }

@@ -1,5 +1,7 @@
 # Changelog
 
+Bora is a fork of [herdr](https://github.com/ogulcancelik/herdr). This changelog records bora's own changes; changes pulled from upstream herdr during a sync are grouped under a "Synced from herdr" heading.
+
 ## Unreleased
 
 ### Fixed
@@ -30,6 +32,7 @@
 - Added `ui.hide_tab_bar_when_single_tab` to hide the tab row when a workspace has one tab. (#448)
 - Added Japanese and Simplified Chinese website docs.
 - Added `github.pulls.list` and `github.issues.list` socket API methods to read cached open pull requests and issues per repo, plus `github.prs_refreshed` and `github.issues_refreshed` events.
+- Create worktree modal opened by a "+" button on each repo header row, with GitHub / Branch / Name tabs. GitHub lists the repo's open pull requests and issues: a pull request opens its worktree, an issue runs the configured `[flow]` command (issue rows are disabled with a hint when no `[flow]` command is set). Branch checks out an existing local branch; Name creates a fresh branch. The existing `new_worktree` keybind and the `GitWorkspace` context-menu "New worktree" entry open the same modal.
 
 ### Changed
 - The mobile switcher now starts from an agents-first summary and renders worktrees as a tree, making narrow terminals easier to scan.
@@ -76,6 +79,8 @@
 - Closing a tab from the context menu now exits the menu cleanly. (#945)
 - Copy feedback now stays visible above retained pane updates. (#555)
 - Windows ARM64 installer fallback now works when the normal checksum path is unavailable. (#897)
+- The Create worktree modal's GitHub tab now fetches the repo's open pull requests when the modal opens, instead of relying on the throttled periodic snapshot, so a newly opened pull request appears immediately rather than the modal showing a stale list. Opening a pull request in a worktree now also shows an immediate "opening PR in worktree" toast, giving visible feedback while the worktree is created.
+- Opening a pull request whose branch already has a worktree now attaches and focuses that existing worktree instead of failing with a git "already checked out" error. This most often hit pull requests opened by the `[flow]` command, whose worktree already existed at the target path.
 
 ## [0.7.1] - 2026-06-24
 

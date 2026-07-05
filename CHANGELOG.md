@@ -1,6 +1,11 @@
 # Changelog
 
+Bora is a fork of [herdr](https://github.com/ogulcancelik/herdr). This changelog records bora's own changes; changes pulled from upstream herdr during a sync are grouped under a "Synced from herdr" heading.
+
 ## Unreleased
+
+### Added
+- Create worktree modal opened by a "+" button on each repo header row, with GitHub / Branch / Name tabs. GitHub lists the repo's open pull requests and issues: a pull request opens its worktree, an issue runs the configured `[flow]` command (issue rows are disabled with a hint when no `[flow]` command is set). Branch checks out an existing local branch; Name creates a fresh branch. The existing `new_worktree` keybind and the `GitWorkspace` context-menu "New worktree" entry open the same modal.
 
 ## [0.7.3] - 2026-07-08
 

@@ -479,8 +479,9 @@ fn render_create_worktree_github_body(
     );
     let entries = app.create_worktree_github_entries();
     if entries.is_empty() {
-        let loading = !app.repo_open_prs.contains_key(&create.repo_identity)
-            && !app.repo_issues.contains_key(&create.repo_identity);
+        let loading = app.prs_fetch_in_flight.contains(&create.repo_identity)
+            || (!app.repo_open_prs.contains_key(&create.repo_identity)
+                && !app.repo_issues.contains_key(&create.repo_identity));
         let msg = if !create.github_pick.query.is_empty() {
             " no matches"
         } else if loading {
