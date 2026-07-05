@@ -461,13 +461,31 @@ pub(crate) fn run_worktree_add_for_pull_request(
     pr_number: u64,
 ) -> Result<(), String> {
     let head = resolve_pull_request_head(source_checkout, pr_number)?;
+    let local_branch = if head.is_cross_repository {
+        pr_fork_branch_name(pr_number)
+    } else {
+        head.head_ref_name.clone()
+    };
+    // Opening a PR whose branch is already checked out in a worktree must reuse
+    // that worktree instead of failing to add a second one for the same branch.
+    // When it is the requested path, treat as done so the caller attaches and
+    // focuses the existing checkout; otherwise report where it lives.
+    if let Some(existing) = existing_worktree_path_on_branch(source_checkout, &local_branch)? {
+        return if canonical_or_original(&existing) == canonical_or_original(path) {
+            Ok(())
+        } else {
+            Err(format!(
+                "PR #{pr_number} branch '{local_branch}' is already checked out at {}",
+                existing.display()
+            ))
+        };
+    }
     if head.is_cross_repository {
         run_worktree_command(&build_pr_fork_fetch_command(source_checkout, pr_number))?;
-        let branch = pr_fork_branch_name(pr_number);
         return run_worktree_command(&build_worktree_add_existing_branch_command(
             source_checkout,
             path,
-            &branch,
+            &local_branch,
         ));
     }
     run_worktree_command(&build_pr_branch_fetch_command(
@@ -480,6 +498,19 @@ pub(crate) fn run_worktree_add_for_pull_request(
         build_worktree_add_tracking_branch_command(source_checkout, path, &head.head_ref_name)
     };
     run_worktree_command(&command)
+}
+
+/// Path of an existing worktree currently checked out on `branch` in this
+/// repo, if any. Makes opening a PR idempotent when its branch already has a
+/// worktree.
+fn existing_worktree_path_on_branch(
+    source_checkout: &Path,
+    branch: &str,
+) -> Result<Option<PathBuf>, String> {
+    Ok(list_existing_worktrees(source_checkout)?
+        .into_iter()
+        .find(|entry| entry.branch.as_deref() == Some(branch))
+        .map(|entry| entry.path))
 }
 
 pub(crate) fn build_worktree_merge_command(repo_root: &Path, branch: &str) -> WorktreeCommand {
@@ -1264,6 +1295,31 @@ prunable stale
         run_worktree_command(&remove).unwrap();
         assert!(!checkout.exists());
 
+        let _ = std::fs::remove_dir_all(repo);
+    }
+
+    #[test]
+    fn existing_worktree_path_on_branch_finds_checked_out_branch() {
+        let repo = create_committed_repo("worktree-branch-lookup-repo");
+        let checkout = unique_temp_path("worktree-branch-lookup-checkout");
+        let branch = "flow/lookup-branch";
+
+        let add = build_worktree_add_new_branch_command(&repo, &checkout, branch, "HEAD");
+        run_worktree_command(&add).unwrap();
+
+        let found = existing_worktree_path_on_branch(&repo, branch)
+            .unwrap()
+            .expect("worktree on branch should be found");
+        assert_eq!(
+            canonical_or_original(&found),
+            canonical_or_original(&checkout)
+        );
+        assert!(existing_worktree_path_on_branch(&repo, "no/such-branch")
+            .unwrap()
+            .is_none());
+
+        let remove = build_worktree_remove_command(&repo, &checkout, false);
+        run_worktree_command(&remove).unwrap();
         let _ = std::fs::remove_dir_all(repo);
     }
 
