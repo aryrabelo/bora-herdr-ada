@@ -1,4 +1,4 @@
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 
@@ -927,6 +927,73 @@ pub(super) fn wait_for_agent_change(
             Ok(1)
         }
         Err(err) => Err(api_client_error_to_io(err)),
+    }
+}
+
+/// Wait until the pane hosting an agent exits (process gone). Unlike agent
+/// status waits, this is the reliable "done" signal for one-shot agents whose
+/// screen looks idle while they wait on a model. Subscribes to the global
+/// `pane.exited` stream and filters by `pane_id`; `recheck` runs after the
+/// subscription is live so an exit in the resolve->subscribe window is not lost.
+pub(super) fn wait_for_pane_exited(
+    pane_id: &str,
+    timeout_ms: Option<u64>,
+    recheck: impl Fn() -> std::io::Result<bool>,
+) -> std::io::Result<i32> {
+    let read_timeout = timeout_ms.map(Duration::from_millis);
+    let deadline = timeout_ms.map(|ms| Instant::now() + Duration::from_millis(ms));
+    let request = Request {
+        id: "cli:agent:wait".into(),
+        method: Method::EventsSubscribe(crate::api::schema::EventsSubscribeParams {
+            subscriptions: vec![Subscription::PaneExited {}],
+        }),
+    };
+    let (ack, mut stream) = ApiClient::local()
+        .subscribe_value(&request, read_timeout)
+        .map_err(api_client_error_to_io)?;
+    if let Err(err) = crate::api::client::parse_response_value(ack) {
+        if let ApiClientError::ErrorResponse(response) = err {
+            eprintln!("{}", serde_json::to_string(&response).unwrap());
+            return Ok(1);
+        }
+        return Err(api_client_error_to_io(err));
+    }
+    // Close the resolve->subscribe race: if the agent vanished meanwhile, the
+    // pane.exited event was emitted before we subscribed and will never arrive.
+    if recheck()? {
+        println!(
+            "{}",
+            serde_json::json!({
+                "id": "cli:agent:wait",
+                "result": { "type": "agent_wait", "pane_id": pane_id, "status": "exited" }
+            })
+        );
+        return Ok(0);
+    }
+    loop {
+        // next_value: pane.exited arrives as a generic event envelope, not one of
+        // the typed SubscriptionEventEnvelope kinds.
+        match stream.next_value() {
+            Ok(None) => {
+                eprintln!("subscription closed before event arrived");
+                return Ok(1);
+            }
+            Ok(Some(event_value)) => {
+                if event_value["data"]["pane_id"].as_str() == Some(pane_id) {
+                    println!("{}", serde_json::to_string(&event_value).unwrap());
+                    return Ok(0);
+                }
+                if deadline.is_some_and(|d| Instant::now() >= d) {
+                    eprintln!("timed out waiting for pane exit");
+                    return Ok(1);
+                }
+            }
+            Err(ApiClientError::Io(err)) if api_timeout_error(&err) => {
+                eprintln!("timed out waiting for pane exit");
+                return Ok(1);
+            }
+            Err(err) => return Err(api_client_error_to_io(err)),
+        }
     }
 }
 
