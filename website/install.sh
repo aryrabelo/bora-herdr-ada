@@ -67,10 +67,35 @@ main() {
         err "download failed from ${URL}"
     fi
 
-    # install
+    # install: stage inside $INSTALL_DIR (same fs), fix perms/signature on the
+    # temp file, then atomic mv — never mutate the installed path in place
+    # (stale kernel-cached signature -> SIGKILL on macOS).
     mkdir -p "$INSTALL_DIR"
-    mv "${TMP}/${BIN}" "${INSTALL_DIR}/${BIN}"
-    chmod +x "${INSTALL_DIR}/${BIN}"
+    STAGED="${INSTALL_DIR}/.${BIN}-install.$$"
+    mv "${TMP}/${BIN}" "$STAGED"
+    chmod +x "$STAGED"
+    if [ "$os" = "macos" ]; then
+        # AMFI rejects linker-signed adhoc signatures (flags 0x20002) and
+        # quarantined downloads; clear xattrs and re-sign ad-hoc (flags 0x2).
+        xattr -cr "$STAGED" 2>/dev/null || true
+        command -v codesign >/dev/null 2>&1 && codesign --force --sign - "$STAGED" 2>/dev/null || true
+    fi
+    mv -f "$STAGED" "${INSTALL_DIR}/${BIN}"
+
+    # smoke-run: an invalid code signature is not a run error on macOS — the
+    # kernel SIGKILLs the binary at exec (exit 137), so a silent dead install
+    # would otherwise pass. Fail loudly.
+    if ! "${INSTALL_DIR}/${BIN}" --version >/dev/null 2>&1; then
+        rc=$?
+        if [ "$rc" -eq 137 ]; then
+            warn "macOS killed the binary at exec (SIGKILL, exit 137) — invalid code signature."
+            warn "AppleSystemPolicy rejected it; kernel log shows 'load code signature error 2'."
+            warn "inspect: log show --last 2m --predicate 'eventMessage CONTAINS \"bora\"'"
+            err "re-sign a fresh copy with: codesign --force --sign -"
+        else
+            err "installed binary failed to run (exit $rc)"
+        fi
+    fi
 
     log "installed ${BIN} to ${INSTALL_DIR}/${BIN}"
 

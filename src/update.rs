@@ -605,10 +605,38 @@ fn download_update(release: &ReleaseInfo) -> Result<DownloadedUpdate, String> {
         }
     }
 
+    // macOS: cargo/CI produce a linker-signed adhoc signature (flags 0x20002)
+    // AMFI rejects, and downloads may carry a quarantine xattr. Either makes the
+    // installed binary die with SIGKILL on next launch. Clear xattrs and re-sign
+    // ad-hoc (flags 0x2) on the temp file before it becomes the live binary.
+    #[cfg(target_os = "macos")]
+    if let Err(e) = resign_adhoc(&tmp_path) {
+        let _ = fs::remove_file(&tmp_path);
+        return Err(e);
+    }
+
     Ok(DownloadedUpdate {
         current_exe,
         tmp_path: Some(tmp_path),
     })
+}
+
+#[cfg(target_os = "macos")]
+fn resign_adhoc(path: &Path) -> Result<(), String> {
+    // Best-effort: strip extended attributes (e.g. quarantine).
+    let _ = Command::new("xattr").args(["-cr"]).arg(path).status();
+
+    let status = Command::new("codesign")
+        .args(["--force", "--sign", "-"])
+        .arg(path)
+        .status()
+        .map_err(|e| format!("failed to ad-hoc sign downloaded update: {e}"))?;
+    if !status.success() {
+        return Err(format!(
+            "failed to ad-hoc sign downloaded update: codesign exited with {status}"
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(not(windows))]
@@ -626,7 +654,45 @@ fn install_downloaded_update(mut update: DownloadedUpdate) -> Result<(), String>
         return Err(format!("failed to replace binary: {e}"));
     }
 
+    // No rollback possible: the old inode is already replaced by the rename
+    // above. All we can do is fail loudly if the new binary is dead on arrival.
+    verify_installed_binary(&update.current_exe)?;
+
     Ok(())
+}
+
+#[cfg(not(windows))]
+fn verify_installed_binary(exe: &Path) -> Result<(), String> {
+    use std::os::unix::process::ExitStatusExt;
+    use std::process::Stdio;
+
+    let status = Command::new(exe)
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map_err(|e| format!("installed update failed to launch: {e}"))?;
+
+    if let Some(code) = status.code() {
+        if code != 0 {
+            return Err(format!("installed update exited with {code} on --version"));
+        }
+        return Ok(());
+    }
+
+    // No exit code => killed by a signal. On macOS a rejected code signature
+    // makes the kernel SIGKILL (9) the binary at exec.
+    let signal = status.signal().unwrap_or(0);
+    if signal == 9 {
+        return Err(
+            "installed update was SIGKILLed at exec: macOS rejected its code signature \
+             (AppleSystemPolicy; kernel logs 'load code signature error 2'). \
+             Inspect with: log show --last 2m --predicate 'eventMessage CONTAINS \"bora\"' \
+             and re-sign a fresh copy with: codesign --force --sign -"
+                .into(),
+        );
+    }
+    Err(format!("installed update was killed by signal {signal} on --version"))
 }
 
 #[cfg(windows)]
@@ -2260,6 +2326,38 @@ mod tests {
             "/tmp/hu-{name}-{}-{nanos}.sock",
             std::process::id()
         ))
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn resign_adhoc_signs_a_macho_binary() {
+        let dst = unique_test_socket_path("resign").with_extension("bin");
+        fs::copy("/bin/ls", &dst).unwrap();
+        assert!(resign_adhoc(&dst).is_ok());
+        let _ = fs::remove_file(&dst);
+    }
+
+    #[test]
+    fn verify_installed_binary_flags_signal_kill_and_accepts_clean_exit() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let make = |name: &str, body: &str| -> std::path::PathBuf {
+            let p = unique_test_socket_path(name).with_extension("sh");
+            fs::write(&p, format!("#!/bin/sh\n{body}\n")).unwrap();
+            fs::set_permissions(&p, fs::Permissions::from_mode(0o755)).unwrap();
+            p
+        };
+
+        // (a) self-SIGKILL => signal death => code-signature diagnosis.
+        let killed = make("verify-killed", "kill -9 $$");
+        let err = verify_installed_binary(&killed).unwrap_err();
+        assert!(err.contains("code signature"), "got: {err}");
+        let _ = fs::remove_file(&killed);
+
+        // (b) clean exit => Ok.
+        let ok = make("verify-ok", "exit 0");
+        assert!(verify_installed_binary(&ok).is_ok());
+        let _ = fs::remove_file(&ok);
     }
 
     fn spawn_accept_loop(path: &Path) -> (Arc<AtomicBool>, thread::JoinHandle<()>) {
