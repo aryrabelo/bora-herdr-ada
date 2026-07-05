@@ -718,6 +718,39 @@ pub(super) fn parse_attach_target(args: &[String], usage: &str) -> Result<(Strin
 }
 
 
+/// Wait until the pane hosting an agent exits (process gone). Unlike agent
+/// status waits, this is the reliable "done" signal for one-shot agents whose
+/// screen looks idle while they wait on a model. `events.wait` observes
+/// current state atomically, so unlike the old subscription-stream client
+/// there is no separate resolve/subscribe race window to guard here.
+pub(super) fn wait_for_pane_exited(pane_id: &str, timeout_ms: Option<u64>) -> std::io::Result<i32> {
+    let response = send_request(&Request {
+        id: "cli:agent:wait".into(),
+        method: Method::EventsWait(crate::api::schema::EventsWaitParams {
+            match_event: crate::api::schema::EventMatch::PaneExited {
+                pane_id: pane_id.to_owned(),
+            },
+            timeout_ms,
+        }),
+    })?;
+    if response.get("error").is_some() {
+        if response["error"]["code"].as_str() == Some("timeout") {
+            eprintln!("timed out waiting for pane exit");
+        } else {
+            eprintln!("{}", serde_json::to_string(&response).unwrap());
+        }
+        return Ok(1);
+    }
+    println!(
+        "{}",
+        serde_json::json!({
+            "id": "cli:agent:wait",
+            "result": { "type": "agent_wait", "pane_id": pane_id, "status": "exited" }
+        })
+    );
+    Ok(0)
+}
+
 pub(super) fn print_response(response: &serde_json::Value) -> std::io::Result<i32> {
     if response.get("error").is_some() {
         eprintln!("{}", serde_json::to_string(response).unwrap());

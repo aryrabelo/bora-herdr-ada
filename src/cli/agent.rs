@@ -442,11 +442,12 @@ fn agent_attach(args: &[String]) -> std::io::Result<i32> {
 
 fn agent_wait(args: &[String]) -> std::io::Result<i32> {
     let Some(target) = args.first() else {
-        eprintln!("usage: herdr agent wait <target> [--until STATUS]... [--timeout MS]");
+        eprintln!("usage: herdr agent wait <target> [--until <idle|working|blocked|done|unknown|exited>]... [--timeout MS]");
         return Ok(2);
     };
     let mut until = Vec::new();
     let mut timeout_ms = None;
+    let mut wait_exited = false;
     let mut index = 1;
     while index < args.len() {
         match args[index].as_str() {
@@ -455,14 +456,18 @@ fn agent_wait(args: &[String]) -> std::io::Result<i32> {
                     eprintln!("--until requires at least one status");
                     return Ok(2);
                 };
-                let status = match super::parse_agent_status(value) {
-                    Ok(status) => status,
-                    Err(err) => {
-                        eprintln!("{err}");
-                        return Ok(2);
-                    }
-                };
-                until.push(status);
+                if value == "exited" {
+                    wait_exited = true;
+                } else {
+                    let status = match super::parse_agent_status(value) {
+                        Ok(status) => status,
+                        Err(err) => {
+                            eprintln!("{err}");
+                            return Ok(2);
+                        }
+                    };
+                    until.push(status);
+                }
                 index += 2;
             }
             "--timeout" => {
@@ -477,7 +482,7 @@ fn agent_wait(args: &[String]) -> std::io::Result<i32> {
                 index += 2;
             }
             "help" | "--help" | "-h" => {
-                eprintln!("usage: herdr agent wait <target> [--until STATUS]... [--timeout MS]");
+                eprintln!("usage: herdr agent wait <target> [--until <idle|working|blocked|done|unknown|exited>]... [--timeout MS]");
                 return Ok(0);
             }
             other => {
@@ -485,6 +490,10 @@ fn agent_wait(args: &[String]) -> std::io::Result<i32> {
                 return Ok(2);
             }
         }
+    }
+
+    if wait_exited {
+        return agent_wait_exited(target, timeout_ms);
     }
     super::print_response(&super::send_request(&Request {
         id: "cli:agent:wait".into(),
@@ -611,6 +620,29 @@ fn agent_get_request(target: &str, request_id: &str) -> Request {
             target: target.to_owned(),
         }),
     }
+}
+
+/// `agent wait <target> --status exited` — resolve the target's pane and block
+/// until that pane exits. A target that no longer resolves has already exited
+/// (that is the success case, not an error): one-shot agents are reaped on exit.
+fn agent_wait_exited(target: &str, timeout_ms: Option<u64>) -> std::io::Result<i32> {
+    let response = resolve_agent_target(target, "cli:agent:wait:resolve")?;
+    if response.get("error").is_some() {
+        println!(
+            "{}",
+            serde_json::json!({
+                "id": "cli:agent:wait",
+                "result": { "type": "agent_wait", "target": target, "status": "exited" }
+            })
+        );
+        return Ok(0);
+    }
+    let Some(pane_id) = response["result"]["agent"]["pane_id"].as_str() else {
+        eprintln!("agent wait failed: response did not include pane_id");
+        return Ok(1);
+    };
+    let pane_id = pane_id.to_owned();
+    super::wait_for_pane_exited(&pane_id, timeout_ms)
 }
 
 fn agent_rename(args: &[String]) -> std::io::Result<i32> {
@@ -793,7 +825,7 @@ fn print_agent_help() {
     eprintln!("  herdr agent prompt <target> <text> [--wait] [--until STATUS]... [--timeout MS]");
     eprintln!("  herdr agent rename <target> <name>|--clear");
     eprintln!("  herdr agent focus <target>");
-    eprintln!("  herdr agent wait <target> [--until STATUS]... [--timeout MS]");
+    eprintln!("  herdr agent wait <target> [--until <idle|working|blocked|done|unknown|exited>]... [--timeout MS]");
     eprintln!("  herdr agent attach <target> [--takeover]");
     eprintln!(
         "  herdr agent start <name> --kind KIND --pane ID [--timeout MS] [-- <agent-args...>]"
