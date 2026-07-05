@@ -133,11 +133,14 @@ impl App {
             result,
         } = ev
         {
-            self.open_prs_refresh_results_pending =
-                self.open_prs_refresh_results_pending.saturating_sub(1);
-            if self.open_prs_refresh_results_pending == 0 {
-                self.open_prs_refresh_in_flight = false;
+            if self.open_prs_refresh_in_flight {
+                self.open_prs_refresh_results_pending =
+                    self.open_prs_refresh_results_pending.saturating_sub(1);
+                if self.open_prs_refresh_results_pending == 0 {
+                    self.open_prs_refresh_in_flight = false;
+                }
             }
+            self.state.prs_fetch_in_flight.remove(&repo_identity);
             self.state
                 .repo_open_prs
                 .insert(repo_identity.clone(), result);
