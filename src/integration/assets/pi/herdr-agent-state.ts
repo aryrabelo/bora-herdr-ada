@@ -319,6 +319,14 @@ export default function (pi) {
     retryTimer.unref?.();
   }
 
+  function forceResetBlocked() {
+    // A turn ending is authoritative that nothing is blocked. Clear any leaked
+    // blockedCount (unmatched approval/ask or a dropped herdr:blocked deactivate)
+    // so a stuck block can't survive into Idle.
+    blockedCount = 0;
+    blockedMessage = undefined;
+  }
+
   pi.events.on("herdr:blocked", (data) => {
     if (!rootSession) {
       return;
@@ -373,6 +381,7 @@ export default function (pi) {
         // end arrived mid-turn; the next turn_start re-holds). Release the
         // repair hold and go idle normally.
         turnRepairHold = false;
+        forceResetBlocked();
         scheduleIdle();
         return;
       }
@@ -396,6 +405,7 @@ export default function (pi) {
       return;
     }
 
+    forceResetBlocked();
     scheduleIdle();
   });
 
