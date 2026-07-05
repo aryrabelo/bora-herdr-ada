@@ -2914,6 +2914,53 @@ fn omp_ask_and_approval_events_report_blocked_state() {
 }
 
 #[test]
+fn agent_end_clears_leaked_blocked_state_before_idle() {
+    // Regression: a leaked blockedCount (unmatched approval/ask or a dropped
+    // herdr:blocked deactivate) must not survive a finished turn. agent_end
+    // force-resets the blocked counters before every idle transition, in both
+    // the main path and the turnRepairHold release branch.
+    for (label, asset) in [("omp", OMP_EXTENSION_ASSET), ("pi", PI_EXTENSION_ASSET)] {
+        let helper_start = asset
+            .find("function forceResetBlocked()")
+            .unwrap_or_else(|| panic!("{label} extension defines forceResetBlocked"));
+        let helper_body = &asset[helper_start..];
+        let helper_body = &helper_body[..helper_body.find('}').unwrap_or(helper_body.len())];
+        helper_body
+            .find("blockedCount = 0;")
+            .unwrap_or_else(|| panic!("{label} forceResetBlocked resets blockedCount"));
+        helper_body
+            .find("blockedMessage = undefined;")
+            .unwrap_or_else(|| panic!("{label} forceResetBlocked clears blockedMessage"));
+
+        let start = asset
+            .find("pi.on(\"agent_end\"")
+            .unwrap_or_else(|| panic!("{label} extension registers agent_end handler"));
+        let rest = &asset[start..];
+        let end = rest[1..]
+            .find("\n\n  pi.")
+            .map(|offset| offset + 1)
+            .unwrap_or(rest.len());
+        let handler = &rest[..end];
+
+        let mut search = handler;
+        let mut idle_transitions = 0;
+        while let Some(idle) = search.find("scheduleIdle();") {
+            search[..idle]
+                .rfind("forceResetBlocked();")
+                .unwrap_or_else(|| {
+                    panic!("{label} agent_end must clear leaked blocked state before going idle")
+                });
+            idle_transitions += 1;
+            search = &search[idle + "scheduleIdle();".len()..];
+        }
+        assert_eq!(
+            idle_transitions, 2,
+            "{label} agent_end covers both idle transitions (main path and turnRepairHold release)"
+        );
+    }
+}
+
+#[test]
 fn install_qodercli_writes_hook_and_updates_settings() {
     let _lock = integration_env_lock();
     let base = unique_base();
