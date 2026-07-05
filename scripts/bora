@@ -43,10 +43,37 @@ cmd=${1:-help}
 # signed ("Code Signature Invalid" / taskgated). cargo emits a *linker-signed*
 # adhoc signature (flags 0x20002) that AMFI rejects, and CI-downloaded binaries
 # are quarantined. Re-signing ad-hoc (codesign --force --sign -, flags 0x2)
-# fixes both. Used by build, install, and ci-install.
-sign_bin() {
-  xattr -cr "$BIN" 2>/dev/null || true
-  command -v codesign >/dev/null 2>&1 && codesign --force --sign - "$BIN" 2>/dev/null || true
+# fixes both. It must run on a temp file that is then atomically renamed onto
+# $BIN: overwriting $BIN in place reuses its inode, so the kernel keeps the
+# stale cached signature and SIGKILLs the binary. Used by build, install, ci-install.
+install_file() {
+  tmp="$BIN_DIR/.bora-install.$$"
+  cp "$1" "$tmp"
+  chmod +x "$tmp"
+  xattr -cr "$tmp" 2>/dev/null || true
+  command -v codesign >/dev/null 2>&1 && codesign --force --sign - "$tmp" 2>/dev/null || true
+  mv -f "$tmp" "$BIN"
+}
+
+# Smoke-test the freshly installed binary. On macOS an invalid code signature
+# is not a run error — the kernel SIGKILLs the process at exec, so `--version`
+# dies with exit 137 (128+SIGKILL) and no output. Fail loudly so a dead install
+# is never mistaken for a good one.
+verify_bin() {
+  if "$BIN" --version >/dev/null 2>&1; then
+    return
+  else
+    rc=$?
+    if [ "$rc" -eq 137 ]; then
+      echo "bora: FATAL: macOS killed the binary at exec (SIGKILL, exit 137) — invalid code signature." >&2
+      echo "bora:   AppleSystemPolicy rejected it; the kernel log shows 'load code signature error 2'." >&2
+      echo "bora:   Inspect: log show --last 2m --predicate 'eventMessage CONTAINS \"bora\"'" >&2
+      echo "bora:   Fix: re-sign a fresh copy with codesign --force --sign - (never re-sign in place)." >&2
+    else
+      echo "bora: FATAL: installed binary failed to run (exit $rc)" >&2
+    fi
+    exit 1
+  fi
 }
 
 case "$cmd" in
@@ -66,12 +93,8 @@ case "$cmd" in
     cd "$REPO_DIR"
     cargo build --release --locked
     mkdir -p "$BIN_DIR"
-    cp target/release/bora "$BIN"
-    chmod +x "$BIN"
-    sign_bin   # cargo's linker-signed adhoc sig is rejected on macOS 26 (SIGKILL); re-sign
-    if ! "$BIN" --version >/dev/null 2>&1; then
-      echo "bora: WARNING: installed binary will not run (code signing?). Try: codesign --force --sign - $BIN" >&2
-    fi
+    install_file target/release/bora
+    verify_bin
     echo "bora: installed $("$BIN" --version 2>/dev/null || echo '(run failed)') -> $BIN"
     ;;
   ci-build)
@@ -89,18 +112,16 @@ case "$cmd" in
     found=$(find "$tmp" -type f -name 'bora*' ! -name '*.txt' ! -name '*.json' | head -1)
     [ -n "$found" ] || { echo "bora: no bora binary found in artifacts under $tmp" >&2; exit 1; }
     mkdir -p "$BIN_DIR"
-    cp "$found" "$BIN"
-    chmod +x "$BIN"
-    sign_bin
+    install_file "$found"
+    verify_bin
     rm -rf "$tmp"
     echo "bora: installed CI binary -> $BIN"
     ;;
   install)
     [ $# -ge 1 ] || { echo "usage: scripts/bora install <file>" >&2; exit 1; }
     mkdir -p "$BIN_DIR"
-    cp "$1" "$BIN"
-    chmod +x "$BIN"
-    sign_bin
+    install_file "$1"
+    verify_bin
     echo "bora: installed $1 -> $BIN"
     ;;
   reload)
