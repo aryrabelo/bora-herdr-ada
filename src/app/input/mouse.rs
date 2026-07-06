@@ -573,6 +573,9 @@ impl AppState {
                                     crate::app::state::RightPanelTab::Issues => {
                                         self.right_panel_issues_requested = true;
                                     }
+                                    crate::app::state::RightPanelTab::PullRequests => {
+                                        self.right_panel_prs_requested = true;
+                                    }
                                 }
                             }
                         }
@@ -594,6 +597,31 @@ impl AppState {
                                 number,
                                 url,
                                 flow_available,
+                            };
+                            self.context_menu = Some(ContextMenuState {
+                                items: build_context_menu_items(&kind, &self.workspaces, &[]),
+                                kind,
+                                x: mouse.column,
+                                y: mouse.row,
+                                list: MenuListState::new(0),
+                                bora_commands: vec![],
+                                bora_port: None,
+                            });
+                            self.mode = Mode::ContextMenu;
+                        }
+                    } else if mouse.row > content_y
+                        && self.right_panel_active_tab
+                            == crate::app::state::RightPanelTab::PullRequests
+                    {
+                        // PR row click — open the PR context menu
+                        if let Some((number, url, head_ref)) = self.right_panel_pr_at_row(mouse.row)
+                        {
+                            let ws_idx = self.active.unwrap_or(0);
+                            let kind = ContextMenuKind::RepoPr {
+                                ws_idx,
+                                number,
+                                url,
+                                head_ref,
                             };
                             self.context_menu = Some(ContextMenuState {
                                 items: build_context_menu_items(&kind, &self.workspaces, &[]),
@@ -763,10 +791,6 @@ impl AppState {
                             self.mark_session_dirty();
                             return None;
                         }
-                    }
-
-                    if self.open_pr_row_context_menu_at(mouse.column, mouse.row) {
-                        return None;
                     }
 
                     if let Some(card) = cards.iter().find(|card| {
@@ -1232,9 +1256,6 @@ impl AppState {
                 {
                     return None;
                 }
-                if self.open_pr_row_context_menu_at(mouse.column, mouse.row) {
-                    return None;
-                }
                 if let Some(idx) = self.workspace_at_row(mouse.row) {
                     self.selected = idx;
                     let kind = self
@@ -1475,53 +1496,6 @@ impl AppState {
             delta.saturating_mul(2),
             max_scroll,
         );
-    }
-
-    /// Open the PR context menu when (col, row) hits a sidebar PR row.
-    /// Returns true when a menu was opened. Used by both mouse buttons.
-    fn open_pr_row_context_menu_at(&mut self, col: u16, row: u16) -> bool {
-        let Some(hit) = self
-            .view
-            .sidebar_pr_row_areas
-            .iter()
-            .find(|area| {
-                row == area.rect.y && col >= area.rect.x && col < area.rect.x + area.rect.width
-            })
-            .cloned()
-        else {
-            return false;
-        };
-        let Some(ws_idx) = self.workspaces.iter().position(|ws| {
-            ws.git_space()
-                .is_some_and(|space| space.repo_identity == hit.repo_identity)
-        }) else {
-            return false;
-        };
-        let Some(pr) = self
-            .repo_open_prs
-            .get(&hit.repo_identity)
-            .and_then(|cache| cache.prs.get(hit.pr_idx))
-            .cloned()
-        else {
-            return false;
-        };
-        let kind = ContextMenuKind::RepoPr {
-            ws_idx,
-            number: pr.number,
-            url: pr.url,
-            head_ref: pr.head_ref_name,
-        };
-        self.context_menu = Some(ContextMenuState {
-            items: build_context_menu_items(&kind, &self.workspaces, &[]),
-            kind,
-            x: col,
-            y: row,
-            list: MenuListState::new(0),
-            bora_commands: vec![],
-            bora_port: None,
-        });
-        self.mode = Mode::ContextMenu;
-        true
     }
 
     pub(super) fn screen_rect(&self) -> Rect {
@@ -4205,7 +4179,7 @@ mod tests {
             .collect()
     }
 
-    // Pins the 3-segment tab header layout (row rp.y): the first and last
+    // Pins the 4-segment tab header layout (row rp.y): the first and last
     // column of each label segment select its tab, divider and past-end
     // columns leave the active tab unchanged, and every header click is
     // consumed.
@@ -4214,18 +4188,25 @@ mod tests {
         use crate::app::state::RightPanelTab;
 
         let mut app = app_with_expanded_right_panel();
+        // Widen the panel so all four tab segments fit with room past the last
+        // label, exercising the clipped/past-end paths.
+        app.state.right_panel_max_width = 60;
+        app.state.right_panel_width = 44;
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 120, 20));
         let rp = app.state.view.right_panel_rect;
         let header_row = rp.y;
 
         let changes_cols = tab_segment_cols(rp, RightPanelTab::Changes);
         let checks_cols = tab_segment_cols(rp, RightPanelTab::Checks);
         let issues_cols = tab_segment_cols(rp, RightPanelTab::Issues);
+        let prs_cols = tab_segment_cols(rp, RightPanelTab::PullRequests);
 
         // Segments are laid out left-to-right starting one column after the
         // panel separator, with one divider column between segments.
         assert_eq!(changes_cols.len(), " Changes ".len());
         assert_eq!(checks_cols.len(), " Checks ".len());
         assert_eq!(issues_cols.len(), " Issues ".len());
+        assert_eq!(prs_cols.len(), " PRs ".len());
         assert_eq!(changes_cols[0], rp.x + 1);
         assert_eq!(
             checks_cols[0],
@@ -4235,12 +4216,14 @@ mod tests {
             issues_cols[0],
             checks_cols.last().copied().expect("cols") + 2
         );
+        assert_eq!(prs_cols[0], issues_cols.last().copied().expect("cols") + 2);
 
         assert_eq!(app.state.right_panel_active_tab, RightPanelTab::Changes);
 
         for (tab, cols) in [
             (RightPanelTab::Checks, &checks_cols),
             (RightPanelTab::Issues, &issues_cols),
+            (RightPanelTab::PullRequests, &prs_cols),
             (RightPanelTab::Changes, &changes_cols),
         ] {
             for &col in &[cols[0], cols.last().copied().expect("cols")] {
@@ -4267,11 +4250,16 @@ mod tests {
         assert_eq!(app.state.right_panel_active_tab, RightPanelTab::Changes);
 
         // Past the last label: no tab change, consumed.
+        let past_end = prs_cols.last().copied().expect("cols") + 1;
+        assert!(
+            past_end < rp.x + rp.width,
+            "panel widened enough for a past-end column"
+        );
         let action = app.state.handle_mouse(
             &mut app.terminal_runtimes,
             mouse(
                 MouseEventKind::Down(MouseButton::Left),
-                rp.x + rp.width - 1,
+                past_end,
                 header_row,
             ),
         );
@@ -4473,6 +4461,168 @@ mod tests {
         (app, identity)
     }
 
+    /// App with an expanded right panel whose active workspace belongs to a
+    /// repo with a populated open-PRs cache, active tab set to PullRequests.
+    fn app_with_prs_cache() -> (crate::app::App, String) {
+        let mut app = app_with_expanded_right_panel();
+        let identity = "github.com/owner/proj".to_string();
+        app.state.workspaces[0].cached_git_space = Some(crate::workspace::GitSpaceMetadata {
+            key: "key-p".into(),
+            repo_identity: identity.clone(),
+            checkout_key: "/repo/proj".into(),
+            label: "proj".into(),
+            repo_root: std::path::PathBuf::from("/repo/proj"),
+            is_linked_worktree: false,
+        });
+        app.state.repo_open_prs.insert(
+            identity.clone(),
+            crate::workspace::RepoOpenPrs {
+                prs: vec![
+                    crate::workspace::OpenPr {
+                        number: 7,
+                        title: "fix: first".into(),
+                        url: "https://github.com/owner/proj/pull/7".into(),
+                        head_ref_name: "fix/first".into(),
+                        is_draft: false,
+                        mergeable: Some("MERGEABLE".into()),
+                    },
+                    crate::workspace::OpenPr {
+                        number: 12,
+                        title: "feat: second".into(),
+                        url: "https://github.com/owner/proj/pull/12".into(),
+                        head_ref_name: "feat/second".into(),
+                        is_draft: false,
+                        mergeable: None,
+                    },
+                ],
+                error: None,
+            },
+        );
+        app.state.right_panel_active_tab = crate::app::state::RightPanelTab::PullRequests;
+        (app, identity)
+    }
+
+    #[tokio::test]
+    async fn right_panel_pr_at_row_walks_flat_layout_with_scroll() {
+        let (mut app, _identity) = app_with_prs_cache();
+        let rp = app.state.view.right_panel_rect;
+        let body_start = rp.y + 1;
+
+        assert_eq!(
+            app.state.right_panel_pr_at_row(body_start),
+            Some((
+                7,
+                "https://github.com/owner/proj/pull/7".to_string(),
+                "fix/first".to_string()
+            ))
+        );
+        assert_eq!(
+            app.state.right_panel_pr_at_row(body_start + 1),
+            Some((
+                12,
+                "https://github.com/owner/proj/pull/12".to_string(),
+                "feat/second".to_string()
+            ))
+        );
+        // Header row and rows past the list resolve to nothing.
+        assert_eq!(app.state.right_panel_pr_at_row(rp.y), None);
+        assert_eq!(app.state.right_panel_pr_at_row(body_start + 2), None);
+
+        // Nonzero scroll shifts the flat index.
+        app.state.right_panel_scroll = 1;
+        assert_eq!(
+            app.state.right_panel_pr_at_row(body_start),
+            Some((
+                12,
+                "https://github.com/owner/proj/pull/12".to_string(),
+                "feat/second".to_string()
+            ))
+        );
+
+        // An errored cache never resolves rows.
+        app.state.right_panel_scroll = 0;
+        app.state
+            .repo_open_prs
+            .get_mut(&_identity)
+            .expect("cache")
+            .error = Some("gh failed".into());
+        assert_eq!(app.state.right_panel_pr_at_row(body_start), None);
+    }
+
+    #[tokio::test]
+    async fn right_panel_pr_row_click_opens_repo_pr_context_menu() {
+        let (mut app, _identity) = app_with_prs_cache();
+        let rp = app.state.view.right_panel_rect;
+        let body_start = rp.y + 1;
+
+        app.state.handle_mouse(
+            &mut app.terminal_runtimes,
+            mouse(
+                MouseEventKind::Down(MouseButton::Left),
+                rp.x + 2,
+                body_start + 1,
+            ),
+        );
+
+        assert_eq!(app.state.mode, Mode::ContextMenu);
+        let menu = app.state.context_menu.as_ref().expect("context menu open");
+        match &menu.kind {
+            crate::app::state::ContextMenuKind::RepoPr {
+                ws_idx,
+                number,
+                url,
+                head_ref,
+            } => {
+                assert_eq!(*ws_idx, 0);
+                assert_eq!(*number, 12);
+                assert_eq!(url, "https://github.com/owner/proj/pull/12");
+                assert_eq!(head_ref, "feat/second");
+            }
+            other => panic!("expected RepoPr context menu, got {other:?}"),
+        }
+
+        app.state.assert_invariants_for_test();
+    }
+
+    #[tokio::test]
+    async fn right_panel_prs_request_flag_set_only_when_switching_into_prs() {
+        let mut app = app_with_expanded_right_panel();
+        use crate::app::state::RightPanelTab;
+        let rp = app.state.view.right_panel_rect;
+        let prs_col = tab_segment_cols(rp, RightPanelTab::PullRequests)[0];
+        let changes_col = tab_segment_cols(rp, RightPanelTab::Changes)[0];
+
+        assert!(!app.state.right_panel_prs_requested);
+
+        app.state.handle_mouse(
+            &mut app.terminal_runtimes,
+            mouse(MouseEventKind::Down(MouseButton::Left), prs_col, rp.y),
+        );
+        assert_eq!(
+            app.state.right_panel_active_tab,
+            RightPanelTab::PullRequests
+        );
+        assert!(app.state.right_panel_prs_requested);
+
+        // Re-clicking PRs while already on PRs does not re-request.
+        app.state.right_panel_prs_requested = false;
+        app.state.handle_mouse(
+            &mut app.terminal_runtimes,
+            mouse(MouseEventKind::Down(MouseButton::Left), prs_col, rp.y),
+        );
+        assert!(!app.state.right_panel_prs_requested);
+
+        // Switching back to Changes never requests PRs.
+        app.state.handle_mouse(
+            &mut app.terminal_runtimes,
+            mouse(MouseEventKind::Down(MouseButton::Left), changes_col, rp.y),
+        );
+        assert_eq!(app.state.right_panel_active_tab, RightPanelTab::Changes);
+        assert!(!app.state.right_panel_prs_requested);
+
+        app.state.assert_invariants_for_test();
+    }
+
     #[tokio::test]
     async fn right_panel_issue_at_row_walks_flat_layout_with_scroll() {
         let (app, identity) = app_with_issues_cache();
@@ -4585,69 +4735,6 @@ mod tests {
                 "Copy URL",
             ]
         );
-
-        app.state.assert_invariants_for_test();
-    }
-
-    #[tokio::test]
-    async fn sidebar_pr_row_click_opens_repo_pr_context_menu() {
-        let mut app = app_for_mouse_test();
-        let identity = "github.com/owner/proj".to_string();
-        app.state
-            .workspaces
-            .push(crate::workspace::Workspace::test_new("proj"));
-        app.state.active = Some(0);
-        app.state.selected = 0;
-        app.state.ensure_test_terminals();
-        app.state.workspaces[0].cached_git_space = Some(crate::workspace::GitSpaceMetadata {
-            key: "key-p".into(),
-            repo_identity: identity.clone(),
-            checkout_key: "/repo/proj".into(),
-            label: "proj".into(),
-            repo_root: std::path::PathBuf::from("/repo/proj"),
-            is_linked_worktree: false,
-        });
-        app.state.repo_open_prs.insert(
-            identity.clone(),
-            crate::workspace::RepoOpenPrs {
-                prs: vec![crate::workspace::OpenPr {
-                    number: 42,
-                    title: "fix focus".into(),
-                    url: "https://github.com/owner/proj/pull/42".into(),
-                    head_ref_name: "fix/focus".into(),
-                    is_draft: false,
-                }],
-                error: None,
-            },
-        );
-        let row_rect = ratatui::layout::Rect::new(0, 5, 26, 1);
-        app.state.view.sidebar_pr_row_areas = vec![crate::app::state::SidebarPrRowArea {
-            rect: row_rect,
-            repo_identity: identity,
-            pr_idx: 0,
-        }];
-
-        app.state.handle_mouse(
-            &mut app.terminal_runtimes,
-            mouse(MouseEventKind::Down(MouseButton::Left), 3, row_rect.y),
-        );
-
-        assert_eq!(app.state.mode, Mode::ContextMenu);
-        let menu = app.state.context_menu.as_ref().expect("context menu open");
-        match &menu.kind {
-            crate::app::state::ContextMenuKind::RepoPr {
-                ws_idx,
-                number,
-                url,
-                head_ref,
-            } => {
-                assert_eq!(*ws_idx, 0);
-                assert_eq!(*number, 42);
-                assert_eq!(url, "https://github.com/owner/proj/pull/42");
-                assert_eq!(head_ref, "fix/focus");
-            }
-            other => panic!("expected RepoPr context menu, got {other:?}"),
-        }
 
         app.state.assert_invariants_for_test();
     }

@@ -10,10 +10,11 @@ use crate::app::state::{AppState, Mode, RightPanelTab};
 /// Tab order and header labels — the single source of truth shared by
 /// `render_tab_header` and `right_panel_tab_hit` so render and hit-testing
 /// cannot diverge.
-const RIGHT_PANEL_TABS: [(RightPanelTab, &str); 3] = [
+const RIGHT_PANEL_TABS: [(RightPanelTab, &str); 4] = [
     (RightPanelTab::Changes, " Changes "),
     (RightPanelTab::Checks, " Checks "),
     (RightPanelTab::Issues, " Issues "),
+    (RightPanelTab::PullRequests, " PRs "),
 ];
 
 /// Map a click column on the tab header row to the tab whose label segment
@@ -83,6 +84,7 @@ pub(super) fn render_right_panel(app: &AppState, frame: &mut Frame, area: Rect) 
         RightPanelTab::Changes => render_changes_tab(app, frame, body),
         RightPanelTab::Checks => render_checks_tab(app, frame, body),
         RightPanelTab::Issues => render_issues_tab(app, frame, body),
+        RightPanelTab::PullRequests => render_prs_tab(app, frame, body),
     }
     render_right_panel_toggle(app, frame, area);
 }
@@ -310,6 +312,81 @@ fn render_issues_tab(app: &AppState, frame: &mut Frame, area: Rect) {
     frame.render_widget(Text::from(display_lines), area);
 }
 
+fn render_prs_tab(app: &AppState, frame: &mut Frame, area: Rect) {
+    let p = &app.palette;
+    let dim_line = |msg: &str| {
+        Line::from(Span::styled(
+            msg.to_string(),
+            Style::default().fg(p.subtext0),
+        ))
+    };
+
+    let ws = app.active.and_then(|i| app.workspaces.get(i));
+    let repo_identity = ws
+        .and_then(|ws| ws.git_space())
+        .map(|space| space.repo_identity.clone());
+    let Some(repo_identity) = repo_identity else {
+        frame.render_widget(dim_line(" not a git repository"), area);
+        return;
+    };
+
+    let Some(cache) = app.repo_open_prs.get(&repo_identity) else {
+        let msg =
+            if app.right_panel_prs_requested || app.prs_fetch_in_flight.contains(&repo_identity) {
+                " loading pull requests…"
+            } else {
+                " no pull request data"
+            };
+        frame.render_widget(dim_line(msg), area);
+        return;
+    };
+
+    if let Some(err) = &cache.error {
+        frame.render_widget(
+            Line::from(Span::styled(format!(" {err}"), Style::default().fg(p.red))),
+            area,
+        );
+        return;
+    }
+
+    if cache.prs.is_empty() {
+        frame.render_widget(dim_line(" no open pull requests"), area);
+        return;
+    }
+
+    let lines: Vec<Line> = cache
+        .prs
+        .iter()
+        .map(|pr| {
+            let (num_style, prefix) = if pr.is_draft {
+                (Style::default().fg(p.subtext0), "◌ ")
+            } else {
+                (Style::default().fg(p.green).bold(), "")
+            };
+            let title_style = if pr.is_draft {
+                Style::default().fg(p.subtext0)
+            } else {
+                Style::default().fg(p.text)
+            };
+            let (mark, mark_style) = match pr.mergeable.as_deref() {
+                Some("MERGEABLE") => (" ✓", Style::default().fg(p.green)),
+                Some("CONFLICTING") => (" ✗", Style::default().fg(p.red)),
+                _ => ("", Style::default().fg(p.subtext0)),
+            };
+            Line::from(vec![
+                Span::styled(format!(" {prefix}#{} ", pr.number), num_style),
+                Span::styled(pr.title.clone(), title_style),
+                Span::styled(mark.to_string(), mark_style),
+            ])
+        })
+        .collect();
+
+    let scroll = app.right_panel_scroll as usize;
+    let visible = area.height as usize;
+    let display_lines: Vec<Line> = lines.into_iter().skip(scroll).take(visible).collect();
+    frame.render_widget(Text::from(display_lines), area);
+}
+
 // ── Toggle button ────────────────────────────────────────────────────────────
 
 /// Toggle icon at the bottom-left of the expanded right panel (just inside the separator).
@@ -480,7 +557,7 @@ mod tests {
     fn tab_header_renders_the_same_labels_the_hit_test_uses() {
         let app = issues_app();
         let buffer = draw_panel(&app);
-        assert_eq!(row_text(&buffer, 0), "│ Changes │ Checks │ Issues");
+        assert_eq!(row_text(&buffer, 0), "│ Changes │ Checks │ Issues │");
     }
 
     #[test]
@@ -555,6 +632,94 @@ mod tests {
         assert_eq!(row_text(&buffer, 1), "│ no open issues");
 
         // Workspace without a git space.
+        app.workspaces[0].cached_git_space = None;
+        let buffer = draw_panel(&app);
+        assert_eq!(row_text(&buffer, 1), "│ not a git repository");
+    }
+
+    fn prs_app() -> AppState {
+        let mut app = issues_app();
+        app.right_panel_active_tab = RightPanelTab::PullRequests;
+        app
+    }
+
+    fn open_pr(
+        number: u64,
+        title: &str,
+        is_draft: bool,
+        mergeable: Option<&str>,
+    ) -> crate::workspace::OpenPr {
+        crate::workspace::OpenPr {
+            number,
+            title: title.into(),
+            url: format!("https://github.com/owner/proj/pull/{number}"),
+            head_ref_name: format!("branch-{number}"),
+            is_draft,
+            mergeable: mergeable.map(String::from),
+        }
+    }
+
+    #[test]
+    fn prs_tab_renders_rows_with_indicators_and_scroll() {
+        let mut app = prs_app();
+        app.repo_open_prs.insert(
+            TEST_REPO.into(),
+            crate::workspace::RepoOpenPrs {
+                prs: vec![
+                    open_pr(42, "feat: widget", false, Some("MERGEABLE")),
+                    open_pr(7, "wip: exp", true, Some("CONFLICTING")),
+                    open_pr(9, "chore: x", false, None),
+                ],
+                error: None,
+            },
+        );
+
+        let buffer = draw_panel(&app);
+        assert_eq!(row_text(&buffer, 1), "│ #42 feat: widget ✓");
+        assert_eq!(row_text(&buffer, 2), "│ ◌ #7 wip: exp ✗");
+        assert_eq!(row_text(&buffer, 3), "│ #9 chore: x");
+
+        app.right_panel_scroll = 1;
+        let buffer = draw_panel(&app);
+        assert_eq!(row_text(&buffer, 1), "│ ◌ #7 wip: exp ✗");
+    }
+
+    #[test]
+    fn prs_tab_renders_error_and_empty_states() {
+        let mut app = prs_app();
+
+        let buffer = draw_panel(&app);
+        assert_eq!(row_text(&buffer, 1), "│ no pull request data");
+
+        app.right_panel_prs_requested = true;
+        let buffer = draw_panel(&app);
+        assert_eq!(row_text(&buffer, 1), "│ loading pull requests…");
+        app.right_panel_prs_requested = false;
+        app.prs_fetch_in_flight.insert(TEST_REPO.into());
+        let buffer = draw_panel(&app);
+        assert_eq!(row_text(&buffer, 1), "│ loading pull requests…");
+        app.prs_fetch_in_flight.clear();
+
+        app.repo_open_prs.insert(
+            TEST_REPO.into(),
+            crate::workspace::RepoOpenPrs {
+                prs: Vec::new(),
+                error: Some("gh: not logged in".into()),
+            },
+        );
+        let buffer = draw_panel(&app);
+        assert_eq!(row_text(&buffer, 1), "│ gh: not logged in");
+
+        app.repo_open_prs.insert(
+            TEST_REPO.into(),
+            crate::workspace::RepoOpenPrs {
+                prs: Vec::new(),
+                error: None,
+            },
+        );
+        let buffer = draw_panel(&app);
+        assert_eq!(row_text(&buffer, 1), "│ no open pull requests");
+
         app.workspaces[0].cached_git_space = None;
         let buffer = draw_panel(&app);
         assert_eq!(row_text(&buffer, 1), "│ not a git repository");

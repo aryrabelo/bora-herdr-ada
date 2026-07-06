@@ -370,6 +370,30 @@ impl AppState {
         Some((issue.number, issue.url.clone()))
     }
 
+    /// Map a screen row in the right panel PRs tab to `(number, url, head_ref)`.
+    ///
+    /// Walks the same flat layout as `render_prs_tab` (one row per PR, offset
+    /// by `right_panel_scroll`). Returns `None` when the row is out of range,
+    /// the cache is missing/errored, or the workspace has no repo.
+    pub(super) fn right_panel_pr_at_row(&self, screen_row: u16) -> Option<(u64, String, String)> {
+        let rp = self.view.right_panel_rect;
+        let body_start = rp.y + 1; // tab header is row rp.y
+        if screen_row < body_start {
+            return None;
+        }
+        let row_in_body = (screen_row - body_start) as usize;
+        let flat_index = row_in_body + self.right_panel_scroll as usize;
+
+        let ws = self.active.and_then(|i| self.workspaces.get(i))?;
+        let repo_identity = ws.git_space().map(|space| space.repo_identity.clone())?;
+        let cache = self.repo_open_prs.get(&repo_identity)?;
+        if cache.error.is_some() {
+            return None;
+        }
+        let pr = cache.prs.get(flat_index)?;
+        Some((pr.number, pr.url.clone(), pr.head_ref_name.clone()))
+    }
+
     pub(super) fn set_sidebar_section_split(&mut self, row: u16) {
         let sidebar = self.view.sidebar_rect;
         let content_height = sidebar.height;

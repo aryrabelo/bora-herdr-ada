@@ -1839,6 +1839,7 @@ mod tests {
                     url: "https://github.com/owner/herdr/pull/7".into(),
                     head_ref_name: "fix-focus".into(),
                     is_draft: false,
+                    mergeable: None,
                 }],
                 error: None,
             },
