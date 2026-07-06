@@ -388,6 +388,24 @@ impl App {
                 self.start_issues_fetch(repo_identity, cwd);
             }
         }
+        if self.state.right_panel_prs_requested {
+            self.state.right_panel_prs_requested = false;
+            let job = self
+                .state
+                .active
+                .and_then(|i| self.state.workspaces.get(i))
+                .and_then(|ws| {
+                    let repo_identity = ws.git_space().map(|space| space.repo_identity.clone())?;
+                    let cwd = ws.resolved_identity_cwd_from(
+                        &self.state.terminals,
+                        &self.terminal_runtimes,
+                    )?;
+                    Some((repo_identity, cwd))
+                });
+            if let Some((repo_identity, cwd)) = job {
+                self.start_open_prs_fetch(repo_identity, cwd);
+            }
+        }
         if self.state.right_panel_diff_requested {
             self.state.right_panel_diff_requested = false;
             if let Some((_, ref path)) = self.state.right_panel_selected_file {

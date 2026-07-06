@@ -1153,9 +1153,7 @@ impl AppState {
                 crate::ui::WorkspaceListEntry::Workspace { ws_idx, .. } => Some(ws_idx),
                 crate::ui::WorkspaceListEntry::GroupHeader { .. }
                 | crate::ui::WorkspaceListEntry::ProjectHeader { .. }
-                | crate::ui::WorkspaceListEntry::BranchHeader { .. }
-                | crate::ui::WorkspaceListEntry::PrSectionHeader { .. }
-                | crate::ui::WorkspaceListEntry::PrRow { .. } => None,
+                | crate::ui::WorkspaceListEntry::BranchHeader { .. } => None,
             })
             .collect::<Vec<_>>();
         if order.is_empty() {

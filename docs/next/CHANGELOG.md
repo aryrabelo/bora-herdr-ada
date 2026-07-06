@@ -4,6 +4,13 @@ Bora is a fork of [herdr](https://github.com/ogulcancelik/herdr). This changelog
 
 ## Unreleased
 
+### Added
+- **Pull Requests tab** in the right panel. A new "PRs" tab (alongside Changes / Checks / Issues) lists the current user's open PRs for the active workspace's repo, with mergeable indicators (`✓` green = MERGEABLE, `✗` red = CONFLICTING) and draft markers. Clicking a PR row opens its context menu (Open in worktree / Open in browser / Copy URL). The PR list is refreshed on tab open and periodically in the background.
+- Create worktree modal opened by a "+" button on each repo header row, with GitHub / Branch / Name tabs. GitHub lists the repo's open pull requests and issues: a pull request opens its worktree, an issue runs the configured `[flow]` command (issue rows are disabled with a hint when no `[flow]` command is set). Branch checks out an existing local branch; Name creates a fresh branch. The existing `new_worktree` keybind and the `GitWorkspace` context-menu "New worktree" entry open the same modal.
+
+### Changed
+- Pull request rows have been removed from the left sidebar. PRs are now managed exclusively through the right panel's "PRs" tab, which provides a cleaner dedicated surface with mergeable status, draft markers, and the same context-menu actions (Open in worktree / browser / copy URL). The Create-worktree modal's GitHub tab continues to offer a separate path to open a PR worktree.
+
 ### Fixed
 - `herdr --remote` now installs remote helper binaries without routing the binary stream through a multiline `/bin/sh -c` command, fixing installs for non-POSIX login shells such as xonsh. (#1203, thanks @nhumrich)
 
