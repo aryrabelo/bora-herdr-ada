@@ -6,9 +6,14 @@ Bora is a fork of [herdr](https://github.com/ogulcancelik/herdr). This changelog
 
 ### Added
 - Added `ui.tab_bar_position = "bottom"` to place the desktop tab row below terminal panes.
+- Copy mode now supports literal smart-case search with `/` and `?`, repeating with `n` and `N`, match highlighting, and tmux-style cross-line `w`/`b`/`e` word motions. (#1230)
+- Added maki detection with idle, working, and blocked screen states. (#1301, thanks @tontinton)
+- **Pull Requests tab** in the right panel. A new "PRs" tab (alongside Changes / Checks / Issues) lists the current user's open PRs for the active workspace's repo, with mergeable indicators (`✓` green = MERGEABLE, `✗` red = CONFLICTING) and draft markers. Clicking a PR row opens its context menu (Open in worktree / Open in browser / Copy URL). The PR list is refreshed on tab open and periodically in the background.
+- Create worktree modal opened by a "+" button on each repo header row, with GitHub / Branch / Name tabs. GitHub lists the repo's open pull requests and issues: a pull request opens its worktree, an issue runs the configured `[flow]` command (issue rows are disabled with a hint when no `[flow]` command is set). Branch checks out an existing local branch; Name creates a fresh branch. The existing `new_worktree` keybind and the `GitWorkspace` context-menu "New worktree" entry open the same modal.
 
 ### Changed
 - Idle, not-yet-seen panes now show an animated braille "sand" glyph whose color ramps gray to red by idle age, and working panes show an animated spinner; the animation timer only schedules redraws while an animation is actually visible.
+- Pull request rows have been removed from the left sidebar. PRs are now managed exclusively through the right panel's "PRs" tab, which provides a cleaner dedicated surface with mergeable status, draft markers, and the same context-menu actions (Open in worktree / browser / copy URL). The Create-worktree modal's GitHub tab continues to offer a separate path to open a PR worktree.
 - Relicensed Herdr from AGPL-3.0-or-later to Apache-2.0.
 
 ### Fixed

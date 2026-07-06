@@ -10,6 +10,7 @@ pub struct OpenPr {
     pub url: String,
     pub head_ref_name: String,
     pub is_draft: bool,
+    pub mergeable: Option<String>,
 }
 
 /// Open PRs authored by the current user for one repo.
@@ -26,7 +27,7 @@ pub struct RepoOpenPrs {
 
 /// Parse `gh pr list --json` output into a list of `OpenPr`.
 ///
-/// Expected JSON shape (from `--json number,title,url,headRefName,isDraft`):
+/// Expected JSON shape (from `--json number,title,url,headRefName,isDraft,mergeable`):
 /// ```json
 /// [
 ///   {
@@ -34,7 +35,8 @@ pub struct RepoOpenPrs {
 ///     "title": "feat: thing",
 ///     "url": "https://github.com/owner/repo/pull/42",
 ///     "headRefName": "feat/thing",
-///     "isDraft": false
+///     "isDraft": false,
+///     "mergeable": "MERGEABLE"
 ///   },
 ///   ...
 /// ]
@@ -70,12 +72,17 @@ pub(super) fn parse_gh_pr_list_json(json_str: &str) -> Result<Vec<OpenPr>, Strin
                 .get("isDraft")
                 .and_then(serde_json::Value::as_bool)
                 .unwrap_or(false);
+            let mergeable = item
+                .get("mergeable")
+                .and_then(|v| v.as_str())
+                .map(String::from);
             Some(OpenPr {
                 number,
                 title,
                 url,
                 head_ref_name,
                 is_draft,
+                mergeable,
             })
         })
         .collect())
@@ -98,7 +105,7 @@ pub fn fetch_my_open_prs(cwd: &Path) -> RepoOpenPrs {
             "--state",
             "open",
             "--json",
-            "number,title,url,headRefName,isDraft",
+            "number,title,url,headRefName,isDraft,mergeable",
         ])
         .output()
     {
@@ -162,7 +169,8 @@ mod tests {
                 "title": "feat: add widget",
                 "url": "https://github.com/owner/repo/pull/42",
                 "headRefName": "feat/widget",
-                "isDraft": false
+                "isDraft": false,
+                "mergeable": "MERGEABLE"
             },
             {
                 "number": 43,
@@ -179,6 +187,7 @@ mod tests {
         assert_eq!(prs[0].url, "https://github.com/owner/repo/pull/42");
         assert_eq!(prs[0].head_ref_name, "feat/widget");
         assert!(!prs[0].is_draft);
+        assert_eq!(prs[0].mergeable.as_deref(), Some("MERGEABLE"));
         assert_eq!(prs[1].number, 43);
     }
 
@@ -229,6 +238,18 @@ mod tests {
         assert_eq!(prs[0].url, "");
         assert_eq!(prs[0].head_ref_name, "");
         assert!(!prs[0].is_draft);
+        assert_eq!(prs[0].mergeable, None);
+    }
+
+    #[test]
+    fn parse_conflicting_mergeable() {
+        let json = r#"[
+            {"number": 8, "mergeable": "CONFLICTING"},
+            {"number": 9, "mergeable": null}
+        ]"#;
+        let prs = parse_gh_pr_list_json(json).unwrap();
+        assert_eq!(prs[0].mergeable.as_deref(), Some("CONFLICTING"));
+        assert_eq!(prs[1].mergeable, None);
     }
 
     #[test]

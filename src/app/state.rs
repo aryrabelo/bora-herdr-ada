@@ -632,14 +632,6 @@ pub struct GroupHeaderCardArea {
     pub rect: Rect,
 }
 
-/// Layout area for an open-PR row in the sidebar workspace list.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SidebarPrRowArea {
-    pub rect: Rect,
-    pub repo_identity: String,
-    pub pr_idx: usize,
-}
-
 /// Layout area for the "+" (create worktree) affordance on a repo header row
 /// in the sidebar workspace list.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -856,7 +848,6 @@ pub struct ViewState {
     pub sidebar_rect: Rect,
     pub workspace_card_areas: Vec<WorkspaceCardArea>,
     pub workspace_group_header_areas: Vec<GroupHeaderCardArea>,
-    pub sidebar_pr_row_areas: Vec<SidebarPrRowArea>,
     pub worktree_new_hit_areas: Vec<WorktreeNewHitArea>,
     pub tab_bar_rect: Rect,
     pub tab_hit_areas: Vec<Rect>,
@@ -880,6 +871,7 @@ pub enum RightPanelTab {
     Changes,
     Checks,
     Issues,
+    PullRequests,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1875,6 +1867,8 @@ pub struct AppState {
     pub right_panel_checks_requested: bool,
     /// Set when Issues tab is activated; drained by App to call start_issues_fetch.
     pub right_panel_issues_requested: bool,
+    /// Set when the PRs tab is activated; drained by App to call start_open_prs_fetch.
+    pub right_panel_prs_requested: bool,
     pub agent_panel_sort: AgentPanelSort,
     /// Transient session-wide projection override for the built-in Agents view.
     pub agent_view_override: Option<crate::api::schema::AgentViewSetParams>,
@@ -2251,7 +2245,6 @@ impl AppState {
                 sidebar_rect: Rect::default(),
                 workspace_card_areas: Vec::new(),
                 workspace_group_header_areas: Vec::new(),
-                sidebar_pr_row_areas: Vec::new(),
                 worktree_new_hit_areas: Vec::new(),
                 tab_bar_rect: Rect::default(),
                 tab_hit_areas: Vec::new(),
@@ -2305,6 +2298,7 @@ impl AppState {
             right_panel_diff_requested: false,
             right_panel_checks_requested: false,
             right_panel_issues_requested: false,
+            right_panel_prs_requested: false,
             agent_panel_sort: AgentPanelSort::Spaces,
             agent_view_override: None,
             sidebar_agents: crate::config::AgentsSidebarConfig::default(),
