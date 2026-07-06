@@ -367,8 +367,6 @@ pub(crate) enum WorkspaceListEntry {
         behind: usize,
         indented: bool,
     },
-    /// Closing line for a project's branch sub-tree (╰───).
-    ProjectFooter { indented: bool },
     /// Collapsible "pull requests" section header under a repo group.
     PrSectionHeader { collapse_key: String, count: usize },
     /// One open PR row under a PrSectionHeader; `pr_idx` indexes into
@@ -417,7 +415,6 @@ fn entry_row_height(
         WorkspaceListEntry::GroupHeader { .. } => 1,
         WorkspaceListEntry::ProjectHeader { .. } => 1,
         WorkspaceListEntry::BranchHeader { .. } => 1,
-        WorkspaceListEntry::ProjectFooter { .. } => 1,
         WorkspaceListEntry::PrSectionHeader { .. } => 1,
         WorkspaceListEntry::PrRow { .. } => 1,
         WorkspaceListEntry::Workspace { .. } => 2,
@@ -736,7 +733,6 @@ fn emit_branch_subgroups(
     }
 
     // One branch sub-tree per branch; members stack under it on the spine.
-    let has_branches = !branch_order.is_empty();
     for branch in &branch_order {
         let members = &by_branch[branch];
         let (ahead, behind) = members
@@ -764,11 +760,6 @@ fn emit_branch_subgroups(
             indented,
             rail: BranchRail::None,
         });
-    }
-
-    // Close the project's branch sub-tree with a footer line.
-    if has_branches {
-        entries.push(WorkspaceListEntry::ProjectFooter { indented });
     }
 }
 
@@ -965,9 +956,6 @@ pub(crate) fn compute_workspace_list_areas(
             }
             WorkspaceListEntry::BranchHeader { .. } => {
                 // BranchHeader is a non-clickable label — no card or header area.
-            }
-            WorkspaceListEntry::ProjectFooter { .. } => {
-                // ProjectFooter is a non-clickable closer line — no card.
             }
             WorkspaceListEntry::Workspace {
                 ws_idx, indented, ..
@@ -1490,18 +1478,6 @@ fn render_workspace_list(
                     frame.render_widget(
                         Paragraph::new(Line::from(line2)),
                         Rect::new(body.x, dots_y, body.width, 1),
-                    );
-                }
-            }
-            WorkspaceListEntry::ProjectFooter { indented } => {
-                if row_y < list_bottom {
-                    let indent = if *indented { " " } else { "" };
-                    frame.render_widget(
-                        Paragraph::new(Line::from(Span::styled(
-                            format!("{indent}╰───────"),
-                            Style::default().fg(p.overlay0),
-                        ))),
-                        Rect::new(body.x, row_y, body.width, 1),
                     );
                 }
             }
@@ -2105,10 +2081,6 @@ mod tests {
             .collect::<String>();
 
         assert!(text.contains("herdr"), "project header label: {text:?}");
-        assert!(
-            text.contains("╰─"),
-            "branch tree connector present: {text:?}"
-        );
         assert!(text.contains("main"), "branch label present: {text:?}");
         assert!(text.contains("strider"), "member name present: {text:?}");
         assert_eq!(
@@ -2305,8 +2277,8 @@ mod tests {
         let metrics = workspace_list_scroll_metrics(&app, ws_area);
 
         assert_eq!(metrics.viewport_rows, 2);
-        assert_eq!(metrics.max_offset_from_bottom, 2);
-        assert_eq!(metrics.offset_from_bottom, 2);
+        assert_eq!(metrics.max_offset_from_bottom, 1);
+        assert_eq!(metrics.offset_from_bottom, 1);
     }
 
     #[test]
@@ -2959,7 +2931,7 @@ mod tests {
         let entries = workspace_list_entries(&app);
 
         // Both checkouts are on branch "main" under a synthesized project header,
-        // so they form one branch sub-tree: BranchHeader + two Spine members + footer.
+        // so they form one branch sub-tree: BranchHeader + two Spine members.
         assert_eq!(
             entries,
             vec![
@@ -2984,7 +2956,6 @@ mod tests {
                     indented: true,
                     rail: BranchRail::Spine,
                 },
-                WorkspaceListEntry::ProjectFooter { indented: true },
             ]
         );
     }
@@ -3032,7 +3003,6 @@ mod tests {
                     indented: true,
                     rail: BranchRail::None,
                 },
-                WorkspaceListEntry::ProjectFooter { indented: true },
             ]
         );
     }
@@ -3094,12 +3064,7 @@ mod tests {
                 )
             })
             .count();
-        let footer_count = entries
-            .iter()
-            .filter(|e| matches!(e, WorkspaceListEntry::ProjectFooter { .. }))
-            .count();
         assert_eq!(spine_count, 2, "each branch member is on the spine");
-        assert_eq!(footer_count, 1, "one closer line per project");
     }
 
     #[test]
@@ -3192,7 +3157,6 @@ mod tests {
                 WorkspaceListEntry::GroupHeader { .. } => "GroupHeader",
                 WorkspaceListEntry::ProjectHeader { .. } => "ProjectHeader",
                 WorkspaceListEntry::BranchHeader { .. } => "BranchHeader",
-                WorkspaceListEntry::ProjectFooter { .. } => "ProjectFooter",
                 WorkspaceListEntry::Workspace { .. } => "Workspace",
                 WorkspaceListEntry::PrSectionHeader { .. } => "PrSectionHeader",
                 WorkspaceListEntry::PrRow { .. } => "PrRow",
@@ -3205,7 +3169,6 @@ mod tests {
                 "BranchHeader",
                 "Workspace",
                 "Workspace",
-                "ProjectFooter",
                 "Workspace",
             ]
         );
@@ -3216,7 +3179,7 @@ mod tests {
             .enumerate()
             .map(|(idx, entry)| entry_row_height(entry, &entries, idx))
             .sum();
-        assert_eq!(total_height, 9, "1+1+2+2+1+2 rows for the pinned sequence");
+        assert_eq!(total_height, 8, "1+1+2+2+2 rows for the pinned sequence");
 
         // Visible-count pass agrees: a body exactly `total_height` rows tall
         // shows every entry; one row less drops exactly the last (2-row)
@@ -3244,9 +3207,7 @@ mod tests {
                 WorkspaceListEntry::GroupHeader { .. }
                 | WorkspaceListEntry::ProjectHeader { .. }
                 | WorkspaceListEntry::PrSectionHeader { .. } => expected_header_ys.push(y),
-                WorkspaceListEntry::BranchHeader { .. }
-                | WorkspaceListEntry::ProjectFooter { .. }
-                | WorkspaceListEntry::PrRow { .. } => {}
+                WorkspaceListEntry::BranchHeader { .. } | WorkspaceListEntry::PrRow { .. } => {}
             }
             y += entry_row_height(entry, &entries, idx);
         }
@@ -3287,9 +3248,9 @@ mod tests {
             row_text(body_y)
         );
         assert!(
-            row_text(body_y + 7).contains("notes"),
+            row_text(body_y + 6).contains("notes"),
             "flat workspace card first row: {:?}",
-            row_text(body_y + 7)
+            row_text(body_y + 6)
         );
 
         // Invariants gate for the state used above, so later field additions

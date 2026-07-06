@@ -1,0 +1,42 @@
+{
+  "changes_this_session": [],
+  "cwd": "/Users/aryrabelo/Sites/bora",
+  "duration_minutes": 6,
+  "ended_at": "2026-07-03T14:43:25Z",
+  "event_seq": 120,
+  "fork_count": 0,
+  "git": {
+    "branch": "main",
+    "last_commit": "d817834",
+    "uncommitted_changes": 0
+  },
+  "harness_mem": {
+    "healthy": true,
+    "last_checked": "2026-07-03T14:37:25Z",
+    "last_error": ""
+  },
+  "intent": "literal",
+  "last_event_id": "event-000120",
+  "memory_logged": true,
+  "orchestration": {
+    "max_state_retries": 3,
+    "retry_backoff_seconds": 10
+  },
+  "parent_session_id": null,
+  "plans": {
+    "completed_tasks": 0,
+    "exists": false,
+    "last_modified": 0,
+    "pending_tasks": 0,
+    "todo_tasks": 0,
+    "wip_tasks": 0
+  },
+  "project_name": "bora",
+  "prompt_seq": 3,
+  "resume_token": "resume-1783089445510913000",
+  "session_id": "session-1783089445510902000",
+  "started_at": "2026-07-03T14:37:25Z",
+  "state": "stopped",
+  "state_version": 1,
+  "updated_at": "2026-07-03T14:43:18Z"
+}
