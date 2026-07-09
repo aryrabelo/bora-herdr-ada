@@ -980,7 +980,7 @@ pub(super) fn wait_for_pane_exited(
     let request = Request {
         id: "cli:agent:wait".into(),
         method: Method::EventsSubscribe(crate::api::schema::EventsSubscribeParams {
-            subscriptions: vec![Subscription::PaneExited {}],
+            subscriptions: vec![crate::api::schema::Subscription::PaneExited {}],
         }),
     };
     let (ack, mut stream) = ApiClient::local()

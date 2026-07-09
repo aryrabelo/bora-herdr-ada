@@ -83,10 +83,8 @@ fn agent_explain(args: &[String]) -> std::io::Result<i32> {
                 index += 1;
             }
             "help" | "--help" | "-h" => {
-                eprintln!("usage: herdr agent explain <target> [--json|--verbose]");
-                eprintln!(
-                    "usage: herdr agent explain --file PATH --agent LABEL [--json|--verbose]"
-                );
+                eprintln!("usage: bora agent explain <target> [--json|--verbose]");
+                eprintln!("usage: bora agent explain --file PATH --agent LABEL [--json|--verbose]");
                 return Ok(0);
             }
             value if value.starts_with('-') => {
@@ -95,7 +93,7 @@ fn agent_explain(args: &[String]) -> std::io::Result<i32> {
             }
             value => {
                 if target.is_some() {
-                    eprintln!("usage: herdr agent explain <target> [--json]");
+                    eprintln!("usage: bora agent explain <target> [--json]");
                     return Ok(2);
                 }
                 target = Some(value.to_string());
@@ -106,11 +104,11 @@ fn agent_explain(args: &[String]) -> std::io::Result<i32> {
 
     let explain = if let Some(path) = file {
         if target.is_some() {
-            eprintln!("usage: herdr agent explain --file PATH --agent LABEL [--json]");
+            eprintln!("usage: bora agent explain --file PATH --agent LABEL [--json]");
             return Ok(2);
         }
         let Some(agent_label) = agent else {
-            eprintln!("herdr agent explain --file requires --agent LABEL");
+            eprintln!("bora agent explain --file requires --agent LABEL");
             return Ok(2);
         };
         let content = std::fs::read_to_string(path)?;
@@ -120,8 +118,8 @@ fn agent_explain(args: &[String]) -> std::io::Result<i32> {
         ))
     } else {
         let Some(target) = target else {
-            eprintln!("usage: herdr agent explain <target> [--json]");
-            eprintln!("usage: herdr agent explain --file PATH --agent LABEL [--json]");
+            eprintln!("usage: bora agent explain <target> [--json]");
+            eprintln!("usage: bora agent explain --file PATH --agent LABEL [--json]");
             return Ok(2);
         };
         if agent.is_some() {
@@ -267,12 +265,12 @@ fn matched_rule_region_preview<'a>(
 
 fn agent_start(args: &[String]) -> std::io::Result<i32> {
     let Some(name) = args.first() else {
-        eprintln!("usage: herdr agent start <name> [--cwd PATH] [--workspace ID] [--tab ID] [--split right|down] [--env KEY=VALUE] [--focus|--no-focus] -- <argv...>");
+        eprintln!("usage: bora agent start <name> [--cwd PATH] [--workspace ID] [--tab ID] [--split right|down] [--env KEY=VALUE] [--focus|--no-focus] -- <argv...>");
         return Ok(2);
     };
 
     let Some(separator) = args.iter().position(|arg| arg == "--") else {
-        eprintln!("usage: herdr agent start <name> [--cwd PATH] [--workspace ID] [--tab ID] [--split right|down] [--env KEY=VALUE] [--focus|--no-focus] -- <argv...>");
+        eprintln!("usage: bora agent start <name> [--cwd PATH] [--workspace ID] [--tab ID] [--split right|down] [--env KEY=VALUE] [--focus|--no-focus] -- <argv...>");
         return Ok(2);
     };
     if separator == args.len() - 1 {
@@ -369,7 +367,7 @@ fn agent_start(args: &[String]) -> std::io::Result<i32> {
 
 fn agent_list(args: &[String]) -> std::io::Result<i32> {
     if !args.is_empty() {
-        eprintln!("usage: herdr agent list");
+        eprintln!("usage: bora agent list");
         return Ok(2);
     }
 
@@ -381,11 +379,11 @@ fn agent_list(args: &[String]) -> std::io::Result<i32> {
 
 fn agent_get(args: &[String]) -> std::io::Result<i32> {
     let Some(target) = args.first() else {
-        eprintln!("usage: herdr agent get <target>");
+        eprintln!("usage: bora agent get <target>");
         return Ok(2);
     };
     if args.len() != 1 {
-        eprintln!("usage: herdr agent get <target>");
+        eprintln!("usage: bora agent get <target>");
         return Ok(2);
     }
 
@@ -399,11 +397,11 @@ fn agent_get(args: &[String]) -> std::io::Result<i32> {
 
 fn agent_focus(args: &[String]) -> std::io::Result<i32> {
     let Some(target) = args.first() else {
-        eprintln!("usage: herdr agent focus <target>");
+        eprintln!("usage: bora agent focus <target>");
         return Ok(2);
     };
     if args.len() != 1 {
-        eprintln!("usage: herdr agent focus <target>");
+        eprintln!("usage: bora agent focus <target>");
         return Ok(2);
     }
 
@@ -417,7 +415,7 @@ fn agent_focus(args: &[String]) -> std::io::Result<i32> {
 
 fn agent_attach(args: &[String]) -> std::io::Result<i32> {
     let (target, takeover) =
-        match super::parse_attach_target(args, "usage: herdr agent attach <target> [--takeover]") {
+        match super::parse_attach_target(args, "usage: bora agent attach <target> [--takeover]") {
             Ok(parsed) => parsed,
             Err(code) => return Ok(code),
         };
@@ -437,7 +435,7 @@ fn agent_attach(args: &[String]) -> std::io::Result<i32> {
 
 fn agent_wait(args: &[String]) -> std::io::Result<i32> {
     let Some(target) = args.first() else {
-        eprintln!("usage: herdr agent wait <target> --status <idle|working|blocked|unknown|exited> [--timeout MS]");
+        eprintln!("usage: bora agent wait <target> --status <idle|working|blocked|unknown|exited> [--timeout MS]");
         return Ok(2);
     };
 
@@ -469,7 +467,7 @@ fn agent_wait(args: &[String]) -> std::io::Result<i32> {
                 index += 2;
             }
             "help" | "--help" | "-h" => {
-                eprintln!("usage: herdr agent wait <target> --status <idle|working|blocked|unknown|exited> [--timeout MS]");
+                eprintln!("usage: bora agent wait <target> --status <idle|working|blocked|unknown|exited> [--timeout MS]");
                 return Ok(0);
             }
             other => {
@@ -567,19 +565,21 @@ fn agent_wait_exited(target: &str, timeout_ms: Option<u64>) -> std::io::Result<i
     let pane_id = pane_id.to_owned();
     let recheck_target = target.to_owned();
     super::wait_for_pane_exited(&pane_id, timeout_ms, move || {
-        Ok(resolve_agent_target(&recheck_target, "cli:agent:wait:recheck")?
-            .get("error")
-            .is_some())
+        Ok(
+            resolve_agent_target(&recheck_target, "cli:agent:wait:recheck")?
+                .get("error")
+                .is_some(),
+        )
     })
 }
 
 fn agent_rename(args: &[String]) -> std::io::Result<i32> {
     let Some(target) = args.first() else {
-        eprintln!("usage: herdr agent rename <target> <name>|--clear");
+        eprintln!("usage: bora agent rename <target> <name>|--clear");
         return Ok(2);
     };
     if args.len() < 2 {
-        eprintln!("usage: herdr agent rename <target> <name>|--clear");
+        eprintln!("usage: bora agent rename <target> <name>|--clear");
         return Ok(2);
     }
     let name = if args.len() == 2 && args[1] == "--clear" {
@@ -599,7 +599,7 @@ fn agent_rename(args: &[String]) -> std::io::Result<i32> {
 
 fn agent_send(args: &[String]) -> std::io::Result<i32> {
     if args.len() < 2 {
-        eprintln!("usage: herdr agent send <target> <text>");
+        eprintln!("usage: bora agent send <target> <text>");
         return Ok(2);
     }
 
@@ -614,7 +614,7 @@ fn agent_send(args: &[String]) -> std::io::Result<i32> {
 
 fn agent_read(args: &[String]) -> std::io::Result<i32> {
     let Some(target) = args.first() else {
-        eprintln!("usage: herdr agent read <target> [--source visible|recent|recent-unwrapped] [--lines N] [--format text|ansi] [--ansi]");
+        eprintln!("usage: bora agent read <target> [--source visible|recent|recent-unwrapped] [--lines N] [--format text|ansi] [--ansi]");
         return Ok(2);
     };
 
@@ -701,18 +701,20 @@ fn parse_agent_wait_status(value: &str) -> std::io::Result<AgentStatus> {
 }
 
 fn print_agent_help() {
-    eprintln!("herdr agent commands:");
-    eprintln!("  herdr agent list");
-    eprintln!("  herdr agent get <target>");
-    eprintln!("  herdr agent read <target> [--source visible|recent|recent-unwrapped] [--lines N] [--format text|ansi] [--ansi]");
-    eprintln!("  herdr agent send <target> <text>");
-    eprintln!("  herdr agent rename <target> <name>|--clear");
-    eprintln!("  herdr agent focus <target>");
-    eprintln!("  herdr agent wait <target> --status <idle|working|blocked|unknown|exited> [--timeout MS]");
-    eprintln!("  herdr agent attach <target> [--takeover]");
-    eprintln!("  herdr agent start <name> [--cwd PATH] [--workspace ID] [--tab ID] [--split right|down] [--env KEY=VALUE] [--focus|--no-focus] -- <argv...>");
-    eprintln!("  herdr agent explain <target> [--json]");
-    eprintln!("  herdr agent explain --file PATH --agent LABEL [--json]");
+    eprintln!("bora agent commands:");
+    eprintln!("  bora agent list");
+    eprintln!("  bora agent get <target>");
+    eprintln!("  bora agent read <target> [--source visible|recent|recent-unwrapped] [--lines N] [--format text|ansi] [--ansi]");
+    eprintln!("  bora agent send <target> <text>");
+    eprintln!("  bora agent rename <target> <name>|--clear");
+    eprintln!("  bora agent focus <target>");
+    eprintln!(
+        "  bora agent wait <target> --status <idle|working|blocked|unknown|exited> [--timeout MS]"
+    );
+    eprintln!("  bora agent attach <target> [--takeover]");
+    eprintln!("  bora agent start <name> [--cwd PATH] [--workspace ID] [--tab ID] [--split right|down] [--env KEY=VALUE] [--focus|--no-focus] -- <argv...>");
+    eprintln!("  bora agent explain <target> [--json]");
+    eprintln!("  bora agent explain --file PATH --agent LABEL [--json]");
     eprintln!("  targets accept terminal ids, unique agent names, detected/reported agent labels, and legacy pane ids");
     eprintln!(
         "  agent send writes literal text; use pane run when you want command text plus Enter"
