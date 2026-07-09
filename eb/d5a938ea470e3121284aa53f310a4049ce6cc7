@@ -1,0 +1,19 @@
+src/ui/sidebar.rs
+  s_c7e2e603af8512::t_5b04846a86fbf0 2280-2281,2934,3182,3210,3251,3253
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "ebd5a938ea470e3121284aa53f310a4049ce6cc7",
+  "prompts": {},
+  "sessions": {
+    "s_c7e2e603af8512": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bc3a86ac-808e-429a-8cc9-2d32f7b8295b",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Ary Rabelo <aryrabelo@gmail.com>"
+    }
+  }
+}

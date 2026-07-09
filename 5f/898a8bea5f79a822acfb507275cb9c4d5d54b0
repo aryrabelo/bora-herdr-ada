@@ -1,0 +1,26 @@
+src/cli.rs
+  s_55a2cb28829857::t_644c9a36d072fb 974-976
+  s_55a2cb28829857::t_5937974a2756da 933-973,977-999
+  s_55a2cb28829857::t_fa8a0bbe4bece3 1
+src/cli/agent.rs
+  s_55a2cb28829857::t_a9457ee6517671 440,446,456-460
+  s_55a2cb28829857::t_9047fbb609669d 482-485
+  s_55a2cb28829857::t_362f4d61760c69 548-575
+  s_55a2cb28829857::t_0a87291173d415 472,711
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "5f898a8bea5f79a822acfb507275cb9c4d5d54b0",
+  "prompts": {},
+  "sessions": {
+    "s_55a2cb28829857": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "40b0a5d9-8d48-44d5-b584-d2a146ee193a",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Ary Rabelo <aryrabelo@gmail.com>"
+    }
+  }
+}

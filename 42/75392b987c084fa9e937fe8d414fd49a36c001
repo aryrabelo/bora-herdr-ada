@@ -1,0 +1,24 @@
+src/ui/sidebar.rs
+  s_f4b63c53a51064::t_597ee3c192a6a2 2968-3063,3068-3102
+  s_f4b63c53a51064::t_c3ada8a851ae9b 3064-3067
+src/app/input/mouse.rs
+  s_f4b63c53a51064::t_dece7dba546f89 3910
+  s_f4b63c53a51064::t_838533e483a071 3907-3909,3911-3969,3975-4045
+  s_f4b63c53a51064::t_c3ada8a851ae9b 3970-3974
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.9",
+  "base_commit_sha": "4275392b987c084fa9e937fe8d414fd49a36c001",
+  "prompts": {},
+  "sessions": {
+    "s_f4b63c53a51064": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a9343042-8c45-4055-bb27-ab3c022fce0c",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Ary Rabelo <aryrabelo@gmail.com>"
+    }
+  }
+}
