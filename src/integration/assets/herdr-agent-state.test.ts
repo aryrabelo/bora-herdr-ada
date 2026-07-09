@@ -21,9 +21,13 @@ process.env.HERDR_PANE_ID = "test-pane";
 process.env.HERDR_OMP_IDLE_DEBOUNCE_MS = "50";
 process.env.HERDR_PI_IDLE_DEBOUNCE_MS = "50";
 
-type Report = { method?: string; params?: { state?: string } };
+type Report = {
+  method?: string;
+  params?: { state?: string; session_start_source?: string };
+};
 
 let reportedStates: string[] = [];
+let sessionReports: Report[] = [];
 
 function capture(raw: unknown): void {
   for (const line of String(raw).split("\n")) {
@@ -36,6 +40,9 @@ function capture(raw: unknown): void {
     }
     if (parsed?.method === "pane.report_agent" && typeof parsed.params?.state === "string") {
       reportedStates.push(parsed.params.state);
+    }
+    if (parsed?.method === "pane.report_agent_session") {
+      sessionReports.push(parsed);
     }
   }
 }
@@ -91,6 +98,7 @@ beforeAll(async () => {
 
 afterEach(() => {
   reportedStates = [];
+  sessionReports = [];
   jest.useRealTimers();
 });
 
@@ -320,4 +328,43 @@ test("kilo: a subagent session going idle does not idle the pane while the root 
   });
   await flush();
   expect(reportedStates.at(-1)).toBe("idle");
+});
+
+// The server gates session replacement on the reported lifecycle source
+// (session_start_source_allows_session_replacement), so session reports must
+// carry it. Guards the coverage upstream's socket suite provided before the
+// fork replaced that suite. Also exercises session_switch, whose
+// resetSessionState crashed on a stale boolean-model variable until now.
+test("omp: session reports carry the lifecycle source", async () => {
+  // Module-loading boundary: see note above; dynamic import is intentional.
+  const mod = await import("./omp/herdr-agent-state.ts");
+  const handlers = new Map<string, (...args: unknown[]) => void>();
+  const pi = {
+    on: (name: string, cb: (...args: unknown[]) => void): void => {
+      handlers.set(name, cb);
+    },
+    events: {
+      on: (name: string, cb: (...args: unknown[]) => void): void => {
+        handlers.set(`events:${name}`, cb);
+      },
+    },
+  };
+  mod.default(pi);
+  const fire = (name: string, ...args: unknown[]): unknown =>
+    handlers.get(name)?.(...args);
+  const sessionCtx = {
+    hasUI: true,
+    sessionManager: {
+      getSessionFile: (): string => "/tmp/omp-source.jsonl",
+      getSessionId: (): string => "omp-source",
+    },
+  };
+
+  fire("session_start", {}, sessionCtx);
+  await flush();
+  expect(sessionReports.at(-1)?.params?.session_start_source).toBe("startup");
+
+  fire("session_switch", { reason: "resume" }, sessionCtx);
+  await flush();
+  expect(sessionReports.at(-1)?.params?.session_start_source).toBe("resume");
 });

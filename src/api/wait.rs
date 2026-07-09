@@ -214,7 +214,6 @@ pub(super) fn wait_for_event(
         std::thread::sleep(CONNECTION_POLL_INTERVAL);
     }
 }
-<<<<<<< HEAD
 
 fn event_match_subscription(
     request_id: &str,
@@ -280,5 +279,3 @@ fn wait_matched_response(request_id: &str, event: serde_json::Value) -> String {
     })
     .unwrap()
 }
-=======
->>>>>>> 5bd13fe2 (chore: reconcile fork with upstream herdr 0.7.3 after rebase)
