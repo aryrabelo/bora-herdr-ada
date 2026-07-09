@@ -26,7 +26,7 @@ fn integration_status(args: &[String]) -> std::io::Result<i32> {
         [] => false,
         [flag] if flag == "--outdated-only" => true,
         _ => {
-            eprintln!("usage: herdr integration status [--outdated-only]");
+            eprintln!("usage: bora integration status [--outdated-only]");
             return Ok(2);
         }
     };
@@ -103,13 +103,13 @@ fn parse_integration_target(
 ) -> std::io::Result<Option<IntegrationTarget>> {
     let Some(target) = args.first().map(std::string::String::as_str) else {
         eprintln!(
-            "usage: herdr integration {action} <pi|omp|claude|codex|copilot|devin|droid|kimi|opencode|kilo|hermes|qodercli|cursor|mastracode>"
+            "usage: bora integration {action} <pi|omp|claude|codex|copilot|devin|droid|kimi|opencode|kilo|hermes|qodercli|cursor|mastracode>"
         );
         return Ok(None);
     };
     if args.len() != 1 {
         eprintln!(
-            "usage: herdr integration {action} <pi|omp|claude|codex|copilot|devin|droid|kimi|opencode|kilo|hermes|qodercli|cursor|mastracode>"
+            "usage: bora integration {action} <pi|omp|claude|codex|copilot|devin|droid|kimi|opencode|kilo|hermes|qodercli|cursor|mastracode>"
         );
         return Ok(None);
     }
@@ -142,34 +142,34 @@ fn parse_integration_target(
 }
 
 fn print_integration_help() {
-    eprintln!("herdr integration commands:");
-    eprintln!("  herdr integration install pi");
-    eprintln!("  herdr integration install omp");
-    eprintln!("  herdr integration install claude");
-    eprintln!("  herdr integration install codex");
-    eprintln!("  herdr integration install copilot");
-    eprintln!("  herdr integration install devin");
-    eprintln!("  herdr integration install droid");
-    eprintln!("  herdr integration install kimi");
-    eprintln!("  herdr integration install opencode");
-    eprintln!("  herdr integration install kilo");
-    eprintln!("  herdr integration install hermes");
-    eprintln!("  herdr integration install qodercli");
-    eprintln!("  herdr integration install cursor");
-    eprintln!("  herdr integration install mastracode");
-    eprintln!("  herdr integration uninstall pi");
-    eprintln!("  herdr integration uninstall omp");
-    eprintln!("  herdr integration uninstall claude");
-    eprintln!("  herdr integration uninstall codex");
-    eprintln!("  herdr integration uninstall copilot");
-    eprintln!("  herdr integration uninstall devin");
-    eprintln!("  herdr integration uninstall droid");
-    eprintln!("  herdr integration uninstall kimi");
-    eprintln!("  herdr integration uninstall opencode");
-    eprintln!("  herdr integration uninstall kilo");
-    eprintln!("  herdr integration uninstall hermes");
-    eprintln!("  herdr integration uninstall qodercli");
-    eprintln!("  herdr integration uninstall cursor");
-    eprintln!("  herdr integration uninstall mastracode");
-    eprintln!("  herdr integration status [--outdated-only]");
+    eprintln!("bora integration commands:");
+    eprintln!("  bora integration install pi");
+    eprintln!("  bora integration install omp");
+    eprintln!("  bora integration install claude");
+    eprintln!("  bora integration install codex");
+    eprintln!("  bora integration install copilot");
+    eprintln!("  bora integration install devin");
+    eprintln!("  bora integration install droid");
+    eprintln!("  bora integration install kimi");
+    eprintln!("  bora integration install opencode");
+    eprintln!("  bora integration install kilo");
+    eprintln!("  bora integration install hermes");
+    eprintln!("  bora integration install qodercli");
+    eprintln!("  bora integration install cursor");
+    eprintln!("  bora integration install mastracode");
+    eprintln!("  bora integration uninstall pi");
+    eprintln!("  bora integration uninstall omp");
+    eprintln!("  bora integration uninstall claude");
+    eprintln!("  bora integration uninstall codex");
+    eprintln!("  bora integration uninstall copilot");
+    eprintln!("  bora integration uninstall devin");
+    eprintln!("  bora integration uninstall droid");
+    eprintln!("  bora integration uninstall kimi");
+    eprintln!("  bora integration uninstall opencode");
+    eprintln!("  bora integration uninstall kilo");
+    eprintln!("  bora integration uninstall hermes");
+    eprintln!("  bora integration uninstall qodercli");
+    eprintln!("  bora integration uninstall cursor");
+    eprintln!("  bora integration uninstall mastracode");
+    eprintln!("  bora integration status [--outdated-only]");
 }
