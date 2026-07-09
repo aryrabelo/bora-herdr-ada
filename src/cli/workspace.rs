@@ -33,7 +33,7 @@ pub(super) fn run_workspace_command(args: &[String]) -> std::io::Result<i32> {
 
 fn workspace_list(args: &[String]) -> std::io::Result<i32> {
     if !args.is_empty() {
-        eprintln!("usage: herdr workspace list");
+        eprintln!("usage: bora workspace list");
         return Ok(2);
     }
 
@@ -115,11 +115,11 @@ fn workspace_create(args: &[String]) -> std::io::Result<i32> {
 
 fn workspace_get(args: &[String]) -> std::io::Result<i32> {
     let Some(raw_workspace_id) = args.first() else {
-        eprintln!("usage: herdr workspace get <workspace_id>");
+        eprintln!("usage: bora workspace get <workspace_id>");
         return Ok(2);
     };
     if args.len() != 1 {
-        eprintln!("usage: herdr workspace get <workspace_id>");
+        eprintln!("usage: bora workspace get <workspace_id>");
         return Ok(2);
     }
 
@@ -128,11 +128,11 @@ fn workspace_get(args: &[String]) -> std::io::Result<i32> {
 
 fn workspace_focus(args: &[String]) -> std::io::Result<i32> {
     let Some(raw_workspace_id) = args.first() else {
-        eprintln!("usage: herdr workspace focus <workspace_id>");
+        eprintln!("usage: bora workspace focus <workspace_id>");
         return Ok(2);
     };
     if args.len() != 1 {
-        eprintln!("usage: herdr workspace focus <workspace_id>");
+        eprintln!("usage: bora workspace focus <workspace_id>");
         return Ok(2);
     }
 
@@ -141,7 +141,7 @@ fn workspace_focus(args: &[String]) -> std::io::Result<i32> {
 
 fn workspace_rename(args: &[String]) -> std::io::Result<i32> {
     if args.len() < 2 {
-        eprintln!("usage: herdr workspace rename <workspace_id> <label>");
+        eprintln!("usage: bora workspace rename <workspace_id> <label>");
         return Ok(2);
     }
 
@@ -264,11 +264,11 @@ fn workspace_set_group(args: &[String]) -> std::io::Result<i32> {
 
 fn workspace_close(args: &[String]) -> std::io::Result<i32> {
     let Some(raw_workspace_id) = args.first() else {
-        eprintln!("usage: herdr workspace close <workspace_id>");
+        eprintln!("usage: bora workspace close <workspace_id>");
         return Ok(2);
     };
     if args.len() != 1 {
-        eprintln!("usage: herdr workspace close <workspace_id>");
+        eprintln!("usage: bora workspace close <workspace_id>");
         return Ok(2);
     }
 
@@ -276,13 +276,13 @@ fn workspace_close(args: &[String]) -> std::io::Result<i32> {
 }
 
 fn print_workspace_help() {
-    eprintln!("herdr workspace commands:");
-    eprintln!("  herdr workspace list");
-    eprintln!("  herdr workspace create [--cwd PATH] [--label TEXT] [--group NAME] [--env KEY=VALUE] [--focus] [--no-focus]");
-    eprintln!("  herdr workspace get <workspace_id>");
-    eprintln!("  herdr workspace focus <workspace_id>");
-    eprintln!("  herdr workspace rename <workspace_id> <label>");
+    eprintln!("bora workspace commands:");
+    eprintln!("  bora workspace list");
+    eprintln!("  bora workspace create [--cwd PATH] [--label TEXT] [--group NAME] [--env KEY=VALUE] [--focus] [--no-focus]");
+    eprintln!("  bora workspace get <workspace_id>");
+    eprintln!("  bora workspace focus <workspace_id>");
+    eprintln!("  bora workspace rename <workspace_id> <label>");
     eprintln!("  bora workspace report-metadata <workspace_id> --source ID [--token NAME=VALUE] [--clear-token NAME] [--seq N] [--ttl-ms N]");
     eprintln!("  bora workspace set-group <workspace_id> [name]   (omit name to ungroup)");
-    eprintln!("  herdr workspace close <workspace_id>");
+    eprintln!("  bora workspace close <workspace_id>");
 }

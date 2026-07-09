@@ -10,6 +10,7 @@ Bora is a fork of [herdr](https://github.com/ogulcancelik/herdr). This changelog
 - Added maki detection with idle, working, and blocked screen states. (#1301, thanks @tontinton)
 - **Pull Requests tab** in the right panel. A new "PRs" tab (alongside Changes / Checks / Issues) lists the current user's open PRs for the active workspace's repo, with mergeable indicators (`✓` green = MERGEABLE, `✗` red = CONFLICTING) and draft markers. Clicking a PR row opens its context menu (Open in worktree / Open in browser / Copy URL). The PR list is refreshed on tab open and periodically in the background.
 - Create worktree modal opened by a "+" button on each repo header row, with GitHub / Branch / Name tabs. GitHub lists the repo's open pull requests and issues: a pull request opens its worktree, an issue runs the configured `[flow]` command (issue rows are disabled with a hint when no `[flow]` command is set). Branch checks out an existing local branch; Name creates a fresh branch. The existing `new_worktree` keybind and the `GitWorkspace` context-menu "New worktree" entry open the same modal.
+- Added `github.pulls.list` and `github.issues.list` socket API methods to read cached open pull requests and issues per repo, plus `github.prs_refreshed` and `github.issues_refreshed` events.
 
 ### Changed
 - Idle, not-yet-seen panes now show an animated braille "sand" glyph whose color ramps gray to red by idle age, and working panes show an animated spinner; the animation timer only schedules redraws while an animation is actually visible.
@@ -147,7 +148,7 @@ Bora is a fork of [herdr](https://github.com/ogulcancelik/herdr). This changelog
 - Added `herdr terminal session control` for bridge processes that need live ANSI frames plus input, resize, scroll, release, and takeover authority.
 - Added `ui.hide_tab_bar_when_single_tab` to hide the tab row when a workspace has one tab. (#448)
 - Added Japanese and Simplified Chinese website docs.
-- Added `herdr integration install grok` for Grok CLI (Grok Build) hooks that report session ids through Herdr's socket API. Grok state stays screen-detected. When native agent session restore is enabled, Herdr can resume Grok panes with `grok --resume <id>`.
+- Added `bora integration install grok` for Grok CLI (Grok Build) hooks that report session ids through Bora's socket API. Grok state stays screen-detected. When native agent session restore is enabled, Bora can resume Grok panes with `grok --resume <id>`.
 - Added `github.pulls.list` and `github.issues.list` socket API methods to read cached open pull requests and issues per repo, plus `github.prs_refreshed` and `github.issues_refreshed` events.
 - Create worktree modal opened by a "+" button on each repo header row, with GitHub / Branch / Name tabs. GitHub lists the repo's open pull requests and issues: a pull request opens its worktree, an issue runs the configured `[flow]` command (issue rows are disabled with a hint when no `[flow]` command is set). Branch checks out an existing local branch; Name creates a fresh branch. The existing `new_worktree` keybind and the `GitWorkspace` context-menu "New worktree" entry open the same modal.
 
