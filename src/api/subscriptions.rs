@@ -578,7 +578,7 @@ fn pane_read(
     })
 }
 
-fn pane_get(
+pub(super) fn pane_get(
     request_id: String,
     pane_id: &str,
     api_tx: &ApiRequestSender,

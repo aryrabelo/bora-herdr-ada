@@ -384,8 +384,6 @@ export default function (pi) {
     if (!activateRootSession(ctx)) {
       return;
     }
-    // A reload can replace this extension mid-run without emitting another agent_start.
-    agentActive = ctx?.isIdle?.() === false;
     publishState(true);
   });
 

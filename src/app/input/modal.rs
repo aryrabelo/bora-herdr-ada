@@ -1530,8 +1530,8 @@ mod tests {
 
     use super::super::{capture_snapshot, state_with_workspaces};
     use super::*;
-    use crate::workspace::Workspace;
     use crate::app::state::build_context_menu_items;
+    use crate::workspace::Workspace;
 
     fn config_env_lock() -> &'static std::sync::Mutex<()> {
         crate::config::test_config_env_lock()

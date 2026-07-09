@@ -202,6 +202,7 @@ fn handle_connection(
                 request_id.clone(),
                 params,
                 &mut stream,
+                api_tx,
                 event_hub,
                 running,
             )?
@@ -231,32 +232,6 @@ fn handle_connection(
         Method::PaneWaitForOutput(params) => {
             let Some(response) =
                 wait_for_output(request_id.clone(), params, &mut stream, api_tx, running)?
-            else {
-                crate::logging::api_request_completed(
-                    &request_id,
-                    method,
-                    "client_disconnected",
-                    changes_ui,
-                );
-                return Ok(());
-            };
-            let result = write_text_line_allow_disconnect(&mut stream, &response);
-            match &result {
-                Ok(()) => crate::logging::api_request_completed(
-                    &request_id,
-                    method,
-                    api_response_outcome(&response),
-                    changes_ui,
-                ),
-                Err(err) => {
-                    crate::logging::api_request_failed(&request_id, method, &err.to_string())
-                }
-            }
-            result
-        }
-        Method::EventsWait(params) => {
-            let Some(response) =
-                wait_for_event(request_id.clone(), params, &mut stream, event_hub, running)?
             else {
                 crate::logging::api_request_completed(
                     &request_id,

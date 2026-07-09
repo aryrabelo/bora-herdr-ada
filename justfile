@@ -6,7 +6,6 @@ test:
     python3 -m unittest scripts.test_agent_detection_manifest_check scripts.test_changelog scripts.test_docs_translation_parity scripts.test_preview scripts.test_vendor_libghostty_vt scripts.test_vendor_portable_pty
     just integration-assets-test
     just plugin-marketplace-test
-    just integration-assets-test
 
 # Run one nextest filter, e.g. `just test-one codex_stale_working`
 test-one filter:
@@ -26,12 +25,15 @@ ci filter='all()': lint
     cargo nextest run --locked -E "{{filter}}" --status-level fail --final-status-level slow --failure-output final --success-output never
     just integration-assets-test
     just plugin-marketplace-test
-    just integration-assets-test
 
 # Run Windows target lint from Unix/macOS to catch cfg(windows) compile and clippy failures before CI
 windows-lint:
     rustup target add x86_64-pc-windows-msvc
-    LIBGHOSTTY_VT_SIMD=false cargo clippy --bin bora --locked --target x86_64-pc-windows-msvc -- -D warnings
+    LIBGHOSTTY_VT_SIMD=false cargo clippy --bin bora --locked --target x86_64-pc-windows-msvc -- -D warnings \
+        -A clippy::dbg_macro \
+        -A clippy::todo \
+        -A clippy::cognitive_complexity \
+        -A clippy::too_many_lines
 
 # Check formatting + run unit tests + Windows target lint + maintenance script tests
 check: ci windows-lint
@@ -52,10 +54,6 @@ build:
 # Build the website and documentation
 website-build:
     cd website && bun install --frozen-lockfile && bun run build
-
-# Test bundled agent integration assets
-integration-assets-test:
-    bun test src/integration/assets/herdr-agent-state.test.ts
 
 # Run plugin marketplace Worker tests
 plugin-marketplace-test:

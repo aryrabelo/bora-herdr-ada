@@ -4,17 +4,14 @@ use std::sync::Arc;
 use regex::Regex;
 
 use crate::api::schema::{
-    ErrorBody, ErrorResponse, EventData, EventEnvelope, EventKind, EventMatch, EventsWaitParams,
-    Method, Request, ResponseResult, Subscription, SubscriptionEventData,
-    SubscriptionEventEnvelope, SuccessResponse,
+    ErrorBody, ErrorResponse, Method, Request, ResponseResult, SuccessResponse,
 };
 use crate::api::server::{
     dispatch_to_app_with_timeout, should_stop_connection, APP_RESPONSE_TIMEOUT,
     CONNECTION_POLL_INTERVAL,
 };
-use crate::api::subscriptions::ActiveSubscription;
 use crate::api::subscriptions::{match_output, output_match_read_source};
-use crate::api::{ApiRequestSender, EventHub};
+use crate::api::ApiRequestSender;
 use crate::ipc::LocalStream;
 
 pub(super) fn wait_for_output(
@@ -130,12 +127,55 @@ pub(super) fn wait_for_event(
     request_id: String,
     params: crate::api::schema::EventsWaitParams,
     stream: &mut LocalStream,
+    api_tx: &ApiRequestSender,
     event_hub: &crate::api::EventHub,
     running: &Arc<AtomicBool>,
 ) -> std::io::Result<Option<String>> {
     let deadline = params
         .timeout_ms
         .map(|ms| std::time::Instant::now() + std::time::Duration::from_millis(ms));
+
+    // events.wait is check-or-wait: a pane agent-status match must observe the
+    // CURRENT state at wait start (via a pane.get probe), not only transitions
+    // emitted after the wait begins.
+    if let crate::api::schema::EventMatch::PaneAgentStatusChanged {
+        pane_id,
+        agent_status,
+    } = &params.match_event
+    {
+        match crate::api::subscriptions::pane_get(
+            format!("{request_id}:wait:probe"),
+            pane_id,
+            api_tx,
+        ) {
+            Ok(probe) => {
+                if probe.agent_status == *agent_status {
+                    let envelope = crate::api::schema::EventEnvelope {
+                        event: crate::api::schema::EventKind::PaneAgentStatusChanged,
+                        data: crate::api::schema::EventData::PaneAgentStatusChanged {
+                            pane_id: probe.pane_id,
+                            workspace_id: probe.workspace_id,
+                            agent_status: probe.agent_status,
+                            agent: probe.agent,
+                            title: probe.title,
+                            display_agent: probe.display_agent,
+                            custom_status: probe.custom_status,
+                            state_labels: probe.state_labels,
+                        },
+                    };
+                    return Ok(Some(
+                        serde_json::to_string(&SuccessResponse {
+                            id: request_id,
+                            result: ResponseResult::WaitMatched { event: envelope },
+                        })
+                        .unwrap(),
+                    ));
+                }
+            }
+            Err(response) => return Ok(Some(serde_json::to_string(&response).unwrap())),
+        }
+    }
+
     // Start at 0 so a result posted just before the wait (the common
     // post-then-wait orchestration order) is still observed from the buffer.
     let mut last_sequence = 0u64;
@@ -174,4 +214,3 @@ pub(super) fn wait_for_event(
         std::thread::sleep(CONNECTION_POLL_INTERVAL);
     }
 }
-

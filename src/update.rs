@@ -692,7 +692,9 @@ fn verify_installed_binary(exe: &Path) -> Result<(), String> {
                 .into(),
         );
     }
-    Err(format!("installed update was killed by signal {signal} on --version"))
+    Err(format!(
+        "installed update was killed by signal {signal} on --version"
+    ))
 }
 
 #[cfg(windows)]
