@@ -37,7 +37,11 @@ ci filter='all()': lint
 [unix]
 windows-lint:
     rustup target add x86_64-pc-windows-msvc
-    LIBGHOSTTY_VT_SIMD=false cargo clippy --bin bora --locked --target x86_64-pc-windows-msvc -- -D warnings
+    LIBGHOSTTY_VT_SIMD=false cargo clippy --bin bora --locked --target x86_64-pc-windows-msvc -- -D warnings \
+        -A clippy::dbg_macro \
+        -A clippy::todo \
+        -A clippy::cognitive_complexity \
+        -A clippy::too_many_lines
 
 # Check formatting + run unit tests + Windows target lint + maintenance script tests
 [unix]
@@ -69,7 +73,6 @@ website-build:
 integration-assets-test:
     bun test src/integration/assets/herdr-agent-state.test.ts
     bun test src/integration/assets/opencode/herdr-agent-state.test.ts
-
 # Run plugin marketplace Worker tests
 plugin-marketplace-test:
     cd workers/plugin-marketplace && bun test

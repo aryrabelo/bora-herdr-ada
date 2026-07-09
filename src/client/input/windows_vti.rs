@@ -126,7 +126,7 @@ fn windows_console_input_record_from_os(
 ) -> Option<WindowsInputRecord> {
     use windows_sys::Win32::System::Console::{FOCUS_EVENT, KEY_EVENT, MOUSE_EVENT};
 
-    match record.EventType as u32 {
+    match u32::from(record.EventType) {
         KEY_EVENT => {
             let key = unsafe { record.Event.KeyEvent };
             let unicode = unsafe { key.uChar.UnicodeChar };

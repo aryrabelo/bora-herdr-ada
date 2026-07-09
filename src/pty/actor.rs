@@ -63,7 +63,7 @@ mod windows {
             if !*self
                 .accepting
                 .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
             {
                 return Err(mpsc::error::SendError(bytes));
             }
@@ -77,7 +77,7 @@ mod windows {
             if !*self
                 .accepting
                 .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
             {
                 return Err(mpsc::error::TrySendError::Closed(bytes));
             }
@@ -186,8 +186,9 @@ mod windows {
                                 if let Err(err) = master.resize(PtySize {
                                     rows: size.rows,
                                     cols: size.cols,
-                                    pixel_width: size.cell_width_px.min(u16::MAX as u32) as u16,
-                                    pixel_height: size.cell_height_px.min(u16::MAX as u32) as u16,
+                                    pixel_width: size.cell_width_px.min(u32::from(u16::MAX)) as u16,
+                                    pixel_height: size.cell_height_px.min(u32::from(u16::MAX))
+                                        as u16,
                                 }) {
                                     warn!(pane_id, err = %err, "windows pty resize failed");
                                 }
@@ -218,7 +219,7 @@ mod windows {
     ) -> std::io::Result<()> {
         let mut writer = writer
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         writer.write_all(bytes)?;
         writer.flush()
     }
