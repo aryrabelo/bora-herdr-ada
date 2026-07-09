@@ -490,7 +490,7 @@ pub fn write_clipboard(bytes: &[u8]) -> bool {
         copy_nonoverlapping(utf16.as_ptr(), locked.cast::<u16>(), utf16.len());
         GlobalUnlock(memory);
 
-        if SetClipboardData(CF_UNICODETEXT as u32, memory).is_null() {
+        if SetClipboardData(u32::from(CF_UNICODETEXT), memory).is_null() {
             GlobalFree(memory);
             return false;
         }

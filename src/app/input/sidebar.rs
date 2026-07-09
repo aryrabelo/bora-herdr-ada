@@ -1,7 +1,6 @@
 use ratatui::layout::Rect;
 
 use crate::app::state::{AppState, ViewLayout};
-use crate::app::Mode;
 
 use super::ScrollbarClickTarget;
 
@@ -437,24 +436,6 @@ impl AppState {
         (idx < self.workspaces.len()).then_some(idx)
     }
 
-    fn collapsed_detail_workspace_idx(&self) -> Option<usize> {
-        if matches!(
-            self.mode,
-            Mode::Navigate
-                | Mode::RenameWorkspace
-                | Mode::SetWorkspaceGroup
-                | Mode::Resize
-                | Mode::ConfirmClose
-                | Mode::ContextMenu
-                | Mode::Settings
-                | Mode::GlobalMenu
-                | Mode::KeybindHelp
-        ) {
-            Some(self.selected)
-        } else {
-            self.active
-        }
-    }
     pub(super) fn collapsed_agent_detail_target_at(
         &self,
         row: u16,

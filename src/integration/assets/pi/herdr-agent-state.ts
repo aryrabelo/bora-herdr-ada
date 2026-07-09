@@ -16,39 +16,28 @@ function enabled() {
   return HERDR_ENV === "1" && !!socketPath && !!paneId;
 }
 
-function sendRequestAttempt(request: unknown, timeoutMs: number): Promise<boolean> {
+function sendRequest(request: unknown): Promise<void> {
   if (!enabled()) {
-    return Promise.resolve(true);
+    return Promise.resolve();
   }
 
   return new Promise((resolve) => {
     let done = false;
-    let timeout: ReturnType<typeof setTimeout> | undefined;
-    const finish = (delivered: boolean) => {
+    const finish = () => {
       if (done) return;
       done = true;
-      if (timeout) {
-        clearTimeout(timeout);
-      }
       socket.destroy();
-      resolve(delivered);
+      resolve();
     };
 
     const socket = createConnection(socketPath!);
-    socket.on("error", () => finish(false));
+    socket.on("error", finish);
     socket.on("connect", () => socket.write(`${JSON.stringify(request)}\n`));
-    socket.on("data", () => finish(true));
-    socket.on("end", () => finish(false));
-    timeout = setTimeout(() => finish(false), timeoutMs);
+    socket.on("data", finish);
+    socket.on("end", finish);
+    const timeout = setTimeout(finish, 500);
     timeout.unref?.();
   });
-}
-
-async function sendRequest(request: unknown): Promise<void> {
-  if (await sendRequestAttempt(request, 500)) {
-    return;
-  }
-  await sendRequestAttempt(request, 1500);
 }
 
 type AgentState = "working" | "blocked" | "idle";
@@ -121,7 +110,7 @@ function currentSessionRef(): Record<string, unknown> | undefined {
   return undefined;
 }
 
-function reportSession(sessionStartSource?: string): Promise<void> {
+function reportSession(): Promise<void> {
   const sessionRef = currentSessionRef();
   if (!sessionRef) {
     return Promise.resolve();
@@ -135,7 +124,6 @@ function reportSession(sessionStartSource?: string): Promise<void> {
       source,
       agent: "pi",
       seq: nextReportSeq(),
-      session_start_source: sessionStartSource,
       ...sessionRef,
     },
   });
@@ -346,15 +334,13 @@ export default function (pi) {
     publishState();
   });
 
-  pi.on("session_start", async (event, ctx) => {
+  pi.on("session_start", (_event, ctx) => {
     if (ctx?.hasUI !== true) {
       return;
     }
     rootSession = true;
     updateSessionRef(ctx);
-    await reportSession(event?.reason);
-    // A reload can replace this extension mid-run without emitting another agent_start.
-    agentActiveCount = ctx?.isIdle?.() === false ? 1 : 0;
+    void reportSession();
     publishState(true);
   });
 

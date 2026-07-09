@@ -170,10 +170,10 @@ fn spawn_server_with_args_and_socket_env(
     api_socket_env: Option<&Path>,
     client_socket_env: Option<&Path>,
 ) -> SpawnedHerdr {
-    fs::create_dir_all(config_home.join("herdr-dev")).unwrap();
+    fs::create_dir_all(config_home.join("bora-dev")).unwrap();
     fs::create_dir_all(runtime_dir).unwrap();
     fs::write(
-        config_home.join("herdr-dev/config.toml"),
+        config_home.join("bora-dev/config.toml"),
         "onboarding = false\n",
     )
     .unwrap();
@@ -589,10 +589,10 @@ fn live_handoff_ignores_leaked_default_socket_env_for_named_session() {
     let base = unique_test_dir();
     let config_home = base.join("config");
     let runtime_dir = base.join("runtime");
-    let default_session_dir = config_home.join("herdr-dev");
+    let default_session_dir = config_home.join("bora-dev");
     let default_api_socket = default_session_dir.join("herdr.sock");
     let default_client_socket = default_session_dir.join("herdr-client.sock");
-    let work_session_dir = config_home.join("herdr-dev/sessions/work");
+    let work_session_dir = config_home.join("bora-dev/sessions/work");
     let work_api_socket = work_session_dir.join("herdr.sock");
     let work_client_socket = work_session_dir.join("herdr-client.sock");
 
@@ -636,7 +636,7 @@ fn live_handoff_preserves_client_socket_env_without_api_socket_env() {
     let base = unique_test_dir();
     let config_home = base.join("config");
     let runtime_dir = base.join("runtime");
-    let api_socket = config_home.join("herdr-dev/herdr.sock");
+    let api_socket = config_home.join("bora-dev/herdr.sock");
     let client_socket = runtime_dir.join("custom-client.sock");
 
     let spawned = spawn_server_with_args_and_socket_env(
