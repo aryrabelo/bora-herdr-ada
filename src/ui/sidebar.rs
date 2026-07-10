@@ -378,8 +378,8 @@ pub(crate) enum WorkspaceListEntry {
         indented: bool,
         branch: Option<ProjectHeaderBranch>,
     },
-    /// Non-clickable branch sub-header inside a project group. Top-level
-    /// headers draw `├─ ` (or `╰── ` when `last`); nested ones draw `├── `.
+    /// Non-clickable branch sub-header inside a project group. Headers draw
+    /// `├── ` (or `╰── ` when `last`); all connectors are 4 cells wide.
     BranchHeader {
         label: String,
         ahead: usize,
@@ -844,6 +844,11 @@ fn emit_branch_subgroups(
             .unwrap_or((0, 0))
     };
 
+    // Bracket mode: branchless members stay INSIDE the bracket, emitted right
+    // after the folded first-branch members. The bracket closes (╰──) on the
+    // last of these rows only when no further branch headers follow.
+    let has_header_branches = branch_order.len() > usize::from(!branch_order.is_empty());
+
     // Fold the first branch group into the preceding project header.
     let folded = bracketed && !branch_order.is_empty();
     if folded {
@@ -857,12 +862,19 @@ fn emit_branch_subgroups(
                 behind,
             });
         }
-        // If the folded branch is also the only branch, its last member closes
-        // the bracket (╰──); otherwise the spine continues to the next branch.
-        let is_last_group = branch_order.len() == 1;
-        let last_member = members.len().saturating_sub(1);
-        for (k, &idx) in members.iter().enumerate() {
-            let rail = if is_last_group && k == last_member {
+    }
+
+    if bracketed {
+        // Rows directly under the header: folded-branch members, then loose
+        // (branchless) members.
+        let mut under_header: Vec<usize> = Vec::new();
+        if folded {
+            under_header.extend_from_slice(&by_branch[&branch_order[0]]);
+        }
+        under_header.extend_from_slice(&no_branch);
+        let last_member = under_header.len().saturating_sub(1);
+        for (k, &idx) in under_header.iter().enumerate() {
+            let rail = if !has_header_branches && k == last_member {
                 BranchRail::Close
             } else {
                 BranchRail::Spine
@@ -905,12 +917,14 @@ fn emit_branch_subgroups(
         }
     }
 
-    for &idx in &no_branch {
-        entries.push(WorkspaceListEntry::Workspace {
-            ws_idx: idx,
-            indented,
-            rail: BranchRail::None,
-        });
+    if !bracketed {
+        for &idx in &no_branch {
+            entries.push(WorkspaceListEntry::Workspace {
+                ws_idx: idx,
+                indented,
+                rail: BranchRail::None,
+            });
+        }
     }
 }
 
@@ -1497,15 +1511,9 @@ fn render_workspace_list(
             } => {
                 if row_y < list_bottom {
                     let indent = if *indented { " " } else { "" };
-                    // Nested (visual-group) headers keep the legacy connector;
-                    // top-level headers draw the bracket tee/elbow.
-                    let connector = if *indented {
-                        "├── "
-                    } else if *last {
-                        "╰── "
-                    } else {
-                        "├─ "
-                    };
+                    // All connectors are 4 cells wide so branch labels align
+                    // across mid (├──), last (╰──), and nested rows.
+                    let connector = if *last { "╰── " } else { "├── " };
                     let mut spans = vec![
                         Span::styled(
                             format!("{indent}{connector}"),
@@ -1621,15 +1629,17 @@ fn render_workspace_list(
                 match rail {
                     BranchRail::Spine => {
                         // Bracket rails anchor at column 0 under the header's `╭─`.
-                        line1.push(Span::styled("│ ", rail_style));
+                        // All bracket rails are 4 cells wide so workspace names
+                        // align across │ / ╰── / blank rows.
+                        line1.push(Span::styled("│   ", rail_style));
                     }
                     BranchRail::Close => {
                         line1.push(Span::styled("╰── ", rail_style));
                     }
                     BranchRail::Blank => {
                         // Bracket already closed at the last branch header; hold
-                        // the spine's width with blank space, no vertical bar.
-                        line1.push(Span::styled("  ", rail_style));
+                        // the rail's width with blank space, no vertical bar.
+                        line1.push(Span::styled("    ", rail_style));
                     }
                     BranchRail::None => {
                         if let Some((key, collapsed)) =
@@ -2432,12 +2442,12 @@ mod tests {
                 WorkspaceListEntry::Workspace {
                     ws_idx: 0,
                     indented: true,
-                    rail: BranchRail::None,
+                    rail: BranchRail::Spine,
                 },
                 WorkspaceListEntry::Workspace {
                     ws_idx: 1,
                     indented: true,
-                    rail: BranchRail::None,
+                    rail: BranchRail::Close,
                 },
             ]
         );
@@ -2524,12 +2534,12 @@ mod tests {
                 WorkspaceListEntry::Workspace {
                     ws_idx: 0,
                     indented: true,
-                    rail: BranchRail::None,
+                    rail: BranchRail::Spine,
                 },
                 WorkspaceListEntry::Workspace {
                     ws_idx: 1,
                     indented: true,
-                    rail: BranchRail::None,
+                    rail: BranchRail::Close,
                 },
             ]
         );
@@ -2556,12 +2566,12 @@ mod tests {
                 WorkspaceListEntry::Workspace {
                     ws_idx: 0,
                     indented: true,
-                    rail: BranchRail::None,
+                    rail: BranchRail::Spine,
                 },
                 WorkspaceListEntry::Workspace {
                     ws_idx: 2,
                     indented: true,
-                    rail: BranchRail::None,
+                    rail: BranchRail::Close,
                 },
                 WorkspaceListEntry::ProjectHeader {
                     name: "herdr".into(),
@@ -2572,7 +2582,7 @@ mod tests {
                 WorkspaceListEntry::Workspace {
                     ws_idx: 1,
                     indented: false,
-                    rail: BranchRail::None,
+                    rail: BranchRail::Close,
                 },
             ]
         );
@@ -2600,12 +2610,12 @@ mod tests {
                 WorkspaceListEntry::Workspace {
                     ws_idx: 0,
                     indented: true,
-                    rail: BranchRail::None,
+                    rail: BranchRail::Spine,
                 },
                 WorkspaceListEntry::Workspace {
                     ws_idx: 1,
                     indented: true,
-                    rail: BranchRail::None,
+                    rail: BranchRail::Close,
                 },
             ]
         );
@@ -2637,17 +2647,17 @@ mod tests {
                 WorkspaceListEntry::Workspace {
                     ws_idx: 0,
                     indented: true,
-                    rail: BranchRail::None,
+                    rail: BranchRail::Spine,
                 },
                 WorkspaceListEntry::Workspace {
                     ws_idx: 1,
                     indented: true,
-                    rail: BranchRail::None,
+                    rail: BranchRail::Spine,
                 },
                 WorkspaceListEntry::Workspace {
                     ws_idx: 2,
                     indented: true,
-                    rail: BranchRail::None,
+                    rail: BranchRail::Close,
                 },
             ]
         );
@@ -2676,7 +2686,7 @@ mod tests {
                 WorkspaceListEntry::Workspace {
                     ws_idx: 0,
                     indented: false,
-                    rail: BranchRail::None,
+                    rail: BranchRail::Close,
                 },
                 WorkspaceListEntry::ProjectHeader {
                     name: "herdr".into(),
@@ -2687,7 +2697,7 @@ mod tests {
                 WorkspaceListEntry::Workspace {
                     ws_idx: 1,
                     indented: false,
-                    rail: BranchRail::None,
+                    rail: BranchRail::Close,
                 },
             ]
         );
@@ -2716,17 +2726,17 @@ mod tests {
                 WorkspaceListEntry::Workspace {
                     ws_idx: 0,
                     indented: true,
-                    rail: BranchRail::None,
+                    rail: BranchRail::Spine,
                 },
                 WorkspaceListEntry::Workspace {
                     ws_idx: 1,
                     indented: true,
-                    rail: BranchRail::None,
+                    rail: BranchRail::Spine,
                 },
                 WorkspaceListEntry::Workspace {
                     ws_idx: 2,
                     indented: true,
-                    rail: BranchRail::None,
+                    rail: BranchRail::Close,
                 },
             ]
         );
@@ -2756,17 +2766,17 @@ mod tests {
                 WorkspaceListEntry::Workspace {
                     ws_idx: 0,
                     indented: true,
-                    rail: BranchRail::None,
+                    rail: BranchRail::Spine,
                 },
                 WorkspaceListEntry::Workspace {
                     ws_idx: 2,
                     indented: true,
-                    rail: BranchRail::None,
+                    rail: BranchRail::Spine,
                 },
                 WorkspaceListEntry::Workspace {
                     ws_idx: 3,
                     indented: true,
-                    rail: BranchRail::None,
+                    rail: BranchRail::Close,
                 },
                 WorkspaceListEntry::ProjectHeader {
                     name: "herdr".into(),
@@ -2777,7 +2787,7 @@ mod tests {
                 WorkspaceListEntry::Workspace {
                     ws_idx: 1,
                     indented: false,
-                    rail: BranchRail::None,
+                    rail: BranchRail::Close,
                 },
             ]
         );
@@ -2805,12 +2815,12 @@ mod tests {
                 WorkspaceListEntry::Workspace {
                     ws_idx: 0,
                     indented: true,
-                    rail: BranchRail::None,
+                    rail: BranchRail::Spine,
                 },
                 WorkspaceListEntry::Workspace {
                     ws_idx: 1,
                     indented: true,
-                    rail: BranchRail::None,
+                    rail: BranchRail::Close,
                 },
             ]
         );
@@ -2859,7 +2869,7 @@ mod tests {
                 WorkspaceListEntry::Workspace {
                     ws_idx: 0,
                     indented: false,
-                    rail: BranchRail::None,
+                    rail: BranchRail::Close,
                 },
                 WorkspaceListEntry::Workspace {
                     ws_idx: 1,
@@ -3069,6 +3079,88 @@ mod tests {
     }
 
     #[test]
+    fn branchless_members_stay_inside_bracket() {
+        // Regression (juno_brain): one checkout with a detected branch plus
+        // members whose branch is unknown. Branchless members must render
+        // inside the bracket (spine rails) and the LAST row closes it —
+        // never rail-less rows dangling after the bracket closed.
+        let mut app = AppState::test_new();
+        let mut ws0 = workspace_with_worktree_space("main", Some("repo-key"), "/repo/juno");
+        ws0.cached_git_branch = Some("init".into());
+        let ws1 =
+            workspace_with_worktree_space("dashboard-v0", Some("repo-key"), "/repo/juno-dash");
+        let ws2 = workspace_with_worktree_space("juno-2", Some("repo-key"), "/repo/juno-2");
+        app.workspaces = vec![ws0, ws1, ws2];
+
+        let entries = workspace_list_entries(&app);
+
+        assert_eq!(
+            entries,
+            vec![
+                WorkspaceListEntry::ProjectHeader {
+                    name: "herdr".into(),
+                    collapse_key: "repo-key".into(),
+                    indented: false,
+                    branch: Some(ProjectHeaderBranch {
+                        label: "init".into(),
+                        ahead: 0,
+                        behind: 0,
+                    }),
+                },
+                WorkspaceListEntry::Workspace {
+                    ws_idx: 0,
+                    indented: true,
+                    rail: BranchRail::Spine,
+                },
+                WorkspaceListEntry::Workspace {
+                    ws_idx: 1,
+                    indented: true,
+                    rail: BranchRail::Spine,
+                },
+                WorkspaceListEntry::Workspace {
+                    ws_idx: 2,
+                    indented: true,
+                    rail: BranchRail::Close,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn all_branchless_bracket_group_still_closes() {
+        // No branch detected anywhere: header has no [branch] label, members
+        // still get spine rails and the last one closes the bracket.
+        let mut app = AppState::test_new();
+        let ws0 = workspace_with_worktree_space("main", Some("repo-key"), "/repo/juno");
+        let ws1 = workspace_with_worktree_space("child", Some("repo-key"), "/repo/juno-child");
+        app.workspaces = vec![ws0, ws1];
+
+        let entries = workspace_list_entries(&app);
+
+        assert_eq!(
+            entries,
+            vec![
+                WorkspaceListEntry::ProjectHeader {
+                    name: "herdr".into(),
+                    collapse_key: "repo-key".into(),
+                    indented: false,
+                    branch: None,
+                },
+                WorkspaceListEntry::Workspace {
+                    ws_idx: 0,
+                    indented: true,
+                    rail: BranchRail::Spine,
+                },
+                WorkspaceListEntry::Workspace {
+                    ws_idx: 1,
+                    indented: true,
+                    rail: BranchRail::Close,
+                },
+            ]
+        );
+    }
+
+    #[test]
     fn ungrouped_workspaces_render_flat() {
         let mut app = AppState::test_new();
         let mut ws0 = Workspace::test_new("alpha");
@@ -3180,8 +3272,8 @@ mod tests {
     #[test]
     fn single_ws_branch_emits_bracket() {
         // A single git workspace with a branch folds that branch into the
-        // project header; its sole member closes the bracket (Close), and the
-        // no-branch parent trails as a loose (None) row.
+        // project header; the no-branch parent stays inside the bracket and
+        // its last row closes it (Close).
         let mut app = AppState::test_new();
         let identity = "github.com/owner/site";
         let mut parent = git_space_member("site", "key-parent", false);
@@ -3194,8 +3286,8 @@ mod tests {
 
         let entries = workspace_list_entries(&app);
 
-        // ProjectHeader{branch: main} + Workspace{Close} for the branched child
-        // + Workspace{None} for the no-branch parent.
+        // ProjectHeader{branch: main} + Workspace{Spine} for the branched child
+        // + Workspace{Close} for the no-branch parent inside the bracket.
         assert_eq!(
             entries,
             vec![
@@ -3212,12 +3304,12 @@ mod tests {
                 WorkspaceListEntry::Workspace {
                     ws_idx: 1,
                     indented: true,
-                    rail: BranchRail::Close,
+                    rail: BranchRail::Spine,
                 },
                 WorkspaceListEntry::Workspace {
                     ws_idx: 0,
                     indented: true,
-                    rail: BranchRail::None,
+                    rail: BranchRail::Close,
                 },
             ]
         );
@@ -3240,8 +3332,9 @@ mod tests {
     #[test]
     fn multiple_branches_in_one_project_emit_multiple_brackets() {
         // Three branches + a no-branch parent: the first branch folds into the
-        // project header, the middle branch is a `├─ ` tee, the last is a
-        // `╰── ` elbow, and the parent trails as a loose row.
+        // project header, the no-branch parent stays inside the bracket right
+        // after the folded members, the middle branch is a `├── ` tee and the
+        // last is a `╰── ` elbow.
         let mut app = AppState::test_new();
         let identity = "github.com/owner/proj";
         let mut parent = git_space_member("proj", "key-p", false);
@@ -3275,6 +3368,11 @@ mod tests {
                     indented: true,
                     rail: BranchRail::Spine,
                 },
+                WorkspaceListEntry::Workspace {
+                    ws_idx: 0,
+                    indented: true,
+                    rail: BranchRail::Spine,
+                },
                 WorkspaceListEntry::BranchHeader {
                     label: "feat/b".into(),
                     ahead: 0,
@@ -3298,11 +3396,6 @@ mod tests {
                     ws_idx: 3,
                     indented: true,
                     rail: BranchRail::Blank,
-                },
-                WorkspaceListEntry::Workspace {
-                    ws_idx: 0,
-                    indented: true,
-                    rail: BranchRail::None,
                 },
             ]
         );
@@ -3331,14 +3424,19 @@ mod tests {
             row_text(body_y + 1)
         );
         assert!(
-            row_text(body_y + 2).starts_with("├─ ") && row_text(body_y + 2).contains("feat/b"),
-            "middle branch is a tee: {:?}",
+            row_text(body_y + 2).starts_with('│'),
+            "loose no-branch member stays on the spine: {:?}",
             row_text(body_y + 2)
         );
         assert!(
-            row_text(body_y + 4).starts_with("╰── ") && row_text(body_y + 4).contains("feat/c"),
+            row_text(body_y + 3).starts_with("├── ") && row_text(body_y + 3).contains("feat/b"),
+            "middle branch is a tee: {:?}",
+            row_text(body_y + 3)
+        );
+        assert!(
+            row_text(body_y + 5).starts_with("╰── ") && row_text(body_y + 5).contains("feat/c"),
             "last branch closes the bracket: {:?}",
-            row_text(body_y + 4)
+            row_text(body_y + 5)
         );
     }
 
