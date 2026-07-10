@@ -346,6 +346,15 @@ impl App {
                 Some(now + crate::app::WORKSPACE_IDLE_CHECK_INTERVAL);
         }
 
+        // Expire temporary sidebar hides so their rows return to the list.
+        if self
+            .state
+            .next_hide_expiry()
+            .is_some_and(|deadline| now >= deadline)
+        {
+            changed |= self.state.sweep_expired_hides(now);
+        }
+
         if geometry_dirty || resized {
             self.pending_agent_resume_deadline = None;
         } else {
@@ -595,6 +604,7 @@ impl App {
             self.selection_autoscroll_deadline,
             self.selection_highlight_clear_deadline,
             self.workspace_idle_check_deadline,
+            self.state.next_hide_expiry(),
             render_deadline,
         ]
         .into_iter()

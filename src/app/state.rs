@@ -1294,12 +1294,22 @@ pub(crate) struct TabPressState {
 pub enum ContextMenuKind {
     Workspace {
         ws_idx: usize,
+        hidden: bool,
     },
     GitWorkspace {
         ws_idx: usize,
         is_linked_worktree: bool,
         has_worktree_children: bool,
         collapsed: bool,
+        hidden: bool,
+    },
+    /// A sidebar group/project header row (visual group or repo group).
+    /// `collapse_key` is the same key used for collapse state; `hidden` is
+    /// whether that key is currently hidden.
+    GroupHeader {
+        name: String,
+        collapse_key: String,
+        hidden: bool,
     },
     Tab {
         ws_idx: usize,
@@ -1366,8 +1376,19 @@ pub fn build_context_menu_items(
         }
         v.push("Remove from group".to_string());
     };
+    let push_hide = |v: &mut Vec<String>, hidden: bool| {
+        v.push(sep());
+        if hidden {
+            v.push("Unhide".to_string());
+        } else {
+            v.push("Hide 5m".to_string());
+            v.push("Hide 10m".to_string());
+            v.push("Hide 15m".to_string());
+            v.push("Hide 30m".to_string());
+        }
+    };
     match kind {
-        ContextMenuKind::Workspace { .. } => {
+        ContextMenuKind::Workspace { hidden, .. } => {
             let mut v = vec!["Rename".to_string(), "Copy path".to_string(), sep()];
             push_groups(&mut v);
             if !custom_commands.is_empty() {
@@ -1376,11 +1397,13 @@ pub fn build_context_menu_items(
             }
             v.push(sep());
             v.push("Close".to_string());
+            push_hide(&mut v, *hidden);
             v
         }
         ContextMenuKind::GitWorkspace {
             is_linked_worktree: false,
             has_worktree_children: false,
+            hidden,
             ..
         } => {
             let mut v = vec![
@@ -1399,10 +1422,12 @@ pub fn build_context_menu_items(
             }
             v.push(sep());
             v.push("Close".to_string());
+            push_hide(&mut v, *hidden);
             v
         }
         ContextMenuKind::GitWorkspace {
             is_linked_worktree: true,
+            hidden,
             ..
         } => {
             let mut v = vec![
@@ -1422,11 +1447,13 @@ pub fn build_context_menu_items(
             v.push(sep());
             v.push("Close".to_string());
             v.push("Delete worktree\u{2026}".to_string());
+            push_hide(&mut v, *hidden);
             v
         }
         ContextMenuKind::GitWorkspace {
             has_worktree_children: true,
             collapsed: true,
+            hidden,
             ..
         } => {
             let mut v = vec![
@@ -1446,11 +1473,13 @@ pub fn build_context_menu_items(
             }
             v.push(sep());
             v.push("Close workspace".to_string());
+            push_hide(&mut v, *hidden);
             v
         }
         ContextMenuKind::GitWorkspace {
             has_worktree_children: true,
             collapsed: false,
+            hidden,
             ..
         } => {
             let mut v = vec![
@@ -1470,7 +1499,20 @@ pub fn build_context_menu_items(
             }
             v.push(sep());
             v.push("Close workspace".to_string());
+            push_hide(&mut v, *hidden);
             v
+        }
+        ContextMenuKind::GroupHeader { hidden, .. } => {
+            if *hidden {
+                vec!["Unhide".to_string()]
+            } else {
+                vec![
+                    "Hide 5m".to_string(),
+                    "Hide 10m".to_string(),
+                    "Hide 15m".to_string(),
+                    "Hide 30m".to_string(),
+                ]
+            }
         }
         ContextMenuKind::Tab { .. } => {
             vec![
@@ -1807,6 +1849,11 @@ pub struct AppState {
     /// it via `[flow]` in their `.bora.toml`; see `repo_issue_flow_template`.
     pub flow_command_template: Option<String>,
     pub collapsed_space_keys: std::collections::HashSet<String>,
+    /// Sidebar-only, non-persisted: workspace/group keys temporarily hidden
+    /// from the main list, mapped to the instant each hide expires.
+    pub hidden_space_keys: std::collections::HashMap<String, std::time::Instant>,
+    /// Whether the collapsible bottom "Hidden" section is expanded.
+    pub hidden_section_expanded: bool,
     pub request_complete_onboarding: bool,
     pub name_input: String,
     pub name_input_replace_on_type: bool,
@@ -1994,6 +2041,30 @@ pub struct AppState {
 impl AppState {
     pub(crate) fn mark_session_dirty(&mut self) {
         self.session_dirty = true;
+    }
+
+    /// Sidebar hide key for a single workspace (non-persisted presentation state).
+    pub(crate) fn workspace_hide_key(ws: &crate::workspace::Workspace) -> String {
+        format!("ws:{}", ws.id)
+    }
+
+    /// Whether `key` is currently hidden: present and not yet expired.
+    pub(crate) fn is_hidden(&self, key: &str) -> bool {
+        self.hidden_space_keys
+            .get(key)
+            .is_some_and(|expiry| *expiry > std::time::Instant::now())
+    }
+
+    /// Earliest hide expiry, if any, for scheduling a render wakeup.
+    pub(crate) fn next_hide_expiry(&self) -> Option<std::time::Instant> {
+        self.hidden_space_keys.values().copied().min()
+    }
+
+    /// Drop hides whose expiry has passed. Returns whether anything changed.
+    pub(crate) fn sweep_expired_hides(&mut self, now: std::time::Instant) -> bool {
+        let before = self.hidden_space_keys.len();
+        self.hidden_space_keys.retain(|_, expiry| *expiry > now);
+        self.hidden_space_keys.len() != before
     }
 
     pub(crate) fn remove_alias_shadowed_by_new_pane(&mut self, pane_id: PaneId) {
@@ -2227,6 +2298,8 @@ impl AppState {
             worktree_directory: std::path::PathBuf::from("/tmp/herdr-worktrees"),
             flow_command_template: None,
             collapsed_space_keys: std::collections::HashSet::new(),
+            hidden_space_keys: std::collections::HashMap::new(),
+            hidden_section_expanded: false,
             request_complete_onboarding: false,
             name_input: String::new(),
             name_input_replace_on_type: false,
@@ -2677,7 +2750,7 @@ impl AppState {
         }
         if let Some(menu) = &self.context_menu {
             match menu.kind {
-                ContextMenuKind::Workspace { ws_idx }
+                ContextMenuKind::Workspace { ws_idx, .. }
                 | ContextMenuKind::GitWorkspace { ws_idx, .. } => {
                     assert_workspace_index(ws_idx, "context menu workspace")
                 }
@@ -2710,6 +2783,8 @@ impl AppState {
                 }
                 // No index to check — the menu carries only the issue number/URL.
                 ContextMenuKind::RepoIssue { .. } => {}
+                // No workspace index to check — a group header carries only keys.
+                ContextMenuKind::GroupHeader { .. } => {}
             }
         }
     }
@@ -2900,6 +2975,7 @@ mod tests {
             is_linked_worktree: true,
             has_worktree_children: false,
             collapsed: false,
+            hidden: false,
         };
         let menu = ContextMenuState {
             items: build_context_menu_items(&kind, &[], &[]),
@@ -2926,6 +3002,11 @@ mod tests {
                 CONTEXT_MENU_SEPARATOR,
                 "Close",
                 "Delete worktree\u{2026}",
+                CONTEXT_MENU_SEPARATOR,
+                "Hide 5m",
+                "Hide 10m",
+                "Hide 15m",
+                "Hide 30m",
             ]
         );
     }
@@ -2937,6 +3018,7 @@ mod tests {
             is_linked_worktree: false,
             has_worktree_children: false,
             collapsed: false,
+            hidden: false,
         };
         let menu = ContextMenuState {
             items: build_context_menu_items(&kind, &[], &[]),
@@ -2962,6 +3044,11 @@ mod tests {
                 "Remove from group",
                 CONTEXT_MENU_SEPARATOR,
                 "Close",
+                CONTEXT_MENU_SEPARATOR,
+                "Hide 5m",
+                "Hide 10m",
+                "Hide 15m",
+                "Hide 30m",
             ]
         );
     }
@@ -2973,6 +3060,7 @@ mod tests {
             is_linked_worktree: false,
             has_worktree_children: true,
             collapsed: false,
+            hidden: false,
         };
         let menu = ContextMenuState {
             items: build_context_menu_items(&kind, &[], &[]),
@@ -2998,6 +3086,11 @@ mod tests {
                 "Remove from group",
                 CONTEXT_MENU_SEPARATOR,
                 "Close workspace",
+                CONTEXT_MENU_SEPARATOR,
+                "Hide 5m",
+                "Hide 10m",
+                "Hide 15m",
+                "Hide 30m",
             ]
         );
     }
