@@ -109,6 +109,7 @@ impl App {
             return;
         }
         let pr = params.pr;
+        let no_setup = params.no_setup;
         // For PR creates the real branch is only known after `gh` resolution in
         // the worker; `pr-<N>` names the checkout path (and the dedupe key).
         let branch = match pr {
@@ -203,6 +204,7 @@ impl App {
         };
         let path = checkout_path;
         let source_checkout_path = api_request.source_checkout_path.clone();
+        let source_repo_root = api_request.source_repo_root.clone();
         let event_tx = self.event_tx.clone();
         std::thread::spawn(move || {
             let result = if let Some(parent_dir) = parent_dir {
@@ -223,11 +225,22 @@ impl App {
                     &base,
                 ),
             });
+            let setup = if result.is_ok() {
+                crate::bora_settings::provision_worktree(
+                    &source_repo_root,
+                    &path,
+                    Some(&branch),
+                    no_setup,
+                )
+            } else {
+                crate::bora_settings::SetupStatus::Skipped
+            };
             let _ = event_tx.blocking_send(AppEvent::WorktreeAddFinished(Box::new(
                 crate::events::WorktreeAddResult {
                     path,
                     api_request: Some(api_request),
                     result,
+                    setup,
                 },
             )));
         });
@@ -409,7 +422,12 @@ impl App {
             );
             return;
         }
-        crate::worktree::copy_worktree_includes(&api.source_repo_root, &result.path);
+        let setup_status = result.setup;
+        let setup = setup_status.as_str().to_string();
+        let setup_error = match &setup_status {
+            crate::bora_settings::SetupStatus::Failed(message) => Some(message.clone()),
+            _ => None,
+        };
 
         let source_workspace_idx = self.api_create_source_workspace_idx(&api);
         let mut source = WorktreeSource {
@@ -498,6 +516,8 @@ impl App {
                     .root_pane_info(ws_idx, tab_idx)
                     .expect("created worktree workspace should have an active root pane"),
                 worktree,
+                setup,
+                setup_error,
             },
         );
         Self::send_api_response(api.respond_to, response);

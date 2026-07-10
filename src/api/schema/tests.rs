@@ -647,11 +647,14 @@ fn worktree_request_and_response_round_trip() {
                 open_workspace_id: Some("w_1".into()),
                 label: "herdr".into(),
             },
+            setup: "ok".into(),
+            setup_error: None,
         },
     };
     let json = serde_json::to_string(&response).unwrap();
     assert!(json.contains("\"type\":\"worktree_created\""));
     assert!(json.contains("\"worktree\""));
+    assert!(json.contains("\"setup\":\"ok\""));
     let restored: SuccessResponse = serde_json::from_str(&json).unwrap();
     assert_eq!(restored, response);
 }
@@ -683,6 +686,33 @@ fn worktree_create_pr_param_round_trips_and_is_omitted_when_absent() {
     assert!(!json.contains("\"pr\""));
     let restored: Request = serde_json::from_str(&json).unwrap();
     assert_eq!(restored, without_pr);
+}
+
+#[test]
+fn worktree_create_no_setup_defaults_false_and_round_trips() {
+    let default_params = WorktreeCreateParams::default();
+    assert!(!default_params.no_setup);
+
+    let request = Request {
+        id: "req_worktree_no_setup".into(),
+        method: Method::WorktreeCreate(WorktreeCreateParams {
+            branch: Some("worktree/api".into()),
+            no_setup: true,
+            ..WorktreeCreateParams::default()
+        }),
+    };
+    let json = serde_json::to_string(&request).unwrap();
+    assert!(json.contains("\"no_setup\":true"));
+    let restored: Request = serde_json::from_str(&json).unwrap();
+    assert_eq!(restored, request);
+
+    // Absent no_setup deserializes to false via serde default.
+    let without: Request =
+        serde_json::from_str(r#"{"id":"x","method":"worktree.create","params":{}}"#).unwrap();
+    let Method::WorktreeCreate(params) = without.method else {
+        panic!("expected worktree.create method");
+    };
+    assert!(!params.no_setup);
 }
 
 #[test]

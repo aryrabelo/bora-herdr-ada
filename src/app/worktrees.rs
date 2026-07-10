@@ -781,6 +781,7 @@ impl App {
                     path,
                     api_request: None,
                     result,
+                    setup: crate::bora_settings::SetupStatus::Skipped,
                 },
             )));
         });
@@ -823,6 +824,7 @@ impl App {
                 pr: None,
                 focus: true,
                 label: None,
+                no_setup: false,
             },
         );
         if let Some(message) = immediate_api_error_message(immediate_response.as_deref()) {
@@ -871,6 +873,7 @@ impl App {
                 pr: None,
                 focus: true,
                 label: None,
+                no_setup: false,
             }),
         );
         if let Some(message) = immediate_api_error_message(immediate_response.as_deref()) {
@@ -2729,6 +2732,7 @@ mod tests {
             path: checkout.clone(),
             api_request: None,
             result: Ok(()),
+            setup: crate::bora_settings::SetupStatus::Skipped,
         });
 
         assert_eq!(
@@ -2828,6 +2832,7 @@ mod tests {
             path: checkout.clone(),
             api_request: None,
             result: Ok(()),
+            setup: crate::bora_settings::SetupStatus::Skipped,
         });
 
         assert_eq!(app.state.workspaces.len(), 2);

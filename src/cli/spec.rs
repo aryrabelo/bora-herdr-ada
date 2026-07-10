@@ -171,6 +171,11 @@ fn workspace_command() -> Command {
                 .arg(option("ttl-ms", "N")),
         )
         .subcommand(id_command("close", "workspace_id", "Close a workspace"))
+        .subcommand(
+            Command::new("run")
+                .about("Run the .bora/settings.toml run script for a workspace")
+                .arg(path_option("cwd", "PATH")),
+        )
 }
 
 fn worktree_command() -> Command {
@@ -194,6 +199,7 @@ fn worktree_command() -> Command {
                 .arg(option("label", "TEXT"))
                 .arg(flag("focus"))
                 .arg(flag("no-focus"))
+                .arg(flag("no-setup"))
                 .arg(json_flag()),
         )
         .subcommand(

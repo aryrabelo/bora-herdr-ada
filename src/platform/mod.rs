@@ -62,6 +62,22 @@ pub fn detach_server_daemon_command(command: &mut std::process::Command) {
     }
 }
 
+/// Create a symlink at `dst` pointing to `src`. `src` is an absolute path into
+/// the root checkout. On Windows the link kind is chosen by the source type.
+#[cfg(unix)]
+pub(crate) fn symlink(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(src, dst)
+}
+
+#[cfg(windows)]
+pub(crate) fn symlink(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+    if src.is_dir() {
+        std::os::windows::fs::symlink_dir(src, dst)
+    } else {
+        std::os::windows::fs::symlink_file(src, dst)
+    }
+}
+
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub fn current_process_is_detached_server_daemon() -> bool {
     unsafe { libc::getsid(0) == libc::getpid() }

@@ -1313,9 +1313,14 @@ impl AppState {
                                     .worktree_space()
                                     .map(|s| s.checkout_path.as_path())
                                     .unwrap_or(&ws.identity_cwd);
-                                let port = cfg.ports.as_ref().and_then(|p| {
-                                    crate::bora_config::port_for_checkout(p, root, checkout_path)
+                                let key = branch.map(str::to_string).unwrap_or_else(|| {
+                                    checkout_path
+                                        .file_name()
+                                        .map(|name| name.to_string_lossy().into_owned())
+                                        .unwrap_or_default()
                                 });
+                                let port =
+                                    crate::bora_settings::resolve_port(root, checkout_path, &key);
                                 (labels, filtered, port)
                             } else {
                                 (vec![], vec![], None)

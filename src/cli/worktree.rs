@@ -71,6 +71,7 @@ fn worktree_create(args: &[String]) -> std::io::Result<i32> {
     let mut path = None;
     let mut label = None;
     let mut focus = false;
+    let mut no_setup = false;
 
     let mut index = 0;
     while index < args.len() {
@@ -143,6 +144,10 @@ fn worktree_create(args: &[String]) -> std::io::Result<i32> {
                 focus = false;
                 index += 1;
             }
+            "--no-setup" => {
+                no_setup = true;
+                index += 1;
+            }
             "--json" => index += 1,
             other => {
                 eprintln!("unknown option: {other}");
@@ -154,7 +159,7 @@ fn worktree_create(args: &[String]) -> std::io::Result<i32> {
         || pr.is_some() && (branch.is_some() || base.is_some())
     {
         eprintln!(
-            "usage: bora worktree create [--workspace ID | --cwd PATH] [--branch NAME] [--base REF] [--pr NUMBER] [--path PATH] [--label TEXT] [--focus] [--no-focus] [--json] (--pr is mutually exclusive with --branch/--base)"
+            "usage: bora worktree create [--workspace ID | --cwd PATH] [--branch NAME] [--base REF] [--pr NUMBER] [--path PATH] [--label TEXT] [--focus] [--no-focus] [--no-setup] [--json] (--pr is mutually exclusive with --branch/--base)"
         );
         return Ok(2);
     }
@@ -168,6 +173,7 @@ fn worktree_create(args: &[String]) -> std::io::Result<i32> {
         path,
         label,
         focus,
+        no_setup,
     })
 }
 
@@ -302,7 +308,7 @@ fn print_worktree_help() {
     eprintln!("bora worktree commands:");
     eprintln!("  bora worktree list [--workspace ID | --cwd PATH] [--json]");
     eprintln!(
-        "  bora worktree create [--workspace ID | --cwd PATH] [--branch NAME] [--base REF] [--pr NUMBER] [--path PATH] [--label TEXT] [--focus] [--no-focus] [--json]"
+        "  bora worktree create [--workspace ID | --cwd PATH] [--branch NAME] [--base REF] [--pr NUMBER] [--path PATH] [--label TEXT] [--focus] [--no-focus] [--no-setup] [--json]"
     );
     eprintln!(
         "  bora worktree open [--workspace ID | --cwd PATH] (--path PATH | --branch NAME) [--label TEXT] [--focus] [--no-focus] [--json]"
