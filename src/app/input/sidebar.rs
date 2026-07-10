@@ -510,7 +510,8 @@ impl AppState {
                 crate::ui::WorkspaceListEntry::Workspace { .. } => None,
                 crate::ui::WorkspaceListEntry::GroupHeader { .. }
                 | crate::ui::WorkspaceListEntry::ProjectHeader { .. }
-                | crate::ui::WorkspaceListEntry::BranchHeader { .. } => None,
+                | crate::ui::WorkspaceListEntry::BranchHeader { .. }
+                | crate::ui::WorkspaceListEntry::HiddenHeader { .. } => None,
             })
             .collect::<Vec<_>>();
         let source_pos = roots.iter().position(|ws_idx| *ws_idx == source_ws_idx)?;

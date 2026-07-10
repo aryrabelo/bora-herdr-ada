@@ -248,8 +248,14 @@ fn format_agent_panel_primary_label(entry: &AgentPanelEntry, max_width: usize) -
 pub(crate) enum BranchRail {
     /// Loose workspace with no detected branch — no tree spine.
     None,
-    /// Under a branch; the project spine continues down to the closer (│).
+    /// Under an open bracket; the project spine continues down (│).
     Spine,
+    /// Last workspace of a folded first-branch group that is also the group's
+    /// last branch — draws the closing elbow (╰──).
+    Close,
+    /// Under a closed branch header (the group's last branch) — blank indent of
+    /// the spine's width, no vertical bar, since the bracket already closed.
+    Blank,
 }
 
 /// Per-tab aggregate dot states in tab order: (AgentState, seen).
@@ -376,6 +382,15 @@ fn branch_display_label(branch: &str) -> &str {
     branch.strip_prefix("worktree/").unwrap_or(branch)
 }
 
+/// Folded first-branch summary carried inline on a top-level project header
+/// (`╭─name [label] ↑a ↓b`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ProjectHeaderBranch {
+    pub label: String,
+    pub ahead: usize,
+    pub behind: usize,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum WorkspaceListEntry {
     Workspace {
@@ -386,18 +401,23 @@ pub(crate) enum WorkspaceListEntry {
     /// A collapsible group header row: a user-defined visual group, or a
     /// synthesized repo header when no main checkout of the repo is open.
     GroupHeader { name: String, collapse_key: String },
-    /// Repo/project header (no chevron); indented when nested under a visual group.
+    /// Repo/project header (no chevron). Top-level headers open the bracket
+    /// rail (`╭─`) and fold the group's first branch into `branch`; headers
+    /// nested under a visual group are `indented` and carry `branch: None`.
     ProjectHeader {
         name: String,
         collapse_key: String,
         indented: bool,
+        branch: Option<ProjectHeaderBranch>,
     },
-    /// Non-clickable branch sub-header inside a project group (╭ label ↑a ↓b).
+    /// Non-clickable branch sub-header inside a project group. Top-level
+    /// headers draw `├─ ` (or `╰── ` when `last`); nested ones draw `├── `.
     BranchHeader {
         label: String,
         ahead: usize,
         behind: usize,
         indented: bool,
+        last: bool,
     },
     /// Collapsible header for the bottom "Hidden" section; `count` is the
     /// number of temporarily-hidden workspaces beneath it.
@@ -593,6 +613,7 @@ fn workspace_list_entries_inner(app: &AppState, force_expanded: bool) -> Vec<Wor
                 name: space.repo_name.clone(),
                 collapse_key: space.repo_identity.clone(),
                 indented: false,
+                branch: None,
             });
             if collapsed {
                 if let Some(active_idx) = visible_group_idx
@@ -605,7 +626,7 @@ fn workspace_list_entries_inner(app: &AppState, force_expanded: bool) -> Vec<Wor
                     });
                 }
             } else {
-                emit_branch_subgroups(app, members, true, &mut entries);
+                emit_branch_subgroups(app, members, true, true, &mut entries);
             }
             continue;
         }
@@ -651,10 +672,17 @@ fn workspace_list_entries_inner(app: &AppState, force_expanded: bool) -> Vec<Wor
                                     name: label,
                                     collapse_key: repo_id.clone(),
                                     indented: true,
+                                    branch: None,
                                 });
                                 if !wt_collapsed {
                                     if let Some(members) = members_by_key.get(&repo_id) {
-                                        emit_branch_subgroups(app, members, true, &mut entries);
+                                        emit_branch_subgroups(
+                                            app,
+                                            members,
+                                            true,
+                                            false,
+                                            &mut entries,
+                                        );
                                     }
                                 }
                             } else {
@@ -663,9 +691,16 @@ fn workspace_list_entries_inner(app: &AppState, force_expanded: bool) -> Vec<Wor
                                         name: space.repo_name.clone(),
                                         collapse_key: space.repo_identity.clone(),
                                         indented: true,
+                                        branch: None,
                                     });
                                 }
-                                emit_branch_subgroups(app, &[member_idx], true, &mut entries);
+                                emit_branch_subgroups(
+                                    app,
+                                    &[member_idx],
+                                    true,
+                                    false,
+                                    &mut entries,
+                                );
                             }
                         }
                     }
@@ -675,14 +710,18 @@ fn workspace_list_entries_inner(app: &AppState, force_expanded: bool) -> Vec<Wor
         }
 
         // --- Flat (ungrouped) workspace: project header (if git) + branch bracket ---
-        if let Some(space) = ws.git_space() {
+        let flat_has_header = if let Some(space) = ws.git_space() {
             entries.push(WorkspaceListEntry::ProjectHeader {
                 name: space.repo_name.clone(),
                 collapse_key: space.repo_identity.clone(),
                 indented: false,
+                branch: None,
             });
-        }
-        emit_branch_subgroups(app, &[ws_idx], false, &mut entries);
+            true
+        } else {
+            false
+        };
+        emit_branch_subgroups(app, &[ws_idx], false, flat_has_header, &mut entries);
     }
     if force_expanded {
         return entries;
@@ -802,10 +841,16 @@ fn apply_hidden_filter(
 }
 
 /// Emit branch sub-groups for a list of project-group member indices.
+///
+/// `bracket` is true when THIS call is rooted by a just-pushed top-level
+/// project header: the first branch folds into that header and the last branch
+/// closes the rounded bracket. When false (nested visual-group repos, or flat
+/// non-git workspaces) the legacy header-per-branch layout is used.
 fn emit_branch_subgroups(
     app: &AppState,
     member_indices: &[usize],
     indented: bool,
+    bracket: bool,
     entries: &mut Vec<WorkspaceListEntry>,
 ) {
     let mut branch_order: Vec<String> = Vec::new();
@@ -822,24 +867,72 @@ fn emit_branch_subgroups(
         }
     }
 
-    // One branch sub-tree per branch; members stack under it on the spine.
-    for branch in &branch_order {
-        let members = &by_branch[branch];
-        let (ahead, behind) = members
+    let bracketed = bracket;
+
+    let branch_meta = |members: &[usize]| -> (usize, usize) {
+        members
             .iter()
             .find_map(|&i| app.workspaces[i].git_ahead_behind())
-            .unwrap_or((0, 0));
+            .unwrap_or((0, 0))
+    };
+
+    // Fold the first branch group into the preceding project header.
+    let folded = bracketed && !branch_order.is_empty();
+    if folded {
+        let first = &branch_order[0];
+        let members = &by_branch[first];
+        let (ahead, behind) = branch_meta(members);
+        if let Some(WorkspaceListEntry::ProjectHeader { branch, .. }) = entries.last_mut() {
+            *branch = Some(ProjectHeaderBranch {
+                label: branch_display_label(first).to_string(),
+                ahead,
+                behind,
+            });
+        }
+        // If the folded branch is also the only branch, its last member closes
+        // the bracket (╰──); otherwise the spine continues to the next branch.
+        let is_last_group = branch_order.len() == 1;
+        let last_member = members.len().saturating_sub(1);
+        for (k, &idx) in members.iter().enumerate() {
+            let rail = if is_last_group && k == last_member {
+                BranchRail::Close
+            } else {
+                BranchRail::Spine
+            };
+            entries.push(WorkspaceListEntry::Workspace {
+                ws_idx: idx,
+                indented,
+                rail,
+            });
+        }
+    }
+
+    // Remaining branches become header rows; the final one closes the bracket.
+    let start = usize::from(folded);
+    let header_branches = &branch_order[start..];
+    for (bi, branch) in header_branches.iter().enumerate() {
+        let members = &by_branch[branch];
+        let (ahead, behind) = branch_meta(members);
+        let last = bracketed && bi + 1 == header_branches.len();
         entries.push(WorkspaceListEntry::BranchHeader {
             label: branch_display_label(branch).to_string(),
             ahead,
             behind,
-            indented,
+            // Top-level bracket headers draw the bracket tee/elbow at column 0;
+            // nested ones keep the legacy indented connector.
+            indented: indented && !bracketed,
+            last,
         });
+        let rail = if last {
+            BranchRail::Blank
+        } else {
+            BranchRail::Spine
+        };
         for &idx in members {
             entries.push(WorkspaceListEntry::Workspace {
                 ws_idx: idx,
                 indented,
-                rail: BranchRail::Spine,
+                rail,
             });
         }
     }
@@ -1318,7 +1411,8 @@ pub(crate) fn workspace_drop_slots(
                 WorkspaceListEntry::Workspace { .. } => None,
                 WorkspaceListEntry::GroupHeader { .. }
                 | WorkspaceListEntry::ProjectHeader { .. }
-                | WorkspaceListEntry::BranchHeader { .. } => None,
+                | WorkspaceListEntry::BranchHeader { .. }
+                | WorkspaceListEntry::HiddenHeader { .. } => None,
             })
     };
 
@@ -1364,6 +1458,7 @@ pub(crate) fn workspace_drop_slots(
             WorkspaceListEntry::GroupHeader { .. }
             | WorkspaceListEntry::ProjectHeader { .. }
             | WorkspaceListEntry::BranchHeader { .. }
+            | WorkspaceListEntry::HiddenHeader { .. }
         )
         | None => crate::app::state::WorkspaceDropTarget::End,
     };
@@ -1706,14 +1801,65 @@ fn render_workspace_list(
                 name,
                 collapse_key,
                 indented,
+                branch,
             } => {
                 if row_y < list_bottom {
                     let collapsed = app.collapsed_space_keys.contains(collapse_key);
-                    let indent = if *indented { " " } else { "" };
-                    let mut spans = vec![Span::styled(
-                        format!("{indent}{name}"),
-                        Style::default().fg(p.accent).add_modifier(Modifier::BOLD),
-                    )];
+                    let name_style = Style::default().fg(p.accent).add_modifier(Modifier::BOLD);
+                    let mut spans = if *indented {
+                        // Nested under a visual group: legacy plain label.
+                        vec![Span::styled(format!(" {name}"), name_style)]
+                    } else {
+                        // Top-level: open the rounded bracket rail.
+                        vec![
+                            Span::styled("╭─", Style::default().fg(p.overlay0)),
+                            Span::styled(name.clone(), name_style),
+                        ]
+                    };
+                    if let Some(b) = branch {
+                        spans.push(Span::styled(" ", Style::default()));
+                        spans.push(Span::styled(
+                            format!("[{}]", b.label),
+                            Style::default().fg(p.overlay1),
+                        ));
+                        if b.ahead > 0 {
+                            spans.push(Span::styled(" ", Style::default()));
+                            spans.push(Span::styled(
+                                format!("↑{}", b.ahead),
+                                Style::default().fg(p.green),
+                            ));
+                        }
+                        if b.behind > 0 {
+                            spans.push(Span::styled(" ", Style::default()));
+                            spans.push(Span::styled(
+                                format!("↓{}", b.behind),
+                                Style::default().fg(p.red),
+                            ));
+                        }
+                        // PR badge for the folded first-branch workspace (the
+                        // next entry), mirroring the branch-header badge.
+                        if let Some(WorkspaceListEntry::Workspace { ws_idx, .. }) =
+                            entries.get(entry_idx + 1)
+                        {
+                            if let Some(pr) = app
+                                .workspaces
+                                .get(*ws_idx)
+                                .and_then(|w| w.cached_check_status.as_ref())
+                                .and_then(|cs| cs.pr.as_ref())
+                            {
+                                let pr_color = match pr.state.as_str() {
+                                    "MERGED" => p.teal,
+                                    "CLOSED" => p.red,
+                                    _ => p.green,
+                                };
+                                spans.push(Span::styled(" ", Style::default()));
+                                spans.push(Span::styled(
+                                    format!("#{}", pr.number),
+                                    Style::default().fg(pr_color),
+                                ));
+                            }
+                        }
+                    }
                     if collapsed {
                         let (state, seen) = space_aggregate_display_state(app, collapse_key);
                         let age = space_aggregate_idle_age(app, collapse_key, now);
@@ -1738,10 +1884,19 @@ fn render_workspace_list(
                 ahead,
                 behind,
                 indented,
+                last,
             } => {
                 if row_y < list_bottom {
                     let indent = if *indented { " " } else { "" };
-                    let connector = "├── ";
+                    // Nested (visual-group) headers keep the legacy connector;
+                    // top-level headers draw the bracket tee/elbow.
+                    let connector = if *indented {
+                        "├── "
+                    } else if *last {
+                        "╰── "
+                    } else {
+                        "├─ "
+                    };
                     let mut spans = vec![
                         Span::styled(
                             format!("{indent}{connector}"),
@@ -1856,8 +2011,16 @@ fn render_workspace_list(
                 let indent_prefix = if *indented { " " } else { "" };
                 match rail {
                     BranchRail::Spine => {
-                        line1.push(Span::styled(indent_prefix, Style::default()));
+                        // Bracket rails anchor at column 0 under the header's `╭─`.
                         line1.push(Span::styled("│ ", rail_style));
+                    }
+                    BranchRail::Close => {
+                        line1.push(Span::styled("╰── ", rail_style));
+                    }
+                    BranchRail::Blank => {
+                        // Bracket already closed at the last branch header; hold
+                        // the spine's width with blank space, no vertical bar.
+                        line1.push(Span::styled("  ", rail_style));
                     }
                     BranchRail::None => {
                         if let Some((key, collapsed)) =
@@ -2975,6 +3138,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
                     name: "herdr".into(),
                     collapse_key: "repo-key".into(),
                     indented: false,
+                    branch: None,
                 },
                 WorkspaceListEntry::Workspace {
                     ws_idx: 0,
@@ -3066,6 +3230,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
                     name: "herdr".into(),
                     collapse_key: "repo-key".into(),
                     indented: false,
+                    branch: None,
                 },
                 WorkspaceListEntry::Workspace {
                     ws_idx: 0,
@@ -3097,6 +3262,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
                     name: "herdr".into(),
                     collapse_key: "repo-key".into(),
                     indented: false,
+                    branch: None,
                 },
                 WorkspaceListEntry::Workspace {
                     ws_idx: 0,
@@ -3112,6 +3278,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
                     name: "herdr".into(),
                     collapse_key: "other-key".into(),
                     indented: false,
+                    branch: None,
                 },
                 WorkspaceListEntry::Workspace {
                     ws_idx: 1,
@@ -3139,6 +3306,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
                     name: "herdr".into(),
                     collapse_key: "repo-key".into(),
                     indented: false,
+                    branch: None,
                 },
                 WorkspaceListEntry::Workspace {
                     ws_idx: 0,
@@ -3175,6 +3343,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
                     name: "herdr".into(),
                     collapse_key: "github.com/owner/resume-builder".into(),
                     indented: false,
+                    branch: None,
                 },
                 WorkspaceListEntry::Workspace {
                     ws_idx: 0,
@@ -3213,6 +3382,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
                     name: "herdr".into(),
                     collapse_key: "github.com/owner/a".into(),
                     indented: false,
+                    branch: None,
                 },
                 WorkspaceListEntry::Workspace {
                     ws_idx: 0,
@@ -3223,6 +3393,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
                     name: "herdr".into(),
                     collapse_key: "github.com/owner/b".into(),
                     indented: false,
+                    branch: None,
                 },
                 WorkspaceListEntry::Workspace {
                     ws_idx: 1,
@@ -3251,6 +3422,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
                     name: "herdr".into(),
                     collapse_key: "repo-key".into(),
                     indented: false,
+                    branch: None,
                 },
                 WorkspaceListEntry::Workspace {
                     ws_idx: 0,
@@ -3290,6 +3462,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
                     name: "herdr".into(),
                     collapse_key: "repo-key".into(),
                     indented: false,
+                    branch: None,
                 },
                 WorkspaceListEntry::Workspace {
                     ws_idx: 0,
@@ -3310,6 +3483,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
                     name: "herdr".into(),
                     collapse_key: "other-key".into(),
                     indented: false,
+                    branch: None,
                 },
                 WorkspaceListEntry::Workspace {
                     ws_idx: 1,
@@ -3337,6 +3511,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
                     name: "herdr".into(),
                     collapse_key: "repo-key".into(),
                     indented: false,
+                    branch: None,
                 },
                 WorkspaceListEntry::Workspace {
                     ws_idx: 0,
@@ -3370,6 +3545,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
                 name: "herdr".into(),
                 collapse_key: "repo-key".into(),
                 indented: false,
+                branch: None,
             }]
         );
     }
@@ -3389,6 +3565,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
                     name: "herdr".into(),
                     collapse_key: "repo-key".into(),
                     indented: false,
+                    branch: None,
                 },
                 WorkspaceListEntry::Workspace {
                     ws_idx: 0,
@@ -3422,6 +3599,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
                     name: "herdr".into(),
                     collapse_key: "repo-key".into(),
                     indented: false,
+                    branch: None,
                 },
                 WorkspaceListEntry::Workspace {
                     ws_idx: 1,
@@ -3439,6 +3617,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
                 name: "herdr".into(),
                 collapse_key: "repo-key".into(),
                 indented: false,
+                branch: None,
             }]
         );
     }
@@ -3462,6 +3641,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
                     name: "herdr".into(),
                     collapse_key: "repo-key".into(),
                     indented: false,
+                    branch: None,
                 },
                 WorkspaceListEntry::Workspace {
                     ws_idx: 1,
@@ -3583,6 +3763,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
                     name: "herdr".into(),
                     collapse_key: "repo-key".into(),
                     indented: true,
+                    branch: None,
                 },
                 WorkspaceListEntry::Workspace {
                     ws_idx: 0,
@@ -3678,8 +3859,8 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
 
         let entries = workspace_list_entries(&app);
 
-        // Both checkouts are on branch "main" under a synthesized project header,
-        // so they form one branch sub-tree: BranchHeader + two Spine members.
+        // Both checkouts are on branch "main"; the branch folds into the
+        // project header and its last member closes the bracket.
         assert_eq!(
             entries,
             vec![
@@ -3687,12 +3868,11 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
                     name: "herdr".into(),
                     collapse_key: "github.com/owner/resume-builder".into(),
                     indented: false,
-                },
-                WorkspaceListEntry::BranchHeader {
-                    label: "main".into(),
-                    ahead: 0,
-                    behind: 0,
-                    indented: true,
+                    branch: Some(ProjectHeaderBranch {
+                        label: "main".into(),
+                        ahead: 0,
+                        behind: 0,
+                    }),
                 },
                 WorkspaceListEntry::Workspace {
                     ws_idx: 0,
@@ -3702,7 +3882,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
                 WorkspaceListEntry::Workspace {
                     ws_idx: 1,
                     indented: true,
-                    rail: BranchRail::Spine,
+                    rail: BranchRail::Close,
                 },
             ]
         );
@@ -3710,9 +3890,9 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
 
     #[test]
     fn single_ws_branch_emits_bracket() {
-        // A single git workspace with a branch always emits a full bracket
-        // (ProjectHeader + BranchHeader + Workspace{Last}). The old "trivial"
-        // short-circuit was removed.
+        // A single git workspace with a branch folds that branch into the
+        // project header; its sole member closes the bracket (Close), and the
+        // no-branch parent trails as a loose (None) row.
         let mut app = AppState::test_new();
         let identity = "github.com/owner/site";
         let mut parent = git_space_member("site", "key-parent", false);
@@ -3725,8 +3905,8 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
 
         let entries = workspace_list_entries(&app);
 
-        // ProjectHeader + BranchHeader for the branched child + Workspace{Last}
-        // for the branched child + Workspace{None} for the no-branch parent.
+        // ProjectHeader{branch: main} + Workspace{Close} for the branched child
+        // + Workspace{None} for the no-branch parent.
         assert_eq!(
             entries,
             vec![
@@ -3734,17 +3914,16 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
                     name: "herdr".into(),
                     collapse_key: identity.into(),
                     indented: false,
-                },
-                WorkspaceListEntry::BranchHeader {
-                    label: "main".into(),
-                    ahead: 0,
-                    behind: 0,
-                    indented: true,
+                    branch: Some(ProjectHeaderBranch {
+                        label: "main".into(),
+                        ahead: 0,
+                        behind: 0,
+                    }),
                 },
                 WorkspaceListEntry::Workspace {
                     ws_idx: 1,
                     indented: true,
-                    rail: BranchRail::Spine,
+                    rail: BranchRail::Close,
                 },
                 WorkspaceListEntry::Workspace {
                     ws_idx: 0,
@@ -3771,7 +3950,9 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
 
     #[test]
     fn multiple_branches_in_one_project_emit_multiple_brackets() {
-        // Each distinct branch in a project gets its own bracket.
+        // Three branches + a no-branch parent: the first branch folds into the
+        // project header, the middle branch is a `├─ ` tee, the last is a
+        // `╰── ` elbow, and the parent trails as a loose row.
         let mut app = AppState::test_new();
         let identity = "github.com/owner/proj";
         let mut parent = git_space_member("proj", "key-p", false);
@@ -3781,38 +3962,95 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
         ws_a.cached_git_space.as_mut().unwrap().repo_identity = identity.into();
         let mut ws_b = git_space_member_on_branch("feature-b", "key-b", false, "feat/b");
         ws_b.cached_git_space.as_mut().unwrap().repo_identity = identity.into();
-        app.workspaces = vec![parent, ws_a, ws_b];
+        let mut ws_c = git_space_member_on_branch("feature-c", "key-c", false, "feat/c");
+        ws_c.cached_git_space.as_mut().unwrap().repo_identity = identity.into();
+        app.workspaces = vec![parent, ws_a, ws_b, ws_c];
 
         let entries = workspace_list_entries(&app);
 
-        // Exactly one BranchHeader, labeled by the first non-linked branched member.
-        let branch_headers: Vec<_> = entries
-            .iter()
-            .filter_map(|e| match e {
-                WorkspaceListEntry::BranchHeader { label, .. } => Some(label.clone()),
-                _ => None,
-            })
-            .collect();
         assert_eq!(
-            branch_headers,
-            vec!["feat/a", "feat/b"],
-            "one bracket per branch"
+            entries,
+            vec![
+                WorkspaceListEntry::ProjectHeader {
+                    name: "herdr".into(),
+                    collapse_key: identity.into(),
+                    indented: false,
+                    branch: Some(ProjectHeaderBranch {
+                        label: "feat/a".into(),
+                        ahead: 0,
+                        behind: 0,
+                    }),
+                },
+                WorkspaceListEntry::Workspace {
+                    ws_idx: 1,
+                    indented: true,
+                    rail: BranchRail::Spine,
+                },
+                WorkspaceListEntry::BranchHeader {
+                    label: "feat/b".into(),
+                    ahead: 0,
+                    behind: 0,
+                    indented: false,
+                    last: false,
+                },
+                WorkspaceListEntry::Workspace {
+                    ws_idx: 2,
+                    indented: true,
+                    rail: BranchRail::Spine,
+                },
+                WorkspaceListEntry::BranchHeader {
+                    label: "feat/c".into(),
+                    ahead: 0,
+                    behind: 0,
+                    indented: false,
+                    last: true,
+                },
+                WorkspaceListEntry::Workspace {
+                    ws_idx: 3,
+                    indented: true,
+                    rail: BranchRail::Blank,
+                },
+                WorkspaceListEntry::Workspace {
+                    ws_idx: 0,
+                    indented: true,
+                    rail: BranchRail::None,
+                },
+            ]
         );
 
-        // All branch members ride the project spine down to the closer line.
-        let spine_count = entries
-            .iter()
-            .filter(|e| {
-                matches!(
-                    e,
-                    WorkspaceListEntry::Workspace {
-                        rail: BranchRail::Spine,
-                        ..
-                    }
-                )
-            })
-            .count();
-        assert_eq!(spine_count, 2, "each branch member is on the spine");
+        // Render pass: the bracket prefixes land at column 0.
+        let runtimes = crate::terminal::TerminalRuntimeRegistry::new();
+        let area = Rect::new(0, 0, 40, 12);
+        let mut terminal = Terminal::new(TestBackend::new(40, 12)).expect("test terminal");
+        terminal
+            .draw(|frame| render_workspace_list(&app, &runtimes, frame, area, false))
+            .expect("workspace list should render");
+        let row_text = |row: u16| -> String {
+            (0..40)
+                .map(|col| terminal.backend().buffer()[(col, row)].symbol().to_string())
+                .collect()
+        };
+        let body_y = WORKSPACE_SECTION_HEADER_ROWS;
+        assert!(
+            row_text(body_y).starts_with("╭─") && row_text(body_y).contains("feat/a"),
+            "header opens bracket with folded branch: {:?}",
+            row_text(body_y)
+        );
+        assert!(
+            row_text(body_y + 1).starts_with('│'),
+            "folded member on spine: {:?}",
+            row_text(body_y + 1)
+        );
+        assert!(
+            row_text(body_y + 2).starts_with("├─ ") && row_text(body_y + 2).contains("feat/b"),
+            "middle branch is a tee: {:?}",
+            row_text(body_y + 2)
+        );
+        assert!(
+            row_text(body_y + 4).starts_with("╰── ") && row_text(body_y + 4).contains("feat/c"),
+            "last branch closes the bracket: {:?}",
+            row_text(body_y + 4)
+        );
     }
 
     #[test]
@@ -3851,6 +4089,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
             ahead: 0,
             behind: 0,
             indented: false,
+            last: false,
         }];
         assert_eq!(entry_row_height(&entries[0], &entries, 0), 1);
     }
@@ -3911,13 +4150,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
             .collect();
         assert_eq!(
             variants,
-            [
-                "ProjectHeader",
-                "BranchHeader",
-                "Workspace",
-                "Workspace",
-                "Workspace",
-            ]
+            ["ProjectHeader", "Workspace", "Workspace", "Workspace",]
         );
 
         // Height pass: total rows from the shared per-entry height helper.
@@ -3926,7 +4159,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
             .enumerate()
             .map(|(idx, entry)| entry_row_height(entry, &entries, idx))
             .sum();
-        assert_eq!(total_height, 5, "1+1+1+1+1 rows for the pinned sequence");
+        assert_eq!(total_height, 4, "1+1+1+1 rows for the pinned sequence");
 
         // Visible-count pass agrees: a body exactly `total_height` rows tall
         // shows every entry; one row less drops exactly the last (1-row)
@@ -3995,9 +4228,27 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
             row_text(body_y)
         );
         assert!(
-            row_text(body_y + 4).contains("notes"),
+            row_text(body_y + 3).contains("notes"),
             "flat workspace card row: {:?}",
-            row_text(body_y + 4)
+            row_text(body_y + 3)
+        );
+
+        // Bracket-rail prefixes: header opens with ╭─, the folded main member
+        // rides the spine (│), and the last member closes it (╰──).
+        assert!(
+            row_text(body_y).contains("╭─"),
+            "project header opens bracket: {:?}",
+            row_text(body_y)
+        );
+        assert!(
+            row_text(body_y + 1).contains('│'),
+            "folded member on spine: {:?}",
+            row_text(body_y + 1)
+        );
+        assert!(
+            row_text(body_y + 2).contains("╰──"),
+            "last member closes bracket: {:?}",
+            row_text(body_y + 2)
         );
 
         // Invariants gate for the state used above, so later field additions
