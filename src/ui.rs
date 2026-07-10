@@ -1054,19 +1054,26 @@ mod tests {
         let buffer = terminal.backend().buffer();
 
         let card = app.view.workspace_card_areas[0].rect;
+        assert_eq!(card.height, 1, "workspace card is a single row");
         let line1 = buffer_row_text(buffer, card, card.y);
-        let line2 = buffer_row_text(buffer, card, card.y + 1);
 
-        // New layout: workspace is git so line 1 has a rail prefix ("│ one").
-        // Assert the name is present and there's no leading number like "1 one".
+        // New layout: single row is "│ <dots> one" — a rail prefix, then the
+        // tab dot(s) to the LEFT of the name, then the name. No leading number.
         assert!(
-            line1.trim_start_matches(['│', ' ']).starts_with("one"),
-            "expected name on row 1, got: {line1:?}"
+            line1.contains("one"),
+            "expected name on the row, got: {line1:?}"
         );
         assert!(!line1.contains("1 one"));
+        // The tab dot sits before the name: after stripping the rail prefix and
+        // spaces, the first glyph is the dot, not the name's first letter.
+        let after_rail = line1.trim_start_matches(['│', ' ']);
         assert!(
-            line2.starts_with("   · main"),
-            "expected dot on branch line, got: {line2:?}"
+            !after_rail.starts_with("one"),
+            "expected a tab dot to the left of the name, got: {line1:?}"
+        );
+        assert!(
+            line1.find("one").map(|p| p > 0).unwrap_or(false),
+            "tab dot must precede the name, got: {line1:?}"
         );
 
         std::fs::remove_dir_all(repo).ok();

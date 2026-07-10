@@ -380,7 +380,7 @@ fn render_header_status(
     let (dot, dot_style) = if matches!(state, AgentState::Working) {
         (
             super::spinner_frame(app.spinner_tick),
-            Style::default().fg(p.yellow),
+            Style::default().fg(p.overlay0),
         )
     } else {
         state_dot(state, seen, app.spinner_tick, p, None)
@@ -1112,8 +1112,8 @@ fn agent_summary_line(app: &AppState, p: &Palette, max_width: u16) -> Line<'stat
         let style = if idx == 0 {
             let color = match tone {
                 SummaryTone::Blocked => p.red,
-                SummaryTone::Done => p.blue,
-                SummaryTone::Working => p.yellow,
+                SummaryTone::Done => p.yellow,
+                SummaryTone::Working => p.overlay0,
                 SummaryTone::Idle | SummaryTone::Muted => p.overlay1,
             };
             let style = Style::default().fg(color).bg(p.panel_bg);

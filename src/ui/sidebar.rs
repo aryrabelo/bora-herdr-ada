@@ -399,7 +399,7 @@ fn entry_row_height(
         WorkspaceListEntry::GroupHeader { .. } => 1,
         WorkspaceListEntry::ProjectHeader { .. } => 1,
         WorkspaceListEntry::BranchHeader { .. } => 1,
-        WorkspaceListEntry::Workspace { .. } => 2,
+        WorkspaceListEntry::Workspace { .. } => 1,
     }
 }
 
@@ -877,10 +877,10 @@ pub(crate) fn compute_workspace_list_areas(
             WorkspaceListEntry::Workspace {
                 ws_idx, indented, ..
             } => {
-                // Workspace card spans 2 rows (name + dots).
+                // Workspace card spans 1 row (name + inline dots).
                 cards.push(crate::app::state::WorkspaceCardArea {
                     ws_idx: *ws_idx,
-                    rect: Rect::new(body.x, row_y, body.width, 2),
+                    rect: Rect::new(body.x, row_y, body.width, 1),
                     indented: *indented,
                 });
             }
@@ -1284,8 +1284,8 @@ fn render_workspace_list(
                 let is_dragged = dragged_ws_idx == Some(i);
                 let highlighted = selected || is_active || is_dragged;
 
-                // Card rect spans 2 rows (name + dots).
-                let card_height = 2u16;
+                // Card rect spans 1 row (name + inline dots).
+                let card_height = 1u16;
                 if highlighted {
                     let bg = if selected {
                         p.surface0
@@ -1312,7 +1312,7 @@ fn render_workspace_list(
                 };
                 let rail_style = Style::default().fg(p.overlay0);
 
-                // --- Line 1: name ---
+                // --- Single row: name + inline tab dots ---
                 let mut line1 = Vec::new();
                 let indent_prefix = if *indented { " " } else { "" };
                 match rail {
@@ -1340,54 +1340,53 @@ fn render_workspace_list(
                     }
                 }
 
+                // Build the tab dots, placed to the LEFT of the name on this
+                // same row. Preserve the existing glyph/style logic verbatim;
+                // one space separates each dot, and one space separates the
+                // dots group from the name.
+                let dots = tab_dot_states(ws, &app.terminals);
+                let dot_ages = tab_dot_idle_ages(ws, &app.terminals, now);
+                let mut dot_spans: Vec<Span> = Vec::new();
+                for (tab_idx, &(state, seen)) in dots.iter().enumerate() {
+                    let (dot_glyph, mut dot_style) = state_dot(
+                        state,
+                        seen,
+                        app.spinner_tick,
+                        p,
+                        dot_ages.get(tab_idx).copied().flatten(),
+                    );
+                    if tab_idx == ws.active_tab {
+                        dot_style = dot_style.add_modifier(Modifier::BOLD);
+                    }
+                    if tab_idx > 0 {
+                        dot_spans.push(Span::styled(" ", Style::default()));
+                    }
+                    dot_spans.push(Span::styled(dot_glyph, dot_style));
+                }
+                // One space between the dots group and the name.
+                let sep = if dot_spans.is_empty() { "" } else { " " };
+
+                // Truncate the name so the dots + separator still fit.
+                let prefix_width: usize = line1
+                    .iter()
+                    .map(|s| display_width(s.content.as_ref()))
+                    .sum();
+                let dots_width: usize = dot_spans
+                    .iter()
+                    .map(|s| display_width(s.content.as_ref()))
+                    .sum();
                 let label = ws.display_name_from(&app.terminals, terminal_runtimes);
+                let avail = (body.width as usize)
+                    .saturating_sub(prefix_width + dots_width + display_width(sep));
+                let label = truncate_end(&label, avail);
+                line1.extend(dot_spans);
+                line1.push(Span::styled(sep, Style::default()));
                 line1.push(Span::styled(label, name_style));
 
                 if row_y < list_bottom {
                     frame.render_widget(
                         Paragraph::new(Line::from(line1)),
                         Rect::new(body.x, row_y, body.width, 1),
-                    );
-                }
-
-                // --- Line 2: tab dots ---
-                let dots_y = row_y + 1;
-                if dots_y < list_bottom {
-                    let mut line2 = Vec::new();
-                    match rail {
-                        BranchRail::Spine => {
-                            line2.push(Span::styled(indent_prefix, Style::default()));
-                            line2.push(Span::styled("│ ", rail_style));
-                        }
-                        BranchRail::None => {
-                            line2.push(Span::styled(indent_prefix, Style::default()));
-                            // Align with name: extra space for non-rail.
-                            if !*indented && workspace_parent_group_state(app, i).is_some() {
-                                line2.push(Span::styled("  ", Style::default()));
-                            }
-                        }
-                    }
-                    let dots = tab_dot_states(ws, &app.terminals);
-                    let dot_ages = tab_dot_idle_ages(ws, &app.terminals, now);
-                    for (tab_idx, &(state, seen)) in dots.iter().enumerate() {
-                        let (dot_glyph, mut dot_style) = state_dot(
-                            state,
-                            seen,
-                            app.spinner_tick,
-                            p,
-                            dot_ages.get(tab_idx).copied().flatten(),
-                        );
-                        if tab_idx == ws.active_tab {
-                            dot_style = dot_style.add_modifier(Modifier::BOLD);
-                        }
-                        if tab_idx > 0 {
-                            line2.push(Span::styled(" ", Style::default()));
-                        }
-                        line2.push(Span::styled(dot_glyph, dot_style));
-                    }
-                    frame.render_widget(
-                        Paragraph::new(Line::from(line2)),
-                        Rect::new(body.x, dots_y, body.width, 1),
                     );
                 }
             }
@@ -2166,9 +2165,9 @@ mod tests {
         let ws_area = Rect::new(0, 0, 30, 6);
         let metrics = workspace_list_scroll_metrics(&app, ws_area);
 
-        assert_eq!(metrics.viewport_rows, 2);
-        assert_eq!(metrics.max_offset_from_bottom, 1);
-        assert_eq!(metrics.offset_from_bottom, 1);
+        assert_eq!(metrics.viewport_rows, 3);
+        assert_eq!(metrics.max_offset_from_bottom, 0);
+        assert_eq!(metrics.offset_from_bottom, 0);
     }
 
     #[test]
@@ -2898,7 +2897,7 @@ mod tests {
     }
 
     #[test]
-    fn workspace_card_area_rect_spans_both_lines() {
+    fn workspace_card_area_rect_is_single_row() {
         let mut app = AppState::test_new();
         app.workspaces = vec![Workspace::test_new("alpha")];
 
@@ -2906,8 +2905,8 @@ mod tests {
 
         assert_eq!(cards.len(), 1);
         assert_eq!(
-            cards[0].rect.height, 2,
-            "card rect must span both name + dots lines"
+            cards[0].rect.height, 1,
+            "card rect is a single row (name + inline dots)"
         );
     }
 
@@ -2998,7 +2997,7 @@ mod tests {
     }
 
     #[test]
-    fn entry_row_height_workspace_is_two_rows() {
+    fn entry_row_height_workspace_is_one_row() {
         let entries = vec![
             WorkspaceListEntry::Workspace {
                 ws_idx: 0,
@@ -3011,9 +3010,9 @@ mod tests {
                 rail: BranchRail::None,
             },
         ];
-        // Every workspace is name + dots = 2 rows; no closer line.
-        assert_eq!(entry_row_height(&entries[0], &entries, 0), 2);
-        assert_eq!(entry_row_height(&entries[1], &entries, 1), 2);
+        // Every workspace is a single row: name + inline dots.
+        assert_eq!(entry_row_height(&entries[0], &entries, 0), 1);
+        assert_eq!(entry_row_height(&entries[1], &entries, 1), 1);
     }
 
     // Characterization: pins the lockstep entries system for a git repo group
@@ -3067,10 +3066,10 @@ mod tests {
             .enumerate()
             .map(|(idx, entry)| entry_row_height(entry, &entries, idx))
             .sum();
-        assert_eq!(total_height, 8, "1+1+2+2+2 rows for the pinned sequence");
+        assert_eq!(total_height, 5, "1+1+1+1+1 rows for the pinned sequence");
 
         // Visible-count pass agrees: a body exactly `total_height` rows tall
-        // shows every entry; one row less drops exactly the last (2-row)
+        // shows every entry; one row less drops exactly the last (1-row)
         // entry. Section area height = body + header rows + footer row.
         let exact = Rect::new(0, 0, 30, total_height + WORKSPACE_SECTION_HEADER_ROWS + 1);
         assert_eq!(workspace_list_visible_count(&app, exact, 0), entries.len());
@@ -3135,9 +3134,9 @@ mod tests {
             row_text(body_y)
         );
         assert!(
-            row_text(body_y + 6).contains("notes"),
-            "flat workspace card first row: {:?}",
-            row_text(body_y + 6)
+            row_text(body_y + 4).contains("notes"),
+            "flat workspace card row: {:?}",
+            row_text(body_y + 4)
         );
 
         // Invariants gate for the state used above, so later field additions

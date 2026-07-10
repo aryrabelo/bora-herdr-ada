@@ -195,7 +195,8 @@ pub(super) fn render_config_diagnostic(frame: &mut Frame, area: Rect, message: &
     }
 }
 
-/// Idle age -> color ramp. `None` (no age data) reads as freshest. The hottest
+/// Idle age -> color ramp. `None` (no age data) reads as freshest and shows
+/// yellow, marking a just-finished (done, unseen-idle) agent. The hottest
 /// (red) color marks the oldest unseen idle.
 pub(super) fn idle_age_color(age: Option<Duration>, p: &Palette) -> Color {
     match age {
@@ -203,7 +204,7 @@ pub(super) fn idle_age_color(age: Option<Duration>, p: &Palette) -> Color {
         Some(d) if d >= Duration::from_secs(1800) => p.yellow, // 30–60 min
         Some(d) if d >= Duration::from_secs(600) => p.teal, // 10–30 min
         Some(d) if d >= Duration::from_secs(120) => p.text, // 2–10 min
-        _ => p.overlay0,                                    // 0–2 min / none
+        _ => p.yellow,                                      // 0–2 min / none
     }
 }
 
@@ -215,7 +216,7 @@ pub(super) fn state_dot(
     idle_age: Option<Duration>,
 ) -> (&'static str, Style) {
     match (state, seen) {
-        (AgentState::Working, _) => (super::spinner_frame(tick), Style::default().fg(p.yellow)),
+        (AgentState::Working, _) => (super::spinner_frame(tick), Style::default().fg(p.overlay0)),
         (AgentState::Idle, false) => (
             super::sand_frame(tick),
             Style::default().fg(idle_age_color(idle_age, p)),
@@ -234,7 +235,7 @@ pub(super) fn agent_icon(
     idle_age: Option<Duration>,
 ) -> (&'static str, Style) {
     match (state, seen) {
-        (AgentState::Working, _) => (super::spinner_frame(tick), Style::default().fg(p.yellow)),
+        (AgentState::Working, _) => (super::spinner_frame(tick), Style::default().fg(p.overlay0)),
         (AgentState::Idle, false) => (
             super::sand_frame(tick),
             Style::default().fg(idle_age_color(idle_age, p)),
@@ -258,7 +259,7 @@ pub(super) fn state_label(state: AgentState, seen: bool) -> &'static str {
 pub(super) fn state_label_color(state: AgentState, seen: bool, p: &Palette) -> Color {
     match (state, seen) {
         (AgentState::Blocked, _) => p.red,
-        (AgentState::Working, _) => p.yellow,
+        (AgentState::Working, _) => p.overlay0,
         (AgentState::Idle, false) => p.teal,
         (AgentState::Idle, true) => p.overlay0,
         (AgentState::Unknown, _) => p.overlay0,
@@ -353,8 +354,8 @@ mod tests {
     #[test]
     fn idle_age_color_buckets() {
         let p = Palette::catppuccin();
-        assert_eq!(idle_age_color(Some(Duration::from_secs(0)), &p), p.overlay0);
-        assert_eq!(idle_age_color(None, &p), p.overlay0);
+        assert_eq!(idle_age_color(Some(Duration::from_secs(0)), &p), p.yellow);
+        assert_eq!(idle_age_color(None, &p), p.yellow);
         assert_eq!(idle_age_color(Some(Duration::from_secs(180)), &p), p.text); // 3 min
         assert_eq!(idle_age_color(Some(Duration::from_secs(900)), &p), p.teal); // 15 min
         assert_eq!(
