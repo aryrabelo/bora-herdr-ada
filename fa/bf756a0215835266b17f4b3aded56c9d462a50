@@ -1,0 +1,19 @@
+NEXT_PROMPT.md
+  s_e34313eeadb467::t_2623c692a1a8c7 1-68
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.12",
+  "base_commit_sha": "fabf756a0215835266b17f4b3aded56c9d462a50",
+  "prompts": {},
+  "sessions": {
+    "s_e34313eeadb467": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ae672615-332b-43ae-9177-0a430158f1ac",
+        "model": "claude-fable-5"
+      },
+      "human_author": null
+    }
+  }
+}
