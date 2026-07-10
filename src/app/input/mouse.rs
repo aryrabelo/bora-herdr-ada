@@ -783,6 +783,10 @@ impl AppState {
                             && mouse.column < header.rect.x + header.rect.width
                         {
                             let key = header.collapse_key.clone();
+                            if key == "hidden:" {
+                                self.hidden_section_expanded = !self.hidden_section_expanded;
+                                return None;
+                            }
                             if self.collapsed_space_keys.contains(&key) {
                                 self.collapsed_space_keys.remove(&key);
                             } else {
@@ -1258,6 +1262,10 @@ impl AppState {
                 }
                 if let Some(idx) = self.workspace_at_row(mouse.row) {
                     self.selected = idx;
+                    let hidden = self
+                        .workspaces
+                        .get(idx)
+                        .is_some_and(|ws| self.is_hidden(&format!("ws:{}", ws.id)));
                     let kind = self
                         .workspaces
                         .get(idx)
@@ -1287,9 +1295,13 @@ impl AppState {
                                 collapsed: group_state
                                     .as_ref()
                                     .is_some_and(|(_, collapsed)| *collapsed),
+                                hidden,
                             })
                         })
-                        .unwrap_or(ContextMenuKind::Workspace { ws_idx: idx });
+                        .unwrap_or(ContextMenuKind::Workspace {
+                            ws_idx: idx,
+                            hidden,
+                        });
                     // Load .bora.toml commands for workspace context menus.
                     let (bora_labels, bora_commands, bora_port) = if matches!(
                         kind,
@@ -1339,6 +1351,34 @@ impl AppState {
                         list: MenuListState::new(0),
                         bora_commands,
                         bora_port,
+                    });
+                    self.mode = Mode::ContextMenu;
+                } else if let Some(header) = self
+                    .view
+                    .workspace_group_header_areas
+                    .iter()
+                    .find(|h| {
+                        mouse.row == h.rect.y
+                            && mouse.column >= h.rect.x
+                            && mouse.column < h.rect.x + h.rect.width
+                    })
+                    .filter(|h| h.collapse_key != "hidden:")
+                    .cloned()
+                {
+                    let hidden = self.is_hidden(&header.collapse_key);
+                    let kind = ContextMenuKind::GroupHeader {
+                        name: header.name.clone(),
+                        collapse_key: header.collapse_key,
+                        hidden,
+                    };
+                    self.context_menu = Some(ContextMenuState {
+                        items: build_context_menu_items(&kind, &self.workspaces, &[]),
+                        kind,
+                        x: mouse.column,
+                        y: mouse.row,
+                        list: MenuListState::new(0),
+                        bora_commands: vec![],
+                        bora_port: None,
                     });
                     self.mode = Mode::ContextMenu;
                 }
@@ -2766,7 +2806,10 @@ mod tests {
     #[test]
     fn hovering_context_menu_updates_highlight() {
         let mut app = app_for_mouse_test();
-        let kind = ContextMenuKind::Workspace { ws_idx: 0 };
+        let kind = ContextMenuKind::Workspace {
+            ws_idx: 0,
+            hidden: false,
+        };
         app.state.context_menu = Some(ContextMenuState {
             items: build_context_menu_items(&kind, &[], &[]),
             kind,
@@ -3066,7 +3109,10 @@ mod tests {
         app.state.selected = 0;
         app.state.mode = Mode::Terminal;
 
-        let kind = ContextMenuKind::Workspace { ws_idx: 1 };
+        let kind = ContextMenuKind::Workspace {
+            ws_idx: 1,
+            hidden: false,
+        };
         app.state.context_menu = Some(ContextMenuState {
             items: build_context_menu_items(&kind, &[], &[]),
             kind,
@@ -3110,7 +3156,10 @@ mod tests {
         app.state.active = Some(0);
         app.state.selected = 0;
         app.state.confirm_close = false;
-        let kind = ContextMenuKind::Workspace { ws_idx: 1 };
+        let kind = ContextMenuKind::Workspace {
+            ws_idx: 1,
+            hidden: false,
+        };
         let items = build_context_menu_items(&kind, &[], &[]);
         let close_idx = items.iter().position(|i| i == "Close").unwrap() as u16;
         app.state.context_menu = Some(ContextMenuState {

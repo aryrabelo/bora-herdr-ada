@@ -367,6 +367,9 @@ pub(crate) enum WorkspaceListEntry {
         behind: usize,
         indented: bool,
     },
+    /// Collapsible header for the bottom "Hidden" section; `count` is the
+    /// number of temporarily-hidden workspaces beneath it.
+    HiddenHeader { count: usize },
 }
 
 /// Derive the repo-header "+" (create worktree) hit areas from the sidebar
@@ -378,7 +381,9 @@ pub(crate) fn worktree_new_hit_areas_from_headers(
 ) -> Vec<crate::app::state::WorktreeNewHitArea> {
     headers
         .iter()
-        .filter(|header| !header.collapse_key.starts_with("vg:"))
+        .filter(|header| {
+            !header.collapse_key.starts_with("vg:") && header.collapse_key != "hidden:"
+        })
         .filter(|header| header.rect.width >= 3)
         .map(|header| crate::app::state::WorktreeNewHitArea {
             repo_identity: header.collapse_key.clone(),
@@ -400,6 +405,7 @@ fn entry_row_height(
         WorkspaceListEntry::ProjectHeader { .. } => 1,
         WorkspaceListEntry::BranchHeader { .. } => 1,
         WorkspaceListEntry::Workspace { .. } => 1,
+        WorkspaceListEntry::HiddenHeader { .. } => 1,
     }
 }
 
@@ -646,7 +652,121 @@ fn workspace_list_entries_inner(app: &AppState, force_expanded: bool) -> Vec<Wor
         }
         emit_branch_subgroups(app, &[ws_idx], false, &mut entries);
     }
-    entries
+    if force_expanded {
+        return entries;
+    }
+    apply_hidden_filter(app, &grouped_keys, entries)
+}
+
+/// Post-process the raw entry list (desktop only): drop temporarily-hidden
+/// workspaces and any group/branch header whose members all became hidden,
+/// then append a collapsible "Hidden" section. Never applied to the mobile
+/// (force-expanded) list.
+fn apply_hidden_filter(
+    app: &AppState,
+    grouped_keys: &std::collections::HashSet<String>,
+    raw: Vec<WorkspaceListEntry>,
+) -> Vec<WorkspaceListEntry> {
+    let level = |e: &WorkspaceListEntry| match e {
+        WorkspaceListEntry::GroupHeader { .. } | WorkspaceListEntry::HiddenHeader { .. } => 0u8,
+        WorkspaceListEntry::ProjectHeader { .. } => 1,
+        WorkspaceListEntry::BranchHeader { .. } => 2,
+        WorkspaceListEntry::Workspace { .. } => 3,
+    };
+    let ws_hidden = |ws_idx: usize| -> bool {
+        let Some(ws) = app.workspaces.get(ws_idx) else {
+            return false;
+        };
+        if app.is_hidden(&AppState::workspace_hide_key(ws)) {
+            return true;
+        }
+        if let Some(group) = &ws.visual_group {
+            if app.is_hidden(&format!("vg:{group}")) {
+                return true;
+            }
+        }
+        if let Some(space) = ws.git_space() {
+            if grouped_keys.contains(&space.repo_identity) && app.is_hidden(&space.repo_identity) {
+                return true;
+            }
+        }
+        false
+    };
+
+    // Mark, per header, whether it had any workspace child in the raw list and
+    // whether any of those children survive. A collapsed header legitimately
+    // has no children and must be kept.
+    let n = raw.len();
+    let mut had_child = vec![false; n];
+    let mut has_kept_child = vec![false; n];
+    let mut open: Vec<usize> = Vec::new();
+    for (i, entry) in raw.iter().enumerate() {
+        let lvl = level(entry);
+        while let Some(&top) = open.last() {
+            if level(&raw[top]) >= lvl {
+                open.pop();
+            } else {
+                break;
+            }
+        }
+        match entry {
+            WorkspaceListEntry::Workspace { ws_idx, .. } => {
+                let hidden = ws_hidden(*ws_idx);
+                for &h in &open {
+                    had_child[h] = true;
+                    has_kept_child[h] |= !hidden;
+                }
+            }
+            WorkspaceListEntry::GroupHeader { .. }
+            | WorkspaceListEntry::ProjectHeader { .. }
+            | WorkspaceListEntry::BranchHeader { .. } => open.push(i),
+            WorkspaceListEntry::HiddenHeader { .. } => {}
+        }
+    }
+
+    let mut result = Vec::with_capacity(n);
+    let mut hidden_ws: Vec<usize> = Vec::new();
+    for (i, entry) in raw.into_iter().enumerate() {
+        match &entry {
+            WorkspaceListEntry::Workspace { ws_idx, .. } => {
+                if ws_hidden(*ws_idx) {
+                    hidden_ws.push(*ws_idx);
+                } else {
+                    result.push(entry);
+                }
+            }
+            WorkspaceListEntry::GroupHeader { collapse_key, .. }
+            | WorkspaceListEntry::ProjectHeader { collapse_key, .. } => {
+                let drop = app.is_hidden(collapse_key) || (had_child[i] && !has_kept_child[i]);
+                if !drop {
+                    result.push(entry);
+                }
+            }
+            WorkspaceListEntry::BranchHeader { .. } => {
+                if !had_child[i] || has_kept_child[i] {
+                    result.push(entry);
+                }
+            }
+            WorkspaceListEntry::HiddenHeader { .. } => result.push(entry),
+        }
+    }
+
+    if !hidden_ws.is_empty() {
+        result.push(WorkspaceListEntry::HiddenHeader {
+            count: hidden_ws.len(),
+        });
+        if app.hidden_section_expanded {
+            for ws_idx in hidden_ws {
+                result.push(WorkspaceListEntry::Workspace {
+                    ws_idx,
+                    indented: true,
+                    rail: BranchRail::None,
+                });
+            }
+        }
+    }
+
+    result
 }
 
 /// Emit branch sub-groups for a list of project-group member indices.
@@ -873,6 +993,15 @@ pub(crate) fn compute_workspace_list_areas(
             }
             WorkspaceListEntry::BranchHeader { .. } => {
                 // BranchHeader is a non-clickable label — no card or header area.
+            }
+            WorkspaceListEntry::HiddenHeader { .. } => {
+                // Reuse the group-header hit-test path so a click toggles the
+                // Hidden section; keyed with a sentinel that no repo can produce.
+                headers.push(crate::app::state::GroupHeaderCardArea {
+                    name: "Hidden".to_string(),
+                    collapse_key: "hidden:".to_string(),
+                    rect: Rect::new(body.x, row_y, body.width, 1),
+                });
             }
             WorkspaceListEntry::Workspace {
                 ws_idx, indented, ..
@@ -1266,6 +1395,27 @@ fn render_workspace_list(
                             ));
                         }
                     }
+                    frame.render_widget(
+                        Paragraph::new(Line::from(spans)),
+                        Rect::new(body.x, row_y, body.width, 1),
+                    );
+                }
+            }
+            WorkspaceListEntry::HiddenHeader { count } => {
+                if row_y < list_bottom {
+                    let chevron = if app.hidden_section_expanded {
+                        "▾"
+                    } else {
+                        "▸"
+                    };
+                    let spans = vec![
+                        Span::styled(chevron, Style::default().fg(p.overlay0)),
+                        Span::styled(" ", Style::default()),
+                        Span::styled(
+                            format!("Hidden ({count})"),
+                            Style::default().fg(p.overlay0).add_modifier(Modifier::BOLD),
+                        ),
+                    ];
                     frame.render_widget(
                         Paragraph::new(Line::from(spans)),
                         Rect::new(body.x, row_y, body.width, 1),
@@ -3047,6 +3197,7 @@ mod tests {
                 WorkspaceListEntry::ProjectHeader { .. } => "ProjectHeader",
                 WorkspaceListEntry::BranchHeader { .. } => "BranchHeader",
                 WorkspaceListEntry::Workspace { .. } => "Workspace",
+                WorkspaceListEntry::HiddenHeader { .. } => "HiddenHeader",
             })
             .collect();
         assert_eq!(
@@ -3094,6 +3245,7 @@ mod tests {
                 WorkspaceListEntry::GroupHeader { .. }
                 | WorkspaceListEntry::ProjectHeader { .. } => expected_header_ys.push(y),
                 WorkspaceListEntry::BranchHeader { .. } => {}
+                WorkspaceListEntry::HiddenHeader { .. } => {}
             }
             y += entry_row_height(entry, &entries, idx);
         }
@@ -3145,5 +3297,117 @@ mod tests {
         for ws in &app.workspaces {
             ws.assert_invariants_for_test();
         }
+    }
+
+    #[test]
+    fn hiding_workspace_moves_it_to_hidden_section() {
+        let mut app = AppState::test_new();
+        let mut a = Workspace::test_new("alpha");
+        a.cached_git_branch = None;
+        let mut b = Workspace::test_new("beta");
+        b.cached_git_branch = None;
+        app.workspaces = vec![a, b];
+        let key = AppState::workspace_hide_key(&app.workspaces[0]);
+        app.hidden_space_keys.insert(
+            key,
+            std::time::Instant::now() + std::time::Duration::from_secs(300),
+        );
+
+        assert_eq!(
+            workspace_list_entries(&app),
+            vec![
+                WorkspaceListEntry::Workspace {
+                    ws_idx: 1,
+                    indented: false,
+                    rail: BranchRail::None,
+                },
+                WorkspaceListEntry::HiddenHeader { count: 1 },
+            ]
+        );
+    }
+
+    #[test]
+    fn expanded_hidden_section_emits_hidden_rows() {
+        let mut app = AppState::test_new();
+        let mut a = Workspace::test_new("alpha");
+        a.cached_git_branch = None;
+        let mut b = Workspace::test_new("beta");
+        b.cached_git_branch = None;
+        app.workspaces = vec![a, b];
+        let key = AppState::workspace_hide_key(&app.workspaces[0]);
+        app.hidden_space_keys.insert(
+            key,
+            std::time::Instant::now() + std::time::Duration::from_secs(300),
+        );
+        app.hidden_section_expanded = true;
+
+        assert_eq!(
+            workspace_list_entries(&app),
+            vec![
+                WorkspaceListEntry::Workspace {
+                    ws_idx: 1,
+                    indented: false,
+                    rail: BranchRail::None,
+                },
+                WorkspaceListEntry::HiddenHeader { count: 1 },
+                WorkspaceListEntry::Workspace {
+                    ws_idx: 0,
+                    indented: true,
+                    rail: BranchRail::None,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn expired_hide_is_not_applied() {
+        let mut app = AppState::test_new();
+        let mut a = Workspace::test_new("alpha");
+        a.cached_git_branch = None;
+        let mut b = Workspace::test_new("beta");
+        b.cached_git_branch = None;
+        app.workspaces = vec![a, b];
+        let key = AppState::workspace_hide_key(&app.workspaces[0]);
+        app.hidden_space_keys.insert(
+            key,
+            std::time::Instant::now() - std::time::Duration::from_secs(1),
+        );
+
+        assert_eq!(
+            workspace_list_entries(&app),
+            vec![
+                WorkspaceListEntry::Workspace {
+                    ws_idx: 0,
+                    indented: false,
+                    rail: BranchRail::None,
+                },
+                WorkspaceListEntry::Workspace {
+                    ws_idx: 1,
+                    indented: false,
+                    rail: BranchRail::None,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn hiding_visual_group_hides_members_and_header() {
+        let mut app = AppState::test_new();
+        let mut ws0 = Workspace::test_new("alpha");
+        ws0.visual_group = Some("g1".into());
+        ws0.cached_git_branch = None;
+        let mut ws1 = Workspace::test_new("beta");
+        ws1.visual_group = Some("g1".into());
+        ws1.cached_git_branch = None;
+        app.workspaces = vec![ws0, ws1];
+        app.hidden_space_keys.insert(
+            "vg:g1".to_string(),
+            std::time::Instant::now() + std::time::Duration::from_secs(300),
+        );
+
+        assert_eq!(
+            workspace_list_entries(&app),
+            vec![WorkspaceListEntry::HiddenHeader { count: 2 }]
+        );
     }
 }

@@ -581,6 +581,8 @@ impl App {
             worktree_directory,
             flow_command_template: config.flow.command.clone(),
             collapsed_space_keys,
+            hidden_space_keys: std::collections::HashMap::new(),
+            hidden_section_expanded: false,
             request_complete_onboarding: false,
             name_input: String::new(),
             name_input_replace_on_type: false,
@@ -5524,7 +5526,10 @@ last_pane = "prefix+tab"
         app.state.active = Some(0);
         app.state.selected = 0;
         app.state.confirm_close = false;
-        let kind = state::ContextMenuKind::Workspace { ws_idx: 1 };
+        let kind = state::ContextMenuKind::Workspace {
+            ws_idx: 1,
+            hidden: false,
+        };
         let items = state::build_context_menu_items(&kind, &[], &[]);
         let close_idx = items.iter().position(|i| i == "Close").unwrap();
         app.state.context_menu = Some(state::ContextMenuState {

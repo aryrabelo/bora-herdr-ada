@@ -379,6 +379,16 @@ pub(super) fn leave_modal(state: &mut AppState) {
     }
 }
 
+/// Minutes for a "Hide Nm" context-menu label.
+fn hide_minutes(label: &str) -> u64 {
+    match label {
+        "Hide 5m" => 5,
+        "Hide 10m" => 10,
+        "Hide 15m" => 15,
+        _ => 30,
+    }
+}
+
 pub(super) const ONBOARDING_WELCOME_ACTIONS: &[ModalActionSpec<ModalAction>] = &[ModalActionSpec {
     action: ModalAction::Continue,
     bindings: &[ModalKeyBinding::Enter],
@@ -743,7 +753,8 @@ pub(super) fn apply_context_menu_action(
             leave_modal(state);
         }
         (
-            ContextMenuKind::Workspace { ws_idx } | ContextMenuKind::GitWorkspace { ws_idx, .. },
+            ContextMenuKind::Workspace { ws_idx, .. }
+            | ContextMenuKind::GitWorkspace { ws_idx, .. },
             Some("Copy path"),
         ) => {
             if let Some(ws) = state.workspaces.get(ws_idx) {
@@ -753,19 +764,22 @@ pub(super) fn apply_context_menu_action(
             leave_modal(state);
         }
         (
-            ContextMenuKind::Workspace { ws_idx } | ContextMenuKind::GitWorkspace { ws_idx, .. },
+            ContextMenuKind::Workspace { ws_idx, .. }
+            | ContextMenuKind::GitWorkspace { ws_idx, .. },
             Some("Rename"),
         ) => {
             open_rename_workspace(state, terminal_runtimes, ws_idx);
         }
         (
-            ContextMenuKind::Workspace { ws_idx } | ContextMenuKind::GitWorkspace { ws_idx, .. },
+            ContextMenuKind::Workspace { ws_idx, .. }
+            | ContextMenuKind::GitWorkspace { ws_idx, .. },
             Some("New group\u{2026}"),
         ) => {
             open_set_workspace_group(state, ws_idx);
         }
         (
-            ContextMenuKind::Workspace { ws_idx } | ContextMenuKind::GitWorkspace { ws_idx, .. },
+            ContextMenuKind::Workspace { ws_idx, .. }
+            | ContextMenuKind::GitWorkspace { ws_idx, .. },
             Some(item_str),
         ) if item_str.starts_with("\u{2192} ") => {
             let group_name = item_str["\u{2192} ".len()..].to_string();
@@ -776,7 +790,8 @@ pub(super) fn apply_context_menu_action(
             leave_modal(state);
         }
         (
-            ContextMenuKind::Workspace { ws_idx } | ContextMenuKind::GitWorkspace { ws_idx, .. },
+            ContextMenuKind::Workspace { ws_idx, .. }
+            | ContextMenuKind::GitWorkspace { ws_idx, .. },
             Some("Remove from group"),
         ) => {
             if let Some(ws) = state.workspaces.get_mut(ws_idx) {
@@ -786,7 +801,8 @@ pub(super) fn apply_context_menu_action(
             leave_modal(state);
         }
         (
-            ContextMenuKind::Workspace { ws_idx } | ContextMenuKind::GitWorkspace { ws_idx, .. },
+            ContextMenuKind::Workspace { ws_idx, .. }
+            | ContextMenuKind::GitWorkspace { ws_idx, .. },
             Some("Close" | "Close workspace"),
         ) => {
             state.selected = ws_idx;
@@ -962,7 +978,60 @@ pub(super) fn apply_context_menu_action(
             leave_modal(state);
         }
         (
-            ContextMenuKind::Workspace { ws_idx } | ContextMenuKind::GitWorkspace { ws_idx, .. },
+            ContextMenuKind::Workspace { ws_idx, .. }
+            | ContextMenuKind::GitWorkspace { ws_idx, .. },
+            Some(label @ ("Hide 5m" | "Hide 10m" | "Hide 15m" | "Hide 30m")),
+        ) => {
+            if let Some(ws) = state.workspaces.get(ws_idx) {
+                let minutes = hide_minutes(label);
+                let key = format!("ws:{}", ws.id);
+                state.hidden_space_keys.insert(
+                    key,
+                    std::time::Instant::now() + std::time::Duration::from_secs(minutes * 60),
+                );
+            }
+            leave_modal(state);
+        }
+        (
+            ContextMenuKind::Workspace { ws_idx, .. }
+            | ContextMenuKind::GitWorkspace { ws_idx, .. },
+            Some("Unhide"),
+        ) => {
+            let keys: Vec<String> = if let Some(ws) = state.workspaces.get(ws_idx) {
+                let mut k = vec![format!("ws:{}", ws.id)];
+                if let Some(group) = &ws.visual_group {
+                    k.push(format!("vg:{group}"));
+                }
+                if let Some(space) = ws.git_space() {
+                    k.push(space.repo_identity.clone());
+                }
+                k
+            } else {
+                Vec::new()
+            };
+            for key in keys {
+                state.hidden_space_keys.remove(&key);
+            }
+            leave_modal(state);
+        }
+        (
+            ContextMenuKind::GroupHeader { collapse_key, .. },
+            Some(label @ ("Hide 5m" | "Hide 10m" | "Hide 15m" | "Hide 30m")),
+        ) => {
+            let minutes = hide_minutes(label);
+            state.hidden_space_keys.insert(
+                collapse_key,
+                std::time::Instant::now() + std::time::Duration::from_secs(minutes * 60),
+            );
+            leave_modal(state);
+        }
+        (ContextMenuKind::GroupHeader { collapse_key, .. }, Some("Unhide")) => {
+            state.hidden_space_keys.remove(&collapse_key);
+            leave_modal(state);
+        }
+        (
+            ContextMenuKind::Workspace { ws_idx, .. }
+            | ContextMenuKind::GitWorkspace { ws_idx, .. },
             Some(label),
         ) if bora_commands.iter().any(|c| c.label == label) => {
             let cmd = bora_commands
@@ -1284,12 +1353,12 @@ impl App {
                 leave_modal(&mut self.state);
             }
             (
-                ContextMenuKind::Workspace { ws_idx }
+                ContextMenuKind::Workspace { ws_idx, .. }
                 | ContextMenuKind::GitWorkspace { ws_idx, .. },
                 Some("Rename"),
             ) => open_rename_workspace(&mut self.state, &self.terminal_runtimes, ws_idx),
             (
-                ContextMenuKind::Workspace { ws_idx }
+                ContextMenuKind::Workspace { ws_idx, .. }
                 | ContextMenuKind::GitWorkspace { ws_idx, .. },
                 Some("Copy path"),
             ) => {
@@ -1300,14 +1369,14 @@ impl App {
                 leave_modal(&mut self.state);
             }
             (
-                ContextMenuKind::Workspace { ws_idx }
+                ContextMenuKind::Workspace { ws_idx, .. }
                 | ContextMenuKind::GitWorkspace { ws_idx, .. },
                 Some("New group\u{2026}"),
             ) => {
                 open_set_workspace_group(&mut self.state, ws_idx);
             }
             (
-                ContextMenuKind::Workspace { ws_idx }
+                ContextMenuKind::Workspace { ws_idx, .. }
                 | ContextMenuKind::GitWorkspace { ws_idx, .. },
                 Some(item_str),
             ) if item_str.starts_with("\u{2192} ") => {
@@ -1320,7 +1389,7 @@ impl App {
                 leave_modal(&mut self.state);
             }
             (
-                ContextMenuKind::Workspace { ws_idx }
+                ContextMenuKind::Workspace { ws_idx, .. }
                 | ContextMenuKind::GitWorkspace { ws_idx, .. },
                 Some("Remove from group"),
             ) => {
@@ -1331,7 +1400,7 @@ impl App {
                 leave_modal(&mut self.state);
             }
             (
-                ContextMenuKind::Workspace { ws_idx }
+                ContextMenuKind::Workspace { ws_idx, .. }
                 | ContextMenuKind::GitWorkspace { ws_idx, .. },
                 Some("Close" | "Close workspace"),
             ) => {
@@ -1478,7 +1547,59 @@ impl App {
                 leave_modal(&mut self.state);
             }
             (
-                ContextMenuKind::Workspace { ws_idx }
+                ContextMenuKind::Workspace { ws_idx, .. }
+                | ContextMenuKind::GitWorkspace { ws_idx, .. },
+                Some(label @ ("Hide 5m" | "Hide 10m" | "Hide 15m" | "Hide 30m")),
+            ) => {
+                if let Some(ws) = self.state.workspaces.get(ws_idx) {
+                    let minutes = hide_minutes(label);
+                    let key = format!("ws:{}", ws.id);
+                    self.state.hidden_space_keys.insert(
+                        key,
+                        std::time::Instant::now() + std::time::Duration::from_secs(minutes * 60),
+                    );
+                }
+                leave_modal(&mut self.state);
+            }
+            (
+                ContextMenuKind::Workspace { ws_idx, .. }
+                | ContextMenuKind::GitWorkspace { ws_idx, .. },
+                Some("Unhide"),
+            ) => {
+                let keys: Vec<String> = if let Some(ws) = self.state.workspaces.get(ws_idx) {
+                    let mut k = vec![format!("ws:{}", ws.id)];
+                    if let Some(group) = &ws.visual_group {
+                        k.push(format!("vg:{group}"));
+                    }
+                    if let Some(space) = ws.git_space() {
+                        k.push(space.repo_identity.clone());
+                    }
+                    k
+                } else {
+                    Vec::new()
+                };
+                for key in keys {
+                    self.state.hidden_space_keys.remove(&key);
+                }
+                leave_modal(&mut self.state);
+            }
+            (
+                ContextMenuKind::GroupHeader { collapse_key, .. },
+                Some(label @ ("Hide 5m" | "Hide 10m" | "Hide 15m" | "Hide 30m")),
+            ) => {
+                let minutes = hide_minutes(label);
+                self.state.hidden_space_keys.insert(
+                    collapse_key,
+                    std::time::Instant::now() + std::time::Duration::from_secs(minutes * 60),
+                );
+                leave_modal(&mut self.state);
+            }
+            (ContextMenuKind::GroupHeader { collapse_key, .. }, Some("Unhide")) => {
+                self.state.hidden_space_keys.remove(&collapse_key);
+                leave_modal(&mut self.state);
+            }
+            (
+                ContextMenuKind::Workspace { ws_idx, .. }
                 | ContextMenuKind::GitWorkspace { ws_idx, .. },
                 Some(label),
             ) if bora_commands.iter().any(|c| c.label == label) => {
@@ -2155,6 +2276,7 @@ mod tests {
             is_linked_worktree: false,
             has_worktree_children: true,
             collapsed: false,
+            hidden: false,
         };
         let menu = ContextMenuState {
             items: build_context_menu_items(&kind, &[], &[]),
@@ -2320,6 +2442,7 @@ mod tests {
             is_linked_worktree: true,
             has_worktree_children: false,
             collapsed: false,
+            hidden: false,
         };
         let menu = ContextMenuState {
             items: build_context_menu_items(&kind, &[], &[]),
@@ -2359,6 +2482,7 @@ mod tests {
             is_linked_worktree: true,
             has_worktree_children: false,
             collapsed: false,
+            hidden: false,
         };
         let menu = ContextMenuState {
             items: build_context_menu_items(&kind, &[], &[]),
@@ -2397,6 +2521,7 @@ mod tests {
             is_linked_worktree: true,
             has_worktree_children: false,
             collapsed: false,
+            hidden: false,
         };
         let menu = ContextMenuState {
             items: build_context_menu_items(&kind, &[], &[]),
@@ -2435,6 +2560,7 @@ mod tests {
             is_linked_worktree: false,
             has_worktree_children: false,
             collapsed: false,
+            hidden: false,
         };
         let menu = ContextMenuState {
             items: build_context_menu_items(&kind, &[], &[]),
