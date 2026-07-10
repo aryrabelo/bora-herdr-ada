@@ -58,6 +58,7 @@ mod agent_resume;
 mod api;
 mod app;
 mod bora_config;
+mod bora_settings;
 mod build_info;
 #[cfg(not(windows))]
 mod checksum;
