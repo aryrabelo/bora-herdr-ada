@@ -1231,6 +1231,7 @@ mod tests {
                 });
             app.state.workspaces[idx].cached_git_space = Some(crate::workspace::GitSpaceMetadata {
                 key: "repo-key".into(),
+                repo_identity: "repo-key".into(),
                 checkout_key: checkout_path.to_string(),
                 label: "herdr".into(),
                 repo_root: "/repo/herdr".into(),
@@ -1272,6 +1273,7 @@ mod tests {
                 });
             app.state.workspaces[idx].cached_git_space = Some(crate::workspace::GitSpaceMetadata {
                 key: "repo-key".into(),
+                repo_identity: "repo-key".into(),
                 checkout_key: checkout_path.to_string(),
                 label: "herdr".into(),
                 repo_root: "/repo/herdr".into(),
@@ -1321,6 +1323,7 @@ mod tests {
                 });
             app.state.workspaces[idx].cached_git_space = Some(crate::workspace::GitSpaceMetadata {
                 key: "repo-key".into(),
+                repo_identity: "repo-key".into(),
                 checkout_key: checkout_path.to_string(),
                 label: "herdr".into(),
                 repo_root: "/repo/herdr".into(),
@@ -1556,6 +1559,7 @@ mod tests {
         });
         ws.cached_git_space = Some(crate::workspace::GitSpaceMetadata {
             key: key.into(),
+            repo_identity: key.into(),
             checkout_key: format!("/repo/{name}"),
             label: "herdr".into(),
             repo_root: "/repo/herdr".into(),

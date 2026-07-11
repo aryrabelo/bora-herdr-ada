@@ -1198,6 +1198,7 @@ mod tests {
             seen: true,
             idle_since: None,
             last_agent_state_change_seq: None,
+            custom_status: None,
             state_labels: std::collections::HashMap::new(),
             tokens: std::collections::HashMap::new(),
         }

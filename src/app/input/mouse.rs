@@ -3790,7 +3790,7 @@ mod tests {
     }
 
     #[test]
-    fn clicking_pane_context_menu_close_last_parent_group_pane_keeps_confirmation_mode() {
+    fn clicking_pane_context_menu_close_last_pane_of_parent_closes_only_it() {
         let mut app = app_for_mouse_test();
         let mut parent = Workspace::test_new("main");
         let pane_id = parent.tabs[0].root_pane;
@@ -3835,8 +3835,9 @@ mod tests {
         ));
 
         assert_eq!(app.state.selected, 0);
-        assert_eq!(app.state.mode, Mode::ConfirmClose);
-        assert_eq!(app.state.workspaces.len(), 2);
+        assert_ne!(app.state.mode, Mode::ConfirmClose);
+        assert_eq!(app.state.workspaces.len(), 1);
+        assert_eq!(app.state.workspaces[0].display_name(), "issue");
         assert!(app.state.context_menu.is_none());
     }
 

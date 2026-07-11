@@ -2253,7 +2253,7 @@ mod tests {
     }
 
     #[test]
-    fn context_menu_close_group_opens_group_close_confirmation() {
+    fn context_menu_close_parent_workspace_confirms_then_closes_only_it() {
         let mut state = state_with_workspaces(&["main", "issue"]);
         state.active = Some(0);
         state.selected = 1;
@@ -2296,12 +2296,13 @@ mod tests {
 
         confirm_close_accept(&mut state);
 
-        assert!(state.workspaces.is_empty());
-        assert_eq!(state.mode, Mode::Navigate);
+        assert_eq!(state.workspaces.len(), 1);
+        assert_eq!(state.workspaces[0].display_name(), "issue");
+        assert_eq!(state.mode, Mode::Terminal);
     }
 
     #[test]
-    fn context_menu_close_pane_last_parent_group_pane_keeps_confirmation_mode() {
+    fn context_menu_close_last_pane_of_parent_closes_only_it() {
         let mut state = state_with_workspaces(&["main", "issue"]);
         state.active = Some(0);
         state.selected = 1;
@@ -2346,12 +2347,12 @@ mod tests {
         apply_context_menu_action(&mut state, &mut terminal_runtimes, menu, idx);
 
         assert_eq!(state.selected, 0);
-        assert_eq!(state.mode, Mode::ConfirmClose);
-        assert_eq!(state.workspaces.len(), 2);
+        assert_ne!(state.mode, Mode::ConfirmClose);
+        assert_eq!(state.workspaces.len(), 1);
+        assert_eq!(state.workspaces[0].display_name(), "issue");
     }
-
     #[test]
-    fn api_context_menu_close_tab_last_parent_group_workspace_keeps_confirmation_mode() {
+    fn api_context_menu_close_last_tab_of_parent_closes_only_it() {
         let mut app = app_with_test_workspaces(&["main", "issue"]);
         mark_worktree_space_member(&mut app.state, 0, "repo-key");
         mark_worktree_space_member(&mut app.state, 1, "repo-key");
@@ -2378,14 +2379,14 @@ mod tests {
             .expect("close tab item");
 
         app.apply_context_menu_action_via_api(menu, idx);
-
         assert_eq!(app.state.selected, 0);
-        assert_eq!(app.state.mode, Mode::ConfirmClose);
-        assert_eq!(app.state.workspaces.len(), 2);
+        assert_ne!(app.state.mode, Mode::ConfirmClose);
+        assert_eq!(app.state.workspaces.len(), 1);
+        assert_eq!(app.state.workspaces[0].display_name(), "issue");
     }
 
     #[test]
-    fn api_context_menu_enter_close_pane_last_parent_group_pane_keeps_confirmation_mode() {
+    fn api_context_menu_enter_close_last_pane_of_parent_closes_only_it() {
         let mut app = app_with_test_workspaces(&["main", "issue"]);
         mark_worktree_space_member(&mut app.state, 0, "repo-key");
         mark_worktree_space_member(&mut app.state, 1, "repo-key");
@@ -2420,8 +2421,9 @@ mod tests {
         app.handle_context_menu_key_via_api(KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()));
 
         assert_eq!(app.state.selected, 0);
-        assert_eq!(app.state.mode, Mode::ConfirmClose);
-        assert_eq!(app.state.workspaces.len(), 2);
+        assert_ne!(app.state.mode, Mode::ConfirmClose);
+        assert_eq!(app.state.workspaces.len(), 1);
+        assert_eq!(app.state.workspaces[0].display_name(), "issue");
         assert!(app.state.context_menu.is_none());
     }
 

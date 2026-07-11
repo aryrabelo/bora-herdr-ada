@@ -26,12 +26,17 @@ pub(crate) struct AgentPanelEntry {
     pub primary_label: String,
     pub primary_tab_label: Option<String>,
     pub agent_label: Option<String>,
+    pub pane_label: Option<String>,
+    pub terminal_title: Option<String>,
+    pub terminal_title_stripped: Option<String>,
+    pub agent: Option<crate::detect::Agent>,
     pub state: AgentState,
     pub seen: bool,
     pub idle_since: Option<std::time::Instant>,
     pub last_agent_state_change_seq: Option<u64>,
     pub custom_status: Option<String>,
     pub state_labels: std::collections::HashMap<String, String>,
+    pub tokens: std::collections::HashMap<String, String>,
 }
 
 fn sidebar_section_heights(total_h: u16, split_ratio: f32) -> (u16, u16) {
@@ -135,12 +140,17 @@ fn agent_panel_entries_with_runtimes(
                     primary_label: workspace_label.clone(),
                     primary_tab_label: multi_tab.then_some(detail.tab_label),
                     agent_label: Some(detail.agent_label),
+                    pane_label: detail.pane_label,
+                    terminal_title: detail.terminal_title,
+                    terminal_title_stripped: detail.terminal_title_stripped,
+                    agent: detail.agent,
                     state: detail.state,
                     seen: detail.seen,
                     idle_since: detail.idle_since,
                     last_agent_state_change_seq: detail.last_agent_state_change_seq,
                     custom_status: detail.custom_status,
                     state_labels: detail.state_labels,
+                    tokens: detail.tokens,
                 })
         })
         .collect();
@@ -1023,6 +1033,77 @@ fn agent_panel_visible_count(area: Rect) -> usize {
         }
     }
     visible
+}
+
+/// Rows one agent entry occupies in the panel body. The fork's agent panel
+/// renders fixed two-row entries; upstream callers use this to hit-test and
+/// scroll by entry height.
+pub(crate) fn agent_entry_height_in_body(
+    _app: &AppState,
+    _entry: &AgentPanelEntry,
+    body_height: u16,
+) -> u16 {
+    2u16.min(body_height)
+}
+
+fn agent_panel_visible_count_from(app: &AppState, area: Rect, scroll: usize) -> usize {
+    let body = agent_panel_body_rect(area, false);
+    if body.width == 0 || body.height == 0 {
+        return 0;
+    }
+
+    let mut used_rows = 0u16;
+    let mut visible = 0usize;
+    for entry in agent_panel_entries(app).iter().skip(scroll) {
+        let height = agent_entry_height_in_body(app, entry, body.height);
+        if used_rows.saturating_add(height) > body.height {
+            break;
+        }
+        used_rows = used_rows.saturating_add(height);
+        visible += 1;
+        if used_rows < body.height {
+            used_rows = used_rows.saturating_add(1);
+        }
+    }
+    visible
+}
+
+fn agent_panel_bottom_start(app: &AppState, area: Rect) -> usize {
+    let body = agent_panel_body_rect(area, false);
+    let entries = agent_panel_entries(app);
+    let mut used_rows = 0u16;
+    let mut start = entries.len();
+    for (index, entry) in entries.iter().enumerate().rev() {
+        let gap = u16::from(index + 1 < entries.len());
+        let needed = agent_entry_height_in_body(app, entry, body.height).saturating_add(gap);
+        if used_rows.saturating_add(needed) > body.height {
+            break;
+        }
+        used_rows = used_rows.saturating_add(needed);
+        start = index;
+    }
+    start.min(entries.len().saturating_sub(1))
+}
+
+pub(crate) fn agent_panel_scroll_for_target(
+    app: &AppState,
+    area: Rect,
+    current_scroll: usize,
+    target: usize,
+) -> usize {
+    let max_scroll = agent_panel_bottom_start(app, area);
+    if target < current_scroll {
+        return target.min(max_scroll);
+    }
+    let mut scroll = current_scroll.min(max_scroll);
+    while scroll < target {
+        let visible = agent_panel_visible_count_from(app, area, scroll);
+        if visible > 0 && target < scroll.saturating_add(visible) {
+            break;
+        }
+        scroll += 1;
+    }
+    scroll.min(max_scroll)
 }
 
 pub(crate) fn agent_panel_scroll_metrics(app: &AppState, area: Rect) -> crate::pane::ScrollMetrics {
@@ -2204,12 +2285,17 @@ mod tests {
             primary_label: "agent-browser".into(),
             primary_tab_label: Some("test-escalation".into()),
             agent_label: Some("claude".into()),
+            pane_label: None,
+            terminal_title: None,
+            terminal_title_stripped: None,
+            agent: None,
             state: AgentState::Idle,
             seen: true,
             idle_since: None,
             last_agent_state_change_seq: None,
             custom_status: None,
             state_labels: std::collections::HashMap::new(),
+            tokens: std::collections::HashMap::new(),
         };
 
         let label = format_agent_panel_primary_label(&entry, 18);

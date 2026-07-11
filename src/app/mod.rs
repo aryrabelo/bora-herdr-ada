@@ -4889,7 +4889,7 @@ mod tests {
     }
 
     #[test]
-    fn pane_close_request_requires_confirmation_before_closing_parent_worktree_group() {
+    fn pane_close_request_in_parent_worktree_group_closes_only_parent() {
         let mut app = test_app();
         let mut parent = Workspace::test_new("api-pane-close-parent");
         parent.worktree_space = Some(crate::workspace::WorktreeSpaceMembership {
@@ -4923,10 +4923,13 @@ mod tests {
         });
         let response: serde_json::Value = serde_json::from_str(&response).unwrap();
 
-        assert_eq!(response["error"]["code"], "confirmation_required");
-        assert_eq!(app.state.mode, Mode::ConfirmClose);
-        assert_eq!(app.state.selected, 0);
-        assert_eq!(app.state.workspaces.len(), 2);
+        assert_eq!(response["result"]["type"], "ok");
+        assert_ne!(app.state.mode, Mode::ConfirmClose);
+        assert_eq!(app.state.workspaces.len(), 1);
+        assert_eq!(
+            app.state.workspaces[0].display_name(),
+            "api-pane-close-child"
+        );
     }
 
     #[test]

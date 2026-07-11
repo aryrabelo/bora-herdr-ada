@@ -557,6 +557,56 @@ mod tests {
     }
 
     #[test]
+    fn api_workspace_close_parent_group_closes_only_parent_and_emits_one_event() {
+        let event_hub = crate::api::EventHub::default();
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(&Config::default(), true, None, api_rx, event_hub.clone());
+        app.state.workspaces = vec![Workspace::test_new("parent"), Workspace::test_new("child")];
+        app.state.workspaces[0].worktree_space = Some(crate::workspace::WorktreeSpaceMembership {
+            key: "repo-key".into(),
+            label: "herdr".into(),
+            repo_root: "/repo/herdr".into(),
+            checkout_path: "/repo/herdr".into(),
+            is_linked_worktree: false,
+        });
+        app.state.workspaces[1].worktree_space = Some(crate::workspace::WorktreeSpaceMembership {
+            key: "repo-key".into(),
+            label: "herdr".into(),
+            repo_root: "/repo/herdr".into(),
+            checkout_path: "/repo/herdr-child".into(),
+            is_linked_worktree: true,
+        });
+        let parent_id = app.state.workspaces[0].id.clone();
+        let child_id = app.state.workspaces[1].id.clone();
+
+        let response = app.handle_workspace_close(
+            "req".into(),
+            WorkspaceTarget {
+                workspace_id: parent_id.clone(),
+            },
+        );
+
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        assert_eq!(success.id, "req");
+        assert_eq!(app.state.workspaces.len(), 1);
+        assert_eq!(app.state.workspaces[0].id, child_id);
+        let closed_events = event_hub
+            .events_after(0)
+            .into_iter()
+            .filter(|(_, event)| {
+                matches!(
+                    &event.data,
+                    EventData::WorkspaceClosed {
+                        workspace_id: closed_id,
+                        ..
+                    } if closed_id == &parent_id
+                )
+            })
+            .count();
+        assert_eq!(closed_events, 1);
+    }
+
+    #[test]
     fn api_workspace_move_reorders_workspaces() {
         let event_hub = crate::api::EventHub::default();
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
