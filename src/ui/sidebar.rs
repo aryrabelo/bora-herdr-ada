@@ -1091,6 +1091,7 @@ fn agent_panel_visible_count_from(app: &AppState, area: Rect, scroll: usize) -> 
     visible
 }
 
+
 fn agent_panel_bottom_start(app: &AppState, area: Rect) -> usize {
     let body = agent_panel_body_rect(area, false);
     let entries = agent_panel_entries(app);
@@ -1128,6 +1129,7 @@ pub(crate) fn agent_panel_scroll_for_target(
     }
     scroll.min(max_scroll)
 }
+
 pub(crate) fn agent_panel_scroll_metrics(app: &AppState, area: Rect) -> crate::pane::ScrollMetrics {
     let max_scroll = agent_panel_bottom_start(app, area);
     let scroll = app.agent_panel_scroll.min(max_scroll);

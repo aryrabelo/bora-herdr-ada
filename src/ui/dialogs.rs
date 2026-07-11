@@ -885,60 +885,20 @@ fn confirm_close_overlay_text(
         .get(app.selected)
         .map(|ws| ws.display_name_from(&app.terminals, terminal_runtimes))
         .unwrap_or_else(|| "?".to_string());
-    let selected_space = app
+    let pane_count = app
         .workspaces
         .get(app.selected)
-        .and_then(|ws| ws.worktree_space());
-    let group_member_indices = selected_space
-        .filter(|space| !space.is_linked_worktree)
-        .map(|space| {
-            app.workspaces
-                .iter()
-                .enumerate()
-                .filter_map(|(idx, ws)| {
-                    ws.worktree_space()
-                        .is_some_and(|member| member.key == space.key)
-                        .then_some(idx)
-                })
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    let closes_group = group_member_indices.len() > 1;
-    let pane_count = if closes_group {
-        group_member_indices
-            .iter()
-            .filter_map(|idx| app.workspaces.get(*idx))
-            .map(|ws| ws.layout.pane_count())
-            .sum()
-    } else {
-        app.workspaces
-            .get(app.selected)
-            .map(|ws| ws.layout.pane_count())
-            .unwrap_or(0)
-    };
+        .map(|ws| ws.layout.pane_count())
+        .unwrap_or(0);
 
     let pane_text = if pane_count == 1 {
         "1 pane".to_string()
     } else {
         format!("{pane_count} panes")
     };
-    let workspace_text = if closes_group {
-        let count = group_member_indices.len();
-        if count == 1 {
-            "1 workspace, ".to_string()
-        } else {
-            format!("{count} workspaces, ")
-        }
-    } else {
-        String::new()
-    };
 
-    let title = if closes_group {
-        "Close worktree group?"
-    } else {
-        "Close workspace?"
-    };
-    let detail = format!("{ws_name} — {workspace_text}{pane_text}");
+    let title = "Close workspace?";
+    let detail = format!("{ws_name} — {pane_text}");
     (title.to_string(), detail)
 }
 
@@ -1146,7 +1106,7 @@ mod tests {
     }
 
     #[test]
-    fn confirm_close_text_reports_parent_group_scope() {
+    fn confirm_close_text_reports_single_workspace_scope() {
         let mut app = AppState::test_new();
         let mut parent = Workspace::test_new("main");
         parent.worktree_space = Some(crate::workspace::WorktreeSpaceMembership {
@@ -1170,8 +1130,8 @@ mod tests {
         let terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
         let (title, detail) = confirm_close_overlay_text(&app, &terminal_runtimes);
 
-        assert_eq!(title, "Close worktree group?");
-        assert_eq!(detail, "main — 2 workspaces, 2 panes");
+        assert_eq!(title, "Close workspace?");
+        assert_eq!(detail, "main — 1 pane");
     }
 
     #[test]

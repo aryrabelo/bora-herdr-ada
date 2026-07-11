@@ -4,9 +4,9 @@ use std::sync::Arc;
 use regex::Regex;
 
 use crate::api::schema::{
-    ErrorBody, ErrorResponse, EventData, EventEnvelope, EventKind, EventMatch, EventsWaitParams,
-    Method, Request, ResponseResult, Subscription, SubscriptionEventData,
-    SubscriptionEventEnvelope, SuccessResponse,
+    ErrorBody, ErrorResponse, EventData, EventEnvelope, EventKind, EventMatch, Method, Request,
+    ResponseResult, Subscription, SubscriptionEventData, SubscriptionEventEnvelope,
+    SuccessResponse,
 };
 use crate::api::server::{
     dispatch_to_app_with_timeout, should_stop_connection, APP_RESPONSE_TIMEOUT,

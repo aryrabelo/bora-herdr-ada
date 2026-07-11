@@ -1674,41 +1674,19 @@ impl AppState {
         self.selection = None;
         self.selection_autoscroll = None;
         self.mark_session_dirty();
-        let close_indices = self
-            .workspaces
-            .get(self.selected)
-            .and_then(|ws| ws.worktree_space())
-            .filter(|space| !space.is_linked_worktree)
-            .map(|space| {
-                self.workspaces
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(idx, ws)| {
-                        ws.worktree_space()
-                            .is_some_and(|member| member.key == space.key)
-                            .then_some(idx)
-                    })
-                    .collect::<Vec<_>>()
-            })
-            .filter(|indices| indices.len() >= 2)
-            .unwrap_or_else(|| vec![self.selected]);
-
-        let mut terminal_ids = Vec::new();
-        let mut pane_ids = Vec::new();
-        for idx in &close_indices {
-            terminal_ids.extend(self.terminal_ids_for_workspace(*idx));
-            pane_ids.extend(self.pane_ids_for_workspace(*idx));
-            if let Some(workspace_id) = self.workspaces.get(*idx).map(|ws| ws.id.clone()) {
-                crate::logging::workspace_closed(&workspace_id);
-            }
+        let idx = self.selected;
+        let terminal_ids = self.terminal_ids_for_workspace(idx);
+        let pane_ids = self.pane_ids_for_workspace(idx);
+        if let Some(workspace_id) = self.workspaces.get(idx).map(|ws| ws.id.clone()) {
+            crate::logging::workspace_closed(&workspace_id);
         }
         let active_workspace_id = self
             .active
             .and_then(|idx| self.workspaces.get(idx))
             .map(|ws| ws.id.clone());
         self.remove_plugin_pane_records(pane_ids);
-        for idx in close_indices.iter().rev() {
-            self.workspaces.remove(*idx);
+        if idx < self.workspaces.len() {
+            self.workspaces.remove(idx);
         }
         self.remove_unattached_terminal_ids(terminal_ids);
         if self.workspaces.is_empty() {
@@ -1981,67 +1959,10 @@ impl AppState {
         self.apply_pane_zoom(ws_idx, pane_id, PaneZoomCommand::Toggle);
     }
 
-    pub(crate) fn workspace_close_would_close_worktree_group(&self, ws_idx: usize) -> bool {
-        self.workspaces
-            .get(ws_idx)
-            .and_then(|ws| ws.worktree_space())
-            .filter(|space| !space.is_linked_worktree)
-            .is_some_and(|space| {
-                self.workspaces
-                    .iter()
-                    .filter(|ws| {
-                        ws.worktree_space()
-                            .is_some_and(|member| member.key == space.key)
-                    })
-                    .count()
-                    >= 2
-            })
-    }
-
-    pub(crate) fn confirm_implicit_worktree_group_close(&mut self, ws_idx: usize) -> bool {
-        if self.confirm_close && self.workspace_close_would_close_worktree_group(ws_idx) {
-            self.selected = ws_idx;
-            self.mode = Mode::ConfirmClose;
-            true
-        } else {
-            false
-        }
-    }
-
     #[cfg(test)]
-    fn close_focused_pane_would_close_workspace(&self, ws_idx: usize) -> bool {
-        self.workspaces.get(ws_idx).is_some_and(|ws| {
-            let pane_count = ws
-                .active_tab()
-                .map(|tab| tab.layout.pane_count())
-                .unwrap_or(0);
-            pane_count <= 1 && ws.tabs.len() <= 1
-        })
-    }
-
-    pub(crate) fn close_pane_would_close_workspace(&self, ws_idx: usize, pane_id: PaneId) -> bool {
-        self.workspaces.get(ws_idx).is_some_and(|ws| {
-            ws.find_tab_index_for_pane(pane_id).is_some_and(|tab_idx| {
-                ws.tabs[tab_idx].layout.pane_count() <= 1 && ws.tabs.len() <= 1
-            })
-        })
-    }
-
-    #[cfg(test)]
-    /// Close the focused pane. Returns true when the close was deferred to confirmation.
+    /// Close the focused pane. Always returns false (no confirmation deferral).
     pub fn close_pane(&mut self) -> bool {
         let active = self.active;
-        if active.is_some_and(|ws_idx| {
-            self.close_focused_pane_would_close_workspace(ws_idx)
-                && self.workspace_close_would_close_worktree_group(ws_idx)
-        }) {
-            if let Some(ws_idx) = active {
-                if self.confirm_implicit_worktree_group_close(ws_idx) {
-                    return true;
-                }
-            }
-        }
-
         self.selection = None;
         self.selection_autoscroll = None;
         self.mark_session_dirty();
@@ -2078,21 +1999,8 @@ impl AppState {
     }
 
     #[cfg(test)]
-    /// Close the active tab. Returns true when the close was deferred to confirmation.
+    /// Close the active tab. Always returns false (no confirmation deferral).
     pub fn close_tab(&mut self) -> bool {
-        if self.active.is_some_and(|ws_idx| {
-            self.workspaces
-                .get(ws_idx)
-                .is_some_and(|ws| ws.tabs.len() <= 1)
-                && self.workspace_close_would_close_worktree_group(ws_idx)
-        }) {
-            if let Some(ws_idx) = self.active {
-                if self.confirm_implicit_worktree_group_close(ws_idx) {
-                    return true;
-                }
-            }
-        }
-
         self.selection = None;
         self.selection_autoscroll = None;
         self.mark_session_dirty();
@@ -4636,7 +4544,7 @@ mod tests {
     }
 
     #[test]
-    fn close_parent_worktree_workspace_closes_group() {
+    fn close_parent_worktree_workspace_closes_only_itself() {
         let mut state = app_with_workspaces(&["main", "issue", "notes"]);
         state.workspaces[0].worktree_space = Some(crate::workspace::WorktreeSpaceMembership {
             key: "repo-key".into(),
@@ -4657,8 +4565,9 @@ mod tests {
 
         state.close_selected_workspace();
 
-        assert_eq!(state.workspaces.len(), 1);
-        assert_eq!(state.workspaces[0].display_name(), "notes");
+        assert_eq!(state.workspaces.len(), 2);
+        assert_eq!(state.workspaces[0].display_name(), "issue");
+        assert_eq!(state.workspaces[1].display_name(), "notes");
         assert_eq!(state.active, Some(0));
         assert_eq!(state.selected, 0);
     }
@@ -5964,19 +5873,18 @@ mod tests {
     }
 
     #[test]
-    fn close_pane_last_pane_in_parent_worktree_group_prompts() {
+    fn close_pane_last_pane_in_parent_worktree_group_closes_only_parent() {
         let mut state = app_with_workspaces(&["parent", "child"]);
         mark_parent_worktree(&mut state, 0);
         mark_linked_worktree(&mut state, 1);
         state.active = Some(0);
-        state.selected = 1;
+        state.selected = 0;
 
         let deferred = state.close_pane();
 
-        assert!(deferred);
-        assert_eq!(state.mode, Mode::ConfirmClose);
-        assert_eq!(state.selected, 0);
-        assert_eq!(state.workspaces.len(), 2);
+        assert!(!deferred);
+        assert_eq!(state.workspaces.len(), 1);
+        assert_eq!(state.workspaces[0].display_name(), "child");
     }
 
     #[test]
@@ -5994,19 +5902,18 @@ mod tests {
     }
 
     #[test]
-    fn close_tab_last_tab_in_parent_worktree_group_prompts() {
+    fn close_tab_last_tab_in_parent_worktree_group_closes_only_parent() {
         let mut state = app_with_workspaces(&["parent", "child"]);
         mark_parent_worktree(&mut state, 0);
         mark_linked_worktree(&mut state, 1);
         state.active = Some(0);
-        state.selected = 1;
+        state.selected = 0;
 
         let deferred = state.close_tab();
 
-        assert!(deferred);
-        assert_eq!(state.mode, Mode::ConfirmClose);
-        assert_eq!(state.selected, 0);
-        assert_eq!(state.workspaces.len(), 2);
+        assert!(!deferred);
+        assert_eq!(state.workspaces.len(), 1);
+        assert_eq!(state.workspaces[0].display_name(), "child");
     }
 
     #[test]
@@ -6024,7 +5931,7 @@ mod tests {
     }
 
     #[test]
-    fn close_pane_last_pane_in_parent_worktree_group_closes_when_confirmation_disabled() {
+    fn close_pane_last_pane_in_parent_worktree_group_leaves_siblings() {
         let mut state = app_with_workspaces(&["parent", "child", "notes"]);
         mark_parent_worktree(&mut state, 0);
         mark_linked_worktree(&mut state, 1);
@@ -6035,7 +5942,8 @@ mod tests {
         let deferred = state.close_pane();
 
         assert!(!deferred);
-        assert_eq!(state.workspaces.len(), 1);
-        assert_eq!(state.workspaces[0].display_name(), "notes");
+        assert_eq!(state.workspaces.len(), 2);
+        assert_eq!(state.workspaces[0].display_name(), "child");
+        assert_eq!(state.workspaces[1].display_name(), "notes");
     }
 }

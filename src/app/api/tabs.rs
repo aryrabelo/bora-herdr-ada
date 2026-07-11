@@ -242,13 +242,6 @@ impl App {
             .unwrap_or_default();
 
         if closes_workspace {
-            if self.state.confirm_implicit_worktree_group_close(ws_idx) {
-                return encode_error(
-                    id,
-                    "confirmation_required",
-                    "closing this tab would close a worktree group",
-                );
-            }
             let workspace = self.workspace_info(ws_idx);
             self.state.selected = ws_idx;
             self.state.close_selected_workspace();
