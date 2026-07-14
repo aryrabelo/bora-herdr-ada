@@ -856,6 +856,15 @@
                 "null"
               ]
             },
+            "idle_seconds": {
+              "description": "Seconds since this pane's agent entered the idle state. Present only\nwhile the agent is idle; cleared on any activity.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
             "label": {
               "type": [
                 "string",
@@ -1135,6 +1144,15 @@
             },
             "focused": {
               "type": "boolean"
+            },
+            "idle_seconds": {
+              "description": "Seconds since every pane in this workspace became idle and seen.\nPresent only while the workspace is fully idle.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
             },
             "label": {
               "type": "string"
@@ -7774,6 +7792,15 @@
                 "null"
               ]
             },
+            "idle_seconds": {
+              "description": "Seconds since this pane's agent entered the idle state. Present only\nwhile the agent is idle; cleared on any activity.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
             "label": {
               "type": [
                 "string",
@@ -10248,6 +10275,15 @@
             },
             "focused": {
               "type": "boolean"
+            },
+            "idle_seconds": {
+              "description": "Seconds since every pane in this workspace became idle and seen.\nPresent only while the workspace is fully idle.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
             },
             "label": {
               "type": "string"
