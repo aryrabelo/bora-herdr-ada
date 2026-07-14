@@ -60,6 +60,10 @@ pub struct WorkspaceInfo {
     pub tab_count: usize,
     pub active_tab_id: String,
     pub agent_status: AgentStatus,
+    /// Seconds since every pane in this workspace became idle and seen.
+    /// Present only while the workspace is fully idle.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idle_seconds: Option<u64>,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     #[schemars(schema_with = "super::common::metadata_token_values_schema")]
     pub tokens: HashMap<String, String>,

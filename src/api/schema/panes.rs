@@ -369,6 +369,10 @@ pub struct PaneInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_agent: Option<String>,
     pub agent_status: AgentStatus,
+    /// Seconds since this pane's agent entered the idle state. Present only
+    /// while the agent is idle; cleared on any activity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idle_seconds: Option<u64>,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub state_labels: HashMap<String, String>,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]

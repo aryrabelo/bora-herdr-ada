@@ -412,6 +412,7 @@ impl App {
             terminal_title_stripped: terminal.terminal_title_stripped(),
             display_agent: presentation.display_agent,
             agent_status: pane_agent_status(terminal.state, pane.seen),
+            idle_seconds: terminal.idle_since.map(|since| since.elapsed().as_secs()),
             state_labels: presentation.state_labels,
             tokens: terminal.metadata_tokens.values(),
             agent_session: terminal_agent_session_info(terminal),
@@ -454,6 +455,7 @@ impl App {
                 crate::workspace::public_tab_id_for_number(&ws.id, ws.active_tab + 1)
             }),
             agent_status: pane_agent_status(agg_state, seen),
+            idle_seconds: ws.last_activity_at.map(|since| since.elapsed().as_secs()),
             tokens: ws.metadata_tokens.values(),
             worktree: ws
                 .worktree_space()
