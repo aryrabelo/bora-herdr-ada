@@ -24,13 +24,16 @@ pub use self::{
         SidebarCollapsedModeConfig, TabBarPositionConfig, ToastClipboardPosition, ToastConfig,
         ToastDelivery, ToastHerdrPosition, UpdateChannelConfig, MAX_TOAST_DELAY_SECONDS,
     },
-    sidebar::{
-        AgentSidebarToken, AgentsSidebarConfig, SidebarConfig, SidebarTokenStyle,
-        SpaceSidebarToken, SpacesSidebarConfig,
-    },
+    sidebar::{AgentSidebarToken, AgentsSidebarConfig, SidebarConfig, SpacesSidebarConfig},
     sound::SoundConfig,
     theme::{parse_color, CustomThemeColors, ThemeConfig},
 };
+
+// Token config types parse the sidebar token schema; this fork does not wire the
+// sidebar token renderer, so these re-exports are unused outside config-parsing
+// tests. Kept for schema/API completeness.
+#[allow(unused_imports)]
+pub use self::sidebar::{SidebarTokenStyle, SpaceSidebarToken};
 
 pub(crate) use self::io::upsert_top_level_bool;
 pub(crate) use self::keybinds::parse_key_combo;

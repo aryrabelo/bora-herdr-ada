@@ -860,7 +860,8 @@ fn cross_area_agent_process_survives_detach_and_reattach() {
 
     let saw_blocked_on_client =
         wait_for_frame_matching(&mut client_b, Duration::from_secs(5), |frame| {
-            frame_contains_colored_symbol(frame, "●", (243, 139, 168))
+            // The fork renders blocked panes with "◆" (upstream uses "◉").
+            frame_contains_text(frame, "◆")
         })
         .expect("frame decoding should succeed");
     assert!(

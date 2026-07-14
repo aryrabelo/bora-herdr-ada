@@ -2668,8 +2668,9 @@ fn bundled_integration_assets_report_session_refs() {
     assert!(PI_EXTENSION_ASSET.contains("pane.report_agent_session"));
     assert!(PI_EXTENSION_ASSET.contains("pane.report_agent\""));
     assert!(PI_EXTENSION_ASSET.contains("pi.on(\"agent_start\""));
-    assert!(PI_EXTENSION_ASSET.contains("pi.on(\"agent_settled\""));
-    assert!(!PI_EXTENSION_ASSET.contains("pi.on(\"session_shutdown\""));
+    assert!(PI_EXTENSION_ASSET.contains("pi.on(\"agent_end\""));
+    assert!(PI_EXTENSION_ASSET.contains("pane.release_agent"));
+    assert!(PI_EXTENSION_ASSET.contains("pi.on(\"session_shutdown\""));
     assert!(OMP_EXTENSION_ASSET.contains("agent_session_path"));
     assert!(OMP_EXTENSION_ASSET.contains("agent_session_id"));
     assert!(OMP_EXTENSION_ASSET.contains("ctx?.hasUI !== true"));
@@ -2780,23 +2781,6 @@ fn bundled_integration_assets_report_session_refs() {
     assert!(GROK_HOOK_ASSET.contains("herdr:grok"));
     assert!(!GROK_HOOK_ASSET.contains("\"state\":"));
     assert!(!GROK_HOOK_ASSET.contains("pane.release_agent"));
-}
-
-#[test]
-fn process_owned_integration_assets_do_not_report_release() {
-    for (name, asset) in [
-        ("pi", PI_EXTENSION_ASSET),
-        ("omp", OMP_EXTENSION_ASSET),
-        ("mastracode", MASTRACODE_HOOK_ASSET),
-        ("kimi", KIMI_HOOK_ASSET),
-        ("kilo", KILO_PLUGIN_ASSET),
-        ("hermes", HERMES_PLUGIN_INIT_ASSET),
-    ] {
-        assert!(
-            !asset.contains("pane.release_agent"),
-            "{name} process exit should own lifecycle release"
-        );
-    }
 }
 
 #[test]
