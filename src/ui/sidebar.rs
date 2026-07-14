@@ -26,9 +26,15 @@ pub(crate) struct AgentPanelEntry {
     pub primary_label: String,
     pub primary_tab_label: Option<String>,
     pub agent_label: Option<String>,
+    // Populated for parity with upstream's token-based agent rows (5cfe5e5e);
+    // the fork's fixed two-row agent panel does not read them yet.
+    #[allow(dead_code)]
     pub pane_label: Option<String>,
+    #[allow(dead_code)]
     pub terminal_title: Option<String>,
+    #[allow(dead_code)]
     pub terminal_title_stripped: Option<String>,
+    #[allow(dead_code)]
     pub agent: Option<crate::detect::Agent>,
     pub state: AgentState,
     pub seen: bool,
@@ -36,6 +42,7 @@ pub(crate) struct AgentPanelEntry {
     pub last_agent_state_change_seq: Option<u64>,
     pub custom_status: Option<String>,
     pub state_labels: std::collections::HashMap<String, String>,
+    #[allow(dead_code)]
     pub tokens: std::collections::HashMap<String, String>,
 }
 
@@ -133,24 +140,31 @@ fn agent_panel_entries_with_runtimes(
             let workspace_label = ws.display_name_from(&app.terminals, terminal_runtimes);
             ws.pane_details(&app.terminals)
                 .into_iter()
-                .map(move |detail| AgentPanelEntry {
-                    ws_idx,
-                    tab_idx: detail.tab_idx,
-                    pane_id: detail.pane_id,
-                    primary_label: workspace_label.clone(),
-                    primary_tab_label: multi_tab.then_some(detail.tab_label),
-                    agent_label: Some(detail.agent_label),
-                    pane_label: detail.pane_label,
-                    terminal_title: detail.terminal_title,
-                    terminal_title_stripped: detail.terminal_title_stripped,
-                    agent: detail.agent,
-                    state: detail.state,
-                    seen: detail.seen,
-                    idle_since: detail.idle_since,
-                    last_agent_state_change_seq: detail.last_agent_state_change_seq,
-                    custom_status: detail.custom_status,
-                    state_labels: detail.state_labels,
-                    tokens: detail.tokens,
+                .map(move |detail| {
+                    let show_tab = multi_tab
+                        || ws
+                            .tabs
+                            .get(detail.tab_idx)
+                            .is_some_and(|tab| !tab.is_auto_named());
+                    AgentPanelEntry {
+                        ws_idx,
+                        tab_idx: detail.tab_idx,
+                        pane_id: detail.pane_id,
+                        primary_label: workspace_label.clone(),
+                        primary_tab_label: show_tab.then_some(detail.tab_label),
+                        agent_label: Some(detail.agent_label),
+                        pane_label: detail.pane_label,
+                        terminal_title: detail.terminal_title,
+                        terminal_title_stripped: detail.terminal_title_stripped,
+                        agent: detail.agent,
+                        state: detail.state,
+                        seen: detail.seen,
+                        idle_since: detail.idle_since,
+                        last_agent_state_change_seq: detail.last_agent_state_change_seq,
+                        custom_status: detail.custom_status,
+                        state_labels: detail.state_labels,
+                        tokens: detail.tokens,
+                    }
                 })
         })
         .collect();
@@ -1328,12 +1342,8 @@ pub(super) fn render_sidebar_collapsed(app: &AppState, frame: &mut Frame, area: 
             if y >= detail_content_area.y + detail_content_area.height {
                 break;
             }
-            let pane_num = app
-                .workspaces
-                .get(detail.ws_idx)
-                .and_then(|ws| ws.public_pane_number(detail.pane_id))
-                .unwrap_or(detail_idx + 1);
-            let pane_style = Style::default().fg(p.overlay0);
+            let position = detail_idx + 1;
+            let position_style = Style::default().fg(p.overlay0);
             let idle_age = detail
                 .idle_since
                 .map(|since| Instant::now().saturating_duration_since(since));
@@ -1341,8 +1351,7 @@ pub(super) fn render_sidebar_collapsed(app: &AppState, frame: &mut Frame, area: 
                 agent_icon(detail.state, detail.seen, app.spinner_tick, p, idle_age);
             frame.render_widget(
                 Paragraph::new(Line::from(vec![
-                    Span::styled(format!("{pane_num}"), pane_style),
-                    Span::styled(" ", pane_style),
+                    Span::styled(format!("{position:<2}"), position_style),
                     Span::styled(icon, icon_style),
                 ])),
                 Rect::new(detail_content_area.x, y, detail_content_area.width, 1),

@@ -799,7 +799,7 @@ mod tests {
     }
 
     #[test]
-    fn per_agent_row_heights_preserve_card_gaps_and_trailing_mouse_targets() {
+    fn agent_panel_fixed_row_heights_preserve_card_gaps_and_trailing_mouse_targets() {
         let mut app = app_for_mouse_test();
         let first = Workspace::test_new("one");
         let first_pane = first.tabs[0].root_pane;
@@ -819,14 +819,6 @@ mod tests {
                 .unwrap()
                 .detected_agent = Some(agent);
         }
-        app.state.sidebar_agents.rows = vec![vec![crate::config::AgentSidebarToken::Agent]];
-        app.state.sidebar_agents.rows_by_agent.insert(
-            "claude".into(),
-            vec![
-                vec![crate::config::AgentSidebarToken::Agent],
-                vec![crate::config::AgentSidebarToken::Workspace],
-            ],
-        );
         let detail_area = app.state.agent_panel_rect();
         let metrics = crate::ui::agent_panel_scroll_metrics(&app.state, detail_area);
         let body = crate::ui::agent_panel_body_rect(
@@ -834,11 +826,18 @@ mod tests {
             crate::ui::should_show_scrollbar(metrics),
         );
 
+        // The fork's agent panel uses fixed two-row entries (a one-row gap
+        // between entries); per-agent token row heights (5cfe5e5e) are not
+        // ported yet. Entry 0 spans body.y..body.y+2, entry 1 starts at +3.
         assert_eq!(
             app.state.agent_detail_target_at(body.y),
             Some((0, 0, first_pane))
         );
-        assert_eq!(app.state.agent_detail_target_at(body.y + 1), None);
+        assert_eq!(
+            app.state.agent_detail_target_at(body.y + 1),
+            Some((0, 0, first_pane))
+        );
+        assert_eq!(app.state.agent_detail_target_at(body.y + 2), None);
         assert_eq!(
             app.state.agent_detail_target_at(body.y + 3),
             Some((1, 0, second_pane))

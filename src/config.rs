@@ -24,13 +24,15 @@ pub use self::{
         SidebarCollapsedModeConfig, ToastClipboardPosition, ToastConfig, ToastDelivery,
         ToastHerdrPosition, UpdateChannelConfig, MAX_TOAST_DELAY_SECONDS,
     },
-    sidebar::{
-        AgentSidebarToken, AgentsSidebarConfig, SidebarConfig, SpaceSidebarToken,
-        SpacesSidebarConfig,
-    },
+    sidebar::{AgentSidebarToken, AgentsSidebarConfig, SidebarConfig, SpacesSidebarConfig},
     sound::SoundConfig,
     theme::{parse_color, CustomThemeColors, ThemeConfig},
 };
+
+// The space token rows are only consumed by the config parsing tests until the
+// token-based sidebar rendering (upstream 5cfe5e5e) is ported to the fork UI.
+#[cfg(test)]
+pub use self::sidebar::SpaceSidebarToken;
 
 pub(crate) use self::io::upsert_top_level_bool;
 pub(crate) use self::keybinds::parse_key_combo;

@@ -201,6 +201,10 @@ pub struct AgentsSidebarConfig {
 }
 
 impl AgentsSidebarConfig {
+    // Consumed by upstream's token-based agent rows (5cfe5e5e); kept while the
+    // fork sidebar still renders fixed agent entries so the next sync can
+    // re-port the tokens feature without re-adding this accessor.
+    #[allow(dead_code)]
     pub(crate) fn rows_for_agent(&self, agent: Option<Agent>) -> &AgentSidebarRows {
         agent
             .and_then(|agent| self.rows_by_agent.get(crate::detect::agent_label(agent)))

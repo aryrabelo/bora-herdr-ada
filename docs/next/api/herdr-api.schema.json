@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "protocol": 17,
+  "protocol": 18,
   "schema_version": 1,
   "schemas": {
     "error_response": {
@@ -678,6 +678,60 @@
                 "layout"
               ],
               "type": "object"
+            },
+            {
+              "properties": {
+                "pane_id": {
+                  "type": "string"
+                },
+                "result": true,
+                "type": {
+                  "const": "pane_result_reported",
+                  "type": "string"
+                },
+                "workspace_id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "pane_id",
+                "workspace_id",
+                "result"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "repo_identity": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "github_prs_refreshed",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "repo_identity"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "repo_identity": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "github_issues_refreshed",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "repo_identity"
+              ],
+              "type": "object"
             }
           ]
         },
@@ -707,7 +761,10 @@
             "pane_exited",
             "pane_agent_detected",
             "pane_agent_status_changed",
-            "layout_updated"
+            "layout_updated",
+            "pane_result_reported",
+            "github_prs_refreshed",
+            "github_issues_refreshed"
           ],
           "type": "string"
         },
@@ -1060,6 +1117,12 @@
                 "pattern": "^[A-Za-z0-9_-]{1,32}$"
               },
               "type": "object"
+            },
+            "visual_group": {
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "workspace_id": {
               "type": "string"
@@ -1683,6 +1746,22 @@
                 "agent_status"
               ],
               "type": "object"
+            },
+            {
+              "properties": {
+                "event": {
+                  "const": "pane_result_reported",
+                  "type": "string"
+                },
+                "pane_id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "event",
+                "pane_id"
+              ],
+              "type": "object"
             }
           ]
         },
@@ -1717,6 +1796,28 @@
           "required": [
             "match_event"
           ],
+          "type": "object"
+        },
+        "GithubIssuesListParams": {
+          "properties": {
+            "repo_identity": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        },
+        "GithubPullsListParams": {
+          "properties": {
+            "repo_identity": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
           "type": "object"
         },
         "IntegrationInstallParams": {
@@ -2482,6 +2583,20 @@
           "required": [
             "pane_id",
             "source"
+          ],
+          "type": "object"
+        },
+        "PaneReportResultParams": {
+          "description": "Structured, opaque attestation posted by an agent/orchestrator about a pane's\ntask result. Bora does not interpret `result`; it carries the JSON through to\nan event verbatim (runtime fact, not persisted task-state).",
+          "properties": {
+            "pane_id": {
+              "type": "string"
+            },
+            "result": true
+          },
+          "required": [
+            "pane_id",
+            "result"
           ],
           "type": "object"
         },
@@ -3405,6 +3520,18 @@
             },
             {
               "properties": {
+                "type": {
+                  "const": "pane.result_reported",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
                 "lines": {
                   "format": "uint32",
                   "minimum": 0,
@@ -3485,6 +3612,30 @@
               "properties": {
                 "type": {
                   "const": "layout.updated",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "type": {
+                  "const": "github.prs_refreshed",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "type": {
+                  "const": "github.issues_refreshed",
                   "type": "string"
                 }
               },
@@ -3609,6 +3760,12 @@
               "default": false,
               "type": "boolean"
             },
+            "group": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "label": {
               "type": [
                 "string",
@@ -3693,6 +3850,23 @@
             "workspace_id",
             "source",
             "tokens"
+          ],
+          "type": "object"
+        },
+        "WorkspaceSetGroupParams": {
+          "properties": {
+            "group": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "workspace_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "workspace_id"
           ],
           "type": "object"
         },
@@ -4129,6 +4303,22 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/WorkspaceReportMetadataParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "workspace.set_group",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/WorkspaceSetGroupParams"
             }
           },
           "required": [
@@ -4828,6 +5018,22 @@
         {
           "properties": {
             "method": {
+              "const": "pane.report_result",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/PaneReportResultParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
               "const": "pane.report_agent_session",
               "type": "string"
             },
@@ -5153,6 +5359,38 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/PluginPaneCloseParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "github.pulls.list",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/GithubPullsListParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "github.issues.list",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/GithubIssuesListParams"
             }
           },
           "required": [
@@ -6218,6 +6456,60 @@
                 "layout"
               ],
               "type": "object"
+            },
+            {
+              "properties": {
+                "pane_id": {
+                  "type": "string"
+                },
+                "result": true,
+                "type": {
+                  "const": "pane_result_reported",
+                  "type": "string"
+                },
+                "workspace_id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "pane_id",
+                "workspace_id",
+                "result"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "repo_identity": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "github_prs_refreshed",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "repo_identity"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "repo_identity": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "github_issues_refreshed",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "repo_identity"
+              ],
+              "type": "object"
             }
           ]
         },
@@ -6262,9 +6554,110 @@
             "pane_exited",
             "pane_agent_detected",
             "pane_agent_status_changed",
-            "layout_updated"
+            "layout_updated",
+            "pane_result_reported",
+            "github_prs_refreshed",
+            "github_issues_refreshed"
           ],
           "type": "string"
+        },
+        "GithubIssueInfo": {
+          "properties": {
+            "number": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "title": {
+              "type": "string"
+            },
+            "url": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "number",
+            "title",
+            "url"
+          ],
+          "type": "object"
+        },
+        "GithubPullInfo": {
+          "properties": {
+            "head_ref_name": {
+              "type": "string"
+            },
+            "is_draft": {
+              "type": "boolean"
+            },
+            "number": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "title": {
+              "type": "string"
+            },
+            "url": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "number",
+            "title",
+            "url",
+            "head_ref_name",
+            "is_draft"
+          ],
+          "type": "object"
+        },
+        "GithubRepoIssues": {
+          "properties": {
+            "error": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "issues": {
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/GithubIssueInfo"
+              },
+              "type": "array"
+            },
+            "repo_identity": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "repo_identity",
+            "issues"
+          ],
+          "type": "object"
+        },
+        "GithubRepoPrs": {
+          "properties": {
+            "error": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "prs": {
+              "items": {
+                "$ref": "#/schemas/success_response/$defs/GithubPullInfo"
+              },
+              "type": "array"
+            },
+            "repo_identity": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "repo_identity",
+            "prs"
+          ],
+          "type": "object"
         },
         "InstalledPluginInfo": {
           "properties": {
@@ -8809,6 +9202,44 @@
                 "type"
               ],
               "type": "object"
+            },
+            {
+              "properties": {
+                "repos": {
+                  "items": {
+                    "$ref": "#/schemas/success_response/$defs/GithubRepoPrs"
+                  },
+                  "type": "array"
+                },
+                "type": {
+                  "const": "github_pulls_list",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "repos"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "repos": {
+                  "items": {
+                    "$ref": "#/schemas/success_response/$defs/GithubRepoIssues"
+                  },
+                  "type": "array"
+                },
+                "type": {
+                  "const": "github_issues_list",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "repos"
+              ],
+              "type": "object"
             }
           ]
         },
@@ -8981,6 +9412,12 @@
                 "pattern": "^[A-Za-z0-9_-]{1,32}$"
               },
               "type": "object"
+            },
+            "visual_group": {
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "workspace_id": {
               "type": "string"

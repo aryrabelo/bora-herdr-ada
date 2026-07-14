@@ -892,7 +892,7 @@ impl AppState {
     pub(crate) fn next_agent_metadata_expiry(&self) -> Option<std::time::Instant> {
         self.terminals
             .values()
-            .filter_map(|terminal| terminal.next_agent_metadata_expiry())
+            .filter_map(super::super::terminal::state::TerminalState::next_agent_metadata_expiry)
             .chain(
                 self.terminals
                     .values()

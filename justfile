@@ -55,6 +55,10 @@ build:
 website-build:
     cd website && bun install --frozen-lockfile && bun run build
 
+# Test bundled agent integration assets
+integration-assets-test:
+    bun test src/integration/assets
+
 # Run plugin marketplace Worker tests
 plugin-marketplace-test:
     cd workers/plugin-marketplace && bun test

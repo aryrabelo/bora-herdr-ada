@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 // session control/observe changes), and upstream independently minted 16 with a
 // different message set. The merged source must exceed both released 16s so
 // stale clients on either lineage are rejected cleanly.
-pub const PROTOCOL_VERSION: u32 = 17;
+pub const PROTOCOL_VERSION: u32 = 18;
 
 /// Maximum allowed frame payload size (2 MB). Frames larger than this are
 /// rejected to prevent denial-of-service via oversized length prefixes.
