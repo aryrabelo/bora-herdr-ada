@@ -278,6 +278,16 @@ impl App {
             changed = true;
         }
 
+        // Self-heal: `idle_since` is an Instant and cannot survive
+        // restore/handoff, so terminals restored in Idle state come back
+        // without a timestamp. Seed it so idle ages are always available.
+        for terminal in self.state.terminals.values_mut() {
+            if terminal.state == crate::detect::AgentState::Idle && terminal.idle_since.is_none() {
+                terminal.idle_since = Some(now);
+                changed = true;
+            }
+        }
+
         if self
             .selection_autoscroll_deadline
             .is_some_and(|deadline| now >= deadline)
@@ -684,7 +694,6 @@ impl App {
     ///
     /// The result is delivered via `AppEvent::WorkspaceChecksRefreshed`.
     /// No-op if the workspace has no resolved cwd or no git branch.
-    #[allow(dead_code)] // called by Checks tab open / refresh button (slice 4)
     pub(crate) fn start_checks_fetch(&self, workspace_id: &str) {
         let ws = self
             .state
@@ -971,6 +980,28 @@ mod tests {
             is_focused: true,
         });
         (app, pane_id)
+    }
+
+    #[test]
+    fn animation_tick_seeds_missing_idle_since_for_idle_terminals() {
+        let (mut app, pane_id) = test_app_with_pane();
+        let terminal_id = app.state.workspaces[0]
+            .terminal_id(pane_id)
+            .expect("pane terminal")
+            .clone();
+        let mut terminal =
+            crate::terminal::TerminalState::new(terminal_id.clone(), PathBuf::from("/tmp"));
+        terminal.state = crate::detect::AgentState::Idle;
+        terminal.idle_since = None;
+        app.state.terminals.insert(terminal_id.clone(), terminal);
+
+        let now = Instant::now();
+        app.handle_scheduled_tasks(now, false);
+
+        assert_eq!(
+            app.state.terminals.get(&terminal_id).unwrap().idle_since,
+            Some(now)
+        );
     }
 
     #[test]

@@ -3113,12 +3113,14 @@ mod tests {
             ws_idx: 1,
             hidden: false,
         };
+        let items = build_context_menu_items(&kind, &[], &[]);
+        let close_idx = items.iter().position(|i| i == "Close").expect("close item");
         app.state.context_menu = Some(ContextMenuState {
-            items: build_context_menu_items(&kind, &[], &[]),
+            items,
             kind,
             x: 2,
             y: 2,
-            list: MenuListState::new(6),
+            list: MenuListState::new(close_idx),
             bora_commands: vec![],
             bora_port: None,
         });

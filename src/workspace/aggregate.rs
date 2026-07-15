@@ -213,6 +213,24 @@ impl Workspace {
             .map(|since| now.saturating_duration_since(since))
             .max()
     }
+
+    /// Oldest idle age across ALL idle panes, seen or not. Drives the numeric
+    /// idle time in the sidebar for workspaces whose idle panes were already
+    /// viewed (unseen-idle age takes precedence for the color ramp).
+    pub fn oldest_idle_age(
+        &self,
+        terminals: &HashMap<TerminalId, TerminalState>,
+        now: std::time::Instant,
+    ) -> Option<std::time::Duration> {
+        self.tabs
+            .iter()
+            .flat_map(|tab| tab.panes.values())
+            .filter_map(|pane| terminals.get(&pane.attached_terminal_id))
+            .filter(|t| t.state == AgentState::Idle)
+            .filter_map(|t| t.idle_since)
+            .map(|since| now.saturating_duration_since(since))
+            .max()
+    }
 }
 
 #[cfg(test)]

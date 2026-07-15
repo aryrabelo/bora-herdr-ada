@@ -1827,7 +1827,13 @@ fn render_workspace_list(
                     .iter()
                     .map(|s| display_width(s.content.as_ref()))
                     .sum();
-                let idle_age = ws.oldest_unseen_idle_age(&app.terminals, now);
+                // Unseen idle drives the hot color ramp; seen idle still shows
+                // the elapsed time, dimmed.
+                let unseen_age = ws.oldest_unseen_idle_age(&app.terminals, now);
+                let (idle_age, idle_color) = match unseen_age {
+                    Some(age) => (Some(age), idle_age_color(Some(age), p)),
+                    None => (ws.oldest_idle_age(&app.terminals, now), p.overlay0),
+                };
                 let idle_suffix = idle_age.map(|age| format!(" {}", format_idle_age(age)));
                 let idle_width = idle_suffix
                     .as_deref()
@@ -1841,10 +1847,7 @@ fn render_workspace_list(
                 line1.push(Span::styled(sep, Style::default()));
                 line1.push(Span::styled(label, name_style));
                 if let Some(suffix) = idle_suffix {
-                    line1.push(Span::styled(
-                        suffix,
-                        Style::default().fg(idle_age_color(idle_age, p)),
-                    ));
+                    line1.push(Span::styled(suffix, Style::default().fg(idle_color)));
                 }
 
                 if row_y < list_bottom {

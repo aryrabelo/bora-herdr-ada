@@ -415,7 +415,7 @@ impl App {
         }
     }
 
-    fn reset_all_agent_detection_runtimes(&self) {
+    pub(crate) fn reset_all_agent_detection_runtimes(&self) {
         for runtime in self.terminal_runtimes.values() {
             runtime.reset_agent_detection();
         }

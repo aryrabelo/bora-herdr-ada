@@ -1331,6 +1331,33 @@ impl App {
                 leave_modal(&mut self.state);
             }
             (
+                ContextMenuKind::Workspace { ws_idx, .. }
+                | ContextMenuKind::GitWorkspace { ws_idx, .. },
+                Some("Refresh status"),
+            ) => {
+                // Force a fresh agent detection probe on every pane and make
+                // sure idle terminals have an idle timestamp (lost across
+                // restore/handoff). Also kick the git/PR/check refetch for the
+                // workspace under the cursor.
+                self.reset_all_agent_detection_runtimes();
+                let now = std::time::Instant::now();
+                for terminal in self.state.terminals.values_mut() {
+                    if terminal.state == crate::detect::AgentState::Idle
+                        && terminal.idle_since.is_none()
+                    {
+                        terminal.idle_since = Some(now);
+                    }
+                }
+                self.mark_git_status_refresh_due(now);
+                self.start_git_status_refresh_if_due(now);
+                if let Some(workspace_id) =
+                    self.state.workspaces.get(ws_idx).map(|ws| ws.id.clone())
+                {
+                    self.start_checks_fetch(&workspace_id);
+                }
+                leave_modal(&mut self.state);
+            }
+            (
                 ContextMenuKind::GitWorkspace {
                     ws_idx, collapsed, ..
                 },
@@ -2278,8 +2305,13 @@ mod tests {
             collapsed: false,
             hidden: false,
         };
+        let items = build_context_menu_items(&kind, &[], &[]);
+        let close_idx = items
+            .iter()
+            .position(|i| i == "Close workspace")
+            .expect("close item");
         let menu = ContextMenuState {
-            items: build_context_menu_items(&kind, &[], &[]),
+            items,
             kind,
             x: 0,
             y: 0,
@@ -2289,7 +2321,7 @@ mod tests {
         };
         let mut terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
 
-        apply_context_menu_action(&mut state, &mut terminal_runtimes, menu, 11);
+        apply_context_menu_action(&mut state, &mut terminal_runtimes, menu, close_idx);
 
         assert_eq!(state.selected, 0);
         assert_eq!(state.mode, Mode::ConfirmClose);

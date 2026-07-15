@@ -1289,7 +1289,12 @@ pub fn build_context_menu_items(
     };
     match kind {
         ContextMenuKind::Workspace { hidden, .. } => {
-            let mut v = vec!["Rename".to_string(), "Copy path".to_string(), sep()];
+            let mut v = vec![
+                "Rename".to_string(),
+                "Copy path".to_string(),
+                "Refresh status".to_string(),
+                sep(),
+            ];
             push_groups(&mut v);
             if !custom_commands.is_empty() {
                 v.push(sep());
@@ -1313,6 +1318,7 @@ pub fn build_context_menu_items(
                 "New worktree".to_string(),
                 "Open worktree\u{2026}".to_string(),
                 "Sync".to_string(),
+                "Refresh status".to_string(),
                 sep(),
             ];
             push_groups(&mut v);
@@ -1337,6 +1343,7 @@ pub fn build_context_menu_items(
                 "Merge to main".to_string(),
                 "Open PR".to_string(),
                 "Sync".to_string(),
+                "Refresh status".to_string(),
                 sep(),
             ];
             push_groups(&mut v);
@@ -1363,6 +1370,7 @@ pub fn build_context_menu_items(
                 "New worktree".to_string(),
                 "Open worktree\u{2026}".to_string(),
                 "Sync".to_string(),
+                "Refresh status".to_string(),
                 "Expand".to_string(),
                 sep(),
             ];
@@ -1389,6 +1397,7 @@ pub fn build_context_menu_items(
                 "New worktree".to_string(),
                 "Open worktree\u{2026}".to_string(),
                 "Sync".to_string(),
+                "Refresh status".to_string(),
                 "Collapse".to_string(),
                 sep(),
             ];
@@ -2784,6 +2793,7 @@ mod tests {
                 "Merge to main",
                 "Open PR",
                 "Sync",
+                "Refresh status",
                 CONTEXT_MENU_SEPARATOR,
                 "New group\u{2026}",
                 "Remove from group",
@@ -2827,6 +2837,7 @@ mod tests {
                 "New worktree",
                 "Open worktree\u{2026}",
                 "Sync",
+                "Refresh status",
                 CONTEXT_MENU_SEPARATOR,
                 "New group\u{2026}",
                 "Remove from group",
@@ -2868,6 +2879,7 @@ mod tests {
                 "New worktree",
                 "Open worktree\u{2026}",
                 "Sync",
+                "Refresh status",
                 "Collapse",
                 CONTEXT_MENU_SEPARATOR,
                 "New group\u{2026}",

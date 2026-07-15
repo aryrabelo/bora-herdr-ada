@@ -5556,6 +5556,51 @@ last_pane = "prefix+tab"
     }
 
     #[test]
+    fn context_menu_refresh_status_seeds_idle_since_and_closes_menu() {
+        let mut app = test_app();
+        let ws = Workspace::test_new("a");
+        let pane_id = ws.tabs[0].root_pane;
+        let terminal_id = ws.terminal_id(pane_id).unwrap().clone();
+        app.state.workspaces = vec![ws];
+        app.state.active = Some(0);
+        let mut terminal = crate::terminal::TerminalState::new(
+            terminal_id.clone(),
+            std::path::PathBuf::from("/tmp"),
+        );
+        terminal.state = crate::detect::AgentState::Idle;
+        terminal.idle_since = None;
+        app.state.terminals.insert(terminal_id.clone(), terminal);
+
+        let kind = state::ContextMenuKind::Workspace {
+            ws_idx: 0,
+            hidden: false,
+        };
+        let items = state::build_context_menu_items(&kind, &[], &[]);
+        let refresh_idx = items.iter().position(|i| i == "Refresh status").unwrap();
+        let menu = state::ContextMenuState {
+            items,
+            kind,
+            x: 2,
+            y: 2,
+            list: state::MenuListState::new(refresh_idx),
+            bora_commands: vec![],
+            bora_port: None,
+        };
+        app.state.mode = Mode::ContextMenu;
+
+        app.apply_context_menu_action_via_api(menu, refresh_idx);
+
+        assert!(app
+            .state
+            .terminals
+            .get(&terminal_id)
+            .unwrap()
+            .idle_since
+            .is_some());
+        assert_ne!(app.state.mode, Mode::ContextMenu);
+    }
+
+    #[test]
     fn raw_ctrl_v_decodes_as_modal_paste_shortcut() {
         let events = crate::raw_input::parse_raw_input_bytes_sync(&[0x16]);
         let Some(crate::raw_input::RawInputEvent::Key(key)) = events.first() else {
