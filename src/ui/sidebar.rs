@@ -1827,13 +1827,12 @@ fn render_workspace_list(
                     .iter()
                     .map(|s| display_width(s.content.as_ref()))
                     .sum();
-                // Unseen idle drives the hot color ramp; seen idle still shows
-                // the elapsed time, dimmed.
-                let unseen_age = ws.oldest_unseen_idle_age(&app.terminals, now);
-                let (idle_age, idle_color) = match unseen_age {
-                    Some(age) => (Some(age), idle_age_color(Some(age), p)),
-                    None => (ws.oldest_idle_age(&app.terminals, now), p.overlay0),
-                };
+                // Idle time follows the same age color ramp whether the idle
+                // pane was already seen or not.
+                let idle_age = ws
+                    .oldest_unseen_idle_age(&app.terminals, now)
+                    .or_else(|| ws.oldest_idle_age(&app.terminals, now));
+                let idle_color = idle_age_color(idle_age, p);
                 let idle_suffix = idle_age.map(|age| format!(" {}", format_idle_age(age)));
                 let idle_width = idle_suffix
                     .as_deref()
