@@ -3806,7 +3806,7 @@ mod tests {
     }
 
     #[test]
-    fn priority_sort_keeps_recently_changed_idle_agent_above_older_idle_agent() {
+    fn priority_sort_puts_oldest_agent_first_within_tier() {
         let mut workspace = Workspace::test_new("one");
         let first = workspace.tabs[0].root_pane;
         let second = workspace.test_split(Direction::Horizontal);
@@ -3820,13 +3820,22 @@ mod tests {
         state.mode = Mode::Terminal;
         state.agent_panel_sort = crate::app::state::AgentPanelSort::Priority;
 
-        transition_agent_state(&mut state, first, AgentState::Idle);
+        // Same tier (both working): the agent whose state changed first
+        // (waiting longest) sorts on top.
+        transition_agent_state(&mut state, first, AgentState::Working);
         transition_agent_state(&mut state, second, AgentState::Working);
-        assert_eq!(crate::ui::agent_panel_entries(&state)[0].pane_id, second);
+        assert_eq!(crate::ui::agent_panel_entries(&state)[0].pane_id, first);
 
+        // Same tier (both done/unseen idle): oldest transition still tops.
         transition_agent_state(&mut state, second, AgentState::Idle);
-
-        assert_eq!(crate::ui::agent_panel_entries(&state)[0].pane_id, second);
+        transition_agent_state(&mut state, first, AgentState::Idle);
+        let entries = crate::ui::agent_panel_entries(&state);
+        let done: Vec<_> = entries
+            .iter()
+            .filter(|e| e.state == AgentState::Idle)
+            .map(|e| e.pane_id)
+            .collect();
+        assert_eq!(done.first(), Some(&second));
         state.assert_invariants_for_test();
     }
 

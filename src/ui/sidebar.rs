@@ -188,7 +188,9 @@ fn agent_panel_entries_with_runtimes(
         entries.sort_by_key(|entry| {
             (
                 std::cmp::Reverse(workspace_attention_priority(entry.state, entry.seen)),
-                std::cmp::Reverse(entry.last_agent_state_change_seq),
+                // Oldest state change first: the agent waiting the longest
+                // tops its tier; panes without a recorded change sort last.
+                entry.last_agent_state_change_seq.unwrap_or(u64::MAX),
             )
         });
     }
