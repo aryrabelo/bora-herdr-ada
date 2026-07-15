@@ -188,6 +188,12 @@ pub fn identify_agent_in_job(job: &crate::platform::ForegroundJob) -> Option<(Ag
     best.map(|(_, agent, name)| (agent, name))
 }
 
+/// Whether a foreground job member is a recognized agent process
+/// (directly or via a runtime/shell wrapper).
+pub fn is_agent_process(process: &crate::platform::ForegroundProcess) -> bool {
+    identify_agent(&normalized_process_name(process)).is_some()
+}
+
 /// Detect the state of an agent from the live terminal tail snapshot.
 /// If `agent` is `None`, returns `Unknown`.
 #[cfg(test)]
@@ -709,6 +715,39 @@ mod tests {
             "mastracode"
         ));
         assert!(!Agent::SCREEN_MANIFEST_AGENTS.contains(&Agent::Mastracode));
+    }
+
+    #[test]
+    fn is_agent_process_rejects_plugin_host_bun_run() {
+        // Real MCP plugin host argv observed hijacking new-pane follow cwd.
+        let process = crate::platform::ForegroundProcess {
+            pid: 5362,
+            name: "bun".into(),
+            argv0: Some("bun".into()),
+            argv: Some(vec![
+                "bun".into(),
+                "run".into(),
+                "--cwd".into(),
+                "/x/plugins/cache/claude-plugins-official/discord/0.0.4".into(),
+                "--shell=bun".into(),
+                "--silent".into(),
+                "start".into(),
+            ]),
+            cmdline: None,
+        };
+        assert!(!is_agent_process(&process));
+    }
+
+    #[test]
+    fn is_agent_process_accepts_wrapped_agent() {
+        let process = crate::platform::ForegroundProcess {
+            pid: 21,
+            name: "claude".into(),
+            argv0: None,
+            argv: None,
+            cmdline: None,
+        };
+        assert!(is_agent_process(&process));
     }
 
     #[test]

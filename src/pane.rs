@@ -249,11 +249,27 @@ fn foreground_member_cwd_different_from_shell(
     shell_cwd: Option<&std::path::PathBuf>,
 ) -> Option<std::path::PathBuf> {
     let job = crate::detect::foreground_job(shell_pid)?;
-    for process in job.processes {
+    agent_member_cwd_different_from_shell(&job, shell_pid, shell_cwd, usable_process_cwd)
+}
+
+#[cfg(unix)]
+fn agent_member_cwd_different_from_shell(
+    job: &crate::platform::ForegroundJob,
+    shell_pid: u32,
+    shell_cwd: Option<&std::path::PathBuf>,
+    process_cwd: impl Fn(u32) -> Option<std::path::PathBuf>,
+) -> Option<std::path::PathBuf> {
+    for process in &job.processes {
         if process.pid == shell_pid {
             continue;
         }
-        let Some(cwd) = usable_process_cwd(process.pid) else {
+        // Only follow a wrapped agent's cwd (the `sh -c claude` case). Helper
+        // subprocesses sharing the job (MCP servers, plugin hosts) run from
+        // unrelated directories and must not hijack the pane's follow cwd.
+        if !crate::detect::is_agent_process(process) {
+            continue;
+        }
+        let Some(cwd) = process_cwd(process.pid) else {
             continue;
         };
         if shell_cwd != Some(&cwd) {
@@ -3362,6 +3378,42 @@ mod tests {
             foreground_shell_agent_action(Some(Agent::Claude), Some(Agent::OpenCode), true, false),
             ForegroundShellAgentAction::ObserveProbe
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn member_cwd_scan_ignores_non_agent_helper_subprocesses() {
+        // MCP/plugin subprocess in the same job runs from an unrelated dir.
+        let shell_cwd = std::path::PathBuf::from("/repo");
+        let job = crate::platform::ForegroundJob {
+            process_group_id: 10,
+            processes: vec![foreground_process(10, "bun"), foreground_process(11, "bun")],
+        };
+        let cwd =
+            agent_member_cwd_different_from_shell(&job, 1, Some(&shell_cwd), |pid| match pid {
+                10 => Some(std::path::PathBuf::from("/repo")),
+                11 => Some(std::path::PathBuf::from("/plugins/cache/discord/0.0.4")),
+                _ => None,
+            });
+        assert_eq!(cwd, None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn member_cwd_scan_follows_wrapped_agent_cwd() {
+        // `sh -c claude` where the agent member cd'ed away from the shell cwd.
+        let shell_cwd = std::path::PathBuf::from("/home/user");
+        let job = crate::platform::ForegroundJob {
+            process_group_id: 20,
+            processes: vec![
+                foreground_process(20, "sh"),
+                foreground_process(21, "claude"),
+            ],
+        };
+        let cwd = agent_member_cwd_different_from_shell(&job, 1, Some(&shell_cwd), |pid| {
+            (pid == 21).then(|| std::path::PathBuf::from("/home/user/project"))
+        });
+        assert_eq!(cwd, Some(std::path::PathBuf::from("/home/user/project")));
     }
 
     fn foreground_process(pid: u32, name: &str) -> crate::platform::ForegroundProcess {
