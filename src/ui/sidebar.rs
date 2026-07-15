@@ -19,6 +19,19 @@ use crate::terminal::TerminalRuntimeRegistry;
 const WORKSPACE_SECTION_HEADER_ROWS: u16 = 2;
 const AGENT_PANEL_HEADER_ROWS: u16 = 3;
 
+/// Glyph + style for a PR's rolled-up check status, shown after the PR badge.
+fn checks_badge(
+    checks: &[crate::workspace::CheckRun],
+    p: &Palette,
+) -> Option<(&'static str, Style)> {
+    use crate::workspace::ChecksRollup;
+    match crate::workspace::checks_rollup(checks)? {
+        ChecksRollup::Passing => Some((" ✓", Style::default().fg(p.green))),
+        ChecksRollup::Failing => Some((" ✗", Style::default().fg(p.red))),
+        ChecksRollup::Pending => Some((" ●", Style::default().fg(p.yellow))),
+    }
+}
+
 pub(crate) struct AgentPanelEntry {
     pub ws_idx: usize,
     pub tab_idx: usize,
@@ -1554,22 +1567,26 @@ fn render_workspace_list(
                         if let Some(WorkspaceListEntry::Workspace { ws_idx, .. }) =
                             entries.get(entry_idx + 1)
                         {
-                            if let Some(pr) = app
+                            if let Some(cs) = app
                                 .workspaces
                                 .get(*ws_idx)
                                 .and_then(|w| w.cached_check_status.as_ref())
-                                .and_then(|cs| cs.pr.as_ref())
                             {
-                                let pr_color = match pr.state.as_str() {
-                                    "MERGED" => p.teal,
-                                    "CLOSED" => p.red,
-                                    _ => p.green,
-                                };
-                                spans.push(Span::styled(" ", Style::default()));
-                                spans.push(Span::styled(
-                                    format!("#{}", pr.number),
-                                    Style::default().fg(pr_color),
-                                ));
+                                if let Some(pr) = cs.pr.as_ref() {
+                                    let pr_color = match pr.state.as_str() {
+                                        "MERGED" => p.teal,
+                                        "CLOSED" => p.red,
+                                        _ => p.green,
+                                    };
+                                    spans.push(Span::styled(" ", Style::default()));
+                                    spans.push(Span::styled(
+                                        format!("#{}", pr.number),
+                                        Style::default().fg(pr_color),
+                                    ));
+                                    if let Some((glyph, style)) = checks_badge(&cs.checks, p) {
+                                        spans.push(Span::styled(glyph, style));
+                                    }
+                                }
                             }
                         }
                     }
@@ -1628,22 +1645,26 @@ fn render_workspace_list(
                     if let Some(WorkspaceListEntry::Workspace { ws_idx, .. }) =
                         entries.get(entry_idx + 1)
                     {
-                        if let Some(pr) = app
+                        if let Some(cs) = app
                             .workspaces
                             .get(*ws_idx)
                             .and_then(|w| w.cached_check_status.as_ref())
-                            .and_then(|cs| cs.pr.as_ref())
                         {
-                            let pr_color = match pr.state.as_str() {
-                                "MERGED" => p.teal,
-                                "CLOSED" => p.red,
-                                _ => p.green,
-                            };
-                            spans.push(Span::styled(" ", Style::default()));
-                            spans.push(Span::styled(
-                                format!("#{}", pr.number),
-                                Style::default().fg(pr_color),
-                            ));
+                            if let Some(pr) = cs.pr.as_ref() {
+                                let pr_color = match pr.state.as_str() {
+                                    "MERGED" => p.teal,
+                                    "CLOSED" => p.red,
+                                    _ => p.green,
+                                };
+                                spans.push(Span::styled(" ", Style::default()));
+                                spans.push(Span::styled(
+                                    format!("#{}", pr.number),
+                                    Style::default().fg(pr_color),
+                                ));
+                                if let Some((glyph, style)) = checks_badge(&cs.checks, p) {
+                                    spans.push(Span::styled(glyph, style));
+                                }
+                            }
                         }
                     }
                     frame.render_widget(

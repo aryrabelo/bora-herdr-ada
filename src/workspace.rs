@@ -28,9 +28,10 @@ pub(crate) use self::git::{fetch_local_branches, fetch_my_issues, fetch_my_open_
 pub(crate) use self::tab::MovedPane;
 pub use self::{
     git::{
-        derive_label_from_cwd, git_branch, git_space_metadata, git_status_cache_key,
-        ChangeSectionKind, ChangeStatus, GitSpaceMetadata, GitStatusCacheEntry, RepoBranches,
-        RepoIssues, RepoOpenPrs, WorkspaceChangeSet, WorkspaceCheckStatus,
+        checks_rollup, derive_label_from_cwd, git_branch, git_space_metadata, git_status_cache_key,
+        ChangeSectionKind, ChangeStatus, CheckRun, ChecksRollup, GitSpaceMetadata,
+        GitStatusCacheEntry, RepoBranches, RepoIssues, RepoOpenPrs, WorkspaceChangeSet,
+        WorkspaceCheckStatus,
     },
     tab::{NewPane, Tab},
 };
