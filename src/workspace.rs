@@ -35,10 +35,10 @@ pub(crate) use self::{
 };
 pub use self::{
     git::{
-        derive_label_from_cwd, fallback_label_from_cwd, git_branch, git_space_metadata,
-        git_status_cache_key, ChangeSectionKind, ChangeStatus, GitSpaceMetadata,
-        GitStatusCacheEntry, GitStatusRefreshDemand, RepoBranches, RepoIssues, RepoOpenPrs,
-        WorkspaceChangeSet, WorkspaceCheckStatus,
+        checks_rollup, derive_label_from_cwd, fallback_label_from_cwd, git_branch,
+        git_space_metadata, git_status_cache_key, ChangeSectionKind, ChangeStatus, CheckRun,
+        ChecksRollup, GitSpaceMetadata, GitStatusCacheEntry, GitStatusRefreshDemand, RepoBranches,
+        RepoIssues, RepoOpenPrs, WorkspaceChangeSet, WorkspaceCheckStatus,
     },
     tab::{NewPane, Tab},
 };

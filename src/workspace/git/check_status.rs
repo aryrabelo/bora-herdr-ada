@@ -26,6 +26,40 @@ pub struct CheckRun {
     pub conclusion: Option<String>,
 }
 
+/// Aggregate state of a PR's checks, mirroring the statusline rollup rules.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChecksRollup {
+    Passing,
+    Failing,
+    Pending,
+}
+
+/// Roll up check runs into one displayable state. `None` when there are no checks.
+pub fn checks_rollup(checks: &[CheckRun]) -> Option<ChecksRollup> {
+    if checks.is_empty() {
+        return None;
+    }
+    if checks.iter().any(|c| {
+        matches!(
+            c.conclusion.as_deref(),
+            Some(
+                "FAILURE"
+                    | "ERROR"
+                    | "TIMED_OUT"
+                    | "CANCELLED"
+                    | "ACTION_REQUIRED"
+                    | "STARTUP_FAILURE"
+            )
+        )
+    }) {
+        return Some(ChecksRollup::Failing);
+    }
+    if checks.iter().any(|c| c.status != "COMPLETED") {
+        return Some(ChecksRollup::Pending);
+    }
+    Some(ChecksRollup::Passing)
+}
+
 // ── JSON parsing ─────────────────────────────────────────────────────────────
 
 /// Parse `gh pr view --json` output into a `WorkspaceCheckStatus`.
@@ -86,7 +120,26 @@ pub(super) fn parse_gh_pr_json(json_str: &str) -> Result<WorkspaceCheckStatus, S
         .map(|arr| {
             arr.iter()
                 .filter_map(|item| {
-                    let name = item.get("name").and_then(|v| v.as_str())?.to_string();
+                    // CheckRun items carry `name`; StatusContext items
+                    // (external CI like CircleCI) carry `context` + `state`.
+                    let name = item
+                        .get("name")
+                        .or_else(|| item.get("context"))
+                        .and_then(|v| v.as_str())?
+                        .to_string();
+                    if let Some(state) = item.get("state").and_then(|v| v.as_str()) {
+                        let (status, conclusion) = match state {
+                            "SUCCESS" | "FAILURE" | "ERROR" => {
+                                ("COMPLETED".to_string(), Some(state.to_string()))
+                            }
+                            _ => ("IN_PROGRESS".to_string(), None),
+                        };
+                        return Some(CheckRun {
+                            name,
+                            status,
+                            conclusion,
+                        });
+                    }
                     let status = item
                         .get("status")
                         .and_then(|v| v.as_str())
@@ -194,6 +247,81 @@ pub fn fetch_check_status(cwd: &Path, branch: &str) -> WorkspaceCheckStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn run(status: &str, conclusion: Option<&str>) -> CheckRun {
+        CheckRun {
+            name: "c".into(),
+            status: status.into(),
+            conclusion: conclusion.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn rollup_none_when_no_checks() {
+        assert_eq!(checks_rollup(&[]), None);
+    }
+
+    #[test]
+    fn rollup_failing_beats_pending() {
+        let checks = [run("IN_PROGRESS", None), run("COMPLETED", Some("FAILURE"))];
+        assert_eq!(checks_rollup(&checks), Some(ChecksRollup::Failing));
+    }
+
+    #[test]
+    fn rollup_hard_fail_conclusions_are_failing() {
+        for c in [
+            "ERROR",
+            "TIMED_OUT",
+            "CANCELLED",
+            "ACTION_REQUIRED",
+            "STARTUP_FAILURE",
+        ] {
+            assert_eq!(
+                checks_rollup(&[run("COMPLETED", Some(c))]),
+                Some(ChecksRollup::Failing),
+                "{c}"
+            );
+        }
+    }
+
+    #[test]
+    fn rollup_pending_when_incomplete() {
+        let checks = [run("COMPLETED", Some("SUCCESS")), run("QUEUED", None)];
+        assert_eq!(checks_rollup(&checks), Some(ChecksRollup::Pending));
+    }
+
+    #[test]
+    fn rollup_passing_when_all_completed_ok() {
+        let checks = [
+            run("COMPLETED", Some("SUCCESS")),
+            run("COMPLETED", Some("NEUTRAL")),
+            run("COMPLETED", Some("SKIPPED")),
+        ];
+        assert_eq!(checks_rollup(&checks), Some(ChecksRollup::Passing));
+    }
+
+    #[test]
+    fn parse_status_context_items_from_external_ci() {
+        let json = r#"{
+            "number": 7,
+            "title": "t",
+            "state": "OPEN",
+            "url": "https://github.com/o/r/pull/7",
+            "statusCheckRollup": [
+                {"__typename": "StatusContext", "context": "ci/circleci: build", "state": "SUCCESS"},
+                {"__typename": "StatusContext", "context": "ci/circleci: deploy", "state": "PENDING"},
+                {"__typename": "StatusContext", "context": "ci/circleci: lint", "state": "FAILURE"}
+            ]
+        }"#;
+        let status = parse_gh_pr_json(json).unwrap();
+        assert_eq!(status.checks.len(), 3);
+        assert_eq!(status.checks[0].name, "ci/circleci: build");
+        assert_eq!(status.checks[0].status, "COMPLETED");
+        assert_eq!(status.checks[0].conclusion.as_deref(), Some("SUCCESS"));
+        assert_eq!(status.checks[1].status, "IN_PROGRESS");
+        assert_eq!(status.checks[1].conclusion, None);
+        assert_eq!(checks_rollup(&status.checks), Some(ChecksRollup::Failing));
+    }
 
     #[test]
     fn parse_pr_with_passing_checks() {

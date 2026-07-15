@@ -18,8 +18,13 @@ pub(crate) use self::check_status::PrSummary;
 pub use self::{
     branches::{fetch_local_branches, RepoBranch, RepoBranches},
     change_set::{ChangeSectionKind, ChangeStatus, WorkspaceChangeSet},
-    check_status::{fetch_check_status, WorkspaceCheckStatus},
-    discovery::{derive_label_from_cwd, fallback_label_from_cwd, git_branch, git_space_metadata, GitSpaceMetadata},
+    check_status::{
+        checks_rollup, fetch_check_status, CheckRun, ChecksRollup, WorkspaceCheckStatus,
+    },
+    discovery::{
+        derive_label_from_cwd, fallback_label_from_cwd, git_branch, git_space_metadata,
+        GitSpaceMetadata,
+    },
     issues::{fetch_my_issues, RepoIssue, RepoIssues},
     open_prs::{fetch_my_open_prs, OpenPr, RepoOpenPrs},
     status::{
