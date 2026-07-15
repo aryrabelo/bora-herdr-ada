@@ -1588,7 +1588,7 @@ fn render_workspace_list(
                             {
                                 if let Some(pr) = cs.pr.as_ref() {
                                     let pr_color = match pr.state.as_str() {
-                                        "MERGED" => p.teal,
+                                        "MERGED" => p.mauve,
                                         "CLOSED" => p.red,
                                         _ => p.green,
                                     };
@@ -1672,7 +1672,7 @@ fn render_workspace_list(
                         {
                             if let Some(pr) = cs.pr.as_ref() {
                                 let pr_color = match pr.state.as_str() {
-                                    "MERGED" => p.teal,
+                                    "MERGED" => p.mauve,
                                     "CLOSED" => p.red,
                                     _ => p.green,
                                 };
