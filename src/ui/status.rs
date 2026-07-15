@@ -208,6 +208,20 @@ pub(super) fn idle_age_color(age: Option<Duration>, p: &Palette) -> Color {
     }
 }
 
+/// Compact numeric idle age: `42s`, `12m`, `3h`, `2d`.
+pub(super) fn format_idle_age(age: Duration) -> String {
+    let secs = age.as_secs();
+    if secs < 60 {
+        format!("{secs}s")
+    } else if secs < 3600 {
+        format!("{}m", secs / 60)
+    } else if secs < 86_400 {
+        format!("{}h", secs / 3600)
+    } else {
+        format!("{}d", secs / 86_400)
+    }
+}
+
 pub(super) fn state_dot(
     state: AgentState,
     seen: bool,
@@ -349,6 +363,17 @@ mod tests {
             bottom_center.x,
             area.x + area.width.saturating_sub(bottom_center.width) / 2
         );
+    }
+
+    #[test]
+    fn format_idle_age_units() {
+        assert_eq!(format_idle_age(Duration::from_secs(0)), "0s");
+        assert_eq!(format_idle_age(Duration::from_secs(42)), "42s");
+        assert_eq!(format_idle_age(Duration::from_secs(60)), "1m");
+        assert_eq!(format_idle_age(Duration::from_secs(3599)), "59m");
+        assert_eq!(format_idle_age(Duration::from_secs(3600)), "1h");
+        assert_eq!(format_idle_age(Duration::from_secs(7200)), "2h");
+        assert_eq!(format_idle_age(Duration::from_secs(90_000)), "1d");
     }
 
     #[test]

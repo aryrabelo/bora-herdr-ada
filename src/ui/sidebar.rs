@@ -9,7 +9,9 @@ use ratatui::{
 };
 
 use super::scrollbar::{render_scrollbar, should_show_scrollbar};
-use super::status::{agent_icon, state_dot, state_label, state_label_color};
+use super::status::{
+    agent_icon, format_idle_age, idle_age_color, state_dot, state_label, state_label_color,
+};
 use super::text::{display_width, display_width_u16, truncate_end};
 use crate::app::state::{AgentPanelSort, Palette};
 use crate::app::{AppState, Mode};
@@ -1506,6 +1508,12 @@ fn render_workspace_list(
                         let (dot, dot_style) = state_dot(state, seen, app.spinner_tick, p, age);
                         spans.push(Span::styled(" ", Style::default()));
                         spans.push(Span::styled(dot, dot_style));
+                        if let Some(age) = age {
+                            spans.push(Span::styled(
+                                format!(" {}", format_idle_age(age)),
+                                Style::default().fg(idle_age_color(Some(age), p)),
+                            ));
+                        }
                     }
                     frame.render_widget(
                         Paragraph::new(Line::from(spans)),
@@ -1596,6 +1604,12 @@ fn render_workspace_list(
                         let (dot, dot_style) = state_dot(state, seen, app.spinner_tick, p, age);
                         spans.push(Span::styled(" ", Style::default()));
                         spans.push(Span::styled(dot, dot_style));
+                        if let Some(age) = age {
+                            spans.push(Span::styled(
+                                format!(" {}", format_idle_age(age)),
+                                Style::default().fg(idle_age_color(Some(age), p)),
+                            ));
+                        }
                     }
                     frame.render_widget(
                         Paragraph::new(Line::from(spans)),
@@ -1764,6 +1778,12 @@ fn render_workspace_list(
                                 let (si, ss) = state_dot(state, seen, app.spinner_tick, p, age);
                                 line1.push(Span::styled(" ", Style::default()));
                                 line1.push(Span::styled(si, ss));
+                                if let Some(age) = age {
+                                    line1.push(Span::styled(
+                                        format!(" {}", format_idle_age(age)),
+                                        Style::default().fg(idle_age_color(Some(age), p)),
+                                    ));
+                                }
                             }
                             line1.push(Span::styled(" ", Style::default()));
                         } else {
@@ -1807,13 +1827,25 @@ fn render_workspace_list(
                     .iter()
                     .map(|s| display_width(s.content.as_ref()))
                     .sum();
+                let idle_age = ws.oldest_unseen_idle_age(&app.terminals, now);
+                let idle_suffix = idle_age.map(|age| format!(" {}", format_idle_age(age)));
+                let idle_width = idle_suffix
+                    .as_deref()
+                    .map(display_width)
+                    .unwrap_or_default();
                 let label = ws.display_name_from(&app.terminals, terminal_runtimes);
                 let avail = (body.width as usize)
-                    .saturating_sub(prefix_width + dots_width + display_width(sep));
+                    .saturating_sub(prefix_width + dots_width + display_width(sep) + idle_width);
                 let label = truncate_end(&label, avail);
                 line1.extend(dot_spans);
                 line1.push(Span::styled(sep, Style::default()));
                 line1.push(Span::styled(label, name_style));
+                if let Some(suffix) = idle_suffix {
+                    line1.push(Span::styled(
+                        suffix,
+                        Style::default().fg(idle_age_color(idle_age, p)),
+                    ));
+                }
 
                 if row_y < list_bottom {
                     frame.render_widget(
