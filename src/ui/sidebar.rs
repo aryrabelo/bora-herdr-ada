@@ -172,7 +172,8 @@ fn collect_agent_panel_entries_with_runtimes(
         }
     };
 
-    app.workspaces
+    let mut entries: Vec<AgentPanelEntry> = app
+        .workspaces
         .iter()
         .enumerate()
         .flat_map(|(ws_idx, ws)| {
@@ -208,7 +209,20 @@ fn collect_agent_panel_entries_with_runtimes(
                     }
                 })
         })
-        .collect()
+        .collect();
+
+    if matches!(app.agent_panel_sort, AgentPanelSort::Priority) {
+        entries.sort_by_key(|entry| {
+            (
+                std::cmp::Reverse(workspace_attention_priority(entry.state, entry.seen)),
+                // Oldest state change first: the agent waiting the longest
+                // tops its tier; panes without a recorded change sort last.
+                entry.last_agent_state_change_seq.unwrap_or(u64::MAX),
+            )
+        });
+    }
+
+    entries
 }
 
 pub(super) fn agent_panel_status_key(state: AgentState, seen: bool) -> &'static str {
