@@ -208,7 +208,7 @@ impl Workspace {
             .flat_map(|tab| tab.panes.values())
             .filter(|pane| !pane.seen)
             .filter_map(|pane| terminals.get(&pane.attached_terminal_id))
-            .filter(|t| t.state == AgentState::Idle)
+            .filter(|t| matches!(t.state, AgentState::Idle | AgentState::Unknown))
             .filter_map(|t| t.idle_since)
             .map(|since| now.saturating_duration_since(since))
             .max()
@@ -226,7 +226,7 @@ impl Workspace {
             .iter()
             .flat_map(|tab| tab.panes.values())
             .filter_map(|pane| terminals.get(&pane.attached_terminal_id))
-            .filter(|t| t.state == AgentState::Idle)
+            .filter(|t| matches!(t.state, AgentState::Idle | AgentState::Unknown))
             .filter_map(|t| t.idle_since)
             .map(|since| now.saturating_duration_since(since))
             .max()
@@ -452,5 +452,39 @@ mod tests {
             ws.oldest_unseen_idle_age(&terminals, now),
             Some(Duration::from_secs(300))
         );
+    }
+
+    #[test]
+    fn idle_age_counts_exited_agent_but_not_plain_shell() {
+        use std::time::{Duration, Instant};
+
+        let mut ws = Workspace::test_new("test");
+        let root_id = ws.tabs[0].root_pane;
+        let now = Instant::now();
+        let mut terminals = HashMap::new();
+
+        // Agent exited back to shell: state Unknown but idle_since preserved.
+        let mut terminal = terminal_for_pane(&ws, root_id);
+        terminal.state = AgentState::Unknown;
+        terminal.idle_since = Some(now - Duration::from_secs(240));
+        terminals.insert(terminal.id.clone(), terminal);
+
+        assert_eq!(
+            ws.oldest_idle_age(&terminals, now),
+            Some(Duration::from_secs(240))
+        );
+        ws.tabs[0].panes.get_mut(&root_id).unwrap().seen = false;
+        assert_eq!(
+            ws.oldest_unseen_idle_age(&terminals, now),
+            Some(Duration::from_secs(240))
+        );
+
+        // Plain shell pane (never had an agent): no idle_since -> no timer.
+        terminals
+            .get_mut(&ws.terminal_id(root_id).unwrap().clone())
+            .unwrap()
+            .idle_since = None;
+        assert_eq!(ws.oldest_idle_age(&terminals, now), None);
+        assert_eq!(ws.oldest_unseen_idle_age(&terminals, now), None);
     }
 }

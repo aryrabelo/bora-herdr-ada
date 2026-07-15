@@ -300,7 +300,11 @@ fn tab_dot_idle_ages(
         .map(|t| {
             details
                 .iter()
-                .filter(|d| d.tab_idx == t && !d.seen && d.state == AgentState::Idle)
+                .filter(|d| {
+                    d.tab_idx == t
+                        && !d.seen
+                        && matches!(d.state, AgentState::Idle | AgentState::Unknown)
+                })
                 .filter_map(|d| d.idle_since)
                 .map(|since| now.saturating_duration_since(since))
                 .max()

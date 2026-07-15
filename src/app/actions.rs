@@ -2699,10 +2699,14 @@ impl AppState {
             self.next_agent_state_change_seq += 1;
             if let Some(terminal) = self.terminals.get_mut(&terminal_id) {
                 terminal.last_agent_state_change_seq = Some(self.next_agent_state_change_seq);
-                terminal.idle_since = if change.state == crate::detect::AgentState::Idle {
-                    Some(std::time::Instant::now())
-                } else {
-                    None
+                terminal.idle_since = match change.state {
+                    crate::detect::AgentState::Idle => Some(std::time::Instant::now()),
+                    // Agent vanished (exited back to shell): keep the finish
+                    // time so the sidebar timer survives the agent process.
+                    crate::detect::AgentState::Unknown => terminal
+                        .idle_since
+                        .or_else(|| Some(std::time::Instant::now())),
+                    _ => None,
                 };
             }
         }
