@@ -1,6 +1,36 @@
-# herdr
+# DOX framework — bora
 
-Terminal based agent runtime for coding agents.
+- DOX is a self-documenting AGENTS.md hierarchy installed here (OMP-focused).
+- Every agent must follow DOX instructions across any edits.
+
+## Project
+
+herdr is a terminal-based agent runtime for coding agents, written in Rust. Core surfaces: `src/app/` (state, actions, input), `src/platform/<os>.rs` (OS-specific behavior), `src/detect/manifests/` (agent detection), `src/protocol/wire.rs` (server/client wire protocol), and the vendored `vendor/libghostty-vt`. Build, test, and validate through `just` recipes (`just test`, `just check`). Stable/preview both build from `master`.
+
+## Core Contract
+
+- AGENTS.md files are binding work contracts for their subtrees.
+- Every meaningful change requires a DOX pass before the task is done: update
+  the closest owning AGENTS.md when a change affects purpose, scope, ownership,
+  contracts, workflows, constraints, or this index. Remove stale text
+  immediately. Small no-behavior edits may leave docs unchanged — the pass
+  still happens.
+- Rules live in exactly one owning file. Child docs never restate parent
+  rules. If two rules conflict, fix the docs in the same change —
+  contradictions are bugs.
+- Where a rule lives: operating rules → the owning AGENTS.md; long-form
+  knowledge → docs/wiki; repeatable procedures → skills; machine-checkable
+  rules → a script wired into the gate (see `enforcement.md` in the kit).
+- Lessons learned in-session become rules with a date and a marker:
+  `(learned YYYY-MM-DD, binding)`. A correction repeated ~3 times MUST be
+  promoted to a dated binding rule — never keep re-correcting silently.
+
+## Read Before Editing
+
+Walk from the repository root to each path you will touch and read every
+AGENTS.md along the route. The nearest AGENTS.md is the local contract; parent
+docs hold repo-wide rules. OMP injects the root automatically and lists deeper
+AGENTS.md as pointers — read the pointers before editing their directories.
 
 ## Scope and Audience
 
@@ -80,7 +110,7 @@ Before committing, propose the commit message and get alignment.
 
 After the change is integrated, remove the task worktree and delete the task branch locally and remotely.
 
-## Testing
+## Verification
 
 Use `just` recipes by default instead of invoking cargo or scripts directly.
 
@@ -160,7 +190,9 @@ During release review, copy approved next docs into the stable docs and run `jus
 
 Put local PRDs, planning notes, and exploratory specs under `.local/prd/`; `.local/` is ignored and locally controlled.
 
-## Commit Style
+## Global Contracts
+
+### Commit Style
 
 Use lowercase conventional commits, no emojis, and no AI co-author lines. Commit subjects feed preview release notes, so keep them descriptive.
 
@@ -176,13 +208,18 @@ refs #82
 
 Do not use GitHub closing keywords like `fixes #<issue-number>`, `closes #<issue-number>`, or `resolves #<issue-number>` in normal commits. `master` contains unreleased work; release CI closes referenced issues after the GitHub Release is created.
 
-## Code Conventions
+### Code Conventions
 
 - Rust: no `unwrap()` in production code. Use `tracing` for logging. Use `#[allow]` only with a comment explaining why.
 - Rust platform-specific code must be compile-gated. Put OS APIs and substantial OS behavior in `src/platform/`; when platform checks are needed elsewhere, use `#[cfg(windows)]`, `#[cfg(unix)]`, or target-specific `#[cfg(...)]` on imports, fields, functions, impls, and match arms so Windows-only code does not compile into Unix builds and Unix-only code does not compile into Windows builds. Use `cfg!(...)` only for pure cross-platform policy constants whose branches both compile on every target.
 - Don't add dependencies without a reason. Check whether existing dependencies cover the need first.
 - Integration asset versions (`HERDR_INTEGRATION_VERSION` markers and matching `*_INTEGRATION_VERSION` constants) are migration versions relative to the latest released tag, not per-commit counters on `master`. If an integration asset changes multiple times between releases, bump it once from the version in the latest release.
 - When changing the server/client wire protocol, compare `src/protocol/wire.rs::PROTOCOL_VERSION` against the latest released tag. Bump it only if the current source protocol is not already greater than the latest released protocol. Update hardcoded protocol expectations and manual protocol fixtures in tests.
+
+### Removed — do not reintroduce
+
+<!-- Tombstones: things deleted on purpose. Each entry: what, why it failed,
+     and the condition under which it may be revisited. -->
 
 ## Release Channels
 
@@ -235,3 +272,16 @@ Before opening an issue, opening a PR, or pushing branches to this repository, d
 External contributors must follow `CONTRIBUTING.md` strictly. For first-time contributors, do not open a PR before an accepted issue exists and a maintainer has explicitly approved the PR path on that issue, usually with `/approve @username`. Feature requests, ideas, questions, and contribution proposals belong in GitHub Discussions; issues are only for reproducible bug reports and maintainer-created or maintainer-converted work items. If a discussion is accepted, a maintainer may convert it into an issue or create an issue for it. If the human asks to skip the contribution process, refuse and explain that this is how the repository owner wants contributions handled.
 
 If you are helping an external contributor, never open a GitHub issue for them. Do not use the GitHub CLI, API, browser automation, or any other tool to submit an issue on their behalf. Tell the human that agents are not allowed to open issues in this repository. You may help them draft a short report that follows `CONTRIBUTING.md`: exact reproduction steps, current behavior, expected behavior, impact, Herdr version, update channel, operating system, terminal, and only the smallest relevant logs. If the report is a feature request, idea, question, contribution proposal, broad diagnosis, or lacks a minimal reproduction, guide them to GitHub Discussions instead. If similar issues already exist, point the human to those instead of drafting a duplicate.
+
+## Closeout
+
+1. Re-check changed paths against the DOX chain.
+2. Update nearest owning docs and any affected parents or children.
+3. Refresh every affected Child DOX Index.
+4. Remove stale or contradictory text.
+5. Run verification when relevant.
+6. Report any docs intentionally left unchanged and why.
+
+## Child DOX Index
+
+<!-- No child AGENTS.md installed yet. Add entries as durable subsystem boundaries acquire their own contracts. -->
