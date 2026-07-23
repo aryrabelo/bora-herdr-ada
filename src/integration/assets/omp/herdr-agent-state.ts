@@ -5,10 +5,12 @@
 // HERDR_INTEGRATION_VERSION=6
 // @ts-nocheck
 
-import { createConnection } from "node:net";
+import net from "node:net";
 
 const HERDR_ENV = process.env.HERDR_ENV;
 const socketPath = process.env.HERDR_SOCKET_PATH;
+const socketEndpoint =
+  process.platform === "win32" && socketPath ? `\\\\.\\pipe\\${socketPath}` : socketPath;
 const paneId = process.env.HERDR_PANE_ID;
 const source = "herdr:omp";
 
@@ -36,7 +38,7 @@ function sendRequestAttempt(request: unknown, timeoutMs: number): Promise<boolea
       resolve(delivered);
     };
 
-    const socket = createConnection(socketPath!);
+    const socket = net.createConnection(socketEndpoint!);
     socket.on("error", () => finish(false));
     socket.on("connect", () => socket.write(`${JSON.stringify(request)}\n`));
     socket.on("data", () => finish(true));

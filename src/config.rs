@@ -29,10 +29,11 @@ pub use self::{
     theme::{parse_color, CustomThemeColors, ThemeConfig},
 };
 
-// The space token rows are only consumed by the config parsing tests until the
-// token-based sidebar rendering (upstream 5cfe5e5e) is ported to the fork UI.
-#[cfg(test)]
-pub use self::sidebar::SpaceSidebarToken;
+// Token config types parse the sidebar token schema; this fork does not wire the
+// sidebar token renderer, so these re-exports are unused outside config-parsing
+// tests. Kept for schema/API completeness.
+#[allow(unused_imports)]
+pub use self::sidebar::{SidebarTokenStyle, SpaceSidebarToken};
 
 pub(crate) use self::io::upsert_top_level_bool;
 pub(crate) use self::keybinds::parse_key_combo;

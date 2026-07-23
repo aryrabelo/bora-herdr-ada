@@ -7,16 +7,30 @@
 //   - kilo reported state for every session id, so a subagent (child) session
 //     going idle clobbered the pane while the root agent was still working.
 //
-// These tests drive the *real* shipped assets through a fake `pi`/plugin host
-// and a mocked node:net that captures the JSON-RPC reports synchronously, with
-// fake timers controlling the idle debounce (no wall-clock waits).
+// These tests drive the *real* shipped assets through a fake `pi`/plugin host.
+// Most tests monkeypatch node:net's `createConnection` on the real module (so
+// every asset, imported fresh or cached, observes the same patched function)
+// with a fake socket that captures the JSON-RPC reports synchronously, using
+// fake timers to control the idle debounce (no wall-clock waits). A few tests
+// instead capture the real connection args to verify the Windows named-pipe
+// endpoint mapping.
 
-import { beforeAll, afterEach, expect, jest, mock, test } from "bun:test";
+import { afterEach, expect, jest, test } from "bun:test";
+import net from "node:net";
+
+const originalCreateConnection = net.createConnection;
+const originalPlatform = process.platform;
+const originalEnvironment = {
+  HERDR_ENV: process.env.HERDR_ENV,
+  HERDR_OMP_IDLE_DEBOUNCE_MS: process.env.HERDR_OMP_IDLE_DEBOUNCE_MS,
+  HERDR_PANE_ID: process.env.HERDR_PANE_ID,
+  HERDR_SOCKET_PATH: process.env.HERDR_SOCKET_PATH,
+};
 
 // The assets read env and bind node:net at module load, so both must be in
 // place before the asset is imported.
 process.env.HERDR_ENV = "1";
-process.env.HERDR_SOCKET_PATH = "/tmp/herdr-agent-state-test.sock"; // unused; net is mocked
+process.env.HERDR_SOCKET_PATH = "/tmp/herdr-agent-state-test.sock"; // unused; net is patched
 process.env.HERDR_PANE_ID = "test-pane";
 process.env.HERDR_OMP_IDLE_DEBOUNCE_MS = "50";
 process.env.HERDR_PI_IDLE_DEBOUNCE_MS = "50";
@@ -28,6 +42,7 @@ type Report = {
 
 let reportedStates: string[] = [];
 let sessionReports: Report[] = [];
+let importCounter = 0;
 
 function capture(raw: unknown): void {
   for (const line of String(raw).split("\n")) {
@@ -89,24 +104,31 @@ async function flush(): Promise<void> {
   }
 }
 
-beforeAll(async () => {
-  await mock.module("node:net", () => ({
-    createConnection: fakeCreateConnection,
-    default: { createConnection: fakeCreateConnection },
-  }));
-});
+function patchFakeConnection(): void {
+  net.createConnection = fakeCreateConnection as typeof net.createConnection;
+}
 
 afterEach(() => {
   reportedStates = [];
   sessionReports = [];
   jest.useRealTimers();
+  net.createConnection = originalCreateConnection;
+  Object.defineProperty(process, "platform", { value: originalPlatform });
+  for (const [name, value] of Object.entries(originalEnvironment)) {
+    if (value === undefined) {
+      delete process.env[name];
+    } else {
+      process.env[name] = value;
+    }
+  }
 });
 
 // omp and pi share the same counter-based state machine.
 for (const agent of ["omp", "pi"] as const) {
   test(`${agent}: overlapping subagents keep the pane working until the last agent_end`, async () => {
     jest.useFakeTimers();
-    // Module-loading boundary: env + node:net mock must be applied before the
+    patchFakeConnection();
+    // Module-loading boundary: env + node:net patch must be applied before the
     // asset binds them at load, so this import is intentionally dynamic.
     const mod = await import(`./${agent}/herdr-agent-state.ts`);
     const handlers = new Map<string, (...args: unknown[]) => void>();
@@ -152,9 +174,11 @@ for (const agent of ["omp", "pi"] as const) {
 for (const agent of ["omp", "pi"] as const) {
   // Build a fresh fake host bound to the real shipped asset. Dynamic import is
   // intentional and load-order sensitive: the specifier is runtime-selected by
-  // `agent`, and the env + node:net mock must be applied before the asset binds
-  // them at module load. Returns `fire(name, ...args)` for the captured hooks.
+  // `agent`, and the env + node:net patch must be applied before the asset
+  // binds them at module load. Returns `fire(name, ...args)` for the captured
+  // hooks.
   const spawn = async () => {
+    patchFakeConnection();
     const mod = await import(`./${agent}/herdr-agent-state.ts`);
     const handlers = new Map<string, (...args: unknown[]) => void>();
     const pi = {
@@ -297,6 +321,7 @@ for (const agent of ["omp", "pi"] as const) {
 }
 
 test("kilo: a subagent session going idle does not idle the pane while the root agent works", async () => {
+  patchFakeConnection();
   // Module-loading boundary: see note above; dynamic import is intentional.
   const mod = await import("./kilo/herdr-agent-state.js");
   const plugin = await mod.HerdrAgentStatePlugin();
@@ -336,6 +361,7 @@ test("kilo: a subagent session going idle does not idle the pane while the root 
 // fork replaced that suite. Also exercises session_switch, whose
 // resetSessionState crashed on a stale boolean-model variable until now.
 test("omp: session reports carry the lifecycle source", async () => {
+  patchFakeConnection();
   // Module-loading boundary: see note above; dynamic import is intentional.
   const mod = await import("./omp/herdr-agent-state.ts");
   const handlers = new Map<string, (...args: unknown[]) => void>();
@@ -368,3 +394,120 @@ test("omp: session reports carry the lifecycle source", async () => {
   await flush();
   expect(sessionReports.at(-1)?.params?.session_start_source).toBe("resume");
 });
+
+// Upstream's Windows named-pipe support (HERDR_SOCKET_PATH mapped to a
+// `\\.\pipe\...` endpoint on win32): verified against the real node:net
+// module by capturing the args passed to `createConnection`, no fake socket
+// involved.
+
+type Handler = (event: unknown, context: unknown) => unknown;
+
+function createExtensionHarness() {
+  const handlers = new Map<string, Handler>();
+  const eventHandlers = new Map<string, Handler>();
+  return {
+    handlers,
+    eventHandlers,
+    pi: {
+      on(event: string, handler: Handler) {
+        handlers.set(event, handler);
+      },
+      events: {
+        on(event: string, handler: Handler) {
+          eventHandlers.set(event, handler);
+          return () => {};
+        },
+      },
+    },
+  };
+}
+
+function configureIntegrationEnvironment(socketPath: string) {
+  process.env.HERDR_ENV = "1";
+  process.env.HERDR_SOCKET_PATH = socketPath;
+  process.env.HERDR_PANE_ID = "test:p1";
+}
+
+function captureConnectionEndpoint() {
+  let connectedEndpoint: unknown;
+  net.createConnection = ((...args: unknown[]) => {
+    connectedEndpoint = args[0];
+    return Reflect.apply(originalCreateConnection, net, args);
+  }) as typeof net.createConnection;
+  return () => connectedEndpoint;
+}
+
+function importFresh(modulePath: string) {
+  importCounter += 1;
+  return import(`${modulePath}?test=${importCounter}`);
+}
+
+const integrations = [
+  { name: "Pi", modulePath: "./pi/herdr-agent-state.ts" },
+  { name: "Oh My Pi", modulePath: "./omp/herdr-agent-state.ts" },
+] as const;
+
+const socketPlugins = [
+  {
+    name: "OpenCode",
+    modulePath: "./opencode/herdr-agent-state.js",
+    sessionID: "opencode-session",
+  },
+  { name: "Kilo", modulePath: "./kilo/herdr-agent-state.js", sessionID: "kilo-session" },
+] as const;
+
+for (const socketPlugin of socketPlugins) {
+  test(`${socketPlugin.name} maps the Windows socket marker path to a named pipe endpoint`, async () => {
+    const markerPath = `herdr-${socketPlugin.name.toLowerCase()}-${process.pid}.sock`;
+    configureIntegrationEnvironment(markerPath);
+    Object.defineProperty(process, "platform", { value: "win32" });
+    const connectedEndpoint = captureConnectionEndpoint();
+
+    const { HerdrAgentStatePlugin } = await importFresh(socketPlugin.modulePath);
+    const plugin = await HerdrAgentStatePlugin();
+    await plugin.event({
+      event: {
+        type: "session.updated",
+        properties: { sessionID: socketPlugin.sessionID },
+      },
+    });
+
+    expect(connectedEndpoint()).toBe(`\\\\.\\pipe\\${markerPath}`);
+  });
+}
+
+test("OpenCode stays disabled without the Herdr socket environment", async () => {
+  process.env.HERDR_ENV = "1";
+  process.env.HERDR_PANE_ID = "test:p1";
+  delete process.env.HERDR_SOCKET_PATH;
+
+  const { HerdrAgentStatePlugin } = await importFresh("./opencode/herdr-agent-state.js");
+
+  expect(await HerdrAgentStatePlugin()).toEqual({});
+});
+
+for (const integration of integrations) {
+  test(`${integration.name} maps the Windows socket marker path to a named pipe endpoint`, async () => {
+    const markerPath = `herdr-${integration.name.toLowerCase().replaceAll(" ", "-")}-${process.pid}.sock`;
+    configureIntegrationEnvironment(markerPath);
+    Object.defineProperty(process, "platform", { value: "win32" });
+    const connectedEndpoint = captureConnectionEndpoint();
+    const { handlers, pi } = createExtensionHarness();
+
+    const { default: install } = await importFresh(integration.modulePath);
+    install(pi);
+    await handlers.get("session_start")?.(
+      { reason: "startup" },
+      {
+        hasUI: true,
+        isIdle: () => true,
+        sessionManager: {
+          getSessionFile: () => undefined,
+          getSessionId: () => "test-session",
+        },
+      },
+    );
+
+    expect(connectedEndpoint()).toBe(`\\\\.\\pipe\\${markerPath}`);
+  });
+}

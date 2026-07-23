@@ -1,6 +1,8 @@
 //! Input handling — translates crossterm key/mouse events into state mutations.
 
+use bytes::Bytes;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use tracing::warn;
 
 use crate::app::PaneClickState;
 use crate::input::TerminalKey;
@@ -47,7 +49,7 @@ mod terminal;
 pub(crate) use self::{
     modal::{
         handle_global_menu_key, handle_keybind_help_key, handle_navigator_key,
-        insert_navigator_search_text, insert_rename_input_text,
+        insert_navigator_search_text, insert_rename_input_text, open_new_workspace_dialog,
     },
     navigate::{
         terminal_direct_indexed_navigation_action, terminal_direct_non_indexed_navigation_action,
@@ -69,17 +71,23 @@ use super::App;
 // ---------------------------------------------------------------------------
 
 impl App {
-    pub(super) async fn handle_key(&mut self, key: TerminalKey) {
+    pub(super) async fn handle_key(
+        &mut self,
+        key: TerminalKey,
+    ) -> Option<super::TerminalInputTarget> {
+        if self.state.popup_pane.is_some() {
+            return self.handle_terminal_key(key).await;
+        }
         let key_event = key.as_key_event();
         if modal_paste_target_active(&self.state) && is_modal_paste_shortcut(&key_event) {
             if let Some(text) = crate::platform::read_clipboard_text() {
                 self.paste_into_active_text_input(&text);
             }
-            return;
+            return None;
         }
 
         match self.state.mode {
-            Mode::Terminal => self.handle_terminal_key(key).await,
+            Mode::Terminal => return self.handle_terminal_key(key).await,
             Mode::Prefix => self.handle_prefix_key(key),
             Mode::Navigate => self.handle_navigate_key(key),
             Mode::Copy => self.handle_copy_mode_key(key),
@@ -109,9 +117,18 @@ impl App {
                 Mode::Terminal => unreachable!(),
             },
         }
+        None
     }
 
     pub(super) async fn handle_paste(&mut self, text: String) {
+        if self.state.popup_pane.is_some() {
+            if let Some(runtime) = self.popup_runtime() {
+                let _ = runtime.send_paste(text).await;
+            } else {
+                self.close_popup_pane();
+            }
+            return;
+        }
         if self.state.mode != Mode::Terminal {
             self.paste_into_active_text_input(&text);
             return;
@@ -243,6 +260,10 @@ impl App {
     }
 
     pub(super) fn handle_mouse(&mut self, mouse: MouseEvent) {
+        if self.state.popup_pane.is_some() {
+            self.handle_popup_mouse(mouse);
+            return;
+        }
         if self.handle_overlay_mouse(mouse) {
             return;
         }
@@ -272,33 +293,18 @@ impl App {
         }
 
         let handled_pane_double_click = self.handle_pane_double_click(mouse);
+        if !handled_pane_double_click {
+            self.focus_pane_before_mouse_press(mouse);
+        }
 
         let previous_agent_panel_sort = self.state.agent_panel_sort;
         let previous_settings_section = self.state.settings.section;
         if !handled_pane_double_click {
-            let right_button = matches!(
-                mouse.kind,
-                MouseEventKind::Down(MouseButton::Right)
-                    | MouseEventKind::Up(MouseButton::Right)
-                    | MouseEventKind::Drag(MouseButton::Right)
-            );
-            let intentional_pane_press = matches!(
-                mouse.kind,
-                MouseEventKind::Down(MouseButton::Left | MouseButton::Middle)
-            );
-            if !right_button
-                && intentional_pane_press
-                && matches!(self.state.mode, Mode::Terminal | Mode::Resize)
-            {
-                if let (Some(ws_idx), Some(info)) = (
-                    self.state.active,
-                    self.state.pane_at(mouse.column, mouse.row).cloned(),
-                ) {
-                    self.focus_pane_internal_via_api(ws_idx, info.id);
-                }
-            }
             if let Some(action) = self.state.handle_mouse(&mut self.terminal_runtimes, mouse) {
                 match action {
+                    MouseAction::NewWorkspace => {
+                        self.begin_tui_workspace_create("tui.mouse.workspace.create")
+                    }
                     MouseAction::Settings(action) => match action {
                         SettingsAction::SaveTheme(name) => self.save_theme(&name),
                         SettingsAction::SaveSound(enabled) => self.save_sound(enabled),
@@ -346,6 +352,15 @@ impl App {
                         self.apply_context_menu_action_via_api(menu, idx)
                     }
                 }
+            }
+            if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
+                && self
+                    .state
+                    .selection
+                    .as_ref()
+                    .is_none_or(crate::selection::Selection::is_in_progress)
+            {
+                self.selection_highlight_clear_deadline = None;
             }
         }
         if previous_settings_section != crate::app::state::SettingsSection::Integrations
@@ -428,6 +443,87 @@ impl App {
         }
     }
 
+    fn handle_popup_mouse(&mut self, mouse: MouseEvent) {
+        let Some((_outer, inner)) =
+            crate::ui::popup_pane_rects(&self.state, self.state.view.terminal_area)
+        else {
+            return;
+        };
+        if mouse.column < inner.x
+            || mouse.column >= inner.x.saturating_add(inner.width)
+            || mouse.row < inner.y
+            || mouse.row >= inner.y.saturating_add(inner.height)
+        {
+            return;
+        }
+        let Some(rt) = self.popup_runtime() else {
+            self.close_popup_pane();
+            return;
+        };
+        let column = mouse.column.saturating_sub(inner.x);
+        let row = mouse.row.saturating_sub(inner.y);
+        let bytes = match mouse.kind {
+            MouseEventKind::ScrollUp
+            | MouseEventKind::ScrollDown
+            | MouseEventKind::ScrollLeft
+            | MouseEventKind::ScrollRight => match rt.wheel_routing() {
+                Some(crate::pane::WheelRouting::MouseReport) => {
+                    rt.encode_mouse_wheel(mouse.kind, column, row, mouse.modifiers)
+                }
+                Some(crate::pane::WheelRouting::AlternateScroll) => {
+                    rt.encode_alternate_scroll(mouse.kind)
+                }
+                Some(crate::pane::WheelRouting::HostScroll) | None => {
+                    let lines_per_notch = self.state.mouse_scroll_lines;
+                    match mouse.kind {
+                        MouseEventKind::ScrollUp => rt.scroll_up(lines_per_notch),
+                        MouseEventKind::ScrollDown => rt.scroll_down(lines_per_notch),
+                        _ => {}
+                    }
+                    return;
+                }
+            },
+            MouseEventKind::Down(_) | MouseEventKind::Up(_) | MouseEventKind::Drag(_) => {
+                rt.encode_mouse_button(mouse.kind, column, row, mouse.modifiers)
+            }
+            MouseEventKind::Moved => {
+                rt.encode_mouse_motion(mouse.kind, column, row, mouse.modifiers)
+            }
+        };
+        let Some(bytes) = bytes else {
+            return;
+        };
+        rt.scroll_reset();
+        if let Err(err) = rt.try_send_bytes(Bytes::from(bytes)) {
+            warn!(err = %err, kind = ?mouse.kind, "failed to forward popup mouse event");
+        }
+    }
+
+    fn focus_pane_before_mouse_press(&mut self, mouse: MouseEvent) {
+        if !matches!(self.state.mode, Mode::Terminal | Mode::Resize)
+            || !matches!(
+                mouse.kind,
+                MouseEventKind::Down(MouseButton::Left | MouseButton::Middle)
+            )
+        {
+            return;
+        }
+
+        let Some(pane_id) = self
+            .state
+            .pane_at(mouse.column, mouse.row)
+            .map(|info| info.id)
+        else {
+            return;
+        };
+        let Some(ws_idx) = self.state.active else {
+            return;
+        };
+
+        // Focus through the runtime API before an application can consume its press.
+        self.focus_pane_internal_via_api(ws_idx, pane_id);
+    }
+
     fn handle_modified_url_click(&mut self, mouse: MouseEvent) -> bool {
         if self.state.mode != Mode::Terminal
             || !matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
@@ -463,11 +559,6 @@ impl App {
     }
 
     fn handle_pane_double_click(&mut self, mouse: MouseEvent) -> bool {
-        if !self.state.copy_on_select {
-            self.last_pane_click = None;
-            return false;
-        }
-
         // A pane press stops being a double-click candidate once it becomes
         // a drag or completes as a real text selection.
         match mouse.kind {
@@ -621,8 +712,12 @@ impl AppState {
             .and_then(|i| self.workspaces.get(i))
             .and_then(|ws| {
                 let tab = ws.active_tab()?;
-                let pane_id = tab.layout.focused();
-                tab.follow_cwd_for_pane(pane_id, &self.terminals, terminal_runtimes)
+                let terminal_id = tab.terminal_id(tab.layout.focused())?;
+                super::creation::launch_cwd_for_terminal(
+                    terminal_id,
+                    &self.terminals,
+                    terminal_runtimes,
+                )
             });
         let cwd = Some(super::creation::resolve_new_terminal_cwd(
             &self.new_terminal_cwd,

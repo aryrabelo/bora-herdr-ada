@@ -76,11 +76,13 @@ mod kitty_graphics;
 mod layout;
 mod logging;
 mod metadata_tokens;
+mod noninteractive_process;
 mod pane;
 mod persist;
 mod platform;
 mod plugin_command;
 mod plugin_paths;
+mod popup_size;
 mod product_announcements;
 mod protocol;
 mod pty;
@@ -224,11 +226,15 @@ const DEFAULT_CONFIG: &str = r##"# bora configuration
 # Custom commands use the same binding syntax.
 # type = "shell" runs detached in the background.
 # type = "pane" opens a temporary pane and closes it when the command exits.
+# type = "popup" opens a session-modal terminal without changing the tab layout.
+# Popup width and height accept terminal cells or percentages such as "80%".
 # On Windows, command strings run through cmd.exe /d /c.
 # [[keys.command]]
 # key = "prefix+alt+g"
-# type = "pane"
+# type = "popup"
 # command = "lazygit"
+# width = "80%"
+# height = "80%"
 
 # Legacy indexed shortcut config is still parsed for compatibility.
 # Prefer switch_tab, switch_workspace, and focus_agent for new configs.
@@ -250,6 +256,9 @@ const DEFAULT_CONFIG: &str = r##"# bora configuration
 # Maximum sidebar width when expanded (columns)
 # sidebar_max_width = 36
 
+# Start with the sidebar collapsed. Changes take effect on the next launch.
+# sidebar_start_collapsed = false
+
 # Collapsed sidebar presentation: "compact" keeps the narrow status rail, "hidden" uses zero width.
 # sidebar_collapsed_mode = "compact"
 
@@ -262,8 +271,8 @@ const DEFAULT_CONFIG: &str = r##"# bora configuration
 # Pane apps like lazygit and btop can still receive mouse when they request it.
 # mouse_capture = true
 
-# Copy text selected by mouse drag or double-click.
-# Set false to disable mouse text selection and copying.
+# Automatically copy text selected by mouse drag.
+# Set false to keep drag selection visible without copying; double-click still copies a word.
 # copy_on_select = true
 
 # Host cursor policy: "auto", "native", or "drawn".
@@ -290,6 +299,9 @@ const DEFAULT_CONFIG: &str = r##"# bora configuration
 # Set false to create tabs immediately with generated names.
 # prompt_new_tab_name = true
 
+# Ask for a workspace name before interactive creation.
+# prompt_new_workspace_name = false
+
 # Draw borders around split panes.
 # pane_borders = true
 
@@ -310,7 +322,11 @@ const DEFAULT_CONFIG: &str = r##"# bora configuration
 # Expanded agent rows. Built-ins are state_icon, state_text, workspace, tab, pane, agent,
 # terminal_title, and terminal_title_stripped.
 # Custom values reported through pane metadata use a $name token.
+# A token occurrence may be styled with { token = "workspace", fg = "#89b4fa", bold = true, dim = false }.
+# Omitted style fields preserve the contextual default.
 # [ui.sidebar.agents]
+# Blank rows between agent entries. Set to 1 to restore the previous spacing.
+# row_gap = 0
 # rows = [["state_icon", "workspace", "tab"], ["agent"]]
 # Optional canonical agent IDs replace the default rows for matching agents.
 # [ui.sidebar.agents.rows_by_agent]
@@ -318,7 +334,10 @@ const DEFAULT_CONFIG: &str = r##"# bora configuration
 
 # Expanded space rows. Built-ins are state_icon, state_text, workspace, branch, and git_status.
 # Custom values reported through workspace metadata use a $name token, for example $jj_status.
+# Inline token styles accept strict #RGB/#RRGGBB foregrounds plus bold and dim booleans.
 # [ui.sidebar.spaces]
+# Blank rows between space entries. Set to 1 to restore the previous spacing.
+# row_gap = 0
 # rows = [["state_icon", "workspace"], ["branch", "git_status"]]
 
 # Accent color for highlights, borders, and navigation UI.
@@ -466,8 +485,11 @@ fn main() -> io::Result<()> {
         std::process::exit(2);
     }
 
-    if let cli::CommandOutcome::Handled(code) = cli::maybe_run(&args)? {
-        std::process::exit(code);
+    match cli::maybe_run(&args) {
+        Ok(cli::CommandOutcome::Handled(code)) => std::process::exit(code),
+        Ok(cli::CommandOutcome::NotCli) => {}
+        Err(err) if cli::protocol_mismatch_was_reported(&err) => std::process::exit(1),
+        Err(err) => return Err(err),
     }
 
     // Subcommands and flags (no TUI, no logging needed)
@@ -534,7 +556,6 @@ fn main() -> io::Result<()> {
         println!("       bora notification <subcommand> ...");
         println!("       bora agent <subcommand> ...");
         println!("       bora pane <subcommand> ...");
-        println!("       bora wait <subcommand> ...");
         println!("       bora session <subcommand> ...");
         println!("       bora integration <subcommand> ...");
         println!();
@@ -591,10 +612,6 @@ fn main() -> io::Result<()> {
             (
                 "bora pane <subcommand>",
                 "Pane control helpers over the socket API",
-            ),
-            (
-                "bora wait <subcommand>",
-                "Blocking wait helpers over the socket API",
             ),
             (
                 "bora session <subcommand>",
@@ -656,7 +673,7 @@ fn main() -> io::Result<()> {
         if arg.starts_with('-') && !known_flags.contains(&arg_name) {
             eprintln!("unknown option: {arg}");
             eprintln!("run 'bora --help' for usage");
-            std::process::exit(1);
+            std::process::exit(2);
         }
         if !arg.starts_with('-')
             && ![
@@ -670,7 +687,6 @@ fn main() -> io::Result<()> {
                 "workspace",
                 "worktree",
                 "pane",
-                "wait",
                 "session",
                 "integration",
             ]
@@ -678,7 +694,7 @@ fn main() -> io::Result<()> {
         {
             eprintln!("unknown command: {arg}");
             eprintln!("run 'bora --help' for usage");
-            std::process::exit(1);
+            std::process::exit(2);
         }
     }
 

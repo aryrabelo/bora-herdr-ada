@@ -2,6 +2,7 @@ use crate::config::{Keybinds, NewTerminalCwdConfig, SoundConfig, ToastConfig, To
 use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::layout::{Direction, Rect};
 use ratatui::style::Color;
+use std::hash::{Hash, Hasher};
 
 use crate::detect::AgentState;
 use crate::layout::{PaneId, PaneInfo, SplitBorder};
@@ -14,6 +15,50 @@ pub(crate) type InstalledPluginRegistry =
 pub(crate) struct PluginPaneRecord {
     pub plugin_id: String,
     pub entrypoint: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PaneGraphicsLayer {
+    pub format: crate::api::schema::PaneGraphicsFormat,
+    pub image_width: u32,
+    pub image_height: u32,
+    pub data: Vec<u8>,
+    pub data_fingerprint: u64,
+    pub render: crate::api::schema::PaneGraphicsPlacementParams,
+}
+
+impl PaneGraphicsLayer {
+    pub(crate) fn new(
+        format: crate::api::schema::PaneGraphicsFormat,
+        image_width: u32,
+        image_height: u32,
+        data: Vec<u8>,
+        render: crate::api::schema::PaneGraphicsPlacementParams,
+    ) -> Self {
+        let data_fingerprint = pane_graphics_data_fingerprint(&data);
+        Self {
+            format,
+            image_width,
+            image_height,
+            data,
+            data_fingerprint,
+            render,
+        }
+    }
+}
+
+fn pane_graphics_data_fingerprint(data: &[u8]) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    data.hash(&mut hasher);
+    hasher.finish()
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PopupPaneState {
+    pub pane_id: PaneId,
+    pub terminal_id: crate::terminal::TerminalId,
+    pub width: Option<crate::popup_size::PopupSize>,
+    pub height: Option<crate::popup_size::PopupSize>,
 }
 
 // ---------------------------------------------------------------------------
@@ -908,6 +953,48 @@ pub(crate) struct NavigatorRow {
     pub is_tab: bool,
     pub expanded: bool,
     pub search_text: String,
+    /// Whether this row itself matched the active query/state filter, as
+    /// opposed to being included as ancestor context or cascaded subtree of a
+    /// matching workspace or tab. Always true when no filter is active.
+    pub matched: bool,
+}
+
+/// One rendered line in the navigator body. Spacer lines separate workspace
+/// groups visually and are not selectable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NavigatorDisplayLine {
+    Spacer,
+    Row(usize),
+}
+
+pub(crate) fn navigator_display_lines(rows: &[NavigatorRow]) -> Vec<NavigatorDisplayLine> {
+    let mut lines = Vec::with_capacity(rows.len().saturating_mul(2));
+    for (idx, row) in rows.iter().enumerate() {
+        if row.is_workspace && !lines.is_empty() {
+            lines.push(NavigatorDisplayLine::Spacer);
+        }
+        lines.push(NavigatorDisplayLine::Row(idx));
+    }
+    lines
+}
+
+pub(crate) fn navigator_display_index_of_row(
+    lines: &[NavigatorDisplayLine],
+    row_idx: usize,
+) -> Option<usize> {
+    lines
+        .iter()
+        .position(|line| *line == NavigatorDisplayLine::Row(row_idx))
+}
+
+pub(crate) fn navigator_first_row_at_or_after(
+    lines: &[NavigatorDisplayLine],
+    line_idx: usize,
+) -> Option<usize> {
+    lines.get(line_idx..)?.iter().find_map(|line| match line {
+        NavigatorDisplayLine::Row(idx) => Some(*idx),
+        NavigatorDisplayLine::Spacer => None,
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1745,6 +1832,7 @@ pub struct AppState {
     pub bora_port_override: Option<u16>,
     pub creating_new_tab: bool,
     pub requested_new_tab_name: Option<String>,
+    pub pending_workspace_create_cwd: Option<std::path::PathBuf>,
     pub rename_pane_target: Option<PaneId>,
     pub worktree_create: Option<WorktreeCreateState>,
     pub worktree_open: Option<WorktreeOpenState>,
@@ -1822,6 +1910,8 @@ pub struct AppState {
     /// Set when the PRs tab is activated; drained by App to call start_open_prs_fetch.
     pub right_panel_prs_requested: bool,
     pub agent_panel_sort: AgentPanelSort,
+    /// Transient session-wide projection override for the built-in Agents view.
+    pub agent_view_override: Option<crate::api::schema::AgentViewSetParams>,
     pub sidebar_agents: crate::config::AgentsSidebarConfig,
     pub sidebar_spaces: crate::config::SpacesSidebarConfig,
     pub next_agent_state_change_seq: u64,
@@ -1835,6 +1925,7 @@ pub struct AppState {
     pub mouse_scroll_lines: usize,
     pub confirm_close: bool,
     pub prompt_new_tab_name: bool,
+    pub prompt_new_workspace_name: bool,
     pub pane_borders: bool,
     pub pane_gaps: bool,
     pub show_agent_labels_on_pane_borders: bool,
@@ -1891,6 +1982,14 @@ pub struct AppState {
     pub(crate) installed_plugins: InstalledPluginRegistry,
     /// Pane ids opened through the plugin pane API.
     pub(crate) plugin_panes: std::collections::HashMap<PaneId, PluginPaneRecord>,
+    /// Runtime image layers owned by API clients and composited over panes.
+    pub(crate) pane_graphics_layers: std::collections::HashMap<PaneId, PaneGraphicsLayer>,
+    /// Active streaming graphics owner token by pane id.
+    pub(crate) pane_graphics_streams: std::collections::HashMap<PaneId, String>,
+    /// Monotonic marker for accepted pane graphics mutations.
+    pub(crate) pane_graphics_revision: u64,
+    /// Session-modal terminal popup. This is intentionally outside workspace layouts.
+    pub(crate) popup_pane: Option<PopupPaneState>,
     /// Recent plugin action/event command executions.
     pub(crate) plugin_command_logs: Vec<crate::api::schema::PluginCommandLogInfo>,
     pub(crate) next_plugin_command_log_id: u64,
@@ -1899,6 +1998,8 @@ pub struct AppState {
     pub global_menu: MenuListState,
     /// Resolved host terminal default colors for theming embedded panes.
     pub host_terminal_theme: TerminalTheme,
+    /// Last known foreground host terminal cell size in pixels.
+    pub(crate) host_cell_size: crate::kitty_graphics::HostCellSize,
     /// Set when a persisted session snapshot would change.
     pub session_dirty: bool,
     /// Cached open PRs authored by the current user, keyed by repo identity
@@ -2029,7 +2130,9 @@ impl AppState {
         &self,
         terminal_runtimes: &crate::terminal::TerminalRuntimeRegistry,
     ) -> bool {
-        self.mouse_capture || self.focused_pane_requests_mouse_capture_from(terminal_runtimes)
+        self.mouse_capture
+            || self.popup_pane.is_some()
+            || self.focused_pane_requests_mouse_capture_from(terminal_runtimes)
     }
 
     pub fn is_prefix_key(&self, key: crate::input::TerminalKey) -> bool {
@@ -2179,6 +2282,7 @@ impl AppState {
             bora_port_override: None,
             creating_new_tab: false,
             requested_new_tab_name: None,
+            pending_workspace_create_cwd: None,
             rename_pane_target: None,
             worktree_create: None,
             worktree_open: None,
@@ -2261,6 +2365,7 @@ impl AppState {
             right_panel_issues_requested: false,
             right_panel_prs_requested: false,
             agent_panel_sort: AgentPanelSort::Spaces,
+            agent_view_override: None,
             sidebar_agents: crate::config::AgentsSidebarConfig::default(),
             sidebar_spaces: crate::config::SpacesSidebarConfig::default(),
             next_agent_state_change_seq: 0,
@@ -2272,6 +2377,7 @@ impl AppState {
             mouse_scroll_lines: crate::config::DEFAULT_MOUSE_SCROLL_LINES,
             confirm_close: true,
             prompt_new_tab_name: true,
+            prompt_new_workspace_name: false,
             pane_borders: true,
             pane_gaps: false,
             show_agent_labels_on_pane_borders: false,
@@ -2321,11 +2427,16 @@ impl AppState {
             integration_install_messages: Vec::new(),
             installed_plugins: std::collections::HashMap::new(),
             plugin_panes: std::collections::HashMap::new(),
+            pane_graphics_layers: std::collections::HashMap::new(),
+            pane_graphics_streams: std::collections::HashMap::new(),
+            pane_graphics_revision: 0,
+            popup_pane: None,
             plugin_command_logs: Vec::new(),
             next_plugin_command_log_id: 1,
             plugin_commands_in_flight: 0,
             global_menu: MenuListState::new(0),
             host_terminal_theme: TerminalTheme::default(),
+            host_cell_size: crate::kitty_graphics::HostCellSize::default(),
             session_dirty: false,
             repo_open_prs: std::collections::HashMap::new(),
             repo_issues: std::collections::HashMap::new(),
@@ -2556,6 +2667,19 @@ impl AppState {
                 "pending agent notification",
             );
         }
+        if let Some(popup) = &self.popup_pane {
+            assert!(
+                self.terminals.contains_key(&popup.terminal_id),
+                "popup {:?} references missing terminal {}",
+                popup.pane_id,
+                popup.terminal_id
+            );
+            assert!(
+                !attached_terminal_ids.contains(&popup.terminal_id),
+                "popup terminal {} must not be attached to a tiled pane",
+                popup.terminal_id
+            );
+        }
         for &pane_id in self.plugin_panes.keys() {
             assert_live_pane(pane_id, "plugin pane record");
         }
@@ -2716,6 +2840,81 @@ mod tests {
         state.ensure_test_terminals();
 
         state.assert_invariants_for_test();
+    }
+
+    fn navigator_row_for_display(is_workspace: bool) -> NavigatorRow {
+        NavigatorRow {
+            target: NavigatorTarget::Workspace { ws_idx: 0 },
+            depth: if is_workspace { 0 } else { 1 },
+            label: String::new(),
+            meta: String::new(),
+            status: crate::detect::AgentState::Idle,
+            seen: true,
+            is_current: false,
+            is_workspace,
+            is_tab: false,
+            expanded: true,
+            search_text: String::new(),
+            matched: true,
+        }
+    }
+
+    #[test]
+    fn navigator_display_lines_separate_workspace_groups() {
+        let rows = vec![
+            navigator_row_for_display(true),
+            navigator_row_for_display(false),
+            navigator_row_for_display(true),
+            navigator_row_for_display(false),
+        ];
+        assert_eq!(
+            navigator_display_lines(&rows),
+            vec![
+                NavigatorDisplayLine::Row(0),
+                NavigatorDisplayLine::Row(1),
+                NavigatorDisplayLine::Spacer,
+                NavigatorDisplayLine::Row(2),
+                NavigatorDisplayLine::Row(3),
+            ]
+        );
+    }
+
+    #[test]
+    fn navigator_display_lines_have_no_leading_spacer() {
+        let rows = vec![
+            navigator_row_for_display(true),
+            navigator_row_for_display(false),
+        ];
+        assert_eq!(
+            navigator_display_lines(&rows),
+            vec![NavigatorDisplayLine::Row(0), NavigatorDisplayLine::Row(1)]
+        );
+        assert!(navigator_display_lines(&[]).is_empty());
+    }
+
+    #[test]
+    fn navigator_display_index_maps_row_to_line() {
+        let rows = vec![
+            navigator_row_for_display(true),
+            navigator_row_for_display(false),
+            navigator_row_for_display(true),
+        ];
+        let lines = navigator_display_lines(&rows);
+        assert_eq!(navigator_display_index_of_row(&lines, 2), Some(3));
+        assert_eq!(navigator_display_index_of_row(&lines, 9), None);
+    }
+
+    #[test]
+    fn navigator_first_row_skips_spacer_lines() {
+        let rows = vec![
+            navigator_row_for_display(true),
+            navigator_row_for_display(false),
+            navigator_row_for_display(true),
+        ];
+        let lines = navigator_display_lines(&rows);
+        // Line 2 is the spacer before the second workspace.
+        assert_eq!(navigator_first_row_at_or_after(&lines, 2), Some(2));
+        assert_eq!(navigator_first_row_at_or_after(&lines, 4), None);
     }
 
     #[test]

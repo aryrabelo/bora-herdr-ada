@@ -49,6 +49,7 @@ pub(crate) struct AgentPanelEntry {
     pub terminal_title: Option<String>,
     #[allow(dead_code)]
     pub terminal_title_stripped: Option<String>,
+    pub agent_kind_label: Option<String>,
     #[allow(dead_code)]
     pub agent: Option<crate::detect::Agent>,
     pub state: AgentState,
@@ -108,12 +109,15 @@ fn agent_panel_sort_label(sort: AgentPanelSort) -> &'static str {
 }
 
 pub(crate) fn agent_panel_toggle_rect(area: Rect, sort: AgentPanelSort) -> Rect {
+    agent_panel_header_label_rect(area, agent_panel_sort_label(sort))
+}
+
+fn agent_panel_header_label_rect(area: Rect, label: &str) -> Rect {
     if area.width == 0 || area.height < 2 {
         return Rect::default();
     }
 
-    let label = agent_panel_sort_label(sort);
-    let width = display_width_u16(label);
+    let width = display_width_u16(label).min(area.width);
     Rect::new(
         area.x + area.width.saturating_sub(width),
         area.y + 1,
@@ -122,8 +126,18 @@ pub(crate) fn agent_panel_toggle_rect(area: Rect, sort: AgentPanelSort) -> Rect 
     )
 }
 
+fn active_agent_view_label(app: &AppState) -> Option<&str> {
+    app.agent_view_override
+        .as_ref()
+        .map(|view| view.label.as_deref().unwrap_or("filtered"))
+}
+
 pub(crate) fn agent_panel_entries(app: &AppState) -> Vec<AgentPanelEntry> {
     agent_panel_entries_with_runtimes(app, None)
+}
+
+pub(crate) fn all_agent_panel_entries(app: &AppState) -> Vec<AgentPanelEntry> {
+    collect_agent_panel_entries_with_runtimes(app, None)
 }
 
 pub(crate) fn agent_panel_entries_from(
@@ -134,6 +148,21 @@ pub(crate) fn agent_panel_entries_from(
 }
 
 fn agent_panel_entries_with_runtimes(
+    app: &AppState,
+    terminal_runtimes: Option<&TerminalRuntimeRegistry>,
+) -> Vec<AgentPanelEntry> {
+    let mut entries = collect_agent_panel_entries_with_runtimes(app, terminal_runtimes);
+    // `apply_agent_view`'s fallback (no explicit sort spec) re-sorts newest-first
+    // within a tier, conflicting with the fork's oldest-first tie-break applied
+    // in `collect_agent_panel_entries_with_runtimes`. Only invoke it when an
+    // override is actually active (filtering and/or an explicit custom sort).
+    if app.agent_view_override.is_some() {
+        crate::app::agent_view::apply_agent_view(app, &mut entries);
+    }
+    entries
+}
+
+fn collect_agent_panel_entries_with_runtimes(
     app: &AppState,
     terminal_runtimes: Option<&TerminalRuntimeRegistry>,
 ) -> Vec<AgentPanelEntry> {
@@ -171,6 +200,7 @@ fn agent_panel_entries_with_runtimes(
                         pane_label: detail.pane_label,
                         terminal_title: detail.terminal_title,
                         terminal_title_stripped: detail.terminal_title_stripped,
+                        agent_kind_label: detail.agent_kind_label,
                         agent: detail.agent,
                         state: detail.state,
                         seen: detail.seen,
@@ -1081,6 +1111,17 @@ pub(crate) fn agent_entry_height_in_body(
     2u16.min(body_height)
 }
 
+pub(crate) fn agent_entry_gap(_app: &AppState, entry_idx: usize, entry_count: usize) -> u16 {
+    // The fork's agent panel uses fixed two-row entries with a fixed one-row gap
+    // between them; upstream's row_gap-driven variable spacing (the sidebar token
+    // engine) is not ported, so row_gap is ignored here.
+    if entry_idx + 1 < entry_count {
+        1
+    } else {
+        0
+    }
+}
+
 fn agent_panel_visible_count_from(app: &AppState, area: Rect, scroll: usize) -> usize {
     let body = agent_panel_body_rect(area, false);
     if body.width == 0 || body.height == 0 {
@@ -1089,16 +1130,17 @@ fn agent_panel_visible_count_from(app: &AppState, area: Rect, scroll: usize) -> 
 
     let mut used_rows = 0u16;
     let mut visible = 0usize;
-    for entry in agent_panel_entries(app).iter().skip(scroll) {
+    let entries = agent_panel_entries(app);
+    for (index, entry) in entries.iter().enumerate().skip(scroll) {
         let height = agent_entry_height_in_body(app, entry, body.height);
         if used_rows.saturating_add(height) > body.height {
             break;
         }
         used_rows = used_rows.saturating_add(height);
         visible += 1;
-        if used_rows < body.height {
-            used_rows = used_rows.saturating_add(1);
-        }
+        used_rows = used_rows
+            .saturating_add(agent_entry_gap(app, index, entries.len()))
+            .min(body.height);
     }
     visible
 }
@@ -1109,7 +1151,7 @@ fn agent_panel_bottom_start(app: &AppState, area: Rect) -> usize {
     let mut used_rows = 0u16;
     let mut start = entries.len();
     for (index, entry) in entries.iter().enumerate().rev() {
-        let gap = u16::from(index + 1 < entries.len());
+        let gap = agent_entry_gap(app, index, entries.len());
         let needed = agent_entry_height_in_body(app, entry, body.height).saturating_add(gap);
         if used_rows.saturating_add(needed) > body.height {
             break;
@@ -1345,9 +1387,14 @@ pub(super) fn render_sidebar_collapsed(app: &AppState, frame: &mut Frame, area: 
 
     if let Some(divider_y) = divider_y {
         let buf = frame.buffer_mut();
+        let divider_color = if app.agent_view_override.is_some() {
+            p.accent
+        } else {
+            p.surface_dim
+        };
         for x in ws_area.x..ws_area.x + ws_area.width {
             buf[(x, divider_y)].set_symbol("─");
-            buf[(x, divider_y)].set_style(Style::default().fg(p.surface_dim));
+            buf[(x, divider_y)].set_style(Style::default().fg(divider_color));
         }
     }
 
@@ -1932,12 +1979,19 @@ fn render_agent_detail(
         )])),
         Rect::new(area.x, area.y + 1, area.width, 1),
     );
-    let toggle_rect = agent_panel_toggle_rect(area, app.agent_panel_sort);
+    let control_label = active_agent_view_label(app)
+        .unwrap_or_else(|| agent_panel_sort_label(app.agent_panel_sort));
+    let toggle_rect = agent_panel_header_label_rect(area, control_label);
     if toggle_rect != Rect::default() {
+        let color = if app.agent_view_override.is_some() {
+            p.accent
+        } else {
+            p.overlay0
+        };
         frame.render_widget(
             Paragraph::new(Span::styled(
-                agent_panel_sort_label(app.agent_panel_sort),
-                Style::default().fg(p.overlay0).add_modifier(Modifier::BOLD),
+                control_label,
+                Style::default().fg(color).add_modifier(Modifier::BOLD),
             ))
             .alignment(Alignment::Right),
             toggle_rect,
@@ -1949,6 +2003,14 @@ fn render_agent_detail(
     let scrollbar_rect = agent_panel_scrollbar_rect(app, area);
     let body = agent_panel_body_rect(area, should_show_scrollbar(metrics));
     if body == Rect::default() {
+        return;
+    }
+    if details.is_empty() && app.agent_view_override.is_some() {
+        frame.render_widget(
+            Paragraph::new(" no matching agents")
+                .style(Style::default().fg(p.overlay0).add_modifier(Modifier::DIM)),
+            Rect::new(body.x, body.y, body.width, 1),
+        );
         return;
     }
 
@@ -2358,6 +2420,7 @@ mod tests {
             pane_label: None,
             terminal_title: None,
             terminal_title_stripped: None,
+            agent_kind_label: None,
             agent: None,
             state: AgentState::Idle,
             seen: true,
@@ -2564,6 +2627,7 @@ mod tests {
             workspace_with_worktree_space("main", Some("repo-key"), "/repo/herdr"),
             workspace_with_worktree_space("issue", Some("repo-key"), "/repo/herdr-issue"),
         ];
+        app.sidebar_spaces.row_gap = 1;
 
         let (cards, headers) = compute_workspace_list_areas(&app, Rect::new(0, 0, 30, 40));
 

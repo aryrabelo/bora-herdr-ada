@@ -298,8 +298,8 @@ fn normalize_repo_identity(url: &str) -> Option<String> {
     Some(format!("{host}/{path}").to_lowercase())
 }
 
-pub(super) fn git_trimmed_stdout(repo_root: &Path, args: &[&str]) -> Option<String> {
-    let output = std::process::Command::new("git")
+fn git_trimmed_stdout(repo_root: &Path, args: &[&str]) -> Option<String> {
+    let output = crate::noninteractive_process::command("git")
         .arg("-C")
         .arg(repo_root)
         .args(args)

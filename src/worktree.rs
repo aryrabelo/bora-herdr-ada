@@ -198,7 +198,7 @@ pub(crate) fn worktree_dirty_remove_message(path: &Path) -> String {
 
 pub(crate) fn checkout_has_dirty_files(path: &Path) -> Result<bool, String> {
     let path_arg = path.display().to_string();
-    let output = std::process::Command::new("git")
+    let output = crate::noninteractive_process::command("git")
         .args([
             "-C",
             &path_arg,
@@ -264,7 +264,7 @@ pub(crate) fn build_worktree_add_existing_branch_command(
 }
 
 pub(crate) fn local_branch_exists(repo_root: &Path, branch: &str) -> Result<bool, String> {
-    let output = std::process::Command::new("git")
+    let output = crate::noninteractive_process::command("git")
         .arg("-C")
         .arg(repo_root)
         .args(["show-ref", "--verify", "--quiet"])
@@ -624,7 +624,7 @@ pub(crate) fn sync_branch_with_upstream(checkout_path: &Path) -> Result<(), Stri
 }
 
 pub(crate) fn run_worktree_command(command: &WorktreeCommand) -> Result<(), String> {
-    let output = std::process::Command::new(&command.program)
+    let output = crate::noninteractive_process::command(&command.program)
         .args(&command.args)
         .output()
         .map_err(|err| err.to_string())?;
@@ -693,7 +693,7 @@ fn leftover_worktree_checkout_matches_repo(repo_root: &Path, path: &Path) -> boo
 }
 
 fn git_common_worktrees_dir(repo_root: &Path) -> Option<PathBuf> {
-    let output = std::process::Command::new("git")
+    let output = crate::noninteractive_process::command("git")
         .arg("-C")
         .arg(repo_root)
         .args(["rev-parse", "--git-common-dir"])
@@ -789,7 +789,7 @@ pub(crate) fn parse_worktree_list_porcelain(output: &str) -> Vec<ExistingWorktre
 }
 
 pub(crate) fn list_existing_worktrees(repo_root: &Path) -> Result<Vec<ExistingWorktree>, String> {
-    let output = std::process::Command::new("git")
+    let output = crate::noninteractive_process::command("git")
         .arg("-C")
         .arg(repo_root)
         .args(["worktree", "list", "--porcelain"])
