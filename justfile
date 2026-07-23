@@ -191,3 +191,22 @@ release version:
 # Print default config
 default-config:
     cargo run --release --locked -- --default-config
+
+# Install the fork's default plugins + keybind (idempotent). Run once per machine after installing bora.
+bootstrap:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    reg="${XDG_CONFIG_HOME:-$HOME/.config}/bora/plugins.json"
+    if [ -f "$reg" ] && grep -q herdr-file-viewer "$reg"; then
+        echo "plugin herdr-file-viewer: already installed"
+    else
+        bora plugin install smarzban/herdr-file-viewer --yes
+    fi
+    cfg="${XDG_CONFIG_HOME:-$HOME/.config}/bora/config.toml"
+    if [ -f "$cfg" ] && grep -q 'command = "open-file-viewer"' "$cfg"; then
+        echo "keybind prefix+f: already set"
+    else
+        mkdir -p "$(dirname "$cfg")"
+        printf '\n[[keys.command]]\nkey = "prefix+f"\ntype = "plugin_action"\ncommand = "open-file-viewer"\n' >> "$cfg"
+        echo "keybind prefix+f -> open-file-viewer (right split): added to $cfg"
+    fi
