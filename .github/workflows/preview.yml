@@ -137,9 +137,6 @@ jobs:
           - target: aarch64-apple-darwin
             os: macos-latest
             name: bora-macos-aarch64
-          - target: x86_64-pc-windows-msvc
-            os: windows-latest
-            name: bora-windows-x86_64.exe
     runs-on: ${{ matrix.os }}
     env:
       LIBGHOSTTY_VT_OPTIMIZE: ReleaseFast
@@ -210,22 +207,12 @@ jobs:
           key: preview-${{ matrix.target }}
 
       - name: Remove Zig caches
-        if: runner.os != 'Windows'
         run: rm -rf .zig-cache vendor/libghostty-vt/.zig-cache vendor/libghostty-vt/zig-out
-
-      - name: Remove Zig caches
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          Remove-Item -Recurse -Force .zig-cache -ErrorAction SilentlyContinue
-          Remove-Item -Recurse -Force vendor/libghostty-vt/.zig-cache -ErrorAction SilentlyContinue
-          Remove-Item -Recurse -Force vendor/libghostty-vt/zig-out -ErrorAction SilentlyContinue
 
       - name: Build
         run: cargo build --release --locked --target ${{ matrix.target }}
 
       - name: Package artifact
-        if: runner.os != 'Windows'
         shell: bash
         run: |
           set -euo pipefail
@@ -253,18 +240,6 @@ jobs:
             echo "target=${{ matrix.target }}"
             echo "channel=preview"
           } >> BUILD_INFO.txt
-
-      - name: Package artifact
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          Copy-Item target\${{ matrix.target }}\release\bora.exe ${{ matrix.name }}
-          $hash = (Get-FileHash -Algorithm SHA256 ${{ matrix.name }}).Hash.ToLowerInvariant()
-          "$hash  ${{ matrix.name }}" | Out-File -Encoding ascii ${{ matrix.name }}.sha256
-          "commit=${{ needs.preflight.outputs.commit }}" | Out-File -Encoding utf8 BUILD_INFO.txt
-          "build_id=${{ needs.preflight.outputs.build_id }}" | Out-File -Encoding utf8 -Append BUILD_INFO.txt
-          "target=${{ matrix.target }}" | Out-File -Encoding utf8 -Append BUILD_INFO.txt
-          "channel=preview" | Out-File -Encoding utf8 -Append BUILD_INFO.txt
 
       - name: Upload artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -324,7 +299,7 @@ jobs:
           result = {}
           for path in pathlib.Path('artifacts').glob('bora-*/*.sha256'):
               digest, name = path.read_text().split()[:2]
-              target = name.removeprefix('bora-').removesuffix('.exe')
+              target = name.removeprefix('bora-')
               result[target] = digest
           pathlib.Path('preview-sha256.json').write_text(json.dumps(result, indent=2) + '\n')
           PY
@@ -344,7 +319,6 @@ jobs:
             artifacts/bora-linux-aarch64/bora-linux-aarch64
             artifacts/bora-macos-x86_64/bora-macos-x86_64
             artifacts/bora-macos-aarch64/bora-macos-aarch64
-            artifacts/bora-windows-x86_64.exe/bora-windows-x86_64.exe
 
       - name: Update preview manifest
         run: |
