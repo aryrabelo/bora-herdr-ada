@@ -611,7 +611,7 @@ mod tests {
     fn workspace_rows_use_expand_caret() {
         let rows = multi_tab_rows();
         assert_eq!(tree_prefix(&rows, 0), "▾");
-        let mut collapsed = rows.clone();
+        let mut collapsed = rows;
         collapsed[0].expanded = false;
         assert_eq!(tree_prefix(&collapsed, 0), "▸");
     }

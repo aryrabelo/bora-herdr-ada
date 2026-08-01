@@ -1279,19 +1279,6 @@ mod tests {
             .any(|arg| arg.get_id() == "agent_args"));
     }
 
-    fn long_help(path: &[&str]) -> String {
-        let mut args = vec!["bora".to_string()];
-        args.extend(path.iter().map(|segment| segment.to_string()));
-        args.push("--help".to_string());
-        let mut output = Vec::new();
-        assert!(
-            super::write_requested_help(&args, &mut output).unwrap(),
-            "help was not handled for bora {}",
-            path.join(" ")
-        );
-        String::from_utf8(output).unwrap()
-    }
-
     #[test]
     fn zsh_completion_contains_public_commands_and_values() {
         let mut cmd = super::command();

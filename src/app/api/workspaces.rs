@@ -749,7 +749,7 @@ mod tests {
             app.state
                 .workspaces
                 .iter()
-                .map(|workspace| workspace.display_name())
+                .map(crate::workspace::Workspace::display_name)
                 .collect::<Vec<_>>(),
             ["normal", "parent", "child", "tail"]
         );

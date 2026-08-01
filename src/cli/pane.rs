@@ -1555,7 +1555,9 @@ fn print_pane_help() {
     eprintln!("  bora pane swap --direction left|right|up|down [--pane ID|--current]");
     eprintln!("  bora pane swap --source-pane ID --target-pane ID");
     eprintln!("  bora pane move <pane_id> --tab <tab_id> --split right|down [--target-pane ID] [--ratio FLOAT] [--focus|--no-focus]");
-    eprintln!("  bora pane move <pane_id> --new-tab [--workspace ID] [--label TEXT] [--focus|--no-focus]");
+    eprintln!(
+        "  bora pane move <pane_id> --new-tab [--workspace ID] [--label TEXT] [--focus|--no-focus]"
+    );
     eprintln!("  bora pane move <pane_id> --new-workspace [--label TEXT] [--tab-label TEXT] [--focus|--no-focus]");
     eprintln!("  bora pane close <pane_id>");
     eprintln!("  bora pane send-text <pane_id> <text>");

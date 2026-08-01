@@ -1161,12 +1161,9 @@ impl App {
     /// Works for any git workspace (the parent/main checkout or a linked
     /// worktree). Runs in the background; result surfaces as a toast.
     pub(crate) fn start_workspace_git_sync(&mut self, ws_idx: usize) {
-        let Some(cwd) = self
-            .state
-            .workspaces
-            .get(ws_idx)
-            .and_then(|ws| ws.resolved_identity_cwd_from(&self.state.terminals, &self.terminal_runtimes))
-        else {
+        let Some(cwd) = self.state.workspaces.get(ws_idx).and_then(|ws| {
+            ws.resolved_identity_cwd_from(&self.state.terminals, &self.terminal_runtimes)
+        }) else {
             self.state.config_diagnostic = Some("Workspace has no resolved git checkout.".into());
             return;
         };

@@ -13,7 +13,7 @@ impl PopupSize {
     pub(crate) fn resolve(self, available: u16) -> u16 {
         match self {
             Self::Cells(cells) => cells,
-            Self::Percent(percent) => ((available as u32 * percent as u32) / 100) as u16,
+            Self::Percent(percent) => ((u32::from(available) * u32::from(percent)) / 100) as u16,
         }
     }
 

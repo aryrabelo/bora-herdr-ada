@@ -5,7 +5,8 @@ use regex::Regex;
 
 use crate::api::schema::{
     ErrorBody, ErrorResponse, EventData, EventEnvelope, EventKind, EventMatch, Method, Request,
-    ResponseResult, Subscription, SubscriptionEventData, SubscriptionEventEnvelope, SuccessResponse,
+    ResponseResult, Subscription, SubscriptionEventData, SubscriptionEventEnvelope,
+    SuccessResponse,
 };
 use crate::api::server::{
     dispatch_to_app_with_timeout, should_stop_connection, APP_RESPONSE_TIMEOUT,
@@ -388,7 +389,7 @@ fn wait_for_resolved_agent(
                             .filter(|status| wait.until.contains(status))
                             .or(matched_event_status)
                         {
-                            let mut matched = wait.initial.clone();
+                            let mut matched = wait.initial;
                             matched.agent_status = status;
                             return Ok(Some(AgentWaitOutcome::Matched(Box::new(matched))));
                         }
@@ -669,31 +670,115 @@ pub(super) fn wait_for_event(
         .timeout_ms
         .map(|ms| std::time::Instant::now() + std::time::Duration::from_millis(ms));
 
-    let subscription = match event_match_subscription(&request_id, params.match_event) {
-        Ok(subscription) => subscription,
-        Err(response) => return Ok(Some(serde_json::to_string(&response).unwrap())),
-    };
-    let mut active = match ActiveSubscription::new(subscription, &request_id, 0, api_tx, event_hub)
+    // events.wait is check-or-wait: a pane agent-status match must observe the
+    // CURRENT state at wait start (via a pane.get probe), not only transitions
+    // emitted after the wait begins. Agent-status matches additionally get
+    // ActiveSubscription's mid-wait pane_not_found detection below.
+    if let crate::api::schema::EventMatch::PaneAgentStatusChanged {
+        pane_id,
+        agent_status,
+    } = &params.match_event
     {
-        Ok(active) => active,
-        Err(response) => return Ok(Some(serde_json::to_string(&response).unwrap())),
-    };
+        match crate::api::subscriptions::pane_get(
+            format!("{request_id}:wait:probe"),
+            pane_id,
+            api_tx,
+        ) {
+            Ok(probe) => {
+                if probe.agent_status == *agent_status {
+                    let envelope = crate::api::schema::EventEnvelope {
+                        event: crate::api::schema::EventKind::PaneAgentStatusChanged,
+                        data: crate::api::schema::EventData::PaneAgentStatusChanged {
+                            pane_id: probe.pane_id,
+                            workspace_id: probe.workspace_id,
+                            agent_status: probe.agent_status,
+                            agent: probe.agent,
+                            title: probe.title,
+                            display_agent: probe.display_agent,
+                            state_labels: probe.state_labels,
+                        },
+                    };
+                    return Ok(Some(
+                        serde_json::to_string(&SuccessResponse {
+                            id: request_id,
+                            result: ResponseResult::WaitMatched { event: envelope },
+                        })
+                        .unwrap(),
+                    ));
+                }
+            }
+            Err(mut response) => {
+                response.id = request_id;
+                return Ok(Some(serde_json::to_string(&response).unwrap()));
+            }
+        }
 
+        let subscription = match event_match_subscription(&request_id, params.match_event) {
+            Ok(subscription) => subscription,
+            Err(response) => return Ok(Some(serde_json::to_string(&response).unwrap())),
+        };
+        let mut active =
+            match ActiveSubscription::new(subscription, &request_id, 0, api_tx, event_hub) {
+                Ok(active) => active,
+                Err(mut response) => {
+                    response.id = request_id;
+                    return Ok(Some(serde_json::to_string(&response).unwrap()));
+                }
+            };
+        loop {
+            if should_stop_connection(stream, running)? {
+                return Ok(None);
+            }
+
+            match active.poll_for_wait(api_tx, event_hub) {
+                Ok(Some(event)) => return Ok(Some(wait_matched_response(&request_id, event))),
+                Ok(None) => {}
+                Err(mut response) if response.error.code == "pane_not_found" => {
+                    response.id = request_id;
+                    return serde_json::to_string(&response)
+                        .map(Some)
+                        .map_err(std::io::Error::other);
+                }
+                Err(_) => {}
+            }
+
+            if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
+                return Ok(Some(
+                    serde_json::to_string(&ErrorResponse {
+                        id: request_id,
+                        error: ErrorBody {
+                            code: "timeout".into(),
+                            message: "timed out waiting for event match".into(),
+                        },
+                    })
+                    .unwrap(),
+                ));
+            }
+
+            std::thread::sleep(CONNECTION_POLL_INTERVAL);
+        }
+    }
+
+    // Any other match_event is filtered directly against the raw event hub.
+    // Start at 0 so a result posted just before the wait (the common
+    // post-then-wait orchestration order) is still observed from the buffer.
+    let mut last_sequence = 0u64;
     loop {
         if should_stop_connection(stream, running)? {
             return Ok(None);
         }
 
-        match active.poll_for_wait(api_tx, event_hub) {
-            Ok(Some(event)) => return Ok(Some(wait_matched_response(&request_id, event))),
-            Ok(None) => {}
-            Err(mut response) if response.error.code == "pane_not_found" => {
-                response.id = request_id;
-                return serde_json::to_string(&response)
-                    .map(Some)
-                    .map_err(std::io::Error::other);
+        for (sequence, envelope) in event_hub.events_after(last_sequence) {
+            last_sequence = sequence;
+            if crate::api::schema::event_matches(&params.match_event, &envelope) {
+                return Ok(Some(
+                    serde_json::to_string(&SuccessResponse {
+                        id: request_id,
+                        result: ResponseResult::WaitMatched { event: envelope },
+                    })
+                    .unwrap(),
+                ));
             }
-            Err(_) => {}
         }
 
         if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {

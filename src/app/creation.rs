@@ -40,7 +40,7 @@ pub(super) fn launch_cwd_for_terminal(
 ) -> Option<PathBuf> {
     terminal_runtimes
         .get(terminal_id)
-        .and_then(|runtime| runtime.follow_cwd())
+        .and_then(crate::terminal::TerminalRuntime::follow_cwd)
         .or_else(|| {
             terminals
                 .get(terminal_id)

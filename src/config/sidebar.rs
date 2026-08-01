@@ -43,6 +43,7 @@ pub struct SidebarTokenColor {
 }
 
 impl SidebarTokenColor {
+    #[cfg(test)]
     pub(crate) fn ratatui(self) -> ratatui::style::Color {
         ratatui::style::Color::Rgb(self.r, self.g, self.b)
     }

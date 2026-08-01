@@ -914,7 +914,7 @@ impl AppState {
                     }
                 }
 
-                let workspace_drop_target = self.workspace_drop_target_at_row(mouse.row);
+                let workspace_drop_index = self.workspace_drop_index_at_row(mouse.row);
                 let tab_drop_index = self.tab_drop_index_at(mouse.column, mouse.row);
                 if self.drag.is_none() {
                     if let Some(press) = &self.workspace_press {
@@ -928,7 +928,7 @@ impl AppState {
                             self.drag = Some(DragState {
                                 target: DragTarget::WorkspaceReorder {
                                     source_ws_idx: press.ws_idx,
-                                    drop_target: workspace_drop_target,
+                                    insert_idx: workspace_drop_index,
                                 },
                             });
                         }
@@ -948,10 +948,10 @@ impl AppState {
                 }
 
                 if let Some(DragState {
-                    target: DragTarget::WorkspaceReorder { drop_target, .. },
+                    target: DragTarget::WorkspaceReorder { insert_idx, .. },
                 }) = &mut self.drag
                 {
-                    *drop_target = workspace_drop_target;
+                    *insert_idx = workspace_drop_index;
                 } else if let Some(DragState {
                     target:
                         DragTarget::TabReorder {
@@ -1080,11 +1080,11 @@ impl AppState {
                         target:
                             DragTarget::WorkspaceReorder {
                                 source_ws_idx,
-                                drop_target: Some(drop_target),
+                                insert_idx: Some(insert_idx),
                             },
                     }) => {
                         if let Some(params) =
-                            self.workspace_move_block_params(source_ws_idx, drop_target)
+                            self.workspace_move_block_params(source_ws_idx, insert_idx)
                         {
                             if self
                                 .workspaces
@@ -1788,7 +1788,7 @@ impl AppState {
         (self
             .workspaces
             .get(ws_idx)
-            .and_then(|workspace| workspace.focused_pane_id())
+            .and_then(crate::workspace::Workspace::focused_pane_id)
             != Some(pane_id))
         .then_some(MouseAction::FocusPane { ws_idx, pane_id })
     }

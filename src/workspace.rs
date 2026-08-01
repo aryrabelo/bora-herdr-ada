@@ -26,13 +26,6 @@ use self::git::git_ahead_behind;
 use self::git::git_status_cache_key_for_space;
 #[cfg(test)]
 pub(crate) use self::git::PrSummary;
-pub(crate) use self::{
-    git::{
-        fetch_local_branches, fetch_my_issues, fetch_my_open_prs,
-        git_status_snapshot_for_cwd_with_demand,
-    },
-    tab::MovedPane,
-};
 pub use self::{
     git::{
         checks_rollup, derive_label_from_cwd, fallback_label_from_cwd, git_branch,
@@ -41,6 +34,13 @@ pub use self::{
         RepoIssues, RepoOpenPrs, WorkspaceChangeSet, WorkspaceCheckStatus,
     },
     tab::{NewPane, Tab},
+};
+pub(crate) use self::{
+    git::{
+        fetch_local_branches, fetch_my_issues, fetch_my_open_prs,
+        git_status_snapshot_for_cwd_with_demand,
+    },
+    tab::MovedPane,
 };
 // Entry types inside the RepoOpenPrs/RepoIssues caches; consumed by UI/API
 // surfaces in later phases.

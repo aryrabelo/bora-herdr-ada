@@ -1,12 +1,12 @@
 use std::time::{Duration, Instant};
 
-use crossterm::terminal;
 use crate::events::AppEvent;
+use crossterm::terminal;
 
 use super::{
     background_update_check_enabled, pressed_key_identity, App, ANIMATION_INTERVAL,
-    AUTO_UPDATE_CHECK_INTERVAL, CHECKS_REFRESH_INTERVAL,
-    MIN_RENDER_INTERVAL, RESIZE_POLL_INTERVAL, SELECTION_AUTOSCROLL_INTERVAL,
+    AUTO_UPDATE_CHECK_INTERVAL, CHECKS_REFRESH_INTERVAL, MIN_RENDER_INTERVAL, RESIZE_POLL_INTERVAL,
+    SELECTION_AUTOSCROLL_INTERVAL,
 };
 fn retain_custom_command_after_wait(
     pid: u32,
@@ -430,10 +430,6 @@ impl App {
 
     pub(crate) fn sync_animation_timer(&mut self, now: Instant) {
         self.sync_animation_timer_with_interval(now, ANIMATION_INTERVAL);
-    }
-
-    pub(crate) fn sync_headless_animation_timer(&mut self, now: Instant) {
-        self.sync_animation_timer_with_interval(now, crate::app::HEADLESS_ANIMATION_INTERVAL);
     }
 
     fn sync_animation_timer_with_interval(&mut self, now: Instant, interval: Duration) {
@@ -894,8 +890,10 @@ mod tests {
             .terminal_id(pane_id)
             .expect("pane terminal")
             .clone();
-        let mut terminal =
-            crate::terminal::TerminalState::new(terminal_id.clone(), std::path::PathBuf::from("/tmp"));
+        let mut terminal = crate::terminal::TerminalState::new(
+            terminal_id.clone(),
+            std::path::PathBuf::from("/tmp"),
+        );
         terminal.state = crate::detect::AgentState::Idle;
         terminal.idle_since = None;
         app.state.terminals.insert(terminal_id.clone(), terminal);

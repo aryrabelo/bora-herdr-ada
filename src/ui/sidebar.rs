@@ -1,7 +1,5 @@
 use std::time::Instant;
 
-mod tokens;
-
 use ratatui::{
     layout::{Alignment, Rect},
     style::{Modifier, Style},
@@ -10,7 +8,6 @@ use ratatui::{
     Frame,
 };
 
-use self::tokens::{ResolvedToken, ResolvedTokenKind, SpaceTokenContext};
 use super::scrollbar::{render_scrollbar, should_show_scrollbar};
 use super::status::{
     agent_icon, format_idle_age, idle_age_color, state_dot, state_label, state_label_color,
@@ -155,7 +152,13 @@ fn agent_panel_entries_with_runtimes(
     terminal_runtimes: Option<&TerminalRuntimeRegistry>,
 ) -> Vec<AgentPanelEntry> {
     let mut entries = collect_agent_panel_entries_with_runtimes(app, terminal_runtimes);
-    crate::app::agent_view::apply_agent_view(app, &mut entries);
+    // `apply_agent_view`'s fallback (no explicit sort spec) re-sorts newest-first
+    // within a tier, conflicting with the fork's oldest-first tie-break applied
+    // in `collect_agent_panel_entries_with_runtimes`. Only invoke it when an
+    // override is actually active (filtering and/or an explicit custom sort).
+    if app.agent_view_override.is_some() {
+        crate::app::agent_view::apply_agent_view(app, &mut entries);
+    }
     entries
 }
 
@@ -1124,7 +1127,6 @@ fn agent_panel_visible_count_from(app: &AppState, area: Rect, scroll: usize) -> 
     visible
 }
 
-
 fn agent_panel_bottom_start(app: &AppState, area: Rect) -> usize {
     let body = agent_panel_body_rect(area, false);
     let entries = agent_panel_entries(app);
@@ -1254,7 +1256,6 @@ pub(crate) fn compute_workspace_list_areas(
                     rect: Rect::new(body.x, row_y, body.width, 1),
                     indented: *indented,
                 });
-
             }
         }
         row_y = row_y.saturating_add(needed);
@@ -1421,111 +1422,35 @@ pub(super) fn render_sidebar_collapsed(app: &AppState, frame: &mut Frame, area: 
     render_sidebar_toggle(app, frame, area, true, p);
 }
 
-pub(crate) fn workspace_drop_slots(
-    app: &AppState,
+pub(crate) fn workspace_drop_indicator_row(
     cards: &[crate::app::state::WorkspaceCardArea],
     area: Rect,
-) -> Vec<(crate::app::state::WorkspaceDropTarget, u16)> {
-    if area.height == 0 || cards.is_empty() {
-        return Vec::new();
+    insert_idx: usize,
+) -> Option<u16> {
+    if area.height == 0 {
+        return None;
     }
     let list_bottom = area.y + area.height.saturating_sub(1);
-    let entries = workspace_list_entries(app);
-    let entry_position = |ws_idx| {
-        entries.iter().position(|entry| {
-            matches!(
-                entry,
-                WorkspaceListEntry::Workspace {
-                    ws_idx: entry_ws_idx,
-                    ..
-                } if *entry_ws_idx == ws_idx
-            )
-        })
-    };
-    let block_root_at = |entry_idx: usize| {
-        entries[..=entry_idx]
-            .iter()
-            .rev()
-            .find_map(|entry| match entry {
-                WorkspaceListEntry::Workspace {
-                    ws_idx,
-                    indented: false,
-                    ..
-                } => Some(*ws_idx),
-                WorkspaceListEntry::Workspace { .. } => None,
-                WorkspaceListEntry::GroupHeader { .. }
-                | WorkspaceListEntry::ProjectHeader { .. }
-                | WorkspaceListEntry::BranchHeader { .. }
-                | WorkspaceListEntry::HiddenHeader { .. } => None,
-            })
-    };
 
-    let mut slots = Vec::new();
-    let mut previous_root = None;
-    for card in cards {
-        let Some(entry_idx) = entry_position(card.ws_idx) else {
-            continue;
-        };
-        let Some(root_idx) = block_root_at(entry_idx) else {
-            continue;
-        };
-        if previous_root == Some(root_idx) {
-            continue;
-        }
-        previous_root = Some(root_idx);
-        if let Some(row) = card.rect.y.checked_sub(1).filter(|row| *row < list_bottom) {
-            slots.push((
-                crate::app::state::WorkspaceDropTarget::Before(root_idx),
-                row,
-            ));
-        }
+    let first = cards.first()?;
+    if insert_idx == first.ws_idx {
+        return first.rect.y.checked_sub(1).filter(|y| *y < list_bottom);
     }
 
-    let Some(last) = cards.last() else {
-        return slots;
-    };
-    let Some(last_entry_idx) = entry_position(last.ws_idx) else {
-        return slots;
-    };
-    let next_entry = entries.get(last_entry_idx.saturating_add(1));
-    if matches!(
-        next_entry,
-        Some(WorkspaceListEntry::Workspace { indented: true, .. })
-    ) {
-        return slots;
-    }
-    let target = match next_entry {
-        Some(WorkspaceListEntry::Workspace { ws_idx, .. }) => {
-            crate::app::state::WorkspaceDropTarget::Before(*ws_idx)
-        }
-        Some(
-            WorkspaceListEntry::GroupHeader { .. }
-            | WorkspaceListEntry::ProjectHeader { .. }
-            | WorkspaceListEntry::BranchHeader { .. }
-            | WorkspaceListEntry::HiddenHeader { .. }
-        )
-        | None => crate::app::state::WorkspaceDropTarget::End,
-    };
-    let row = last.rect.y.saturating_add(last.rect.height);
-    if row < list_bottom
-        && slots
-            .last()
-            .is_none_or(|(last_target, _)| *last_target != target)
+    if let Some(row) = cards
+        .last()
+        .filter(|card| insert_idx == card.ws_idx.saturating_add(1))
+        .map(|card| card.rect.y.saturating_add(card.rect.height))
+        .filter(|y| *y < list_bottom)
     {
-        slots.push((target, row));
+        return Some(row);
     }
-    slots
-}
 
-pub(crate) fn workspace_drop_indicator_row(
-    app: &AppState,
-    cards: &[crate::app::state::WorkspaceCardArea],
-    area: Rect,
-    target: crate::app::state::WorkspaceDropTarget,
-) -> Option<u16> {
-    workspace_drop_slots(app, cards, area)
-        .into_iter()
-        .find_map(|(candidate, row)| (candidate == target).then_some(row))
+    if let Some(card) = cards.iter().find(|card| card.ws_idx == insert_idx) {
+        return card.rect.y.checked_sub(1).filter(|y| *y < list_bottom);
+    }
+
+    None
 }
 
 pub(super) fn render_sidebar(
@@ -1555,203 +1480,6 @@ pub(super) fn render_sidebar(
     render_agent_detail(app, terminal_runtimes, frame, detail_area);
     render_sidebar_toggle(app, frame, area, false, p);
 }
-
-fn resolved_token_spans(
-    resolved: &[ResolvedToken],
-    state_icon: (&str, Style),
-    state_text_style: Style,
-    workspace_style: Style,
-    secondary_style: Style,
-    custom_style: Style,
-    p: &Palette,
-    max_width: usize,
-) -> Vec<Span<'static>> {
-    let fixed_widths = resolved
-        .iter()
-        .map(|token| match &token.kind {
-            ResolvedTokenKind::StateIcon => display_width(state_icon.0),
-            ResolvedTokenKind::GitStatus { ahead, behind } => {
-                usize::from(*ahead > 0) * display_width(&format!("↑{ahead}"))
-                    + usize::from(*behind > 0) * display_width(&format!("↓{behind}"))
-                    + usize::from(*ahead > 0 && *behind > 0)
-            }
-            _ => 0,
-        })
-        .collect::<Vec<_>>();
-    let flexible_widths = resolved
-        .iter()
-        .map(|token| match &token.kind {
-            ResolvedTokenKind::StateText(text)
-            | ResolvedTokenKind::Workspace(text)
-            | ResolvedTokenKind::Tab(text)
-            | ResolvedTokenKind::Pane(text)
-            | ResolvedTokenKind::Agent(text)
-            | ResolvedTokenKind::TerminalTitle(text)
-            | ResolvedTokenKind::Branch(text)
-            | ResolvedTokenKind::Custom(text) => display_width(text),
-            _ => 0,
-        })
-        .collect::<Vec<_>>();
-    let minimum_width = |active: &[bool]| {
-        let indices = active
-            .iter()
-            .enumerate()
-            .filter_map(|(index, active)| active.then_some(index))
-            .collect::<Vec<_>>();
-        let content = indices
-            .iter()
-            .map(|index| fixed_widths[*index] + usize::from(flexible_widths[*index] > 0))
-            .sum::<usize>();
-        let separators = indices
-            .windows(2)
-            .map(|pair| display_width(tokens::separator(&resolved[pair[0]], &resolved[pair[1]])))
-            .sum::<usize>();
-        content + separators
-    };
-    let mut active = resolved.iter().map(|_| true).collect::<Vec<_>>();
-    if minimum_width(&active) > max_width {
-        for (index, width) in flexible_widths.iter().enumerate() {
-            if *width > 0 {
-                active[index] = false;
-            }
-        }
-        for index in (0..resolved.len()).rev() {
-            if flexible_widths[index] == 0 {
-                continue;
-            }
-            active[index] = true;
-            if minimum_width(&active) > max_width {
-                active[index] = false;
-            }
-        }
-    }
-    let visible_indices = active
-        .iter()
-        .enumerate()
-        .filter_map(|(index, active)| active.then_some(index))
-        .collect::<Vec<_>>();
-    let separator_width = visible_indices
-        .windows(2)
-        .map(|pair| display_width(tokens::separator(&resolved[pair[0]], &resolved[pair[1]])))
-        .sum::<usize>();
-    let fixed_width = visible_indices
-        .iter()
-        .map(|index| fixed_widths[*index])
-        .sum::<usize>();
-    let mut budgets = flexible_widths
-        .iter()
-        .enumerate()
-        .map(|(index, width)| usize::from(active[index] && *width > 0))
-        .collect::<Vec<_>>();
-    let minimum = budgets.iter().sum::<usize>();
-    let mut remaining = max_width
-        .saturating_sub(separator_width + fixed_width)
-        .saturating_sub(minimum);
-    while remaining > 0 {
-        let mut grew = false;
-        for (budget, width) in budgets.iter_mut().zip(&flexible_widths) {
-            if *budget > 0 && *budget < *width {
-                *budget += 1;
-                remaining -= 1;
-                grew = true;
-                if remaining == 0 {
-                    break;
-                }
-            }
-        }
-        if !grew {
-            break;
-        }
-    }
-    let mut spans = Vec::new();
-    for (position, index) in visible_indices.iter().copied().enumerate() {
-        let token = &resolved[index];
-        if position > 0 {
-            let previous = &resolved[visible_indices[position - 1]];
-            spans.push(Span::styled(
-                tokens::separator(previous, token),
-                Style::default().fg(p.overlay0).add_modifier(Modifier::DIM),
-            ));
-        }
-        match &token.kind {
-            ResolvedTokenKind::StateIcon => {
-                spans.push(Span::styled(
-                    state_icon.0.to_string(),
-                    apply_token_style(state_icon.1, token.style),
-                ));
-            }
-            ResolvedTokenKind::StateText(text) => {
-                spans.push(Span::styled(
-                    truncate_end(text, budgets[index]),
-                    apply_token_style(state_text_style, token.style),
-                ));
-            }
-            ResolvedTokenKind::Workspace(text) => {
-                spans.push(Span::styled(
-                    truncate_end(text, budgets[index]),
-                    apply_token_style(workspace_style, token.style),
-                ));
-            }
-            ResolvedTokenKind::Tab(text)
-            | ResolvedTokenKind::Pane(text)
-            | ResolvedTokenKind::Agent(text)
-            | ResolvedTokenKind::Branch(text) => {
-                spans.push(Span::styled(
-                    truncate_end(text, budgets[index]),
-                    apply_token_style(secondary_style, token.style),
-                ));
-            }
-            ResolvedTokenKind::GitStatus { ahead, behind } => {
-                if *ahead > 0 {
-                    spans.push(Span::styled(
-                        format!("↑{ahead}"),
-                        apply_token_style(Style::default().fg(p.green), token.style),
-                    ));
-                }
-                if *ahead > 0 && *behind > 0 {
-                    spans.push(Span::styled(
-                        " ",
-                        apply_token_style(Style::default(), token.style),
-                    ));
-                }
-                if *behind > 0 {
-                    spans.push(Span::styled(
-                        format!("↓{behind}"),
-                        apply_token_style(Style::default().fg(p.red), token.style),
-                    ));
-                }
-            }
-            ResolvedTokenKind::TerminalTitle(text) | ResolvedTokenKind::Custom(text) => {
-                spans.push(Span::styled(
-                    truncate_end(text, budgets[index]),
-                    apply_token_style(custom_style, token.style),
-                ));
-            }
-        }
-    }
-    spans
-}
-
-fn apply_token_style(mut style: Style, patch: crate::config::SidebarTokenStyle) -> Style {
-    if let Some(fg) = patch.fg {
-        style = style.fg(fg.ratatui());
-    }
-    if let Some(bold) = patch.bold {
-        style = if bold {
-            style.add_modifier(Modifier::BOLD)
-        } else {
-            style.remove_modifier(Modifier::BOLD)
-        };
-    }
-    if let Some(dim) = patch.dim {
-        style = if dim {
-            style.add_modifier(Modifier::DIM)
-        } else {
-            style.remove_modifier(Modifier::DIM)
-        };
-    }
-    style
-}
 fn render_workspace_list(
     app: &AppState,
     terminal_runtimes: &TerminalRuntimeRegistry,
@@ -1768,9 +1496,9 @@ fn render_workspace_list(
     };
     let insertion_row = match app.drag.as_ref().map(|drag| &drag.target) {
         Some(crate::app::state::DragTarget::WorkspaceReorder {
-            drop_target: Some(drop_target),
+            insert_idx: Some(insert_idx),
             ..
-        }) => workspace_drop_indicator_row(app, &app.view.workspace_card_areas, area, *drop_target),
+        }) => workspace_drop_indicator_row(&app.view.workspace_card_areas, area, *insert_idx),
         _ => None,
     };
 
@@ -2419,54 +2147,6 @@ mod tests {
             .to_string()
     }
 
-    fn find_symbol_x(buffer: &ratatui::buffer::Buffer, row: u16, width: u16, symbol: &str) -> u16 {
-        (0..width)
-            .find(|x| buffer[(*x, row)].symbol() == symbol)
-            .unwrap_or_else(|| {
-                panic!(
-                    "missing symbol {symbol:?} in row {}",
-                    row_text(buffer, row, width)
-                )
-            })
-    }
-
-    #[test]
-    fn occurrence_foreground_flattens_composite_git_status_colors() {
-        let config: crate::config::Config = toml::from_str(
-            r##"[ui.sidebar.spaces]
-rows = [[{ token = "git_status", fg = "#123456" }]]
-"##,
-        )
-        .unwrap();
-        let spans = resolved_token_spans(
-            &[ResolvedToken {
-                kind: ResolvedTokenKind::GitStatus {
-                    ahead: 2,
-                    behind: 1,
-                },
-                style: config.ui.sidebar.spaces.rows[0][0].parts().1,
-            }],
-            ("", Style::default()),
-            Style::default(),
-            Style::default(),
-            Style::default(),
-            Style::default(),
-            &crate::app::state::AppState::test_new().palette,
-            20,
-        );
-
-        assert_eq!(
-            spans
-                .iter()
-                .map(|span| span.content.as_ref())
-                .collect::<String>(),
-            "↑2 ↓1"
-        );
-        assert!(spans
-            .iter()
-            .all(|span| { span.style.fg == Some(ratatui::style::Color::Rgb(0x12, 0x34, 0x56)) }));
-    }
-
     #[test]
     fn narrow_agent_rows_preserve_later_tab_tokens() {
         let mut app = crate::app::state::AppState::test_new();
@@ -2984,7 +2664,6 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
         assert_eq!(cards[1].ws_idx, 1);
         assert!(cards[1].indented);
         assert_eq!(cards[1].rect.y, cards[0].rect.y + cards[0].rect.height);
-
     }
 
     #[test]

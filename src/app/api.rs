@@ -182,9 +182,7 @@ impl App {
         } = ev
         {
             self.state.issues_fetch_in_flight.remove(&repo_identity);
-            self.state
-                .repo_issues
-                .insert(repo_identity.clone(), result);
+            self.state.repo_issues.insert(repo_identity.clone(), result);
             self.render_dirty.request_generic();
             self.render_notify.notify_one();
             self.emit_event(crate::api::schema::EventEnvelope {

@@ -13,8 +13,8 @@ mod api_helpers;
 pub(crate) use api_helpers::limit_snapshot_lines;
 mod config_io;
 mod creation;
-mod git_refresh;
 pub(crate) mod flow;
+mod git_refresh;
 mod ids;
 mod input;
 mod popup;
@@ -35,7 +35,6 @@ use std::time::{Duration, Instant};
 
 const MIN_RENDER_INTERVAL: Duration = Duration::from_millis(16);
 pub(crate) const ANIMATION_INTERVAL: Duration = Duration::from_millis(16);
-pub(crate) const HEADLESS_ANIMATION_INTERVAL: Duration = Duration::from_millis(128);
 pub(crate) const SELECTION_AUTOSCROLL_INTERVAL: Duration = Duration::from_millis(30);
 const RESIZE_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const GIT_REMOTE_STATUS_REFRESH_INTERVAL: Duration = Duration::from_millis(1500);
@@ -1198,7 +1197,7 @@ impl App {
                 let kitty_graphics_enabled = self.state.kitty_graphics_enabled;
                 if self.full_redraw_pending {
                     for cell in &mut terminal.current_buffer_mut().content {
-                        cell.set_skip(true);
+                        cell.set_diff_option(ratatui::buffer::CellDiffOption::Skip);
                     }
                     terminal.swap_buffers();
                     self.full_redraw_pending = false;
@@ -1775,7 +1774,7 @@ impl App {
             issue_ref: flow::issue_ref_from_repo_identity(&git_space.repo_identity, request.number),
             number: request.number,
             url: request.url.clone(),
-            repo_path: repo_path.clone(),
+            repo_path,
         };
         let command = flow::render_flow_command(&template, &context);
         Ok(command)
@@ -1984,17 +1983,15 @@ impl App {
                     if self.try_route_paste_to_popup(&text) {
                     } else if self.state.mode != Mode::Terminal {
                         self.paste_into_active_text_input(&text);
-                    } else {
-                        if let Some(ws_idx) = self.state.active {
-                            if let Some(ws) = self.state.workspaces.get(ws_idx) {
-                                if let Some(focused) = ws.focused_pane_id() {
-                                    if let Some(runtime) = self.state.runtime_for_pane_in_workspace(
-                                        &self.terminal_runtimes,
-                                        ws_idx,
-                                        focused,
-                                    ) {
-                                        let _ = runtime.try_send_paste(text);
-                                    }
+                    } else if let Some(ws_idx) = self.state.active {
+                        if let Some(ws) = self.state.workspaces.get(ws_idx) {
+                            if let Some(focused) = ws.focused_pane_id() {
+                                if let Some(runtime) = self.state.runtime_for_pane_in_workspace(
+                                    &self.terminal_runtimes,
+                                    ws_idx,
+                                    focused,
+                                ) {
+                                    let _ = runtime.try_send_paste(text);
                                 }
                             }
                         }

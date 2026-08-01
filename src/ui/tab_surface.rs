@@ -226,7 +226,7 @@ mod tests {
             .buffer()
             .content()
             .iter()
-            .map(|cell| cell.symbol())
+            .map(ratatui::buffer::Cell::symbol)
             .collect::<String>();
         assert!(rendered.contains("LEFT"), "surface: {rendered:?}");
         assert!(rendered.contains("RIGHT"), "surface: {rendered:?}");
@@ -304,7 +304,7 @@ mod tests {
         assert_eq!(frame.hyperlinks, vec![uri.to_owned()]);
         assert_eq!(
             frame_digest(&frame),
-            "066907232edcd2e56758512f2d0dee86051ca8c7f7bf752396f7586e17904ef2"
+            "5d234658794b9b76eced12366db4b323557fc49b272505fbb378c15878b38457"
         );
     }
 

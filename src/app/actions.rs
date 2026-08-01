@@ -4508,7 +4508,7 @@ mod tests {
         let names = state
             .workspaces
             .iter()
-            .map(|workspace| workspace.display_name())
+            .map(crate::workspace::Workspace::display_name)
             .collect::<Vec<_>>();
         assert_eq!(
             names,
@@ -4536,7 +4536,7 @@ mod tests {
             state
                 .workspaces
                 .iter()
-                .map(|workspace| workspace.display_name())
+                .map(crate::workspace::Workspace::display_name)
                 .collect::<Vec<_>>(),
             ["a", "b", "c"]
         );

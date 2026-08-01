@@ -1227,16 +1227,10 @@ pub struct SettingsState {
     pub original_theme: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum WorkspaceDropTarget {
-    Before(usize),
-    End,
-}
-
 pub(crate) enum DragTarget {
     WorkspaceReorder {
         source_ws_idx: usize,
-        drop_target: Option<WorkspaceDropTarget>,
+        insert_idx: Option<usize>,
     },
     TabReorder {
         ws_idx: usize,
@@ -2722,11 +2716,16 @@ impl AppState {
             match &drag.target {
                 DragTarget::WorkspaceReorder {
                     source_ws_idx,
-                    drop_target,
+                    insert_idx,
                 } => {
                     assert_workspace_index(*source_ws_idx, "workspace drag source");
-                    if let Some(WorkspaceDropTarget::Before(ws_idx)) = drop_target {
-                        assert_workspace_index(*ws_idx, "workspace drag target");
+                    if let Some(insert_idx) = insert_idx {
+                        assert!(
+                            *insert_idx <= self.workspaces.len(),
+                            "workspace drag insert index {} out of bounds for {} workspaces",
+                            insert_idx,
+                            self.workspaces.len()
+                        );
                     }
                 }
                 DragTarget::TabReorder {

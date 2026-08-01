@@ -243,7 +243,7 @@ impl App {
             .state
             .terminals
             .get(terminal_id)
-            .and_then(|terminal| terminal.effective_known_agent())
+            .and_then(crate::terminal::state::TerminalState::effective_known_agent)
         else {
             return agent_not_ready(id, &params.target);
         };

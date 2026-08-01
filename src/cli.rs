@@ -396,7 +396,6 @@ fn run_terminal_command(args: &[String]) -> std::io::Result<i32> {
     }
 }
 
-
 fn run_session_command(args: &[String]) -> std::io::Result<i32> {
     let Some(subcommand) = args.first().map(std::string::String::as_str) else {
         print_session_help();
@@ -717,7 +716,6 @@ pub(super) fn parse_attach_target(args: &[String], usage: &str) -> Result<(Strin
     Ok((target.clone(), takeover))
 }
 
-
 /// Wait until the pane hosting an agent exits (process gone). Unlike agent
 /// status waits, this is the reliable "done" signal for one-shot agents whose
 /// screen looks idle while they wait on a model. `events.wait` observes
@@ -978,7 +976,6 @@ fn print_terminal_help() {
     eprintln!("  bora terminal title clear");
     eprintln!("  detach from direct attach with ctrl+b q; send literal ctrl+b with ctrl+b ctrl+b");
 }
-
 
 fn print_session_help() {
     eprintln!("bora session commands:");

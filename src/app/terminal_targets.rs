@@ -110,7 +110,7 @@ impl App {
             .terminals
             .values()
             .find(|terminal| terminal.id.to_string() == target.terminal_id)
-            .is_some_and(|terminal| terminal.is_agent_terminal())
+            .is_some_and(super::super::terminal::state::TerminalState::is_agent_terminal)
     }
 
     fn single_terminal_match(

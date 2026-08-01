@@ -607,7 +607,7 @@ fn spawn_pty_drain(mut reader: Box<dyn Read + Send>) -> SharedOutput {
                 Ok(0) => break,
                 Ok(n) => thread_output
                     .lock()
-                    .unwrap_or_else(|p| p.into_inner())
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .push_str(&String::from_utf8_lossy(&buf[..n])),
                 Err(_) => break,
             }
@@ -617,14 +617,20 @@ fn spawn_pty_drain(mut reader: Box<dyn Read + Send>) -> SharedOutput {
 }
 
 fn read_output(output: &SharedOutput) -> String {
-    output.lock().unwrap_or_else(|p| p.into_inner()).clone()
+    output
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
 }
 
 /// Current captured byte length, used as a watermark so a test can search only
 /// the output emitted *after* a trigger. The teardown markers also appear in
 /// normal attach-phase output, so matching the whole buffer is meaningless.
 fn output_len(output: &SharedOutput) -> usize {
-    output.lock().unwrap_or_else(|p| p.into_inner()).len()
+    output
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .len()
 }
 
 /// Spawns a server + real thin client under a PTY and waits until the client

@@ -757,7 +757,7 @@ impl HeadlessServer {
             let next_deadline = self
                 .pending_alt_screen_reads
                 .iter()
-                .map(|pending| pending.next_deadline())
+                .map(super::alt_screen_read::PendingAltScreenRead::next_deadline)
                 .fold(next_deadline, |deadline, pending| {
                     Some(deadline.map_or(pending, |current| current.min(pending)))
                 });
