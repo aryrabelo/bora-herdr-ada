@@ -119,11 +119,12 @@ for (const agent of ["omp", "pi"] as const) {
           handlers.set(`events:${name}`, cb);
         },
       },
+
     };
     mod.default(pi);
     const fire = (name: string, ...args: unknown[]) => handlers.get(name)?.(...args);
 
-    fire("session_start", {}, { hasUI: true });
+    fire("session_start", {}, { hasUI: true, mode: "tui" });
     await flush();
     fire("agent_start", {}, {}); // agent A
     await flush();
@@ -175,7 +176,7 @@ for (const agent of ["omp", "pi"] as const) {
     jest.useFakeTimers();
     const fire = await spawn();
 
-    fire("session_start", {}, { hasUI: true });
+    fire("session_start", {}, { hasUI: true, mode: "tui" });
     await flush();
     fire("agent_start", {}, {}); // agent A
     await flush();
@@ -228,7 +229,7 @@ for (const agent of ["omp", "pi"] as const) {
     jest.useFakeTimers();
     const fire = await spawn();
 
-    fire("session_start", {}, { hasUI: true });
+    fire("session_start", {}, { hasUI: true, mode: "tui" });
     await flush();
     fire("agent_start", {}, {});
     await flush();
@@ -247,7 +248,7 @@ for (const agent of ["omp", "pi"] as const) {
     jest.useFakeTimers();
     const fire = await spawn();
 
-    fire("session_start", {}, { hasUI: true });
+    fire("session_start", {}, { hasUI: true, mode: "tui" });
     await flush();
     fire("agent_start", {}, {}); // real bookkeeping: count 1
     await flush();
@@ -274,7 +275,7 @@ for (const agent of ["omp", "pi"] as const) {
     jest.useFakeTimers();
     const fire = await spawn();
 
-    fire("session_start", {}, { hasUI: true });
+    fire("session_start", {}, { hasUI: true, mode: "tui" });
     await flush();
 
     // Inversion: turn_start fires before its loop's agent_start. The count is 0,
@@ -368,3 +369,4 @@ test("omp: session reports carry the lifecycle source", async () => {
   await flush();
   expect(sessionReports.at(-1)?.params?.session_start_source).toBe("resume");
 });
+

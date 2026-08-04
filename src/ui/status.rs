@@ -12,7 +12,7 @@ use super::text::display_width_u16;
 use super::widgets::panel_contrast_fg;
 use crate::{
     app::state::{CopyFeedback, Palette, ToastKind, ToastNotification},
-    config::{ToastClipboardPosition, ToastHerdrPosition},
+    config::{StatusIndicatorStyle, ToastClipboardPosition, ToastHerdrPosition},
     detect::AgentState,
 };
 
@@ -226,6 +226,7 @@ pub(super) fn state_dot(
     state: AgentState,
     seen: bool,
     tick: u32,
+    indicator_style: StatusIndicatorStyle,
     p: &Palette,
     idle_age: Option<Duration>,
 ) -> (&'static str, Style) {
@@ -236,7 +237,7 @@ pub(super) fn state_dot(
             Style::default().fg(idle_age_color(idle_age, p)),
         ),
         (AgentState::Idle, true) => ("○", Style::default().fg(p.overlay0)),
-        (AgentState::Blocked, _) => ("◆", Style::default().fg(p.red)),
+        (AgentState::Blocked, _) => (blocked_glyph(indicator_style), Style::default().fg(p.red)),
         (AgentState::Unknown, _) => ("◰", Style::default().fg(p.overlay0)),
     }
 }
@@ -245,6 +246,7 @@ pub(super) fn agent_icon(
     state: AgentState,
     seen: bool,
     tick: u32,
+    indicator_style: StatusIndicatorStyle,
     p: &Palette,
     idle_age: Option<Duration>,
 ) -> (&'static str, Style) {
@@ -255,8 +257,38 @@ pub(super) fn agent_icon(
             Style::default().fg(idle_age_color(idle_age, p)),
         ),
         (AgentState::Idle, true) => ("○", Style::default().fg(p.overlay0)),
-        (AgentState::Blocked, _) => ("◆", Style::default().fg(p.red)),
+        (AgentState::Blocked, _) => (blocked_glyph(indicator_style), Style::default().fg(p.red)),
         (AgentState::Unknown, _) => ("○", Style::default().fg(p.overlay0)),
+    }
+}
+
+fn blocked_glyph(indicator_style: StatusIndicatorStyle) -> &'static str {
+    match indicator_style {
+        StatusIndicatorStyle::Dots => "◆",
+        StatusIndicatorStyle::Symbols => "×",
+    }
+}
+
+/// Static (non-animated) glyph for a state, honoring the user's dots/symbols
+/// preference. Used for text labels (e.g. the mobile summary line) that have
+/// no room for the animated spinner/sand-timer frames `state_dot`/`agent_icon`
+/// render into a live pane icon.
+pub(super) fn state_icon_symbol(
+    state: AgentState,
+    seen: bool,
+    indicator_style: StatusIndicatorStyle,
+) -> &'static str {
+    match (indicator_style, state, seen) {
+        (StatusIndicatorStyle::Dots, AgentState::Blocked, _) => "●",
+        (StatusIndicatorStyle::Dots, AgentState::Working, _) => "●",
+        (StatusIndicatorStyle::Dots, AgentState::Idle, false) => "●",
+        (StatusIndicatorStyle::Dots, AgentState::Idle, true) => "○",
+        (StatusIndicatorStyle::Dots, AgentState::Unknown, _) => "·",
+        (StatusIndicatorStyle::Symbols, AgentState::Blocked, _) => "×",
+        (StatusIndicatorStyle::Symbols, AgentState::Working, _) => "◐",
+        (StatusIndicatorStyle::Symbols, AgentState::Idle, false) => "✓",
+        (StatusIndicatorStyle::Symbols, AgentState::Idle, true) => "○",
+        (StatusIndicatorStyle::Symbols, AgentState::Unknown, _) => "·",
     }
 }
 pub(super) fn state_label(state: AgentState, seen: bool) -> &'static str {
@@ -301,6 +333,7 @@ mod tests {
     }
 
     #[test]
+
     fn toast_rect_uses_configured_corner() {
         let area = Rect::new(10, 20, 100, 40);
         let toast = toast();
@@ -396,6 +429,7 @@ mod tests {
             AgentState::Idle,
             false,
             0,
+            StatusIndicatorStyle::Dots,
             &p,
             Some(Duration::from_secs(7200)),
         );
@@ -406,7 +440,86 @@ mod tests {
     #[test]
     fn state_dot_blocked_and_unknown_glyphs() {
         let p = Palette::catppuccin();
-        assert_eq!(state_dot(AgentState::Blocked, false, 0, &p, None).0, "◆");
-        assert_eq!(state_dot(AgentState::Unknown, true, 0, &p, None).0, "◰");
+        assert_eq!(
+            state_dot(
+                AgentState::Blocked,
+                false,
+                0,
+                StatusIndicatorStyle::Dots,
+                &p,
+                None
+            )
+            .0,
+            "◆"
+        );
+        assert_eq!(
+            state_dot(
+                AgentState::Unknown,
+                true,
+                0,
+                StatusIndicatorStyle::Dots,
+                &p,
+                None
+            )
+            .0,
+            "◰"
+        );
+    }
+
+    #[test]
+    fn state_dot_blocked_glyph_honors_symbols_indicator_style() {
+        let p = Palette::catppuccin();
+        assert_eq!(
+            state_dot(
+                AgentState::Blocked,
+                false,
+                0,
+                StatusIndicatorStyle::Symbols,
+                &p,
+                None
+            )
+            .0,
+            "×"
+        );
+        assert_eq!(
+            agent_icon(
+                AgentState::Blocked,
+                false,
+                0,
+                StatusIndicatorStyle::Symbols,
+                &p,
+                None
+            )
+            .0,
+            "×"
+        );
+    }
+
+    #[test]
+    fn state_icon_symbol_uses_configured_style_for_static_states() {
+        assert_eq!(
+            state_icon_symbol(AgentState::Blocked, true, StatusIndicatorStyle::Dots),
+            "●"
+        );
+        assert_eq!(
+            state_icon_symbol(AgentState::Blocked, true, StatusIndicatorStyle::Symbols),
+            "×"
+        );
+        assert_eq!(
+            state_icon_symbol(AgentState::Working, true, StatusIndicatorStyle::Symbols),
+            "◐"
+        );
+        assert_eq!(
+            state_icon_symbol(AgentState::Idle, false, StatusIndicatorStyle::Symbols),
+            "✓"
+        );
+        assert_eq!(
+            state_icon_symbol(AgentState::Idle, true, StatusIndicatorStyle::Symbols),
+            "○"
+        );
+        assert_eq!(
+            state_icon_symbol(AgentState::Unknown, true, StatusIndicatorStyle::Symbols),
+            "·"
+        );
     }
 }

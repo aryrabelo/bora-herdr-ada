@@ -234,8 +234,7 @@ fn worktree_command() -> Command {
             Command::new("list")
                 .about("List worktree workspaces")
                 .arg(option("workspace", "ID"))
-                .arg(path_option("cwd", "PATH"))
-                .arg(json_flag()),
+                .arg(path_option("cwd", "PATH")),
         )
         .subcommand(
             Command::new("create")
@@ -248,8 +247,7 @@ fn worktree_command() -> Command {
                 .arg(option("label", "TEXT"))
                 .arg(flag("focus"))
                 .arg(flag("no-focus"))
-                .arg(flag("no-setup"))
-                .arg(json_flag()),
+                .arg(flag("no-setup")),
         )
         .subcommand(
             Command::new("open")
@@ -260,15 +258,13 @@ fn worktree_command() -> Command {
                 .arg(option("branch", "NAME"))
                 .arg(option("label", "TEXT"))
                 .arg(flag("focus"))
-                .arg(flag("no-focus"))
-                .arg(json_flag()),
+                .arg(flag("no-focus")),
         )
         .subcommand(
             Command::new("remove")
                 .about("Remove a worktree checkout")
                 .arg(option("workspace", "ID"))
-                .arg(flag("force"))
-                .arg(json_flag()),
+                .arg(flag("force")),
         )
 }
 
@@ -1195,6 +1191,18 @@ mod tests {
         assert!(String::from_utf8(help)
             .unwrap()
             .contains("Usage: bora agent rename <TARGET> <NAME>|--clear"));
+    }
+
+    #[test]
+    fn worktree_json_compatibility_flag_stays_out_of_public_spec() {
+        let cmd = super::command();
+        for subcommand in ["list", "create", "open", "remove"] {
+            let worktree_command = command_path(&cmd, &["worktree", subcommand]);
+            assert!(
+                !has_option(worktree_command, "json"),
+                "herdr worktree {subcommand} should not advertise --json"
+            );
+        }
     }
 
     #[test]

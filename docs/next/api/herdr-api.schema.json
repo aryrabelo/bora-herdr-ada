@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "protocol": 18,
+  "protocol": 20,
   "schema_version": 1,
   "schemas": {
     "error_response": {
@@ -2238,6 +2238,7 @@
             "qodercli",
             "cursor",
             "mastracode",
+            "antigravity_cli",
             "grok"
           ],
           "type": "string"
@@ -7536,6 +7537,7 @@
             "qodercli",
             "cursor",
             "mastracode",
+            "antigravity_cli",
             "grok"
           ],
           "type": "string"

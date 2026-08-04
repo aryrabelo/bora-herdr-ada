@@ -2,7 +2,7 @@
 // managed by herdr; reinstalling or updating the integration overwrites this file.
 // add custom hooks/plugins beside this file instead of editing it.
 // HERDR_INTEGRATION_ID=pi
-// HERDR_INTEGRATION_VERSION=5
+// HERDR_INTEGRATION_VERSION=9
 // @ts-nocheck
 
 import { createConnection } from "node:net";
@@ -334,8 +334,10 @@ export default function (pi) {
     publishState();
   });
 
-  pi.on("session_start", (_event, ctx) => {
-    if (ctx?.hasUI !== true) {
+  pi.on("session_start", async (event, ctx) => {
+    // TUI only: RPC/JSON/print modes are headless (no PTY herdr can display),
+    // and RPC still reports hasUI=true, so mode is the reliable gate.
+    if (ctx?.mode !== "tui") {
       return;
     }
     rootSession = true;

@@ -2,6 +2,7 @@ use crate::api::schema::{
     WorktreeCreateParams, WorktreeListParams, WorktreeOpenParams, WorktreeRemoveParams,
 };
 
+// Worktree output is always JSON. The parsers retain `--json` as a hidden compatibility no-op.
 pub(super) fn run_worktree_command(args: &[String]) -> std::io::Result<i32> {
     let Some(subcommand) = args.first().map(std::string::String::as_str) else {
         print_worktree_help();

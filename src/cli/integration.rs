@@ -129,11 +129,12 @@ fn parse_integration_target(
         "qodercli" => IntegrationTarget::Qodercli,
         "cursor" => IntegrationTarget::Cursor,
         "mastracode" => IntegrationTarget::Mastracode,
+        "antigravity-cli" | "antigravity_cli" => IntegrationTarget::AntigravityCli,
         "grok" => IntegrationTarget::Grok,
         _ => {
             eprintln!("unknown integration target: {target}");
             eprintln!(
-                "currently supported: pi, omp, claude, codex, copilot, devin, droid, kimi, opencode, kilo, hermes, qodercli, cursor, mastracode, grok"
+                "currently supported: pi, omp, claude, codex, copilot, devin, droid, kimi, opencode, kilo, hermes, qodercli, cursor, mastracode, antigravity-cli, grok"
             );
             return Ok(None);
         }
@@ -158,6 +159,7 @@ fn print_integration_help() {
     eprintln!("  bora integration install qodercli");
     eprintln!("  bora integration install cursor");
     eprintln!("  bora integration install mastracode");
+    eprintln!("  bora integration install antigravity-cli");
     eprintln!("  bora integration install grok");
     eprintln!("  bora integration uninstall pi");
     eprintln!("  bora integration uninstall omp");
@@ -173,6 +175,7 @@ fn print_integration_help() {
     eprintln!("  bora integration uninstall qodercli");
     eprintln!("  bora integration uninstall cursor");
     eprintln!("  bora integration uninstall mastracode");
+    eprintln!("  bora integration uninstall antigravity-cli");
     eprintln!("  bora integration uninstall grok");
     eprintln!("  bora integration status [--outdated-only]");
 }

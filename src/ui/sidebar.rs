@@ -1342,7 +1342,14 @@ pub(super) fn render_sidebar_collapsed(app: &AppState, frame: &mut Frame, area: 
         }
         let (agg_state, agg_seen) = ws.aggregate_display_state(&app.terminals);
         let idle_age = ws.oldest_unseen_idle_age(&app.terminals, Instant::now());
-        let (icon, icon_style) = state_dot(agg_state, agg_seen, app.spinner_tick, p, idle_age);
+        let (icon, icon_style) = state_dot(
+            agg_state,
+            agg_seen,
+            app.spinner_tick,
+            app.status_indicators,
+            p,
+            idle_age,
+        );
         let is_selected = visible_idx == app.selected && is_navigating;
         let is_active = Some(visible_idx) == app.active;
         let row_style = if is_selected {
@@ -1369,8 +1376,7 @@ pub(super) fn render_sidebar_collapsed(app: &AppState, frame: &mut Frame, area: 
 
         frame.render_widget(
             Paragraph::new(Line::from(vec![
-                Span::styled(format!("{}", visible_idx + 1), num_style),
-                Span::styled(" ", row_style),
+                Span::styled(format!("{:<2}", visible_idx + 1), num_style),
                 Span::styled(icon, icon_style),
             ])),
             Rect::new(ws_area.x, y, ws_area.width, 1),
@@ -1407,8 +1413,14 @@ pub(super) fn render_sidebar_collapsed(app: &AppState, frame: &mut Frame, area: 
             let idle_age = detail
                 .idle_since
                 .map(|since| Instant::now().saturating_duration_since(since));
-            let (icon, icon_style) =
-                agent_icon(detail.state, detail.seen, app.spinner_tick, p, idle_age);
+            let (icon, icon_style) = agent_icon(
+                detail.state,
+                detail.seen,
+                app.spinner_tick,
+                app.status_indicators,
+                p,
+                idle_age,
+            );
             frame.render_widget(
                 Paragraph::new(Line::from(vec![
                     Span::styled(format!("{position:<2}"), position_style),
@@ -1549,7 +1561,8 @@ fn render_workspace_list(
                     if collapsed && !collapse_key.starts_with("vg:") {
                         let (state, seen) = space_aggregate_display_state(app, collapse_key);
                         let age = space_aggregate_idle_age(app, collapse_key, now);
-                        let (dot, dot_style) = state_dot(state, seen, app.spinner_tick, p, age);
+                        let (dot, dot_style) =
+                            state_dot(state, seen, app.spinner_tick, app.status_indicators, p, age);
                         spans.push(Span::styled(" ", Style::default()));
                         spans.push(Span::styled(dot, dot_style));
                         if let Some(age) = age {
@@ -1645,7 +1658,8 @@ fn render_workspace_list(
                     if collapsed {
                         let (state, seen) = space_aggregate_display_state(app, collapse_key);
                         let age = space_aggregate_idle_age(app, collapse_key, now);
-                        let (dot, dot_style) = state_dot(state, seen, app.spinner_tick, p, age);
+                        let (dot, dot_style) =
+                            state_dot(state, seen, app.spinner_tick, app.status_indicators, p, age);
                         spans.push(Span::styled(" ", Style::default()));
                         spans.push(Span::styled(dot, dot_style));
                         if let Some(age) = age {
@@ -1819,7 +1833,14 @@ fn render_workspace_list(
                             if collapsed {
                                 let (state, seen) = space_aggregate_display_state(app, &key);
                                 let age = space_aggregate_idle_age(app, &key, now);
-                                let (si, ss) = state_dot(state, seen, app.spinner_tick, p, age);
+                                let (si, ss) = state_dot(
+                                    state,
+                                    seen,
+                                    app.spinner_tick,
+                                    app.status_indicators,
+                                    p,
+                                    age,
+                                );
                                 line1.push(Span::styled(" ", Style::default()));
                                 line1.push(Span::styled(si, ss));
                                 if let Some(age) = age {
@@ -1848,6 +1869,7 @@ fn render_workspace_list(
                         state,
                         seen,
                         app.spinner_tick,
+                        app.status_indicators,
                         p,
                         dot_ages.get(tab_idx).copied().flatten(),
                     );
@@ -2018,8 +2040,14 @@ fn render_agent_detail(
         let idle_age = detail
             .idle_since
             .map(|since| Instant::now().saturating_duration_since(since));
-        let (icon, icon_style) =
-            agent_icon(detail.state, detail.seen, app.spinner_tick, p, idle_age);
+        let (icon, icon_style) = agent_icon(
+            detail.state,
+            detail.seen,
+            app.spinner_tick,
+            app.status_indicators,
+            p,
+            idle_age,
+        );
         let label_color = state_label_color(detail.state, detail.seen, p);
         let label = detail
             .state_labels
@@ -2308,6 +2336,7 @@ mod tests {
         app.active = Some(0);
         app.selected = 0;
         app.agent_panel_sort = crate::app::state::AgentPanelSort::Priority;
+        app.status_indicators = crate::config::StatusIndicatorStyle::Symbols;
 
         let set_state = |app: &mut crate::app::state::AppState, ws_idx: usize, state| {
             let pane = app.workspaces[ws_idx].tabs[0].root_pane;
@@ -2332,11 +2361,89 @@ mod tests {
             .expect("collapsed sidebar should render");
 
         let buffer = terminal.backend().buffer();
-        assert_eq!(buffer[(detail_area.x + 2, first_detail_y)].symbol(), "◆");
+        assert_eq!(buffer[(detail_area.x + 2, first_detail_y)].symbol(), "×");
         assert_eq!(
             buffer[(detail_area.x + 2, first_detail_y)].style().fg,
             Some(app.palette.red)
         );
+        assert_eq!(buffer[(detail_area.x + 2, detail_area.y + 1)].symbol(), "⠋");
+        assert_eq!(
+            buffer[(detail_area.x + 2, detail_area.y + 1)].style().fg,
+            Some(app.palette.overlay0)
+        );
+    }
+
+    #[test]
+    fn collapsed_sidebar_keeps_workspace_status_visible_for_two_digit_positions() {
+        let mut app = crate::app::state::AppState::test_new();
+        app.workspaces = (1..=10)
+            .map(|idx| Workspace::test_new(&format!("workspace-{idx}")))
+            .collect();
+        app.ensure_test_terminals();
+
+        for ws_idx in 0..app.workspaces.len() {
+            let pane = app.workspaces[ws_idx].tabs[0].root_pane;
+            let terminal_id = app.workspaces[ws_idx].tabs[0].panes[&pane]
+                .attached_terminal_id
+                .clone();
+            app.terminals.get_mut(&terminal_id).unwrap().detected_agent = Some(Agent::Claude);
+        }
+
+        let area = Rect::new(0, 0, 4, 25);
+        let (workspace_area, _, _) = collapsed_sidebar_sections(area);
+        let mut terminal = Terminal::new(TestBackend::new(area.width, area.height))
+            .expect("test terminal should initialize");
+
+        terminal
+            .draw(|frame| render_sidebar_collapsed(&app, frame, area))
+            .expect("collapsed sidebar should render");
+
+        let tenth_row = workspace_area.y + 9;
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(workspace_area.x, workspace_area.y)].symbol(), "1");
+        assert_eq!(
+            buffer[(workspace_area.x + 1, workspace_area.y)].symbol(),
+            " "
+        );
+        assert_eq!(
+            buffer[(workspace_area.x + 2, workspace_area.y)].symbol(),
+            "◰"
+        );
+        assert_eq!(buffer[(workspace_area.x, tenth_row)].symbol(), "1");
+        assert_eq!(buffer[(workspace_area.x + 1, tenth_row)].symbol(), "0");
+        assert_eq!(buffer[(workspace_area.x + 2, tenth_row)].symbol(), "◰");
+    }
+
+    #[test]
+    fn collapsed_sidebar_keeps_status_visible_for_two_digit_positions() {
+        let mut app = crate::app::state::AppState::test_new();
+        app.workspaces = (1..=10)
+            .map(|idx| Workspace::test_new(&format!("workspace-{idx}")))
+            .collect();
+        app.ensure_test_terminals();
+
+        for ws_idx in 0..app.workspaces.len() {
+            let pane = app.workspaces[ws_idx].tabs[0].root_pane;
+            let terminal_id = app.workspaces[ws_idx].tabs[0].panes[&pane]
+                .attached_terminal_id
+                .clone();
+            app.terminals.get_mut(&terminal_id).unwrap().detected_agent = Some(Agent::Claude);
+        }
+
+        let area = Rect::new(0, 0, 4, 25);
+        let (_, _, detail_area) = collapsed_sidebar_sections(area);
+        let mut terminal = Terminal::new(TestBackend::new(area.width, area.height))
+            .expect("test terminal should initialize");
+
+        terminal
+            .draw(|frame| render_sidebar_collapsed(&app, frame, area))
+            .expect("collapsed sidebar should render");
+
+        let tenth_row = detail_area.y + 9;
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(detail_area.x, tenth_row)].symbol(), "1");
+        assert_eq!(buffer[(detail_area.x + 1, tenth_row)].symbol(), "0");
+        assert_eq!(buffer[(detail_area.x + 2, tenth_row)].symbol(), "○");
     }
 
     #[cfg(unix)]
@@ -2381,6 +2488,7 @@ mod tests {
             live_cwd.clone(),
             0,
             crate::terminal_theme::TerminalTheme::default(),
+            None,
             crate::pane::PaneShellConfig::new("/bin/sh", crate::config::ShellModeConfig::NonLogin),
             &crate::pane::PaneLaunchEnv::default(),
             events,

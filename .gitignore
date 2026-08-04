@@ -1,5 +1,6 @@
 /target
 /prebuilt/
+node_modules/
 /vendor/libghostty-vt/zig-pkg/
 __pycache__/
 *.pyc
@@ -11,6 +12,8 @@ __pycache__/
 /docs/*
 !/docs/next/
 !/docs/next/**
+!/docs/preview/
+!/docs/preview/**
 !/docs/versions/
 !/docs/versions/**
 /.local/
