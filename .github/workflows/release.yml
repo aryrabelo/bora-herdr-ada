@@ -342,7 +342,7 @@ jobs:
     needs: release
     runs-on: ubuntu-latest
     concurrency:
-      group: docs-publish-master
+      group: docs-publish-main
       cancel-in-progress: false
     permissions:
       contents: write
@@ -350,7 +350,7 @@ jobs:
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
-          ref: master
+          ref: main
           fetch-depth: 0
           ssh-key: ${{ secrets.RELEASE_DEPLOY_KEY }}
 
@@ -382,7 +382,7 @@ jobs:
             echo "website/latest.json is already at v$VERSION"
             exit 0
           fi
-          python3 scripts/changelog.py sync-latest-json --version "$VERSION" --output website/latest.json --announcement "$ANNOUNCEMENT_PATH" --protocol "$RELEASE_PROTOCOL"
+          python3 scripts/changelog.py sync-latest-json --version "$VERSION" --repo "${{ github.repository }}" --output website/latest.json --announcement "$ANNOUNCEMENT_PATH" --protocol "$RELEASE_PROTOCOL"
           if cmp -s "$ANNOUNCEMENT_ORIGINAL_PATH" docs/next/product-announcement.json; then
             printf 'null\n' > docs/next/product-announcement.json
           else
@@ -397,15 +397,15 @@ jobs:
           git add -A README.md README.zh-CN.md docs/versions website/latest.json website/src/content/docs website/src/data/config-reference.json docs/next/product-announcement.json
           git diff --cached --quiet || git commit -m "docs: update website manifest for v$VERSION"
           for attempt in 1 2 3; do
-            git pull --rebase origin master
+            git pull --rebase origin main
             node website/scripts/docs-versions.mjs check
             node website/scripts/docs-preview.mjs check
             (cd website && bun install --frozen-lockfile && bun run build)
-            if git push origin master; then
+            if git push origin main; then
               exit 0
             fi
             if [ "$attempt" -lt 3 ]; then
-              echo "master changed during release publishing; retrying ($attempt/3)"
+              echo "main changed during release publishing; retrying ($attempt/3)"
               sleep $((attempt * 2))
             fi
           done

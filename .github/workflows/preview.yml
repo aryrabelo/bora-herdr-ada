@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       commit:
-        description: Optional master commit SHA to publish
+        description: Optional main commit SHA to publish
         required: false
         type: string
 
@@ -36,7 +36,7 @@ jobs:
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
-          ref: master
+          ref: main
           fetch-depth: 0
           persist-credentials: false
 
@@ -45,16 +45,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          git fetch origin master --tags
+          git fetch origin main --tags
           requested="${{ github.event.inputs.commit || '' }}"
           if [ -n "$requested" ]; then
             commit="$(git rev-parse "$requested^{commit}")"
-            if ! git merge-base --is-ancestor "$commit" origin/master; then
-              echo "error: requested commit $commit is not reachable from origin/master" >&2
+            if ! git merge-base --is-ancestor "$commit" origin/main; then
+              echo "error: requested commit $commit is not reachable from origin/main" >&2
               exit 1
             fi
           else
-            commit="$(python3 scripts/preview.py select-commit --ref origin/master)"
+            commit="$(python3 scripts/preview.py select-commit --ref origin/main)"
           fi
           current_preview="$(python3 scripts/preview.py current-commit --manifest website/preview.json || true)"
           if [ "$current_preview" = "$commit" ] && node website/scripts/docs-preview.mjs check; then
@@ -287,7 +287,7 @@ jobs:
     if: needs.preflight.outputs.should_publish == 'true'
     runs-on: ubuntu-latest
     concurrency:
-      group: docs-publish-master
+      group: docs-publish-main
       cancel-in-progress: false
     permissions:
       contents: write
@@ -295,7 +295,7 @@ jobs:
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
-          ref: master
+          ref: main
           fetch-depth: 0
           persist-credentials: false
 
@@ -333,6 +333,7 @@ jobs:
             --commit '${{ needs.preflight.outputs.commit }}' \
             --build-id '${{ needs.preflight.outputs.build_id }}' \
             --base-version '${{ needs.preflight.outputs.base_version }}' \
+            --repo "${{ github.repository }}" \
             --output PREVIEW_NOTES.md
           python3 - <<'PY'
           import json, pathlib
@@ -374,6 +375,7 @@ jobs:
             --protocol '${{ needs.preflight.outputs.protocol }}' \
             --notes PREVIEW_NOTES.md \
             --sha-file preview-sha256.json \
+            --repo "${{ github.repository }}" \
             --retain 30
           (cd website && bun install --frozen-lockfile)
 
@@ -387,15 +389,15 @@ jobs:
           git diff --cached --quiet || git commit -m "docs: publish preview documentation"
           remote="https://x-access-token:${KANGAL_GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           for attempt in 1 2 3; do
-            git pull --rebase "$remote" master
+            git pull --rebase "$remote" main
             node website/scripts/docs-preview.mjs check
             node website/scripts/docs-versions.mjs check
             (cd website && bun run build)
-            if git push "$remote" HEAD:master; then
+            if git push "$remote" HEAD:main; then
               exit 0
             fi
             if [ "$attempt" -lt 3 ]; then
-              echo "master changed during preview publishing; retrying ($attempt/3)"
+              echo "main changed during preview publishing; retrying ($attempt/3)"
               sleep $((attempt * 2))
             fi
           done
