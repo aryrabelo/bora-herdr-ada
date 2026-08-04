@@ -642,6 +642,26 @@ Worktree 事件订阅包括 `worktree.created`、`worktree.opened` 和 `worktree
 
 生命周期事件用 `events.subscribe`。支持一次性等待时,专门的等待辅助命令会单独在文档中说明。
 
+## GitHub 数据
+
+当 `[github] enabled = true`(默认)时,Herdr 会在后台按仓库定期获取当前用户的未关闭 pull request。issue 按需获取。`github.pulls.list` 和 `github.issues.list` 通过 socket API 暴露这些缓存数据。
+
+列出所有仓库中未关闭的 PR:
+
+```json
+{"id":"req_1","method":"github.pulls.list","params":{}}
+```
+
+按特定仓库标识过滤:
+
+```json
+{"id":"req_1","method":"github.pulls.list","params":{"repo_identity":"github.com/owner/repo"}}
+```
+
+每个响应返回一个 `repos` 数组。每个仓库条目包含 `repo_identity`、一个带有 `number`、`title`、`url` 的 `prs`(或 `issues`)数组,PR 还额外包含 `head_ref_name` 和 `is_draft`;若该仓库的 `gh` CLI 调用失败,则包含可选的 `error` 字段。没有缓存数据时,`repos` 为空数组。
+
+订阅 `github.prs_refreshed` 和 `github.issues_refreshed`,可以在后台刷新完成时收到通知。每个事件都包含被刷新的 `repo_identity`。
+
 ## 读取窗格
 
 除非你在编写协议客户端,否则通过 CLI 使用 `pane.read`。

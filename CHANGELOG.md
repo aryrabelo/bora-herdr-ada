@@ -5,7 +5,23 @@ Bora is a fork of [herdr](https://github.com/ogulcancelik/herdr). This changelog
 ## Unreleased
 
 ### Added
+- Added `ui.tab_bar_position = "bottom"` to place the desktop tab row below terminal panes.
+- Copy mode now supports literal smart-case search with `/` and `?`, repeating with `n` and `N`, match highlighting, and tmux-style cross-line `w`/`b`/`e` word motions. (#1230)
+- Added maki detection with idle, working, and blocked screen states. (#1301, thanks @tontinton)
+- **Pull Requests tab** in the right panel. A new "PRs" tab (alongside Changes / Checks / Issues) lists the current user's open PRs for the active workspace's repo, with mergeable indicators (`✓` green = MERGEABLE, `✗` red = CONFLICTING) and draft markers. Clicking a PR row opens its context menu (Open in worktree / Open in browser / Copy URL). The PR list is refreshed on tab open and periodically in the background.
 - Create worktree modal opened by a "+" button on each repo header row, with GitHub / Branch / Name tabs. GitHub lists the repo's open pull requests and issues: a pull request opens its worktree, an issue runs the configured `[flow]` command (issue rows are disabled with a hint when no `[flow]` command is set). Branch checks out an existing local branch; Name creates a fresh branch. The existing `new_worktree` keybind and the `GitWorkspace` context-menu "New worktree" entry open the same modal.
+- Added `github.pulls.list` and `github.issues.list` socket API methods to read cached open pull requests and issues per repo, plus `github.prs_refreshed` and `github.issues_refreshed` events.
+
+### Changed
+- Idle, not-yet-seen panes now show an animated braille "sand" glyph whose color ramps gray to red by idle age, and working panes show an animated spinner; the animation timer only schedules redraws while an animation is actually visible.
+- Pull request rows have been removed from the left sidebar. PRs are now managed exclusively through the right panel's "PRs" tab, which provides a cleaner dedicated surface with mergeable status, draft markers, and the same context-menu actions (Open in worktree / browser / copy URL). The Create-worktree modal's GitHub tab continues to offer a separate path to open a PR worktree.
+- Settings and `ui.status_indicators = "symbols"` can now use distinct static shapes for blocked, working, done, idle, and unknown agent states. (#2260)
+- The plugin marketplace now discovers valid manifests at repository roots and subdirectories, groups multiple plugins under each repository, and publishes their versions and exact default-branch commits.
+
+### Fixed
+- Claude Code confirmation prompts using `Enter to confirm · Esc to cancel` now report `blocked` instead of `idle`. (#2268)
+- Sidebar agent lists keep scrolling when differently sized clients are attached to the same session. (#2255, thanks @aiworkflowpro)
+- `pane send-keys` and `agent send-keys` now preserve Shift when sending `shift+tab`, allowing agent permission modes to be cycled programmatically. (#1561, thanks @keinstn and @tomohisa)
 
 ## [0.8.0] - 2026-08-03
 
@@ -175,6 +191,7 @@ Bora is a fork of [herdr](https://github.com/ogulcancelik/herdr). This changelog
 - Native Windows servers now detach from the terminal console that launched them, so closing WezTerm, Windows Terminal, or another host terminal no longer stops persistent pane processes. (#1329)
 - Windows API clients now remain connected while waiting for initial named-pipe request bytes, so `status server`, `api snapshot`, and other socket commands no longer intermittently fail with BrokenPipe. (#1279)
 - `herdr --remote` now installs remote helper binaries without routing the binary stream through a multiline `/bin/sh -c` command, fixing installs for non-POSIX login shells such as xonsh. (#1203, thanks @nhumrich)
+- omp session switches (e.g. resuming a session) no longer crash the agent-state extension on a stale internal variable, which left the pane's agent state stuck.
 
 ## [0.7.3] - 2026-07-08
 
@@ -200,6 +217,9 @@ Bora is a fork of [herdr](https://github.com/ogulcancelik/herdr). This changelog
 - Added `herdr terminal session control` for bridge processes that need live ANSI frames plus input, resize, scroll, release, and takeover authority.
 - Added `ui.hide_tab_bar_when_single_tab` to hide the tab row when a workspace has one tab. (#448)
 - Added Japanese and Simplified Chinese website docs.
+- Added `bora integration install grok` for Grok CLI (Grok Build) hooks that report session ids through Bora's socket API. Grok state stays screen-detected. When native agent session restore is enabled, Bora can resume Grok panes with `grok --resume <id>`.
+- Added `github.pulls.list` and `github.issues.list` socket API methods to read cached open pull requests and issues per repo, plus `github.prs_refreshed` and `github.issues_refreshed` events.
+- Create worktree modal opened by a "+" button on each repo header row, with GitHub / Branch / Name tabs. GitHub lists the repo's open pull requests and issues: a pull request opens its worktree, an issue runs the configured `[flow]` command (issue rows are disabled with a hint when no `[flow]` command is set). Branch checks out an existing local branch; Name creates a fresh branch. The existing `new_worktree` keybind and the `GitWorkspace` context-menu "New worktree" entry open the same modal.
 
 ### Changed
 - The mobile switcher now starts from an agents-first summary and renders worktrees as a tree, making narrow terminals easier to scan.
@@ -246,6 +266,8 @@ Bora is a fork of [herdr](https://github.com/ogulcancelik/herdr). This changelog
 - Closing a tab from the context menu now exits the menu cleanly. (#945)
 - Copy feedback now stays visible above retained pane updates. (#555)
 - Windows ARM64 installer fallback now works when the normal checksum path is unavailable. (#897)
+- The Create worktree modal's GitHub tab now fetches the repo's open pull requests when the modal opens, instead of relying on the throttled periodic snapshot, so a newly opened pull request appears immediately rather than the modal showing a stale list. Opening a pull request in a worktree now also shows an immediate "opening PR in worktree" toast, giving visible feedback while the worktree is created.
+- Opening a pull request whose branch already has a worktree now attaches and focuses that existing worktree instead of failing with a git "already checked out" error. This most often hit pull requests opened by the `[flow]` command, whose worktree already existed at the target path.
 
 ## [0.7.1] - 2026-06-24
 
