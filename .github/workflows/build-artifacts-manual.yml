@@ -43,6 +43,7 @@ jobs:
   build-linux:
     if: ${{ inputs.build_group == 'linux' || inputs.build_group == 'all' }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -127,6 +128,7 @@ jobs:
   build-macos:
     if: ${{ inputs.build_group == 'macos' || inputs.build_group == 'all' }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
