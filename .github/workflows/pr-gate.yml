@@ -8,10 +8,15 @@ concurrency:
   group: pr-gate-${{ github.event.pull_request.number }}
   cancel-in-progress: false
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 jobs:
   check-contributor:
     if: github.repository == 'herdrdev/herdr'
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     permissions:
       contents: read
       issues: write
