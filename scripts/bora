@@ -3,14 +3,19 @@
 #
 # Branch model:
 #   master  1:1 mirror of upstream ogulcancelik/herdr:master, only fast-forwarded.
-#   main    default branch = master + our features (squash-merged PRs).
-#           kept current by rebasing onto master (`scripts/bora sync`).
+#   main    default branch = master + our features. kept current by MERGING
+#           master into main (`scripts/bora sync`) — never rebase; main
+#           carries its own merge commits from prior syncs (see `git log
+#           --merges main`), and rebasing replays the fork's entire commit
+#           history against the new master instead of just the delta,
+#           producing a multi-hundred-conflict rebase. (learned 2026-08-05,
+#           binding)
 #
 # The built binary is `bora` with its own config namespace (bora/bora-dev), so
 # it coexists with a stock herdr from brew/mise without overwriting it.
 #
 # Usage:
-#   scripts/bora sync       fast-forward master to upstream, then rebase main onto it
+#   scripts/bora sync       fast-forward master to upstream, then merge it into main
 #   scripts/bora build      cargo build --release, install bin as bora
 #   scripts/bora ci-build   trigger the GitHub Actions macOS build on the fork (main)
 #   scripts/bora ci-install download the latest macOS CI artifact, install it
@@ -83,11 +88,16 @@ case "$cmd" in
     # master mirrors upstream 1:1 — fast-forward only, never carries fork commits.
     git push "$FORK_REMOTE" "$UPSTREAM_REMOTE/$UPSTREAM_BRANCH:refs/heads/master"
     git fetch "$FORK_REMOTE" master
-    # replay main's feature commits on top of the refreshed master.
+    # Merge (not rebase) master into main: main already carries merge
+    # commits from prior syncs, so `git merge-base main master` finds the
+    # true delta and only the genuinely new upstream commits need conflict
+    # resolution. A rebase here replays main's ENTIRE unique history
+    # instead, which explodes into hundreds of conflicts once main has any
+    # merge commit in its ancestry.
     git checkout main
-    git rebase "$FORK_REMOTE/master"
-    echo "bora: master fast-forwarded to $UPSTREAM_REMOTE/$UPSTREAM_BRANCH and main rebased onto it."
-    echo "bora: review, then publish with: git push --force-with-lease $FORK_REMOTE main"
+    git merge master
+    echo "bora: master fast-forwarded to $UPSTREAM_REMOTE/$UPSTREAM_BRANCH and merged into main."
+    echo "bora: resolve any conflicts, run 'just test', review, then publish with: git push $FORK_REMOTE main"
     ;;
   build)
     cd "$REPO_DIR"
