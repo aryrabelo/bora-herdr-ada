@@ -60,7 +60,6 @@ mod app;
 mod bora_config;
 mod bora_settings;
 mod build_info;
-#[cfg(not(windows))]
 mod checksum;
 mod cli;
 mod client;
@@ -130,6 +129,7 @@ const DEFAULT_CONFIG: &str = r##"# bora configuration
 # Override individual color tokens on top of the base theme.
 # Accepts: hex (#rrggbb), named colors, rgb(r,g,b), or panel_bg = "reset"
 # [theme.custom]
+# sidebar_bg = "#181825"
 # panel_bg = "reset"
 # accent = "#f5c2e7"
 # red = "#ff6188"
