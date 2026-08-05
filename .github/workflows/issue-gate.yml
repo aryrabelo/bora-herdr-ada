@@ -7,10 +7,15 @@ on:
 permissions:
   issues: write
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.issue.number }}
+  cancel-in-progress: true
+
 jobs:
   check-template:
     if: ${{ !github.event.issue.pull_request }}
     runs-on: ubuntu-latest
+    timeout-minutes: 5
 
     steps:
       - name: Close non-template issues

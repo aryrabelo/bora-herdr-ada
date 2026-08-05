@@ -12,9 +12,13 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   RUST_TOOLCHAIN_VERSION: 1.96.1
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+
 jobs:
   flake-check:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
 
@@ -63,6 +67,7 @@ jobs:
             libghostty_vt_simd: 'true'
 
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     env:
       LIBGHOSTTY_VT_OPTIMIZE: ${{ matrix.libghostty_vt_optimize }}
       LIBGHOSTTY_VT_SIMD: ${{ matrix.libghostty_vt_simd }}
@@ -155,6 +160,7 @@ jobs:
 
   validate-release-inputs:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     permissions:
       contents: read
 
@@ -178,6 +184,7 @@ jobs:
   release:
     needs: [build, flake-check, validate-release-inputs]
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: write
 
@@ -205,6 +212,7 @@ jobs:
   close-released-issues:
     needs: release
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     continue-on-error: true
     permissions:
       contents: read
@@ -344,6 +352,7 @@ jobs:
     concurrency:
       group: docs-publish-main
       cancel-in-progress: false
+    timeout-minutes: 15
     permissions:
       contents: write
 

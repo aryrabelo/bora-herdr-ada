@@ -21,6 +21,7 @@ concurrency:
 
 jobs:
   preflight:
+    timeout-minutes: 10
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -139,6 +140,7 @@ jobs:
             name: bora-macos-aarch64
 
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     env:
       LIBGHOSTTY_VT_OPTIMIZE: ReleaseFast
       LIBGHOSTTY_VT_SIMD: 'true'
@@ -259,6 +261,7 @@ jobs:
     concurrency:
       group: docs-publish-main
       cancel-in-progress: false
+    timeout-minutes: 15
     permissions:
       contents: write
       issues: write
