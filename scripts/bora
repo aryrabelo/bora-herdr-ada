@@ -87,7 +87,10 @@ case "$cmd" in
     git fetch "$UPSTREAM_REMOTE" "$UPSTREAM_BRANCH"
     # master mirrors upstream 1:1 — fast-forward only, never carries fork commits.
     git push "$FORK_REMOTE" "$UPSTREAM_REMOTE/$UPSTREAM_BRANCH:refs/heads/master"
-    git fetch "$FORK_REMOTE" master
+    # `git push src:refs/heads/master` only moves the ref on $FORK_REMOTE;
+    # it never touches the local `master` branch, so update it explicitly
+    # or the merge below silently runs against a stale local ref.
+    git update-ref refs/heads/master "$UPSTREAM_REMOTE/$UPSTREAM_BRANCH"
     # Merge (not rebase) master into main: main already carries merge
     # commits from prior syncs, so `git merge-base main master` finds the
     # true delta and only the genuinely new upstream commits need conflict
