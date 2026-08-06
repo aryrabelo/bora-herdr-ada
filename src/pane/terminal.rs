@@ -1999,6 +1999,20 @@ impl GhosttyPaneTerminal {
                     cell.reset();
                     cell.set_symbol(symbol);
                     cell.set_style(style);
+                    if basic.wide == crate::ghostty::CellWide::Wide
+                        && is_halfwidth_katakana_voiced_grapheme(symbol)
+                    {
+                        // This grapheme is two individually-narrow codepoints (base kana +
+                        // voiced-sound mark) that we render across two cells, but each is
+                        // unicode-width 1, so ratatui's own Buffer diffing computes
+                        // cell_width() == 2 for the *string* and auto-skips diffing the
+                        // following SpacerTail cell (its normal, correct behavior for a
+                        // genuine wide glyph). Force this cell's diff width to 1 so the
+                        // SpacerTail cell's empty symbol is actually applied instead of
+                        // silently carrying over stale buffer content.
+                        cell.diff_option =
+                            ratatui::buffer::CellDiffOption::ForcedWidth(std::num::NonZeroU16::MIN);
+                    }
                     x += 1;
                 }
                 while x < area.width {
