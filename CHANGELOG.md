@@ -4,6 +4,25 @@ Bora is a fork of [herdr](https://github.com/ogulcancelik/herdr). This changelog
 
 ## Unreleased
 
+### Added
+- Windows clients can now remote attach to unix hosts. (#2329)
+
+### Changed
+- `theme.custom.sidebar_bg` can now give the desktop sidebar its own background without changing built-in theme defaults.
+
+### Fixed
+- Configs containing the retired Herdr-written `ui.agent_panel_scope` setting no longer report it as an unknown key after upgrades. (#2292)
+- `pane query --current` now resolves the calling pane correctly instead of an unrelated one. (#2298, refs #2297)
+- Default mouse reports, including ones split across reads, now parse correctly instead of being dropped. (#2312, refs #2309)
+- The tab navigator now also searches single-tab names, not just multi-tab groups. (#2320)
+- Closing a pane now returns focus to the pane its split was opened from, instead of an unrelated neighbour in tree order. (#2266)
+- Halfwidth katakana voiced sound marks (e.g. `ｶﾞ`) now render correctly instead of the mark corrupting the following character. (#2257)
+- `modifyOtherKeys` key releases are now preserved instead of being dropped. (#2303, refs #2302)
+- The collapsed sidebar now highlights the focused agent pane, matching the workspace list and expanded panel. (#2382)
+- Ctrl-Tab no longer sends stray escape sequences to legacy (non-kitty-keyboard-protocol) panes. (refs #2296)
+- OSC 4 palette overrides are now rendered directly instead of being forwarded by index, fixing incorrect colors. (#2162)
+- Plugin marketplace counts now stay current instead of going stale.
+
 ## [0.13.1] - 2026-08-04
 
 ### Added

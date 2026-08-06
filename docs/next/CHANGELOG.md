@@ -4,6 +4,25 @@ Bora is a fork of [herdr](https://github.com/ogulcancelik/herdr). This changelog
 
 ## Unreleased
 
+### Added
+- Windows clients can now remote attach to unix hosts. (#2329)
+
+### Changed
+- `theme.custom.sidebar_bg` can now give the desktop sidebar its own background without changing built-in theme defaults.
+
+### Fixed
+- Configs containing the retired Herdr-written `ui.agent_panel_scope` setting no longer report it as an unknown key after upgrades. (#2292)
+- `pane query --current` now resolves the calling pane correctly instead of an unrelated one. (#2298, refs #2297)
+- Default mouse reports, including ones split across reads, now parse correctly instead of being dropped. (#2312, refs #2309)
+- The tab navigator now also searches single-tab names, not just multi-tab groups. (#2320)
+- Closing a pane now returns focus to the pane its split was opened from, instead of an unrelated neighbour in tree order. (#2266)
+- Halfwidth katakana voiced sound marks (e.g. `ｶﾞ`) now render correctly instead of the mark corrupting the following character. (#2257)
+- `modifyOtherKeys` key releases are now preserved instead of being dropped. (#2303, refs #2302)
+- The collapsed sidebar now highlights the focused agent pane, matching the workspace list and expanded panel. (#2382)
+- Ctrl-Tab no longer sends stray escape sequences to legacy (non-kitty-keyboard-protocol) panes. (refs #2296)
+- OSC 4 palette overrides are now rendered directly instead of being forwarded by index, fixing incorrect colors. (#2162)
+- Plugin marketplace counts now stay current instead of going stale.
+
 ## [0.13.1] - 2026-08-04
 
 ### Added
@@ -17,12 +36,10 @@ Bora is a fork of [herdr](https://github.com/ogulcancelik/herdr). This changelog
 ### Changed
 - Idle, not-yet-seen panes now show an animated braille "sand" glyph whose color ramps gray to red by idle age, and working panes show an animated spinner; the animation timer only schedules redraws while an animation is actually visible.
 - Pull request rows have been removed from the left sidebar. PRs are now managed exclusively through the right panel's "PRs" tab, which provides a cleaner dedicated surface with mergeable status, draft markers, and the same context-menu actions (Open in worktree / browser / copy URL). The Create-worktree modal's GitHub tab continues to offer a separate path to open a PR worktree.
-- `theme.custom.sidebar_bg` can now give the desktop sidebar its own background without changing built-in theme defaults.
 - Settings and `ui.status_indicators = "symbols"` can now use distinct static shapes for blocked, working, done, idle, and unknown agent states. (#2260)
 - The plugin marketplace now discovers valid manifests at repository roots and subdirectories, groups multiple plugins under each repository, and publishes their versions and exact default-branch commits.
 
 ### Fixed
-- Configs containing the retired Herdr-written `ui.agent_panel_scope` setting no longer report it as an unknown key after upgrades. (#2292)
 - Claude Code confirmation prompts using `Enter to confirm · Esc to cancel` now report `blocked` instead of `idle`. (#2268)
 - Sidebar agent lists keep scrolling when differently sized clients are attached to the same session. (#2255, thanks @aiworkflowpro)
 - `pane send-keys` and `agent send-keys` now preserve Shift when sending `shift+tab`, allowing agent permission modes to be cycled programmatically. (#1561, thanks @keinstn and @tomohisa)
