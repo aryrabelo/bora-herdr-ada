@@ -4,6 +4,8 @@ Bora is a fork of [herdr](https://github.com/ogulcancelik/herdr). This changelog
 
 ## Unreleased
 
+## [0.13.2] - 2026-08-05
+
 ### Added
 - Windows clients can now remote attach to unix hosts. (#2329)
 
