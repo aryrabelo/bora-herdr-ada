@@ -81,7 +81,7 @@ jobs:
         uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:
           version: 0.15.2
-          use-cache: true
+          use-cache: false
 
       - name: Restore Homebrew Zig cache
         if: runner.os == 'macOS'
@@ -106,7 +106,7 @@ jobs:
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: .zig-cache
-          key: zig-build-v1-${{ runner.os }}-${{ runner.arch }}-0.15.2-${{ github.run_id }}-${{ github.run_attempt }}
+          key: zig-build-v1-${{ runner.os }}-${{ runner.arch }}-0.15.2-${{ hashFiles('Cargo.lock', 'build.rs', 'vendor/libghostty-vt.vendor.json', 'vendor/libghostty-vt/**') }}
           restore-keys: |
             zig-build-v1-${{ runner.os }}-${{ runner.arch }}-0.15.2-
 
@@ -122,4 +122,8 @@ jobs:
 
       - name: Run checks
         run: just ci '${{ matrix.nextest_filter }}'
+
+      - name: Run live handoff integration tests (macOS, push to main only)
+        if: matrix.os == 'macos-latest' && github.event_name == 'push' && github.ref_name == 'main'
+        run: cargo nextest run --locked -E "binary(live_handoff)" --status-level fail --final-status-level slow --failure-output final --success-output never
 
