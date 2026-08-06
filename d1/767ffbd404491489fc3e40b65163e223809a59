@@ -1,0 +1,16 @@
+.github/workflows/build-artifacts-manual.yml
+  h_b156936c57c455 34-37
+.github/workflows/ci.yml
+  h_b156936c57c455 84,109,126-129
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "d1767ffbd404491489fc3e40b65163e223809a59",
+  "prompts": {},
+  "humans": {
+    "h_b156936c57c455": {
+      "author": "Ary Rabelo <aryrabelo@gmail.com>"
+    }
+  }
+}
