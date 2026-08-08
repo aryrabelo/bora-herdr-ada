@@ -27,3 +27,6 @@ __pycache__/
 
 /.wrangler/
 **/.wrangler/
+
+# graphify generated output
+graphify-out/
