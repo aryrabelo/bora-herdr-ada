@@ -45,6 +45,8 @@ pub(crate) struct BoraFiles {
 pub(crate) struct BoraPortsRange {
     pub base: u16,
     pub max: u16,
+    /// Stride between allocated ports. `0` is treated as `1` (contiguous).
+    pub step: u16,
 }
 
 impl Default for BoraPortsRange {
@@ -52,6 +54,18 @@ impl Default for BoraPortsRange {
         Self {
             base: 4100,
             max: 4199,
+            step: 1,
+        }
+    }
+}
+
+impl BoraPortsRange {
+    /// `step`, normalized so `0` (unset/invalid) behaves as `1`.
+    fn effective_step(&self) -> u16 {
+        if self.step == 0 {
+            1
+        } else {
+            self.step
         }
     }
 }
@@ -108,8 +122,9 @@ fn git_common_dir(repo_root: &Path) -> PathBuf {
 }
 
 /// Stable per-workspace port persisted at `<git common dir>/info/bora-ports.json`.
-/// An existing `key` keeps its port forever; a new key gets the lowest free port
-/// in `[base, max]`; `None` when the range is exhausted.
+/// An existing `key` keeps its port forever; a new key gets the lowest free
+/// `base + k*step` candidate within `[base, max]`; `None` when the range is
+/// exhausted.
 pub(crate) fn allocate_port(repo_root: &Path, key: &str, range: &BoraPortsRange) -> Option<u16> {
     let info_dir = git_common_dir(repo_root).join("info");
     let map_path = info_dir.join("bora-ports.json");
@@ -131,7 +146,14 @@ pub(crate) fn allocate_port(repo_root: &Path, key: &str, range: &BoraPortsRange)
     }
 
     let taken: HashSet<u16> = map.values().copied().collect();
-    let port = (range.base..=range.max).find(|candidate| !taken.contains(candidate))?;
+    let step = range.effective_step() as u32;
+    let base = range.base as u32;
+    let max = range.max as u32;
+    let port = (0..)
+        .map(|k: u32| base + k * step)
+        .take_while(|&candidate| candidate <= max)
+        .map(|candidate| candidate as u16)
+        .find(|candidate| !taken.contains(candidate))?;
 
     map.insert(key.to_string(), port);
     match serde_json::to_string_pretty(&map) {
@@ -657,6 +679,7 @@ base = 5000
         let range = BoraPortsRange {
             base: 4100,
             max: 4101,
+            step: 1,
         };
         let first = allocate_port(&repo, "branch-a", &range).unwrap();
         let first_again = allocate_port(&repo, "branch-a", &range).unwrap();
@@ -669,6 +692,34 @@ base = 5000
 
         // Range exhausted for a new key.
         assert_eq!(allocate_port(&repo, "branch-c", &range), None);
+    }
+
+    #[test]
+    fn port_allocation_respects_step_stride() {
+        let repo = init_repo("ports-step");
+        let range = BoraPortsRange {
+            base: 4100,
+            max: 4199,
+            step: 10,
+        };
+
+        let first = allocate_port(&repo, "branch-a", &range).unwrap();
+        assert_eq!(first, 4100);
+
+        let second = allocate_port(&repo, "branch-b", &range).unwrap();
+        assert_eq!(second, 4110);
+
+        // A branch with a pre-existing persisted port off the stride keeps it.
+        let info_dir = git_common_dir(&repo).join("info");
+        std::fs::create_dir_all(&info_dir).unwrap();
+        let map_path = info_dir.join("bora-ports.json");
+        let mut map: BTreeMap<String, u16> =
+            serde_json::from_str(&std::fs::read_to_string(&map_path).unwrap()).unwrap();
+        map.insert("branch-legacy".to_string(), 4105);
+        std::fs::write(&map_path, serde_json::to_string_pretty(&map).unwrap()).unwrap();
+
+        let legacy = allocate_port(&repo, "branch-legacy", &range).unwrap();
+        assert_eq!(legacy, 4105);
     }
 
     #[test]
@@ -725,6 +776,7 @@ base = 5000
         let range = BoraPortsRange {
             base: 6100,
             max: 6199,
+            step: 1,
         };
         let handles: Vec<_> = (0..8)
             .map(|i| {

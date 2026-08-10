@@ -214,12 +214,15 @@ Resolution precedence:
 1. If `.bora/settings.toml` defines `[ports]` (`base`/`max`, default
    `4100`–`4199`), the **stable persisted allocator** is used: a port is
    allocated once per branch and kept forever. New workspaces take the lowest
-   free port in the range; when the range is exhausted `BORA_PORT` is not set.
-   Assignments persist in `.git/info/bora-ports.json` (`{"<branch>": <port>}`).
+   free port among `base + k*step` (for `k = 0, 1, 2, ...`) within the range;
+   when the range is exhausted `BORA_PORT` is not set. `step` defaults to `1`
+   (contiguous ports); `0` is treated as `1`. Assignments persist in
+   `.git/info/bora-ports.json` (`{"<branch>": <port>}`).
 
    ```toml
    [ports]
    base = 4100
+   step = 10   # optional; reserve a block of ports per workspace
    max  = 4199
    ```
 
