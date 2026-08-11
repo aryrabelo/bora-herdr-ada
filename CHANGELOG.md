@@ -4,6 +4,63 @@ Bora is a fork of [herdr](https://github.com/ogulcancelik/herdr). This changelog
 
 ## Unreleased
 
+### Setup local (plugins e atalhos) — 2026-08-11
+
+Plugins instalados no bora desta máquina, com auditoria de segurança em
+`~/Sites/herdr-plugins/` (clones pinados nos commits instalados):
+
+- **reviewr** (`persiyanov.reviewr`, SAFE) — pane de code-review ao lado do
+  agente: diff local, comentários por linha, envio pro input do agente.
+  - Abrir/fechar: `ctrl+alt+r` (toggle).
+  - No pane: `v` seleciona linhas, `c` comenta, `s` envia tudo pro agente,
+    `1/2/3` abas Changes / All files / PR (PR é read-only), `?` ajuda.
+- **gh-pr** (`wyattjoh/herdr-plugin-gh-pr`, SAFE) — status do PR + CI na
+  sidebar (`#123 ✓/✗/●`), refresh automático a cada 30s por pane.
+  - Sem comando: aparece na row do agente (token `$pr` na config da sidebar).
+  - Refresh manual: `bora plugin action invoke gh-pr.refresh`;
+    abrir PR no browser: `bora plugin action invoke gh-pr.open-pr`.
+- **automations** (fork local `~/Sites/herdr-plugins/herdr-automations`,
+  linkado; safe-with-caveats mitigado por build do source) — cron de agentes:
+  agenda um prompt, o bora acorda um agente num worktree novo.
+  - Board: `prefix+a` (overlay); `r` roda agora, `e` edita o YAML, `enter`
+    pula pro workspace do último run.
+  - CLI: `herdr-automations add | list | run <nome> | history | fire <evento>`.
+  - Config: `bora plugin config-dir dnzzl.automations` → `automations.yaml`.
+  - **Event triggers (feature nossa, branch `event-triggers`)**: campo
+    `on: worktree.created` no YAML dispara a automation quando o evento
+    ocorre no repo dela; outros eventos pedem um bloco `[[events]]` no
+    manifest. Repo privado: `aryrabelo/herdr-automations`.
+- **dashboard** (`chouxcreams.herdr-dashboard`) — TUI com o PR de cada pane
+  agrupado por workspace: estado, CI, reviews; daemon coleta a cada 90s.
+  - Abrir: `bora plugin action invoke open --plugin chouxcreams.herdr-dashboard`.
+  - Scriptável: `herdr-dashboard --once --json` (base para automações de CI).
+- **beads popover** (`hexsprite/herdr-beads`, safe-with-caveats /tmp) —
+  ctrl+click num id de bead (`https://bead.invalid/<id>`) abre os detalhes
+  num split; ids dentro do split também são clicáveis (anda a árvore de
+  dependências). Requer `bd` no PATH.
+- **file-viewer** (`smarzban/herdr-file-viewer`, safe-with-caveats) — visor de
+  arquivo git-aware num split. `prefix+f` abre.
+  - Caveat: update-checker liga sozinho e busca conteúdo remoto do GitHub
+    (`update_check` no config); desligável.
+- **board** (`bredebjorhovd/herdr-board`, ⚠️ HIGH finding, instalado mas SEM
+  credenciais configuradas — inerte) — board global de issues GitHub/Linear
+  → dispatch de agentes → review volta pro agente que abriu o PR.
+  - **NÃO configurar `.env`/`routing.toml` sem ler o achado abaixo primeiro.**
+    Reportado upstream: https://github.com/bredebjorhovd/herdr-board/issues/49
+  - `review.rs`: comentário de PR de **qualquer conta do GitHub** (repo
+    público) é digitado automaticamente no pane do agente vivo como se
+    fosse instrução — sem checar autor. `dispatch.rs`: título/corpo da
+    issue vai verbatim pro prompt de abertura, sem delimitador.
+    Mitigação até correção upstream: só repos privados seus,
+    `deliver_reviews = false`.
+  - Se/quando configurar: toggle `prefix+shift+o`; credenciais em
+    `bora plugin config-dir board`/`.env`; roteamento com `herdr-board init`.
+
+Removido: `tam.pr-workflow` (prompt de merge automático indesejado; fork
+patchado ficou em `~/Sites/herdr-pr-workflow`).
+
+Keybinds versionados em `dotfiles-2026/dotfiles/bora/config.toml`.
+
 ## [0.13.2] - 2026-08-05
 
 ### Added
