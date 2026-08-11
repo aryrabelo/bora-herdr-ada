@@ -23,6 +23,64 @@ impl AppState {
         detail_area
     }
 
+    /// Hit area for the sidebar Programs launcher band (pane-mode
+    /// `.bora.toml` commands for the active workspace, plus the
+    /// "+ run command…" row). Sits directly above the workspace list's
+    /// "new"/"menu" footer row; MUST derive from `sidebar_programs_band_rect`
+    /// so rendering and hit-testing agree.
+    pub(super) fn sidebar_programs_rect(&self) -> Rect {
+        let ws_area = self.workspace_list_rect();
+        crate::ui::sidebar_programs_band_rect(self, ws_area)
+    }
+
+    /// Pane-mode `.bora.toml` commands for the active workspace, in display
+    /// order. Loaded fresh (no cache) — mirrors the workspace context menu's
+    /// on-demand `.bora.toml` read.
+    pub(crate) fn sidebar_program_commands(&self) -> Vec<crate::bora_config::BoraCommand> {
+        let Some(ws_idx) = self.active else {
+            return Vec::new();
+        };
+        let Some(ws) = self.workspaces.get(ws_idx) else {
+            return Vec::new();
+        };
+        crate::bora_config::workspace_commands(ws)
+            .into_iter()
+            .filter(|c| c.mode == crate::bora_config::BoraCommandMode::Pane)
+            .collect()
+    }
+
+    /// Resolve the sidebar Programs entry at `idx` (0-based, in
+    /// `sidebar_program_commands` order) into a dispatchable
+    /// `PendingBoraCommand`, including `$BORA_PORT` resolution.
+    pub(crate) fn sidebar_program_launch(
+        &self,
+        idx: usize,
+    ) -> Option<crate::app::state::PendingBoraCommand> {
+        let ws_idx = self.active?;
+        let ws = self.workspaces.get(ws_idx)?;
+        let cmd = self.sidebar_program_commands().into_iter().nth(idx)?;
+        let branch = ws.cached_git_branch.as_deref();
+        let checkout_path = ws
+            .worktree_space()
+            .map(|s| s.checkout_path.as_path())
+            .unwrap_or(&ws.identity_cwd);
+        let key = branch.map(str::to_string).unwrap_or_else(|| {
+            checkout_path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_default()
+        });
+        let port = ws
+            .bora_config_root()
+            .and_then(|root| crate::bora_settings::resolve_port(root, checkout_path, &key));
+        Some(crate::app::state::PendingBoraCommand {
+            ws_idx,
+            command: cmd.command,
+            mode: cmd.mode,
+            port,
+        })
+    }
+
     pub(super) fn workspace_list_scrollbar_target_at(
         &self,
         col: u16,

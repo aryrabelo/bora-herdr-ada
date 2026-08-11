@@ -911,6 +911,9 @@ pub enum Mode {
     RenamePane,
     /// User is typing a visual group name for a workspace.
     SetWorkspaceGroup,
+    /// User is typing an arbitrary shell command from the sidebar Programs
+    /// launcher's "+ run command…" row.
+    LaunchProgramPrompt,
     NewLinkedWorktree,
     OpenExistingWorktree,
     ConfirmRemoveWorktree,

@@ -1,0 +1,14 @@
+[[commands]]
+label = "helix"
+command = "hx ."
+mode = "pane"
+
+[[commands]]
+label = "gitui"
+command = "gitui"
+mode = "pane"
+
+[[commands]]
+label = "beads ready"
+command = "bd ready; exec $SHELL"
+mode = "pane"

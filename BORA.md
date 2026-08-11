@@ -14,6 +14,18 @@ stock `herdr` install (brew/mise) instead of overwriting it.
   manifest keyed on the `π  /` status bar (working = braille spinner / `⟦esc⟧`).
   See commit `fix(detect): recognize omp (oh-my-pi) as a first-class agent`.
 
+- **Sidebar "Programs" launcher.** The workspace-list sidebar shows a fixed
+  band above the "new"/"menu" footer: one row per pane-mode `.bora.toml`
+  `[[commands]]` entry for the active workspace's branch, plus an always-on
+  "+ run command…" row that opens a free-text prompt (reuses the
+  rename-modal text-input pattern; `Mode::LaunchProgramPrompt`). Clicking an
+  entry runs the same `PendingBoraCommand` path the right-click context menu
+  already used, so external editors/tools (Helix via `hx .`, `gitui`, `bd
+  ready`) configured in `.bora.toml` are one click away instead of only
+  reachable through the workspace context menu. See
+  `src/app/input/mouse.rs` (`MouseAction::LaunchProgram*`), `src/ui/sidebar.rs`
+  (`sidebar_programs_band_rect`), and this repo's own `.bora.toml`.
+
 ## Branch layout
 
 - `upstream` -> upstream `ogulcancelik/herdr`.

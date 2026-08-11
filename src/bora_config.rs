@@ -50,6 +50,24 @@ pub(crate) enum BoraCommandMode {
     Pane,
 }
 
+/// `.bora.toml [[commands]]` scoped to `ws`'s branch. Single source shared
+/// by the workspace context menu and the sidebar Programs launcher so
+/// branch filtering never drifts between the two surfaces.
+pub(crate) fn workspace_commands(ws: &crate::workspace::Workspace) -> Vec<BoraCommand> {
+    let Some(root) = ws.bora_config_root() else {
+        return Vec::new();
+    };
+    let Some(config) = load_bora_config(root) else {
+        return Vec::new();
+    };
+    let branch = ws.cached_git_branch.as_deref();
+    config
+        .commands
+        .into_iter()
+        .filter(|c| c.branch.as_deref().is_none_or(|b| branch == Some(b)))
+        .collect()
+}
+
 pub(crate) fn load_bora_config(repo_root: &Path) -> Option<BoraConfig> {
     let path = repo_root.join(".bora.toml");
     let content = std::fs::read_to_string(&path).ok()?;

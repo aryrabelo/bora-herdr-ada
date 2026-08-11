@@ -2114,7 +2114,8 @@ impl App {
             Mode::RenameWorkspace
             | Mode::RenameTab
             | Mode::RenamePane
-            | Mode::SetWorkspaceGroup => {
+            | Mode::SetWorkspaceGroup
+            | Mode::LaunchProgramPrompt => {
                 self.handle_rename_key_via_api(key_event);
             }
             Mode::NewLinkedWorktree => {

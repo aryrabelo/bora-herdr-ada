@@ -506,7 +506,7 @@ fn entry_row_height(
 
 pub(crate) fn normalized_workspace_scroll(app: &AppState, area: Rect, requested: usize) -> usize {
     let ws_area = workspace_list_rect(area, app.sidebar_section_split);
-    let body = workspace_list_body_rect(ws_area, false);
+    let body = workspace_list_body_rect(app, ws_area, false);
     if body.height == 0 {
         return requested;
     }
@@ -1008,20 +1008,44 @@ pub(crate) fn workspace_list_rect(area: Rect, split_ratio: f32) -> Rect {
     ws_area
 }
 
-pub(crate) fn workspace_list_body_rect(area: Rect, has_scrollbar: bool) -> Rect {
+/// Rows the sidebar Programs launcher band occupies: one per pane-mode
+/// `.bora.toml` command for the active workspace, plus the fixed
+/// "+ run command…" row.
+pub(crate) fn sidebar_program_row_count(app: &AppState) -> u16 {
+    app.sidebar_program_commands().len() as u16 + 1
+}
+
+/// Hit/render area for the sidebar Programs launcher band: sits directly
+/// above the workspace list's "new"/"menu" footer row, within `ws_area`
+/// (the first section returned by `expanded_sidebar_sections`). Reserving
+/// this band is `workspace_list_body_rect`'s job too — both MUST agree on
+/// `sidebar_program_row_count`, or scrolling and hit-testing will disagree
+/// about where the workspace list body ends.
+pub(crate) fn sidebar_programs_band_rect(app: &AppState, ws_area: Rect) -> Rect {
+    if ws_area.height == 0 {
+        return Rect::default();
+    }
+    let footer_rows = 1u16;
+    let rows = sidebar_program_row_count(app).min(ws_area.height.saturating_sub(footer_rows));
+    let y = ws_area.y + ws_area.height - footer_rows - rows;
+    Rect::new(ws_area.x, y, ws_area.width, rows)
+}
+
+pub(crate) fn workspace_list_body_rect(app: &AppState, area: Rect, has_scrollbar: bool) -> Rect {
     if area.width == 0 || area.height <= WORKSPACE_SECTION_HEADER_ROWS {
         return Rect::default();
     }
 
+    let programs_rows = sidebar_programs_band_rect(app, area).height;
     let body_y = area.y.saturating_add(WORKSPACE_SECTION_HEADER_ROWS);
-    let footer_y = area.y + area.height.saturating_sub(1);
+    let footer_y = (area.y + area.height).saturating_sub(1 + programs_rows);
     let body_height = footer_y.saturating_sub(body_y);
     let body_width = area.width.saturating_sub(u16::from(has_scrollbar));
     Rect::new(area.x, body_y, body_width, body_height)
 }
 
 fn workspace_list_visible_count(app: &AppState, area: Rect, scroll: usize) -> usize {
-    let body = workspace_list_body_rect(area, false);
+    let body = workspace_list_body_rect(app, area, false);
     if body.width == 0 || body.height == 0 {
         return 0;
     }
@@ -1062,7 +1086,7 @@ pub(crate) fn workspace_list_scroll_metrics(
 
 pub(crate) fn workspace_list_scrollbar_rect(app: &AppState, area: Rect) -> Option<Rect> {
     let metrics = workspace_list_scroll_metrics(app, area);
-    let body = workspace_list_body_rect(area, true);
+    let body = workspace_list_body_rect(app, area, true);
     (should_show_scrollbar(metrics) && body.width > 0 && body.height > 0).then_some(Rect::new(
         area.x + area.width.saturating_sub(1),
         body.y,
@@ -1201,7 +1225,7 @@ pub(crate) fn compute_workspace_list_areas(
     }
 
     let metrics = workspace_list_scroll_metrics(app, ws_area);
-    let body = workspace_list_body_rect(ws_area, should_show_scrollbar(metrics));
+    let body = workspace_list_body_rect(app, ws_area, should_show_scrollbar(metrics));
     if body.width == 0 || body.height == 0 {
         return (Vec::new(), Vec::new());
     }
@@ -1507,8 +1531,45 @@ pub(super) fn render_sidebar(
     let (ws_area, detail_area) = expanded_sidebar_sections(area, app.sidebar_section_split);
 
     render_workspace_list(app, terminal_runtimes, frame, ws_area, is_navigating);
+    render_programs_section(app, frame, sidebar_programs_band_rect(app, ws_area));
     render_agent_detail(app, terminal_runtimes, frame, detail_area);
     render_sidebar_toggle(app, frame, area, false, p);
+}
+
+/// Sidebar "Programs" launcher band: one row per pane-mode `.bora.toml`
+/// command for the active workspace, plus a fixed "+ run command…" row.
+/// Row count/geometry MUST match `sidebar_programs_band_rect` exactly.
+fn render_programs_section(app: &AppState, frame: &mut Frame, area: Rect) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let p = &app.palette;
+    let commands = app.sidebar_program_commands();
+    let mut row_y = area.y;
+    let bottom = area.y + area.height;
+    for cmd in &commands {
+        if row_y >= bottom {
+            return;
+        }
+        let label = truncate_end(&cmd.label, (area.width as usize).saturating_sub(1));
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                format!(" {label}"),
+                Style::default().fg(p.text),
+            )),
+            Rect::new(area.x, row_y, area.width, 1),
+        );
+        row_y = row_y.saturating_add(1);
+    }
+    if row_y < bottom {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                " + run command…",
+                Style::default().fg(p.overlay0),
+            )),
+            Rect::new(area.x, row_y, area.width, 1),
+        );
+    }
 }
 fn render_workspace_list(
     app: &AppState,
@@ -1554,7 +1615,7 @@ fn render_workspace_list(
     // --- Render entries using the same lockstep iteration ---
     let entries = workspace_list_entries(app);
     let scroll = app.workspace_scroll;
-    let body = workspace_list_body_rect(area, scrollbar_rect.is_some());
+    let body = workspace_list_body_rect(app, area, scrollbar_rect.is_some());
     let mut row_y = body.y;
     let now = Instant::now();
 
@@ -3027,7 +3088,11 @@ mod tests {
         app.active = None;
         app.mode = Mode::Terminal;
 
-        let ws_area = Rect::new(0, 0, 30, 6);
+        // +1 row vs. the original fixture height to absorb the always-on
+        // "+ run command…" Programs launcher row reserved at the bottom of
+        // the workspace list, so this still exercises the "everything fits"
+        // (zero scroll) case the test name describes.
+        let ws_area = Rect::new(0, 0, 30, 7);
         let metrics = workspace_list_scroll_metrics(&app, ws_area);
 
         assert_eq!(metrics.viewport_rows, 3);
@@ -4093,10 +4158,11 @@ mod tests {
 
         // Visible-count pass agrees: a body exactly `total_height` rows tall
         // shows every entry; one row less drops exactly the last (1-row)
-        // entry. Section area height = body + header rows + footer row.
-        let exact = Rect::new(0, 0, 30, total_height + WORKSPACE_SECTION_HEADER_ROWS + 1);
+        // entry. Section area height = body + header rows + footer row +
+        // the always-on "+ run command…" programs row.
+        let exact = Rect::new(0, 0, 30, total_height + WORKSPACE_SECTION_HEADER_ROWS + 2);
         assert_eq!(workspace_list_visible_count(&app, exact, 0), entries.len());
-        let short = Rect::new(0, 0, 30, total_height + WORKSPACE_SECTION_HEADER_ROWS);
+        let short = Rect::new(0, 0, 30, total_height + WORKSPACE_SECTION_HEADER_ROWS + 1);
         assert_eq!(
             workspace_list_visible_count(&app, short, 0),
             entries.len() - 1
@@ -4107,7 +4173,7 @@ mod tests {
         let sidebar = Rect::new(0, 0, 30, 40);
         let (cards, headers) = compute_workspace_list_areas(&app, sidebar);
         let ws_area = workspace_list_rect(sidebar, app.sidebar_section_split);
-        let body = workspace_list_body_rect(ws_area, false);
+        let body = workspace_list_body_rect(&app, ws_area, false);
         let mut expected_card_ys = Vec::new();
         let mut expected_header_ys = Vec::new();
         let mut y = body.y;

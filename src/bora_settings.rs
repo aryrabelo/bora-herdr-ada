@@ -146,9 +146,9 @@ pub(crate) fn allocate_port(repo_root: &Path, key: &str, range: &BoraPortsRange)
     }
 
     let taken: HashSet<u16> = map.values().copied().collect();
-    let step = range.effective_step() as u32;
-    let base = range.base as u32;
-    let max = range.max as u32;
+    let step = u32::from(range.effective_step());
+    let base = u32::from(range.base);
+    let max = u32::from(range.max);
     let port = (0..)
         .map(|k: u32| base + k * step)
         .take_while(|&candidate| candidate <= max)
