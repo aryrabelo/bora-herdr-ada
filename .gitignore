@@ -30,3 +30,9 @@ __pycache__/
 
 # graphify generated output
 graphify-out/
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key
+.beads/proxieddb/

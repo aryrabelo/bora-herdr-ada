@@ -2,22 +2,33 @@
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "Bash|Grep",
         "hooks": [
           {
-            "type": "command",
-            "command": "/Users/aryrabelo/.local/bin/graphify hook-guard search"
+            "command": "/Users/aryrabelo/.local/bin/graphify hook-guard search",
+            "type": "command"
           }
-        ]
+        ],
+        "matcher": "Bash|Grep"
       },
       {
-        "matcher": "Read|Glob",
         "hooks": [
           {
-            "type": "command",
-            "command": "/Users/aryrabelo/.local/bin/graphify hook-guard read"
+            "command": "/Users/aryrabelo/.local/bin/graphify hook-guard read",
+            "type": "command"
           }
-        ]
+        ],
+        "matcher": "Read|Glob"
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "command": "bd prime --hook-json",
+            "type": "command"
+          }
+        ],
+        "matcher": ""
       }
     ]
   }
