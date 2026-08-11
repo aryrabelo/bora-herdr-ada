@@ -60,21 +60,45 @@ pub(super) fn ghostty_mods_from_key_modifiers(modifiers: crossterm::event::KeyMo
 
 pub(super) fn ghostty_mouse_encoder_for_terminal(
     terminal: &crate::ghostty::Terminal,
+    position: crate::input::mouse::Position,
 ) -> Option<crate::ghostty::MouseEncoder> {
     let mut encoder = crate::ghostty::MouseEncoder::new().ok()?;
     encoder.set_from_terminal(terminal);
-    if terminal
-        .mode_get(crate::ghostty::MODE_MOUSE_SGR_PIXELS)
-        .ok()?
-    {
-        // Herdr receives host mouse positions in terminal cells. Downgrade
-        // SGR-pixels to normal SGR so forwarded coordinates stay cell-local.
-        encoder.set_format(crate::ghostty::MOUSE_FORMAT_SGR);
-    }
     let cols = u32::from(terminal.cols().ok()?);
     let rows = u32::from(terminal.rows().ok()?);
-    encoder.set_size(cols, rows, 1, 1);
+    match position {
+        crate::input::mouse::Position::Cell { .. } => {
+            if terminal
+                .mode_get(crate::ghostty::MODE_MOUSE_SGR_PIXELS)
+                .ok()?
+            {
+                // Herdr receives host mouse positions in terminal cells. Downgrade
+                // SGR-pixels to normal SGR so forwarded coordinates stay cell-local.
+                encoder.set_format(crate::ghostty::MOUSE_FORMAT_SGR);
+            }
+            encoder.set_size(cols, rows, 1, 1);
+        }
+        crate::input::mouse::Position::Pixels { .. } => {
+            let width_px = terminal.width_px().ok()?;
+            let height_px = terminal.height_px().ok()?;
+            if width_px == 0 || height_px == 0 || cols == 0 || rows == 0 {
+                return None;
+            }
+            encoder.set_size(width_px, height_px, width_px / cols, height_px / rows);
+        }
+    }
     Some(encoder)
+}
+
+pub(super) fn ghostty_mouse_position_for_terminal(
+    position: crate::input::mouse::Position,
+) -> Option<(f32, f32)> {
+    match position {
+        crate::input::mouse::Position::Pixels { x, y } => Some((x as f32, y as f32)),
+        crate::input::mouse::Position::Cell { column, row } => {
+            Some((f32::from(column), f32::from(row)))
+        }
+    }
 }
 
 pub(super) fn ghostty_mouse_event_from_button_kind(

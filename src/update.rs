@@ -171,6 +171,8 @@ struct UpdateManifest {
     protocol: Option<u32>,
     notes: String,
     assets: BTreeMap<String, AssetRef>,
+    #[serde(default)]
+    sha256: BTreeMap<String, String>,
     announcement: Option<serde_json::Value>,
     #[serde(default, deserialize_with = "deserialize_manifest_releases")]
     releases: BTreeMap<String, serde_json::Value>,
@@ -364,6 +366,13 @@ fn release_info_from_manifest(manifest: &UpdateManifest) -> Result<Option<Releas
         .get(&asset_key)
         .ok_or_else(|| format!("no binary for {asset_key} in update manifest"))?;
     let download_url = asset.url.clone();
+    let sha256 = asset
+        .sha256
+        .clone()
+        .or_else(|| manifest.sha256.get(&asset_key).cloned())
+        .ok_or_else(|| {
+            format!("update manifest asset {asset_key} is missing a SHA-256 checksum")
+        })?;
 
     Ok(Some(ReleaseInfo {
         identity: latest.to_string(),
@@ -374,7 +383,7 @@ fn release_info_from_manifest(manifest: &UpdateManifest) -> Result<Option<Releas
         #[cfg(not(windows))]
         target_protocol: manifest.protocol,
         download_url,
-        sha256: asset.sha256.clone(),
+        sha256: Some(sha256),
         notes_body,
     }))
 }
@@ -3436,6 +3445,26 @@ mod tests {
     }
 
     #[test]
+    fn stable_update_requires_asset_checksum() {
+        let (os, arch) = platform_target();
+        let asset_key = format!("{os}-{arch}");
+        let json = format!(
+            r####"{{
+                "version": "99.99.99",
+                "notes": "### Changed\n- One",
+                "assets": {{
+                    "{asset_key}": "https://example.com/herdr"
+                }}
+            }}"####
+        );
+        let manifest: UpdateManifest = serde_json::from_str(&json).unwrap();
+
+        assert!(release_info_from_manifest(&manifest)
+            .unwrap_err()
+            .contains("missing a SHA-256 checksum"));
+    }
+
+    #[test]
     fn invalid_manifest_announcement_does_not_block_release_info() {
         let (os, arch) = platform_target();
         let asset_key = format!("{os}-{arch}");
@@ -3450,7 +3479,10 @@ mod tests {
                     "body": "### Heads up\n- Defaults changed"
                 }},
                 "assets": {{
-                    "{asset_key}": "https://example.com/herdr"
+                    "{asset_key}": {{
+                        "url": "https://example.com/herdr",
+                        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    }}
                 }}
             }}"####
         );
@@ -3530,8 +3562,18 @@ mod tests {
 
     #[test]
     fn checked_in_website_manifest_matches_update_schema() {
-        let manifest: UpdateManifest = serde_json::from_str(include_str!("../website/latest.json"))
-            .expect("website/latest.json should match updater schema");
+        #[derive(Deserialize)]
+        struct LegacyUpdateManifest {
+            assets: BTreeMap<String, String>,
+        }
+
+        let json = include_str!("../website/latest.json");
+        let legacy: LegacyUpdateManifest = serde_json::from_str(json)
+            .expect("website/latest.json should keep legacy string asset URLs");
+        assert_eq!(legacy.assets.len(), 4);
+
+        let manifest: UpdateManifest =
+            serde_json::from_str(json).expect("website/latest.json should match updater schema");
 
         assert!(!manifest
             .metadata_for_version(&Version::parse(&manifest.version).unwrap())
@@ -3551,17 +3593,22 @@ mod tests {
             "macos-x86_64",
             "macos-aarch64",
         ] {
-            let url = &manifest
+            let asset = manifest
                 .assets
                 .get(target)
-                .unwrap_or_else(|| panic!("missing asset URL for {target}"))
-                .url;
+                .unwrap_or_else(|| panic!("missing asset URL for {target}"));
+            let url = &asset.url;
+            assert_eq!(
+                manifest.sha256.get(target).map(String::len),
+                Some(64),
+                "missing SHA-256 checksum for {target}"
+            );
             assert!(
                 url.contains(&format!("/releases/download/v{}/", manifest.version)),
                 "unexpected release URL for {target}: {url}"
             );
             assert!(
-                url.ends_with(&format!("herdr-{target}")),
+                url.ends_with(&format!("bora-{target}")),
                 "unexpected asset name for {target}: {url}"
             );
         }
@@ -3577,16 +3624,24 @@ mod tests {
                 "macos-x86_64",
                 "macos-aarch64",
             ] {
-                let url = assets
+                let asset = assets
                     .get(target)
-                    .and_then(serde_json::Value::as_str)
+                    .cloned()
                     .unwrap_or_else(|| panic!("missing asset URL for {version} {target}"));
+                let asset: AssetRef = serde_json::from_value(asset)
+                    .unwrap_or_else(|_| panic!("invalid asset for {version} {target}"));
+                let url = &asset.url;
                 assert!(
                     url.contains(&format!("/releases/download/v{version}/")),
                     "unexpected release URL for {version} {target}: {url}"
                 );
+                // Archived entries include releases inherited from upstream
+                // herdr (<= 0.8.0, `herdr-<target>`) alongside the fork's own
+                // (`bora-<target>`). Only the current release, asserted above,
+                // must be bora-named.
                 assert!(
-                    url.ends_with(&format!("herdr-{target}")),
+                    url.ends_with(&format!("bora-{target}"))
+                        || url.ends_with(&format!("herdr-{target}")),
                     "unexpected asset name for {version} {target}: {url}"
                 );
             }

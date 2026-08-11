@@ -28,12 +28,27 @@ stock `herdr` install (brew/mise) instead of overwriting it.
 
 ## Branch layout
 
-- `upstream` -> upstream `ogulcancelik/herdr`.
+- `upstream` -> upstream `herdrdev/herdr` (the org was renamed from
+  `ogulcancelik/herdr`; the old path still redirects).
 - `origin`   -> our repo `aryrabelo/bora-herdr-ada`.
 - `master` -> 1:1 mirror of upstream `master`. Never carries fork commits;
   only fast-forwarded (`scripts/bora sync`).
-- `main`   -> default branch = `master` + our features, each landed as a
-  squash-merged PR. Kept current by rebasing onto `master`.
+- `main`   -> default branch = `master` + our features. Kept current by
+  merging `master` in (never rebasing — see "Keeping current with upstream").
+
+### Worktree location (learned 2026-08-11, binding)
+
+Task worktrees for this repo live at `~/Sites/worktrees/bora/<slug>/` — the
+machine-wide convention is `~/Sites/worktrees/{repo}/{slug}/`. This overrides
+root `AGENTS.md`'s upstream `../herdr-worktrees/<task-slug>` layout, which does
+not apply on this workstation. Never create sibling worktrees next to the
+checkout (e.g. `~/Sites/bora-<something>`).
+
+```sh
+git worktree add ~/Sites/worktrees/bora/<slug> <ref>
+# when done:
+git worktree remove ~/Sites/worktrees/bora/<slug>
+```
 
 ## Build / install
 
@@ -97,18 +112,24 @@ workflow, and return to a pure from-source build.
 
 ## Keeping current with upstream
 
-`master` is a pristine mirror; `main` is rebased onto it.
+`master` is a pristine mirror; `main` carries the fork's work and takes
+`master` in by **merge**, never rebase — `main` already holds merge commits
+from prior syncs, so `git merge-base` finds the true delta and only genuinely
+new upstream commits need conflict resolution. A rebase replays `main`'s entire
+unique history instead and explodes into hundreds of conflicts. (learned
+2026-08-05, binding; enforced in `scripts/bora sync`.)
 
 ```sh
-scripts/bora sync   # fast-forward master to upstream, rebase main onto it
-# review the rebase, then publish:
-git push --force-with-lease origin main
+scripts/bora sync   # fast-forward master to upstream, then merge it into main
+# resolve conflicts, run `just check`, then publish:
+git push origin main
 ```
 
-Rebase conflicts are localized to the feature commits (`src/detect/*`,
+Conflicts cluster in the fork's own surfaces (`src/detect/*`,
 `src/config/sound.rs`, `src/terminal/state.rs`, the worktree-action files,
-`src/ui/sidebar.rs`, and the rebrand string changes). Resolve, finish the
-rebase, then rebuild (`scripts/bora build`).
+`src/ui/sidebar.rs`, `src/ui/dialogs.rs`, and the rebrand string changes —
+including `bora-*` release asset names and `CARGO_BIN_EXE_bora`). Resolve,
+commit the merge, then rebuild (`scripts/bora build`).
 
 ## Releases
 

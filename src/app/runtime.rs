@@ -60,6 +60,11 @@ impl App {
         msg: crate::api::ApiRequestMessage,
     ) -> bool {
         let previous_mode = self.state.mode;
+        let stream_open = match &msg.request.method {
+            crate::api::schema::Method::PaneGraphicsStreamOpen(params) => Some(params.clone()),
+            _ => None,
+        };
+        let stream_active = msg.stream_active.clone();
         let mut changed = self.expire_due_metadata(Instant::now());
         changed |= crate::api::request_changes_ui(&msg.request);
         let skip_default_workspace = matches!(
@@ -82,6 +87,9 @@ impl App {
             return changed | deferred_changed;
         }
         let response = self.handle_api_request(msg.request);
+        if let (Some(params), Some(active)) = (stream_open.as_ref(), stream_active) {
+            self.attach_pane_graphics_stream_active(params, active, &response);
+        }
         if !skip_default_workspace {
             changed |= self.ensure_default_workspace();
         }
@@ -232,6 +240,8 @@ impl App {
                 changes_view
             }
             crate::raw_input::RawInputEvent::OuterFocusGained => {
+                #[cfg(not(windows))]
+                self.query_host_terminal_appearance();
                 self.send_outer_focus_event(crate::ghostty::FocusEvent::Gained);
                 if self.state.redraw_on_focus_gained {
                     self.request_repaint();
@@ -395,6 +405,7 @@ impl App {
         }
 
         changed |= self.expire_due_metadata(now);
+        changed |= self.handle_tab_bar_status_tasks(now);
 
         // Periodically sweep workspaces and update their idle-since timestamps.
         let idle_check_due = self
@@ -664,8 +675,7 @@ impl App {
             self.session_save_deadline,
             self.selection_autoscroll_deadline,
             self.selection_highlight_clear_deadline,
-            self.workspace_idle_check_deadline,
-            self.state.next_hide_expiry(),
+            self.next_tab_bar_status_deadline(),
             render_deadline,
         ]
         .into_iter()
