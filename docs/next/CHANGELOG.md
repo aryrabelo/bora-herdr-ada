@@ -11,6 +11,9 @@ Bora is a fork of [herdr](https://github.com/herdrdev/herdr). This changelog rec
 - `website/latest.json` validation now expects the fork's `bora-<target>` release asset names instead of upstream's `herdr-<target>`, in both the current-release and archived-release checks.
 - The release-manifest test helper now builds `bora-<target>` asset fixtures, matching `scripts/changelog.py`'s expected asset names.
 - Direct installs verify the downloaded binary's SHA-256 against the release manifest again; the checksum comparison had been dropped from `website/install.sh`.
+- omp agent state is read from its OSC title (`π > `, `π <spinner> `, `π ! `) instead of a `π  /` body marker omp no longer renders. Every omp pane used to report `idle` through the known-agent fallback, even mid-turn.
+- Sidebar idle-age labels (`42s`, `12m`) keep counting while nothing else redraws: an idle pane now arms a 1 s re-render tick instead of relying on the spinner-only animation timer.
+- `just bench-render-scale` builds again: the recipe still passed upstream's `--bin herdr` after the fork renamed the binary to `bora`.
 
 ### Synced from herdr
 - Merged upstream `herdrdev/herdr` master (49 commits) into the fork.

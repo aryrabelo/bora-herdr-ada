@@ -38,6 +38,9 @@ use std::time::{Duration, Instant};
 
 const MIN_RENDER_INTERVAL: Duration = Duration::from_millis(16);
 pub(crate) const ANIMATION_INTERVAL: Duration = Duration::from_millis(16);
+/// Slow re-render cadence that keeps sidebar idle-age labels (`42s`, `12m`)
+/// advancing while nothing else marks a frame dirty.
+pub(crate) const IDLE_AGE_TICK_INTERVAL: Duration = Duration::from_secs(1);
 pub(crate) const SELECTION_AUTOSCROLL_INTERVAL: Duration = Duration::from_millis(30);
 const RESIZE_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const GIT_REMOTE_STATUS_REFRESH_INTERVAL: Duration = Duration::from_millis(1500);

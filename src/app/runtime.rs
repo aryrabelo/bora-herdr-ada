@@ -357,7 +357,7 @@ impl App {
             .is_some_and(|deadline| now >= deadline)
         {
             self.state.spinner_tick = self.state.spinner_tick.wrapping_add(1);
-            self.next_animation_tick = Some(now + ANIMATION_INTERVAL);
+            self.next_animation_tick = None;
             changed = true;
         }
 
@@ -499,11 +499,35 @@ impl App {
     }
 
     fn sync_animation_timer_with_interval(&mut self, now: Instant, interval: Duration) {
-        if self.agent_panel_has_animation() {
-            self.next_animation_tick.get_or_insert(now + interval);
+        // Spinners need frame-rate ticks; idle-age labels only need a slow tick.
+        let interval = if self.agent_panel_has_animation() {
+            Some(interval)
+        } else if self.has_idle_age_label() {
+            Some(crate::app::IDLE_AGE_TICK_INTERVAL)
         } else {
-            self.next_animation_tick = None;
+            None
+        };
+        match interval {
+            Some(interval) => {
+                let deadline = now + interval;
+                if self
+                    .next_animation_tick
+                    .is_none_or(|current| current > deadline)
+                {
+                    self.next_animation_tick = Some(deadline);
+                }
+            }
+            None => self.next_animation_tick = None,
         }
+    }
+
+    /// True while any terminal carries an idle timestamp, i.e. the sidebar is
+    /// drawing at least one age label that must keep counting.
+    fn has_idle_age_label(&self) -> bool {
+        self.state
+            .terminals
+            .values()
+            .any(|terminal| terminal.idle_since.is_some())
     }
 
     fn agent_panel_has_animation(&self) -> bool {
@@ -972,6 +996,79 @@ mod tests {
         );
     }
 
+    /// Insert a terminal for `pane_id` in `state`, with `idle_since` set when
+    /// the terminal should carry an age label.
+    fn set_pane_terminal(
+        app: &mut super::super::App,
+        pane_id: crate::layout::PaneId,
+        state: crate::detect::AgentState,
+        idle_since: Option<Instant>,
+    ) {
+        let terminal_id = app.state.workspaces[0]
+            .terminal_id(pane_id)
+            .expect("pane terminal")
+            .clone();
+        let mut terminal = crate::terminal::TerminalState::new(
+            terminal_id.clone(),
+            std::path::PathBuf::from("/tmp"),
+        );
+        terminal.state = state;
+        terminal.idle_since = idle_since;
+        app.state.terminals.insert(terminal_id, terminal);
+    }
+
+    #[test]
+    fn idle_age_tick_uses_slow_interval_without_animation() {
+        let (mut app, pane_id) = test_app_with_pane();
+        let now = Instant::now();
+        // Fresh panes are seen, so no unseen-idle animation is pending.
+        set_pane_terminal(
+            &mut app,
+            pane_id,
+            crate::detect::AgentState::Idle,
+            Some(now),
+        );
+
+        app.sync_animation_timer(now);
+
+        assert_eq!(
+            app.next_animation_tick,
+            Some(now + crate::app::IDLE_AGE_TICK_INTERVAL)
+        );
+    }
+
+    #[test]
+    fn animation_tick_prefers_frame_interval_when_working() {
+        let (mut app, pane_id) = test_app_with_pane();
+        let now = Instant::now();
+        set_pane_terminal(
+            &mut app,
+            pane_id,
+            crate::detect::AgentState::Working,
+            Some(now),
+        );
+
+        app.sync_animation_timer(now);
+        assert_eq!(app.next_animation_tick, Some(now + ANIMATION_INTERVAL));
+
+        // A pending slow idle deadline must not starve the spinner cadence.
+        app.next_animation_tick = Some(now + crate::app::IDLE_AGE_TICK_INTERVAL);
+        app.sync_animation_timer(now);
+        assert_eq!(app.next_animation_tick, Some(now + ANIMATION_INTERVAL));
+    }
+
+    #[test]
+    fn idle_age_tick_clears_without_idle_terminals() {
+        let (mut app, pane_id) = test_app_with_pane();
+        let now = Instant::now();
+        set_pane_terminal(&mut app, pane_id, crate::detect::AgentState::Unknown, None);
+        app.next_animation_tick = Some(now);
+
+        app.sync_animation_timer(now);
+
+        assert!(app.next_animation_tick.is_none());
+    }
+
     #[test]
     fn tick_selection_autoscroll_stops_when_metrics_unavailable() {
         // Without a runtime, pane_scroll_metrics returns None.
@@ -993,6 +1090,33 @@ mod tests {
         // Should stop because no runtime metrics available
         assert!(app.state.selection_autoscroll.is_none());
         assert!(app.selection_autoscroll_deadline.is_none());
+    }
+
+    #[test]
+    fn idle_age_tick_redraws_and_rearms_each_second() {
+        // End-to-end: an idle pane with no output must keep producing frames so
+        // the sidebar age label advances, and the timer must re-arm at 1 s.
+        let (mut app, pane_id) = test_app_with_pane();
+        let start = Instant::now();
+        set_pane_terminal(
+            &mut app,
+            pane_id,
+            crate::detect::AgentState::Idle,
+            Some(start),
+        );
+        app.sync_animation_timer(start);
+        let deadline = app.next_animation_tick.expect("idle tick armed");
+        assert_eq!(deadline, start + crate::app::IDLE_AGE_TICK_INTERVAL);
+
+        assert!(
+            app.handle_scheduled_tasks(deadline, false),
+            "due idle tick must mark the frame dirty"
+        );
+        assert_eq!(
+            app.next_animation_tick,
+            Some(deadline + crate::app::IDLE_AGE_TICK_INTERVAL),
+            "idle tick must re-arm at the slow cadence, not the frame cadence"
+        );
     }
 
     #[test]

@@ -154,33 +154,33 @@ line_regex = ["^exact line$"]
 }
 
 #[test]
-fn omp_manifest_detects_working_idle_and_blocked_from_screen() {
+fn omp_manifest_reads_state_from_title_not_body() {
     with_manifest_dirs("omp-states", || {
-        // Working: π status bar + braille spinner line + ⟦esc⟧ interrupt hint.
-        let working = " ⠸ doing a thing ⟦esc⟧\n╭── π  / ⬢ Opus 4.8 · ◒ med ─╮\n";
-        let w = explain(Agent::Omp, working);
-        assert_eq!(
-            w.state,
-            AgentState::Working,
-            "pi bar + spinner + interrupt hint should read working"
-        );
+        // The body carries no state anchor: a themed status bar, a spinner
+        // line, and prior output all fall back to known-agent idle.
+        for screen in [
+            " ⠸ doing a thing\n╭── π  / ⬢ Opus 4.8 · ◒ med ─╮\n",
+            "prior output\n╭── π  / ⬢ Opus 4.8 ─╮\n",
+        ] {
+            let result = explain(Agent::Omp, screen);
+            assert_eq!(result.state, AgentState::Idle);
+            assert!(
+                result.matched_rule.is_none(),
+                "body screens must not match a state rule: {screen:?}"
+            );
+        }
 
-        // Idle: status bar present, no spinner and no interrupt hint.
-        let idle = "prior output\n╭── π  / ⬢ Opus 4.8 ─╮\n";
-        let i = explain(Agent::Omp, idle);
-        assert_eq!(
-            i.state,
-            AgentState::Idle,
-            "pi bar without spinner/interrupt hint should read idle"
-        );
-
-        // Blocked: an interactive selection prompt outranks the in-progress spinner.
-        let blocked = " ⠸ choosing ⟦esc⟧\n  enter select   esc cancel\n╭── π  / ─╮\n";
+        // Blocked: the selection footer is the one body signal that stands.
+        let blocked = " ⠸ choosing\n  enter select   esc cancel\n╭── π  / ─╮\n";
         let b = explain(Agent::Omp, blocked);
         assert_eq!(
             b.state,
             AgentState::Blocked,
-            "selection prompt should outrank working and read blocked"
+            "selection prompt should read blocked"
+        );
+        assert_eq!(
+            b.matched_rule.as_ref().map(|rule| rule.id.as_str()),
+            Some("selection_prompt")
         );
     });
 }
@@ -944,4 +944,76 @@ fn codex_osc_working_beats_weak_blocker_screen() {
         result.matched_rule.as_ref().map(|r| r.id.as_str()),
         Some("osc_title_working")
     );
+}
+
+// --- omp OSC rules ---
+
+#[test]
+fn omp_osc_title_spinner_is_working() {
+    let result = osc_explain(Agent::Omp, "", "π ⠙ Fix sidebar", "");
+    assert_eq!(result.state, AgentState::Working);
+    assert_eq!(
+        result.matched_rule.as_ref().map(|r| r.id.as_str()),
+        Some("osc_title_working")
+    );
+    assert!(result.visible_working);
+}
+
+#[test]
+fn omp_osc_title_windows_colon_is_working() {
+    // Windows has no spinner; omp uses ":" as the working marker there.
+    let result = osc_explain(Agent::Omp, "", "π : Fix sidebar", "");
+    assert_eq!(result.state, AgentState::Working);
+    assert_eq!(
+        result.matched_rule.as_ref().map(|r| r.id.as_str()),
+        Some("osc_title_working")
+    );
+}
+
+#[test]
+fn omp_osc_title_prompt_marker_is_idle() {
+    let result = osc_explain(Agent::Omp, "", "π > Fix sidebar", "");
+    assert_eq!(result.state, AgentState::Idle);
+    assert_eq!(
+        result.matched_rule.as_ref().map(|r| r.id.as_str()),
+        Some("osc_title_idle")
+    );
+    assert!(result.visible_idle);
+}
+
+#[test]
+fn omp_osc_title_attention_is_blocked() {
+    let result = osc_explain(Agent::Omp, "", "π ! Fix sidebar", "");
+    assert_eq!(result.state, AgentState::Blocked);
+    assert_eq!(
+        result.matched_rule.as_ref().map(|r| r.id.as_str()),
+        Some("osc_title_blocked")
+    );
+    assert!(result.visible_blocker);
+}
+
+#[test]
+fn omp_selection_prompt_outranks_working_title() {
+    // The spinner can still be on screen while omp waits on the human.
+    let screen = "up/down navigate  enter select  esc cancel\n";
+    let result = osc_explain(Agent::Omp, screen, "π ⠙ Fix sidebar", "");
+    assert_eq!(result.state, AgentState::Blocked);
+    assert_eq!(
+        result.matched_rule.as_ref().map(|r| r.id.as_str()),
+        Some("selection_prompt")
+    );
+    assert!(result.visible_blocker);
+}
+
+#[test]
+fn omp_state_less_title_has_no_matched_rule() {
+    // `tui.titleState` disabled → "π: <label>" carries no state signal.
+    let result = osc_explain(Agent::Omp, "", "π: Fix sidebar", "");
+    assert_eq!(result.state, AgentState::Idle);
+    assert!(result.matched_rule.is_none());
+    assert_eq!(
+        result.fallback_reason.as_deref(),
+        Some(DEFAULT_KNOWN_AGENT_IDLE_FALLBACK)
+    );
+    assert!(!result.visible_idle);
 }

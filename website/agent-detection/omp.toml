@@ -1,46 +1,53 @@
 id = "omp"
-version = "2026.06.20.1"
+version = "2026.08.12.1"
 min_engine_version = 2
-updated_at = "2026-06-20T00:00:00Z"
+updated_at = "2026-08-12T00:00:00Z"
 aliases = ["herdr:omp"]
 
-# omp (oh-my-pi) renders a "π  /" status bar in every frame and sets its OSC
-# title to "π" / "π: <session>", so the π marker is the reliable identity
-# anchor. It does NOT encode working/idle in the title (unlike claude/codex), so
-# state is read from the body: a turn in progress shows a braille spinner plus
-# the ⟦esc⟧ interrupt hint; at the prompt neither is present. An interactive
-# Ask/selection prompt is waiting on the human, so it must read as blocked even
-# while a spinner or interrupt hint from the in-progress turn is still on screen
-# — hence the selection rule outranks the working rule.
+# omp (oh-my-pi) encodes state in its OSC 0 title, not in the body: the title is
+# "π > <label>" at the prompt, "π <braille frame> <label>" while a turn runs
+# (Windows uses "π : <label>" because it has no spinner), and "π ! <label>" while
+# omp waits on the human (its "attention" state, set when the ask/permission tool
+# starts). The body carries no reliable anchor — the status bar uses themed
+# nerd-font glyphs inside a box frame and the bottom rows are frequently a plugin
+# panel — so all state rules read the title. An interactive selection prompt is
+# waiting on the human, so both blocked rules outrank the working rule.
+#
+# With `tui.titleState` disabled the title degrades to "π: <label>" / "π" and
+# carries no state; an extension can also replace the title wholesale. In both
+# cases no rule matches and the known-agent idle fallback applies.
 
+[[rules]]
+id = "osc_title_blocked"
+state = "blocked"
+priority = 1200
+region = "osc_title"
+visible_blocker = true
+regex = ['^π\s+!(?:\s|$)']
+
+# Screen-level backstop: omp's selection/ask footer is
+# "up/down navigate  enter select  esc cancel". It outranks the working title
+# because the spinner can still be on screen while omp waits on the human.
 [[rules]]
 id = "selection_prompt"
 state = "blocked"
-priority = 300
+priority = 1150
 region = "whole_recent"
 visible_blocker = true
 contains = ["enter select", "esc cancel"]
 
 [[rules]]
-id = "working"
+id = "osc_title_working"
 state = "working"
-priority = 100
-region = "whole_recent"
+priority = 1050
+region = "osc_title"
 visible_working = true
-line_regex = ['π\s+/']
-any = [
-  { contains = ["⟦esc⟧"] },
-  { line_regex = ['^\s*[\x{2800}-\x{28FF}]\s'] },
-]
+regex = ['^π\s+(?:[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]|:)(?:\s|$)']
 
 [[rules]]
-id = "idle"
+id = "osc_title_idle"
 state = "idle"
-priority = 50
-region = "whole_recent"
+priority = 100
+region = "osc_title"
 visible_idle = true
-line_regex = ['π\s+/']
-not = [
-  { contains = ["⟦esc⟧"] },
-  { line_regex = ['^\s*[\x{2800}-\x{28FF}]\s'] },
-]
+regex = ['^π\s+>(?:\s|$)']

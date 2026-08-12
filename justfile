@@ -79,7 +79,7 @@ build:
 
 # Non-gating full-render scaling profile for background workspaces and active panes
 bench-render-scale:
-    cargo test --release --locked --bin herdr render_scale_profile -- --ignored --nocapture --test-threads=1
+    cargo test --release --locked --bin bora render_scale_profile -- --ignored --nocapture --test-threads=1
 
 # Build the website and documentation
 website-build:
