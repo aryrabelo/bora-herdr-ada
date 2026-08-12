@@ -402,9 +402,14 @@ fn restore_workspace(
         return (None, failed_imports);
     }
 
-    let worktree_space = restored_worktree_space_membership(snap.worktree_space.clone());
+    let restored_membership = restored_worktree_space_membership(snap.worktree_space.clone());
     let (cached_git_space, cached_auto_label, cached_git_status_key) =
         crate::workspace::discover_workspace_git_identity(&snap.identity_cwd);
+    let worktree_space = restored_membership.or_else(|| {
+        cached_git_space
+            .as_ref()
+            .map(|space| crate::workspace::worktree_space_from_git_space(space, &snap.identity_cwd))
+    });
 
     (
         Some(Workspace {

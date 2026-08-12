@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
@@ -91,6 +91,19 @@ pub(crate) fn discover_workspace_git_identity(
         .map(git_status_cache_key_for_space)
         .unwrap_or_else(|| cwd.to_path_buf());
     (space, auto_label, status_cache_key)
+}
+
+pub(crate) fn worktree_space_from_git_space(
+    space: &GitSpaceMetadata,
+    checkout_path: &Path,
+) -> WorktreeSpaceMembership {
+    WorktreeSpaceMembership {
+        key: space.key.clone(),
+        label: space.repo_name.clone(),
+        repo_root: space.repo_root.clone(),
+        checkout_path: checkout_path.to_path_buf(),
+        is_linked_worktree: space.is_linked_worktree,
+    }
 }
 
 impl WorkspaceGitStatusSnapshot {
@@ -279,6 +292,9 @@ impl Workspace {
         public_pane_numbers.insert(root_pane, 1);
         let (cached_git_space, cached_auto_label, cached_git_status_key) =
             discover_workspace_git_identity(&identity_cwd);
+        let worktree_space = cached_git_space
+            .as_ref()
+            .map(|space| worktree_space_from_git_space(space, &identity_cwd));
         Self {
             id,
             custom_name: label,
@@ -291,7 +307,7 @@ impl Workspace {
             cached_git_space,
             cached_change_set: None,
             cached_check_status: None,
-            worktree_space: None,
+            worktree_space,
             metadata_tokens: crate::metadata_tokens::MetadataTokens::default(),
             metadata_token_sequences: HashMap::new(),
             visual_group: None,
@@ -481,6 +497,9 @@ impl Workspace {
         public_pane_numbers.insert(tab.root_pane, 1);
         let (cached_git_space, cached_auto_label, cached_git_status_key) =
             discover_workspace_git_identity(&initial_cwd);
+        let worktree_space = cached_git_space
+            .as_ref()
+            .map(|space| worktree_space_from_git_space(space, &initial_cwd));
         Ok((
             Self {
                 id,
@@ -494,7 +513,7 @@ impl Workspace {
                 cached_git_space,
                 cached_change_set: None,
                 cached_check_status: None,
-                worktree_space: None,
+                worktree_space,
                 metadata_tokens: crate::metadata_tokens::MetadataTokens::default(),
                 metadata_token_sequences: HashMap::new(),
                 visual_group: None,
@@ -1770,6 +1789,67 @@ mod tests {
         );
         assert_eq!(auto_label, checkout.file_name().unwrap().to_str().unwrap());
 
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    #[tokio::test]
+    async fn workspace_new_derives_worktree_space_without_explicit_worktree_action() {
+        let (base, repo, checkout) = self::git::test_support::create_repo_with_linked_worktree(
+            "auto-derive-worktree-space",
+        );
+
+        #[cfg(windows)]
+        let command = "C:\\Windows\\System32\\whoami.exe";
+        #[cfg(not(windows))]
+        let command = "/usr/bin/true";
+        let argv = vec![command.to_string()];
+
+        let (events, _) = mpsc::channel(64);
+        let (repo_workspace, _repo_terminal, repo_runtime) = Workspace::new_argv_command(
+            repo.clone(),
+            24,
+            80,
+            &argv,
+            1024,
+            crate::terminal_theme::TerminalTheme::default(),
+            None,
+            events,
+            Arc::new(Notify::new()),
+            Arc::new(RenderSignal::new()),
+        )
+        .expect("create repo workspace");
+
+        let (events, _) = mpsc::channel(64);
+        let (checkout_workspace, _checkout_terminal, checkout_runtime) =
+            Workspace::new_argv_command(
+                checkout.clone(),
+                24,
+                80,
+                &argv,
+                1024,
+                crate::terminal_theme::TerminalTheme::default(),
+                None,
+                events,
+                Arc::new(Notify::new()),
+                Arc::new(RenderSignal::new()),
+            )
+            .expect("create checkout workspace");
+
+        let repo_membership = repo_workspace
+            .worktree_space
+            .as_ref()
+            .expect("repo workspace should derive worktree_space from discovered git identity");
+        let checkout_membership = checkout_workspace
+            .worktree_space
+            .as_ref()
+            .expect("checkout workspace should derive worktree_space from discovered git identity");
+
+        assert_eq!(repo_membership.key, checkout_membership.key);
+        assert!(!repo_membership.is_linked_worktree);
+        assert!(checkout_membership.is_linked_worktree);
+
+        repo_runtime.shutdown();
+        checkout_runtime.shutdown();
         std::fs::remove_dir_all(base).unwrap();
     }
 
