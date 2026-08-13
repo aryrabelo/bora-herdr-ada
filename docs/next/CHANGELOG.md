@@ -14,6 +14,7 @@ Bora is a fork of [herdr](https://github.com/herdrdev/herdr). This changelog rec
 - omp agent state is read from its OSC title (`π > `, `π <spinner> `, `π ! `) instead of a `π  /` body marker omp no longer renders. Every omp pane used to report `idle` through the known-agent fallback, even mid-turn.
 - Sidebar idle-age labels (`42s`, `12m`) keep counting while nothing else redraws: an idle pane now arms a 1 s re-render tick instead of relying on the spinner-only animation timer.
 - `just bench-render-scale` builds again: the recipe still passed upstream's `--bin herdr` after the fork renamed the binary to `bora`.
+- Sidebar spinner animation ticks every 80 ms instead of every 16 ms. The old cadence forced a full app re-render 60 times a second for as long as any pane in any workspace was working, which starved input handling (single keypresses got dropped) and made the outer terminal flicker. omp 17.3.0 rewrites its OSC title spinner every 80 ms, so bora now detects a working pane for essentially the whole turn and paid that 60 fps cost continuously. `SPINNER_TICK_STEP` keeps the visible glyph cadence unchanged.
 
 ### Synced from herdr
 - Merged upstream `herdrdev/herdr` master (49 commits) into the fork.

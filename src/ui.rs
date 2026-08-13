@@ -109,8 +109,9 @@ const COLLAPSED_WIDTH: u16 = 4; // num + space + dot + separator
 // Braille spinner frames — smooth rotation
 const SPINNERS: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
-/// Map spinner_tick (incremented every frame at ~60fps) to a spinner frame.
-/// We want ~8 updates/sec so divide by 8.
+/// Map `spinner_tick` to a spinner frame. The tick advances by
+/// `app::SPINNER_TICK_STEP` per animation tick, so this divisor of 8 lands at
+/// roughly 6-8 glyph updates/sec.
 pub(super) fn spinner_frame(tick: u32) -> &'static str {
     SPINNERS[(tick as usize / 8) % SPINNERS.len()]
 }
@@ -122,7 +123,7 @@ const SAND: &[&str] = &[
 ];
 
 /// Idle "sand" animation — deliberately slower than the working spinner
-/// (~2 fps at the 16ms tick) since it is ambient. Tunable via the divisor.
+/// (~2 fps) since it is ambient. Tunable via the divisor.
 pub(super) fn sand_frame(tick: u32) -> &'static str {
     SAND[(tick as usize / 30) % SAND.len()]
 }

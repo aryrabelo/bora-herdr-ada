@@ -356,7 +356,10 @@ impl App {
             .next_animation_tick
             .is_some_and(|deadline| now >= deadline)
         {
-            self.state.spinner_tick = self.state.spinner_tick.wrapping_add(1);
+            self.state.spinner_tick = self
+                .state
+                .spinner_tick
+                .wrapping_add(crate::app::SPINNER_TICK_STEP);
             self.next_animation_tick = None;
             changed = true;
         }
@@ -1055,6 +1058,29 @@ mod tests {
         app.next_animation_tick = Some(now + crate::app::IDLE_AGE_TICK_INTERVAL);
         app.sync_animation_timer(now);
         assert_eq!(app.next_animation_tick, Some(now + ANIMATION_INTERVAL));
+    }
+
+    /// `ANIMATION_INTERVAL` sets how often the app re-renders; `SPINNER_TICK_STEP`
+    /// compensates so the visible glyph cadence is unchanged. Slowing the render
+    /// tick without raising the step would freeze the spinner, so pin the
+    /// product: a glyph must change every 100-200 ms of wall clock.
+    #[test]
+    fn spinner_glyph_cadence_survives_the_render_tick_interval() {
+        let start = crate::ui::spinner_frame(0);
+        let mut tick = 0u32;
+        let ticks_per_glyph = loop {
+            tick += crate::app::SPINNER_TICK_STEP;
+            if crate::ui::spinner_frame(tick) != start {
+                break tick / crate::app::SPINNER_TICK_STEP;
+            }
+            assert!(tick < 10_000, "spinner glyph never advanced");
+        };
+        let glyph_period = ANIMATION_INTERVAL * ticks_per_glyph;
+        assert!(
+            (100..=200).contains(&glyph_period.as_millis()),
+            "spinner glyph period {glyph_period:?} left the 100-200 ms band; \
+             adjust SPINNER_TICK_STEP after changing ANIMATION_INTERVAL"
+        );
     }
 
     #[test]

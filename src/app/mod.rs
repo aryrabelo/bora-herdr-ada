@@ -37,7 +37,16 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 const MIN_RENDER_INTERVAL: Duration = Duration::from_millis(16);
-pub(crate) const ANIMATION_INTERVAL: Duration = Duration::from_millis(16);
+/// Sidebar spinner cadence. 80 ms (~12 fps) matches omp's own spinner and is
+/// plenty for a glyph cycle; the old 16 ms tick forced a full app re-render at
+/// 60 fps whenever any pane anywhere was working, which starved input handling
+/// and made the outer terminal flicker.
+pub(crate) const ANIMATION_INTERVAL: Duration = Duration::from_millis(80);
+/// `spinner_tick` advances by this much per animation tick so the actual glyph
+/// cadence (tick / divisor, see `ui::spinner_frame` and `ui::sand_frame`) stays
+/// what it was when `ANIMATION_INTERVAL` was 16 ms. Keep in sync with the ratio
+/// between `ANIMATION_INTERVAL` and that old 16 ms value.
+pub(crate) const SPINNER_TICK_STEP: u32 = 5;
 /// Slow re-render cadence that keeps sidebar idle-age labels (`42s`, `12m`)
 /// advancing while nothing else marks a frame dirty.
 pub(crate) const IDLE_AGE_TICK_INTERVAL: Duration = Duration::from_secs(1);
