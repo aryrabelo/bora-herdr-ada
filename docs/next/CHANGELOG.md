@@ -26,6 +26,8 @@ Bora is a fork of [herdr](https://github.com/herdrdev/herdr). This changelog rec
 - Pixel-precision mouse position forwarding for panes that request SGR-pixels reporting.
 - Server shutdown requests are prioritized over pane and API traffic.
 - Windows: lower idle agent-detection CPU, atomic installer swaps, and native support for all agent integrations.
+- Merged upstream `herdrdev/herdr` master again (12 commits): large terminal redraws are compacted instead of skipped, shifted-punctuation keybinds are disambiguated, the scrollback editor preserves logical lines, Claude title spinner frames are stripped, and repeated Git config reads are avoided.
+- Added Qwen Code detection for idle, working, and user-confirmation states, plus optional native session restore.
 
 ## [0.13.2] - 2026-08-05
 
@@ -76,6 +78,9 @@ Bora is a fork of [herdr](https://github.com/herdrdev/herdr). This changelog rec
 - Experimental pane graphics now support bounded named layers, acknowledged full-RGBA primary-layer direct file frames on audited local terminals, owned BGRA fallback, exact pixel mouse input, and placement-only resize replay.
 
 ### Fixed
+- `prefix+e` now preserves logical lines when opening soft-wrapped scrollback in an editor. (#2733)
+- Prefix keybindings now disambiguate layout-aware shifted punctuation, so a shifted `\` no longer triggers `prefix+|` on keyboard layouts where the same key produces both characters. (#2674)
+- Remote clients now continue redrawing at very large terminal sizes instead of freezing when a full ANSI frame exceeds the transport limit. (#2670)
 - OpenCode panes now track the root conversation selected in their own TUI for native restore without adopting activity from attached clients. (#2450)
 - Server stop requests now bypass pane and API traffic, preventing busy sessions from blocking shutdown or admitting a client while shutdown is pending. (#2612)
 - Fish `Ctrl+Alt` keybindings now work in panes after legacy Alt-prefixed control bytes are decoded with both modifiers. (#2514)

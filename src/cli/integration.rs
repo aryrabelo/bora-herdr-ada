@@ -110,13 +110,13 @@ fn parse_integration_target(
 ) -> std::io::Result<Option<IntegrationTarget>> {
     let Some(target) = args.first().map(std::string::String::as_str) else {
         eprintln!(
-            "usage: bora integration {action} <pi|omp|claude|codex|copilot|devin|droid|kimi|opencode|kilo|hermes|qodercli|cursor|mastracode|grok>"
+            "usage: bora integration {action} <pi|omp|claude|codex|copilot|devin|droid|kimi|opencode|kilo|hermes|qodercli|qwen|cursor|mastracode|grok>"
         );
         return Ok(None);
     };
     if args.len() != 1 {
         eprintln!(
-            "usage: bora integration {action} <pi|omp|claude|codex|copilot|devin|droid|kimi|opencode|kilo|hermes|qodercli|cursor|mastracode|grok>"
+            "usage: bora integration {action} <pi|omp|claude|codex|copilot|devin|droid|kimi|opencode|kilo|hermes|qodercli|qwen|cursor|mastracode|grok>"
         );
         return Ok(None);
     }
@@ -134,6 +134,7 @@ fn parse_integration_target(
         "kilo" => IntegrationTarget::Kilo,
         "hermes" => IntegrationTarget::Hermes,
         "qodercli" => IntegrationTarget::Qodercli,
+        "qwen" => IntegrationTarget::Qwen,
         "cursor" => IntegrationTarget::Cursor,
         "mastracode" => IntegrationTarget::Mastracode,
         "antigravity-cli" | "antigravity_cli" => IntegrationTarget::AntigravityCli,
@@ -141,7 +142,7 @@ fn parse_integration_target(
         _ => {
             eprintln!("unknown integration target: {target}");
             eprintln!(
-                "currently supported: pi, omp, claude, codex, copilot, devin, droid, kimi, opencode, kilo, hermes, qodercli, cursor, mastracode, antigravity-cli, grok"
+                "currently supported: pi, omp, claude, codex, copilot, devin, droid, kimi, opencode, kilo, hermes, qodercli, qwen, cursor, mastracode, antigravity-cli, grok"
             );
             return Ok(None);
         }
@@ -164,6 +165,7 @@ fn print_integration_help() {
     eprintln!("  bora integration install kilo");
     eprintln!("  bora integration install hermes");
     eprintln!("  bora integration install qodercli");
+    eprintln!("  bora integration install qwen");
     eprintln!("  bora integration install cursor");
     eprintln!("  bora integration install mastracode");
     eprintln!("  bora integration install antigravity-cli");
@@ -180,6 +182,7 @@ fn print_integration_help() {
     eprintln!("  bora integration uninstall kilo");
     eprintln!("  bora integration uninstall hermes");
     eprintln!("  bora integration uninstall qodercli");
+    eprintln!("  bora integration uninstall qwen");
     eprintln!("  bora integration uninstall cursor");
     eprintln!("  bora integration uninstall mastracode");
     eprintln!("  bora integration uninstall antigravity-cli");
