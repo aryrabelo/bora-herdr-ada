@@ -784,6 +784,7 @@ impl App {
             repo_branches: HashMap::new(),
             branches_fetch_in_flight: std::collections::HashSet::new(),
             terminal_runtime_shutdowns: Vec::new(),
+            force_full_repaint: false,
         };
 
         state.terminals = restored_terminals;

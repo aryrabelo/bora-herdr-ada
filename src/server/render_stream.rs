@@ -12,7 +12,13 @@ use crate::terminal::TerminalRuntimeRegistry;
 /// Per-client render baseline for the negotiated render encoding.
 pub(crate) enum ClientRenderState {
     /// Semantic clients compare full frame data and skip identical frames.
-    Semantic { last_frame: Option<FrameData> },
+    Semantic {
+        last_frame: Option<FrameData>,
+        /// Set when the next frame must tell the client to repaint every
+        /// cell from scratch, even if the frame content otherwise matches
+        /// `last_frame`. Cleared once that frame is committed as sent.
+        repaint_pending: bool,
+    },
     /// Terminal-ANSI clients keep a terminal diff encoder and sequence number.
     TerminalAnsi {
         blit_encoder: BlitEncoder,
@@ -24,7 +30,10 @@ pub(crate) enum ClientRenderState {
 impl ClientRenderState {
     pub(crate) fn new(render_encoding: RenderEncoding) -> Self {
         match render_encoding {
-            RenderEncoding::SemanticFrame => Self::Semantic { last_frame: None },
+            RenderEncoding::SemanticFrame => Self::Semantic {
+                last_frame: None,
+                repaint_pending: false,
+            },
             RenderEncoding::TerminalAnsi => Self::TerminalAnsi {
                 blit_encoder: BlitEncoder::new(),
                 seq: 0,
@@ -35,7 +44,13 @@ impl ClientRenderState {
 
     pub(crate) fn reset_baseline(&mut self) {
         match self {
-            Self::Semantic { last_frame } => *last_frame = None,
+            Self::Semantic {
+                last_frame,
+                repaint_pending,
+            } => {
+                *last_frame = None;
+                *repaint_pending = false;
+            }
             Self::TerminalAnsi {
                 blit_encoder,
                 repaint_pending,
@@ -49,7 +64,13 @@ impl ClientRenderState {
 
     pub(crate) fn request_repaint(&mut self) {
         match self {
-            Self::Semantic { last_frame } => *last_frame = None,
+            Self::Semantic {
+                last_frame,
+                repaint_pending,
+            } => {
+                *last_frame = None;
+                *repaint_pending = true;
+            }
             Self::TerminalAnsi {
                 repaint_pending, ..
             } => *repaint_pending = true,
@@ -57,19 +78,25 @@ impl ClientRenderState {
     }
 
     pub(crate) fn reset_semantic_input_baseline(&mut self) {
-        if let Self::Semantic { last_frame } = self {
+        if let Self::Semantic { last_frame, .. } = self {
             *last_frame = None;
         }
     }
 
     pub(crate) fn prepare_frame(&mut self, frame: FrameData) -> Option<PreparedRender> {
         match self {
-            Self::Semantic { last_frame } => {
-                if last_frame.as_ref() == Some(&frame) {
+            Self::Semantic {
+                last_frame,
+                repaint_pending,
+            } => {
+                let unchanged = last_frame.as_ref() == Some(&frame);
+                if unchanged && !*repaint_pending {
                     crate::render_prof::event("prepare_frame.semantic.skip_current");
                     return None;
                 }
                 crate::render_prof::event("prepare_frame.semantic.changed");
+                let mut frame = frame;
+                frame.force_full_repaint = *repaint_pending;
                 Some(PreparedRender::Semantic {
                     message: ServerMessage::Frame(frame),
                 })
@@ -113,7 +140,7 @@ impl ClientRenderState {
 
     pub(crate) fn last_frame(&self) -> Option<&FrameData> {
         match self {
-            Self::Semantic { last_frame } => last_frame.as_ref(),
+            Self::Semantic { last_frame, .. } => last_frame.as_ref(),
             Self::TerminalAnsi { blit_encoder, .. } => blit_encoder.last_frame(),
         }
     }
@@ -121,11 +148,18 @@ impl ClientRenderState {
     pub(crate) fn commit_sent_frame(&mut self, prepared: PreparedRender) {
         match (self, prepared) {
             (
-                Self::Semantic { last_frame },
-                PreparedRender::Semantic {
-                    message: ServerMessage::Frame(frame),
+                Self::Semantic {
+                    last_frame,
+                    repaint_pending,
                 },
-            ) => *last_frame = Some(frame),
+                PreparedRender::Semantic {
+                    message: ServerMessage::Frame(mut frame),
+                },
+            ) => {
+                frame.force_full_repaint = false;
+                *last_frame = Some(frame);
+                *repaint_pending = false;
+            }
             (
                 Self::TerminalAnsi {
                     blit_encoder,
@@ -634,6 +668,112 @@ mod render_scale_benchmark {
         print_profiles(
             "active panes (one workspace)",
             profile_cardinalities(app_with_active_panes),
+        );
+    }
+}
+
+#[cfg(test)]
+mod client_render_state_tests {
+    use super::*;
+    use crate::protocol::CellData;
+
+    fn make_frame(symbol: &str) -> FrameData {
+        FrameData {
+            cells: vec![CellData {
+                symbol: symbol.to_owned(),
+                fg: 0,
+                bg: 0,
+                modifier: 0,
+                skip: false,
+                hyperlink: None,
+            }],
+            width: 1,
+            height: 1,
+            cursor: None,
+            hyperlinks: Vec::new(),
+            graphics: Vec::new(),
+            force_full_repaint: false,
+        }
+    }
+
+    #[test]
+    fn semantic_request_repaint_forces_full_repaint_flag_on_next_frame() {
+        let mut state = ClientRenderState::new(RenderEncoding::SemanticFrame);
+
+        // Establish a baseline so the encoder would otherwise treat an
+        // identical next frame as unchanged and skip it.
+        let baseline = state
+            .prepare_frame(make_frame("A"))
+            .expect("first frame sends");
+        state.commit_sent_frame(baseline);
+
+        // A layout toggle requests a repaint without any content change.
+        state.request_repaint();
+        let prepared = state
+            .prepare_frame(make_frame("A"))
+            .expect("repaint-pending frame must send even if content is unchanged");
+        let PreparedRender::Semantic {
+            message: ServerMessage::Frame(frame),
+        } = &prepared
+        else {
+            panic!("expected a semantic frame message");
+        };
+        assert!(
+            frame.force_full_repaint,
+            "server must tell the client to repaint fully"
+        );
+
+        // The pending flag clears once the frame is committed as sent, so a
+        // subsequent identical frame with no new repaint request is skipped.
+        state.commit_sent_frame(prepared);
+        assert!(
+            state.prepare_frame(make_frame("A")).is_none(),
+            "repaint_pending must have cleared after commit_sent_frame"
+        );
+    }
+
+    #[test]
+    fn semantic_repaint_pending_clears_after_commit() {
+        let mut state = ClientRenderState::new(RenderEncoding::SemanticFrame);
+        let first = state.prepare_frame(make_frame("A")).unwrap();
+        state.commit_sent_frame(first);
+
+        state.request_repaint();
+        let repainted = state.prepare_frame(make_frame("A")).unwrap();
+        state.commit_sent_frame(repainted);
+
+        // Same content, no new repaint request: must now be skippable again.
+        assert!(
+            state.prepare_frame(make_frame("A")).is_none(),
+            "repaint_pending must have cleared after commit_sent_frame"
+        );
+    }
+
+    #[test]
+    fn terminal_ansi_request_repaint_forces_full_encode_and_clears_after_commit() {
+        let mut state = ClientRenderState::new(RenderEncoding::TerminalAnsi);
+        let first = state.prepare_frame(make_frame("A")).unwrap();
+        state.commit_sent_frame(first);
+
+        state.request_repaint();
+        let prepared = state
+            .prepare_frame(make_frame("A"))
+            .expect("repaint-pending frame must send even if content is unchanged");
+        let PreparedRender::TerminalAnsi { message, .. } = &prepared else {
+            panic!("expected a terminal-ansi frame message");
+        };
+        let ServerMessage::Terminal(terminal_frame) = message else {
+            panic!("expected a terminal frame message");
+        };
+        assert!(
+            terminal_frame.full,
+            "repaint request must force a full encode"
+        );
+        state.commit_sent_frame(prepared);
+
+        assert!(
+            state.prepare_frame(make_frame("A")).is_none(),
+            "repaint_pending must have cleared after commit_sent_frame"
         );
     }
 }

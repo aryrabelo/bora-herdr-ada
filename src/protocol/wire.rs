@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 // ---------------------------------------------------------------------------
 
 /// Current protocol version. Bumped when wire format changes incompatibly.
-pub const PROTOCOL_VERSION: u32 = 20;
+pub const PROTOCOL_VERSION: u32 = 21;
 
 /// Maximum allowed frame payload size (2 MB). Frames larger than this are
 /// rejected to prevent denial-of-service via oversized length prefixes.
@@ -537,6 +537,12 @@ pub struct FrameData {
     pub hyperlinks: Vec<String>,
     /// Kitty graphics protocol bytes to apply after the text frame.
     pub graphics: Vec<u8>,
+    /// True when the receiving client must repaint every cell from scratch
+    /// instead of diffing against its previously rendered frame. Set when a
+    /// layout change (e.g. sidebar/right-panel toggle) reflows pane content
+    /// without changing the outer terminal size, so encoders that key off
+    /// dimension changes alone would otherwise miss it.
+    pub force_full_repaint: bool,
 }
 
 impl FrameData {
@@ -597,6 +603,7 @@ impl FrameData {
             cursor,
             hyperlinks: hyperlink_uris,
             graphics: Vec::new(),
+            force_full_repaint: false,
         }
     }
 
@@ -1470,6 +1477,7 @@ mod tests {
             }),
             hyperlinks: vec!["https://example.com".to_owned()],
             graphics: Vec::new(),
+            force_full_repaint: false,
         };
         let msg = ServerMessage::Frame(frame);
         let encoded = bincode::serde::encode_to_vec(&msg, bincode::config::standard()).unwrap();
@@ -1705,6 +1713,7 @@ mod tests {
             }),
             hyperlinks: Vec::new(),
             graphics: Vec::new(),
+            force_full_repaint: false,
         };
         let msg = ServerMessage::Frame(frame);
 
@@ -2048,6 +2057,7 @@ mod tests {
             cursor: None,
             hyperlinks: Vec::new(),
             graphics: Vec::new(),
+            force_full_repaint: false,
         };
         assert!(frame.to_ratatui_buffer().is_none());
     }

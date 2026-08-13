@@ -4,6 +4,9 @@ Bora is a fork of [herdr](https://github.com/ogulcancelik/herdr). This changelog
 
 ## Unreleased
 
+### Fixed
+- Sidebar and right-panel toggle no longer leaves the terminal flickering (content painted a few rows off, alternating with the correct state) until an unrelated full redraw happens to fire. The toggle reflows every pane's column width without changing the outer terminal's size, so neither transport encoding noticed: the default `SemanticFrame` client encoder and the `terminal-ansi`/`--remote` `BlitEncoder` both decided full-vs-diff repaint purely from outer-frame dimensions, so a layout change alone never triggered a full repaint and the diff/scroll-shift path ran against already-reflowed content. `FrameData` now carries an explicit `force_full_repaint` signal (protocol version bumped 20 -> 21) that the server sets on any `AppState`-level layout change and both client encoders honor.
+
 ## [0.14.4] - 2026-08-13
 
 ### Fixed

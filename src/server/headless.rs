@@ -4328,6 +4328,7 @@ impl HeadlessServer {
             && self.app.state.toast.is_none()
             && self.app.state.copy_feedback.is_none()
             && !self.app.full_redraw_pending
+            && !self.app.state.force_full_repaint
     }
 
     fn send_retained_frame_to_client(
@@ -4409,6 +4410,20 @@ impl HeadlessServer {
     fn render_and_stream(&mut self) {
         let full_started = crate::render_prof::timer();
         let render_targets = render_targets(&self.clients, self.foreground_client_id);
+
+        // A layout change (e.g. sidebar/right-panel toggle) can reflow pane
+        // content without changing the outer terminal's cols/rows, so the
+        // per-client encoders below (which key full-repaint decisions off
+        // dimension changes) would otherwise miss it. Bridge the app-level
+        // "something changed" signal into an explicit per-client repaint
+        // request, mirroring the resize/cell-size-query handling elsewhere
+        // in this file.
+        if self.app.full_redraw_pending || self.app.state.force_full_repaint {
+            for client in self.clients.values_mut() {
+                client.request_repaint();
+            }
+            self.app.state.force_full_repaint = false;
+        }
 
         if render_targets.is_empty() {
             let (cols, rows) = self.effective_size;
@@ -8572,6 +8587,7 @@ next_tab = ""
             cursor: None,
             hyperlinks: Vec::new(),
             graphics: Vec::new(),
+            force_full_repaint: false,
         };
         let client = server.clients.get_mut(&1).unwrap();
         let prepared = client
@@ -9645,6 +9661,74 @@ next_tab = ""
             client_rx.recv_timeout(Duration::from_millis(50)).is_err(),
             "identical frame should not be sent twice"
         );
+    }
+
+    #[test]
+    fn render_and_stream_forces_client_repaint_after_layout_toggle_without_geometry_change() {
+        let mut server = test_headless_server();
+        server.app.state.workspaces = vec![crate::workspace::Workspace::test_new("test")];
+        server.app.state.active = Some(0);
+        server.app.state.selected = 0;
+        server.app.state.mode = crate::app::Mode::Terminal;
+
+        let (client_tx, _client_control_rx, client_rx) = test_client_writer();
+
+        server.clients.insert(
+            1,
+            ClientConnection::new(
+                (80, 24),
+                crate::kitty_graphics::HostCellSize::default(),
+                crate::terminal_theme::TerminalTheme::default(),
+                None,
+                1,
+                RenderEncoding::SemanticFrame,
+                Some(client_tx),
+            ),
+        );
+        server.foreground_client_id = Some(1);
+        server.sync_foreground_client_state();
+        server.resize_shared_runtime_to_effective_size();
+
+        server.render_and_stream();
+        client_rx
+            .recv_timeout(Duration::from_millis(100))
+            .expect("expected baseline frame");
+
+        // Steady state: an unchanged render must not resend anything, proving
+        // no repaint is pending yet.
+        server.render_and_stream();
+        assert!(
+            client_rx.recv_timeout(Duration::from_millis(50)).is_err(),
+            "identical content with no repaint request should not resend"
+        );
+
+        // Same outer geometry (80x24), but a layout toggle reflows pane
+        // content. This mirrors exactly what `NavigateAction::ToggleSidebar`
+        // does in `src/app/input/navigate.rs` (the App-level handler lives in
+        // a private module unreachable from this test module, so the
+        // production two-line effect is reproduced here directly).
+        server.app.state.sidebar_collapsed = !server.app.state.sidebar_collapsed;
+        server.app.state.request_full_repaint();
+
+        server.render_and_stream();
+        let toggled = client_rx
+            .recv_timeout(Duration::from_millis(100))
+            .expect("expected a frame after the layout toggle, even with unchanged geometry");
+        match read_server_message(toggled) {
+            ServerMessage::Frame(frame) => assert!(
+                frame.force_full_repaint,
+                "layout toggle must force the client to repaint fully"
+            ),
+            other => panic!("expected semantic frame, got {other:?}"),
+        }
+
+        // The forced-repaint flag must not leak into subsequent frames.
+        server.render_and_stream();
+        assert!(
+            client_rx.recv_timeout(Duration::from_millis(50)).is_err(),
+            "identical content with no new repaint request should not resend"
+        );
+        assert!(!server.app.state.force_full_repaint);
     }
 
     #[test]

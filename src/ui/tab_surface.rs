@@ -323,7 +323,7 @@ mod tests {
         // release bump, which is how it sat red on main for a week.
         assert_eq!(
             frame_digest_ignoring_row(&frame, 0),
-            "a36ea91792bb15ba3e46a266724441737b3ffd5b13a450194b1589da3be88c2f"
+            "28ba0ef5d9069f239bbd8a5e5516799d8e9c55e0606025fe4f2f7a4acd0d227d"
         );
     }
 
@@ -340,7 +340,7 @@ mod tests {
         assert_eq!(frame.cursor, None);
         assert_eq!(
             frame_digest(&frame),
-            "c25e76ce8a2d74abe5a106e62738f3da9851ad4073025028533f78d9c180f467"
+            "0553b6ce839fbaf16193554fbda304d2b56d60c6d9d728b5c226b3e181ee758c"
         );
     }
 }

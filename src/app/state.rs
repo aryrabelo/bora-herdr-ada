@@ -1970,11 +1970,20 @@ pub struct AppState {
     /// Terminal runtimes that should be shut down by the app/runtime layer
     /// after state has detached their terminal metadata.
     pub(crate) terminal_runtime_shutdowns: Vec<crate::terminal::TerminalId>,
+    /// Set when a layout change (e.g. sidebar/right-panel toggle) reflows
+    /// pane content without changing the outer terminal's cols/rows. Bridged
+    /// into a per-client repaint request by the headless render loop, since
+    /// dimension-keyed full-repaint heuristics would otherwise miss it.
+    pub(crate) force_full_repaint: bool,
 }
 
 impl AppState {
     pub(crate) fn mark_session_dirty(&mut self) {
         self.session_dirty = true;
+    }
+
+    pub(crate) fn request_full_repaint(&mut self) {
+        self.force_full_repaint = true;
     }
 
     /// Sidebar hide key for a single workspace (non-persisted presentation state).
@@ -2383,6 +2392,7 @@ impl AppState {
             repo_branches: std::collections::HashMap::new(),
             branches_fetch_in_flight: std::collections::HashSet::new(),
             terminal_runtime_shutdowns: Vec::new(),
+            force_full_repaint: false,
         }
     }
 

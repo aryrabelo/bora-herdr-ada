@@ -413,10 +413,12 @@ impl App {
             }
             NavigateAction::ToggleSidebar => {
                 self.state.sidebar_collapsed = !self.state.sidebar_collapsed;
+                self.state.request_full_repaint();
                 leave_navigate_mode(&mut self.state);
             }
             NavigateAction::ToggleRightPanel => {
                 self.state.right_panel_collapsed = !self.state.right_panel_collapsed;
+                self.state.request_full_repaint();
                 leave_navigate_mode(&mut self.state);
             }
             NavigateAction::CyclePaneNext => {
@@ -1856,11 +1858,13 @@ pub(super) fn execute_navigate_action_in_context(
         }
         NavigateAction::ToggleSidebar => {
             state.sidebar_collapsed = !state.sidebar_collapsed;
+            state.request_full_repaint();
             leave_navigate_mode(state);
         }
         NavigateAction::ToggleRightPanel => {
             // ponytail: wire keybind in config when user demand exists
             state.right_panel_collapsed = !state.right_panel_collapsed;
+            state.request_full_repaint();
             leave_navigate_mode(state);
         }
         NavigateAction::CyclePaneNext => {

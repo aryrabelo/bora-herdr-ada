@@ -607,6 +607,7 @@ struct FrameWire {
     cursor: Option<CursorWire>,
     hyperlinks: Vec<String>,
     graphics: Vec<u8>,
+    force_full_repaint: bool,
 }
 
 #[allow(dead_code)]

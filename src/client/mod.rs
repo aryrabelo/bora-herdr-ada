@@ -1656,15 +1656,13 @@ async fn run_client_loop(
                     } else {
                         frame_data
                     };
+                    let repaint = state.repaint_pending || frame_data.force_full_repaint;
                     let encoded = if state.draw_host_cursor {
-                        state.blit_encoder.encode_with_suppressed_visible_cursor(
-                            &frame_data,
-                            state.repaint_pending,
-                        )
-                    } else {
                         state
                             .blit_encoder
-                            .encode(&frame_data, state.repaint_pending)
+                            .encode_with_suppressed_visible_cursor(&frame_data, repaint)
+                    } else {
+                        state.blit_encoder.encode(&frame_data, repaint)
                     };
                     let mut stdout = io::stdout();
                     let graphics = if state.kitty_graphics_enabled {
