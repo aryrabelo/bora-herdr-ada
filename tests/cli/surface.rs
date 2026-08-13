@@ -463,7 +463,7 @@ fn api_schema_default_output_is_a_short_summary() {
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("Herdr API schema"), "stdout: {stdout}");
+    assert!(stdout.contains("Bora API schema"), "stdout: {stdout}");
     assert!(
         stdout.contains("Use `bora api schema --json`"),
         "stdout: {stdout}"
