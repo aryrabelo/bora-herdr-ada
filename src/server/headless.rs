@@ -190,9 +190,9 @@ fn record_render_impact(source: &'static str, impact: RenderImpact) {
     crate::render_prof::event(event);
 }
 
-fn rect_fits_frame(rect: Rect, frame: &FrameData) -> bool {
-    rect.x.saturating_add(rect.width) <= frame.width
-        && rect.y.saturating_add(rect.height) <= frame.height
+fn rect_fits_frame(rect: Rect, frame_size: (u16, u16)) -> bool {
+    let (width, height) = frame_size;
+    rect.x.saturating_add(rect.width) <= width && rect.y.saturating_add(rect.height) <= height
 }
 
 fn apply_terminal_dirty_patch(
@@ -200,7 +200,7 @@ fn apply_terminal_dirty_patch(
     area: Rect,
     patch: crate::pane::TerminalDirtyPatch,
 ) -> bool {
-    if !rect_fits_frame(area, frame) {
+    if !rect_fits_frame(area, (frame.width, frame.height)) {
         return false;
     }
     let width = usize::from(frame.width);
@@ -224,7 +224,7 @@ fn dirty_patch_intersects_hyperlinks(
     area: Rect,
     patch: &crate::pane::TerminalDirtyPatch,
 ) -> bool {
-    if frame.hyperlinks.is_empty() || !rect_fits_frame(area, frame) {
+    if frame.hyperlinks.is_empty() || !rect_fits_frame(area, (frame.width, frame.height)) {
         return false;
     }
     let width = usize::from(frame.width);
@@ -4184,45 +4184,16 @@ impl HeadlessServer {
         }
 
         let render_targets = render_targets(&self.clients, self.foreground_client_id);
-        let [(client_id, (cols, rows), cell_size, _is_foreground, mode)] =
-            render_targets.as_slice()
-        else {
-            retained_fallback!("multiple_or_no_target");
-        };
-        if !matches!(mode, ClientConnectionMode::App) {
+        if render_targets.is_empty() {
+            retained_success!("no_clients");
+        }
+        let app_targets: Vec<_> = render_targets
+            .into_iter()
+            .filter(|(_, _, _, _, mode)| matches!(mode, ClientConnectionMode::App))
+            .collect();
+        if app_targets.is_empty() {
             retained_fallback!("not_app_client");
         }
-        let Some(client) = self.clients.get(client_id) else {
-            retained_fallback!("client_missing");
-        };
-        if client.deferred_render() != DeferredRender::None {
-            retained_fallback!("render_pending");
-        }
-        if self.app.state.kitty_graphics_enabled && !client.graphics_cache.is_empty() {
-            retained_fallback!("graphics_cache_active");
-        }
-        if client.graphics_surface_reset_pending {
-            retained_fallback!("graphics_surface_reset");
-        }
-        if self.app.state.kitty_graphics_enabled
-            && cell_size.is_known()
-            && crate::kitty_graphics::has_visible_pane_graphics(
-                &self.app.state,
-                &self.app.pane_graphics,
-                &self.app.terminal_runtimes,
-                self.app.state.view.tab_surface(),
-                *cell_size,
-            )
-        {
-            retained_fallback!("visible_kitty_graphics");
-        }
-        let Some(mut frame) = client.render_state.last_frame().cloned() else {
-            retained_fallback!("no_last_frame");
-        };
-        if frame.width != *cols || frame.height != *rows {
-            retained_fallback!("frame_size_mismatch");
-        }
-        frame.graphics.clear();
 
         let Some(ws_idx) = self.app.state.active else {
             retained_fallback!("no_active_workspace");
@@ -4232,9 +4203,15 @@ impl HeadlessServer {
             retained_fallback!("no_pane_info");
         }
 
-        let mut touched = false;
-        for info in pane_infos {
-            if !rect_fits_frame(info.inner_rect, &frame) {
+        // `collect_dirty_patch` drains each pane's dirty-row tracking, so it must
+        // run exactly once per tick no matter how many clients are attached: every
+        // App client renders the same active workspace at `effective_size`, so the
+        // same patches are simply re-applied to each client's own retained
+        // baseline below instead of being recomputed (and re-drained) per client.
+        let (eff_cols, eff_rows) = self.effective_size;
+        let mut pane_patches: Vec<(Rect, crate::pane::TerminalDirtyPatch)> = Vec::new();
+        for info in &pane_infos {
+            if !rect_fits_frame(info.inner_rect, (eff_cols, eff_rows)) {
                 retained_fallback!("pane_rect_outside_frame");
             }
             let Some(runtime) = self.app.state.runtime_for_pane_in_workspace(
@@ -4254,34 +4231,89 @@ impl HeadlessServer {
                 crate::pane::TerminalDirtyPatchOutcome::Patch(patch) => {
                     crate::render_prof::event("retained.pane_patch");
                     crate::render_prof::counter("retained.patch_rows", patch.rows.len() as u64);
-                    if dirty_patch_intersects_hyperlinks(&frame, info.inner_rect, &patch) {
-                        retained_fallback!("hyperlink_intersection");
-                    }
-                    if !apply_terminal_dirty_patch(&mut frame, info.inner_rect, patch) {
-                        retained_fallback!("patch_apply_failed");
-                    }
-                    touched = true;
+                    pane_patches.push((info.inner_rect, patch));
                 }
             }
         }
 
-        let previous_cursor = frame.cursor.clone();
-        frame.cursor = crate::server::render_stream::focused_terminal_cursor(
+        let cursor = crate::server::render_stream::focused_terminal_cursor(
             &self.app.state,
             &self.app.terminal_runtimes,
         );
-        let cursor_changed = frame.cursor != previous_cursor;
 
-        if !touched && !cursor_changed {
-            retained_success!("clean_no_cursor_change");
+        // Pass 1: validate eligibility and build the patched frame for every
+        // attached App client. Any client that can't safely take the fast path
+        // this tick (queue backpressure, active graphics, a stale/missing
+        // baseline) falls the whole tick back to a full render for everyone,
+        // exactly like the single-client contract this generalizes — but now
+        // N=1 is no longer a hard requirement, so 2+ caught-up clients share
+        // the fast path instead of being forced to full-render on every frame.
+        let mut prepared: Vec<(u64, FrameData, bool)> = Vec::with_capacity(app_targets.len());
+        for (client_id, (cols, rows), cell_size, _is_foreground, _mode) in &app_targets {
+            let client_id = *client_id;
+            let Some(client) = self.clients.get(&client_id) else {
+                retained_fallback!("client_missing");
+            };
+            if client.deferred_render() != DeferredRender::None {
+                retained_fallback!("render_pending");
+            }
+            if self.app.state.kitty_graphics_enabled && !client.graphics_cache.is_empty() {
+                retained_fallback!("graphics_cache_active");
+            }
+            if client.graphics_surface_reset_pending {
+                retained_fallback!("graphics_surface_reset");
+            }
+            if self.app.state.kitty_graphics_enabled
+                && cell_size.is_known()
+                && crate::kitty_graphics::has_visible_pane_graphics(
+                    &self.app.state,
+                    &self.app.pane_graphics,
+                    &self.app.terminal_runtimes,
+                    self.app.state.view.tab_surface(),
+                    *cell_size,
+                )
+            {
+                retained_fallback!("visible_kitty_graphics");
+            }
+            let Some(mut frame) = client.render_state.last_frame().cloned() else {
+                retained_fallback!("no_last_frame");
+            };
+            if frame.width != *cols || frame.height != *rows {
+                retained_fallback!("frame_size_mismatch");
+            }
+            frame.graphics.clear();
+
+            let mut touched = false;
+            for (rect, patch) in &pane_patches {
+                if dirty_patch_intersects_hyperlinks(&frame, *rect, patch) {
+                    retained_fallback!("hyperlink_intersection");
+                }
+                if !apply_terminal_dirty_patch(&mut frame, *rect, patch.clone()) {
+                    retained_fallback!("patch_apply_failed");
+                }
+                touched = true;
+            }
+            prepared.push((client_id, frame, touched));
         }
 
+        // Pass 2: stream the validated frame to each client.
         let mut broken_clients = Vec::new();
-        let sent = self.send_retained_frame_to_client(*client_id, frame, &mut broken_clients);
+        let mut all_sent = true;
+        for (client_id, mut frame, touched) in prepared {
+            let previous_cursor = frame.cursor.clone();
+            frame.cursor = cursor.clone();
+            let cursor_changed = frame.cursor != previous_cursor;
+            if !touched && !cursor_changed {
+                continue;
+            }
+            if !self.send_retained_frame_to_client(client_id, frame, &mut broken_clients) {
+                all_sent = false;
+            }
+        }
         for broken_client in broken_clients {
             self.remove_client_and_resize_if_needed(broken_client);
         }
-        if sent {
+        if all_sent {
             retained_success!("sent");
         }
         retained_fallback!("send_failed");
@@ -4776,6 +4808,7 @@ impl HeadlessServer {
                 .app
                 .start_pending_agent_resumes(self.app.pending_agent_resume_due(now));
         }
+
         changed
     }
 
@@ -9751,6 +9784,67 @@ next_tab = ""
         );
         assert!(patched.cells.iter().any(|cell| cell.symbol == "Z"));
         assert_eq!((patched.width, patched.height), (80, 24));
+    }
+
+    /// Two attached App clients used to permanently disable the retained fast
+    /// path (`render_targets(...)` required exactly one target), forcing a full
+    /// render for every frame whenever a second client was attached. With both
+    /// clients caught up, the retained path must now serve both.
+    #[tokio::test]
+    async fn retained_pty_update_serves_two_attached_app_clients() {
+        let (mut server, client_rx_1, pane_id) = retained_test_server(b"aaaa");
+        let (client_tx_2, _client_control_rx_2, client_rx_2) = test_client_writer();
+        server.clients.insert(
+            2,
+            ClientConnection::new(
+                (80, 24),
+                crate::kitty_graphics::HostCellSize::default(),
+                crate::terminal_theme::TerminalTheme::default(),
+                None,
+                2,
+                RenderEncoding::SemanticFrame,
+                Some(client_tx_2),
+            ),
+        );
+
+        server.render_and_stream();
+        let first_1 = read_server_frame(
+            client_rx_1
+                .recv_timeout(Duration::from_millis(100))
+                .expect("client 1 initial frame"),
+        );
+        let first_2 = read_server_frame(
+            client_rx_2
+                .recv_timeout(Duration::from_millis(100))
+                .expect("client 2 initial frame"),
+        );
+        assert!(first_1.cells.iter().any(|cell| cell.symbol == "a"));
+        assert!(first_2.cells.iter().any(|cell| cell.symbol == "a"));
+
+        let runtime = server
+            .app
+            .state
+            .runtime_for_pane_in_workspace(&server.app.terminal_runtimes, 0, pane_id)
+            .expect("runtime");
+        runtime.test_process_pty_bytes(b"\rZ");
+
+        assert!(
+            server.render_retained_pty_update_and_stream(),
+            "two caught-up App clients must still use the retained fast path, \
+             not fall back to `multiple_or_no_target`"
+        );
+        let patched_1 = read_server_frame(
+            client_rx_1
+                .recv_timeout(Duration::from_millis(100))
+                .expect("client 1 retained frame"),
+        );
+        let patched_2 = read_server_frame(
+            client_rx_2
+                .recv_timeout(Duration::from_millis(100))
+                .expect("client 2 retained frame"),
+        );
+        assert!(patched_1.cells.iter().any(|cell| cell.symbol == "Z"));
+        assert!(patched_2.cells.iter().any(|cell| cell.symbol == "Z"));
     }
 
     #[tokio::test]
