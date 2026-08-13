@@ -4,6 +4,34 @@ Bora is a fork of [herdr](https://github.com/ogulcancelik/herdr). This changelog
 
 ## Unreleased
 
+## [0.14.3] - 2026-08-13
+
+### Added
+- Sidebar "Programs" launcher: a fixed band above the sidebar footer lists each pane-mode `.bora.toml` `[[commands]]` entry for the active workspace's branch, plus an always-on "+ run command…" row that opens a free-text prompt. Clicking an entry spawns it as a center-workspace pane through the existing command pipeline, so external tools (Helix, `gitui`, `bd`) are one click away instead of only reachable from the workspace context menu.
+
+### Fixed
+- `website/latest.json` validation now expects the fork's `bora-<target>` release asset names instead of upstream's `herdr-<target>`, in both the current-release and archived-release checks.
+- The release-manifest test helper now builds `bora-<target>` asset fixtures, matching `scripts/changelog.py`'s expected asset names.
+- Direct installs verify the downloaded binary's SHA-256 against the release manifest again; the checksum comparison had been dropped from `website/install.sh`.
+- omp agent state is read from its OSC title (`π > `, `π <spinner> `, `π ! `) instead of a `π  /` body marker omp no longer renders. Every omp pane used to report `idle` through the known-agent fallback, even mid-turn.
+- Sidebar idle-age labels (`42s`, `12m`) keep counting while nothing else redraws: an idle pane now arms a 1 s re-render tick instead of relying on the spinner-only animation timer.
+- `just bench-render-scale` builds again: the recipe still passed upstream's `--bin herdr` after the fork renamed the binary to `bora`.
+- Sidebar spinner animation ticks every 80 ms instead of every 16 ms. The old cadence forced a full app re-render 60 times a second for as long as any pane in any workspace was working, which starved input handling (single keypresses got dropped) and made the outer terminal flicker. omp 17.3.0 rewrites its OSC title spinner every 80 ms, so bora now detects a working pane for essentially the whole turn and paid that 60 fps cost continuously. `SPINNER_TICK_STEP` keeps the visible glyph cadence unchanged.
+
+### Synced from herdr
+- Merged upstream `herdrdev/herdr` master (49 commits) into the fork.
+- Per-pane right-click routing: panes can forward normal right-click gestures to mouse-reporting applications via the pane context menu, `bora pane input --right-click pane`, or `pane split --right-click pane`.
+- Configurable right-aligned tab bar status entries (zoom state, hostname, date/time, literal text, and asynchronously refreshed command output).
+- The outer terminal window title now tracks the session through `ui.window_title`.
+- New `keys.move_tab_previous` / `keys.move_tab_next` and `keys.resize_pane_*` keybind actions.
+- `pane read` and `pane wait-output` now accept `--flag=value` and reordered options.
+- Pixel-precision mouse position forwarding for panes that request SGR-pixels reporting.
+- Server shutdown requests are prioritized over pane and API traffic.
+- Windows: lower idle agent-detection CPU, atomic installer swaps, and native support for all agent integrations.
+- Merged upstream `herdrdev/herdr` master again (12 commits): large terminal redraws are compacted instead of skipped, shifted-punctuation keybinds are disambiguated, the scrollback editor preserves logical lines, Claude title spinner frames are stripped, and repeated Git config reads are avoided.
+- Added Qwen Code detection for idle, working, and user-confirmation states, plus optional native session restore.
+
+
 ### Setup local (plugins e atalhos) — 2026-08-11
 
 Plugins instalados no bora desta máquina, com auditoria de segurança em

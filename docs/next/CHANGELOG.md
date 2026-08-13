@@ -1,8 +1,10 @@
 # Changelog
 
-Bora is a fork of [herdr](https://github.com/herdrdev/herdr). This changelog records bora's own changes; changes pulled from upstream herdr during a sync are grouped under a "Synced from herdr" heading.
+Bora is a fork of [herdr](https://github.com/ogulcancelik/herdr). This changelog records bora's own changes; changes pulled from upstream herdr during a sync are grouped under a "Synced from herdr" heading.
 
 ## Unreleased
+
+## [0.14.3] - 2026-08-13
 
 ### Added
 - Sidebar "Programs" launcher: a fixed band above the sidebar footer lists each pane-mode `.bora.toml` `[[commands]]` entry for the active workspace's branch, plus an always-on "+ run command…" row that opens a free-text prompt. Clicking an entry spawns it as a center-workspace pane through the existing command pipeline, so external tools (Helix, `gitui`, `bd`) are one click away instead of only reachable from the workspace context menu.
@@ -29,18 +31,70 @@ Bora is a fork of [herdr](https://github.com/herdrdev/herdr). This changelog rec
 - Merged upstream `herdrdev/herdr` master again (12 commits): large terminal redraws are compacted instead of skipped, shifted-punctuation keybinds are disambiguated, the scrollback editor preserves logical lines, Claude title spinner frames are stripped, and repeated Git config reads are avoided.
 - Added Qwen Code detection for idle, working, and user-confirmation states, plus optional native session restore.
 
+
+### Setup local (plugins e atalhos) — 2026-08-11
+
+Plugins instalados no bora desta máquina, com auditoria de segurança em
+`~/Sites/herdr-plugins/` (clones pinados nos commits instalados):
+
+- **reviewr** (`persiyanov.reviewr`, SAFE) — pane de code-review ao lado do
+  agente: diff local, comentários por linha, envio pro input do agente.
+  - Abrir/fechar: `ctrl+alt+r` (toggle).
+  - No pane: `v` seleciona linhas, `c` comenta, `s` envia tudo pro agente,
+    `1/2/3` abas Changes / All files / PR (PR é read-only), `?` ajuda.
+- **gh-pr** (`wyattjoh/herdr-plugin-gh-pr`, SAFE) — status do PR + CI na
+  sidebar (`#123 ✓/✗/●`), refresh automático a cada 30s por pane.
+  - Sem comando: aparece na row do agente (token `$pr` na config da sidebar).
+  - Refresh manual: `bora plugin action invoke gh-pr.refresh`;
+    abrir PR no browser: `bora plugin action invoke gh-pr.open-pr`.
+- **automations** (fork local `~/Sites/herdr-plugins/herdr-automations`,
+  linkado; safe-with-caveats mitigado por build do source) — cron de agentes:
+  agenda um prompt, o bora acorda um agente num worktree novo.
+  - Board: `prefix+a` (overlay); `r` roda agora, `e` edita o YAML, `enter`
+    pula pro workspace do último run.
+  - CLI: `herdr-automations add | list | run <nome> | history | fire <evento>`.
+  - Config: `bora plugin config-dir dnzzl.automations` → `automations.yaml`.
+  - **Event triggers (feature nossa, branch `event-triggers`)**: campo
+    `on: worktree.created` no YAML dispara a automation quando o evento
+    ocorre no repo dela; outros eventos pedem um bloco `[[events]]` no
+    manifest. Repo privado: `aryrabelo/herdr-automations`.
+- **dashboard** (`chouxcreams.herdr-dashboard`) — TUI com o PR de cada pane
+  agrupado por workspace: estado, CI, reviews; daemon coleta a cada 90s.
+  - Abrir: `bora plugin action invoke open --plugin chouxcreams.herdr-dashboard`.
+  - Scriptável: `herdr-dashboard --once --json` (base para automações de CI).
+- **beads popover** (`hexsprite/herdr-beads`, safe-with-caveats /tmp) —
+  ctrl+click num id de bead (`https://bead.invalid/<id>`) abre os detalhes
+  num split; ids dentro do split também são clicáveis (anda a árvore de
+  dependências). Requer `bd` no PATH.
+- **file-viewer** (`smarzban/herdr-file-viewer`, safe-with-caveats) — visor de
+  arquivo git-aware num split. `prefix+f` abre.
+  - Caveat: update-checker liga sozinho e busca conteúdo remoto do GitHub
+    (`update_check` no config); desligável.
+- **board** (`bredebjorhovd/herdr-board`, ⚠️ HIGH finding, instalado mas SEM
+  credenciais configuradas — inerte) — board global de issues GitHub/Linear
+  → dispatch de agentes → review volta pro agente que abriu o PR.
+  - **NÃO configurar `.env`/`routing.toml` sem ler o achado abaixo primeiro.**
+    Reportado upstream: https://github.com/bredebjorhovd/herdr-board/issues/49
+  - `review.rs`: comentário de PR de **qualquer conta do GitHub** (repo
+    público) é digitado automaticamente no pane do agente vivo como se
+    fosse instrução — sem checar autor. `dispatch.rs`: título/corpo da
+    issue vai verbatim pro prompt de abertura, sem delimitador.
+    Mitigação até correção upstream: só repos privados seus,
+    `deliver_reviews = false`.
+  - Se/quando configurar: toggle `prefix+shift+o`; credenciais em
+    `bora plugin config-dir board`/`.env`; roteamento com `herdr-board init`.
+
+Removido: `tam.pr-workflow` (prompt de merge automático indesejado; fork
+patchado ficou em `~/Sites/herdr-pr-workflow`).
+
+Keybinds versionados em `dotfiles-2026/dotfiles/bora/config.toml`.
+
 ## [0.13.2] - 2026-08-05
 
 ### Added
 - Windows clients can now remote attach to unix hosts. (#2329)
 
 ### Changed
-- Herdr now keeps the outer terminal window title in sync with the session through `ui.window_title`, so window managers and terminal tab bars show the active workspace and the host the panes actually run on.
-- The desktop tab bar now has configurable right-aligned status entries for zoom state, hostname, date/time, literal text, and asynchronously refreshed command output.
-- Optional `keys.move_tab_previous` and `keys.move_tab_next` bindings now reorder the active tab in place, wrapping at either end.
-- Optional `keys.resize_pane_left`, `keys.resize_pane_down`, `keys.resize_pane_up`, and `keys.resize_pane_right` bindings now resize the focused pane in one keystroke without entering resize mode.
-- Devin CLI, Cursor Agent CLI, MastraCode, Hermes Agent, and Grok CLI integrations now install and run natively on Windows.
-- Panes can now route normal right-click gestures to mouse-reporting applications through the pane menu, `herdr pane input`, `pane.input.set`, or the `pane split --right-click pane` launch option.
 - `theme.custom.sidebar_bg` can now give the desktop sidebar its own background without changing built-in theme defaults.
 
 ### Fixed
@@ -72,24 +126,7 @@ Bora is a fork of [herdr](https://github.com/herdrdev/herdr). This changelog rec
 - Settings and `ui.status_indicators = "symbols"` can now use distinct static shapes for blocked, working, done, idle, and unknown agent states. (#2260)
 - The plugin marketplace now discovers valid manifests at repository roots and subdirectories, groups multiple plugins under each repository, and publishes their versions and exact default-branch commits.
 
-### Changed
-- Desktop tab labels are now centered in their tabs, so the active-tab highlight has symmetric padding.
-- Bumped the client/server protocol version to 20 for pane terminal bell forwarding.
-- Experimental pane graphics now support bounded named layers, acknowledged full-RGBA primary-layer direct file frames on audited local terminals, owned BGRA fallback, exact pixel mouse input, and placement-only resize replay.
-
 ### Fixed
-- `prefix+e` now preserves logical lines when opening soft-wrapped scrollback in an editor. (#2733)
-- Prefix keybindings now disambiguate layout-aware shifted punctuation, so a shifted `\` no longer triggers `prefix+|` on keyboard layouts where the same key produces both characters. (#2674)
-- Remote clients now continue redrawing at very large terminal sizes instead of freezing when a full ANSI frame exceeds the transport limit. (#2670)
-- OpenCode panes now track the root conversation selected in their own TUI for native restore without adopting activity from attached clients. (#2450)
-- Server stop requests now bypass pane and API traffic, preventing busy sessions from blocking shutdown or admitting a client while shutdown is pending. (#2612)
-- Fish `Ctrl+Alt` keybindings now work in panes after legacy Alt-prefixed control bytes are decoded with both modifiers. (#2514)
-- `herdr config check` now reports unknown built-in theme names instead of silently accepting them. (#2452)
-- macOS `herdr --remote` clients now keep the accepted bridge socket blocking, preventing an immediate disconnect after the protocol handshake. (#2478, thanks @mathijshenquet)
-- Prefix keybindings now preserve Shift in WezTerm Kitty keyboard mode, so commands such as config reload no longer trigger their unshifted action. (#2435)
-- BEL characters emitted by pane programs now reach the outer terminal so its audible and visual bell settings can react. (#2453)
-- Stable direct installs, self-updates, and remote helper downloads now require and verify the SHA-256 digest published for each GitHub release asset.
-- Configs containing the retired Herdr-written `ui.agent_panel_scope` setting no longer report it as an unknown key after upgrades. (#2292)
 - Claude Code confirmation prompts using `Enter to confirm · Esc to cancel` now report `blocked` instead of `idle`. (#2268)
 - Sidebar agent lists keep scrolling when differently sized clients are attached to the same session. (#2255, thanks @aiworkflowpro)
 - `pane send-keys` and `agent send-keys` now preserve Shift when sending `shift+tab`, allowing agent permission modes to be cycled programmatically. (#1561, thanks @keinstn and @tomohisa)
