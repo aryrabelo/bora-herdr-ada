@@ -486,9 +486,23 @@ fn blit_frame_to_with_cursor_memory_and_clear_policy(
         let prev = prev.unwrap();
         let shift = detect_scroll_shift(frame, prev);
         if let Some(shift) = shift {
+            // DECSLRM only takes effect while DECLRMM (mode 69) is enabled,
+            // and only needs to be emitted when the shift does not already
+            // span the full width — mirroring libghostty-vt's own formatter
+            // convention of only emitting margins that aren't the default.
+            let full_width = shift.left == 0 && shift.right == frame.width - 1;
+            if !full_width {
+                let _ = writer.write_all(b"\x1b[?69h");
+            }
             let _ = write!(writer, "\x1b[{};{}r", shift.top + 1, shift.bottom + 1);
+            if !full_width {
+                let _ = write!(writer, "\x1b[{};{}s", shift.left + 1, shift.right + 1);
+            }
             let _ = write!(writer, "\x1b[{}S", shift.lines);
             let _ = writer.write_all(b"\x1b[r");
+            if !full_width {
+                let _ = writer.write_all(b"\x1b[?69l");
+            }
         }
         write_changed_cells(&mut writer, frame, prev, shift);
     }
@@ -780,11 +794,14 @@ fn cells_visually_equal(
     // Skip flag is only for ratatui internal use, not visual.
 }
 
-/// Describes a uniform vertical shift of screen content between two frames.
+/// Describes a uniform vertical shift of screen content between two frames,
+/// confined to a column range.
 ///
 /// When a pane scrolls, every row below the scrolled band moves by the same
 /// number of lines. Detecting that shift lets the blit emit a real terminal
-/// scroll (`SU`) instead of repainting every cell as if it changed.
+/// scroll (`SU`) instead of repainting every cell as if it changed. Columns
+/// outside `[left, right]` are excluded because they did not move — most
+/// commonly a sidebar sitting next to the pane that scrolled.
 #[derive(Clone, Copy)]
 struct ScrollShift {
     /// First row of the scrolled band, inclusive, 0-based.
@@ -793,22 +810,29 @@ struct ScrollShift {
     bottom: u16,
     /// How many rows the band's content moved up by.
     lines: u16,
+    /// First column that moved, inclusive, 0-based.
+    left: u16,
+    /// Last column that moved, inclusive, 0-based.
+    right: u16,
 }
 
-/// Hashes every field [`cells_visually_equal`] compares, for one row.
+/// Hashes every field [`cells_visually_equal`] compares, for the `[left,
+/// right]` segment of one row.
 ///
 /// Hashes the *resolved* hyperlink string rather than the raw
 /// `CellData::hyperlink` index: the two frames' hyperlink tables are
 /// independent, so the same index can resolve to different URIs in each.
-fn hash_row_for_scroll_shift(
+fn hash_row_segment_for_scroll_shift(
     frame: &FrameData,
     sanitized_hyperlinks: &[Option<String>],
     row: u16,
+    left: u16,
+    right: u16,
 ) -> u64 {
     let width = frame.width as usize;
     let start = (row as usize) * width;
     let mut hasher = DefaultHasher::new();
-    for cell in &frame.cells[start..start + width] {
+    for cell in &frame.cells[start + left as usize..=start + right as usize] {
         cell.symbol.hash(&mut hasher);
         cell.fg.hash(&mut hasher);
         cell.bg.hash(&mut hasher);
@@ -819,9 +843,42 @@ fn hash_row_for_scroll_shift(
     hasher.finish()
 }
 
-/// Verifies a candidate scroll band cell-by-cell so a row-hash collision can
-/// never cause a bad skip. Costs one pass over the band — the same order as
-/// the diff it replaces, so this is not a new asymptotic cost.
+/// Checks whether `col` belongs to the shifted rectangle: for every row `y`
+/// in `top..=shifted_bottom`, `frame` at `(y, col)` must be visually
+/// identical to `prev` at `(y + lines, col)`. Used to expand a column range
+/// outward from a probe so a changing sidebar/gutter or a moving scrollbar
+/// — anything that does not participate in the scroll — stops the expansion
+/// rather than being folded into the rectangle.
+fn column_shifts_uniformly(
+    frame: &FrameData,
+    prev: &FrameData,
+    frame_hyperlinks: &[Option<String>],
+    prev_hyperlinks: &[Option<String>],
+    top: u16,
+    shifted_bottom: u16,
+    lines: u16,
+    col: u16,
+) -> bool {
+    let width = frame.width as usize;
+    for y in top..=shifted_bottom {
+        let frame_idx = (y as usize) * width + col as usize;
+        let prev_idx = ((y + lines) as usize) * width + col as usize;
+        if !cells_visually_equal(
+            frame_hyperlinks,
+            &frame.cells[frame_idx],
+            prev_hyperlinks,
+            &prev.cells[prev_idx],
+        ) {
+            return false;
+        }
+    }
+    true
+}
+
+/// Verifies a candidate scroll band cell-by-cell, restricted to
+/// `shift.left..=shift.right`, so a row-hash collision can never cause a bad
+/// skip. Costs one pass over the band — the same order as the diff it
+/// replaces, so this is not a new asymptotic cost.
 fn scroll_shift_band_matches(
     frame: &FrameData,
     prev: &FrameData,
@@ -833,9 +890,9 @@ fn scroll_shift_band_matches(
     for y in shift.top..=(shift.bottom - shift.lines) {
         let frame_start = (y as usize) * width;
         let prev_start = ((y + shift.lines) as usize) * width;
-        for col in 0..width {
-            let cell = &frame.cells[frame_start + col];
-            let prev_cell = &prev.cells[prev_start + col];
+        for col in shift.left..=shift.right {
+            let cell = &frame.cells[frame_start + col as usize];
+            let prev_cell = &prev.cells[prev_start + col as usize];
             if !cells_visually_equal(frame_hyperlinks, cell, prev_hyperlinks, prev_cell) {
                 return false;
             }
@@ -844,26 +901,61 @@ fn scroll_shift_band_matches(
     true
 }
 
-/// Detects a uniform vertical scroll between `prev` and `frame`.
+/// Detects a uniform vertical scroll between `prev` and `frame`, confined to
+/// the column range that actually shifted.
+///
+/// Uses a probe-then-expand strategy instead of a bounding box over changed
+/// cells: a bounding box would stretch to the full width whenever a sidebar
+/// gutter carries a live indicator (e.g. a per-workspace status dot) that
+/// changes almost every frame, degenerating to the same full-width detection
+/// that already fails to fire on a real, gutter-bearing layout. Instead:
+/// 1. Hash only a central probe column range (the middle half of the width)
+///    and run the shift search on that segment. In every realistic layout
+///    the probe sits inside the pane that actually scrolls, so a gutter at
+///    the edges cannot pollute the candidate.
+/// 2. Expand the column range outward from the probe, one column at a time,
+///    stopping at the first column that does not shift uniformly. This
+///    naturally excludes a changing gutter or a moving scrollbar without
+///    needing to know anything about layout.
 ///
 /// Only meaningful when both frames share the same dimensions; callers must
 /// check that before relying on the result (this function also checks, and
 /// returns `None` on mismatch, as a defensive guard).
 fn detect_scroll_shift(frame: &FrameData, prev: &FrameData) -> Option<ScrollShift> {
     if frame.width != prev.width || frame.height != prev.height {
+        crate::render_prof::event("scroll_shift.miss_dims");
         return None;
     }
+    let width = frame.width;
     let height = frame.height;
     let threshold = cmp::max(8, (height / 3) as usize);
+
+    let probe_left = width / 4;
+    let probe_right = (3 * width / 4).saturating_sub(1);
+    if probe_right < probe_left {
+        // Too narrow to have a meaningful probe range.
+        crate::render_prof::event("scroll_shift.miss_dims");
+        return None;
+    }
 
     let frame_hyperlinks = sanitized_frame_hyperlinks(frame);
     let prev_hyperlinks = sanitized_frame_hyperlinks(prev);
 
     let curr_hash: Vec<u64> = (0..height)
-        .map(|row| hash_row_for_scroll_shift(frame, &frame_hyperlinks, row))
+        .map(|row| {
+            hash_row_segment_for_scroll_shift(
+                frame,
+                &frame_hyperlinks,
+                row,
+                probe_left,
+                probe_right,
+            )
+        })
         .collect();
     let prev_hash: Vec<u64> = (0..height)
-        .map(|row| hash_row_for_scroll_shift(prev, &prev_hyperlinks, row))
+        .map(|row| {
+            hash_row_segment_for_scroll_shift(prev, &prev_hyperlinks, row, probe_left, probe_right)
+        })
         .collect();
 
     // Find the shift amount (in lines) with the most matching rows.
@@ -879,10 +971,10 @@ fn detect_scroll_shift(frame: &FrameData, prev: &FrameData) -> Option<ScrollShif
             best_lines = Some(lines);
         }
     }
-    if best_count < threshold {
+    let Some(lines) = best_lines.filter(|_| best_count >= threshold) else {
+        crate::render_prof::event("scroll_shift.miss_threshold");
         return None;
-    }
-    let lines = best_lines?;
+    };
 
     // Find the longest contiguous run of matching rows for that shift amount.
     let span = (height - lines) as usize;
@@ -894,43 +986,113 @@ fn detect_scroll_shift(frame: &FrameData, prev: &FrameData) -> Option<ScrollShif
             run_start.get_or_insert(y);
         } else if let Some(start) = run_start.take() {
             let end = y - 1;
-            if best_run.map_or(true, |(bs, be)| end - start > be - bs) {
+            if best_run.is_none_or(|(bs, be)| end - start > be - bs) {
                 best_run = Some((start, end));
             }
         }
     }
     if let Some(start) = run_start {
         let end = span - 1;
-        if best_run.map_or(true, |(bs, be)| end - start > be - bs) {
+        if best_run.is_none_or(|(bs, be)| end - start > be - bs) {
             best_run = Some((start, end));
         }
     }
-    let (run_start, run_end) = best_run?;
+    let Some((run_start, run_end)) = best_run else {
+        crate::render_prof::event("scroll_shift.miss_run");
+        return None;
+    };
     if run_end - run_start + 1 < threshold {
+        crate::render_prof::event("scroll_shift.miss_run");
         return None;
     }
 
     let top = run_start as u16;
     let bottom = run_end as u16 + lines;
     if bottom >= height {
+        crate::render_prof::event("scroll_shift.miss_band");
         return None;
     }
-    let shift = ScrollShift { top, bottom, lines };
+    let shifted_bottom = bottom - lines;
 
-    scroll_shift_band_matches(frame, prev, shift, &frame_hyperlinks, &prev_hyperlinks)
-        .then_some(shift)
+    // Expand outward from the probe range: a column joins the rectangle only
+    // if every row in the shifted sub-band shows identical content between
+    // `frame` at that column and `prev` shifted by `lines` at that column.
+    let mut left = probe_left;
+    while left > 0
+        && column_shifts_uniformly(
+            frame,
+            prev,
+            &frame_hyperlinks,
+            &prev_hyperlinks,
+            top,
+            shifted_bottom,
+            lines,
+            left - 1,
+        )
+    {
+        left -= 1;
+    }
+    let mut right = probe_right;
+    while right + 1 < width
+        && column_shifts_uniformly(
+            frame,
+            prev,
+            &frame_hyperlinks,
+            &prev_hyperlinks,
+            top,
+            shifted_bottom,
+            lines,
+            right + 1,
+        )
+    {
+        right += 1;
+    }
+
+    let cols = right - left + 1;
+    crate::render_prof::counter("scroll_shift.cols", u64::from(cols));
+
+    // Require a sane minimum width before bothering with a DECLRMM/DECSLRM
+    // round-trip: a sliver this narrow is not worth the overhead.
+    let min_cols = cmp::max(16, (width / 3) as usize);
+    if usize::from(cols) < min_cols {
+        crate::render_prof::event("scroll_shift.miss_band");
+        return None;
+    }
+
+    let shift = ScrollShift {
+        top,
+        bottom,
+        lines,
+        left,
+        right,
+    };
+
+    if scroll_shift_band_matches(frame, prev, shift, &frame_hyperlinks, &prev_hyperlinks) {
+        crate::render_prof::event("scroll_shift.hit");
+        crate::render_prof::counter("scroll_shift.lines", u64::from(shift.lines));
+        Some(shift)
+    } else {
+        crate::render_prof::event("scroll_shift.miss_verify");
+        None
+    }
 }
 
-/// Resolves which row of `prev` the terminal currently shows at `row`, given
-/// an optional scroll `shift` already emitted for this frame.
+/// Resolves which row of `prev` the terminal currently shows at `(row,
+/// col)`, given an optional scroll `shift` already emitted for this frame.
+///
+/// Columns outside `shift.left..=shift.right` never moved even when `row`
+/// falls inside the scrolled band, because the scroll region was confined to
+/// that column range (e.g. a sidebar next to a scrolling pane).
 ///
 /// `None` means the scroll exposed a blank row with no prior content: every
 /// non-skip cell there must be written unconditionally.
-fn scroll_shift_prev_row(row: u16, shift: Option<ScrollShift>) -> Option<u16> {
+fn scroll_shift_prev_row(row: u16, col: u16, shift: Option<ScrollShift>) -> Option<u16> {
     match shift {
         None => Some(row),
         Some(shift) => {
-            if row < shift.top || row > shift.bottom {
+            let in_band = row >= shift.top && row <= shift.bottom;
+            let in_columns = col >= shift.left && col <= shift.right;
+            if !in_band || !in_columns {
                 Some(row)
             } else if row <= shift.bottom - shift.lines {
                 Some(row + shift.lines)
@@ -954,10 +1116,6 @@ fn write_changed_cells(
     let width = frame.width as usize;
 
     for row in 0..frame.height {
-        // A scroll already emitted for this frame means the terminal shows
-        // `prev`'s content at a different row than before: resolve which one.
-        // `None` means the scroll exposed a blank row with no prior content.
-        let prev_row = scroll_shift_prev_row(row, shift);
         let mut invalidated = 0usize;
         let mut to_skip = 0usize;
         // Herdr clients disable host autowrap, so safe cells can advance inline
@@ -967,6 +1125,14 @@ fn write_changed_cells(
         for col in 0..frame.width {
             let idx = (row as usize) * width + (col as usize);
             let cell = &frame.cells[idx];
+            // A scroll already emitted for this frame means the terminal shows
+            // `prev`'s content at a different row than before for columns
+            // inside the scrolled rectangle: resolve which one. Columns
+            // outside the rectangle (e.g. a sidebar next to a scrolling
+            // pane) never moved even on a row inside the scrolled band.
+            // `None` means the scroll exposed a blank cell with no prior
+            // content.
+            let prev_row = scroll_shift_prev_row(row, col, shift);
             let prev_cell = prev_row.map(|pr| &prev.cells[(pr as usize) * width + (col as usize)]);
 
             let cell_changed = match prev_cell {
@@ -1707,6 +1873,8 @@ mod tests {
     /// Builds a `(prev, curr)` pair where every row of `curr` equals `prev`
     /// shifted up by one row, with a fresh bottom row. Distinct content and
     /// color per absolute row keeps row hashes from colliding by accident.
+    /// Every column holds the same content within a row, so the shift spans
+    /// the full width.
     fn uniform_single_row_scroll_frames(width: u16, height: u16) -> (FrameData, FrameData) {
         fn row_cell(row: u16) -> CellData {
             make_cell(
@@ -1719,8 +1887,7 @@ mod tests {
 
         let mut prev_cells = Vec::with_capacity(usize::from(width) * usize::from(height));
         for row in 0..height {
-            let cell = row_cell(row);
-            prev_cells.extend(std::iter::repeat(cell).take(usize::from(width)));
+            prev_cells.extend(std::iter::repeat_n(row_cell(row), usize::from(width)));
         }
 
         let mut curr_cells = Vec::with_capacity(usize::from(width) * usize::from(height));
@@ -1730,7 +1897,7 @@ mod tests {
             } else {
                 make_cell("Z", 999, 0, 0)
             };
-            curr_cells.extend(std::iter::repeat(cell).take(usize::from(width)));
+            curr_cells.extend(std::iter::repeat_n(cell, usize::from(width)));
         }
 
         (
@@ -1739,9 +1906,87 @@ mod tests {
         )
     }
 
+    /// Builds a `(prev, curr)` pair with a `left_gutter`-wide static-layout
+    /// column band on the left, a `right_gutter`-wide one on the right, and
+    /// a scrolling pane (shifted up by one row, fresh bottom row) in
+    /// between. Gutter content varies by absolute row (like real sidebar
+    /// text) so it never shifts with the pane; when `gutters_change` is
+    /// true, `curr`'s gutter cells additionally differ from `prev`'s at the
+    /// same row (like a live status indicator), using a disjoint symbol
+    /// range so a replay can tell whether the new content actually landed.
+    fn gutter_scroll_frames(
+        width: u16,
+        height: u16,
+        left_gutter: u16,
+        right_gutter: u16,
+        gutters_change: bool,
+    ) -> (FrameData, FrameData) {
+        let pane_width = width - left_gutter - right_gutter;
+
+        fn pane_symbol(row: u16) -> String {
+            ((b'a' + (row as u8 % 26)) as char).to_string()
+        }
+        fn pane_fg(row: u16) -> u32 {
+            u32::from(row) + 1
+        }
+        fn left_symbol(row: u16, changed: bool) -> String {
+            let offset = if changed { 5 } else { 0 };
+            (((row % 5) as u8 + offset + b'0') as char).to_string()
+        }
+        fn right_symbol(row: u16, changed: bool) -> String {
+            let offset = if changed { 13 } else { 0 };
+            (((row % 13) as u8 + offset + b'A') as char).to_string()
+        }
+
+        let mut prev_cells = Vec::with_capacity(usize::from(width) * usize::from(height));
+        let mut curr_cells = Vec::with_capacity(usize::from(width) * usize::from(height));
+
+        for row in 0..height {
+            let prev_pane = make_cell(&pane_symbol(row), pane_fg(row), 0, 0);
+            let curr_pane = if row + 1 < height {
+                make_cell(&pane_symbol(row + 1), pane_fg(row + 1), 0, 0)
+            } else {
+                make_cell("Z", 999, 0, 0)
+            };
+            let prev_left = make_cell(&left_symbol(row, false), 10, 0, 0);
+            let curr_left = make_cell(&left_symbol(row, gutters_change), 10, 0, 0);
+            let prev_right = make_cell(&right_symbol(row, false), 20, 0, 0);
+            let curr_right = make_cell(&right_symbol(row, gutters_change), 20, 0, 0);
+
+            prev_cells.extend(std::iter::repeat_n(prev_left, usize::from(left_gutter)));
+            prev_cells.extend(std::iter::repeat_n(prev_pane, usize::from(pane_width)));
+            prev_cells.extend(std::iter::repeat_n(prev_right, usize::from(right_gutter)));
+
+            curr_cells.extend(std::iter::repeat_n(curr_left, usize::from(left_gutter)));
+            curr_cells.extend(std::iter::repeat_n(curr_pane, usize::from(pane_width)));
+            curr_cells.extend(std::iter::repeat_n(curr_right, usize::from(right_gutter)));
+        }
+
+        (
+            make_frame(width, height, prev_cells),
+            make_frame(width, height, curr_cells),
+        )
+    }
+
+    /// Asserts every cell of a real, replayed `terminal` matches `frame`
+    /// exactly, grapheme for grapheme.
+    fn assert_replay_matches_frame(terminal: &crate::ghostty::Terminal, frame: &FrameData) {
+        for row in 0..frame.height {
+            for col in 0..frame.width {
+                let idx = usize::from(row) * usize::from(frame.width) + usize::from(col);
+                let expected: Vec<u32> = frame.cells[idx].symbol.chars().map(u32::from).collect();
+                let (_, graphemes) = terminal.screen_cell(col, u32::from(row)).unwrap();
+                assert_eq!(
+                    graphemes, expected,
+                    "row {row} col {col} mismatch after replay"
+                );
+            }
+        }
+    }
+
     #[test]
     fn scroll_shift_emits_terminal_scroll_instead_of_repainting_every_row() {
-        const WIDTH: u16 = 6;
+        const WIDTH: u16 = 20;
         const HEIGHT: u16 = 9;
         let (prev, curr) = uniform_single_row_scroll_frames(WIDTH, HEIGHT);
 
@@ -1760,17 +2005,20 @@ mod tests {
             scroll_text.contains("\x1b[1S"),
             "expected an SU scroll-up-by-1 sequence in output: {scroll_text:?}"
         );
+        assert!(
+            !scroll_text.contains("\x1b[?69h"),
+            "a full-width shift needs no DECLRMM/DECSLRM margins: {scroll_text:?}"
+        );
 
         // Budget: DECSTBM (~7 bytes) + SU (~4 bytes) + region reset (~3 bytes)
-        // + one freshly exposed WIDTH-cell row (SGR + CUP + symbols, well
-        // under 100 bytes for WIDTH=6) + the fixed cursor/sync wrapper bytes
-        // every blit emits (~60 bytes). 400 bytes covers that with margin
-        // while still being dramatically smaller than repainting all 54
+        // + one freshly exposed WIDTH-cell row + the fixed cursor/sync
+        // wrapper bytes every blit emits. 500 bytes covers that with margin
+        // while still being dramatically smaller than repainting all 180
         // cells the naive per-cell diff would rewrite.
         assert!(
-            scroll_output.len() < 400,
+            scroll_output.len() < 500,
             "scroll-shift blit for a {WIDTH}x{HEIGHT} single-row scroll should stay under a \
-             400-byte budget (DECSTBM+SU+one new row+wrapper bytes), got {} bytes",
+             500-byte budget (DECSTBM+SU+one new row+wrapper bytes), got {} bytes",
             scroll_output.len()
         );
         assert!(
@@ -1783,13 +2031,67 @@ mod tests {
     }
 
     #[test]
-    fn scroll_shift_replays_exactly_through_decstbm_and_su() {
-        const WIDTH: u16 = 6;
+    fn scroll_shift_replays_exactly_with_thin_gutters_on_both_edges() {
+        // The primary fixture: this is the user's real layout. A collapsed
+        // sidebar keeps a thin left gutter (status dot etc.) and there is a
+        // thin gutter on the right edge too, so no full-width row ever
+        // shifts uniformly — only the rectangle detector can fire here.
+        const WIDTH: u16 = 30;
         const HEIGHT: u16 = 9;
-        let (prev, curr) = uniform_single_row_scroll_frames(WIDTH, HEIGHT);
+        const LEFT_GUTTER: u16 = 3;
+        const RIGHT_GUTTER: u16 = 2;
+        let (prev, curr) = gutter_scroll_frames(WIDTH, HEIGHT, LEFT_GUTTER, RIGHT_GUTTER, false);
 
         let mut terminal = crate::ghostty::Terminal::new(WIDTH, HEIGHT, 0).unwrap();
+        let mut initial = Vec::new();
+        blit_frame_to(&mut initial, &prev, None);
+        terminal.write(&initial);
 
+        let mut diff = Vec::new();
+        blit_frame_to(&mut diff, &curr, Some(&prev));
+        let diff_text = String::from_utf8_lossy(&diff);
+        assert!(
+            diff_text.contains("\x1b[?69h") && diff_text.contains('s') && diff_text.contains('S'),
+            "expected DECLRMM+DECSLRM+SU in output for a gutter-bounded shift: {diff_text:?}"
+        );
+        terminal.write(&diff);
+
+        assert_replay_matches_frame(&terminal, &curr);
+
+        // Explicit gutter check: both edges are static between frames, so
+        // they must show exactly their original (unchanged) content, proven
+        // directly against `prev` rather than only via the full-frame check.
+        for row in 0..HEIGHT {
+            for col in 0..LEFT_GUTTER {
+                let idx = usize::from(row) * usize::from(WIDTH) + usize::from(col);
+                let expected: Vec<u32> = prev.cells[idx].symbol.chars().map(u32::from).collect();
+                let (_, graphemes) = terminal.screen_cell(col, u32::from(row)).unwrap();
+                assert_eq!(
+                    graphemes, expected,
+                    "left gutter row {row} col {col} corrupted"
+                );
+            }
+            for col in (WIDTH - RIGHT_GUTTER)..WIDTH {
+                let idx = usize::from(row) * usize::from(WIDTH) + usize::from(col);
+                let expected: Vec<u32> = prev.cells[idx].symbol.chars().map(u32::from).collect();
+                let (_, graphemes) = terminal.screen_cell(col, u32::from(row)).unwrap();
+                assert_eq!(
+                    graphemes, expected,
+                    "right gutter row {row} col {col} corrupted"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn scroll_shift_replays_exactly_with_wide_left_sidebar_and_thin_right_gutter() {
+        const WIDTH: u16 = 100;
+        const HEIGHT: u16 = 9;
+        const LEFT_GUTTER: u16 = 20;
+        const RIGHT_GUTTER: u16 = 3;
+        let (prev, curr) = gutter_scroll_frames(WIDTH, HEIGHT, LEFT_GUTTER, RIGHT_GUTTER, false);
+
+        let mut terminal = crate::ghostty::Terminal::new(WIDTH, HEIGHT, 0).unwrap();
         let mut initial = Vec::new();
         blit_frame_to(&mut initial, &prev, None);
         terminal.write(&initial);
@@ -1797,49 +2099,71 @@ mod tests {
         let mut diff = Vec::new();
         blit_frame_to(&mut diff, &curr, Some(&prev));
         assert!(
-            String::from_utf8_lossy(&diff).contains("\x1b[1S"),
-            "this test only proves the scroll path if it actually triggered"
+            String::from_utf8_lossy(&diff).contains("\x1b[?69h"),
+            "a wide sidebar must still let the pane's rectangle be detected"
         );
         terminal.write(&diff);
 
-        for row in 0..HEIGHT {
-            let expected = if row + 1 < HEIGHT {
-                (b'a' + ((row + 1) as u8 % 26)) as char
-            } else {
-                'Z'
-            };
-            for col in 0..WIDTH {
-                let (_, graphemes) = terminal.screen_cell(col, u32::from(row)).unwrap();
-                assert_eq!(
-                    graphemes,
-                    vec![u32::from(expected)],
-                    "row {row} col {col} mismatch after replaying the scroll-shift diff"
-                );
-            }
-        }
+        assert_replay_matches_frame(&terminal, &curr);
     }
 
     #[test]
-    fn scroll_shift_is_rejected_when_rows_are_not_uniformly_shifted() {
-        const WIDTH: u16 = 6;
+    fn scroll_shift_detects_pane_scroll_despite_changing_gutters_on_both_sides() {
+        // Pins the exact failure mode: both gutters carry live content (a
+        // status dot on the left, something on the right) that changes on
+        // almost every frame, while the pane between them scrolls by one
+        // row. Detection must still fire, restricted to the pane's columns.
+        const WIDTH: u16 = 30;
         const HEIGHT: u16 = 9;
-        let (mut prev, mut curr) = uniform_single_row_scroll_frames(WIDTH, HEIGHT);
+        const LEFT_GUTTER: u16 = 4;
+        const RIGHT_GUTTER: u16 = 2;
+        let (prev, curr) = gutter_scroll_frames(WIDTH, HEIGHT, LEFT_GUTTER, RIGHT_GUTTER, true);
 
-        // Pin column 0 to the absolute row index in both frames, like a
-        // sidebar clock that does not move when the rest of the pane
-        // scrolls. That keeps every row's content from shifting uniformly.
-        for row in 0..HEIGHT {
-            let pinned = make_cell(&format!("{row}"), 0, 0, 0);
-            let prev_idx = usize::from(row) * usize::from(WIDTH);
-            let curr_idx = usize::from(row) * usize::from(WIDTH);
-            prev.cells[prev_idx] = pinned.clone();
-            curr.cells[curr_idx] = pinned;
-        }
+        assert!(
+            detect_scroll_shift(&curr, &prev).is_some(),
+            "a live indicator in both gutters must not block detecting the pane's scroll"
+        );
+
+        let mut scroll_output = Vec::new();
+        blit_frame_to(&mut scroll_output, &curr, Some(&prev));
+        let mut naive_output = Vec::new();
+        write_changed_cells(&mut naive_output, &curr, &prev, None);
+        assert!(
+            scroll_output.len() * 5 < naive_output.len() * 4,
+            "detection firing should still collapse the byte count even with both gutters \
+             changing: scroll {} bytes vs naive {} bytes",
+            scroll_output.len(),
+            naive_output.len()
+        );
+
+        let mut terminal = crate::ghostty::Terminal::new(WIDTH, HEIGHT, 0).unwrap();
+        let mut initial = Vec::new();
+        blit_frame_to(&mut initial, &prev, None);
+        terminal.write(&initial);
+        terminal.write(&scroll_output);
+
+        assert_replay_matches_frame(&terminal, &curr);
+    }
+
+    #[test]
+    fn scroll_shift_is_rejected_when_content_does_not_shift_uniformly() {
+        const WIDTH: u16 = 20;
+        const HEIGHT: u16 = 9;
+        let prev = make_frame(
+            WIDTH,
+            HEIGHT,
+            vec![make_cell("A", 0, 0, 0); usize::from(WIDTH) * usize::from(HEIGHT)],
+        );
+        let curr = make_frame(
+            WIDTH,
+            HEIGHT,
+            vec![make_cell("B", 0, 0, 0); usize::from(WIDTH) * usize::from(HEIGHT)],
+        );
 
         assert!(
             detect_scroll_shift(&curr, &prev).is_none(),
-            "a sidebar column that does not shift with the rest of the pane must not be \
-             mistaken for a uniform scroll"
+            "content that changed everywhere with no shift relationship must not be mistaken \
+             for a scroll"
         );
 
         let mut blit_output = Vec::new();
@@ -1847,6 +2171,34 @@ mod tests {
         let mut naive_output = Vec::new();
         write_changed_cells(&mut naive_output, &curr, &prev, None);
 
+        assert!(
+            blit_output
+                .windows(naive_output.len())
+                .any(|window| window == naive_output.as_slice()),
+            "with no shift detected, the diff bytes must be byte-identical to the pre-change \
+             per-cell diff path"
+        );
+    }
+
+    #[test]
+    fn scroll_shift_is_rejected_when_the_shifting_region_is_too_narrow() {
+        // The probe-only column range here is exactly 10 columns wide
+        // (bordered on both sides by content that does not shift), which is
+        // below the minimum-width gate: detection must decline rather than
+        // emit a DECLRMM/DECSLRM round-trip for a sliver this small.
+        const WIDTH: u16 = 20;
+        const HEIGHT: u16 = 9;
+        let (prev, curr) = gutter_scroll_frames(WIDTH, HEIGHT, 5, 5, false);
+
+        assert!(
+            detect_scroll_shift(&curr, &prev).is_none(),
+            "a shifting island narrower than the minimum-width gate must be rejected"
+        );
+
+        let mut blit_output = Vec::new();
+        blit_frame_to(&mut blit_output, &curr, Some(&prev));
+        let mut naive_output = Vec::new();
+        write_changed_cells(&mut naive_output, &curr, &prev, None);
         assert!(
             blit_output
                 .windows(naive_output.len())
@@ -1871,6 +2223,8 @@ mod tests {
             top: 0,
             bottom: HEIGHT - 1,
             lines: 1,
+            left: 0,
+            right: WIDTH - 1,
         };
         let frame_hyperlinks = sanitized_frame_hyperlinks(&curr);
         let prev_hyperlinks = sanitized_frame_hyperlinks(&prev);
