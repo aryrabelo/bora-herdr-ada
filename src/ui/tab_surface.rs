@@ -257,6 +257,22 @@ mod tests {
         format!("{:x}", Sha256::digest(encoded))
     }
 
+    /// The sidebar header renders the compile-time version tag, so digesting it
+    /// would break this characterization on every release bump. Blank that row
+    /// first: the frame below it is what the test actually characterizes.
+    fn frame_digest_ignoring_row(frame: &crate::protocol::FrameData, row: u16) -> String {
+        let mut frame = frame.clone();
+        let width = frame.width as usize;
+        let start = row as usize * width;
+        for cell in &mut frame.cells[start..start + width] {
+            cell.symbol = " ".to_owned();
+            cell.fg = 0;
+            cell.bg = 0;
+            cell.modifier = 0;
+        }
+        frame_digest(&frame)
+    }
+
     fn full_app_characterization_state(uri: &str) -> AppState {
         let mut workspace = Workspace::test_new("characterization");
         workspace.identity_cwd = std::path::PathBuf::from("characterization");
@@ -302,12 +318,12 @@ mod tests {
         assert!(!app.view.split_borders.is_empty());
         assert!(frame.cursor.is_some());
         assert_eq!(frame.hyperlinks, vec![uri.to_owned()]);
-        // Digest refreshed for the fork's desktop sidebar (the "Programs"
-        // launcher band changed the sidebar column) and the herdr sync that
-        // followed. The mobile frame has no sidebar, so its digest is unchanged.
+        // Row 0 of the sidebar column carries the compile-time version tag, so
+        // it is excluded: digesting it made this characterization fail on every
+        // release bump, which is how it sat red on main for a week.
         assert_eq!(
-            frame_digest(&frame),
-            "f2238f4fe880d36ffeb83c6a98fd5a7f14bf1d8c6d207d65827908c4733b7dde"
+            frame_digest_ignoring_row(&frame, 0),
+            "a36ea91792bb15ba3e46a266724441737b3ffd5b13a450194b1589da3be88c2f"
         );
     }
 
