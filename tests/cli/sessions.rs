@@ -339,7 +339,7 @@ fn integration_status_outdated_only_prints_action_for_legacy_install() {
     assert!(output.stdout.is_empty());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("installed herdr integrations need updating"));
-    assert!(stderr.contains("herdr integration install pi"));
+    assert!(stderr.contains("bora integration install pi"));
 
     cleanup_test_base(&base);
 }
