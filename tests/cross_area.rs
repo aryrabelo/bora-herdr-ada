@@ -839,9 +839,16 @@ fn cross_area_agent_process_survives_detach_and_reattach() {
     // Reattach and ensure client-side state reflects the persisted working status.
     let mut client_b = UnixStream::connect(&client_socket).expect("client B should connect");
     client_handshake(&mut client_b, CURRENT_PROTOCOL, 80, 24);
+    // Working-state panes render the animated braille spinner glyph in
+    // `overlay0` (muted gray) since commit 8c3b9671 ("swap working/done
+    // colors"); the headless server never advances `spinner_tick`, so the
+    // frame always shows the first spinner frame, but check every glyph in
+    // the animation cycle to stay robust to that.
     let saw_working_on_client =
         wait_for_frame_matching(&mut client_b, Duration::from_secs(5), |frame| {
-            frame_contains_colored_symbol(frame, "●", (249, 226, 175))
+            ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+                .iter()
+                .any(|symbol| frame_contains_colored_symbol(frame, symbol, (108, 112, 134)))
         })
         .expect("frame decoding should succeed");
     assert!(

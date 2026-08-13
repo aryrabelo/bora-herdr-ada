@@ -79,6 +79,15 @@ fn spawn_server_with_env(
         runtime_dir.join("herdr-client.sock"),
     );
     cmd.env("SHELL", "/bin/sh");
+    // Isolate from the ambient HERDR_* env of a live session the test suite
+    // happens to run inside (e.g. a bora pane): otherwise the spawned test
+    // server inherits HERDR_STARTUP_CWD and auto-creates an extra "startup"
+    // workspace/pane the test never asked for, desyncing pane counts/ids.
+    cmd.env_remove("HERDR_STARTUP_CWD");
+    cmd.env_remove("HERDR_SESSION");
+    cmd.env_remove("HERDR_PANE_ID");
+    cmd.env_remove("HERDR_TAB_ID");
+    cmd.env_remove("HERDR_WORKSPACE_ID");
     for (key, value) in extra_env {
         cmd.env(key, value);
     }
@@ -725,8 +734,8 @@ fn live_handoff_preserves_installed_plugins() {
     let base = unique_test_dir();
     let config_home = base.join("config");
     let runtime_dir = base.join("runtime");
-    let api_socket = config_home.join("herdr-dev/herdr.sock");
-    let registry_path = config_home.join("herdr-dev/plugins.json");
+    let api_socket = config_home.join("bora-dev/herdr.sock");
+    let registry_path = config_home.join("bora-dev/plugins.json");
     let existing_plugin = base.join("plugins/existing");
     let added_plugin = base.join("plugins/added");
     write_plugin_manifest(&existing_plugin, "test.live-handoff-existing");

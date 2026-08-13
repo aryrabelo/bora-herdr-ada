@@ -142,6 +142,15 @@ fn spawn_herdr_with_options(
     cmd.env_remove("HERDR_CLIENT_SOCKET_PATH");
     cmd.env("SHELL", shell);
     cmd.env_remove("HERDR_ENV");
+    // Isolate from the ambient HERDR_* env of a live session the test suite
+    // happens to run inside (e.g. a bora pane): otherwise the spawned test
+    // server inherits HERDR_STARTUP_CWD and auto-creates an extra "startup"
+    // workspace/pane the test never asked for, desyncing pane counts/ids.
+    cmd.env_remove("HERDR_STARTUP_CWD");
+    cmd.env_remove("HERDR_SESSION");
+    cmd.env_remove("HERDR_PANE_ID");
+    cmd.env_remove("HERDR_TAB_ID");
+    cmd.env_remove("HERDR_WORKSPACE_ID");
     if let Some(path) = path_override {
         cmd.env("PATH", path);
     }
