@@ -302,9 +302,12 @@ mod tests {
         assert!(!app.view.split_borders.is_empty());
         assert!(frame.cursor.is_some());
         assert_eq!(frame.hyperlinks, vec![uri.to_owned()]);
+        // Digest refreshed for the fork's desktop sidebar (the "Programs"
+        // launcher band changed the sidebar column) and the herdr sync that
+        // followed. The mobile frame has no sidebar, so its digest is unchanged.
         assert_eq!(
             frame_digest(&frame),
-            "b4281f68dcaf520edefaf021d2d07a19d49d5bf271ef2552ca32d76348ddf48c"
+            "f2238f4fe880d36ffeb83c6a98fd5a7f14bf1d8c6d207d65827908c4733b7dde"
         );
     }
 
