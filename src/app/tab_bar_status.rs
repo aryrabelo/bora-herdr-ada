@@ -333,7 +333,7 @@ impl StatusCommandControl {
         if let Some(mut process_group) = self
             .process_group
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take()
         {
             process_group.terminate();
@@ -344,7 +344,7 @@ impl StatusCommandControl {
         let mut registered = self
             .process_group
             .lock()
-            .unwrap_or_else(|error| error.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if self.is_terminated() {
             process_group.terminate();
         } else {
