@@ -4,6 +4,15 @@ Bora is a fork of [herdr](https://github.com/ogulcancelik/herdr). This changelog
 
 ## Unreleased
 
+## [0.14.4] - 2026-08-13
+
+### Fixed
+- Typed keys are no longer lost when a busy agent pane stops draining its input: keystrokes that hit a full input channel are now queued in order and delivered once capacity frees up, instead of being silently dropped (typing `1234567890` into a busy pane used to yield only a few of the characters).
+- `just release-prepare` no longer overwrites `docs/next/CHANGELOG.md` with root `CHANGELOG.md`'s content, which could silently destroy staged unreleased entries; the flow now promotes `docs/next/CHANGELOG.md` (the documented staging file) into root instead, and `just release-docs-check`/`scripts/changelog.py check-history-sync` fails loudly instead of releasing when the two files have diverged.
+- `just lint` now prints a reminder listing any touched files that are entirely gated off on macOS (`#![cfg(not(target_os = "macos"))]`, e.g. `tests/auto_detect.rs`), since a green macOS `just check` cannot prove those files are clean — only CI's `ubuntu-latest` leg lints them.
+- The retained (incremental) render fast path no longer disables itself the moment a second client attaches. It previously required exactly one connected App/TerminalAttach client and fell back to a full render for every frame otherwise (measured: ~53% of retained attempts falling back with two clients attached); it now serves any number of caught-up App clients from the same computed frame patch.
+- `install.sh` reports the real exit code when the freshly installed binary fails its smoke run. `$?` was read inside `if ! cmd`, where it is the status of the negation and therefore always `0`, so every failure printed `exit 0` and the branch that diagnoses a macOS code-signature SIGKILL (exit 137) could never be reached.
+
 ## [0.14.3] - 2026-08-13
 
 ### Added

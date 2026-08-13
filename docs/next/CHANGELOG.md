@@ -4,6 +4,8 @@ Bora is a fork of [herdr](https://github.com/ogulcancelik/herdr). This changelog
 
 ## Unreleased
 
+## [0.14.4] - 2026-08-13
+
 ### Fixed
 - Typed keys are no longer lost when a busy agent pane stops draining its input: keystrokes that hit a full input channel are now queued in order and delivered once capacity frees up, instead of being silently dropped (typing `1234567890` into a busy pane used to yield only a few of the characters).
 - `just release-prepare` no longer overwrites `docs/next/CHANGELOG.md` with root `CHANGELOG.md`'s content, which could silently destroy staged unreleased entries; the flow now promotes `docs/next/CHANGELOG.md` (the documented staging file) into root instead, and `just release-docs-check`/`scripts/changelog.py check-history-sync` fails loudly instead of releasing when the two files have diverged.
