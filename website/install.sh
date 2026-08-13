@@ -121,8 +121,11 @@ main() {
     # smoke-run: an invalid code signature is not a run error on macOS — the
     # kernel SIGKILLs the binary at exec (exit 137), so a silent dead install
     # would otherwise pass. Fail loudly.
-    if ! "${INSTALL_DIR}/${BIN}" --version >/dev/null 2>&1; then
-        rc=$?
+    # `$?` inside `if ! cmd` is the status of the negation, always 0, which made
+    # the exit-137 branch below unreachable and reported "exit 0" on any failure.
+    rc=0
+    "${INSTALL_DIR}/${BIN}" --version >/dev/null 2>&1 || rc=$?
+    if [ "$rc" -ne 0 ]; then
         if [ "$rc" -eq 137 ]; then
             warn "macOS killed the binary at exec (SIGKILL, exit 137) — invalid code signature."
             warn "AppleSystemPolicy rejected it; kernel log shows 'load code signature error 2'."

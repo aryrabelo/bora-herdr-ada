@@ -23,7 +23,10 @@ class UnixInstallerTests(unittest.TestCase):
         self.bin_dir.mkdir()
         self.install_dir = self.root / "install"
         self.payload = self.root / "payload"
-        self.payload.write_bytes(b"fake-herdr-binary\n")
+        # install.sh smoke-runs the installed binary with `--version`, so the
+        # payload has to be something the shell can actually exec.
+        self.payload.write_bytes(b'#!/bin/sh\necho "bora 0.0.0-test"\n')
+        self.payload.chmod(0o755)
         self.expected_sha256 = hashlib.sha256(self.payload.read_bytes()).hexdigest()
 
         for command in REQUIRED_COMMANDS:
@@ -142,11 +145,11 @@ exec {sha256sum} "$@"
                 result = self._run_installer(self.expected_sha256.upper(), tool)
 
                 self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertEqual((self.install_dir / "herdr").read_bytes(), self.payload.read_bytes())
+                self.assertEqual((self.install_dir / "bora").read_bytes(), self.payload.read_bytes())
 
     def test_checksum_mismatch_does_not_replace_existing_binary(self) -> None:
         self.install_dir.mkdir()
-        installed = self.install_dir / "herdr"
+        installed = self.install_dir / "bora"
         installed.write_bytes(b"existing-herdr\n")
 
         result = self._run_installer("0" * 64)
@@ -157,7 +160,7 @@ exec {sha256sum} "$@"
 
     def test_missing_checksum_fails_without_replacing_existing_binary(self) -> None:
         self.install_dir.mkdir()
-        installed = self.install_dir / "herdr"
+        installed = self.install_dir / "bora"
         installed.write_bytes(b"existing-herdr\n")
 
         result = self._run_installer(None)
