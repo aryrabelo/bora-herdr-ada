@@ -107,6 +107,27 @@ Examples:
 - Sidebar layout, token placement, colors, selection, modals, mouse/viewport state: TUI/client.
 - Workspace/tab/pane remain shared session organization for now, but avoid making them mandatory identity for unrelated runtime features.
 
+### Fork merge friction — upstream sync
+
+This fork must stay easy to merge with upstream `herdrdev/herdr`. The recurring conflict
+classes, and how to resolve them, so the next sync is cheap:
+
+- **Binary rename in user-facing strings.** This fork renames the `herdr` binary to `bora`
+  in CLI output, docs, and config. Upstream merges reintroduce `herdr` in touched strings —
+  grep the merged diff for `herdr` in string literals and rename to `bora`, but leave
+  `herdrdev/herdr` repository/URL references and internal upstream identifiers alone.
+- **Fork-only struct fields** (e.g. `change_set` on `WorkspaceGitStatusSnapshot`). Upstream
+  restructuring a type we've extended produces a field-shape conflict. Keep the fork-only
+  field, re-apply it to upstream's new shape, and re-verify its call sites compile.
+- **Fork-only enum variants colliding with fixed-size arrays** (e.g. `Agent::Maki` in
+  `SCREEN_MANIFEST_AGENTS: [Self; N]`). When upstream adds its own variant to the same enum,
+  the array length and any exhaustive match/array-literal sites need both variants accounted
+  for — search all `match`/array-literal sites of the enum after merging, not just the ones
+  the diff flags.
+
+(learned 2026-08-13, binding: these three classes caused the recurring merge conflicts in
+today's upstream sync.)
+
 ## Maintainer Workflow
 
 This section applies only to verified maintainers as defined under Scope and
@@ -153,6 +174,8 @@ just check              # formatting check + cargo nextest + maintenance script 
 ```
 
 Run `just check` before committing unless Can explicitly accepts narrower validation. Do not bypass failing checks; fix the failure or explain exactly why a narrower check is enough.
+
+**`just check`/`just lint` only lint the host target you run them on and cannot compile whole-file `#![cfg(not(target_os = "macos"))]`-gated Rust (e.g. `tests/auto_detect.rs`, `tests/cli.rs`) from a macOS box; only CI's `ubuntu-latest` leg lints that code.** A green `just check` on macOS is not proof those files are clean — `lint` prints a reminder listing any such files touched in the tree; treat that reminder as a to-verify list, not noise. (learned 2026-08-13, binding: clippy failures in Linux-only-gated test files reached CI invisibly from a macOS `just check` this way.)
 
 Unit tests live next to the code (`#[cfg(test)] mod tests`). New `AppState` or `Workspace` behavior should be testable with `AppState::test_new()` and `Workspace::test_new()` without PTYs.
 
@@ -214,7 +237,7 @@ When updating libghostty-vt, check every active patch in `vendor/libghostty-vt.p
 
 ## Docs
 
-Unreleased docs live in `docs/next/website/src/content/docs/`. Update those when a user-facing change needs docs before the next release. They are committed drafts but are never production website input. `docs/next/README.md` and `docs/next/CHANGELOG.md` stage root README and changelog changes.
+Unreleased docs live in `docs/next/website/src/content/docs/`. Update those when a user-facing change needs docs before the next release. They are committed drafts but are never production website input. `docs/next/README.md` and `docs/next/CHANGELOG.md` stage root README and changelog changes: **`docs/next/CHANGELOG.md` is the single source of truth for unreleased entries.** Append new entries only there. Root `CHANGELOG.md` stays release-generated: its `## Unreleased` section must stay empty between releases, and `just release-prepare` promotes `docs/next/CHANGELOG.md`'s Unreleased section into a new versioned entry in both files (`scripts/changelog.py prepare --path docs/next/CHANGELOG.md`, then that result is copied over root `CHANGELOG.md`, never the other direction). `just release-docs-check` (and therefore `just pre-release-check`/`just release-prepare`) runs `python3 scripts/changelog.py check-history-sync`, which fails loudly instead of silently overwriting either file when root has direct Unreleased content or when released history has diverged between the two files — reconcile by hand before releasing if it fires. (learned 2026-08-13, binding: an earlier version of `release-prepare` copied root into `docs/next` and destroyed docs/next-only content; do not reintroduce that direction.)
 
 The active preview release docs live in `docs/preview/website/`. Preview CI owns this mutable snapshot and commits it atomically with `website/preview.json`; never edit it manually. Validate it with `node website/scripts/docs-preview.mjs check`.
 

@@ -25,6 +25,13 @@ lint:
         -A clippy::todo \
         -A clippy::cognitive_complexity \
         -A clippy::too_many_lines
+    @gated=$(grep -rlF '#![cfg(not(target_os = "macos"))]' src tests 2>/dev/null || true); \
+    if [ -n "$gated" ] && [ "$(uname)" = "Darwin" ]; then \
+        echo ""; \
+        echo "note: these files are gated off entirely on macOS and were NOT compiled or linted by the clippy run above:"; \
+        printf '  %s\n' $gated; \
+        echo "verify them on CI's ubuntu-latest leg (or a Linux box) before trusting a green just lint here."; \
+    fi
 
 [script("powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File")]
 [windows]
@@ -118,10 +125,10 @@ release-docs-check:
     node website/scripts/docs-preview.mjs check
     @test -f docs/next/README.md
     @test -f docs/next/README.zh-CN.md
-    @if ! diff -u CHANGELOG.md docs/next/CHANGELOG.md; then \
-        echo "error: CHANGELOG.md differs from docs/next/CHANGELOG.md; finalize release notes before releasing"; \
+    @python3 scripts/changelog.py check-history-sync || { \
+        echo "run this before releasing: reconcile CHANGELOG.md and docs/next/CHANGELOG.md (the staging file)"; \
         exit 1; \
-    fi
+    }
     @for file in CONFIGURATION.md INTEGRATIONS.md SOCKET_API.md; do \
         if [ -e "$file" ]; then \
             echo "error: $file was replaced by website docs; remove the root copy"; \
@@ -171,8 +178,8 @@ release-prepare version:
         exit 1; \
     fi
     just pre-release-check
-    python3 scripts/changelog.py prepare --version {{version}}
-    cp CHANGELOG.md docs/next/CHANGELOG.md
+    python3 scripts/changelog.py prepare --version {{version}} --path docs/next/CHANGELOG.md
+    cp docs/next/CHANGELOG.md CHANGELOG.md
     sed -i.bak 's/^version = ".*"/version = "{{version}}"/' Cargo.toml && rm -f Cargo.toml.bak
     cargo update -p bora --offline
     just check

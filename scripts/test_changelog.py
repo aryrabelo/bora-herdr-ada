@@ -10,6 +10,7 @@ from scripts.changelog import (
     archived_releases_from_current_manifest,
     build_latest_json,
     canonicalize_manifest,
+    check_history_sync,
     DEFAULT_PRODUCT_ANNOUNCEMENT_PATH,
     default_release_assets,
     ensure_current_release_assets_are_mirrored,
@@ -73,6 +74,26 @@ class ChangelogScriptTests(unittest.TestCase):
         body = extract_section_body(changelog, "0.1.1")
 
         self.assertEqual(body, "### Fixed\n- Smoothed Claude flapping.\n")
+
+    def test_check_history_sync_passes_when_only_docs_next_has_staged_unreleased(self) -> None:
+        root = "# Changelog\n\n## Unreleased\n\n## [1.0.0] - 2026-01-01\n\n- initial\n"
+        next_ = "# Changelog\n\n## Unreleased\n\n- staged entry\n\n## [1.0.0] - 2026-01-01\n\n- initial\n"
+
+        check_history_sync(root, next_)  # must not raise
+
+    def test_check_history_sync_rejects_direct_root_unreleased_edits(self) -> None:
+        root = "# Changelog\n\n## Unreleased\n\n- oops direct edit\n\n## [1.0.0] - 2026-01-01\n\n- initial\n"
+        next_ = "# Changelog\n\n## Unreleased\n\n## [1.0.0] - 2026-01-01\n\n- initial\n"
+
+        with self.assertRaisesRegex(ChangelogError, "has content under Unreleased"):
+            check_history_sync(root, next_)
+
+    def test_check_history_sync_rejects_diverged_released_history(self) -> None:
+        root = "# Changelog\n\n## Unreleased\n\n## [1.0.0] - 2026-01-01\n\n- initial A\n"
+        next_ = "# Changelog\n\n## Unreleased\n\n## [1.0.0] - 2026-01-01\n\n- initial B\n"
+
+        with self.assertRaisesRegex(ChangelogError, "diverged outside the Unreleased section"):
+            check_history_sync(root, next_)
 
     def test_build_latest_json_trims_notes(self) -> None:
         manifest = json.loads(

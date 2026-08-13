@@ -126,6 +126,56 @@ def prepare_release(text: str, version: str, release_date: str) -> str:
     return rebuilt + "\n"
 
 
+def read_section_body_raw(text: str, wanted_title: str) -> str:
+    """Like extract_section_body, but returns "" for an empty section instead of raising."""
+    section = find_section(text, wanted_title)
+    return text[section.body_start : section.end].strip("\n")
+
+
+def strip_section(text: str, wanted_title: str) -> str:
+    """Return the changelog text with the named section's heading and body removed."""
+    section = find_section(text, wanted_title)
+    before = text[: section.start].rstrip("\n")
+    after = text[section.end :].strip("\n")
+    if before and after:
+        return f"{before}\n\n{after}\n"
+    if before:
+        return f"{before}\n"
+    if after:
+        return f"{after}\n"
+    return ""
+
+
+def check_history_sync(
+    root_text: str,
+    next_text: str,
+    root_label: str = "CHANGELOG.md",
+    next_label: str = "docs/next/CHANGELOG.md",
+) -> None:
+    """Fail loudly instead of letting the release flow silently overwrite either file.
+
+    docs/next/CHANGELOG.md is the staging file for unreleased entries (see AGENTS.md's
+    Docs section); root CHANGELOG.md is generated from it at release time and must stay
+    empty under Unreleased between releases. Released history in both files must match
+    exactly, since nothing should hand-edit one without the other.
+    """
+    root_unreleased = read_section_body_raw(root_text, "Unreleased")
+    if root_unreleased.strip():
+        raise ChangelogError(
+            f"{root_label} has content under Unreleased. {next_label} is the staging file "
+            f"for unreleased entries (see AGENTS.md Docs section) — move this content there "
+            f"and clear it from {root_label} before releasing."
+        )
+    root_history = strip_section(root_text, "Unreleased")
+    next_history = strip_section(next_text, "Unreleased")
+    if root_history != next_history:
+        raise ChangelogError(
+            f"{root_label} and {next_label} have diverged outside the Unreleased section "
+            f"(a released entry was hand-edited independently in one file). Reconcile them "
+            f"manually before releasing; do not let the release flow overwrite either blindly."
+        )
+
+
 def read_protocol_version(source_path: Path = PROTOCOL_SOURCE_PATH) -> int:
     content = source_path.read_text(encoding="utf-8")
     match = re.search(r"pub const PROTOCOL_VERSION: u32 = (\d+);", content)
@@ -620,6 +670,19 @@ def cmd_extract(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_check_history_sync(args: argparse.Namespace) -> int:
+    root_path = Path(args.root)
+    next_path = Path(args.next)
+    root_text = load_text(root_path)
+    next_text = load_text(next_path)
+    try:
+        check_history_sync(root_text, next_text, root_label=str(root_path), next_label=str(next_path))
+    except ChangelogError as exc:
+        sys.stderr.write(f"error: {exc}\n")
+        return 1
+    return 0
+
+
 def cmd_sync_latest_json(args: argparse.Namespace) -> int:
     manifest_path = Path(args.output)
     version = normalize_version(args.version)
@@ -723,6 +786,14 @@ def build_parser() -> argparse.ArgumentParser:
     extract.add_argument("--version", required=True)
     extract.add_argument("--output")
     extract.set_defaults(func=cmd_extract)
+
+    check_history_sync_parser = subparsers.add_parser(
+        "check-history-sync",
+        help="Fail loudly if CHANGELOG.md and docs/next/CHANGELOG.md have diverged outside Unreleased",
+    )
+    check_history_sync_parser.add_argument("--root", default="CHANGELOG.md")
+    check_history_sync_parser.add_argument("--next", default="docs/next/CHANGELOG.md")
+    check_history_sync_parser.set_defaults(func=cmd_check_history_sync)
 
     sync_latest_json = subparsers.add_parser(
         "sync-latest-json",
