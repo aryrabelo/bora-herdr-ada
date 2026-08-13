@@ -1,4 +1,5 @@
 use std::cell::Cell;
+use std::collections::VecDeque;
 use std::io;
 use std::path::Path;
 use std::sync::{
@@ -1050,6 +1051,7 @@ pub struct PaneRuntime {
     pane_id: PaneId,
     terminal: Arc<PaneTerminal>,
     io: PaneRuntimeIo,
+    input_overflow: Arc<PaneInputOverflow>,
     current_size: Cell<(u16, u16, u32, u32)>,
     child_pid: Arc<AtomicU32>,
     reported_cwd: Arc<Mutex<Option<std::path::PathBuf>>>,
@@ -1064,6 +1066,7 @@ pub struct PaneRuntime {
     detect_handle: Option<tokio::task::AbortHandle>,
 }
 
+#[derive(Clone)]
 enum PaneRuntimeIo {
     Actor(PtyIoActorHandle),
     #[cfg(test)]
@@ -1223,6 +1226,143 @@ impl PaneRuntimeIo {
                     tokio::time::sleep(delay).await;
                     let _ = sender.send(bytes).await;
                 });
+            }
+        }
+    }
+}
+
+/// Upper bound on keystrokes held for one pane while its child is not draining
+/// stdin. Generous next to any human typing burst; reaching it means the pane is
+/// wedged, so the queue is capped rather than allowed to grow without bound.
+const MAX_QUEUED_PANE_INPUT: usize = 4096;
+
+/// Bytes that could not be forwarded to a pane's PTY immediately due to
+/// transient backpressure (`TrySendError::Full`) instead of being dropped.
+///
+/// Ordering contract: as long as anything is queued or being drained, every
+/// subsequent send for the pane is queued too rather than attempting the
+/// fast (synchronous) path, so a fast-pathed keystroke can never overtake a
+/// keystroke that is still waiting for channel capacity. Exactly one drain
+/// task runs per pane at a time and forwards the queue strictly in FIFO
+/// order via the capacity-aware async write.
+#[derive(Default)]
+struct PaneInputOverflow(Mutex<PaneInputOverflowState>);
+
+#[derive(Default)]
+struct PaneInputOverflowState {
+    queue: VecDeque<Bytes>,
+    draining: bool,
+}
+
+impl PaneInputOverflow {
+    /// Sends `bytes`, queuing them instead of discarding them when the
+    /// pane's input channel is momentarily full. Returns `false` only when
+    /// the pane is genuinely gone (`Closed`), in which case the bytes are
+    /// dropped and logged.
+    fn send_or_queue(self: &Arc<Self>, pane_id: PaneId, io: &PaneRuntimeIo, bytes: Bytes) -> bool {
+        let take_fast_path = {
+            let state = self
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.queue.is_empty() && !state.draining
+        };
+        if take_fast_path {
+            match io.try_send_bytes(bytes) {
+                Ok(()) => return true,
+                Err(mpsc::error::TrySendError::Closed(bytes)) => {
+                    warn!(
+                        pane = pane_id.raw(),
+                        dropped_bytes = bytes.len(),
+                        "dropping pane input: pane input channel is closed"
+                    );
+                    return false;
+                }
+                Err(mpsc::error::TrySendError::Full(bytes)) => {
+                    self.enqueue_and_ensure_drain(pane_id, io, bytes);
+                    return true;
+                }
+            }
+        }
+        self.enqueue_and_ensure_drain(pane_id, io, bytes);
+        true
+    }
+
+    fn enqueue_and_ensure_drain(
+        self: &Arc<Self>,
+        pane_id: PaneId,
+        io: &PaneRuntimeIo,
+        bytes: Bytes,
+    ) {
+        let queued_bytes = bytes.len();
+        let mut state = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.queue.len() >= MAX_QUEUED_PANE_INPUT {
+            // A pane that stays open but never drains stdin would otherwise grow
+            // this queue without bound (key repeat against a wedged child). Human
+            // typing cannot reach this depth, so hitting it means the pane is
+            // stuck, and dropping the newest keystroke is preferable to leaking.
+            warn!(
+                pane = pane_id.raw(),
+                queued_bytes,
+                queue_depth = state.queue.len(),
+                "dropping pane input: backpressure queue is full, pane is not draining stdin"
+            );
+            return;
+        }
+        state.queue.push_back(bytes);
+        warn!(
+            pane = pane_id.raw(),
+            queued_bytes,
+            queue_depth = state.queue.len(),
+            "pane input backpressured; queuing keystroke instead of dropping it"
+        );
+        if state.draining {
+            return;
+        }
+        state.draining = true;
+        drop(state);
+        let overflow = Arc::clone(self);
+        let io = io.clone();
+        tokio::spawn(async move { overflow.drain(pane_id, io).await });
+    }
+
+    /// Forwards the queue to the PTY strictly in FIFO order using the
+    /// capacity-aware async write, one item at a time, so a slow child never
+    /// blocks the caller and never sees keystrokes out of order.
+    async fn drain(self: Arc<Self>, pane_id: PaneId, io: PaneRuntimeIo) {
+        loop {
+            let next = {
+                let mut state = self
+                    .0
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                match state.queue.pop_front() {
+                    Some(bytes) => bytes,
+                    None => {
+                        state.draining = false;
+                        return;
+                    }
+                }
+            };
+            if let Err(err) = io.send_bytes(next).await {
+                let mut state = self
+                    .0
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let dropped_keystrokes = state.queue.len() + 1;
+                state.queue.clear();
+                state.draining = false;
+                drop(state);
+                warn!(
+                    pane = pane_id.raw(),
+                    dropped_keystrokes,
+                    dropped_bytes = err.0.len(),
+                    "dropping queued pane input: pane closed while draining backpressure queue"
+                );
+                return;
             }
         }
     }
@@ -2008,6 +2148,7 @@ impl PaneRuntime {
             pane_id,
             terminal,
             io,
+            input_overflow: Arc::new(PaneInputOverflow::default()),
             current_size: Cell::new((rows, cols, cell_width_px, cell_height_px)),
             child_pid,
             reported_cwd,
@@ -2551,6 +2692,7 @@ impl PaneRuntime {
             pane_id,
             terminal,
             io,
+            input_overflow: Arc::new(PaneInputOverflow::default()),
             current_size: Cell::new((rows, cols, 0, 0)),
             child_pid,
             reported_cwd,
@@ -2814,6 +2956,17 @@ impl PaneRuntime {
         self.io.try_send_bytes(bytes)
     }
 
+    /// Forwards user keystroke bytes to the pane, guaranteeing they are
+    /// never silently dropped due to transient backpressure (a busy agent
+    /// pane that has stopped draining stdin). Returns `false` only when the
+    /// pane's input is genuinely closed (pane gone or live handoff in
+    /// progress), in which case the bytes are dropped and logged rather
+    /// than sent.
+    pub fn send_bytes_preserving_order(&self, bytes: Bytes) -> bool {
+        self.input_overflow
+            .send_or_queue(self.pane_id, &self.io, bytes)
+    }
+
     pub fn send_bytes_after(&self, bytes: Bytes, delay: std::time::Duration) {
         self.io.send_bytes_after(bytes, delay);
     }
@@ -3048,6 +3201,7 @@ impl PaneRuntime {
                     sender: tx,
                     resize_tx,
                 },
+                input_overflow: Arc::new(PaneInputOverflow::default()),
                 current_size: Cell::new((rows, cols, 0, 0)),
                 child_pid: Arc::new(AtomicU32::new(0)),
                 reported_cwd: Arc::new(Mutex::new(None)),
@@ -3688,6 +3842,7 @@ mod tests {
                 sender: tx,
                 resize_tx,
             },
+            input_overflow: Arc::new(PaneInputOverflow::default()),
             current_size: Cell::new((80, 24, 0, 0)),
             child_pid: Arc::new(AtomicU32::new(0)),
             reported_cwd: Arc::new(Mutex::new(None)),
@@ -3719,6 +3874,7 @@ mod tests {
                 sender: tx,
                 resize_tx,
             },
+            input_overflow: Arc::new(PaneInputOverflow::default()),
             current_size: Cell::new((80, 24, 0, 0)),
             child_pid: Arc::new(AtomicU32::new(0)),
             reported_cwd: Arc::new(Mutex::new(None)),
@@ -3737,6 +3893,49 @@ mod tests {
             tokio::time::timeout(std::time::Duration::from_millis(10), rx.recv())
                 .await
                 .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn send_bytes_preserving_order_queues_full_channel_input_without_reordering() {
+        let (runtime, mut rx) = PaneRuntime::test_with_channel_capacity(80, 24, 1);
+
+        // Fill the only channel slot so every subsequent try_send observes `Full`.
+        runtime
+            .try_send_bytes(Bytes::from_static(b"filler"))
+            .expect("fills the single channel slot");
+
+        let sequence = b"1234567890";
+        for byte in sequence {
+            assert!(
+                runtime.send_bytes_preserving_order(Bytes::copy_from_slice(&[*byte])),
+                "a backpressured keystroke must be queued, never dropped"
+            );
+        }
+
+        // Draining the filler frees capacity for the queued keystrokes.
+        assert_eq!(rx.recv().await.unwrap().as_ref(), b"filler");
+
+        let mut received = Vec::new();
+        for _ in 0..sequence.len() {
+            received.extend_from_slice(&rx.recv().await.expect("queued keystroke arrives"));
+        }
+        assert_eq!(
+            received, sequence,
+            "queued keystrokes must survive backpressure in the original order"
+        );
+    }
+
+    #[tokio::test]
+    async fn send_bytes_preserving_order_drops_and_reports_closed_pane_input() {
+        let (runtime, rx) = PaneRuntime::test_with_channel(80, 24);
+        drop(rx);
+
+        let accepted = runtime.send_bytes_preserving_order(Bytes::from_static(b"1"));
+
+        assert!(
+            !accepted,
+            "input to a closed pane must be reported as dropped, not silently accepted"
         );
     }
 

@@ -438,6 +438,12 @@ impl TerminalRuntime {
         self.0.try_send_bytes(bytes)
     }
 
+    /// Forwards user keystroke bytes without dropping them on transient
+    /// backpressure; see `PaneRuntime::send_bytes_preserving_order`.
+    pub fn send_bytes_preserving_order(&self, bytes: Bytes) -> bool {
+        self.0.send_bytes_preserving_order(bytes)
+    }
+
     pub fn send_bytes_after(&self, bytes: Bytes, delay: std::time::Duration) {
         self.0.send_bytes_after(bytes, delay);
     }

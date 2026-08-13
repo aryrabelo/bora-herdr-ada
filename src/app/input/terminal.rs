@@ -49,14 +49,14 @@ impl App {
                     self.close_popup_pane();
                     return None;
                 };
-                return runtime.try_send_bytes(bytes).is_ok().then_some(target);
+                return runtime.send_bytes_preserving_order(bytes).then_some(target);
             }
         }
 
         let input = self.prepare_terminal_key_forward(source_id, key)?;
         let sent = self
             .lookup_runtime_sender(input.ws_idx, input.pane_id)
-            .is_some_and(|runtime| runtime.try_send_bytes(input.bytes).is_ok());
+            .is_some_and(|runtime| runtime.send_bytes_preserving_order(input.bytes));
         sent.then_some(input.target)
     }
 
