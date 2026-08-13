@@ -1217,6 +1217,32 @@ fn live_handoff_accepts_canonical_pane_id_from_child_env() {
     cleanup_test_base(&base);
 }
 
+// Some sandboxed macOS execution contexts withhold process argv/environ from
+// `sysctl(KERN_PROCARGS2)` for SIP-protected platform binaries (`/bin/sh`,
+// `/bin/sleep`), even for same-uid readers. That makes the `HERDR_AGENT` env
+// hint below unreadable through no fault of the detection code. Building and
+// `exec`-ing a locally compiled, non-platform binary keeps this test's actual
+// intent (an "unmanaged" agent process recognized only via env hint, since it
+// has no name a screen/process-name manifest would match) portable across
+// hardened environments.
+fn compile_idle_binary(dir: &Path) -> PathBuf {
+    let src = dir.join("idle.rs");
+    let bin = dir.join("idle");
+    fs::write(
+        &src,
+        "fn main() { std::thread::sleep(std::time::Duration::from_secs(30)); }\n",
+    )
+    .unwrap();
+    let status = std::process::Command::new("rustc")
+        .arg(&src)
+        .arg("-o")
+        .arg(&bin)
+        .status()
+        .expect("run rustc to build idle helper binary");
+    assert!(status.success(), "failed to compile idle helper binary");
+    bin
+}
+
 #[test]
 fn live_handoff_keeps_unmanaged_agent_name_bound_to_saved_session() {
     use std::os::unix::fs::PermissionsExt;
@@ -1231,11 +1257,13 @@ fn live_handoff_keeps_unmanaged_agent_name_bound_to_saved_session() {
     let started_marker = base.join("agent-started");
     let fake_pi = base.join("pi");
     fs::create_dir_all(&base).unwrap();
+    let idle_bin = compile_idle_binary(&base);
     fs::write(
         &fake_pi,
         format!(
-            "#!/bin/sh\nexport HERDR_AGENT=pi\necho started > {}\nexec /bin/sleep 30\n",
-            started_marker.display()
+            "#!/bin/sh\nexport HERDR_AGENT=pi\necho started > {}\nexec {}\n",
+            started_marker.display(),
+            idle_bin.display()
         ),
     )
     .unwrap();
