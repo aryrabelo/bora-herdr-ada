@@ -974,9 +974,14 @@ fn new_terminal_cwd_follow_ignores_nonleader_group_member_cwd() {
         ),
     );
     assert_eq!(pane["result"]["pane"]["cwd"], base.display().to_string());
+    // Fork divergence from upstream: 3da87db7 stopped following non-agent job
+    // members, because MCP and plugin-host subprocesses spawned by omp were
+    // hijacking the pane's follow cwd. This helper is a plain `sleep`, so the
+    // pane stays on the leader's cwd. Upstream still expects `helper_cwd` here;
+    // keep this expectation when syncing.
     assert_eq!(
         pane["result"]["pane"]["foreground_cwd"],
-        helper_cwd.display().to_string()
+        base.display().to_string()
     );
 
     let split = send_request(
