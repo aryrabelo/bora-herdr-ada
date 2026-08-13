@@ -27,6 +27,8 @@
 //! and minimize cursor movement.
 
 use std::cmp;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::io::Write;
 
 use unicode_width::UnicodeWidthStr;
@@ -478,9 +480,17 @@ fn blit_frame_to_with_cursor_memory_and_clear_policy(
         }
         write_all_cells(&mut writer, frame);
     } else {
-        // Diff-based update: only write changed cells.
+        // Diff-based update: only write changed cells. When the content
+        // scrolled uniformly, emit a real terminal scroll first so the
+        // client applies a move instead of repainting every shifted row.
         let prev = prev.unwrap();
-        write_changed_cells(&mut writer, frame, prev);
+        let shift = detect_scroll_shift(frame, prev);
+        if let Some(shift) = shift {
+            let _ = write!(writer, "\x1b[{};{}r", shift.top + 1, shift.bottom + 1);
+            let _ = write!(writer, "\x1b[{}S", shift.lines);
+            let _ = writer.write_all(b"\x1b[r");
+        }
+        write_changed_cells(&mut writer, frame, prev, shift);
     }
 
     // Position the cursor while it is still hidden, then restore visibility.
@@ -770,13 +780,184 @@ fn cells_visually_equal(
     // Skip flag is only for ratatui internal use, not visual.
 }
 
-fn write_changed_cells(writer: &mut impl Write, frame: &FrameData, prev: &FrameData) {
+/// Describes a uniform vertical shift of screen content between two frames.
+///
+/// When a pane scrolls, every row below the scrolled band moves by the same
+/// number of lines. Detecting that shift lets the blit emit a real terminal
+/// scroll (`SU`) instead of repainting every cell as if it changed.
+#[derive(Clone, Copy)]
+struct ScrollShift {
+    /// First row of the scrolled band, inclusive, 0-based.
+    top: u16,
+    /// Last row of the scrolled band, inclusive, 0-based.
+    bottom: u16,
+    /// How many rows the band's content moved up by.
+    lines: u16,
+}
+
+/// Hashes every field [`cells_visually_equal`] compares, for one row.
+///
+/// Hashes the *resolved* hyperlink string rather than the raw
+/// `CellData::hyperlink` index: the two frames' hyperlink tables are
+/// independent, so the same index can resolve to different URIs in each.
+fn hash_row_for_scroll_shift(
+    frame: &FrameData,
+    sanitized_hyperlinks: &[Option<String>],
+    row: u16,
+) -> u64 {
+    let width = frame.width as usize;
+    let start = (row as usize) * width;
+    let mut hasher = DefaultHasher::new();
+    for cell in &frame.cells[start..start + width] {
+        cell.symbol.hash(&mut hasher);
+        cell.fg.hash(&mut hasher);
+        cell.bg.hash(&mut hasher);
+        cell.modifier.hash(&mut hasher);
+        cell.skip.hash(&mut hasher);
+        sanitized_cell_hyperlink_uri(sanitized_hyperlinks, cell).hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
+/// Verifies a candidate scroll band cell-by-cell so a row-hash collision can
+/// never cause a bad skip. Costs one pass over the band — the same order as
+/// the diff it replaces, so this is not a new asymptotic cost.
+fn scroll_shift_band_matches(
+    frame: &FrameData,
+    prev: &FrameData,
+    shift: ScrollShift,
+    frame_hyperlinks: &[Option<String>],
+    prev_hyperlinks: &[Option<String>],
+) -> bool {
+    let width = frame.width as usize;
+    for y in shift.top..=(shift.bottom - shift.lines) {
+        let frame_start = (y as usize) * width;
+        let prev_start = ((y + shift.lines) as usize) * width;
+        for col in 0..width {
+            let cell = &frame.cells[frame_start + col];
+            let prev_cell = &prev.cells[prev_start + col];
+            if !cells_visually_equal(frame_hyperlinks, cell, prev_hyperlinks, prev_cell) {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+/// Detects a uniform vertical scroll between `prev` and `frame`.
+///
+/// Only meaningful when both frames share the same dimensions; callers must
+/// check that before relying on the result (this function also checks, and
+/// returns `None` on mismatch, as a defensive guard).
+fn detect_scroll_shift(frame: &FrameData, prev: &FrameData) -> Option<ScrollShift> {
+    if frame.width != prev.width || frame.height != prev.height {
+        return None;
+    }
+    let height = frame.height;
+    let threshold = cmp::max(8, (height / 3) as usize);
+
+    let frame_hyperlinks = sanitized_frame_hyperlinks(frame);
+    let prev_hyperlinks = sanitized_frame_hyperlinks(prev);
+
+    let curr_hash: Vec<u64> = (0..height)
+        .map(|row| hash_row_for_scroll_shift(frame, &frame_hyperlinks, row))
+        .collect();
+    let prev_hash: Vec<u64> = (0..height)
+        .map(|row| hash_row_for_scroll_shift(prev, &prev_hyperlinks, row))
+        .collect();
+
+    // Find the shift amount (in lines) with the most matching rows.
+    let mut best_lines: Option<u16> = None;
+    let mut best_count = 0usize;
+    for lines in 1..height {
+        let span = (height - lines) as usize;
+        let count = (0..span)
+            .filter(|&y| curr_hash[y] == prev_hash[y + lines as usize])
+            .count();
+        if count > best_count {
+            best_count = count;
+            best_lines = Some(lines);
+        }
+    }
+    if best_count < threshold {
+        return None;
+    }
+    let lines = best_lines?;
+
+    // Find the longest contiguous run of matching rows for that shift amount.
+    let span = (height - lines) as usize;
+    let mut run_start: Option<usize> = None;
+    let mut best_run: Option<(usize, usize)> = None;
+    for y in 0..span {
+        let is_match = curr_hash[y] == prev_hash[y + lines as usize];
+        if is_match {
+            run_start.get_or_insert(y);
+        } else if let Some(start) = run_start.take() {
+            let end = y - 1;
+            if best_run.map_or(true, |(bs, be)| end - start > be - bs) {
+                best_run = Some((start, end));
+            }
+        }
+    }
+    if let Some(start) = run_start {
+        let end = span - 1;
+        if best_run.map_or(true, |(bs, be)| end - start > be - bs) {
+            best_run = Some((start, end));
+        }
+    }
+    let (run_start, run_end) = best_run?;
+    if run_end - run_start + 1 < threshold {
+        return None;
+    }
+
+    let top = run_start as u16;
+    let bottom = run_end as u16 + lines;
+    if bottom >= height {
+        return None;
+    }
+    let shift = ScrollShift { top, bottom, lines };
+
+    scroll_shift_band_matches(frame, prev, shift, &frame_hyperlinks, &prev_hyperlinks)
+        .then_some(shift)
+}
+
+/// Resolves which row of `prev` the terminal currently shows at `row`, given
+/// an optional scroll `shift` already emitted for this frame.
+///
+/// `None` means the scroll exposed a blank row with no prior content: every
+/// non-skip cell there must be written unconditionally.
+fn scroll_shift_prev_row(row: u16, shift: Option<ScrollShift>) -> Option<u16> {
+    match shift {
+        None => Some(row),
+        Some(shift) => {
+            if row < shift.top || row > shift.bottom {
+                Some(row)
+            } else if row <= shift.bottom - shift.lines {
+                Some(row + shift.lines)
+            } else {
+                None
+            }
+        }
+    }
+}
+
+fn write_changed_cells(
+    writer: &mut impl Write,
+    frame: &FrameData,
+    prev: &FrameData,
+    shift: Option<ScrollShift>,
+) {
     let mut last_sgr = String::new(); // Track last SGR to avoid redundant style changes.
     let mut active_hyperlink = None;
     let sanitized_hyperlinks = sanitized_frame_hyperlinks(frame);
     let prev_sanitized_hyperlinks = sanitized_frame_hyperlinks(prev);
+    let width = frame.width as usize;
 
     for row in 0..frame.height {
+        // A scroll already emitted for this frame means the terminal shows
+        // `prev`'s content at a different row than before: resolve which one.
+        // `None` means the scroll exposed a blank row with no prior content.
+        let prev_row = scroll_shift_prev_row(row, shift);
         let mut invalidated = 0usize;
         let mut to_skip = 0usize;
         // Herdr clients disable host autowrap, so safe cells can advance inline
@@ -784,19 +965,26 @@ fn write_changed_cells(writer: &mut impl Write, frame: &FrameData, prev: &FrameD
         let mut next_inline_col = None;
 
         for col in 0..frame.width {
-            let idx = (row as usize) * (frame.width as usize) + (col as usize);
+            let idx = (row as usize) * width + (col as usize);
             let cell = &frame.cells[idx];
-            let prev_cell = &prev.cells[idx];
+            let prev_cell = prev_row.map(|pr| &prev.cells[(pr as usize) * width + (col as usize)]);
 
-            if !cell.skip
-                && (!cells_visually_equal(
-                    &sanitized_hyperlinks,
-                    cell,
-                    &prev_sanitized_hyperlinks,
-                    prev_cell,
-                ) || invalidated > 0)
-                && to_skip == 0
-            {
+            let cell_changed = match prev_cell {
+                Some(prev_cell) => {
+                    !cell.skip
+                        && (!cells_visually_equal(
+                            &sanitized_hyperlinks,
+                            cell,
+                            &prev_sanitized_hyperlinks,
+                            prev_cell,
+                        ) || invalidated > 0)
+                }
+                // Exposed by the scroll: no previous content to diff against,
+                // so every non-skip cell must be written unconditionally.
+                None => !cell.skip,
+            };
+
+            if cell_changed && to_skip == 0 {
                 let cursor_position =
                     (next_inline_col != Some(col) || invalidated > 0).then_some((col, row));
                 write_cell(
@@ -812,7 +1000,10 @@ fn write_changed_cells(writer: &mut impl Write, frame: &FrameData, prev: &FrameD
             }
 
             to_skip = cell_width(cell).saturating_sub(1);
-            let affected_width = cmp::max(cell_width(cell), cell_width(prev_cell));
+            let affected_width = match prev_cell {
+                Some(prev_cell) => cmp::max(cell_width(cell), cell_width(prev_cell)),
+                None => cell_width(cell),
+            };
             invalidated = cmp::max(affected_width, invalidated).saturating_sub(1);
         }
     }
@@ -1511,6 +1702,189 @@ mod tests {
                 assert_eq!(graphemes, vec![u32::from('B')]);
             }
         }
+    }
+
+    /// Builds a `(prev, curr)` pair where every row of `curr` equals `prev`
+    /// shifted up by one row, with a fresh bottom row. Distinct content and
+    /// color per absolute row keeps row hashes from colliding by accident.
+    fn uniform_single_row_scroll_frames(width: u16, height: u16) -> (FrameData, FrameData) {
+        fn row_cell(row: u16) -> CellData {
+            make_cell(
+                &((b'a' + (row as u8 % 26)) as char).to_string(),
+                u32::from(row) + 1,
+                0,
+                0,
+            )
+        }
+
+        let mut prev_cells = Vec::with_capacity(usize::from(width) * usize::from(height));
+        for row in 0..height {
+            let cell = row_cell(row);
+            prev_cells.extend(std::iter::repeat(cell).take(usize::from(width)));
+        }
+
+        let mut curr_cells = Vec::with_capacity(usize::from(width) * usize::from(height));
+        for row in 0..height {
+            let cell = if row + 1 < height {
+                row_cell(row + 1)
+            } else {
+                make_cell("Z", 999, 0, 0)
+            };
+            curr_cells.extend(std::iter::repeat(cell).take(usize::from(width)));
+        }
+
+        (
+            make_frame(width, height, prev_cells),
+            make_frame(width, height, curr_cells),
+        )
+    }
+
+    #[test]
+    fn scroll_shift_emits_terminal_scroll_instead_of_repainting_every_row() {
+        const WIDTH: u16 = 6;
+        const HEIGHT: u16 = 9;
+        let (prev, curr) = uniform_single_row_scroll_frames(WIDTH, HEIGHT);
+
+        let mut scroll_output = Vec::new();
+        blit_frame_to(&mut scroll_output, &curr, Some(&prev));
+
+        let mut naive_output = Vec::new();
+        write_changed_cells(&mut naive_output, &curr, &prev, None);
+
+        let scroll_text = String::from_utf8_lossy(&scroll_output);
+        assert!(
+            scroll_text.contains("\x1b[1;9r"),
+            "expected a DECSTBM scroll-region sequence (rows 1..9) in output: {scroll_text:?}"
+        );
+        assert!(
+            scroll_text.contains("\x1b[1S"),
+            "expected an SU scroll-up-by-1 sequence in output: {scroll_text:?}"
+        );
+
+        // Budget: DECSTBM (~7 bytes) + SU (~4 bytes) + region reset (~3 bytes)
+        // + one freshly exposed WIDTH-cell row (SGR + CUP + symbols, well
+        // under 100 bytes for WIDTH=6) + the fixed cursor/sync wrapper bytes
+        // every blit emits (~60 bytes). 400 bytes covers that with margin
+        // while still being dramatically smaller than repainting all 54
+        // cells the naive per-cell diff would rewrite.
+        assert!(
+            scroll_output.len() < 400,
+            "scroll-shift blit for a {WIDTH}x{HEIGHT} single-row scroll should stay under a \
+             400-byte budget (DECSTBM+SU+one new row+wrapper bytes), got {} bytes",
+            scroll_output.len()
+        );
+        assert!(
+            scroll_output.len() * 2 < naive_output.len(),
+            "scroll-shift blit ({} bytes) should be well under half the naive full-diff byte \
+             count ({} bytes) for a shift this large",
+            scroll_output.len(),
+            naive_output.len()
+        );
+    }
+
+    #[test]
+    fn scroll_shift_replays_exactly_through_decstbm_and_su() {
+        const WIDTH: u16 = 6;
+        const HEIGHT: u16 = 9;
+        let (prev, curr) = uniform_single_row_scroll_frames(WIDTH, HEIGHT);
+
+        let mut terminal = crate::ghostty::Terminal::new(WIDTH, HEIGHT, 0).unwrap();
+
+        let mut initial = Vec::new();
+        blit_frame_to(&mut initial, &prev, None);
+        terminal.write(&initial);
+
+        let mut diff = Vec::new();
+        blit_frame_to(&mut diff, &curr, Some(&prev));
+        assert!(
+            String::from_utf8_lossy(&diff).contains("\x1b[1S"),
+            "this test only proves the scroll path if it actually triggered"
+        );
+        terminal.write(&diff);
+
+        for row in 0..HEIGHT {
+            let expected = if row + 1 < HEIGHT {
+                (b'a' + ((row + 1) as u8 % 26)) as char
+            } else {
+                'Z'
+            };
+            for col in 0..WIDTH {
+                let (_, graphemes) = terminal.screen_cell(col, u32::from(row)).unwrap();
+                assert_eq!(
+                    graphemes,
+                    vec![u32::from(expected)],
+                    "row {row} col {col} mismatch after replaying the scroll-shift diff"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn scroll_shift_is_rejected_when_rows_are_not_uniformly_shifted() {
+        const WIDTH: u16 = 6;
+        const HEIGHT: u16 = 9;
+        let (mut prev, mut curr) = uniform_single_row_scroll_frames(WIDTH, HEIGHT);
+
+        // Pin column 0 to the absolute row index in both frames, like a
+        // sidebar clock that does not move when the rest of the pane
+        // scrolls. That keeps every row's content from shifting uniformly.
+        for row in 0..HEIGHT {
+            let pinned = make_cell(&format!("{row}"), 0, 0, 0);
+            let prev_idx = usize::from(row) * usize::from(WIDTH);
+            let curr_idx = usize::from(row) * usize::from(WIDTH);
+            prev.cells[prev_idx] = pinned.clone();
+            curr.cells[curr_idx] = pinned;
+        }
+
+        assert!(
+            detect_scroll_shift(&curr, &prev).is_none(),
+            "a sidebar column that does not shift with the rest of the pane must not be \
+             mistaken for a uniform scroll"
+        );
+
+        let mut blit_output = Vec::new();
+        blit_frame_to(&mut blit_output, &curr, Some(&prev));
+        let mut naive_output = Vec::new();
+        write_changed_cells(&mut naive_output, &curr, &prev, None);
+
+        assert!(
+            blit_output
+                .windows(naive_output.len())
+                .any(|window| window == naive_output.as_slice()),
+            "with no shift detected, the diff bytes must be byte-identical to the pre-change \
+             per-cell diff path"
+        );
+    }
+
+    #[test]
+    fn scroll_shift_band_verification_rejects_a_hash_collision_with_one_differing_cell() {
+        const WIDTH: u16 = 4;
+        const HEIGHT: u16 = 6;
+        let (prev, mut curr) = uniform_single_row_scroll_frames(WIDTH, HEIGHT);
+
+        // A real hash collision cannot be forced deterministically, so this
+        // exercises the verification step directly: construct a shift whose
+        // band the row-hash stage would have accepted, but flip one cell
+        // inside the band so it visually differs. The verifier must reject
+        // the whole band rather than trust the hash match.
+        let shift = ScrollShift {
+            top: 0,
+            bottom: HEIGHT - 1,
+            lines: 1,
+        };
+        let frame_hyperlinks = sanitized_frame_hyperlinks(&curr);
+        let prev_hyperlinks = sanitized_frame_hyperlinks(&prev);
+        assert!(
+            scroll_shift_band_matches(&curr, &prev, shift, &frame_hyperlinks, &prev_hyperlinks),
+            "sanity: the untouched band should match before corrupting a cell"
+        );
+
+        curr.cells[0] = make_cell("!", 42, 0, 0);
+        assert!(
+            !scroll_shift_band_matches(&curr, &prev, shift, &frame_hyperlinks, &prev_hyperlinks),
+            "a single differing cell inside the band must reject the whole shift, even if row \
+             hashes had matched"
+        );
     }
 
     #[test]
