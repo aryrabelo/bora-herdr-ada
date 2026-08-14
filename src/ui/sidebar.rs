@@ -877,7 +877,19 @@ fn workspace_list_entries_inner(app: &AppState, force_expanded: bool) -> Vec<Wor
     let mut emitted_visual_groups = std::collections::HashSet::<String>::new();
     let mut entries = Vec::new();
 
-    for (ws_idx, ws) in app.workspaces.iter().enumerate() {
+    // Channels lead, then everything else in its own order.
+    //
+    // A group is emitted where its FIRST member sits, so with creation order the
+    // channel block landed in the middle of the repo groups — anything created
+    // after the first `#` workspace ended up below the channels, which reads as
+    // if that repo belonged under them. Channels and workspaces are two separate
+    // kinds, so they get two separate blocks. The sort is stable, so the repo
+    // groups keep their relative order exactly as before.
+    let mut emission_order: Vec<usize> = (0..app.workspaces.len()).collect();
+    emission_order.sort_by_key(|&idx| !is_auto_channel(&app.workspaces[idx]));
+
+    for ws_idx in emission_order {
+        let ws = &app.workspaces[ws_idx];
         if consumed.contains(&ws_idx) {
             continue;
         }
@@ -2247,11 +2259,19 @@ fn render_workspace_list(
                     .as_deref()
                     .map(display_width)
                     .unwrap_or_default();
-                // Tokens configured under `[ui.sidebar.spaces] rows` (e.g. a
-                // `$unread`/`$pr` custom badge reported through `bora
-                // workspace report-metadata`). Cheap emptiness check keeps
-                // the common token-free workspace free of any resolution or
-                // layout cost.
+                // Metadata tokens reported through `bora workspace
+                // report-metadata` (a channel's unread badge, a `$pr` chip).
+                //
+                // Only the CUSTOM tokens of the configured row are drawn here:
+                // this fork renders the state dot, name, branch and git status
+                // itself, so painting the whole resolved row would repeat them —
+                // the default `[ui.sidebar.spaces] rows` starts with
+                // `state_icon, workspace`, which showed every name twice.
+                //
+                // When the config names no custom token, every reported value is
+                // drawn instead, so a badge is visible without the reporter and
+                // the reader having to agree on a key in config first. Config
+                // then only decides ordering and style.
                 let full_label = ws.display_name_from(&app.terminals, terminal_runtimes);
                 let token_spans: Vec<Span<'static>> = if ws.metadata_tokens.is_empty() {
                     Vec::new()
@@ -2270,35 +2290,51 @@ fn render_workspace_list(
                             suppress_git_details: *indented,
                         },
                     );
-                    rows.first()
-                        .map(|resolved| {
-                            let state_icon = state_dot(
-                                row_state,
-                                row_seen,
-                                app.spinner_tick,
-                                app.status_indicators,
-                                p,
-                                idle_age,
-                            );
-                            let state_text_style = Style::default()
-                                .fg(state_label_color(row_state, row_seen, p))
-                                .add_modifier(Modifier::DIM);
-                            let branch_style =
-                                Style::default().fg(if highlighted { p.mauve } else { p.overlay0 });
-                            resolved_token_spans(
-                                resolved,
-                                state_icon,
-                                state_text_style,
-                                name_style,
-                                branch_style,
-                                branch_style,
-                                p,
-                                (body.width as usize).saturating_sub(
-                                    prefix_width + dots_width + display_width(sep) + idle_width,
-                                ),
-                            )
-                        })
-                        .unwrap_or_default()
+                    let mut customs: Vec<ResolvedToken> = rows
+                        .into_iter()
+                        .flatten()
+                        .filter(|token| matches!(token.kind, ResolvedTokenKind::Custom(_)))
+                        .collect();
+                    if customs.is_empty() {
+                        let mut values: Vec<(&String, &String)> = token_values.iter().collect();
+                        values.sort_unstable_by_key(|(key, _)| *key);
+                        customs = values
+                            .into_iter()
+                            .map(|(_, value)| ResolvedToken {
+                                kind: ResolvedTokenKind::Custom(value.clone()),
+                                style: crate::config::SidebarTokenStyle::default(),
+                            })
+                            .collect();
+                    }
+                    if customs.is_empty() {
+                        Vec::new()
+                    } else {
+                        let state_icon = state_dot(
+                            row_state,
+                            row_seen,
+                            app.spinner_tick,
+                            app.status_indicators,
+                            p,
+                            idle_age,
+                        );
+                        let state_text_style = Style::default()
+                            .fg(state_label_color(row_state, row_seen, p))
+                            .add_modifier(Modifier::DIM);
+                        let branch_style =
+                            Style::default().fg(if highlighted { p.mauve } else { p.overlay0 });
+                        resolved_token_spans(
+                            &customs,
+                            state_icon,
+                            state_text_style,
+                            name_style,
+                            branch_style,
+                            branch_style,
+                            p,
+                            (body.width as usize).saturating_sub(
+                                prefix_width + dots_width + display_width(sep) + idle_width,
+                            ),
+                        )
+                    }
                 };
                 let token_width: usize = if token_spans.is_empty() {
                     0
@@ -2507,14 +2543,20 @@ fn render_agent_detail(
             status_spans.push(Span::styled(" · ", agent_style));
             status_spans.push(Span::styled(custom_status.clone(), agent_style));
         }
-        // Tokens configured under `[ui.sidebar.agents] rows` (e.g. a `$pr`
-        // custom token). `resolved_agent_rows` is already cheap when
-        // unconfigured -- `rows_for_agent` returns the empty default row
-        // set, so nothing is resolved or laid out for the common case.
-        if let Some(resolved) = resolved_agent_rows(app, detail).first() {
+        // Custom tokens configured under `[ui.sidebar.agents] rows`, e.g. the
+        // `$pr` chip fed by the gh-pr plugin. Same reasoning as the workspace
+        // row: the state icon, workspace, agent and title are already drawn
+        // above, so only the custom tokens are appended here — painting the
+        // whole resolved row would repeat what the reader can already see.
+        let agent_customs: Vec<ResolvedToken> = resolved_agent_rows(app, detail)
+            .into_iter()
+            .flatten()
+            .filter(|token| matches!(token.kind, ResolvedTokenKind::Custom(_)))
+            .collect();
+        if !agent_customs.is_empty() {
             status_spans.push(Span::styled(" · ", agent_style));
             status_spans.extend(resolved_token_spans(
-                resolved,
+                &agent_customs,
                 (icon, icon_style),
                 status_style,
                 name_style,
@@ -4179,15 +4221,19 @@ mod tests {
             .position(|row| row.contains("channels"))
             .unwrap_or_else(|| panic!("channels get their own group: {rows:?}"));
         assert!(
-            repo_at < group_at,
-            "the repo group stands on its own, not nested inside the channel group: {rows:?}"
+            group_at < repo_at,
+            "channels form their own leading block, above the repo groups: {rows:?}"
         );
-        // No `#` row may sit inside the repo bracket: that spans every row from the
-        // repo header up to the channel group header.
-        let inside_repo = &rows[repo_at..group_at];
+        // No `#` row may sit inside the repo bracket, which now runs from the repo
+        // header to the end of the drawn rows.
+        let inside_repo = &rows[repo_at..];
         assert!(
             !inside_repo.iter().any(|row| row.contains('#')),
             "no channel is left inside the repo bracket: {inside_repo:?}"
+        );
+        assert!(
+            repo_at > 0 && !rows[..repo_at].is_empty(),
+            "the repo block still renders after the channel block: {rows:?}"
         );
 
         // The channel group holds both channels, and its rail closes on the last.
