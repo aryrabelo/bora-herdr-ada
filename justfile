@@ -56,9 +56,13 @@ windows-lint:
         -A clippy::cognitive_complexity \
         -A clippy::too_many_lines
 
-# Check formatting + run unit tests + Windows target lint + maintenance script tests
+# Check formatting + run unit tests + maintenance script tests
+# Windows target lint is commented out on purpose: this fork does not ship or use
+# Windows builds, and `windows-lint` downloads the msvc target and type-checks the
+# whole Windows tree on every `just check`. Run `just windows-lint` by hand if a
+# change touches src/platform/windows.rs.
 [unix]
-check: ci windows-lint
+check: ci
     python3 -m unittest scripts.test_agent_detection_manifest_check scripts.test_changelog scripts.test_config_reference_check scripts.test_docs_translation_parity scripts.test_hermes_integration_asset scripts.test_package_windows_conpty scripts.test_preview scripts.test_unix_installer scripts.test_vendor_libghostty_vt scripts.test_vendor_portable_pty
     @echo "docs reminder: if this changes user-facing behavior, make sure the relevant release docs are updated or called out before release."
 
