@@ -1794,9 +1794,8 @@ mod tests {
 
     #[tokio::test]
     async fn workspace_new_derives_worktree_space_without_explicit_worktree_action() {
-        let (base, repo, checkout) = self::git::test_support::create_repo_with_linked_worktree(
-            "auto-derive-worktree-space",
-        );
+        let (base, repo, checkout) =
+            self::git::test_support::create_repo_with_linked_worktree("auto-derive-worktree-space");
 
         #[cfg(windows)]
         let command = "C:\\Windows\\System32\\whoami.exe";
