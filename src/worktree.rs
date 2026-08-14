@@ -197,15 +197,21 @@ pub(crate) fn worktree_dirty_remove_message(path: &Path) -> String {
 }
 
 pub(crate) fn checkout_has_dirty_files(path: &Path) -> Result<bool, String> {
+    checkout_status_is_nonempty(path, "--untracked-files=all")
+}
+
+/// Tracked-only dirtiness: staged or unstaged changes to files git already
+/// knows, ignoring untracked ones. `git merge` completes with untracked files
+/// present, so a merge gate must not refuse on them; removing a checkout would
+/// destroy them, so `checkout_has_dirty_files` still counts them.
+pub(crate) fn checkout_has_tracked_changes(path: &Path) -> Result<bool, String> {
+    checkout_status_is_nonempty(path, "--untracked-files=no")
+}
+
+fn checkout_status_is_nonempty(path: &Path, untracked: &str) -> Result<bool, String> {
     let path_arg = path.display().to_string();
     let output = crate::noninteractive_process::command("git")
-        .args([
-            "-C",
-            &path_arg,
-            "status",
-            "--porcelain",
-            "--untracked-files=all",
-        ])
+        .args(["-C", &path_arg, "status", "--porcelain", untracked])
         .output()
         .map_err(|err| err.to_string())?;
 
@@ -551,8 +557,14 @@ pub(crate) fn merge_branch_to_parent(
     if checkout_has_dirty_files(checkout_path)? {
         return Err("worktree has uncommitted changes; commit them before merging".into());
     }
-    if checkout_has_dirty_files(repo_root)? {
-        return Err("base checkout has uncommitted changes; commit or stash them first".into());
+    // Untracked files in the base do not affect the merge: it runs in repo_root
+    // and git completes with them present. Only tracked modifications can be
+    // overwritten, so gating on untracked ones refuses merges git would perform.
+    if checkout_has_tracked_changes(repo_root)? {
+        return Err(
+            "base checkout has uncommitted changes to tracked files; commit or stash them first"
+                .into(),
+        );
     }
     let merge = build_worktree_merge_command(repo_root, branch);
     if let Err(err) = run_worktree_command(&merge) {
@@ -892,6 +904,44 @@ mod tests {
     fn generated_branch_slug_is_worktree_namespaced_and_stable() {
         assert_eq!(generated_branch_slug(0), "worktree/brave-river-0000");
         assert_eq!(generated_branch_slug(9), "worktree/calm-cloud-0009");
+    }
+
+    #[test]
+    fn merge_to_parent_ignores_untracked_files_in_the_base_checkout() {
+        let repo = create_committed_repo("merge-untracked-base");
+        run_git(&repo, &["branch", "feature"]);
+        let checkout = unique_temp_path("merge-untracked-checkout");
+        run_git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                &checkout.display().to_string(),
+                "feature",
+            ],
+        );
+        std::fs::write(checkout.join("feature.txt"), "work\n").unwrap();
+        run_git(&checkout, &["add", "feature.txt"]);
+        run_git(&checkout, &["commit", "--quiet", "-m", "feature work"]);
+
+        // git merge completes with untracked files present, so the gate must not
+        // refuse on them: this is the reported failure, a clean worktree that
+        // could not be merged because the base held unrelated untracked files.
+        std::fs::write(repo.join("untracked-note.md"), "scratch\n").unwrap();
+        merge_branch_to_parent(&repo, &checkout, "feature").expect("untracked base must merge");
+        assert!(repo.join("feature.txt").exists());
+
+        // A tracked modification in the base is a real conflict risk and still blocks.
+        std::fs::write(checkout.join("more.txt"), "more\n").unwrap();
+        run_git(&checkout, &["add", "more.txt"]);
+        run_git(&checkout, &["commit", "--quiet", "-m", "more work"]);
+        std::fs::write(repo.join("README.md"), "modified\n").unwrap();
+        let err = merge_branch_to_parent(&repo, &checkout, "feature")
+            .expect_err("tracked base changes must still block");
+        assert!(err.contains("tracked"), "unexpected error: {err}");
+
+        let _ = std::fs::remove_dir_all(&checkout);
+        let _ = std::fs::remove_dir_all(&repo);
     }
 
     #[test]
