@@ -1805,7 +1805,7 @@ mod tests {
 
         let (events, _) = mpsc::channel(64);
         let (repo_workspace, _repo_terminal, repo_runtime) = Workspace::new_argv_command(
-            repo.clone(),
+            repo,
             24,
             80,
             &argv,
@@ -1821,7 +1821,7 @@ mod tests {
         let (events, _) = mpsc::channel(64);
         let (checkout_workspace, _checkout_terminal, checkout_runtime) =
             Workspace::new_argv_command(
-                checkout.clone(),
+                checkout,
                 24,
                 80,
                 &argv,
