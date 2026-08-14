@@ -31,6 +31,19 @@ fn pane_border_title(label: &str, pane_width: u16, _focused: bool) -> Option<Str
     Some(format!(" {} ", truncate_end(label, max_label_width)))
 }
 
+/// Lead a pane's border title with its public id so two panes running the same
+/// agent stay distinguishable. Falls back to whichever half exists.
+fn border_label_with_pane_id(
+    pane_public_id: Option<String>,
+    label: Option<String>,
+) -> Option<String> {
+    match (pane_public_id, label) {
+        (Some(id), Some(label)) => Some(format!("{id} · {label}")),
+        (Some(id), None) => Some(id),
+        (None, label) => label,
+    }
+}
+
 // Full view computation reaches this helper for active and background panes.
 // Keep terminal queries narrow, allocation-free, and short under the core lock.
 fn terminal_inner_rect(rt: &TerminalRuntime, pane_inner: Rect, pane_scrollbars: bool) -> Rect {
@@ -662,11 +675,24 @@ fn render_pane_border_titles(
         if !info.borders.contains(Borders::TOP) || info.rect.width <= 4 {
             continue;
         }
-        let Some(title) = ws
+        // Opt-in: lead the border with the pane's own public id (`w26:p1`) so two
+        // panes running the same agent are distinguishable. The id cannot come from
+        // `rename`: `border_label` prefers the terminal's own title, which agents
+        // set, so a manual label loses on exactly the panes that need it.
+        let pane_public_id = app
+            .show_pane_ids_on_pane_borders
+            .then(|| {
+                ws.public_pane_number(info.id)
+                    .map(|number| crate::workspace::public_pane_id_for_number(&ws.id, number))
+            })
+            .flatten();
+        let label = ws
             .pane_state(info.id)
             .and_then(|pane| app.terminals.get(&pane.attached_terminal_id))
-            .and_then(|terminal| terminal.border_label(app.show_agent_labels_on_pane_borders))
-            .and_then(|label| pane_border_title(&label, info.rect.width, info.is_focused))
+            .and_then(|terminal| terminal.border_label(app.show_agent_labels_on_pane_borders));
+        let combined = border_label_with_pane_id(pane_public_id, label);
+        let Some(title) =
+            combined.and_then(|label| pane_border_title(&label, info.rect.width, info.is_focused))
         else {
             continue;
         };
@@ -1020,6 +1046,32 @@ mod tests {
     }
 
     #[test]
+    fn border_label_leads_with_the_public_pane_id() {
+        // Two panes running the same agent: the id is what tells them apart.
+        assert_eq!(
+            border_label_with_pane_id(Some("w26:p1".into()), Some("orchestrator".into()))
+                .as_deref(),
+            Some("w26:p1 · orchestrator")
+        );
+        assert_eq!(
+            border_label_with_pane_id(Some("w4D:p1".into()), Some("orchestrator".into()))
+                .as_deref(),
+            Some("w4D:p1 · orchestrator")
+        );
+        // A pane with no label still shows its id, which is the point.
+        assert_eq!(
+            border_label_with_pane_id(Some("w26:p1".into()), None).as_deref(),
+            Some("w26:p1")
+        );
+        // No id available: unchanged from the previous behaviour.
+        assert_eq!(
+            border_label_with_pane_id(None, Some("claude".into())).as_deref(),
+            Some("claude")
+        );
+        assert_eq!(border_label_with_pane_id(None, None), None);
+    }
+
+    #[test]
     fn pane_border_title_trims_and_truncates() {
         assert_eq!(
             pane_border_title(" claude ", 20, false).as_deref(),
@@ -1080,6 +1132,51 @@ mod tests {
         assert_eq!(buffer[(4, 0)].symbol(), "模");
         assert_eq!(buffer[(5, 0)].symbol(), " ");
         assert_eq!(buffer[(6, 0)].symbol(), "块");
+    }
+
+    #[test]
+    fn pane_border_renderer_shows_the_public_pane_id() {
+        let mut app = AppState::test_new();
+        app.mode = Mode::Terminal;
+        app.show_pane_ids_on_pane_borders = true;
+        app.view.terminal_area = Rect::new(0, 0, 40, 3);
+        let ws = Workspace::test_new("test");
+        let pane_id = ws.tabs[0].root_pane;
+        app.view.pane_infos = vec![PaneInfo {
+            id: pane_id,
+            rect: Rect::new(0, 0, 40, 3),
+            inner_rect: Rect::default(),
+            scrollbar_rect: None,
+            borders: Borders::ALL,
+            is_focused: false,
+        }];
+
+        let terminal_id = ws.tabs[0].panes[&pane_id].attached_terminal_id.clone();
+        let mut terminal_state = TerminalState::new(terminal_id.clone(), "/tmp".into());
+        terminal_state.set_manual_label("orchestrator".into());
+        app.terminals.insert(terminal_id, terminal_state);
+
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(40, 3)).unwrap();
+        terminal
+            .draw(|frame| render_view_pane_borders(&app, &ws, frame))
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let top_row: String = (0..40).map(|x| buffer[(x, 0)].symbol()).collect();
+        let expected_id = crate::workspace::public_pane_id_for_number(
+            &ws.id,
+            ws.public_pane_number(pane_id)
+                .expect("pane has a public number"),
+        );
+        assert!(
+            top_row.contains(&expected_id),
+            "border must carry the pane id {expected_id}; row was {top_row}"
+        );
+        assert!(
+            top_row.contains("orchestrator"),
+            "border must keep the label; row was {top_row}"
+        );
     }
 
     #[test]
