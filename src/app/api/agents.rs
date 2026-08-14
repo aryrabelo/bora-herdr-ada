@@ -4,7 +4,8 @@ use bytes::Bytes;
 
 use crate::api::schema::{
     AgentPromptParams, AgentRenameParams, AgentSendKeysParams, AgentStartParams, AgentTarget,
-    PaneReadResult, ResponseResult,
+    EventData, EventEnvelope, EventKind, PaneReadResult, ResponseResult,
+    AGENT_PROMPTED_TEXT_LIMIT,
 };
 use crate::app::App;
 
@@ -98,12 +99,36 @@ impl App {
                 ),
             );
         }
+        let announced_text = if params.announce {
+            match params.from.as_deref() {
+                Some(from) => format!("[from {from}]\n{}", params.text),
+                None => params.text.clone(),
+            }
+        } else {
+            params.text.clone()
+        };
         let (text, enter) =
-            crate::app::api_helpers::encode_api_submission_parts(runtime, &params.text);
+            crate::app::api_helpers::encode_api_submission_parts(runtime, &announced_text);
         if let Err(err) = runtime.try_send_bytes(Bytes::from(text)) {
             return encode_error(id, "agent_prompt_failed", err.to_string());
         }
         runtime.send_bytes_after(Bytes::from(enter), AGENT_PROMPT_SUBMIT_DELAY);
+        let to_pane_id = self.public_pane_id(resolved.ws_idx, resolved.pane_id);
+        let to_workspace_id = self.public_workspace_id(resolved.ws_idx);
+        if let Some(to_pane_id) = to_pane_id {
+            let (text, text_truncated) = truncate_agent_prompt_text(&announced_text);
+            self.emit_event(EventEnvelope {
+                event: EventKind::AgentPrompted,
+                data: EventData::AgentPrompted {
+                    from_pane_id: params.from.clone(),
+                    to_pane_id,
+                    to_workspace_id,
+                    text,
+                    text_truncated,
+                    text_len: announced_text.len(),
+                },
+            });
+        }
         let Some(agent) = self.agent_info(resolved.ws_idx, resolved.pane_id) else {
             return agent_not_found(id, &params.target);
         };
@@ -268,6 +293,20 @@ impl App {
     }
 }
 
+/// Truncates `text` to `AGENT_PROMPTED_TEXT_LIMIT` bytes at a UTF-8
+/// character boundary for `EventData::AgentPrompted`. Returns the
+/// (possibly-unchanged) text and whether it was truncated.
+fn truncate_agent_prompt_text(text: &str) -> (String, bool) {
+    if text.len() <= AGENT_PROMPTED_TEXT_LIMIT {
+        return (text.to_string(), false);
+    }
+    let mut end = AGENT_PROMPTED_TEXT_LIMIT;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    (text[..end].to_string(), true)
+}
+
 fn agent_not_ready(id: String, target: &str) -> String {
     encode_error(
         id,
@@ -336,6 +375,8 @@ mod tests {
             AgentPromptParams {
                 target: public_pane_id,
                 text: "A != B".into(),
+                from: Some("wS:p1".into()),
+                announce: false,
                 wait: None,
             },
         );
@@ -344,6 +385,24 @@ mod tests {
             panic!("expected prompted response");
         };
         assert_eq!(agent.name.as_deref(), Some("reviewer"));
+        let to_pane_id = app.public_pane_id(0, pane_id).unwrap();
+        assert!(app.event_hub.events_after(0).iter().any(|(_, event)| {
+            matches!(
+                &event.data,
+                crate::api::schema::EventData::AgentPrompted {
+                    from_pane_id,
+                    to_pane_id: actual_pane_id,
+                    text,
+                    text_truncated,
+                    text_len,
+                    ..
+                } if from_pane_id.as_deref() == Some("wS:p1")
+                    && actual_pane_id == &to_pane_id
+                    && text == "A != B"
+                    && !text_truncated
+                    && *text_len == "A != B".len()
+            )
+        }));
         assert_eq!(
             rx.try_recv().unwrap(),
             Bytes::from_static(b"\x1b[200~A != B\x1b[201~")
@@ -367,6 +426,8 @@ mod tests {
             AgentPromptParams {
                 target: "reviewer".into(),
                 text: "A != B".into(),
+                from: None,
+                announce: false,
                 wait: None,
             },
         );
@@ -388,12 +449,90 @@ mod tests {
             AgentPromptParams {
                 target: "opencode".into(),
                 text: "wrong target".into(),
+                from: None,
+                announce: false,
                 wait: None,
             },
         );
         let error: crate::api::schema::ErrorResponse = serde_json::from_str(&rejected).unwrap();
         assert_eq!(error.error.code, "agent_not_found");
         assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn agent_prompt_announce_prepends_sender_header_to_injected_text() {
+        let mut app = app_with_agent();
+        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        let terminal_id = app.state.workspaces[0].tabs[0].panes[&pane_id]
+            .attached_terminal_id
+            .clone();
+        let terminal = app.state.terminals.get_mut(&terminal_id).unwrap();
+        terminal.set_agent_name("reviewer".into());
+        terminal.set_detected_state(Some(Agent::OpenCode), AgentState::Working);
+        let (runtime, mut rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        // Raw (non-bracketed-paste) submission: the injected bytes are the
+        // announced text verbatim, easiest to assert on directly.
+        runtime.test_process_pty_bytes(b"\x1b[?2004l");
+        app.state.insert_test_runtime(pane_id, runtime);
+
+        let response = app.handle_agent_prompt(
+            "req-announce".into(),
+            AgentPromptParams {
+                target: "reviewer".into(),
+                text: "hello".into(),
+                from: Some("wS:p1".into()),
+                announce: true,
+                wait: None,
+            },
+        );
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        assert!(matches!(success.result, ResponseResult::AgentPrompted { .. }));
+        assert_eq!(
+            rx.try_recv().unwrap(),
+            Bytes::from_static(b"[from wS:p1]\nhello")
+        );
+
+        let to_pane_id = app.public_pane_id(0, pane_id).unwrap();
+        assert!(app.event_hub.events_after(0).iter().any(|(_, event)| {
+            matches!(
+                &event.data,
+                crate::api::schema::EventData::AgentPrompted {
+                    to_pane_id: actual_pane_id,
+                    text,
+                    text_len,
+                    ..
+                } if actual_pane_id == &to_pane_id
+                    && text == "[from wS:p1]\nhello"
+                    && *text_len == "[from wS:p1]\nhello".len()
+            )
+        }));
+    }
+
+    #[tokio::test]
+    async fn agent_prompt_announce_without_from_leaves_text_unchanged() {
+        let mut app = app_with_agent();
+        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        let terminal_id = app.state.workspaces[0].tabs[0].panes[&pane_id]
+            .attached_terminal_id
+            .clone();
+        let terminal = app.state.terminals.get_mut(&terminal_id).unwrap();
+        terminal.set_agent_name("reviewer".into());
+        terminal.set_detected_state(Some(Agent::OpenCode), AgentState::Working);
+        let (runtime, mut rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        runtime.test_process_pty_bytes(b"\x1b[?2004l");
+        app.state.insert_test_runtime(pane_id, runtime);
+
+        app.handle_agent_prompt(
+            "req-announce-no-from".into(),
+            AgentPromptParams {
+                target: "reviewer".into(),
+                text: "hello".into(),
+                from: None,
+                announce: true,
+                wait: None,
+            },
+        );
+        assert_eq!(rx.try_recv().unwrap(), Bytes::from_static(b"hello"));
     }
 
     #[tokio::test]
@@ -458,6 +597,8 @@ mod tests {
             AgentPromptParams {
                 target: "reviewer".into(),
                 text: "A != B".into(),
+                from: None,
+                announce: false,
                 wait: None,
             },
         );

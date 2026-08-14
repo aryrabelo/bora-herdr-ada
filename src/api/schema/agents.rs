@@ -176,6 +176,17 @@ pub struct AgentStartParams {
 pub struct AgentPromptParams {
     pub target: String,
     pub text: String,
+    /// Public pane id of the sender, when known. The CLI fills this from
+    /// `HERDR_PANE_ID` automatically; callers outside a herdr pane may omit it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
+    /// When true and `from` is known, prepends a `[from <pane_id>]` header
+    /// line to `text` before it is written to the target pane, so the
+    /// receiving agent (which has no channel but its own terminal input)
+    /// can see who is prompting it. Opt-in: off by default so callers piping
+    /// exact commands or code are never surprised by a mutated payload.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub announce: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wait: Option<AgentPromptWaitOptions>,
 }

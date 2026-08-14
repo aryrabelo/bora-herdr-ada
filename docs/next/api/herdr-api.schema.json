@@ -747,6 +747,47 @@
               "type": "object"
             },
             {
+              "description": "Emitted when `agent.prompt` writes text into another pane's terminal\n(agent-to-agent coordination). `text` is truncated to\n`AGENT_PROMPTED_TEXT_LIMIT` bytes at a UTF-8 boundary; truncation is\nby size only, never to hide contents — a client that can already read\n`to_pane_id`'s own output sees the same raw bytes on screen.",
+              "properties": {
+                "from_pane_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "text": {
+                  "type": "string"
+                },
+                "text_len": {
+                  "format": "uint",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "text_truncated": {
+                  "type": "boolean"
+                },
+                "to_pane_id": {
+                  "type": "string"
+                },
+                "to_workspace_id": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "agent_prompted",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "to_pane_id",
+                "to_workspace_id",
+                "text",
+                "text_truncated",
+                "text_len"
+              ],
+              "type": "object"
+            },
+            {
               "properties": {
                 "repo_identity": {
                   "type": "string"
@@ -809,6 +850,7 @@
             "pane_agent_status_changed",
             "layout_updated",
             "pane_result_reported",
+            "agent_prompted",
             "github_prs_refreshed",
             "github_issues_refreshed"
           ],
@@ -1305,6 +1347,17 @@
       "$defs": {
         "AgentPromptParams": {
           "properties": {
+            "announce": {
+              "description": "When true and `from` is known, prepends a `[from <pane_id>]` header\nline to `text` before it is written to the target pane, so the\nreceiving agent (which has no channel but its own terminal input)\ncan see who is prompting it. Opt-in: off by default so callers piping\nexact commands or code are never surprised by a mutated payload.",
+              "type": "boolean"
+            },
+            "from": {
+              "description": "Public pane id of the sender, when known. The CLI fills this from\n`HERDR_PANE_ID` automatically; callers outside a herdr pane may omit it.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "target": {
               "type": "string"
             },
@@ -7288,6 +7341,47 @@
               "type": "object"
             },
             {
+              "description": "Emitted when `agent.prompt` writes text into another pane's terminal\n(agent-to-agent coordination). `text` is truncated to\n`AGENT_PROMPTED_TEXT_LIMIT` bytes at a UTF-8 boundary; truncation is\nby size only, never to hide contents — a client that can already read\n`to_pane_id`'s own output sees the same raw bytes on screen.",
+              "properties": {
+                "from_pane_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "text": {
+                  "type": "string"
+                },
+                "text_len": {
+                  "format": "uint",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "text_truncated": {
+                  "type": "boolean"
+                },
+                "to_pane_id": {
+                  "type": "string"
+                },
+                "to_workspace_id": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "agent_prompted",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "to_pane_id",
+                "to_workspace_id",
+                "text",
+                "text_truncated",
+                "text_len"
+              ],
+              "type": "object"
+            },
+            {
               "properties": {
                 "repo_identity": {
                   "type": "string"
@@ -7365,6 +7459,7 @@
             "pane_agent_status_changed",
             "layout_updated",
             "pane_result_reported",
+            "agent_prompted",
             "github_prs_refreshed",
             "github_issues_refreshed"
           ],

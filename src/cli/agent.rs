@@ -683,7 +683,7 @@ fn agent_rename(args: &[String]) -> std::io::Result<i32> {
 fn agent_prompt(args: &[String]) -> std::io::Result<i32> {
     let Some(target) = args.first() else {
         eprintln!(
-            "usage: bora agent prompt <target> <text> [--wait] [--until STATUS]... [--timeout MS]"
+            "usage: bora agent prompt <target> <text> [--announce] [--wait] [--until STATUS]... [--timeout MS]"
         );
         return Ok(2);
     };
@@ -692,11 +692,16 @@ fn agent_prompt(args: &[String]) -> std::io::Result<i32> {
         return Ok(2);
     };
     let mut wait = false;
+    let mut announce = false;
     let mut until = Vec::new();
     let mut timeout_ms = None;
     let mut index = 2;
     while index < args.len() {
         match args[index].as_str() {
+            "--announce" => {
+                announce = true;
+                index += 1;
+            }
             "--wait" => {
                 wait = true;
                 index += 1;
@@ -741,11 +746,20 @@ fn agent_prompt(args: &[String]) -> std::io::Result<i32> {
         eprintln!("--timeout requires --wait");
         return Ok(2);
     }
+    let from = std::env::var("HERDR_PANE_ID")
+        .ok()
+        .filter(|value| !value.trim().is_empty());
+    if announce && from.is_none() {
+        eprintln!("--announce requires HERDR_PANE_ID");
+        return Ok(2);
+    }
     let response = super::send_request(&Request {
         id: "cli:agent:prompt".into(),
         method: Method::AgentPrompt(AgentPromptParams {
             target: target.clone(),
             text: text.clone(),
+            from,
+            announce,
             wait: wait.then_some(AgentPromptWaitOptions { until, timeout_ms }),
         }),
     })?;

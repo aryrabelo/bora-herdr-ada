@@ -6,6 +6,7 @@ Bora is a fork of [herdr](https://github.com/herdrdev/herdr). This changelog rec
 
 ### Added
 - Sidebar "Programs" launcher: a fixed band above the sidebar footer lists each pane-mode `.bora.toml` `[[commands]]` entry for the active workspace's branch, plus an always-on "+ run command…" row that opens a free-text prompt. Clicking an entry spawns it as a center-workspace pane through the existing command pipeline, so external tools (Helix, `gitui`, `bd`) are one click away instead of only reachable from the workspace context menu.
+- `agent.prompted` event: `bora agent prompt` now emits an `EventKind::AgentPrompted` event (subscribable via the existing `events`/`events.wait` API) whenever it writes text into another pane's terminal, carrying the sender pane (`from_pane_id`, auto-filled by the CLI from `HERDR_PANE_ID` when available), target pane/workspace, and the prompt text (truncated at 4KB). Lets a client render a log of agent-to-agent coordination instead of it being invisible PTY input. The new opt-in `--announce` flag also prepends a `[from <pane_id>]` header to the text actually written into the target pane, so the receiving agent — which has no channel but its own terminal input — knows who's prompting it; off by default so exact command/code payloads are never mutated.
 
 ### Fixed
 - `website/latest.json` validation now expects the fork's `bora-<target>` release asset names instead of upstream's `herdr-<target>`, in both the current-release and archived-release checks.
