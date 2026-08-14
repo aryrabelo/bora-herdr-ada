@@ -1939,6 +1939,46 @@ mod tests {
     }
 
     #[test]
+    fn pane_ids_resolve_without_the_colon() {
+        let (app, public_pane_id) = app_with_test_workspace();
+        let colon_free = public_pane_id.replace(':', "");
+        assert_ne!(colon_free, public_pane_id, "fixture must contain a colon");
+
+        // The orchestrator channel nick strips the colon, and that string gets
+        // pasted straight into `bora agent prompt`/`bora pane ...`.
+        assert_eq!(
+            app.parse_pane_id(&colon_free),
+            app.parse_pane_id(&public_pane_id)
+        );
+        assert_eq!(
+            app.parse_current_public_pane_id(&colon_free),
+            app.parse_current_public_pane_id(&public_pane_id)
+        );
+        assert!(app.parse_current_public_pane_id(&colon_free).is_some());
+        assert_eq!(app.parse_pane_id("w9p9"), None);
+
+        // Stripping the colon is only unambiguous because the separator is the
+        // sole lowercase `p`: `PUBLIC_ID_ALPHABET` is uppercase-only, so a
+        // stripped id splits back at exactly one position. Adding a lowercase
+        // letter to that alphabet would make two distinct panes collide here,
+        // and the resolver would silently pick whichever it scanned first.
+        let mut app = app;
+        let second = app.state.workspaces[0].test_split(ratatui::layout::Direction::Horizontal);
+        app.state.ensure_test_terminals();
+        let second_public = app.public_pane_id(0, second).unwrap();
+        assert_ne!(second_public, public_pane_id);
+        assert_ne!(
+            second_public.replace(':', ""),
+            public_pane_id.replace(':', ""),
+            "stripped pane ids must stay unique"
+        );
+        assert_eq!(
+            app.parse_pane_id(&second_public.replace(':', "")),
+            Some((0, second))
+        );
+    }
+
+    #[test]
     fn pane_input_set_changes_only_the_target_pane() {
         let (mut app, public_pane_id) = app_with_test_workspace();
         let target = app.state.workspaces[0].tabs[0].root_pane;
