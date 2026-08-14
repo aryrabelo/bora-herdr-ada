@@ -652,14 +652,24 @@ pub(crate) enum WorkspaceListEntry {
         indented: bool,
         branch: Option<ProjectHeaderBranch>,
     },
-    /// Non-clickable branch sub-header inside a project group. Headers draw
-    /// `├── ` (or `╰── ` when `last`); all connectors are 4 cells wide.
+    /// Branch sub-header inside a project group. Headers draw `├── ` (or
+    /// `╰── ` when `last`); all connectors are 4 cells wide.
+    ///
+    /// `ws_idx`: a branch holding exactly one auto-named worktree printed
+    /// its name on this header AND again on the child `Workspace` row below
+    /// (both derive from the same checkout). `Some(idx)` folds that single
+    /// workspace INTO the header — the row renders and clicks like a
+    /// `Workspace` row (dot, idle age, selection highlight) instead of a
+    /// plain label, and no separate `Workspace` entry is emitted for it.
+    /// `None` is the plain non-clickable label: a branch with 2+ workspaces
+    /// (a worktree can host two), or a workspace the user renamed by hand.
     BranchHeader {
         label: String,
         ahead: usize,
         behind: usize,
         indented: bool,
         last: bool,
+        ws_idx: Option<usize>,
     },
     /// Collapsible header for the bottom "Hidden" section; `count` is the
     /// number of temporarily-hidden workspaces beneath it.
@@ -736,15 +746,6 @@ pub(crate) fn grouped_child_display_label(
         .unwrap_or(branch)
         .to_string()
 }
-
-/// Default name of the sidebar group holding `#`-prefixed workspaces, used when
-/// the config leaves `ui.channel_group_name` unset.
-///
-/// Channels are created as `bora workspace create --label "#<name>"` and are
-/// hosted by whichever checkout happens to be convenient, so repo grouping
-/// scatters them across unrelated project brackets. A channel is a coordination
-/// surface, not a lane of that repo's work.
-pub(crate) const DEFAULT_CHANNEL_GROUP_NAME: &str = "channels";
 
 /// A workspace auto-filed as a channel: `#`-labelled and not placed in a group
 /// by hand.
@@ -1248,6 +1249,31 @@ fn emit_branch_subgroups(
         let members = &by_branch[branch];
         let (ahead, behind) = branch_meta(members);
         let is_last_branch = bracketed && bi + 1 == header_branches.len();
+        // A branch with exactly one workspace whose name REPEATS the branch
+        // prints the identical string twice: once as the header label, once as
+        // the child row below it. Fold that workspace INTO the header instead.
+        //
+        // The test is the repetition itself, not how the name was set. An
+        // auto-named checkout repeats by construction; a workspace renamed by
+        // hand to the same string repeats just as visibly, and one measured live
+        // does exactly that. A workspace named something else keeps its own row,
+        // and 2+ workspaces always keep the header-plus-rows shape, because a
+        // worktree can host two workspaces and the header then groups them.
+        let branch_label = branch_display_label(branch);
+        let repeats_branch = |ws: &crate::workspace::Workspace| match ws.custom_name.as_deref() {
+            None => true,
+            Some(name) => {
+                name == branch_label
+                    || branch_label
+                        .rsplit('/')
+                        .next()
+                        .is_some_and(|short| name == short)
+            }
+        };
+        let collapse_idx = match members.as_slice() {
+            [only] if repeats_branch(&app.workspaces[*only]) => Some(*only),
+            _ => None,
+        };
         entries.push(WorkspaceListEntry::BranchHeader {
             label: branch_display_label(branch).to_string(),
             ahead,
@@ -1255,21 +1281,25 @@ fn emit_branch_subgroups(
             // Top-level bracket headers draw the bracket tee/elbow at column 0;
             // nested ones keep the legacy indented connector.
             indented: indented && !bracketed,
-            // Only a childless last branch has to close the bracket itself.
-            last: is_last_branch && members.is_empty(),
+            // A childless last branch, or one collapsed into this header,
+            // closes the bracket itself — there is no child row left to.
+            last: is_last_branch && (members.is_empty() || collapse_idx.is_some()),
+            ws_idx: collapse_idx,
         });
-        let last_member = members.len().saturating_sub(1);
-        for (mi, &idx) in members.iter().enumerate() {
-            let rail = if is_last_branch && mi == last_member {
-                BranchRail::Close
-            } else {
-                BranchRail::Spine
-            };
-            entries.push(WorkspaceListEntry::Workspace {
-                ws_idx: idx,
-                indented,
-                rail,
-            });
+        if collapse_idx.is_none() {
+            let last_member = members.len().saturating_sub(1);
+            for (mi, &idx) in members.iter().enumerate() {
+                let rail = if is_last_branch && mi == last_member {
+                    BranchRail::Close
+                } else {
+                    BranchRail::Spine
+                };
+                entries.push(WorkspaceListEntry::Workspace {
+                    ws_idx: idx,
+                    indented,
+                    rail,
+                });
+            }
         }
     }
 
@@ -1540,8 +1570,20 @@ pub(crate) fn compute_workspace_list_areas(
                     rect: Rect::new(body.x, row_y, body.width, 1),
                 });
             }
-            WorkspaceListEntry::BranchHeader { .. } => {
-                // BranchHeader is a non-clickable label — no card or header area.
+            WorkspaceListEntry::BranchHeader {
+                ws_idx, indented, ..
+            } => {
+                // `Some` means this header folded its sole workspace's row
+                // into itself (see `WorkspaceListEntry::BranchHeader`); it
+                // must stay clickable, so push the same card a `Workspace`
+                // row would have. `None` is the plain non-clickable label.
+                if let Some(idx) = *ws_idx {
+                    cards.push(crate::app::state::WorkspaceCardArea {
+                        ws_idx: idx,
+                        rect: Rect::new(body.x, row_y, body.width, 1),
+                        indented: *indented,
+                    });
+                }
             }
             WorkspaceListEntry::HiddenHeader { .. } => {
                 // Reuse the group-header hit-test path so a click toggles the
@@ -2047,19 +2089,74 @@ fn render_workspace_list(
                 behind,
                 indented,
                 last,
+                ws_idx,
             } => {
                 if row_y < list_bottom {
                     let indent = if *indented { " " } else { "" };
                     // All connectors are 4 cells wide so branch labels align
                     // across mid (├──), last (╰──), and nested rows.
                     let connector = if *last { "╰── " } else { "├── " };
-                    let mut spans = vec![
-                        Span::styled(
-                            format!("{indent}{connector}"),
-                            Style::default().fg(p.overlay0),
-                        ),
-                        Span::styled(label.clone(), Style::default().fg(p.overlay1)),
-                    ];
+                    let mut spans = vec![Span::styled(
+                        format!("{indent}{connector}"),
+                        Style::default().fg(p.overlay0),
+                    )];
+
+                    // `Some` means this header folded its sole workspace's
+                    // row into itself: draw it (dot, idle age, selection
+                    // highlight) the way the `Workspace` arm does, with the
+                    // branch label standing in for the name.
+                    let collapsed_ws = ws_idx.map(|idx| &app.workspaces[idx]);
+                    let highlighted = ws_idx.is_some_and(|idx| {
+                        (idx == app.selected && is_navigating)
+                            || Some(idx) == app.active
+                            || dragged_ws_idx == Some(idx)
+                    });
+                    if let Some(idx) = *ws_idx {
+                        if highlighted {
+                            let selected = idx == app.selected && is_navigating;
+                            let bg = if selected {
+                                p.surface0
+                            } else if dragged_ws_idx == Some(idx) {
+                                p.surface1
+                            } else {
+                                p.surface_dim
+                            };
+                            let buf = frame.buffer_mut();
+                            for x in body.x..body.x + body.width {
+                                buf[(x, row_y)].set_style(Style::default().bg(bg));
+                            }
+                        }
+                    }
+                    let name_style = if highlighted {
+                        Style::default().fg(p.text).add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(p.overlay1)
+                    };
+                    if let Some(ws) = collapsed_ws {
+                        let dots = tab_dot_states(ws, &app.terminals);
+                        let dot_ages = tab_dot_idle_ages(ws, &app.terminals, now);
+                        for (tab_idx, &(state, seen)) in dots.iter().enumerate() {
+                            let (dot_glyph, mut dot_style) = state_dot(
+                                state,
+                                seen,
+                                app.spinner_tick,
+                                app.status_indicators,
+                                p,
+                                dot_ages.get(tab_idx).copied().flatten(),
+                            );
+                            if tab_idx == ws.active_tab {
+                                dot_style = dot_style.add_modifier(Modifier::BOLD);
+                            }
+                            if tab_idx > 0 {
+                                spans.push(Span::styled(" ", Style::default()));
+                            }
+                            spans.push(Span::styled(dot_glyph, dot_style));
+                        }
+                        if !dots.is_empty() {
+                            spans.push(Span::styled(" ", Style::default()));
+                        }
+                    }
+                    spans.push(Span::styled(label.clone(), name_style));
                     if *ahead > 0 {
                         spans.push(Span::styled(" ", Style::default()));
                         spans.push(Span::styled(
@@ -2074,7 +2171,17 @@ fn render_workspace_list(
                             Style::default().fg(p.red),
                         ));
                     }
-                    if let Some(WorkspaceListEntry::Workspace { ws_idx, .. }) =
+                    if let Some(ws) = collapsed_ws {
+                        let idle_age = ws
+                            .oldest_unseen_idle_age(&app.terminals, now)
+                            .or_else(|| ws.oldest_idle_age(&app.terminals, now));
+                        if let Some(age) = idle_age {
+                            spans.push(Span::styled(
+                                format!(" {}", format_idle_age(age)),
+                                Style::default().fg(idle_age_color(Some(age), p)),
+                            ));
+                        }
+                    } else if let Some(WorkspaceListEntry::Workspace { ws_idx, .. }) =
                         entries.get(entry_idx + 1)
                     {
                         if let Some(cs) = app
@@ -4597,8 +4704,12 @@ mod tests {
     fn multiple_branches_in_one_project_emit_multiple_brackets() {
         // Three branches + a no-branch parent: the first branch folds into the
         // project header, the no-branch parent stays inside the bracket right
-        // after the folded members, both branch sub-headers are `├── ` tees, and
-        // the elbow `╰── ` lands on the group's last workspace row.
+        // after the folded members. `feat/b` and `feat/c` each hold a single
+        // auto-named workspace (no `custom_name`), so per the collapse rule
+        // their headers fold that lone workspace INTO themselves instead of
+        // printing the branch name twice — no separate `Workspace` row for
+        // either. `feat/c` is also the group's last row, so its collapsed
+        // header draws the closing elbow itself.
         let mut app = AppState::test_new();
         let identity = "github.com/owner/proj";
         let mut parent = git_space_member("proj", "key-p", false);
@@ -4608,8 +4719,10 @@ mod tests {
         ws_a.cached_git_space.as_mut().unwrap().repo_identity = identity.into();
         let mut ws_b = git_space_member_on_branch("feature-b", "key-b", false, "feat/b");
         ws_b.cached_git_space.as_mut().unwrap().repo_identity = identity.into();
+        ws_b.custom_name = None;
         let mut ws_c = git_space_member_on_branch("feature-c", "key-c", false, "feat/c");
         ws_c.cached_git_space.as_mut().unwrap().repo_identity = identity.into();
+        ws_c.custom_name = None;
         app.workspaces = vec![parent, ws_a, ws_b, ws_c];
 
         let entries = workspace_list_entries(&app);
@@ -4643,23 +4756,15 @@ mod tests {
                     behind: 0,
                     indented: false,
                     last: false,
-                },
-                WorkspaceListEntry::Workspace {
-                    ws_idx: 2,
-                    indented: true,
-                    rail: BranchRail::Spine,
+                    ws_idx: Some(2),
                 },
                 WorkspaceListEntry::BranchHeader {
                     label: "feat/c".into(),
                     ahead: 0,
                     behind: 0,
                     indented: false,
-                    last: false,
-                },
-                WorkspaceListEntry::Workspace {
-                    ws_idx: 3,
-                    indented: true,
-                    rail: BranchRail::Close,
+                    last: true,
+                    ws_idx: Some(3),
                 },
             ]
         );
@@ -4694,18 +4799,230 @@ mod tests {
         );
         assert!(
             row_text(body_y + 3).starts_with("├── ") && row_text(body_y + 3).contains("feat/b"),
-            "middle branch is a tee: {:?}",
+            "collapsed feat/b header is a tee, another branch still follows: {:?}",
             row_text(body_y + 3)
         );
         assert!(
-            row_text(body_y + 5).starts_with("├── ") && row_text(body_y + 5).contains("feat/c"),
-            "last branch is still a tee, it does not close the bracket: {:?}",
-            row_text(body_y + 5)
+            row_text(body_y + 4).starts_with("╰── ") && row_text(body_y + 4).contains("feat/c"),
+            "collapsed feat/c header IS the group's last row, so it closes the bracket itself: {:?}",
+            row_text(body_y + 4)
+        );
+    }
+
+    #[test]
+    fn single_auto_named_worktree_on_a_branch_collapses_to_one_row() {
+        // feat/b's only member has no custom_name (still named after its
+        // checkout): the header and the would-be child row would show the
+        // identical string, so the header folds that workspace into itself.
+        let mut app = AppState::test_new();
+        let identity = "github.com/owner/proj";
+        let mut ws_a = git_space_member_on_branch("feature-a", "key-a", false, "feat/a");
+        ws_a.cached_git_space.as_mut().unwrap().repo_identity = identity.into();
+        let mut ws_b = git_space_member_on_branch("feature-b", "key-b", false, "feat/b");
+        ws_b.cached_git_space.as_mut().unwrap().repo_identity = identity.into();
+        ws_b.custom_name = None;
+        app.workspaces = vec![ws_a, ws_b];
+
+        let entries = workspace_list_entries(&app);
+
+        assert_eq!(
+            entries,
+            vec![
+                WorkspaceListEntry::ProjectHeader {
+                    name: "herdr".into(),
+                    collapse_key: identity.into(),
+                    indented: false,
+                    branch: Some(ProjectHeaderBranch {
+                        label: "feat/a".into(),
+                        ahead: 0,
+                        behind: 0,
+                    }),
+                },
+                WorkspaceListEntry::Workspace {
+                    ws_idx: 0,
+                    indented: true,
+                    rail: BranchRail::Spine,
+                },
+                WorkspaceListEntry::BranchHeader {
+                    label: "feat/b".into(),
+                    ahead: 0,
+                    behind: 0,
+                    indented: false,
+                    last: true,
+                    ws_idx: Some(1),
+                },
+            ],
+            "no separate child row is emitted for the collapsed branch"
+        );
+    }
+
+    #[test]
+    fn two_workspaces_on_the_same_branch_keep_header_and_both_rows() {
+        // A worktree can host two workspaces: even with no custom_name, 2+
+        // members must never collapse — the owner's explicit guard.
+        let mut app = AppState::test_new();
+        let identity = "github.com/owner/proj";
+        let mut ws_a = git_space_member_on_branch("feature-a", "key-a", false, "feat/a");
+        ws_a.cached_git_space.as_mut().unwrap().repo_identity = identity.into();
+        let mut ws_b1 = git_space_member_on_branch("feature-b", "key-b1", true, "feat/b");
+        ws_b1.cached_git_space.as_mut().unwrap().repo_identity = identity.into();
+        ws_b1.custom_name = None;
+        let mut ws_b2 = git_space_member_on_branch("feature-b-2", "key-b2", true, "feat/b");
+        ws_b2.cached_git_space.as_mut().unwrap().repo_identity = identity.into();
+        ws_b2.custom_name = None;
+        app.workspaces = vec![ws_a, ws_b1, ws_b2];
+
+        let entries = workspace_list_entries(&app);
+
+        assert_eq!(
+            entries,
+            vec![
+                WorkspaceListEntry::ProjectHeader {
+                    name: "herdr".into(),
+                    collapse_key: identity.into(),
+                    indented: false,
+                    branch: Some(ProjectHeaderBranch {
+                        label: "feat/a".into(),
+                        ahead: 0,
+                        behind: 0,
+                    }),
+                },
+                WorkspaceListEntry::Workspace {
+                    ws_idx: 0,
+                    indented: true,
+                    rail: BranchRail::Spine,
+                },
+                WorkspaceListEntry::BranchHeader {
+                    label: "feat/b".into(),
+                    ahead: 0,
+                    behind: 0,
+                    indented: false,
+                    last: false,
+                    ws_idx: None,
+                },
+                WorkspaceListEntry::Workspace {
+                    ws_idx: 1,
+                    indented: true,
+                    rail: BranchRail::Spine,
+                },
+                WorkspaceListEntry::Workspace {
+                    ws_idx: 2,
+                    indented: true,
+                    rail: BranchRail::Close,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn single_worktree_with_custom_name_does_not_collapse() {
+        // A workspace the user renamed by hand keeps its own visible row
+        // even though it is still the branch's only member.
+        let mut app = AppState::test_new();
+        let identity = "github.com/owner/proj";
+        let mut ws_a = git_space_member_on_branch("feature-a", "key-a", false, "feat/a");
+        ws_a.cached_git_space.as_mut().unwrap().repo_identity = identity.into();
+        let mut ws_b = git_space_member_on_branch("feature-b", "key-b", false, "feat/b");
+        ws_b.cached_git_space.as_mut().unwrap().repo_identity = identity.into();
+        ws_b.custom_name = Some("my-renamed-space".into());
+        app.workspaces = vec![ws_a, ws_b];
+
+        let entries = workspace_list_entries(&app);
+
+        assert_eq!(
+            entries,
+            vec![
+                WorkspaceListEntry::ProjectHeader {
+                    name: "herdr".into(),
+                    collapse_key: identity.into(),
+                    indented: false,
+                    branch: Some(ProjectHeaderBranch {
+                        label: "feat/a".into(),
+                        ahead: 0,
+                        behind: 0,
+                    }),
+                },
+                WorkspaceListEntry::Workspace {
+                    ws_idx: 0,
+                    indented: true,
+                    rail: BranchRail::Spine,
+                },
+                WorkspaceListEntry::BranchHeader {
+                    label: "feat/b".into(),
+                    ahead: 0,
+                    behind: 0,
+                    indented: false,
+                    last: false,
+                    ws_idx: None,
+                },
+                WorkspaceListEntry::Workspace {
+                    ws_idx: 1,
+                    indented: true,
+                    rail: BranchRail::Close,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn single_worktree_renamed_to_its_own_branch_still_collapses() {
+        // Measured live: a worktree workspace can carry a custom name identical
+        // to its branch. The repetition is what the reader sees, so the test is
+        // the repeated string, not whether a human typed it.
+        let mut app = AppState::test_new();
+        let identity = "github.com/owner/proj";
+        let mut ws_a = git_space_member_on_branch("feature-a", "key-a", false, "feat/a");
+        ws_a.cached_git_space.as_mut().unwrap().repo_identity = identity.into();
+        let mut named = git_space_member_on_branch("token", "key-b", false, "orc-channel-token");
+        named.cached_git_space.as_mut().unwrap().repo_identity = identity.into();
+        named.custom_name = Some("orc-channel-token".into());
+        let mut short = git_space_member_on_branch("badge", "key-c", false, "ary/orc-canal-badge");
+        short.cached_git_space.as_mut().unwrap().repo_identity = identity.into();
+        short.custom_name = Some("orc-canal-badge".into());
+        app.workspaces = vec![ws_a, named, short];
+
+        let entries = workspace_list_entries(&app);
+
+        let collapsed: Vec<Option<usize>> = entries
+            .iter()
+            .filter_map(|entry| match entry {
+                WorkspaceListEntry::BranchHeader { ws_idx, .. } => Some(*ws_idx),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            collapsed,
+            vec![Some(1), Some(2)],
+            "a name identical to the branch collapses, and so does one matching \
+             the branch's last segment: {entries:?}"
         );
         assert!(
-            row_text(body_y + 6).starts_with("╰── "),
-            "the group's last row closes the bracket, so the rail reaches the bottom: {:?}",
-            row_text(body_y + 6)
+            !entries
+                .iter()
+                .any(|entry| matches!(entry, WorkspaceListEntry::Workspace { ws_idx: 1 | 2, .. })),
+            "neither collapsed workspace keeps a duplicate child row: {entries:?}"
+        );
+    }
+
+    #[test]
+    fn collapsed_branch_header_row_is_a_clickable_workspace_card() {
+        // The old child row was clickable; a collapsed row that cannot be
+        // clicked is a regression. This is the load-bearing assertion for
+        // `ws_idx`.
+        let mut app = AppState::test_new();
+        let identity = "github.com/owner/proj";
+        let mut ws_a = git_space_member_on_branch("feature-a", "key-a", false, "feat/a");
+        ws_a.cached_git_space.as_mut().unwrap().repo_identity = identity.into();
+        let mut ws_b = git_space_member_on_branch("feature-b", "key-b", false, "feat/b");
+        ws_b.cached_git_space.as_mut().unwrap().repo_identity = identity.into();
+        ws_b.custom_name = None;
+        app.workspaces = vec![ws_a, ws_b];
+
+        let (cards, _headers) = compute_workspace_list_areas(&app, Rect::new(0, 0, 30, 20));
+
+        assert!(
+            cards.iter().any(|c| c.ws_idx == 1),
+            "collapsed branch header must register a clickable card for its workspace: {cards:?}"
         );
     }
 
@@ -4746,6 +5063,7 @@ mod tests {
             behind: 0,
             indented: false,
             last: false,
+            ws_idx: None,
         }];
         assert_eq!(entry_row_height(&entries[0], &entries, 0), 1);
     }
