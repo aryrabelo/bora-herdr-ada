@@ -289,12 +289,9 @@ pub(crate) enum BranchRail {
     None,
     /// Under an open bracket; the project spine continues down (│).
     Spine,
-    /// Last workspace of a folded first-branch group that is also the group's
-    /// last branch — draws the closing elbow (╰──).
+    /// Last row of a bracketed group — draws the closing elbow (╰──). Every
+    /// group closes on a workspace row, so no rail is ever left blank.
     Close,
-    /// Under a closed branch header (the group's last branch) — blank indent of
-    /// the spine's width, no vertical bar, since the bracket already closed.
-    Blank,
 }
 
 /// Per-tab aggregate dot states in tab order: (AgentState, seen).
@@ -538,6 +535,26 @@ pub(crate) fn grouped_child_display_label(
         .to_string()
 }
 
+/// Sidebar group holding `#`-prefixed workspaces.
+///
+/// Channels are created as `bora workspace create --label "#<name>"` and are
+/// hosted by whichever checkout happens to be convenient, so repo grouping
+/// scatters them across unrelated project brackets. A channel is a coordination
+/// surface, not a lane of that repo's work.
+pub(crate) const CHANNEL_GROUP_NAME: &str = "Canais";
+
+/// Group a workspace belongs to for sidebar purposes. An explicit group set by
+/// the user always wins, so a channel can still be filed somewhere else.
+fn effective_visual_group(ws: &crate::workspace::Workspace) -> Option<&str> {
+    if let Some(group) = ws.visual_group.as_deref() {
+        return Some(group);
+    }
+    ws.custom_name
+        .as_deref()
+        .is_some_and(|name| name.starts_with('#'))
+        .then_some(CHANNEL_GROUP_NAME)
+}
+
 pub(crate) fn workspace_list_entries(app: &AppState) -> Vec<WorkspaceListEntry> {
     workspace_list_entries_inner(app, false)
 }
@@ -587,9 +604,9 @@ fn workspace_list_entries_inner(app: &AppState, force_expanded: bool) -> Vec<Wor
     // --- Visual group setup ---
     let mut visual_group_members = std::collections::HashMap::<String, Vec<usize>>::new();
     for (ws_idx, ws) in app.workspaces.iter().enumerate() {
-        if let Some(ref group_name) = ws.visual_group {
+        if let Some(group_name) = effective_visual_group(ws) {
             visual_group_members
-                .entry(group_name.clone())
+                .entry(group_name.to_owned())
                 .or_default()
                 .push(ws_idx);
         }
@@ -603,7 +620,7 @@ fn workspace_list_entries_inner(app: &AppState, force_expanded: bool) -> Vec<Wor
     // by the visual group handler and must be skipped in the main loop.
     let mut consumed = std::collections::HashSet::<usize>::new();
     for (ws_idx, ws) in app.workspaces.iter().enumerate() {
-        if ws.visual_group.is_some() {
+        if effective_visual_group(ws).is_some() {
             if let Some(space) = ws
                 .git_space()
                 .filter(|s| grouped_keys.contains(&s.repo_identity) && !s.is_linked_worktree)
@@ -614,7 +631,7 @@ fn workspace_list_entries_inner(app: &AppState, force_expanded: bool) -> Vec<Wor
                             && app
                                 .workspaces
                                 .get(m)
-                                .is_some_and(|w| w.visual_group.is_none())
+                                .is_some_and(|w| effective_visual_group(w).is_none())
                         {
                             consumed.insert(m);
                         }
@@ -683,10 +700,8 @@ fn workspace_list_entries_inner(app: &AppState, force_expanded: bool) -> Vec<Wor
 
         // --- Visual group handling ---
         if in_visual_group.contains(&ws_idx) {
-            let group_name = ws
-                .visual_group
-                .as_deref()
-                .expect("in_visual_group only set for workspaces with visual_group");
+            let group_name = effective_visual_group(ws)
+                .expect("in_visual_group only set for workspaces with a group");
             if emitted_visual_groups.insert(group_name.to_owned()) {
                 let vg_key = format!("vg:{group_name}");
                 let collapsed = !force_expanded && app.collapsed_space_keys.contains(&vg_key);
@@ -794,7 +809,7 @@ fn apply_hidden_filter(
         if app.is_hidden(&AppState::workspace_hide_key(ws)) {
             return true;
         }
-        if let Some(group) = &ws.visual_group {
+        if let Some(group) = effective_visual_group(ws) {
             if app.is_hidden(&format!("vg:{group}")) {
                 return true;
             }
@@ -962,13 +977,17 @@ fn emit_branch_subgroups(
         }
     }
 
-    // Remaining branches become header rows; the final one closes the bracket.
+    // Remaining branches become header rows. The bracket closes on the group's
+    // last ROW, never on a header: a header with members beneath it draws a tee
+    // and the final member draws the elbow, so the rail runs unbroken to the
+    // bottom of the group. Closing on the header instead left every row under
+    // the last branch hanging with no rail beside it.
     let start = usize::from(folded);
     let header_branches = &branch_order[start..];
     for (bi, branch) in header_branches.iter().enumerate() {
         let members = &by_branch[branch];
         let (ahead, behind) = branch_meta(members);
-        let last = bracketed && bi + 1 == header_branches.len();
+        let is_last_branch = bracketed && bi + 1 == header_branches.len();
         entries.push(WorkspaceListEntry::BranchHeader {
             label: branch_display_label(branch).to_string(),
             ahead,
@@ -976,14 +995,16 @@ fn emit_branch_subgroups(
             // Top-level bracket headers draw the bracket tee/elbow at column 0;
             // nested ones keep the legacy indented connector.
             indented: indented && !bracketed,
-            last,
+            // Only a childless last branch has to close the bracket itself.
+            last: is_last_branch && members.is_empty(),
         });
-        let rail = if last {
-            BranchRail::Blank
-        } else {
-            BranchRail::Spine
-        };
-        for &idx in members {
+        let last_member = members.len().saturating_sub(1);
+        for (mi, &idx) in members.iter().enumerate() {
+            let rail = if is_last_branch && mi == last_member {
+                BranchRail::Close
+            } else {
+                BranchRail::Spine
+            };
             entries.push(WorkspaceListEntry::Workspace {
                 ws_idx: idx,
                 indented,
@@ -1898,11 +1919,6 @@ fn render_workspace_list(
                     BranchRail::Close => {
                         line1.push(Span::styled("╰── ", rail_style));
                     }
-                    BranchRail::Blank => {
-                        // Bracket already closed at the last branch header; hold
-                        // the rail's width with blank space, no vertical bar.
-                        line1.push(Span::styled("    ", rail_style));
-                    }
                     BranchRail::None => {
                         if let Some((key, collapsed)) =
                             workspace_parent_group_state(app, i).filter(|_| !*indented)
@@ -1983,13 +1999,39 @@ fn render_workspace_list(
                     .as_deref()
                     .map(display_width)
                     .unwrap_or_default();
+                // Display-only tokens reported through
+                // `bora workspace report-metadata`, e.g. an unread badge on a
+                // channel workspace. Empty for almost every workspace, so the
+                // formatting cost stays behind the emptiness check.
+                //
+                // ponytail: plain suffix, no per-token styling or width
+                // allocation. The config-driven layout for these
+                // (`[ui.sidebar.spaces] rows`) lives in the orphaned
+                // src/ui/sidebar/tokens.rs — restore that if ordering or styling
+                // per token is ever needed.
+                let token_suffix = (!ws.metadata_tokens.is_empty()).then(|| {
+                    let mut suffix = String::new();
+                    for (_, value) in ws.metadata_tokens.sorted_pairs() {
+                        suffix.push(' ');
+                        suffix.push_str(value);
+                    }
+                    suffix
+                });
+                let token_width = token_suffix
+                    .as_deref()
+                    .map(display_width)
+                    .unwrap_or_default();
                 let label = ws.display_name_from(&app.terminals, terminal_runtimes);
-                let avail = (body.width as usize)
-                    .saturating_sub(prefix_width + dots_width + display_width(sep) + idle_width);
+                let avail = (body.width as usize).saturating_sub(
+                    prefix_width + dots_width + display_width(sep) + idle_width + token_width,
+                );
                 let label = truncate_end(&label, avail);
                 line1.extend(dot_spans);
                 line1.push(Span::styled(sep, Style::default()));
                 line1.push(Span::styled(label, name_style));
+                if let Some(suffix) = token_suffix {
+                    line1.push(Span::styled(suffix, Style::default().fg(p.accent)));
+                }
                 if let Some(suffix) = idle_suffix {
                     line1.push(Span::styled(suffix, Style::default().fg(idle_color)));
                 }
@@ -3626,6 +3668,109 @@ mod tests {
     }
 
     #[test]
+    fn hash_prefixed_workspaces_auto_group_as_channels() {
+        // orc channels are created as `--label "#<name>"` and hosted by whatever
+        // checkout was convenient, so repo grouping scatters them. They collect
+        // under one channel group instead, with unrelated workspaces untouched.
+        let mut app = AppState::test_new();
+        let mut chan_a = Workspace::test_new("canal-ary");
+        chan_a.set_custom_name("#canal-ary".into());
+        chan_a.cached_git_branch = None;
+        let mut plain = Workspace::test_new("orchestrator");
+        plain.cached_git_branch = None;
+        let mut chan_b = Workspace::test_new("part3");
+        chan_b.set_custom_name("#part3-model-status".into());
+        chan_b.cached_git_branch = None;
+        app.workspaces = vec![chan_a, plain, chan_b];
+
+        let entries = workspace_list_entries(&app);
+
+        assert_eq!(
+            entries,
+            vec![
+                WorkspaceListEntry::GroupHeader {
+                    name: CHANNEL_GROUP_NAME.into(),
+                    collapse_key: format!("vg:{CHANNEL_GROUP_NAME}"),
+                },
+                WorkspaceListEntry::Workspace {
+                    ws_idx: 0,
+                    indented: true,
+                    rail: BranchRail::None,
+                },
+                WorkspaceListEntry::Workspace {
+                    ws_idx: 2,
+                    indented: true,
+                    rail: BranchRail::None,
+                },
+                WorkspaceListEntry::Workspace {
+                    ws_idx: 1,
+                    indented: false,
+                    rail: BranchRail::None,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn explicit_group_beats_the_channel_prefix() {
+        // The `#` rule is a default, not a cage: a channel filed into a group by
+        // hand stays there.
+        let mut app = AppState::test_new();
+        let mut chan = Workspace::test_new("canal-ary");
+        chan.set_custom_name("#canal-ary".into());
+        chan.visual_group = Some("mine".into());
+        chan.cached_git_branch = None;
+        app.workspaces = vec![chan];
+
+        let entries = workspace_list_entries(&app);
+
+        assert_eq!(
+            entries.first(),
+            Some(&WorkspaceListEntry::GroupHeader {
+                name: "mine".into(),
+                collapse_key: "vg:mine".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn workspace_row_renders_reported_metadata_tokens() {
+        // `bora workspace report-metadata` is how an outside process (the orc
+        // channel code) flags unread traffic. Before this the tokens were stored,
+        // expired, and shipped over the API but never drawn, so the badge could
+        // not reach the screen at all.
+        let mut app = AppState::test_new();
+        let mut ws = Workspace::test_new("canal-ary");
+        ws.set_custom_name("#canal-ary".into());
+        ws.cached_git_branch = None;
+        ws.metadata_tokens.patch(
+            std::collections::HashMap::from([("unread".to_string(), Some("3 msg".to_string()))]),
+            None,
+            std::time::Instant::now(),
+        );
+        app.workspaces = vec![ws];
+
+        let runtimes = crate::terminal::TerminalRuntimeRegistry::new();
+        let area = Rect::new(0, 0, 40, 8);
+        let mut terminal = Terminal::new(TestBackend::new(40, 8)).expect("test terminal");
+        terminal
+            .draw(|frame| render_workspace_list(&app, &runtimes, frame, area, false))
+            .expect("workspace list should render");
+        let rows: Vec<String> = (0..8)
+            .map(|row| {
+                (0..40)
+                    .map(|col| terminal.backend().buffer()[(col, row)].symbol().to_string())
+                    .collect()
+            })
+            .collect();
+
+        assert!(
+            rows.iter().any(|row| row.contains("3 msg")),
+            "reported token is drawn on the workspace row: {rows:?}"
+        );
+    }
+
+    #[test]
     fn collapsed_visual_group_shows_only_header() {
         let mut app = AppState::test_new();
         let mut ws0 = Workspace::test_new("alpha");
@@ -3941,8 +4086,8 @@ mod tests {
     fn multiple_branches_in_one_project_emit_multiple_brackets() {
         // Three branches + a no-branch parent: the first branch folds into the
         // project header, the no-branch parent stays inside the bracket right
-        // after the folded members, the middle branch is a `├── ` tee and the
-        // last is a `╰── ` elbow.
+        // after the folded members, both branch sub-headers are `├── ` tees, and
+        // the elbow `╰── ` lands on the group's last workspace row.
         let mut app = AppState::test_new();
         let identity = "github.com/owner/proj";
         let mut parent = git_space_member("proj", "key-p", false);
@@ -3998,12 +4143,12 @@ mod tests {
                     ahead: 0,
                     behind: 0,
                     indented: false,
-                    last: true,
+                    last: false,
                 },
                 WorkspaceListEntry::Workspace {
                     ws_idx: 3,
                     indented: true,
-                    rail: BranchRail::Blank,
+                    rail: BranchRail::Close,
                 },
             ]
         );
@@ -4042,9 +4187,14 @@ mod tests {
             row_text(body_y + 3)
         );
         assert!(
-            row_text(body_y + 5).starts_with("╰── ") && row_text(body_y + 5).contains("feat/c"),
-            "last branch closes the bracket: {:?}",
+            row_text(body_y + 5).starts_with("├── ") && row_text(body_y + 5).contains("feat/c"),
+            "last branch is still a tee, it does not close the bracket: {:?}",
             row_text(body_y + 5)
+        );
+        assert!(
+            row_text(body_y + 6).starts_with("╰── "),
+            "the group's last row closes the bracket, so the rail reaches the bottom: {:?}",
+            row_text(body_y + 6)
         );
     }
 
