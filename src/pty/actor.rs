@@ -90,7 +90,7 @@ mod windows {
             let _order = self
                 .response_order
                 .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if let Some(bytes) = response().filter(|bytes| !bytes.is_empty()) {
                 let _ = self.write_tx.send(bytes);
             }
@@ -181,7 +181,7 @@ mod windows {
                             Ok(n) => {
                                 let _order = response_order
                                     .lock()
-                                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                                 let result = on_read(&buf[..n]);
                                 if result
                                     .terminal_responses

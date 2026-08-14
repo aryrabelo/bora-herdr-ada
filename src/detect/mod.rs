@@ -252,6 +252,7 @@ pub fn identify_agent_in_job(job: &crate::platform::ForegroundJob) -> Option<(Ag
 
 /// Whether a foreground job member is a recognized agent process
 /// (directly or via a runtime/shell wrapper).
+#[cfg(unix)]
 pub fn is_agent_process(process: &crate::platform::ForegroundProcess) -> bool {
     identify_agent(&normalized_process_name(process)).is_some()
 }
@@ -848,6 +849,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn is_agent_process_rejects_plugin_host_bun_run() {
         // Real MCP plugin host argv observed hijacking new-pane follow cwd.
@@ -869,6 +871,7 @@ mod tests {
         assert!(!is_agent_process(&process));
     }
 
+    #[cfg(unix)]
     #[test]
     fn is_agent_process_accepts_wrapped_agent() {
         let process = crate::platform::ForegroundProcess {

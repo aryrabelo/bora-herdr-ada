@@ -169,11 +169,19 @@ fn extended_length_path(path: &std::path::Path) -> std::io::Result<Vec<u16>> {
 
     let path = std::path::absolute(path)?;
     let wide = path.as_os_str().encode_wide().collect::<Vec<_>>();
-    let mut extended = if wide.starts_with(&[b'\\' as u16, b'\\' as u16, b'?' as u16, b'\\' as u16])
-        || wide.starts_with(&[b'\\' as u16, b'\\' as u16, b'.' as u16, b'\\' as u16])
-    {
+    let mut extended = if wide.starts_with(&[
+        u16::from(b'\\'),
+        u16::from(b'\\'),
+        u16::from(b'?'),
+        u16::from(b'\\'),
+    ]) || wide.starts_with(&[
+        u16::from(b'\\'),
+        u16::from(b'\\'),
+        u16::from(b'.'),
+        u16::from(b'\\'),
+    ]) {
         wide
-    } else if wide.starts_with(&[b'\\' as u16, b'\\' as u16]) {
+    } else if wide.starts_with(&[u16::from(b'\\'), u16::from(b'\\')]) {
         "\\\\?\\UNC\\"
             .encode_utf16()
             .chain(wide.into_iter().skip(2))
@@ -1022,7 +1030,7 @@ fn select_pane_foreground_job_from_snapshot(
 ) -> Option<(ForegroundJob, bool)> {
     if let Some(job) = FOREGROUND_SELECTION_CACHE
         .lock()
-        .unwrap_or_else(|err| err.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .get(shell_pid, snapshot)
     {
         return Some((job, false));
@@ -1033,7 +1041,7 @@ fn select_pane_foreground_job_from_snapshot(
     let retry_with_fresh_snapshot = job.process_group_id != shell_pid && cached.is_none();
     FOREGROUND_SELECTION_CACHE
         .lock()
-        .unwrap_or_else(|err| err.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .remember(shell_pid, cached);
     Some((job, retry_with_fresh_snapshot))
 }
@@ -1217,14 +1225,14 @@ fn snapshot_processes() -> Vec<WindowsProcessEntry> {
 fn cached_foreground_processes() -> Arc<ProcessSnapshot> {
     let mut cache = FOREGROUND_PROCESS_SNAPSHOT_CACHE
         .lock()
-        .unwrap_or_else(|err| err.into_inner());
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     cache.snapshot(FOREGROUND_PROCESS_SNAPSHOT_CACHE_TTL, snapshot_processes)
 }
 
 fn fresh_foreground_processes() -> Arc<ProcessSnapshot> {
     let mut cache = FOREGROUND_PROCESS_SNAPSHOT_CACHE
         .lock()
-        .unwrap_or_else(|err| err.into_inner());
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     cache.snapshot(Duration::ZERO, snapshot_processes)
 }
 
@@ -1446,7 +1454,7 @@ fn process_is_git_bash(pid: u32) -> bool {
     {
         let mut cache = GIT_BASH_PROCESS_CACHE
             .lock()
-            .unwrap_or_else(|err| err.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(cached) = cache.get_mut(&pid) {
             if cached.creation_time == creation_time {
                 cached.last_used = Instant::now();
@@ -1460,7 +1468,7 @@ fn process_is_git_bash(pid: u32) -> bool {
         .is_some_and(|path| is_git_bash_executable_path(std::path::Path::new(path)));
     let mut cache = GIT_BASH_PROCESS_CACHE
         .lock()
-        .unwrap_or_else(|err| err.into_inner());
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     if cache.len() >= PROCESS_RUNTIME_MARKER_CACHE_CAPACITY {
         cache.retain(|_, cached| {
             cached.last_used.elapsed() < PROCESS_RUNTIME_MARKER_CACHE_RETENTION
@@ -1566,7 +1574,7 @@ fn process_runtime_marker(pid: u32) -> Option<String> {
     {
         let mut cache = PROCESS_RUNTIME_MARKER_CACHE
             .lock()
-            .unwrap_or_else(|err| err.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(cached) = cache.get_mut(&pid) {
             if cached.creation_time == creation_time
                 && (cached.marker.is_some()
@@ -1581,7 +1589,7 @@ fn process_runtime_marker(pid: u32) -> Option<String> {
     let marker = process_runtime_marker_from_handle(process.0)?;
     let mut cache = PROCESS_RUNTIME_MARKER_CACHE
         .lock()
-        .unwrap_or_else(|err| err.into_inner());
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     if cache.len() >= PROCESS_RUNTIME_MARKER_CACHE_CAPACITY {
         cache.retain(|_, cached| {
             cached.last_used.elapsed() < PROCESS_RUNTIME_MARKER_CACHE_RETENTION
@@ -1918,7 +1926,7 @@ pub fn read_clipboard_image() -> Option<ClipboardImage> {
                     extension: "png",
                 });
             }
-            for format in [CF_DIBV5 as u32, CF_DIB as u32] {
+            for format in [u32::from(CF_DIBV5), u32::from(CF_DIB)] {
                 if let Some(bytes) =
                     clipboard_global_bytes(format, clipboard_image::MAX_CLIPBOARD_ALLOCATION)
                 {
