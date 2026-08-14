@@ -924,6 +924,11 @@ pub struct UiConfig {
     /// Lead each split pane border with its public pane id (`w26:p1`) so two panes
     /// running the same agent stay distinguishable. Default: false.
     pub show_pane_ids_on_pane_borders: bool,
+    /// Sidebar group that collects `#`-labelled channel workspaces. Renaming it
+    /// is the whole point of it being config: the word is user-facing, and the
+    /// grouping rule keys off the `#` label, never off this string.
+    /// Default: "channels".
+    pub channel_group_name: String,
     /// Hide the tab row when the workspace has one tab. Default: false.
     pub hide_tab_bar_when_single_tab: bool,
     /// Desktop tab row placement. Default: top.
@@ -1151,6 +1156,7 @@ impl Default for UiConfig {
             pane_gaps: true,
             show_agent_labels_on_pane_borders: false,
             show_pane_ids_on_pane_borders: false,
+            channel_group_name: "channels".to_string(),
             hide_tab_bar_when_single_tab: false,
             tab_bar_position: TabBarPositionConfig::Top,
             tab_bar_right: Vec::new(),

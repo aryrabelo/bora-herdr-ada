@@ -333,6 +333,10 @@ const DEFAULT_CONFIG: &str = r##"# bora configuration
 # running the same agent can be told apart and addressed individually.
 # show_pane_ids_on_pane_borders = false
 
+# Name of the sidebar group that collects `#`-labelled channel workspaces.
+# Only the label changes: which workspaces are channels keys off the `#` prefix.
+# channel_group_name = "channels"
+
 # Hide the tab row when a workspace has exactly one tab.
 # New tabs can still be created with the configured keybinding.
 # hide_tab_bar_when_single_tab = false

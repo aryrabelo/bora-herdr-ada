@@ -1,3 +1,5 @@
+mod tokens;
+
 use std::time::Instant;
 
 use ratatui::{
@@ -8,6 +10,7 @@ use ratatui::{
     Frame,
 };
 
+use self::tokens::{ResolvedToken, ResolvedTokenKind, SpaceTokenContext};
 use super::scrollbar::{render_scrollbar, should_show_scrollbar};
 use super::status::{
     agent_icon, format_idle_age, idle_age_color, state_dot, state_label, state_label_color,
@@ -41,16 +44,10 @@ pub(crate) struct AgentPanelEntry {
     pub primary_label: String,
     pub primary_tab_label: Option<String>,
     pub agent_label: Option<String>,
-    // Populated for parity with upstream's token-based agent rows (5cfe5e5e);
-    // the fork's fixed two-row agent panel does not read them yet.
-    #[allow(dead_code)]
     pub pane_label: Option<String>,
-    #[allow(dead_code)]
     pub terminal_title: Option<String>,
-    #[allow(dead_code)]
     pub terminal_title_stripped: Option<String>,
     pub agent_kind_label: Option<String>,
-    #[allow(dead_code)]
     pub agent: Option<crate::detect::Agent>,
     pub state: AgentState,
     pub seen: bool,
@@ -58,7 +55,6 @@ pub(crate) struct AgentPanelEntry {
     pub last_agent_state_change_seq: Option<u64>,
     pub custom_status: Option<String>,
     pub state_labels: std::collections::HashMap<String, String>,
-    #[allow(dead_code)]
     pub tokens: std::collections::HashMap<String, String>,
 }
 
@@ -236,6 +232,212 @@ pub(super) fn agent_panel_status_key(state: AgentState, seen: bool) -> &'static 
         (AgentState::Blocked, _) => "blocked",
         (AgentState::Unknown, _) => "unknown",
     }
+}
+
+fn resolved_agent_rows(app: &AppState, entry: &AgentPanelEntry) -> Vec<Vec<ResolvedToken>> {
+    let label = entry
+        .state_labels
+        .get(agent_panel_status_key(entry.state, entry.seen))
+        .map(String::as_str)
+        .unwrap_or_else(|| state_label(entry.state, entry.seen));
+    tokens::agent_rows(&app.sidebar_agents, entry, label)
+}
+
+fn resolved_token_spans(
+    resolved: &[ResolvedToken],
+    state_icon: (&str, Style),
+    state_text_style: Style,
+    workspace_style: Style,
+    secondary_style: Style,
+    custom_style: Style,
+    p: &Palette,
+    max_width: usize,
+) -> Vec<Span<'static>> {
+    let fixed_widths = resolved
+        .iter()
+        .map(|token| match &token.kind {
+            ResolvedTokenKind::StateIcon => display_width(state_icon.0),
+            ResolvedTokenKind::GitStatus { ahead, behind } => {
+                usize::from(*ahead > 0) * display_width(&format!("↑{ahead}"))
+                    + usize::from(*behind > 0) * display_width(&format!("↓{behind}"))
+                    + usize::from(*ahead > 0 && *behind > 0)
+            }
+            _ => 0,
+        })
+        .collect::<Vec<_>>();
+    let flexible_widths = resolved
+        .iter()
+        .map(|token| match &token.kind {
+            ResolvedTokenKind::StateText(text)
+            | ResolvedTokenKind::Workspace(text)
+            | ResolvedTokenKind::Tab(text)
+            | ResolvedTokenKind::Pane(text)
+            | ResolvedTokenKind::Agent(text)
+            | ResolvedTokenKind::TerminalTitle(text)
+            | ResolvedTokenKind::Branch(text)
+            | ResolvedTokenKind::Custom(text) => display_width(text),
+            _ => 0,
+        })
+        .collect::<Vec<_>>();
+    let minimum_width = |active: &[bool]| {
+        let indices = active
+            .iter()
+            .enumerate()
+            .filter_map(|(index, active)| active.then_some(index))
+            .collect::<Vec<_>>();
+        let content = indices
+            .iter()
+            .map(|index| fixed_widths[*index] + usize::from(flexible_widths[*index] > 0))
+            .sum::<usize>();
+        let separators = indices
+            .windows(2)
+            .map(|pair| display_width(tokens::separator(&resolved[pair[0]], &resolved[pair[1]])))
+            .sum::<usize>();
+        content + separators
+    };
+    let mut active = resolved.iter().map(|_| true).collect::<Vec<_>>();
+    if minimum_width(&active) > max_width {
+        for (index, width) in flexible_widths.iter().enumerate() {
+            if *width > 0 {
+                active[index] = false;
+            }
+        }
+        for index in (0..resolved.len()).rev() {
+            if flexible_widths[index] == 0 {
+                continue;
+            }
+            active[index] = true;
+            if minimum_width(&active) > max_width {
+                active[index] = false;
+            }
+        }
+    }
+    let visible_indices = active
+        .iter()
+        .enumerate()
+        .filter_map(|(index, active)| active.then_some(index))
+        .collect::<Vec<_>>();
+    let separator_width = visible_indices
+        .windows(2)
+        .map(|pair| display_width(tokens::separator(&resolved[pair[0]], &resolved[pair[1]])))
+        .sum::<usize>();
+    let fixed_width = visible_indices
+        .iter()
+        .map(|index| fixed_widths[*index])
+        .sum::<usize>();
+    let mut budgets = flexible_widths
+        .iter()
+        .enumerate()
+        .map(|(index, width)| usize::from(active[index] && *width > 0))
+        .collect::<Vec<_>>();
+    let minimum = budgets.iter().sum::<usize>();
+    let mut remaining = max_width
+        .saturating_sub(separator_width + fixed_width)
+        .saturating_sub(minimum);
+    while remaining > 0 {
+        let mut grew = false;
+        for (budget, width) in budgets.iter_mut().zip(&flexible_widths) {
+            if *budget > 0 && *budget < *width {
+                *budget += 1;
+                remaining -= 1;
+                grew = true;
+                if remaining == 0 {
+                    break;
+                }
+            }
+        }
+        if !grew {
+            break;
+        }
+    }
+    let mut spans = Vec::new();
+    for (position, index) in visible_indices.iter().copied().enumerate() {
+        let token = &resolved[index];
+        if position > 0 {
+            let previous = &resolved[visible_indices[position - 1]];
+            spans.push(Span::styled(
+                tokens::separator(previous, token),
+                Style::default().fg(p.overlay0).add_modifier(Modifier::DIM),
+            ));
+        }
+        match &token.kind {
+            ResolvedTokenKind::StateIcon => {
+                spans.push(Span::styled(
+                    state_icon.0.to_string(),
+                    apply_token_style(state_icon.1, token.style),
+                ));
+            }
+            ResolvedTokenKind::StateText(text) => {
+                spans.push(Span::styled(
+                    truncate_end(text, budgets[index]),
+                    apply_token_style(state_text_style, token.style),
+                ));
+            }
+            ResolvedTokenKind::Workspace(text) => {
+                spans.push(Span::styled(
+                    truncate_end(text, budgets[index]),
+                    apply_token_style(workspace_style, token.style),
+                ));
+            }
+            ResolvedTokenKind::Tab(text)
+            | ResolvedTokenKind::Pane(text)
+            | ResolvedTokenKind::Agent(text)
+            | ResolvedTokenKind::Branch(text) => {
+                spans.push(Span::styled(
+                    truncate_end(text, budgets[index]),
+                    apply_token_style(secondary_style, token.style),
+                ));
+            }
+            ResolvedTokenKind::GitStatus { ahead, behind } => {
+                if *ahead > 0 {
+                    spans.push(Span::styled(
+                        format!("↑{ahead}"),
+                        apply_token_style(Style::default().fg(p.green), token.style),
+                    ));
+                }
+                if *ahead > 0 && *behind > 0 {
+                    spans.push(Span::styled(
+                        " ",
+                        apply_token_style(Style::default(), token.style),
+                    ));
+                }
+                if *behind > 0 {
+                    spans.push(Span::styled(
+                        format!("↓{behind}"),
+                        apply_token_style(Style::default().fg(p.red), token.style),
+                    ));
+                }
+            }
+            ResolvedTokenKind::TerminalTitle(text) | ResolvedTokenKind::Custom(text) => {
+                spans.push(Span::styled(
+                    truncate_end(text, budgets[index]),
+                    apply_token_style(custom_style, token.style),
+                ));
+            }
+        }
+    }
+    spans
+}
+
+fn apply_token_style(mut style: Style, patch: crate::config::SidebarTokenStyle) -> Style {
+    if let Some(fg) = patch.fg {
+        style = style.fg(fg.ratatui());
+    }
+    if let Some(bold) = patch.bold {
+        style = if bold {
+            style.add_modifier(Modifier::BOLD)
+        } else {
+            style.remove_modifier(Modifier::BOLD)
+        };
+    }
+    if let Some(dim) = patch.dim {
+        style = if dim {
+            style.add_modifier(Modifier::DIM)
+        } else {
+            style.remove_modifier(Modifier::DIM)
+        };
+    }
+    style
 }
 
 fn format_agent_panel_primary_label(entry: &AgentPanelEntry, max_width: usize) -> String {
@@ -535,13 +737,14 @@ pub(crate) fn grouped_child_display_label(
         .to_string()
 }
 
-/// Sidebar group holding `#`-prefixed workspaces.
+/// Default name of the sidebar group holding `#`-prefixed workspaces, used when
+/// the config leaves `ui.channel_group_name` unset.
 ///
 /// Channels are created as `bora workspace create --label "#<name>"` and are
 /// hosted by whichever checkout happens to be convenient, so repo grouping
 /// scatters them across unrelated project brackets. A channel is a coordination
 /// surface, not a lane of that repo's work.
-pub(crate) const CHANNEL_GROUP_NAME: &str = "Canais";
+pub(crate) const DEFAULT_CHANNEL_GROUP_NAME: &str = "channels";
 
 /// A workspace auto-filed as a channel: `#`-labelled and not placed in a group
 /// by hand.
@@ -555,11 +758,18 @@ fn is_auto_channel(ws: &crate::workspace::Workspace) -> bool {
 
 /// Group a workspace belongs to for sidebar purposes. An explicit group set by
 /// the user always wins, so a channel can still be filed somewhere else.
-fn effective_visual_group(ws: &crate::workspace::Workspace) -> Option<&str> {
+///
+/// `channel_group` is the configured display name; the rule that decides WHAT is
+/// a channel keys off the `#` label, never off this string, so renaming the group
+/// cannot change which workspaces land in it.
+fn effective_visual_group<'a>(
+    ws: &'a crate::workspace::Workspace,
+    channel_group: &'a str,
+) -> Option<&'a str> {
     if let Some(group) = ws.visual_group.as_deref() {
         return Some(group);
     }
-    is_auto_channel(ws).then_some(CHANNEL_GROUP_NAME)
+    is_auto_channel(ws).then_some(channel_group)
 }
 
 /// Git space a workspace contributes to repo grouping, which for a channel is
@@ -628,7 +838,7 @@ fn workspace_list_entries_inner(app: &AppState, force_expanded: bool) -> Vec<Wor
     // --- Visual group setup ---
     let mut visual_group_members = std::collections::HashMap::<String, Vec<usize>>::new();
     for (ws_idx, ws) in app.workspaces.iter().enumerate() {
-        if let Some(group_name) = effective_visual_group(ws) {
+        if let Some(group_name) = effective_visual_group(ws, &app.channel_group_name) {
             visual_group_members
                 .entry(group_name.to_owned())
                 .or_default()
@@ -644,17 +854,16 @@ fn workspace_list_entries_inner(app: &AppState, force_expanded: bool) -> Vec<Wor
     // by the visual group handler and must be skipped in the main loop.
     let mut consumed = std::collections::HashSet::<usize>::new();
     for (ws_idx, ws) in app.workspaces.iter().enumerate() {
-        if effective_visual_group(ws).is_some() {
+        if effective_visual_group(ws, &app.channel_group_name).is_some() {
             if let Some(space) = grouping_git_space(ws)
                 .filter(|s| grouped_keys.contains(&s.repo_identity) && !s.is_linked_worktree)
             {
                 if let Some(members) = members_by_key.get(&space.repo_identity) {
                     for &m in members {
                         if m != ws_idx
-                            && app
-                                .workspaces
-                                .get(m)
-                                .is_some_and(|w| effective_visual_group(w).is_none())
+                            && app.workspaces.get(m).is_some_and(|w| {
+                                effective_visual_group(w, &app.channel_group_name).is_none()
+                            })
                         {
                             consumed.insert(m);
                         }
@@ -723,7 +932,7 @@ fn workspace_list_entries_inner(app: &AppState, force_expanded: bool) -> Vec<Wor
 
         // --- Visual group handling ---
         if in_visual_group.contains(&ws_idx) {
-            let group_name = effective_visual_group(ws)
+            let group_name = effective_visual_group(ws, &app.channel_group_name)
                 .expect("in_visual_group only set for workspaces with a group");
             if emitted_visual_groups.insert(group_name.to_owned()) {
                 let vg_key = format!("vg:{group_name}");
@@ -848,7 +1057,7 @@ fn apply_hidden_filter(
         if app.is_hidden(&AppState::workspace_hide_key(ws)) {
             return true;
         }
-        if let Some(group) = effective_visual_group(ws) {
+        if let Some(group) = effective_visual_group(ws, &app.channel_group_name) {
             if app.is_hidden(&format!("vg:{group}")) {
                 return true;
             }
@@ -2038,38 +2247,77 @@ fn render_workspace_list(
                     .as_deref()
                     .map(display_width)
                     .unwrap_or_default();
-                // Display-only tokens reported through
-                // `bora workspace report-metadata`, e.g. an unread badge on a
-                // channel workspace. Empty for almost every workspace, so the
-                // formatting cost stays behind the emptiness check.
-                //
-                // ponytail: plain suffix, no per-token styling or width
-                // allocation. The config-driven layout for these
-                // (`[ui.sidebar.spaces] rows`) lives in the orphaned
-                // src/ui/sidebar/tokens.rs — restore that if ordering or styling
-                // per token is ever needed.
-                let token_suffix = (!ws.metadata_tokens.is_empty()).then(|| {
-                    let mut suffix = String::new();
-                    for (_, value) in ws.metadata_tokens.sorted_pairs() {
-                        suffix.push(' ');
-                        suffix.push_str(value);
-                    }
-                    suffix
-                });
-                let token_width = token_suffix
-                    .as_deref()
-                    .map(display_width)
-                    .unwrap_or_default();
-                let label = ws.display_name_from(&app.terminals, terminal_runtimes);
+                // Tokens configured under `[ui.sidebar.spaces] rows` (e.g. a
+                // `$unread`/`$pr` custom badge reported through `bora
+                // workspace report-metadata`). Cheap emptiness check keeps
+                // the common token-free workspace free of any resolution or
+                // layout cost.
+                let full_label = ws.display_name_from(&app.terminals, terminal_runtimes);
+                let token_spans: Vec<Span<'static>> = if ws.metadata_tokens.is_empty() {
+                    Vec::new()
+                } else {
+                    let (row_state, row_seen) = ws.aggregate_state(&app.terminals);
+                    let branch = ws.branch();
+                    let token_values = ws.metadata_tokens.values();
+                    let rows = tokens::space_rows(
+                        &app.sidebar_spaces,
+                        SpaceTokenContext {
+                            workspace: &full_label,
+                            branch: branch.as_deref(),
+                            state_text: state_label(row_state, row_seen),
+                            ahead_behind: ws.git_ahead_behind(),
+                            tokens: &token_values,
+                            suppress_git_details: *indented,
+                        },
+                    );
+                    rows.first()
+                        .map(|resolved| {
+                            let state_icon = state_dot(
+                                row_state,
+                                row_seen,
+                                app.spinner_tick,
+                                app.status_indicators,
+                                p,
+                                idle_age,
+                            );
+                            let state_text_style = Style::default()
+                                .fg(state_label_color(row_state, row_seen, p))
+                                .add_modifier(Modifier::DIM);
+                            let branch_style =
+                                Style::default().fg(if highlighted { p.mauve } else { p.overlay0 });
+                            resolved_token_spans(
+                                resolved,
+                                state_icon,
+                                state_text_style,
+                                name_style,
+                                branch_style,
+                                branch_style,
+                                p,
+                                (body.width as usize).saturating_sub(
+                                    prefix_width + dots_width + display_width(sep) + idle_width,
+                                ),
+                            )
+                        })
+                        .unwrap_or_default()
+                };
+                let token_width: usize = if token_spans.is_empty() {
+                    0
+                } else {
+                    1 + token_spans
+                        .iter()
+                        .map(|s| display_width(s.content.as_ref()))
+                        .sum::<usize>()
+                };
                 let avail = (body.width as usize).saturating_sub(
                     prefix_width + dots_width + display_width(sep) + idle_width + token_width,
                 );
-                let label = truncate_end(&label, avail);
+                let label = truncate_end(&full_label, avail);
                 line1.extend(dot_spans);
                 line1.push(Span::styled(sep, Style::default()));
                 line1.push(Span::styled(label, name_style));
-                if let Some(suffix) = token_suffix {
-                    line1.push(Span::styled(suffix, Style::default().fg(p.accent)));
+                if !token_spans.is_empty() {
+                    line1.push(Span::raw(" "));
+                    line1.extend(token_spans);
                 }
                 if let Some(suffix) = idle_suffix {
                     line1.push(Span::styled(suffix, Style::default().fg(idle_color)));
@@ -2258,6 +2506,23 @@ fn render_agent_detail(
         if let Some(custom_status) = &detail.custom_status {
             status_spans.push(Span::styled(" · ", agent_style));
             status_spans.push(Span::styled(custom_status.clone(), agent_style));
+        }
+        // Tokens configured under `[ui.sidebar.agents] rows` (e.g. a `$pr`
+        // custom token). `resolved_agent_rows` is already cheap when
+        // unconfigured -- `rows_for_agent` returns the empty default row
+        // set, so nothing is resolved or laid out for the common case.
+        if let Some(resolved) = resolved_agent_rows(app, detail).first() {
+            status_spans.push(Span::styled(" · ", agent_style));
+            status_spans.extend(resolved_token_spans(
+                resolved,
+                (icon, icon_style),
+                status_style,
+                name_style,
+                agent_style,
+                agent_style,
+                p,
+                body.width.saturating_sub(3) as usize,
+            ));
         }
         frame.render_widget(
             Paragraph::new(Line::from(status_spans)).style(row_style),
@@ -3728,8 +3993,11 @@ mod tests {
             entries,
             vec![
                 WorkspaceListEntry::GroupHeader {
-                    name: CHANNEL_GROUP_NAME.into(),
-                    collapse_key: format!("vg:{CHANNEL_GROUP_NAME}"),
+                    // Literal, not CHANNEL_GROUP_NAME: asserting against the
+                    // constant the production code reads means a rename changes
+                    // both sides together and the test cannot see it.
+                    name: "channels".into(),
+                    collapse_key: "vg:channels".into(),
                 },
                 WorkspaceListEntry::Workspace {
                     ws_idx: 0,
@@ -3773,12 +4041,15 @@ mod tests {
     }
 
     #[test]
-    fn workspace_row_renders_reported_metadata_tokens() {
+    fn workspace_row_renders_configured_custom_token() {
         // `bora workspace report-metadata` is how an outside process (the orc
-        // channel code) flags unread traffic. Before this the tokens were stored,
-        // expired, and shipped over the API but never drawn, so the badge could
-        // not reach the screen at all.
+        // channel code) flags unread traffic. This exercises the real
+        // `[ui.sidebar.spaces] rows` config path (`tokens::space_rows` +
+        // `resolved_token_spans`), not an ad-hoc suffix.
         let mut app = AppState::test_new();
+        app.sidebar_spaces.rows = vec![vec![crate::config::SpaceSidebarToken::Custom(
+            "unread".into(),
+        )]];
         let mut ws = Workspace::test_new("canal-ary");
         ws.set_custom_name("#canal-ary".into());
         ws.cached_git_branch = None;
@@ -3805,7 +4076,48 @@ mod tests {
 
         assert!(
             rows.iter().any(|row| row.contains("3 msg")),
-            "reported token is drawn on the workspace row: {rows:?}"
+            "configured $unread token is drawn on the workspace row via the real config path: {rows:?}"
+        );
+    }
+
+    #[test]
+    fn agent_row_renders_configured_custom_token() {
+        // Same restoration, agent side: a configured `$pr` custom token in
+        // `[ui.sidebar.agents] rows` must draw on the agent panel's status
+        // line via `resolved_agent_rows` + `resolved_token_spans`.
+        let mut app = AppState::test_new();
+        app.sidebar_agents.rows = vec![vec![crate::config::AgentSidebarToken::Custom("pr".into())]];
+        let ws = Workspace::test_new("agent-ws");
+        let root_pane = ws.tabs[0].root_pane;
+        let terminal_id = ws.terminal_id(root_pane).unwrap().clone();
+        let mut terminal_state =
+            crate::terminal::TerminalState::new(terminal_id.clone(), "/tmp".into());
+        terminal_state.set_agent_name("planner".into());
+        terminal_state.metadata_tokens.patch(
+            std::collections::HashMap::from([("pr".to_string(), Some("#42".to_string()))]),
+            None,
+            std::time::Instant::now(),
+        );
+        app.workspaces = vec![ws];
+        app.terminals.insert(terminal_id, terminal_state);
+
+        let runtimes = crate::terminal::TerminalRuntimeRegistry::new();
+        let area = Rect::new(0, 0, 40, 8);
+        let mut terminal = Terminal::new(TestBackend::new(40, 8)).expect("test terminal");
+        terminal
+            .draw(|frame| render_agent_detail(&app, &runtimes, frame, area))
+            .expect("agent detail should render");
+        let rows: Vec<String> = (0..8)
+            .map(|row| {
+                (0..40)
+                    .map(|col| terminal.backend().buffer()[(col, row)].symbol().to_string())
+                    .collect()
+            })
+            .collect();
+
+        assert!(
+            rows.iter().any(|row| row.contains("#42")),
+            "configured $pr token is drawn on the agent panel row: {rows:?}"
         );
     }
 
@@ -3864,13 +4176,12 @@ mod tests {
             .unwrap_or_else(|| panic!("orchestrator keeps a top-level project header: {rows:?}"));
         let group_at = rows
             .iter()
-            .position(|row| row.contains(CHANNEL_GROUP_NAME))
+            .position(|row| row.contains("channels"))
             .unwrap_or_else(|| panic!("channels get their own group: {rows:?}"));
         assert!(
             repo_at < group_at,
             "the repo group stands on its own, not nested inside the channel group: {rows:?}"
         );
-
         // No `#` row may sit inside the repo bracket: that spans every row from the
         // repo header up to the channel group header.
         let inside_repo = &rows[repo_at..group_at];
@@ -3888,6 +4199,39 @@ mod tests {
         assert!(
             channel_rows[1].starts_with("╰── ") && channel_rows[1].contains("#part3-model-status"),
             "last channel closes the rail at the bottom of the group: {channel_rows:?}"
+        );
+    }
+
+    #[test]
+    fn channel_group_name_is_configurable_without_changing_membership() {
+        // The word is user-facing, so it is config. What counts as a channel keys
+        // off the `#` label, so renaming the group must move nobody in or out.
+        let mut app = AppState::test_new();
+        app.channel_group_name = "canais".to_string();
+        let mut chan = Workspace::test_new("canal");
+        chan.set_custom_name("#canal-ary".into());
+        chan.cached_git_branch = None;
+        let mut plain = Workspace::test_new("orchestrator");
+        plain.cached_git_branch = None;
+        app.workspaces = vec![chan, plain];
+
+        let entries = workspace_list_entries(&app);
+
+        assert_eq!(
+            entries.first(),
+            Some(&WorkspaceListEntry::GroupHeader {
+                name: "canais".into(),
+                collapse_key: "vg:canais".into(),
+            }),
+            "the configured name is what the group header carries: {entries:?}"
+        );
+        let grouped = entries
+            .iter()
+            .filter(|entry| matches!(entry, WorkspaceListEntry::Workspace { indented: true, .. }))
+            .count();
+        assert_eq!(
+            grouped, 1,
+            "renaming the group moves nobody in or out: {entries:?}"
         );
     }
 

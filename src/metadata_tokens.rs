@@ -92,20 +92,6 @@ impl MetadataTokens {
         self.entries.is_empty()
     }
 
-    /// Key-ordered borrow of the live tokens. The render path needs a stable
-    /// order — `HashMap` iteration would reshuffle the row between frames — and
-    /// must not clone every key and value the way `values()` does. Only called
-    /// for resources that actually carry tokens, which is the rare case.
-    pub(crate) fn sorted_pairs(&self) -> Vec<(&str, &str)> {
-        let mut pairs: Vec<(&str, &str)> = self
-            .entries
-            .iter()
-            .map(|(key, token)| (key.as_str(), token.value.as_str()))
-            .collect();
-        pairs.sort_unstable_by_key(|(key, _)| *key);
-        pairs
-    }
-
     pub(crate) fn next_expiry(&self) -> Option<Instant> {
         self.entries
             .values()
