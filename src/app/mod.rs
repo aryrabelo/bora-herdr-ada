@@ -4970,6 +4970,32 @@ mod tests {
     }
 
     #[test]
+    fn agent_target_resolves_by_terminal_id() {
+        let mut app = test_app();
+        let workspace = Workspace::test_new("terminal-target-agent-id");
+        let pane = workspace.tabs[0].root_pane;
+        let terminal_id = workspace.terminal_id(pane).unwrap().to_string();
+        app.state.workspaces = vec![workspace];
+        app.state.ensure_test_terminals();
+        let attached_terminal_id = app.state.workspaces[0].terminal_id(pane).cloned().unwrap();
+        app.state
+            .terminals
+            .get_mut(&attached_terminal_id)
+            .unwrap()
+            .set_detected_state(
+                Some(crate::detect::Agent::Pi),
+                crate::detect::AgentState::Idle,
+            );
+        app.state.active = Some(0);
+        app.state.selected = 0;
+
+        let resolved = app.resolve_agent_target(&terminal_id).unwrap();
+
+        assert_eq!(resolved.pane_id, pane);
+        assert_eq!(resolved.terminal_id, terminal_id);
+    }
+
+    #[test]
     fn agent_target_rejects_a_pane_that_only_has_a_launch_command() {
         let mut app = test_app();
         let workspace = Workspace::test_new("terminal-target-command");

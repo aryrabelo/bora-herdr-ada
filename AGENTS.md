@@ -250,6 +250,14 @@ Put local PRDs, planning notes, and exploratory specs under `.local/prd/`; `.loc
 
 ## Global Contracts
 
+### Version Bump
+
+Every shipped update bumps the bora version. When a change lands in `Cargo.toml`'s
+package, bump `version` in the same commit — never ship code without a version bump,
+because the installed binary reports `bora --version` and an unbumped build is
+indistinguishable from the previous one at runtime. (learned 2026-08-14, binding:
+requested directly by Ary after an update shipped under the old version number.)
+
 ### Commit Style
 
 Use lowercase conventional commits, no emojis, and no AI co-author lines. Commit subjects feed preview release notes, so keep them descriptive.

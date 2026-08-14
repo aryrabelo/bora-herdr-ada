@@ -85,6 +85,18 @@ impl App {
             }
         }
 
+        let terminal_matches: Vec<_> = self
+            .terminal_targets()
+            .into_iter()
+            .filter(|candidate| candidate.terminal_id == target)
+            .collect();
+        if let Some(resolved) = self
+            .single_terminal_match(target, terminal_matches)?
+            .filter(|resolved| self.target_is_agent(resolved))
+        {
+            return Ok(resolved);
+        }
+
         let name_matches: Vec<_> = self
             .terminal_targets()
             .into_iter()
