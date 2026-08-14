@@ -543,16 +543,40 @@ pub(crate) fn grouped_child_display_label(
 /// surface, not a lane of that repo's work.
 pub(crate) const CHANNEL_GROUP_NAME: &str = "Canais";
 
+/// A workspace auto-filed as a channel: `#`-labelled and not placed in a group
+/// by hand.
+fn is_auto_channel(ws: &crate::workspace::Workspace) -> bool {
+    ws.visual_group.is_none()
+        && ws
+            .custom_name
+            .as_deref()
+            .is_some_and(|name| name.starts_with('#'))
+}
+
 /// Group a workspace belongs to for sidebar purposes. An explicit group set by
 /// the user always wins, so a channel can still be filed somewhere else.
 fn effective_visual_group(ws: &crate::workspace::Workspace) -> Option<&str> {
     if let Some(group) = ws.visual_group.as_deref() {
         return Some(group);
     }
-    ws.custom_name
-        .as_deref()
-        .is_some_and(|name| name.starts_with('#'))
-        .then_some(CHANNEL_GROUP_NAME)
+    is_auto_channel(ws).then_some(CHANNEL_GROUP_NAME)
+}
+
+/// Git space a workspace contributes to repo grouping, which for a channel is
+/// none at all.
+///
+/// A channel lives in whatever checkout hosted it, and orc hosts every channel
+/// in the orchestrator hub — a NON-linked checkout. Letting that count as repo
+/// membership does two wrong things at once: the channel joins the repo's branch
+/// bracket, and, being a non-linked checkout with a group of its own, it drags
+/// the repo's entire member list inside the channel group.
+fn grouping_git_space(
+    ws: &crate::workspace::Workspace,
+) -> Option<&crate::workspace::GitSpaceMetadata> {
+    if is_auto_channel(ws) {
+        return None;
+    }
+    ws.git_space()
 }
 
 pub(crate) fn workspace_list_entries(app: &AppState) -> Vec<WorkspaceListEntry> {
@@ -576,7 +600,7 @@ fn workspace_list_entries_inner(app: &AppState, force_expanded: bool) -> Vec<Wor
     // --- Worktree group setup ---
     let mut members_by_key = std::collections::HashMap::<String, Vec<usize>>::new();
     for (ws_idx, ws) in app.workspaces.iter().enumerate() {
-        if let Some(space) = ws.git_space() {
+        if let Some(space) = grouping_git_space(ws) {
             members_by_key
                 .entry(space.repo_identity.clone())
                 .or_default()
@@ -621,8 +645,7 @@ fn workspace_list_entries_inner(app: &AppState, force_expanded: bool) -> Vec<Wor
     let mut consumed = std::collections::HashSet::<usize>::new();
     for (ws_idx, ws) in app.workspaces.iter().enumerate() {
         if effective_visual_group(ws).is_some() {
-            if let Some(space) = ws
-                .git_space()
+            if let Some(space) = grouping_git_space(ws)
                 .filter(|s| grouped_keys.contains(&s.repo_identity) && !s.is_linked_worktree)
             {
                 if let Some(members) = members_by_key.get(&space.repo_identity) {
@@ -650,13 +673,14 @@ fn workspace_list_entries_inner(app: &AppState, force_expanded: bool) -> Vec<Wor
             continue;
         }
 
-        let in_worktree_group = ws
-            .git_space()
+        let in_worktree_group = grouping_git_space(ws)
             .filter(|space| grouped_keys.contains(&space.repo_identity))
             .is_some();
 
         if in_worktree_group && !in_visual_group.contains(&ws_idx) {
-            let space = ws.git_space().unwrap();
+            let Some(space) = grouping_git_space(ws) else {
+                continue;
+            };
             if emitted_worktree_groups.contains(&space.repo_identity) {
                 continue;
             }
@@ -691,8 +715,7 @@ fn workspace_list_entries_inner(app: &AppState, force_expanded: bool) -> Vec<Wor
             continue;
         }
 
-        if in_worktree_group {
-            let space = ws.git_space().unwrap();
+        if let Some(space) = grouping_git_space(ws).filter(|_| in_worktree_group) {
             if emitted_worktree_groups.contains(&space.repo_identity) {
                 continue;
             }
@@ -711,10 +734,26 @@ fn workspace_list_entries_inner(app: &AppState, force_expanded: bool) -> Vec<Wor
                 });
                 if !collapsed {
                     if let Some(vg_members) = visual_group_members.get(group_name) {
-                        for &member_idx in vg_members {
+                        let last_member = vg_members.len().saturating_sub(1);
+                        for (position, &member_idx) in vg_members.iter().enumerate() {
                             let member_ws = &app.workspaces[member_idx];
-                            let repo = member_ws
-                                .git_space()
+                            if is_auto_channel(member_ws) {
+                                // A channel row is just the channel: no repo header
+                                // and no branch bracket, because the checkout that
+                                // hosts it is not what the row is about. The rail
+                                // still closes on the group's last row.
+                                entries.push(WorkspaceListEntry::Workspace {
+                                    ws_idx: member_idx,
+                                    indented: true,
+                                    rail: if position == last_member {
+                                        BranchRail::Close
+                                    } else {
+                                        BranchRail::Spine
+                                    },
+                                });
+                                continue;
+                            }
+                            let repo = grouping_git_space(member_ws)
                                 .filter(|s| grouped_keys.contains(&s.repo_identity))
                                 .map(|s| (s.repo_identity.clone(), s.repo_name.clone()));
 
@@ -3695,12 +3734,12 @@ mod tests {
                 WorkspaceListEntry::Workspace {
                     ws_idx: 0,
                     indented: true,
-                    rail: BranchRail::None,
+                    rail: BranchRail::Spine,
                 },
                 WorkspaceListEntry::Workspace {
                     ws_idx: 2,
                     indented: true,
-                    rail: BranchRail::None,
+                    rail: BranchRail::Close,
                 },
                 WorkspaceListEntry::Workspace {
                     ws_idx: 1,
@@ -3767,6 +3806,88 @@ mod tests {
         assert!(
             rows.iter().any(|row| row.contains("3 msg")),
             "reported token is drawn on the workspace row: {rows:?}"
+        );
+    }
+
+    #[test]
+    fn channels_leave_their_host_repo_group_in_the_live_fleet_shape() {
+        // Transcribed from the running session, because smaller branchless cases
+        // could not reproduce the failure: every `#` channel is a NON-linked
+        // checkout of a repo that also has real work workspaces, since orc hosts
+        // all channels in the orchestrator hub. That combination made the channel
+        // group swallow the entire repo — project header, branches and all — while
+        // leaving the channels themselves inside the repo's bracket.
+        let mut app = AppState::test_new();
+        let mk = |name: &str, repo: &str, linked: bool, branch: &str, custom: Option<&str>| {
+            let mut ws = git_space_member_on_branch(name, repo, linked, branch);
+            ws.cached_git_space.as_mut().unwrap().repo_identity = repo.into();
+            ws.cached_git_space.as_mut().unwrap().repo_name = repo.into();
+            if let Some(custom) = custom {
+                ws.set_custom_name(custom.into());
+            }
+            ws
+        };
+        app.workspaces = vec![
+            mk("orchestrator", "orchestrator", false, "main", None),
+            mk("bora", "bora", false, "main", None),
+            mk("canal", "orchestrator", false, "main", Some("#canal-ary")),
+            mk("orcbin", "orchestrator", true, "orcbin", None),
+            mk("orchestrator-review", "orchestrator", false, "main", None),
+            mk(
+                "part3",
+                "orchestrator",
+                false,
+                "main",
+                Some("#part3-model-status"),
+            ),
+        ];
+
+        let runtimes = crate::terminal::TerminalRuntimeRegistry::new();
+        let area = Rect::new(0, 0, 34, 20);
+        let mut terminal = Terminal::new(TestBackend::new(34, 20)).expect("test terminal");
+        terminal
+            .draw(|frame| render_workspace_list(&app, &runtimes, frame, area, false))
+            .expect("render");
+        let rows: Vec<String> = (0..20)
+            .map(|row| {
+                (0..34)
+                    .map(|col| terminal.backend().buffer()[(col, row)].symbol().to_string())
+                    .collect::<String>()
+                    .trim_end()
+                    .to_string()
+            })
+            .collect();
+
+        let repo_at = rows
+            .iter()
+            .position(|row| row.starts_with("╭─orchestrator"))
+            .unwrap_or_else(|| panic!("orchestrator keeps a top-level project header: {rows:?}"));
+        let group_at = rows
+            .iter()
+            .position(|row| row.contains(CHANNEL_GROUP_NAME))
+            .unwrap_or_else(|| panic!("channels get their own group: {rows:?}"));
+        assert!(
+            repo_at < group_at,
+            "the repo group stands on its own, not nested inside the channel group: {rows:?}"
+        );
+
+        // No `#` row may sit inside the repo bracket: that spans every row from the
+        // repo header up to the channel group header.
+        let inside_repo = &rows[repo_at..group_at];
+        assert!(
+            !inside_repo.iter().any(|row| row.contains('#')),
+            "no channel is left inside the repo bracket: {inside_repo:?}"
+        );
+
+        // The channel group holds both channels, and its rail closes on the last.
+        let channel_rows = &rows[group_at + 1..group_at + 3];
+        assert!(
+            channel_rows[0].starts_with('│') && channel_rows[0].contains("#canal-ary"),
+            "first channel rides the spine: {channel_rows:?}"
+        );
+        assert!(
+            channel_rows[1].starts_with("╰── ") && channel_rows[1].contains("#part3-model-status"),
+            "last channel closes the rail at the bottom of the group: {channel_rows:?}"
         );
     }
 
