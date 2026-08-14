@@ -36,3 +36,11 @@ graphify-out/
 *.db
 .beads-credential-key
 .beads/proxieddb/
+
+# Per-worktree direnv file written by ppws create; never committed.
+# Anchored to the repo root on purpose: a bare `.envrc` would also cover the
+# tracked vendor/libghostty-vt/.envrc if re-vendoring ever untracks it.
+/.envrc
+
+# Stale lock left behind when a bd invocation is interrupted.
+.beads.gate.lock
