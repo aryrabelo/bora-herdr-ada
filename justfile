@@ -78,6 +78,11 @@ install-hooks:
     chmod +x .githooks/commit-msg
     @echo "installed git hooks from .githooks"
 
+# Report upstream symbols (fn/mod) absent from this fork, split production vs test.
+# Not part of `check`: it needs the `upstream` remote/ref, which CI may lack.
+upstream-drift:
+    python3 scripts/upstream_drift.py --report
+
 # Build release binary
 [unix]
 build:

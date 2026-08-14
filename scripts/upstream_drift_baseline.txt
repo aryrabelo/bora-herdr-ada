@@ -1,0 +1,95 @@
+# Symbols present in upstream/master but absent from this fork's src tree.
+#
+# This file is an ACKNOWLEDGED-GAP list, not an approval list. Its job is to let
+# `--check` fail on NEW drift; presence here does NOT mean a gap was reviewed and
+# accepted. Saying otherwise would make the file lie the same way a stale
+# allowlist entry does.
+#
+# Triaged so far (2026-08-14), item by item rather than as a batch, because a
+# batch verdict that is right for most entries hides the one that is not:
+#
+#   VERIFIED RENAMES, live equivalents measured in this fork:
+#     state_icon -> state_dot, workspace_row_height -> entry_row_height,
+#     space_aggregate_state -> space_aggregate_display_state,
+#     workspace_drop_target_at_row -> workspace_drop_index_at_row,
+#     workspace_list_bottom_start -> workspace_list_rect,
+#     git_status_fingerprint_from_info -> git_status_fingerprint.
+#     long_help is an upstream TEST helper, not production.
+#
+#   REAL FEATURE GAP, still unresolved, awaiting an owner decision:
+#     confirm_implicit_worktree_group_close + workspace_close_would_close_worktree_group
+#     + close_pane_would_close_workspace + close_focused_pane_would_close_workspace,
+#     plus ~8 upstream tests naming the same behavior. Upstream PROMPTS before a
+#     close that would implicitly take down a whole worktree group (live upstream:
+#     called at src/app/input/navigate.rs:502, gated on the user's confirm_close
+#     setting). This fork has ConfirmClose but zero worktree/group consideration in
+#     the decision, so closing the last pane of a group takes the group down with
+#     no prompt. NOT a rename. Do not treat this entry as accepted.
+#
+#   NOT YET TRIAGED: read_branch_config, read_branch_config_with_user_paths,
+#     read_upstream_identity. Genuine absences, low risk, unexamined.
+#
+# Regenerate with:
+#     python3 scripts/upstream_drift.py --update
+fn:agent_panel_tab_label_visibility_tracks_tab_identity
+fn:api_context_menu_close_tab_last_parent_group_workspace_keeps_confirmation_mode
+fn:api_context_menu_enter_close_pane_last_parent_group_pane_keeps_confirmation_mode
+fn:clicking_pane_context_menu_close_last_parent_group_pane_keeps_confirmation_mode
+fn:close_focused_pane_would_close_workspace
+fn:close_pane_last_pane_in_parent_worktree_group_closes_when_confirmation_disabled
+fn:close_pane_last_pane_in_parent_worktree_group_prompts
+fn:close_pane_would_close_workspace
+fn:close_parent_worktree_workspace_closes_group
+fn:close_tab_last_tab_in_parent_worktree_group_prompts
+fn:collapsed_sidebar_numbers_grouped_agents_by_list_position
+fn:collapsed_sidebar_numbers_priority_agents_by_list_position
+fn:compact_space_group_scroll_clamps_when_all_entries_fit
+fn:confirm_close_text_reports_parent_group_scope
+fn:confirm_implicit_worktree_group_close
+fn:context_menu_close_group_opens_group_close_confirmation
+fn:default_agent_row_gap_packs_rendering_and_scroll_geometry
+fn:default_agent_rows_remove_redundant_state_text
+fn:desktop_worktree_connector_uses_full_list_at_viewport_boundary
+fn:desktop_worktree_tree_aligns_parents_and_marks_children
+fn:dragging_collapsed_worktree_parent_still_moves_hidden_children
+fn:dragging_worktree_parent_reorders_the_complete_group
+fn:edit_scrollback_key_opens_focused_runtime_scrollback_in_editor_pane
+fn:git_status_fingerprint_from_info
+fn:grouped_child_label_keeps_custom_workspace_name
+fn:grouped_child_label_uses_short_branch_for_auto_named_workspace
+fn:linked_only_worktree_members_do_not_form_parentless_group
+fn:long_help
+fn:next_step_hints_render_without_replacing_existing_after_help
+fn:occurrence_false_removes_default_workspace_bold_and_agent_dim
+fn:occurrence_foreground_flattens_composite_git_status_colors
+fn:oversized_agent_override_is_clipped_to_the_panel_body
+fn:oversized_space_layout_is_clipped_to_the_section_body
+fn:packed_workspace_drag_indicator_overlays_an_internal_boundary
+fn:pane_close_request_requires_confirmation_before_closing_parent_worktree_group
+fn:per_agent_row_heights_preserve_card_gaps_and_trailing_mouse_targets
+fn:plain_drag_anchors_to_the_selected_parentless_linked_workspace
+fn:prefix_close_pane_last_parent_group_pane_opens_confirmation
+fn:priority_sort_keeps_recently_changed_idle_agent_above_older_idle_agent
+fn:process_owned_integration_assets_do_not_report_release
+fn:read_branch_config
+fn:read_branch_config_with_user_paths
+fn:read_upstream_identity
+fn:space_aggregate_state
+fn:space_occurrence_style_applies_without_styling_separator
+fn:space_row_gap_preserves_compact_worktree_children
+fn:state_icon
+fn:state_icons_support_dot_and_distinct_symbol_styles
+fn:stripped_terminal_title_renders_with_unicode_width_truncation
+fn:top_drop_slot_is_distinct_from_gap_below_first_workspace
+fn:tui_close_pane_last_parent_group_pane_opens_confirmation_via_api
+fn:tui_close_tab_last_parent_group_workspace_opens_confirmation_via_api
+fn:variable_agent_heights_pack_the_bottom_and_reveal_targets
+fn:workspace_close_would_close_worktree_group
+fn:workspace_drop_slots
+fn:workspace_drop_target_at_row
+fn:workspace_entry_gap
+fn:workspace_list_bottom_start
+fn:workspace_list_entries_do_not_auto_attach_normal_git_workspace_to_group
+fn:workspace_list_entries_do_not_group_normal_git_workspaces
+fn:workspace_row_height
+fn:workspace_row_height_in_body
