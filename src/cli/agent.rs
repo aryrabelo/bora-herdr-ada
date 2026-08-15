@@ -683,7 +683,7 @@ fn agent_rename(args: &[String]) -> std::io::Result<i32> {
 fn agent_prompt(args: &[String]) -> std::io::Result<i32> {
     let Some(target) = args.first() else {
         eprintln!(
-            "usage: bora agent prompt <target> <text> [--wait] [--until STATUS]... [--timeout MS]"
+            "usage: bora agent prompt <target> <text> [--wait] [--until STATUS]... [--timeout MS] [--when-idle] [--from PANE] [--no-from]"
         );
         return Ok(2);
     };
@@ -692,13 +692,24 @@ fn agent_prompt(args: &[String]) -> std::io::Result<i32> {
         return Ok(2);
     };
     let mut wait = false;
+    let mut when_idle = false;
     let mut until = Vec::new();
     let mut timeout_ms = None;
+    let env_pane_id = std::env::var("HERDR_PANE_ID")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| super::normalize_pane_id(&value));
+    let mut from_pane = env_pane_id;
+    let mut no_from = false;
     let mut index = 2;
     while index < args.len() {
         match args[index].as_str() {
             "--wait" => {
                 wait = true;
+                index += 1;
+            }
+            "--when-idle" => {
+                when_idle = true;
                 index += 1;
             }
             "--until" => {
@@ -727,6 +738,19 @@ fn agent_prompt(args: &[String]) -> std::io::Result<i32> {
                 };
                 index += 2;
             }
+            "--from" => {
+                let Some(value) = args.get(index + 1) else {
+                    eprintln!("missing value for --from");
+                    return Ok(2);
+                };
+                from_pane = Some(super::normalize_pane_id(value));
+                no_from = false;
+                index += 2;
+            }
+            "--no-from" => {
+                no_from = true;
+                index += 1;
+            }
             option => {
                 eprintln!("unknown option: {option}");
                 return Ok(2);
@@ -737,9 +761,12 @@ fn agent_prompt(args: &[String]) -> std::io::Result<i32> {
         eprintln!("--until requires --wait");
         return Ok(2);
     }
-    if timeout_ms.is_some() && !wait {
-        eprintln!("--timeout requires --wait");
+    if timeout_ms.is_some() && !wait && !when_idle {
+        eprintln!("--timeout requires --wait or --when-idle");
         return Ok(2);
+    }
+    if no_from {
+        from_pane = None;
     }
     let response = super::send_request(&Request {
         id: "cli:agent:prompt".into(),
@@ -747,8 +774,21 @@ fn agent_prompt(args: &[String]) -> std::io::Result<i32> {
             target: target.clone(),
             text: text.clone(),
             wait: wait.then_some(AgentPromptWaitOptions { until, timeout_ms }),
+            from_pane,
+            when_idle: when_idle.then_some(true),
+            when_idle_timeout_ms: when_idle.then_some(timeout_ms).flatten(),
+            peer_pid: None,
+            origin_channel: None,
         }),
     })?;
+    if response.get("error").is_none() && response["result"]["outcome"].as_str() == Some("deferred")
+    {
+        let queue_position = response["result"]["queue_position"].as_u64();
+        let position_note = queue_position
+            .map(|position| format!(" (pos {position})"))
+            .unwrap_or_default();
+        eprintln!("deferred: target working, queued{position_note}");
+    }
     super::print_response(&response)
 }
 
@@ -837,7 +877,7 @@ fn print_agent_help() {
     eprintln!("  bora agent get <target>");
     eprintln!("  bora agent read <target> [--source visible|recent|recent-unwrapped|detection] [--lines N] [--format text|ansi] [--ansi]");
     eprintln!("  bora agent send-keys <target> <key> [key ...]");
-    eprintln!("  bora agent prompt <target> <text> [--wait] [--until STATUS]... [--timeout MS]");
+    eprintln!("  bora agent prompt <target> <text> [--wait] [--until STATUS]... [--timeout MS] [--when-idle]");
     eprintln!("  bora agent rename <target> <name>|--clear");
     eprintln!("  bora agent focus <target>");
     eprintln!("  bora agent wait <target> [--until <idle|working|blocked|done|unknown|exited>]... [--timeout MS]");

@@ -340,6 +340,39 @@ pub fn foreground_process_group_id(child_pid: u32) -> Option<u32> {
     (tpgid > 0).then_some(tpgid as u32)
 }
 
+/// Walks the parent-pid chain from `candidate_pid` up to the root, returning true if
+/// `ancestor_pid` is `candidate_pid` itself or one of its ancestors. Used to verify a
+/// caller's peer PID (from the API socket's `SO_PEERCRED`) actually descends from a
+/// pane's shell process, rather than trusting a caller-supplied `from_pane` claim.
+pub fn pid_is_descendant_of(ancestor_pid: u32, candidate_pid: u32) -> bool {
+    if ancestor_pid == 0 || candidate_pid == 0 {
+        return false;
+    }
+    let mut current = candidate_pid;
+    let mut visited = std::collections::HashSet::new();
+    while visited.insert(current) {
+        if current == ancestor_pid {
+            return true;
+        }
+        let Some(parent) = process_ppid(current) else {
+            return false;
+        };
+        if parent == 0 || parent == current {
+            return false;
+        }
+        current = parent;
+    }
+    false
+}
+
+fn process_ppid(pid: u32) -> Option<u32> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let rest = stat.get(stat.rfind(')')? + 2..)?;
+    let fields: Vec<&str> = rest.split_whitespace().collect();
+    let ppid: i32 = fields.get(1)?.parse().ok()?;
+    (ppid > 0).then_some(ppid as u32)
+}
+
 pub fn foreground_process_group_id_for_tty_fd(fd: RawFd) -> Option<u32> {
     let pgid = unsafe { libc::tcgetpgrp(fd) };
     (pgid > 0).then_some(pgid as u32)

@@ -88,6 +88,11 @@ fn agent_start_and_prompt_requests_round_trip() {
             target: "reviewer".into(),
             text: "review this".into(),
             wait: None,
+            from_pane: None,
+            when_idle: None,
+            when_idle_timeout_ms: None,
+            peer_pid: None,
+            origin_channel: None,
         }),
     };
     let prompt_json = serde_json::to_value(&prompt).unwrap();
@@ -106,6 +111,11 @@ fn agent_start_and_prompt_requests_round_trip() {
                 until: vec![AgentStatus::Idle, AgentStatus::Done],
                 timeout_ms: Some(120_000),
             }),
+            from_pane: None,
+            when_idle: None,
+            when_idle_timeout_ms: None,
+            peer_pid: None,
+            origin_channel: None,
         }),
     };
     let prompt_and_wait_json = serde_json::to_value(&prompt_and_wait).unwrap();
@@ -121,6 +131,35 @@ fn agent_start_and_prompt_requests_round_trip() {
         serde_json::from_value::<Request>(prompt_and_wait_json).unwrap(),
         prompt_and_wait
     );
+}
+
+#[test]
+fn agent_prompt_peer_pid_is_never_serialized_or_accepted_from_a_client() {
+    // `peer_pid` is set server-side from OS socket peer credentials, never by the
+    // client: it must be absent from the wire JSON, and a client that tries to set
+    // it anyway must be silently ignored, not trusted.
+    let request = Request {
+        id: "prompt".into(),
+        method: Method::AgentPrompt(AgentPromptParams {
+            target: "reviewer".into(),
+            text: "review this".into(),
+            wait: None,
+            from_pane: Some("w1:p1".into()),
+            when_idle: None,
+            when_idle_timeout_ms: None,
+            peer_pid: Some(4242),
+            origin_channel: None,
+        }),
+    };
+    let json = serde_json::to_value(&request).unwrap();
+    assert!(json["params"].get("peer_pid").is_none());
+
+    let spoofed = r#"{"id":"prompt","method":"agent.prompt","params":{"target":"reviewer","text":"review this","from_pane":"w1:p1","peer_pid":999999}}"#;
+    let restored: Request = serde_json::from_str(spoofed).unwrap();
+    let Method::AgentPrompt(params) = restored.method else {
+        panic!("wrong method parsed");
+    };
+    assert_eq!(params.peer_pid, None);
 }
 
 #[test]

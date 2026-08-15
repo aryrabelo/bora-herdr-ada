@@ -174,6 +174,12 @@ pub fn process_cwd(_pid: u32) -> Option<PathBuf> {
     None
 }
 
+/// Unsupported platform stub. Fails closed: no ancestry claim can be verified, so
+/// `from_pane` attribution always degrades to unverified on this platform.
+pub fn pid_is_descendant_of(_ancestor_pid: u32, _candidate_pid: u32) -> bool {
+    false
+}
+
 /// Unsupported platform stub.
 pub fn session_processes(_child_pid: u32) -> Vec<u32> {
     Vec::new()

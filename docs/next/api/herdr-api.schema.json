@@ -777,6 +777,86 @@
                 "repo_identity"
               ],
               "type": "object"
+            },
+            {
+              "description": "A `when_idle`-deferred agent prompt was drained and successfully\ninjected into its target. Terminal, matching `queue_id` from the\noriginal `agent.prompt` deferred receipt.",
+              "properties": {
+                "from_pane": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "queue_id": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "target_pane": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "queued_prompt_delivered",
+                  "type": "string"
+                },
+                "workspace_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "type",
+                "queue_id",
+                "target_pane"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "A `when_idle`-deferred agent prompt was dropped without ever reaching\nits target — the durable record the deferred receipt promised, since\nthe queue itself only logs internally. Terminal, matching `queue_id`\nfrom the original `agent.prompt` deferred receipt.",
+              "properties": {
+                "detail": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "from_pane": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "queue_id": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "reason": {
+                  "$ref": "#/schemas/event/$defs/QueuedAgentPromptDropReason"
+                },
+                "target_pane": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "queued_prompt_dropped",
+                  "type": "string"
+                },
+                "workspace_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "type",
+                "queue_id",
+                "target_pane",
+                "reason"
+              ],
+              "type": "object"
             }
           ]
         },
@@ -810,7 +890,9 @@
             "layout_updated",
             "pane_result_reported",
             "github_prs_refreshed",
-            "github_issues_refreshed"
+            "github_issues_refreshed",
+            "queued_prompt_delivered",
+            "queued_prompt_dropped"
           ],
           "type": "string"
         },
@@ -1088,6 +1170,26 @@
           ],
           "type": "object"
         },
+        "QueuedAgentPromptDropReason": {
+          "description": "Why a queued (`when_idle`-deferred) agent prompt never reached its target.\nCarried on `EventData::QueuedPromptDropped` so a sender that only sees the\n`deferred` receipt can still learn the terminal outcome.",
+          "oneOf": [
+            {
+              "const": "capacity",
+              "description": "The per-target queue was full; this was the oldest entry, evicted to\nmake room for a newer one.",
+              "type": "string"
+            },
+            {
+              "const": "pane_closed",
+              "description": "The target pane closed before the queue could be drained to it.",
+              "type": "string"
+            },
+            {
+              "const": "agent_changed",
+              "description": "Replaying the prompt failed for a reason a retry cannot fix (rate\nlimited, target pane gone, or the agent hosting it changed).",
+              "type": "string"
+            }
+          ]
+        },
         "SplitDirection": {
           "enum": [
             "right",
@@ -1305,6 +1407,12 @@
       "$defs": {
         "AgentPromptParams": {
           "properties": {
+            "from_pane": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "target": {
               "type": "string"
             },
@@ -1319,6 +1427,22 @@
                 {
                   "type": "null"
                 }
+              ]
+            },
+            "when_idle": {
+              "description": "When true, and the target is currently `working`, block server-side until the\ntarget leaves the working state (bounded by `when_idle_timeout_ms`) before\ninjecting the prompt. Absent/false: byte-identical to always-inject behavior.",
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "when_idle_timeout_ms": {
+              "description": "Idle-gate timeout in milliseconds; only meaningful with `when_idle: true`.\nDefaults to 60000ms when omitted.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
               ]
             }
           },
@@ -1767,6 +1891,68 @@
           },
           "required": [
             "target"
+          ],
+          "type": "object"
+        },
+        "ChannelCreateParams": {
+          "properties": {
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "name"
+          ],
+          "type": "object"
+        },
+        "ChannelHistoryParams": {
+          "properties": {
+            "lines": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "name"
+          ],
+          "type": "object"
+        },
+        "ChannelMembersParams": {
+          "properties": {
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "name"
+          ],
+          "type": "object"
+        },
+        "ChannelSendParams": {
+          "properties": {
+            "from_pane": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "name": {
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "name",
+            "text"
           ],
           "type": "object"
         },
@@ -6150,6 +6336,86 @@
             "params"
           ],
           "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "channel.create",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/ChannelCreateParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "channel.list",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/EmptyParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "channel.send",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/ChannelSendParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "channel.history",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/ChannelHistoryParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "channel.members",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/ChannelMembersParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
         }
       ],
       "properties": {
@@ -6565,6 +6831,20 @@
           ],
           "type": "object"
         },
+        "AgentPromptOutcome": {
+          "oneOf": [
+            {
+              "const": "injected",
+              "description": "The prompt was injected into the target pane immediately.",
+              "type": "string"
+            },
+            {
+              "const": "deferred",
+              "description": "The target was `working`; the prompt was queued (see the receipt's\n`queue_id`) and will be replayed once it leaves `working` (see\n`App::drain_pending_agent_prompts`). This outcome only reports that the\nprompt was accepted into the queue, not that it was delivered: its\nterminal fate (delivered or dropped) is observable via the\n`agent_prompt.delivered` / `agent_prompt.dropped` events carrying the\nsame `queue_id`.",
+              "type": "string"
+            }
+          ]
+        },
         "AgentSessionInfo": {
           "properties": {
             "agent": {
@@ -6604,6 +6884,123 @@
             "unknown"
           ],
           "type": "string"
+        },
+        "ChannelDelivery": {
+          "properties": {
+            "detail": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "pane_id": {
+              "type": "string"
+            },
+            "status": {
+              "$ref": "#/schemas/success_response/$defs/ChannelDeliveryStatus"
+            }
+          },
+          "required": [
+            "pane_id",
+            "status"
+          ],
+          "type": "object"
+        },
+        "ChannelDeliveryStatus": {
+          "enum": [
+            "delivered",
+            "deferred",
+            "failed"
+          ],
+          "type": "string"
+        },
+        "ChannelMember": {
+          "description": "One pane in a channel's workspace, as reported by `channel.members` — who\nwould receive a `channel.send`.",
+          "properties": {
+            "agent_status": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/AgentStatus"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "`None` for panes not hosting a detected agent (plain shells)."
+            },
+            "name": {
+              "description": "The pane's display/agent name, when it hosts a detected agent.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "pane_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "pane_id"
+          ],
+          "type": "object"
+        },
+        "ChannelMessage": {
+          "description": "A single line of a channel's append-only JSONL transcript. Reused as both\nthe on-disk storage record (`src/persist/channels.rs`) and the wire type,\nsince the two shapes are identical.",
+          "properties": {
+            "from_name": {
+              "type": "string"
+            },
+            "from_pane": {
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            },
+            "ts": {
+              "description": "RFC 3339 timestamp.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "ts",
+            "from_pane",
+            "from_name",
+            "text"
+          ],
+          "type": "object"
+        },
+        "ChannelSummary": {
+          "properties": {
+            "agent_count": {
+              "format": "uint",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "member_status_counts": {
+              "additionalProperties": {
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "description": "Member panes' agent status (`\"idle\"`, `\"working\"`, ...) mapped to how\nmany panes are currently in that status. Panes not hosting a detected\nagent are excluded, so this can undercount `pane_count`.",
+              "type": "object"
+            },
+            "name": {
+              "description": "Channel name including the leading `#`.",
+              "type": "string"
+            },
+            "pane_count": {
+              "format": "uint",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "name",
+            "pane_count",
+            "agent_count"
+          ],
+          "type": "object"
         },
         "ClientWindowTitleReason": {
           "enum": [
@@ -7319,6 +7716,86 @@
                 "repo_identity"
               ],
               "type": "object"
+            },
+            {
+              "description": "A `when_idle`-deferred agent prompt was drained and successfully\ninjected into its target. Terminal, matching `queue_id` from the\noriginal `agent.prompt` deferred receipt.",
+              "properties": {
+                "from_pane": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "queue_id": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "target_pane": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "queued_prompt_delivered",
+                  "type": "string"
+                },
+                "workspace_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "type",
+                "queue_id",
+                "target_pane"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "A `when_idle`-deferred agent prompt was dropped without ever reaching\nits target — the durable record the deferred receipt promised, since\nthe queue itself only logs internally. Terminal, matching `queue_id`\nfrom the original `agent.prompt` deferred receipt.",
+              "properties": {
+                "detail": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "from_pane": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "queue_id": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "reason": {
+                  "$ref": "#/schemas/success_response/$defs/QueuedAgentPromptDropReason"
+                },
+                "target_pane": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "queued_prompt_dropped",
+                  "type": "string"
+                },
+                "workspace_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "type",
+                "queue_id",
+                "target_pane",
+                "reason"
+              ],
+              "type": "object"
             }
           ]
         },
@@ -7367,7 +7844,9 @@
             "layout_updated",
             "pane_result_reported",
             "github_prs_refreshed",
-            "github_issues_refreshed"
+            "github_issues_refreshed",
+            "queued_prompt_delivered",
+            "queued_prompt_dropped"
           ],
           "type": "string"
         },
@@ -9037,6 +9516,26 @@
             }
           ]
         },
+        "QueuedAgentPromptDropReason": {
+          "description": "Why a queued (`when_idle`-deferred) agent prompt never reached its target.\nCarried on `EventData::QueuedPromptDropped` so a sender that only sees the\n`deferred` receipt can still learn the terminal outcome.",
+          "oneOf": [
+            {
+              "const": "capacity",
+              "description": "The per-target queue was full; this was the oldest entry, evicted to\nmake room for a newer one.",
+              "type": "string"
+            },
+            {
+              "const": "pane_closed",
+              "description": "The target pane closed before the queue could be drained to it.",
+              "type": "string"
+            },
+            {
+              "const": "agent_changed",
+              "description": "Replaying the prompt failed for a reason a retry cannot fix (rate\nlimited, target pane gone, or the agent hosting it changed).",
+              "type": "string"
+            }
+          ]
+        },
         "ReadFormat": {
           "enum": [
             "text",
@@ -9378,6 +9877,27 @@
               "properties": {
                 "agent": {
                   "$ref": "#/schemas/success_response/$defs/AgentInfo"
+                },
+                "outcome": {
+                  "$ref": "#/schemas/success_response/$defs/AgentPromptOutcome",
+                  "default": "injected"
+                },
+                "queue_id": {
+                  "description": "Set only when `outcome` is `deferred`: the id of the queued prompt,\nstable for its whole lifetime in the pending queue. Correlates this\nreceipt with its terminal-fate `agent_prompt.delivered` /\n`agent_prompt.dropped` event.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "queue_position": {
+                  "format": "uint",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
                 },
                 "type": {
                   "const": "agent_prompted",
@@ -10263,6 +10783,98 @@
               "required": [
                 "type",
                 "repos"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "channel": {
+                  "$ref": "#/schemas/success_response/$defs/ChannelSummary"
+                },
+                "type": {
+                  "const": "channel_created",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "channel"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "channels": {
+                  "items": {
+                    "$ref": "#/schemas/success_response/$defs/ChannelSummary"
+                  },
+                  "type": "array"
+                },
+                "type": {
+                  "const": "channel_list",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "channels"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "deliveries": {
+                  "items": {
+                    "$ref": "#/schemas/success_response/$defs/ChannelDelivery"
+                  },
+                  "type": "array"
+                },
+                "type": {
+                  "const": "channel_sent",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "deliveries"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "messages": {
+                  "items": {
+                    "$ref": "#/schemas/success_response/$defs/ChannelMessage"
+                  },
+                  "type": "array"
+                },
+                "type": {
+                  "const": "channel_history",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "messages"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "members": {
+                  "items": {
+                    "$ref": "#/schemas/success_response/$defs/ChannelMember"
+                  },
+                  "type": "array"
+                },
+                "type": {
+                  "const": "channel_members",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "members"
               ],
               "type": "object"
             }

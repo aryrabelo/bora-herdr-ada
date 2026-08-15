@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
+use super::agents::QueuedAgentPromptDropReason;
 use super::common::{AgentStatus, ReadSource};
 use super::panes::{PaneInfo, PaneReadResult, PaneScrollInfo};
 use super::tabs::TabInfo;
@@ -229,6 +230,8 @@ pub enum EventKind {
     PaneResultReported,
     GithubPrsRefreshed,
     GithubIssuesRefreshed,
+    QueuedPromptDelivered,
+    QueuedPromptDropped,
 }
 
 impl EventKind {
@@ -263,6 +266,8 @@ impl EventKind {
             EventKind::PaneResultReported => "pane.result_reported",
             EventKind::GithubPrsRefreshed => "github.prs_refreshed",
             EventKind::GithubIssuesRefreshed => "github.issues_refreshed",
+            EventKind::QueuedPromptDelivered => "agent_prompt.delivered",
+            EventKind::QueuedPromptDropped => "agent_prompt.dropped",
         }
     }
 }
@@ -298,6 +303,8 @@ pub const KNOWN_EVENT_KINDS: &[EventKind] = &[
     EventKind::PaneResultReported,
     EventKind::GithubPrsRefreshed,
     EventKind::GithubIssuesRefreshed,
+    EventKind::QueuedPromptDelivered,
+    EventKind::QueuedPromptDropped,
 ];
 
 pub const PLUGIN_HOOK_EVENT_KINDS: &[EventKind] = &[
@@ -324,6 +331,8 @@ pub const PLUGIN_HOOK_EVENT_KINDS: &[EventKind] = &[
     EventKind::PaneAgentDetected,
     EventKind::PaneAgentStatusChanged,
     EventKind::PaneResultReported,
+    EventKind::QueuedPromptDelivered,
+    EventKind::QueuedPromptDropped,
 ];
 
 #[cfg(test)]
@@ -580,6 +589,32 @@ pub enum EventData {
     },
     GithubIssuesRefreshed {
         repo_identity: String,
+    },
+    /// A `when_idle`-deferred agent prompt was drained and successfully
+    /// injected into its target. Terminal, matching `queue_id` from the
+    /// original `agent.prompt` deferred receipt.
+    QueuedPromptDelivered {
+        queue_id: u64,
+        target_pane: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        workspace_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        from_pane: Option<String>,
+    },
+    /// A `when_idle`-deferred agent prompt was dropped without ever reaching
+    /// its target — the durable record the deferred receipt promised, since
+    /// the queue itself only logs internally. Terminal, matching `queue_id`
+    /// from the original `agent.prompt` deferred receipt.
+    QueuedPromptDropped {
+        queue_id: u64,
+        target_pane: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        workspace_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        from_pane: Option<String>,
+        reason: QueuedAgentPromptDropReason,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        detail: Option<String>,
     },
 }
 /// Returns whether an emitted `EventEnvelope` satisfies an `events.wait` filter.

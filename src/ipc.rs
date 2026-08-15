@@ -118,6 +118,43 @@ pub(crate) fn local_stream_peer_closed(stream: &mut LocalStream) -> io::Result<b
     probe_stream_closed(stream)
 }
 
+/// Best-effort caller PID derived from OS-level socket peer credentials.
+///
+/// macOS's `xucred`-based `LOCAL_PEERCRED` exposes only uid/gid, not a pid, so this
+/// queries `LOCAL_PEEREPID` directly via `getsockopt`. Linux (`ucred`-based
+/// `SO_PEERCRED`) and Windows (named pipe peer process id) both carry a pid already
+/// and go through `interprocess`'s cross-platform `peer_creds()`.
+///
+/// Returns `None` when the platform/socket kind doesn't expose peer credentials;
+/// callers must treat that as "cannot verify", never as an implicit pass.
+#[cfg(target_os = "macos")]
+pub(crate) fn local_stream_peer_pid(stream: &LocalStream) -> Option<u32> {
+    use std::os::unix::io::AsRawFd;
+
+    let LocalStream::UdSocket(uds) = stream;
+    let fd = uds.inner().as_raw_fd();
+    let mut pid: libc::pid_t = 0;
+    let mut len = std::mem::size_of::<libc::pid_t>() as libc::socklen_t;
+    let ret = unsafe {
+        libc::getsockopt(
+            fd,
+            libc::SOL_LOCAL,
+            libc::LOCAL_PEEREPID,
+            &mut pid as *mut libc::pid_t as *mut libc::c_void,
+            &mut len,
+        )
+    };
+    (ret == 0 && pid > 0).then_some(pid as u32)
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn local_stream_peer_pid(stream: &LocalStream) -> Option<u32> {
+    use interprocess::local_socket::traits::StreamCommon as _;
+
+    let pid = stream.peer_creds().ok()?.pid()?;
+    u32::try_from(pid).ok()
+}
+
 pub(crate) fn set_local_stream_polling(stream: &mut LocalStream, enabled: bool) -> io::Result<()> {
     #[cfg(unix)]
     {

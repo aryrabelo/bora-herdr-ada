@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 pub mod agents;
+pub mod channels;
 pub mod common;
 pub mod events;
 pub mod github;
@@ -15,6 +16,7 @@ pub mod workspaces;
 pub mod worktrees;
 
 pub use agents::*;
+pub use channels::*;
 pub use common::*;
 pub use events::*;
 pub use github::*;
@@ -250,6 +252,16 @@ pub enum Method {
     GithubPullsList(GithubPullsListParams),
     #[serde(rename = "github.issues.list")]
     GithubIssuesList(GithubIssuesListParams),
+    #[serde(rename = "channel.create")]
+    ChannelCreate(ChannelCreateParams),
+    #[serde(rename = "channel.list")]
+    ChannelList(EmptyParams),
+    #[serde(rename = "channel.send")]
+    ChannelSend(ChannelSendParams),
+    #[serde(rename = "channel.history")]
+    ChannelHistory(ChannelHistoryParams),
+    #[serde(rename = "channel.members")]
+    ChannelMembers(ChannelMembersParams),
 }
 
 #[cfg(test)]

@@ -30,13 +30,45 @@ mod theme_sync;
 mod window_title;
 mod worktrees;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::pending;
 use std::io::{self, Write};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 const MIN_RENDER_INTERVAL: Duration = Duration::from_millis(16);
+/// Minimum spacing between two `agent.prompt` calls with the same
+/// (from_pane, target_pane) pair, to break accidental agent-to-agent
+/// prompt loops. Prompts without a `from_pane` (human/orchestrator path)
+/// are exempt.
+const AGENT_PROMPT_RATE_LIMIT: Duration = Duration::from_secs(2);
+/// Entries older than this are pruned opportunistically on insert so the
+/// rate-limit map cannot grow unbounded across a long session.
+const AGENT_PROMPT_RATE_LIMIT_PRUNE_AGE: Duration = Duration::from_secs(60);
+/// Per-target cap on `when_idle` prompts deferred by the in-process fast path
+/// (`App::handle_agent_prompt`) while the target is `Working`. Past the cap,
+/// the oldest queued prompt is dropped so a spammy sender cannot grow the
+/// queue unbounded; the newest instruction is kept as the more useful one.
+pub(crate) const PENDING_AGENT_PROMPT_CAP: usize = 32;
+
+/// A `when_idle` agent.prompt whose in-process fast path found the target
+/// `Working` and deferred it instead of dropping it. Replayed through
+/// `handle_agent_prompt` once the target is next observed to leave
+/// `Working` — see `App::drain_pending_agent_prompts`. Every terminal fate
+/// (delivered, or dropped by cap eviction / pane close / replay failure) is
+/// reported via an `agent_prompt.delivered` / `agent_prompt.dropped` event
+/// carrying `queue_id` — see `App::report_queued_prompt_dropped` — so the
+/// `deferred` receipt never overpromises: the sender can always learn what
+/// ultimately happened to a queued prompt.
+pub(crate) struct PendingAgentPrompt {
+    /// Stable for the lifetime of this entry in the queue; echoed on the
+    /// deferred receipt (`AgentPrompted.queue_id`) and on its terminal-fate
+    /// event so a caller can correlate the two.
+    pub(crate) queue_id: u64,
+    pub(crate) params: crate::api::schema::AgentPromptParams,
+    pub(crate) enqueued_at: Instant,
+}
+
 /// Sidebar spinner cadence. 80 ms (~12 fps) matches omp's own spinner and is
 /// plenty for a glyph cycle; the old 16 ms tick forced a full app re-render at
 /// 60 fps whenever any pane anywhere was working, which starved input handling
@@ -86,6 +118,34 @@ pub(crate) fn load_plugin_manifest(
     enabled: bool,
 ) -> Result<crate::api::schema::InstalledPluginInfo, (&'static str, String)> {
     api::plugins::load_plugin_manifest(path, enabled)
+}
+
+/// ponytail: tiny duplicate of `app::api::channels::now_rfc3339` — not worth
+/// threading a `pub(crate)` visibility change through a private submodule for
+/// three lines.
+fn rfc3339_now() -> String {
+    time::OffsetDateTime::now_utc()
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_default()
+}
+
+/// Renders a `QueuedAgentPromptDropReason` (plus optional detail, e.g. an
+/// error code/message from a failed replay) as the human-readable text used in
+/// both the sender's PTY notice and the channel history system line.
+fn queued_prompt_drop_reason_text(
+    reason: crate::api::schema::QueuedAgentPromptDropReason,
+    detail: Option<&str>,
+) -> String {
+    use crate::api::schema::QueuedAgentPromptDropReason as Reason;
+    let base = match reason {
+        Reason::Capacity => "queue full",
+        Reason::PaneClosed => "target pane closed",
+        Reason::AgentChanged => "target unavailable",
+    };
+    match detail {
+        Some(detail) if !detail.is_empty() => format!("{base} ({detail})"),
+        _ => base.to_string(),
+    }
 }
 
 /// Full application: AppState + runtime concerns (event channels, async I/O).
@@ -142,6 +202,17 @@ pub struct App {
     pub(crate) toast_deadline: Option<Instant>,
     pub(crate) copy_feedback_deadline: Option<Instant>,
     pub(crate) last_api_notification_at: Option<Instant>,
+    /// Last `agent.prompt` timestamp per (from_pane, target_pane) pair, used
+    /// to reject rapid-fire agent-to-agent prompts (loop guard).
+    pub(crate) agent_prompt_rate_limits: HashMap<(String, String), Instant>,
+    /// `when_idle` prompts deferred because the in-process fast path found
+    /// the target `Working`, keyed by the target's public pane id. Drained
+    /// in FIFO order once the target's status is next observed to leave
+    /// `Working`; see `drain_pending_agent_prompts`.
+    pub(crate) pending_agent_prompts: HashMap<String, VecDeque<PendingAgentPrompt>>,
+    /// Monotonic id source for `PendingAgentPrompt` entries; see
+    /// `PendingAgentPrompt::queue_id`.
+    pub(crate) next_pending_agent_prompt_queue_id: u64,
     pub(crate) last_git_remote_status_refresh: Instant,
     pub(crate) last_git_repo_discovery_refresh: Instant,
     pub(crate) last_checks_refresh: Instant,
@@ -829,6 +900,8 @@ impl App {
             toast_deadline: None,
             copy_feedback_deadline: None,
             last_api_notification_at: None,
+            agent_prompt_rate_limits: HashMap::new(),
+            pending_agent_prompts: HashMap::new(),
             state,
             pane_graphics: pane_graphics::Runtime::default(),
             pane_graphics_files: Arc::new(crate::pane_graphics_files::FileStore::default()),
@@ -857,6 +930,7 @@ impl App {
             pending_api_worktree_removes: HashMap::new(),
             pending_api_worktree_remove_paths: HashMap::new(),
             next_api_worktree_operation_id: 1,
+            next_pending_agent_prompt_queue_id: 1,
             last_sidebar_divider_click: None,
             last_pane_click: None,
             pending_url_click_sources: HashSet::new(),
@@ -903,6 +977,304 @@ impl App {
         app.configure_tab_bar_status(&config.ui.tab_bar_right, &config.ui.tab_bar_right_separator);
         app.configure_window_title(&config.ui.window_title);
         app
+    }
+
+    /// Checks and records an `agent.prompt` call from `from_pane` to
+    /// `target_pane` against the loop-guard rate limit.
+    ///
+    /// Returns `Ok(())` and records `now` for the pair when the call is
+    /// allowed. Returns `Err(remaining)` — the cooldown still left — when
+    /// the same pair fired within `AGENT_PROMPT_RATE_LIMIT` and the call
+    /// must be rejected without recording a new timestamp.
+    pub(crate) fn check_agent_prompt_rate_limit(
+        &mut self,
+        from_pane: &str,
+        target_pane: &str,
+        now: Instant,
+    ) -> Result<(), Duration> {
+        self.agent_prompt_rate_limits
+            .retain(|_, at| now.duration_since(*at) < AGENT_PROMPT_RATE_LIMIT_PRUNE_AGE);
+        let key = (from_pane.to_string(), target_pane.to_string());
+        if let Some(last) = self.agent_prompt_rate_limits.get(&key) {
+            let elapsed = now.duration_since(*last);
+            if elapsed < AGENT_PROMPT_RATE_LIMIT {
+                return Err(AGENT_PROMPT_RATE_LIMIT - elapsed);
+            }
+        }
+        self.agent_prompt_rate_limits.insert(key, now);
+        Ok(())
+    }
+
+    /// Queues `params` for replay once `target_pane` (its public pane id) is next
+    /// observed to leave `Working`. Bounded per target at
+    /// `PENDING_AGENT_PROMPT_CAP`: past the cap, the oldest queued prompt is dropped
+    /// (with a tracing warning, and a `agent_prompt.dropped` event / best-effort
+    /// sender notice — see `report_queued_prompt_dropped`) to make room — a full
+    /// queue means the target is falling behind, so keeping the newest instruction
+    /// is more useful than keeping the oldest. Returns `(1-based queue position,
+    /// queue_id)`, surfaced to callers as `AgentPrompted.queue_position` /
+    /// `AgentPrompted.queue_id`.
+    pub(crate) fn enqueue_pending_agent_prompt(
+        &mut self,
+        target_pane: String,
+        params: crate::api::schema::AgentPromptParams,
+    ) -> (usize, u64) {
+        let queue_id = self.next_pending_agent_prompt_queue_id();
+        let evicted = {
+            let queue = self
+                .pending_agent_prompts
+                .entry(target_pane.clone())
+                .or_default();
+            if queue.len() >= PENDING_AGENT_PROMPT_CAP {
+                queue.pop_front()
+            } else {
+                None
+            }
+        };
+        if let Some(evicted) = evicted {
+            tracing::warn!(
+                target = %target_pane,
+                cap = PENDING_AGENT_PROMPT_CAP,
+                "pending agent prompt queue full; dropped oldest queued prompt"
+            );
+            self.report_queued_prompt_dropped(
+                evicted.queue_id,
+                &target_pane,
+                evicted.params.from_pane,
+                evicted.params.origin_channel,
+                crate::api::schema::QueuedAgentPromptDropReason::Capacity,
+                None,
+            );
+        }
+        let queue = self
+            .pending_agent_prompts
+            .entry(target_pane.clone())
+            .or_default();
+        queue.push_back(PendingAgentPrompt {
+            queue_id,
+            params,
+            enqueued_at: Instant::now(),
+        });
+        (queue.len(), queue_id)
+    }
+
+    fn next_pending_agent_prompt_queue_id(&mut self) -> u64 {
+        let id = self.next_pending_agent_prompt_queue_id;
+        self.next_pending_agent_prompt_queue_id =
+            self.next_pending_agent_prompt_queue_id.saturating_add(1);
+        id
+    }
+
+    /// Replays every prompt queued for `target_pane`, oldest first, through
+    /// `handle_agent_prompt`. A queued prompt that lands mid-`Working` again (the
+    /// target flipped back busy between drains) is simply re-queued by
+    /// `handle_agent_prompt`'s own busy check — reported as an `outcome: "deferred"`
+    /// receipt, not an error — so ordering degrades but nothing is lost; not a
+    /// terminal fate, so no event yet. A successful replay is terminal: reports
+    /// `agent_prompt.delivered`. Any other failure (rate-limited, pane gone, agent
+    /// swapped out) is also terminal — a retry cannot fix it — so it is logged and
+    /// reported via `report_queued_prompt_dropped`.
+    pub(crate) fn drain_pending_agent_prompts(&mut self, target_pane: &str) {
+        let Some(queue) = self.pending_agent_prompts.remove(target_pane) else {
+            return;
+        };
+        for pending in queue {
+            let queue_id = pending.queue_id;
+            let from_pane = pending.params.from_pane.clone();
+            let origin_channel = pending.params.origin_channel.clone();
+            let waited_ms = pending.enqueued_at.elapsed().as_millis();
+            let request_id = format!("deferred:{target_pane}:{waited_ms}");
+            let response = self.handle_agent_prompt(request_id, pending.params);
+            let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&response) else {
+                continue;
+            };
+            if let Some(error) = parsed.get("error") {
+                let code = error.get("code").and_then(|c| c.as_str()).unwrap_or("");
+                let message = error.get("message").and_then(|m| m.as_str()).unwrap_or("");
+                tracing::warn!(
+                    target = %target_pane,
+                    waited_ms,
+                    code,
+                    message,
+                    "deferred agent prompt dropped; replay failed"
+                );
+                let detail = if message.is_empty() {
+                    code.to_string()
+                } else {
+                    message.to_string()
+                };
+                self.report_queued_prompt_dropped(
+                    queue_id,
+                    target_pane,
+                    from_pane,
+                    origin_channel,
+                    crate::api::schema::QueuedAgentPromptDropReason::AgentChanged,
+                    Some(detail),
+                );
+                continue;
+            }
+            let outcome = parsed
+                .get("result")
+                .and_then(|result| result.get("outcome"))
+                .and_then(|outcome| outcome.as_str());
+            if outcome == Some("deferred") {
+                tracing::debug!(
+                    target = %target_pane,
+                    waited_ms,
+                    "deferred agent prompt re-queued; target busy again"
+                );
+                continue;
+            }
+            self.report_queued_prompt_delivered(queue_id, target_pane, from_pane);
+        }
+    }
+
+    /// Drops every prompt queued for `target_pane` (its public pane id) — the
+    /// recipient disappeared (pane closed) before it could be delivered.
+    pub(crate) fn fail_pending_agent_prompts(&mut self, target_pane: &str) {
+        let Some(queue) = self.pending_agent_prompts.remove(target_pane) else {
+            return;
+        };
+        for pending in queue {
+            tracing::warn!(
+                target = %target_pane,
+                waited_ms = pending.enqueued_at.elapsed().as_millis(),
+                "deferred agent prompt dropped; target pane closed before delivery"
+            );
+            self.report_queued_prompt_dropped(
+                pending.queue_id,
+                target_pane,
+                pending.params.from_pane,
+                pending.params.origin_channel,
+                crate::api::schema::QueuedAgentPromptDropReason::PaneClosed,
+                None,
+            );
+        }
+    }
+
+    /// Emits the durable `agent_prompt.delivered` event for a queued prompt that
+    /// was successfully drained and injected.
+    fn report_queued_prompt_delivered(
+        &mut self,
+        queue_id: u64,
+        target_pane: &str,
+        from_pane: Option<String>,
+    ) {
+        let workspace_id = self
+            .resolve_agent_target(target_pane)
+            .ok()
+            .map(|resolved| self.public_workspace_id(resolved.ws_idx));
+        self.emit_event(crate::api::schema::EventEnvelope {
+            event: crate::api::schema::EventKind::QueuedPromptDelivered,
+            data: crate::api::schema::EventData::QueuedPromptDelivered {
+                queue_id,
+                target_pane: target_pane.to_string(),
+                workspace_id,
+                from_pane,
+            },
+        });
+    }
+
+    /// Reports the terminal drop of a queued prompt — this is what keeps a
+    /// `deferred` receipt honest, since the queue itself otherwise only logs
+    /// internally (see the module-level `PendingAgentPrompt` doc). Always emits
+    /// the durable `agent_prompt.dropped` event; when the sender is a known,
+    /// resolvable pane, also best-effort injects a one-line PTY notice (see
+    /// `notify_pane_of_queue_drop` — that path can never itself be queued, so
+    /// this never recurses); when the prompt was a `channel.send` fan-out
+    /// delivery, appends an honest system line to that channel's history.
+    fn report_queued_prompt_dropped(
+        &mut self,
+        queue_id: u64,
+        target_pane: &str,
+        from_pane: Option<String>,
+        origin_channel: Option<String>,
+        reason: crate::api::schema::QueuedAgentPromptDropReason,
+        detail: Option<String>,
+    ) {
+        let workspace_id = self
+            .resolve_agent_target(target_pane)
+            .ok()
+            .map(|resolved| self.public_workspace_id(resolved.ws_idx));
+        self.emit_event(crate::api::schema::EventEnvelope {
+            event: crate::api::schema::EventKind::QueuedPromptDropped,
+            data: crate::api::schema::EventData::QueuedPromptDropped {
+                queue_id,
+                target_pane: target_pane.to_string(),
+                workspace_id,
+                from_pane: from_pane.clone(),
+                reason,
+                detail: detail.clone(),
+            },
+        });
+        let reason_text = queued_prompt_drop_reason_text(reason, detail.as_deref());
+        if let Some(from_pane) = from_pane.as_deref() {
+            self.notify_pane_of_queue_drop(from_pane, target_pane, &reason_text);
+        }
+        if let Some(channel) = origin_channel {
+            let line = crate::api::schema::ChannelMessage {
+                ts: rfc3339_now(),
+                from_pane: "system".to_string(),
+                from_name: "bora".to_string(),
+                text: format!("delivery to {target_pane} dropped: {reason_text}"),
+            };
+            if let Err(err) = crate::persist::channels::append_message(&channel, &line) {
+                tracing::warn!(
+                    channel = %channel,
+                    target = %target_pane,
+                    error = %err,
+                    "failed to append delivery-drop notice to channel history"
+                );
+            }
+        }
+    }
+
+    /// Best-effort direct PTY notice to `from_pane` that its queued prompt to
+    /// `target_pane` was dropped. Deliberately bypasses the deferred queue and
+    /// rate limiting entirely — it calls `handle_agent_prompt` with
+    /// `from_pane: None` and `when_idle: None`, so neither gate applies — which is
+    /// what keeps a notice from ever being queued itself: a drop can never
+    /// recurse into reporting another drop. Skips silently (the event emitted by
+    /// `report_queued_prompt_dropped` remains the durable record) when `from_pane`
+    /// no longer resolves to a live agent pane, or that pane is currently
+    /// `Working` — a courtesy notice must never interrupt an agent mid-task.
+    fn notify_pane_of_queue_drop(&mut self, from_pane: &str, target_pane: &str, reason: &str) {
+        let Ok(resolved) = self.resolve_agent_target(from_pane) else {
+            return;
+        };
+        if let Some(agent) = self.agent_info(resolved.ws_idx, resolved.pane_id) {
+            if agent.agent_status == crate::api::schema::AgentStatus::Working {
+                tracing::debug!(
+                    from_pane,
+                    target_pane,
+                    "queued prompt drop notice skipped; sender pane busy"
+                );
+                return;
+            }
+        }
+        let notice = format!("[bora] prompt to {target_pane} dropped: {reason}");
+        let response = self.handle_agent_prompt(
+            format!("system:queue_drop_notice:{target_pane}"),
+            crate::api::schema::AgentPromptParams {
+                target: from_pane.to_string(),
+                text: notice,
+                wait: None,
+                from_pane: None,
+                when_idle: None,
+                when_idle_timeout_ms: None,
+                peer_pid: None,
+                origin_channel: None,
+            },
+        );
+        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&response) {
+            if parsed.get("error").is_some() {
+                tracing::debug!(
+                    from_pane,
+                    target_pane,
+                    "queued prompt drop notice failed to inject"
+                );
+            }
+        }
     }
 
     #[cfg(unix)]
@@ -7264,5 +7636,56 @@ last_pane = "prefix+tab"
             &input[events[1].start..events[1].start + events[1].len],
             b"a"
         );
+    }
+
+    #[test]
+    fn agent_prompt_rate_limit_isolates_by_pair() {
+        let mut app = test_app();
+        let now = Instant::now();
+        assert!(app
+            .check_agent_prompt_rate_limit("w1:p1", "w1:p2", now)
+            .is_ok());
+        // Same pair immediately after: rejected.
+        assert_eq!(
+            app.check_agent_prompt_rate_limit("w1:p1", "w1:p2", now + Duration::from_millis(500)),
+            Err(Duration::from_millis(1500))
+        );
+        // Different target from same sender: unaffected.
+        assert!(app
+            .check_agent_prompt_rate_limit("w1:p1", "w1:p3", now + Duration::from_millis(500))
+            .is_ok());
+    }
+
+    #[test]
+    fn agent_prompt_rate_limit_expires_after_cooldown() {
+        let mut app = test_app();
+        let now = Instant::now();
+        assert!(app
+            .check_agent_prompt_rate_limit("w1:p1", "w1:p2", now)
+            .is_ok());
+        assert!(app
+            .check_agent_prompt_rate_limit(
+                "w1:p1",
+                "w1:p2",
+                now + AGENT_PROMPT_RATE_LIMIT + Duration::from_millis(1)
+            )
+            .is_ok());
+    }
+
+    #[test]
+    fn agent_prompt_rate_limit_prunes_stale_entries() {
+        let mut app = test_app();
+        let now = Instant::now();
+        assert!(app
+            .check_agent_prompt_rate_limit("w1:p1", "w1:p2", now)
+            .is_ok());
+        assert_eq!(app.agent_prompt_rate_limits.len(), 1);
+        // Past the prune age: the stale entry is dropped, and a distinct
+        // pair check afterward leaves only the fresh entry behind.
+        let later = now + AGENT_PROMPT_RATE_LIMIT_PRUNE_AGE + Duration::from_secs(1);
+        assert!(app
+            .check_agent_prompt_rate_limit("w1:p9", "w1:p8", later)
+            .is_ok());
+        assert_eq!(app.agent_prompt_rate_limits.len(), 1);
     }
 }

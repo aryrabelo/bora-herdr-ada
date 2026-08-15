@@ -2,6 +2,7 @@ use std::time::{Duration, Instant};
 
 mod agent_view;
 mod agents;
+mod channels;
 mod env;
 mod integrations;
 mod layouts;
@@ -733,6 +734,13 @@ impl App {
             || update.previous_presentation != update.presentation
         {
             let presentation = update.presentation.clone();
+            // Drain before emitting: a queued `when_idle` prompt replayed here only
+            // sends bytes to the pty, it cannot synchronously flip `agent_status`
+            // again (detection is async on terminal output), so event ordering is
+            // unaffected either way.
+            if agent_status != crate::api::schema::AgentStatus::Working {
+                self.drain_pending_agent_prompts(&pane_id);
+            }
             self.emit_event(crate::api::schema::EventEnvelope {
                 event: crate::api::schema::EventKind::PaneAgentStatusChanged,
                 data: crate::api::schema::EventData::PaneAgentStatusChanged {
@@ -1300,6 +1308,19 @@ impl App {
             }
             Method::GithubIssuesList(params) => {
                 return self.handle_github_issues_list(request.id, params);
+            }
+            Method::ChannelCreate(params) => {
+                return self.handle_channel_create(request.id, params);
+            }
+            Method::ChannelList(_) => return self.handle_channel_list(request.id),
+            Method::ChannelSend(params) => {
+                return self.handle_channel_send(request.id, params);
+            }
+            Method::ChannelHistory(params) => {
+                return self.handle_channel_history(request.id, params);
+            }
+            Method::ChannelMembers(params) => {
+                return self.handle_channel_members(request.id, params);
             }
             _ => {
                 return responses::encode_error(

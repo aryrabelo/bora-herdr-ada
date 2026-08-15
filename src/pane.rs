@@ -3217,6 +3217,12 @@ impl PaneRuntime {
             rx,
         )
     }
+
+    /// Overrides the shell pid for `from_pane` identity-verification tests. Test-only:
+    /// real runtimes get their child pid from the spawned process.
+    pub(crate) fn test_set_child_pid(&self, pid: u32) {
+        self.child_pid.store(pid, Ordering::Release);
+    }
 }
 
 #[cfg(test)]

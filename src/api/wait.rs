@@ -18,6 +18,7 @@ use crate::api::{ApiRequestSender, EventHub};
 use crate::ipc::LocalStream;
 
 const AGENT_PROMPT_EFFECT_TIMEOUT_MS: u64 = 5_000;
+const DEFAULT_WHEN_IDLE_TIMEOUT_MS: u64 = 60_000;
 
 pub(super) fn wait_for_output(
     request_id: String,
@@ -182,6 +183,45 @@ pub(super) fn prompt_agent(
     event_hub: &EventHub,
     running: &Arc<AtomicBool>,
 ) -> std::io::Result<Option<String>> {
+    if params.when_idle == Some(true) {
+        let idle_last_event_sequence = event_hub.current_sequence();
+        let before_idle = match agent_get(&request_id, &params.target, api_tx) {
+            Ok(agent) => agent,
+            Err(response) => {
+                return serde_json::to_string(&response)
+                    .map(Some)
+                    .map_err(std::io::Error::other);
+            }
+        };
+        if before_idle.agent_status == crate::api::schema::AgentStatus::Working {
+            let timeout_ms = params
+                .when_idle_timeout_ms
+                .unwrap_or(DEFAULT_WHEN_IDLE_TIMEOUT_MS);
+            match wait_for_pane_idle(
+                request_id.clone(),
+                params.target.clone(),
+                timeout_ms,
+                before_idle,
+                idle_last_event_sequence,
+                stream,
+                api_tx,
+                event_hub,
+                running,
+            )? {
+                Some(IdleWaitOutcome::Idle) => {}
+                Some(IdleWaitOutcome::TimedOut) => {
+                    // The target never left `working` within the budget. Fall
+                    // through to dispatch anyway: `handle_agent_prompt`'s own
+                    // busy check will enqueue the prompt and return a
+                    // `deferred` receipt instead of losing it to a
+                    // client-facing timeout error.
+                }
+                Some(IdleWaitOutcome::Response(response)) => return Ok(Some(response)),
+                None => return Ok(None),
+            }
+        }
+    }
+
     let Some(wait) = params.wait.clone() else {
         return Ok(Some(dispatch_to_app_with_timeout(
             Request {
@@ -211,8 +251,12 @@ pub(super) fn prompt_agent(
         api_tx,
         None,
     );
-    let Ok(prompted) = agent_from_response(&request_id, &prompt_response) else {
-        return Ok(Some(prompt_response));
+    let prompted = match agent_prompt_dispatch_outcome(&request_id, &prompt_response) {
+        Ok(PromptDispatchOutcome::Injected(agent)) => *agent,
+        // Nothing was actually injected — a `deferred` receipt has no prompt
+        // effect to wait on, so return it as-is rather than treating it like
+        // a normal injected prompt.
+        Ok(PromptDispatchOutcome::Deferred) | Err(_) => return Ok(Some(prompt_response)),
     };
     if !agent_wait_identity_matches(
         &prompted,
@@ -318,7 +362,12 @@ fn agent_prompt_success(
 ) -> std::io::Result<String> {
     serde_json::to_string(&SuccessResponse {
         id: request_id,
-        result: ResponseResult::AgentPrompted { agent },
+        result: ResponseResult::AgentPrompted {
+            agent,
+            outcome: crate::api::schema::AgentPromptOutcome::Injected,
+            queue_position: None,
+            queue_id: None,
+        },
     })
     .map_err(std::io::Error::other)
 }
@@ -338,6 +387,7 @@ struct ResolvedAgentWait {
 enum AgentWaitTimeoutKind {
     Status,
     PromptStalled { baseline: u64, timeout_ms: u64 },
+    Idle { timeout_ms: u64 },
 }
 
 enum AgentWaitOutcome {
@@ -522,6 +572,85 @@ fn agent_wait_statuses(
     }
 }
 
+fn not_working_statuses() -> Vec<crate::api::schema::AgentStatus> {
+    vec![
+        crate::api::schema::AgentStatus::Idle,
+        crate::api::schema::AgentStatus::Blocked,
+        crate::api::schema::AgentStatus::Done,
+        crate::api::schema::AgentStatus::Unknown,
+    ]
+}
+
+enum IdleWaitOutcome {
+    Idle,
+    /// The target never left `working` within the budget. The caller falls
+    /// through to dispatch anyway so the busy prompt is enqueued and
+    /// reported as a `deferred` receipt instead of a lost timeout error.
+    TimedOut,
+    Response(String),
+}
+
+/// Best-effort extraction of `error.code` from a JSON-encoded response, for
+/// internal control-flow decisions that never leak the raw value outward.
+fn response_error_code(response: &str) -> Option<String> {
+    serde_json::from_str::<serde_json::Value>(response)
+        .ok()?
+        .get("error")?
+        .get("code")?
+        .as_str()
+        .map(str::to_string)
+}
+
+/// Pre-send idle gate for `AgentPromptParams.when_idle`: blocks until the target leaves
+/// `Working`, reusing the same EventHub poll loop and identity re-verification as
+/// `wait_for_resolved_agent`, bounded by `timeout_ms`.
+fn wait_for_pane_idle(
+    request_id: String,
+    target: String,
+    timeout_ms: u64,
+    initial: crate::api::schema::AgentInfo,
+    last_event_sequence: u64,
+    stream: &mut LocalStream,
+    api_tx: &ApiRequestSender,
+    event_hub: &EventHub,
+    running: &Arc<AtomicBool>,
+) -> std::io::Result<Option<IdleWaitOutcome>> {
+    let Some(outcome) = wait_for_resolved_agent(
+        request_id,
+        ResolvedAgentWait {
+            target,
+            until: not_working_statuses(),
+            timeout_ms: Some(timeout_ms),
+            initial,
+            last_event_sequence,
+            after_state_change_seq: None,
+            accept_transient_status: true,
+            timeout_kind: AgentWaitTimeoutKind::Idle { timeout_ms },
+        },
+        stream,
+        api_tx,
+        event_hub,
+        running,
+    )?
+    else {
+        return Ok(None);
+    };
+    Ok(Some(match outcome {
+        AgentWaitOutcome::Matched(_) => IdleWaitOutcome::Idle,
+        // `AgentWaitTimeoutKind::Idle` is only ever constructed here, and its
+        // "agent_busy_timeout" code is only ever produced by the genuine
+        // still-working deadline branch of `wait_for_resolved_agent` — every
+        // other failure in this call (pane gone, identity lost, probe error)
+        // uses a different code and is returned to the caller unchanged.
+        AgentWaitOutcome::Response(response)
+            if response_error_code(&response).as_deref() == Some("agent_busy_timeout") =>
+        {
+            IdleWaitOutcome::TimedOut
+        }
+        AgentWaitOutcome::Response(response) => IdleWaitOutcome::Response(response),
+    }))
+}
+
 fn agent_wait_identity_matches(
     agent: &crate::api::schema::AgentInfo,
     expected_terminal_id: &str,
@@ -597,6 +726,53 @@ fn agent_from_response(
     })
 }
 
+enum PromptDispatchOutcome {
+    Injected(Box<crate::api::schema::AgentInfo>),
+    Deferred,
+}
+
+/// Parses an `agent.prompt` dispatch response, distinguishing an actually
+/// injected prompt (has a prompt effect worth waiting on) from a `deferred`
+/// receipt (the target was busy; nothing was injected, so waiting for an
+/// effect would be meaningless).
+fn agent_prompt_dispatch_outcome(
+    request_id: &str,
+    response: &str,
+) -> Result<PromptDispatchOutcome, ErrorResponse> {
+    let value: serde_json::Value = serde_json::from_str(response).map_err(|_| ErrorResponse {
+        id: request_id.into(),
+        error: ErrorBody {
+            code: "internal_error".into(),
+            message: "failed to decode agent response".into(),
+        },
+    })?;
+    if value.get("error").is_some() {
+        let error = serde_json::from_value(value["error"].clone()).map_err(|_| ErrorResponse {
+            id: request_id.into(),
+            error: ErrorBody {
+                code: "internal_error".into(),
+                message: "failed to decode agent error".into(),
+            },
+        })?;
+        return Err(ErrorResponse {
+            id: request_id.into(),
+            error,
+        });
+    }
+    if value["result"]["outcome"].as_str() == Some("deferred") {
+        return Ok(PromptDispatchOutcome::Deferred);
+    }
+    serde_json::from_value(value["result"]["agent"].clone())
+        .map(|agent| PromptDispatchOutcome::Injected(Box::new(agent)))
+        .map_err(|_| ErrorResponse {
+            id: request_id.into(),
+            error: ErrorBody {
+                code: "internal_error".into(),
+                message: "failed to decode agent result".into(),
+            },
+        })
+}
+
 fn agent_wait_success(
     request_id: String,
     agent: crate::api::schema::AgentInfo,
@@ -626,6 +802,15 @@ fn agent_wait_timeout(
                 "agent_prompt_stalled",
                 format!(
                     "agent prompt produced no observed state change within {timeout_ms} ms; status is {status} and state_change_seq remained {baseline}"
+                ),
+            )
+        }
+        AgentWaitTimeoutKind::Idle { timeout_ms } => {
+            let status = format!("{:?}", current.agent_status).to_ascii_lowercase();
+            (
+                "agent_busy_timeout",
+                format!(
+                    "timed out after {timeout_ms} ms waiting for agent to go idle; last observed status is {status}"
                 ),
             )
         }

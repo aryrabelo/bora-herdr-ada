@@ -193,6 +193,40 @@ impl App {
             EventData::GithubPrsRefreshed { .. } | EventData::GithubIssuesRefreshed { .. } => {
                 empty_plugin_context(correlation_id)
             }
+            EventData::QueuedPromptDelivered {
+                target_pane,
+                workspace_id,
+                ..
+            } => self
+                .plugin_context_for_public_pane_id(target_pane, correlation_id)
+                .or_else(|| {
+                    workspace_id.as_ref().and_then(|workspace_id| {
+                        self.plugin_context_for_workspace_id(workspace_id, correlation_id)
+                    })
+                })
+                .unwrap_or_else(|| {
+                    let mut context = empty_plugin_context(correlation_id);
+                    context.workspace_id = workspace_id.clone();
+                    context.focused_pane_id = Some(target_pane.clone());
+                    context
+                }),
+            EventData::QueuedPromptDropped {
+                target_pane,
+                workspace_id,
+                ..
+            } => self
+                .plugin_context_for_public_pane_id(target_pane, correlation_id)
+                .or_else(|| {
+                    workspace_id.as_ref().and_then(|workspace_id| {
+                        self.plugin_context_for_workspace_id(workspace_id, correlation_id)
+                    })
+                })
+                .unwrap_or_else(|| {
+                    let mut context = empty_plugin_context(correlation_id);
+                    context.workspace_id = workspace_id.clone();
+                    context.focused_pane_id = Some(target_pane.clone());
+                    context
+                }),
         }
     }
 

@@ -771,6 +771,32 @@ fn process_bsdinfo(pid: u32) -> Option<libc::proc_bsdinfo> {
     (ret == size).then_some(info)
 }
 
+/// Walks the parent-pid chain from `candidate_pid` up to the root, returning true if
+/// `ancestor_pid` is `candidate_pid` itself or one of its ancestors. Used to verify a
+/// caller's peer PID (from the API socket's `LOCAL_PEERCRED`) actually descends from a
+/// pane's shell process, rather than trusting a caller-supplied `from_pane` claim.
+pub fn pid_is_descendant_of(ancestor_pid: u32, candidate_pid: u32) -> bool {
+    if ancestor_pid == 0 || candidate_pid == 0 {
+        return false;
+    }
+    let mut current = candidate_pid;
+    let mut visited = std::collections::HashSet::new();
+    while visited.insert(current) {
+        if current == ancestor_pid {
+            return true;
+        }
+        let Some(info) = process_bsdinfo(current) else {
+            return false;
+        };
+        let parent = info.pbi_ppid;
+        if parent == 0 || parent == current {
+            return false;
+        }
+        current = parent;
+    }
+    false
+}
+
 fn comm_from_bsdinfo(info: &libc::proc_bsdinfo) -> Option<String> {
     let end = info
         .pbi_comm
@@ -1209,5 +1235,42 @@ printf '%s\n' "$@" > "$HERDR_NOTIFY_ARGS"
         assert_eq!(argv[1], "-c");
         assert!(argv[2].contains("EDITOR:-vi"));
         assert!(argv[2].contains("/tmp/herdr scrollback.txt"));
+    }
+
+    #[test]
+    fn pid_is_descendant_of_matches_self() {
+        let me = std::process::id();
+        assert!(super::pid_is_descendant_of(me, me));
+    }
+
+    #[test]
+    fn pid_is_descendant_of_walks_real_child_process_tree() {
+        let mut child = Command::new("/bin/sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn real child process");
+        let child_pid = child.id();
+        let test_process_pid = std::process::id();
+
+        // The spawned child's parent is this test process: a direct ancestry walk,
+        // not a self-match short circuit.
+        assert!(super::pid_is_descendant_of(test_process_pid, child_pid));
+        // Not reflexive: the test process does not descend from its own child.
+        assert!(!super::pid_is_descendant_of(child_pid, test_process_pid));
+
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+
+    #[test]
+    fn pid_is_descendant_of_fails_closed_for_unrelated_pid() {
+        // A pid far outside any real process range and unrelated to the test
+        // process: no ancestry claim should be trusted for it.
+        assert!(!super::pid_is_descendant_of(
+            std::process::id(),
+            999_999_999
+        ));
+        assert!(!super::pid_is_descendant_of(0, std::process::id()));
+        assert!(!super::pid_is_descendant_of(std::process::id(), 0));
     }
 }

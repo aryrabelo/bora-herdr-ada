@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
-use super::agents::AgentInfo;
+use super::agents::{AgentInfo, AgentPromptOutcome};
+use super::channels::{ChannelDelivery, ChannelMember, ChannelMessage, ChannelSummary};
 use super::common::{ClientWindowTitleReason, NotificationShowReason};
 use super::events::EventEnvelope;
 use super::integrations::{
@@ -107,6 +108,16 @@ pub enum ResponseResult {
     },
     AgentPrompted {
         agent: AgentInfo,
+        #[serde(default)]
+        outcome: AgentPromptOutcome,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        queue_position: Option<usize>,
+        /// Set only when `outcome` is `deferred`: the id of the queued prompt,
+        /// stable for its whole lifetime in the pending queue. Correlates this
+        /// receipt with its terminal-fate `agent_prompt.delivered` /
+        /// `agent_prompt.dropped` event.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        queue_id: Option<u64>,
     },
     AgentList {
         agents: Vec<AgentInfo>,
@@ -276,6 +287,21 @@ pub enum ResponseResult {
     },
     GithubIssuesList {
         repos: Vec<super::github::GithubRepoIssues>,
+    },
+    ChannelCreated {
+        channel: ChannelSummary,
+    },
+    ChannelList {
+        channels: Vec<ChannelSummary>,
+    },
+    ChannelSent {
+        deliveries: Vec<ChannelDelivery>,
+    },
+    ChannelHistory {
+        messages: Vec<ChannelMessage>,
+    },
+    ChannelMembers {
+        members: Vec<ChannelMember>,
     },
 }
 

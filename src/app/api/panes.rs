@@ -1580,6 +1580,9 @@ impl App {
         let Some(public_pane_id) = self.public_pane_id(ws_idx, pane_id) else {
             return Err(pane_not_found(id, &target.pane_id));
         };
+        // The recipient disappeared before any queued `when_idle` prompt could be
+        // replayed to it; nothing left to drain to, so drop and log instead.
+        self.fail_pending_agent_prompts(&public_pane_id);
         let workspace_id = self.public_workspace_id(ws_idx);
         let layout_update_target = self.layout_update_target_after_pane_removal(ws_idx, pane_id);
         let workspace_snapshot = self.workspace_info(ws_idx);
@@ -2361,6 +2364,57 @@ mod tests {
         assert_eq!(success.id, "req");
         assert_eq!(app.state.request_remove_linked_worktree, None);
         assert!(app.state.workspaces.is_empty());
+    }
+
+    #[test]
+    fn api_pane_close_fails_queued_agent_prompts_for_the_closed_target() {
+        let mut app = app_with_linked_worktree();
+        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        let public_pane_id = app.public_pane_id(0, pane_id).unwrap();
+
+        let (_, queue_id) = app.enqueue_pending_agent_prompt(
+            public_pane_id.clone(),
+            crate::api::schema::AgentPromptParams {
+                target: public_pane_id.clone(),
+                text: "orphaned by pane close".into(),
+                wait: None,
+                from_pane: None,
+                when_idle: Some(true),
+                when_idle_timeout_ms: None,
+                peer_pid: None,
+                origin_channel: None,
+            },
+        );
+        assert!(app.pending_agent_prompts.contains_key(&public_pane_id));
+
+        let response = app.handle_pane_close(
+            "req".into(),
+            PaneTarget {
+                pane_id: public_pane_id.clone(),
+            },
+        );
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        assert_eq!(success.id, "req");
+        assert!(
+            !app.pending_agent_prompts.contains_key(&public_pane_id),
+            "queued prompt for a closed pane must be dropped, not left to leak forever"
+        );
+        assert!(
+            app.event_hub
+                .events_after(0)
+                .iter()
+                .any(|(_, envelope)| matches!(
+                    &envelope.data,
+                    crate::api::schema::EventData::QueuedPromptDropped {
+                        queue_id: id,
+                        target_pane,
+                        reason: crate::api::schema::QueuedAgentPromptDropReason::PaneClosed,
+                        ..
+                    } if *id == queue_id && target_pane == &public_pane_id
+                )),
+            "closing a pane with a queued prompt must report the drop as an event, \
+             not just an internal tracing log"
+        );
     }
 
     #[test]

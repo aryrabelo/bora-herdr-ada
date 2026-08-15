@@ -4,7 +4,8 @@ use serde::Serialize;
 
 use crate::api::client::{ApiClient, ApiClientError};
 use crate::api::schema::{
-    AgentStatus, ClientWindowTitleSetParams, EmptyParams, Method, PaneAgentState, ReadFormat,
+    AgentStatus, ChannelCreateParams, ChannelHistoryParams, ChannelMembersParams,
+    ChannelSendParams, ClientWindowTitleSetParams, EmptyParams, Method, PaneAgentState, ReadFormat,
     ReadSource, Request, SplitDirection,
 };
 
@@ -114,6 +115,11 @@ fn run_channel_command(args: &[String]) -> std::io::Result<i32> {
             println!("{}", config.update.channel.as_str());
             Ok(0)
         }
+        Some("create") => channel_create(&args[1..]),
+        Some("list") if args.len() == 1 => channel_list(),
+        Some("send") => channel_send(&args[1..]),
+        Some("history") => channel_history(&args[1..]),
+        Some("members") => channel_members(&args[1..]),
         Some("help" | "--help" | "-h") => {
             print_channel_help();
             Ok(0)
@@ -123,6 +129,177 @@ fn run_channel_command(args: &[String]) -> std::io::Result<i32> {
             Ok(2)
         }
     }
+}
+
+fn channel_create(args: &[String]) -> std::io::Result<i32> {
+    let Some(name) = args.first() else {
+        eprintln!("usage: bora channel create <name>");
+        return Ok(2);
+    };
+    if args.len() != 1 {
+        eprintln!("usage: bora channel create <name>");
+        return Ok(2);
+    }
+    print_response(&send_request(&Request {
+        id: "cli:channel:create".into(),
+        method: Method::ChannelCreate(ChannelCreateParams { name: name.clone() }),
+    })?)
+}
+
+fn channel_list() -> std::io::Result<i32> {
+    print_response(&send_request(&Request {
+        id: "cli:channel:list".into(),
+        method: Method::ChannelList(EmptyParams::default()),
+    })?)
+}
+
+fn channel_send(args: &[String]) -> std::io::Result<i32> {
+    let Some(name) = args.first() else {
+        eprintln!("usage: bora channel send <name> <text> [--pane ID|--current]");
+        return Ok(2);
+    };
+    let Some(text) = args.get(1) else {
+        eprintln!("usage: bora channel send <name> <text> [--pane ID|--current]");
+        return Ok(2);
+    };
+    let env_pane_id = std::env::var("HERDR_PANE_ID")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| normalize_pane_id(&value));
+    let mut from_pane = env_pane_id;
+    let mut index = 2;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--pane" => {
+                let Some(value) = args.get(index + 1) else {
+                    eprintln!("missing value for --pane");
+                    return Ok(2);
+                };
+                from_pane = Some(normalize_pane_id(value));
+                index += 2;
+            }
+            "--current" => {
+                index += 1;
+            }
+            option => {
+                eprintln!("unknown option: {option}");
+                return Ok(2);
+            }
+        }
+    }
+    print_response(&send_request(&Request {
+        id: "cli:channel:send".into(),
+        method: Method::ChannelSend(ChannelSendParams {
+            name: name.clone(),
+            text: text.clone(),
+            from_pane,
+        }),
+    })?)
+}
+
+fn channel_history(args: &[String]) -> std::io::Result<i32> {
+    let Some(name) = args.first() else {
+        eprintln!("usage: bora channel history <name> [--lines N] [--json]");
+        return Ok(2);
+    };
+    let mut lines = None;
+    let mut json = false;
+    let mut index = 1;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--lines" => {
+                let Some(value) = args.get(index + 1) else {
+                    eprintln!("missing value for --lines");
+                    return Ok(2);
+                };
+                lines = match value.parse::<u32>() {
+                    Ok(lines) => Some(lines),
+                    Err(_) => {
+                        eprintln!("--lines must be a non-negative integer");
+                        return Ok(2);
+                    }
+                };
+                index += 2;
+            }
+            "--json" => {
+                json = true;
+                index += 1;
+            }
+            option => {
+                eprintln!("unknown option: {option}");
+                return Ok(2);
+            }
+        }
+    }
+    let response = send_request(&Request {
+        id: "cli:channel:history".into(),
+        method: Method::ChannelHistory(ChannelHistoryParams {
+            name: name.clone(),
+            lines,
+        }),
+    })?;
+    if json {
+        return print_response(&response);
+    }
+    if response.get("error").is_some() {
+        eprintln!("{}", serde_json::to_string(&response).unwrap());
+        return Ok(1);
+    }
+    let messages = response["result"]["messages"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    for message in messages {
+        let ts = message["ts"].as_str().unwrap_or("");
+        let hhmm = ts.get(11..16).unwrap_or(ts);
+        let from_name = message["from_name"].as_str().unwrap_or("?");
+        let text = message["text"].as_str().unwrap_or("");
+        println!("{hhmm} {from_name}: {text}");
+    }
+    Ok(0)
+}
+
+fn channel_members(args: &[String]) -> std::io::Result<i32> {
+    let Some(name) = args.first() else {
+        eprintln!("usage: bora channel members <name> [--json]");
+        return Ok(2);
+    };
+    let mut json = false;
+    let mut index = 1;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--json" => {
+                json = true;
+                index += 1;
+            }
+            option => {
+                eprintln!("unknown option: {option}");
+                return Ok(2);
+            }
+        }
+    }
+    let response = send_request(&Request {
+        id: "cli:channel:members".into(),
+        method: Method::ChannelMembers(ChannelMembersParams { name: name.clone() }),
+    })?;
+    if json {
+        return print_response(&response);
+    }
+    if response.get("error").is_some() {
+        eprintln!("{}", serde_json::to_string(&response).unwrap());
+        return Ok(1);
+    }
+    let members = response["result"]["members"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    for member in members {
+        let pane_id = member["pane_id"].as_str().unwrap_or("?");
+        let status = member["agent_status"].as_str().unwrap_or("-");
+        let name = member["name"].as_str().unwrap_or("-");
+        println!("{pane_id}  {status}  {name}");
+    }
+    Ok(0)
 }
 
 fn channel_set(args: &[String]) -> std::io::Result<i32> {
@@ -237,8 +414,17 @@ fn channel_set_install_action(
 
 fn print_channel_help() {
     eprintln!("bora channel commands:");
-    eprintln!("  bora channel show                  print the configured update channel");
-    eprintln!("  bora channel set <stable|preview>  choose the update channel");
+    eprintln!("  bora channel show                            print the configured update channel");
+    eprintln!("  bora channel set <stable|preview>            choose the update channel");
+    eprintln!("  bora channel create <name>                   create a #channel workspace");
+    eprintln!("  bora channel list                            list #channel workspaces");
+    eprintln!("  bora channel send <name> <text> [--pane ID|--current]");
+    eprintln!(
+        "                                                post to a #channel and prompt its agents"
+    );
+    eprintln!("  bora channel history <name> [--lines N] [--json]");
+    eprintln!("                                                print a #channel's message history");
+    eprintln!("  bora channel members <name> [--json]         list a #channel's member panes");
 }
 
 fn run_config_command(args: &[String]) -> std::io::Result<i32> {

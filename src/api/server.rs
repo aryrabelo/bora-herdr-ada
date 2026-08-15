@@ -99,6 +99,7 @@ fn start_server_inner(
         for stream in listener.incoming() {
             match stream {
                 Ok(stream) => {
+                    let peer_pid = crate::ipc::local_stream_peer_pid(&stream);
                     let api_tx = api_tx.clone();
                     let event_hub = event_hub.clone();
                     let capabilities = capabilities.clone();
@@ -112,6 +113,7 @@ fn start_server_inner(
                             &connection_running,
                             capabilities,
                             server_stop.as_ref(),
+                            peer_pid,
                         ) {
                             warn!(err = %err, "api connection failed");
                         }
@@ -155,7 +157,7 @@ fn handle_connection(
     running: &Arc<AtomicBool>,
     capabilities: Option<ServerCapabilities>,
 ) -> std::io::Result<()> {
-    handle_connection_with_stop(stream, api_tx, event_hub, running, capabilities, None)
+    handle_connection_with_stop(stream, api_tx, event_hub, running, capabilities, None, None)
 }
 
 fn handle_connection_with_stop(
@@ -165,6 +167,7 @@ fn handle_connection_with_stop(
     running: &Arc<AtomicBool>,
     capabilities: Option<ServerCapabilities>,
     server_stop: Option<&Arc<AtomicBool>>,
+    peer_pid: Option<u32>,
 ) -> std::io::Result<()> {
     if let Err(err) = stream.set_send_timeout(Some(STREAM_WRITE_TIMEOUT)) {
         debug!(err = %err, "api connection write timeout unavailable");
@@ -251,7 +254,8 @@ fn handle_connection_with_stop(
             )?;
             finish_wait_response(&mut stream, response, &request_id, method, changes_ui)
         }
-        Method::AgentPrompt(params) => {
+        Method::AgentPrompt(mut params) => {
+            params.peer_pid = peer_pid;
             let response = prompt_agent(
                 request_id.clone(),
                 params,
@@ -481,6 +485,11 @@ fn api_method_name(method: &Method) -> &'static str {
         Method::PluginPaneClose(_) => "plugin.pane.close",
         Method::GithubPullsList(_) => "github.pulls.list",
         Method::GithubIssuesList(_) => "github.issues.list",
+        Method::ChannelCreate(_) => "channel.create",
+        Method::ChannelList(_) => "channel.list",
+        Method::ChannelSend(_) => "channel.send",
+        Method::ChannelHistory(_) => "channel.history",
+        Method::ChannelMembers(_) => "channel.members",
     }
 }
 
@@ -1196,6 +1205,57 @@ mod tests {
             .expect("response write completion");
         let response: SuccessResponse = serde_json::from_str(&read_line(&mut client)).unwrap();
         assert_eq!(response.id, "req_write");
+        server_thread.join().unwrap().unwrap();
+    }
+
+    #[test]
+    fn agent_prompt_dispatch_sets_peer_pid_from_real_socket_credentials() {
+        // Real UDS accept + `LOCAL_PEERCRED`/`SO_PEERCRED`: both ends of the pair are
+        // this test process, so the OS reports the peer pid as `std::process::id()`.
+        let (mut client, server, _path) = local_stream_pair("agent-prompt-peer-pid");
+        let peer_pid = crate::ipc::local_stream_peer_pid(&server)
+            .expect("OS peer credentials available for a real socket pair");
+        assert_eq!(peer_pid, std::process::id());
+
+        client
+            .write_all(br#"{"id":"req_prompt","method":"agent.prompt","params":{"target":"reviewer","text":"hi","from_pane":"w1:p1","peer_pid":999999}}"#)
+            .unwrap();
+        client.write_all(b"\n").unwrap();
+        client.flush().unwrap();
+
+        let (api_tx, mut api_rx) = mpsc::unbounded_channel();
+        let running = Arc::new(AtomicBool::new(true));
+        let event_hub = EventHub::default();
+        let server_running = Arc::clone(&running);
+        let server_thread = std::thread::spawn(move || {
+            handle_connection_with_stop(
+                server,
+                &api_tx,
+                &event_hub,
+                &server_running,
+                None,
+                None,
+                Some(peer_pid),
+            )
+        });
+
+        let msg = api_rx.blocking_recv().unwrap();
+        let Method::AgentPrompt(params) = msg.request.method else {
+            panic!("expected agent.prompt dispatch");
+        };
+        // The connection accept loop's real OS-derived peer_pid wins; the
+        // client-supplied `peer_pid: 999999` in the wire JSON is discarded.
+        assert_eq!(params.peer_pid, Some(peer_pid));
+        msg.respond_to
+            .send(error_response_json(
+                msg.request.id,
+                "agent_not_found",
+                "no such agent in this test".into(),
+            ))
+            .unwrap();
+
+        let response: serde_json::Value = serde_json::from_str(&read_line(&mut client)).unwrap();
+        assert_eq!(response["error"]["code"], "agent_not_found");
         server_thread.join().unwrap().unwrap();
     }
 

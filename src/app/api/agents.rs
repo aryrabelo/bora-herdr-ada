@@ -1,10 +1,10 @@
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 
 use crate::api::schema::{
-    AgentPromptParams, AgentRenameParams, AgentSendKeysParams, AgentStartParams, AgentTarget,
-    PaneReadResult, ResponseResult,
+    AgentPromptOutcome, AgentPromptParams, AgentRenameParams, AgentSendKeysParams,
+    AgentStartParams, AgentTarget, PaneReadResult, ResponseResult,
 };
 use crate::app::App;
 
@@ -59,7 +59,11 @@ impl App {
         encode_success(id, ResponseResult::AgentStarted { agent, argv })
     }
 
-    pub(super) fn handle_agent_prompt(&mut self, id: String, params: AgentPromptParams) -> String {
+    pub(in crate::app) fn handle_agent_prompt(
+        &mut self,
+        id: String,
+        mut params: AgentPromptParams,
+    ) -> String {
         if params.text.is_empty() {
             return encode_error(id, "empty_agent_prompt", "agent prompt must not be empty");
         }
@@ -67,6 +71,45 @@ impl App {
             Ok(resolved) => resolved,
             Err(err) => return encode_error_body(id, self.agent_target_error_body(err)),
         };
+        if let Some(agent) = self.agent_info(resolved.ws_idx, resolved.pane_id) {
+            if agent_prompt_should_reject_busy(params.when_idle, agent.agent_status) {
+                let target_pane = self
+                    .public_pane_id(resolved.ws_idx, resolved.pane_id)
+                    .unwrap_or_else(|| params.target.clone());
+                let (queue_position, queue_id) =
+                    self.enqueue_pending_agent_prompt(target_pane, params.clone());
+                return encode_success(
+                    id,
+                    ResponseResult::AgentPrompted {
+                        agent,
+                        outcome: AgentPromptOutcome::Deferred,
+                        queue_position: Some(queue_position),
+                        queue_id: Some(queue_id),
+                    },
+                );
+            }
+        }
+        if let Some(from_pane) = params.from_pane.as_deref() {
+            let target_pane = self
+                .public_pane_id(resolved.ws_idx, resolved.pane_id)
+                .unwrap_or_else(|| params.target.clone());
+            if let Err(remaining) =
+                self.check_agent_prompt_rate_limit(from_pane, &target_pane, Instant::now())
+            {
+                return encode_error(
+                    id,
+                    "agent_prompt_rate_limited",
+                    format!(
+                        "agent prompt from {from_pane} to {target_pane} is rate-limited; retry in {}ms",
+                        remaining.as_millis()
+                    ),
+                );
+            }
+        }
+        if let Some(from_pane) = params.from_pane.clone() {
+            let prefix = self.agent_prompt_from_prefix(&from_pane, params.peer_pid);
+            params.text = format!("{prefix}{}", params.text);
+        }
         let Some(terminal_id) = self
             .state
             .workspaces
@@ -117,7 +160,80 @@ impl App {
         let Some(agent) = self.agent_info(resolved.ws_idx, resolved.pane_id) else {
             return agent_not_found(id, &params.target);
         };
-        encode_success(id, ResponseResult::AgentPrompted { agent })
+        encode_success(
+            id,
+            ResponseResult::AgentPrompted {
+                agent,
+                outcome: AgentPromptOutcome::Injected,
+                queue_position: None,
+                queue_id: None,
+            },
+        )
+    }
+
+    /// Resolves a `from_pane` identifier into a `[from <public_pane_id> <display_name>] `
+    /// prefix when the caller's OS-level peer PID (`AgentPromptParams::peer_pid`, set by
+    /// the connection accept loop, never by the client) is confirmed to descend from that
+    /// pane's shell process. Otherwise returns `[from? claimed <raw_from>] `: the claim is
+    /// still delivered, just flagged as unverified so the receiving agent can weigh it
+    /// accordingly. Never fails the prompt.
+    fn agent_prompt_from_prefix(&self, raw_from: &str, peer_pid: Option<u32>) -> String {
+        let Some((ws_idx, pane_id)) = self.parse_pane_id(raw_from) else {
+            tracing::debug!(
+                from_pane = raw_from,
+                "agent_prompt: could not resolve from_pane, using raw id"
+            );
+            return format!("[from? claimed {raw_from}] ");
+        };
+        if !self.sender_pane_identity_verified(ws_idx, pane_id, peer_pid) {
+            tracing::debug!(
+                from_pane = raw_from,
+                ?peer_pid,
+                "agent_prompt: from_pane identity unverified"
+            );
+            return format!("[from? claimed {raw_from}] ");
+        }
+        let public_id = self
+            .public_pane_id(ws_idx, pane_id)
+            .unwrap_or_else(|| raw_from.to_string());
+        let display_name = self
+            .state
+            .workspaces
+            .get(ws_idx)
+            .and_then(|ws| ws.custom_name.clone())
+            .or_else(|| {
+                self.state
+                    .workspaces
+                    .get(ws_idx)
+                    .and_then(|ws| ws.terminal_id(pane_id))
+                    .and_then(|terminal_id| self.state.terminals.get(terminal_id))
+                    .and_then(|terminal| terminal.effective_agent_label())
+                    .map(str::to_string)
+            })
+            .unwrap_or_else(|| "unknown".into());
+        format!("[from {public_id} {display_name}] ")
+    }
+
+    /// True only when `peer_pid` is the claimed pane's shell process itself, or a
+    /// descendant of it in the OS process tree. `None` (no OS peer credentials, e.g. an
+    /// unsupported platform) or a pane with no live shell always fails closed to
+    /// unverified — never treated as an implicit pass.
+    fn sender_pane_identity_verified(
+        &self,
+        ws_idx: usize,
+        pane_id: crate::layout::PaneId,
+        peer_pid: Option<u32>,
+    ) -> bool {
+        let Some(peer_pid) = peer_pid else {
+            return false;
+        };
+        let Some(runtime) = self.lookup_runtime_sender(ws_idx, pane_id) else {
+            return false;
+        };
+        let Some(shell_pid) = runtime.child_pid() else {
+            return false;
+        };
+        crate::platform::pid_is_descendant_of(shell_pid, peer_pid)
     }
 
     pub(super) fn handle_agent_read(
@@ -278,6 +394,18 @@ impl App {
     }
 }
 
+/// Pure status-gate decision for `AgentPromptParams.when_idle`: true only when the
+/// caller opted in AND the target is currently `working`. Never blocks; the caller
+/// (`handle_agent_prompt`) queues the prompt via `enqueue_pending_agent_prompt` for
+/// later replay rather than dropping it. Callers that need to wait for idle instead
+/// of deferring use the api/wait.rs pre-send poll.
+fn agent_prompt_should_reject_busy(
+    when_idle: Option<bool>,
+    status: crate::api::schema::AgentStatus,
+) -> bool {
+    when_idle == Some(true) && status == crate::api::schema::AgentStatus::Working
+}
+
 fn agent_not_ready(id: String, target: &str) -> String {
     encode_error(
         id,
@@ -322,6 +450,27 @@ mod tests {
         app
     }
 
+    #[test]
+    fn agent_prompt_should_reject_busy_gates_on_when_idle_and_working_status() {
+        assert!(agent_prompt_should_reject_busy(
+            Some(true),
+            AgentStatus::Working
+        ));
+        for status in [
+            AgentStatus::Idle,
+            AgentStatus::Blocked,
+            AgentStatus::Done,
+            AgentStatus::Unknown,
+        ] {
+            assert!(!agent_prompt_should_reject_busy(Some(true), status));
+        }
+        assert!(!agent_prompt_should_reject_busy(
+            Some(false),
+            AgentStatus::Working
+        ));
+        assert!(!agent_prompt_should_reject_busy(None, AgentStatus::Working));
+    }
+
     #[tokio::test]
     async fn agent_prompt_sends_text_then_delays_enter() {
         let mut app = app_with_agent();
@@ -347,6 +496,11 @@ mod tests {
                 target: public_pane_id,
                 text: "A != B".into(),
                 wait: None,
+                from_pane: None,
+                when_idle: None,
+                when_idle_timeout_ms: None,
+                peer_pid: None,
+                origin_channel: None,
             },
         );
         let success: SuccessResponse = serde_json::from_str(&response).unwrap();
@@ -378,6 +532,11 @@ mod tests {
                 target: "reviewer".into(),
                 text: "A != B".into(),
                 wait: None,
+                from_pane: None,
+                when_idle: None,
+                when_idle_timeout_ms: None,
+                peer_pid: None,
+                origin_channel: None,
             },
         );
         let raw: SuccessResponse = serde_json::from_str(&raw).unwrap();
@@ -399,6 +558,11 @@ mod tests {
                 target: "opencode".into(),
                 text: "wrong target".into(),
                 wait: None,
+                from_pane: None,
+                when_idle: None,
+                when_idle_timeout_ms: None,
+                peer_pid: None,
+                origin_channel: None,
             },
         );
         let error: crate::api::schema::ErrorResponse = serde_json::from_str(&rejected).unwrap();
@@ -429,6 +593,11 @@ mod tests {
                 target: "reviewer".into(),
                 text: "A != B".into(),
                 wait: None,
+                from_pane: None,
+                when_idle: None,
+                when_idle_timeout_ms: None,
+                peer_pid: None,
+                origin_channel: None,
             },
         );
         let success: SuccessResponse = serde_json::from_str(&response).unwrap();
@@ -448,6 +617,560 @@ mod tests {
                 .unwrap(),
             Bytes::from_static(b"\r")
         );
+    }
+
+    #[tokio::test]
+    async fn agent_prompt_from_prefix_uses_workspace_custom_name_when_verified() {
+        let mut app = app_with_agent();
+        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        app.state.workspaces[0].custom_name = Some("brandos".into());
+        let (runtime, _rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        runtime.test_set_child_pid(4242);
+        app.state.insert_test_runtime(pane_id, runtime);
+        let public_pane_id = app.public_pane_id(0, pane_id).unwrap();
+
+        let prefix = app.agent_prompt_from_prefix(&public_pane_id, Some(4242));
+        assert_eq!(prefix, format!("[from {public_pane_id} brandos] "));
+    }
+
+    #[tokio::test]
+    async fn agent_prompt_from_prefix_falls_back_to_detected_agent_name_when_verified() {
+        let mut app = app_with_agent();
+        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        app.state.workspaces[0].custom_name = None;
+        let terminal_id = app.state.workspaces[0].tabs[0].panes[&pane_id]
+            .attached_terminal_id
+            .clone();
+        app.state
+            .terminals
+            .get_mut(&terminal_id)
+            .unwrap()
+            .set_detected_state(Some(Agent::Codex), AgentState::Idle);
+        let (runtime, _rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        runtime.test_set_child_pid(4243);
+        app.state.insert_test_runtime(pane_id, runtime);
+        let public_pane_id = app.public_pane_id(0, pane_id).unwrap();
+
+        let prefix = app.agent_prompt_from_prefix(&public_pane_id, Some(4243));
+        assert_eq!(prefix, format!("[from {public_pane_id} codex] "));
+    }
+
+    #[test]
+    fn agent_prompt_from_prefix_falls_back_to_raw_id_when_unresolvable() {
+        let app = app_with_agent();
+        let prefix = app.agent_prompt_from_prefix("p_bogus_99", None);
+        assert_eq!(prefix, "[from? claimed p_bogus_99] ");
+    }
+
+    #[tokio::test]
+    async fn agent_prompt_from_prefix_is_unverified_without_peer_pid() {
+        let mut app = app_with_agent();
+        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        let (runtime, _rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        runtime.test_set_child_pid(4244);
+        app.state.insert_test_runtime(pane_id, runtime);
+        let public_pane_id = app.public_pane_id(0, pane_id).unwrap();
+
+        // No OS peer credentials for this call: a caller-supplied `from_pane` is a
+        // hint, never trusted at face value.
+        let prefix = app.agent_prompt_from_prefix(&public_pane_id, None);
+        assert_eq!(prefix, format!("[from? claimed {public_pane_id}] "));
+    }
+
+    #[tokio::test]
+    async fn agent_prompt_from_prefix_is_unverified_when_peer_pid_does_not_descend_from_shell() {
+        let mut app = app_with_agent();
+        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        let (runtime, _rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        runtime.test_set_child_pid(4245);
+        app.state.insert_test_runtime(pane_id, runtime);
+        let public_pane_id = app.public_pane_id(0, pane_id).unwrap();
+
+        // A peer pid that is neither the claimed pane's shell nor a live descendant
+        // of it: the ancestry walk fails closed instead of trusting the claim.
+        let prefix = app.agent_prompt_from_prefix(&public_pane_id, Some(4246));
+        assert_eq!(prefix, format!("[from? claimed {public_pane_id}] "));
+    }
+
+    #[tokio::test]
+    async fn agent_prompt_marks_unverified_from_pane_claim_in_submitted_text() {
+        let mut app = app_with_agent();
+        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        let terminal_id = app.state.workspaces[0].tabs[0].panes[&pane_id]
+            .attached_terminal_id
+            .clone();
+        let terminal = app.state.terminals.get_mut(&terminal_id).unwrap();
+        terminal.set_agent_name("reviewer".into());
+        terminal.set_detected_state(Some(Agent::OpenCode), AgentState::Working);
+        let (runtime, mut rx) =
+            crate::terminal::TerminalRuntime::test_with_channel_and_scrollback_bytes(
+                80, 24, 0, b"", 1,
+            );
+        runtime.test_process_pty_bytes(b"\x1b[?2004h");
+        app.state.insert_test_runtime(pane_id, runtime);
+        app.state.workspaces[0].custom_name = Some("brandos".into());
+        let public_pane_id = app.public_pane_id(0, pane_id).unwrap();
+
+        // The target pane has no real shell process backing it in this test harness
+        // (matching `runtime_hosts_agent`'s test-mode bypass), so `peer_pid` can
+        // never be confirmed to descend from it: the claim is delivered, but
+        // flagged unverified rather than silently trusted the way the
+        // caller-supplied string used to be. Verified-path prefix formatting is
+        // covered directly by `agent_prompt_from_prefix_*_when_verified` above.
+        let response = app.handle_agent_prompt(
+            "req".into(),
+            AgentPromptParams {
+                target: public_pane_id.clone(),
+                text: "A != B".into(),
+                wait: None,
+                from_pane: Some(public_pane_id.clone()),
+                when_idle: None,
+                when_idle_timeout_ms: None,
+                peer_pid: Some(4248),
+                origin_channel: None,
+            },
+        );
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        assert!(matches!(
+            success.result,
+            ResponseResult::AgentPrompted { .. }
+        ));
+        let expected = format!("[from? claimed {public_pane_id}] A != B");
+        assert_eq!(
+            rx.try_recv().unwrap(),
+            Bytes::from(format!("\x1b[200~{expected}\x1b[201~"))
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_prompt_queues_when_target_busy_and_when_idle() {
+        let mut app = app_with_agent();
+        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        let terminal_id = app.state.workspaces[0].tabs[0].panes[&pane_id]
+            .attached_terminal_id
+            .clone();
+        let terminal = app.state.terminals.get_mut(&terminal_id).unwrap();
+        terminal.set_agent_name("reviewer".into());
+        terminal.set_detected_state(Some(Agent::OpenCode), AgentState::Working);
+        let (runtime, mut rx) =
+            crate::terminal::TerminalRuntime::test_with_channel_and_scrollback_bytes(
+                80, 24, 0, b"", 1,
+            );
+        app.state.insert_test_runtime(pane_id, runtime);
+        let public_pane_id = app.public_pane_id(0, pane_id).unwrap();
+
+        let response = app.handle_agent_prompt(
+            "req".into(),
+            AgentPromptParams {
+                target: public_pane_id.clone(),
+                text: "queued message".into(),
+                wait: None,
+                from_pane: None,
+                when_idle: Some(true),
+                when_idle_timeout_ms: None,
+                peer_pid: None,
+                origin_channel: None,
+            },
+        );
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        let ResponseResult::AgentPrompted {
+            outcome,
+            queue_position,
+            ..
+        } = success.result
+        else {
+            panic!("expected AgentPrompted, got {:?}", success.result);
+        };
+        assert_eq!(outcome, crate::api::schema::AgentPromptOutcome::Deferred);
+        assert_eq!(queue_position, Some(1));
+        assert!(
+            rx.try_recv().is_err(),
+            "busy prompt must not dispatch bytes"
+        );
+
+        let queue = app
+            .pending_agent_prompts
+            .get(&public_pane_id)
+            .expect("prompt queued, not dropped");
+        assert_eq!(queue.len(), 1);
+        assert_eq!(queue[0].params.text, "queued message");
+    }
+
+    #[test]
+    fn enqueue_pending_agent_prompt_drops_oldest_past_cap() {
+        let mut app = app_with_agent();
+        for i in 0..(crate::app::PENDING_AGENT_PROMPT_CAP + 1) {
+            app.enqueue_pending_agent_prompt(
+                "p_target".into(),
+                AgentPromptParams {
+                    target: "p_target".into(),
+                    text: format!("msg-{i}"),
+                    wait: None,
+                    from_pane: None,
+                    when_idle: Some(true),
+                    when_idle_timeout_ms: None,
+                    peer_pid: None,
+                    origin_channel: None,
+                },
+            );
+        }
+        let queue = app.pending_agent_prompts.get("p_target").unwrap();
+        assert_eq!(queue.len(), crate::app::PENDING_AGENT_PROMPT_CAP);
+        // The oldest (msg-0) was dropped to make room; msg-1 is now the head.
+        assert_eq!(queue.front().unwrap().params.text, "msg-1");
+        assert_eq!(
+            queue.back().unwrap().params.text,
+            format!("msg-{}", crate::app::PENDING_AGENT_PROMPT_CAP)
+        );
+    }
+
+    #[test]
+    fn enqueue_pending_agent_prompt_cap_eviction_emits_dropped_event() {
+        let mut app = app_with_agent();
+        let mut last_queue_id = 0;
+        for i in 0..(crate::app::PENDING_AGENT_PROMPT_CAP + 1) {
+            let (_, queue_id) = app.enqueue_pending_agent_prompt(
+                "p_target".into(),
+                AgentPromptParams {
+                    target: "p_target".into(),
+                    text: format!("msg-{i}"),
+                    wait: None,
+                    from_pane: Some("p_sender".into()),
+                    when_idle: Some(true),
+                    when_idle_timeout_ms: None,
+                    peer_pid: None,
+                    origin_channel: None,
+                },
+            );
+            if i == 0 {
+                last_queue_id = queue_id;
+            }
+        }
+        let events = app.event_hub.events_after(0);
+        let dropped = events
+            .iter()
+            .find_map(|(_, envelope)| match &envelope.data {
+                crate::api::schema::EventData::QueuedPromptDropped {
+                    queue_id,
+                    target_pane,
+                    from_pane,
+                    reason,
+                    ..
+                } if target_pane == "p_target" => Some((*queue_id, from_pane.clone(), *reason)),
+                _ => None,
+            })
+            .expect("cap eviction must emit a queued_prompt_dropped event");
+        assert_eq!(dropped.0, last_queue_id, "evicted entry was msg-0");
+        assert_eq!(dropped.1.as_deref(), Some("p_sender"));
+        assert_eq!(
+            dropped.2,
+            crate::api::schema::QueuedAgentPromptDropReason::Capacity
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|(_, e)| e.event == crate::api::schema::EventKind::QueuedPromptDropped)
+                .count(),
+            1,
+            "only the single evicted entry should be reported"
+        );
+    }
+
+    #[tokio::test]
+    async fn drain_pending_agent_prompts_delivers_once_target_is_idle() {
+        let mut app = app_with_agent();
+        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        let terminal_id = app.state.workspaces[0].tabs[0].panes[&pane_id]
+            .attached_terminal_id
+            .clone();
+        let terminal = app.state.terminals.get_mut(&terminal_id).unwrap();
+        terminal.set_agent_name("reviewer".into());
+        terminal.set_detected_state(Some(Agent::OpenCode), AgentState::Working);
+        let (runtime, mut rx) =
+            crate::terminal::TerminalRuntime::test_with_channel_and_scrollback_bytes(
+                80, 24, 0, b"", 1,
+            );
+        runtime.test_process_pty_bytes(b"\x1b[?2004h");
+        app.state.insert_test_runtime(pane_id, runtime);
+        let public_pane_id = app.public_pane_id(0, pane_id).unwrap();
+
+        let (_, queue_id) = app.enqueue_pending_agent_prompt(
+            public_pane_id.clone(),
+            AgentPromptParams {
+                target: public_pane_id.clone(),
+                text: "deferred message".into(),
+                wait: None,
+                from_pane: None,
+                when_idle: Some(true),
+                when_idle_timeout_ms: None,
+                peer_pid: None,
+                origin_channel: None,
+            },
+        );
+
+        // Target leaves `Working`: the drain hook (wired in `emit_pane_state_update`)
+        // is exercised directly here.
+        app.state
+            .terminals
+            .get_mut(&terminal_id)
+            .unwrap()
+            .set_detected_state(Some(Agent::OpenCode), AgentState::Idle);
+        app.drain_pending_agent_prompts(&public_pane_id);
+
+        assert!(
+            !app.pending_agent_prompts.contains_key(&public_pane_id),
+            "drained queue must be removed, not left empty-but-present"
+        );
+        assert_eq!(
+            rx.try_recv().unwrap(),
+            Bytes::from_static(b"\x1b[200~deferred message\x1b[201~")
+        );
+        let events = app.event_hub.events_after(0);
+        assert!(
+            events.iter().any(|(_, envelope)| matches!(
+                &envelope.data,
+                crate::api::schema::EventData::QueuedPromptDelivered {
+                    queue_id: id,
+                    target_pane,
+                    ..
+                } if *id == queue_id && target_pane == &public_pane_id
+            )),
+            "successful drain must emit a queued_prompt_delivered event"
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|(_, e)| e.event == crate::api::schema::EventKind::QueuedPromptDropped),
+            "a delivered prompt must never also be reported as dropped"
+        );
+    }
+
+    #[tokio::test]
+    async fn drain_pending_agent_prompts_requeues_when_still_busy() {
+        let mut app = app_with_agent();
+        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        let terminal_id = app.state.workspaces[0].tabs[0].panes[&pane_id]
+            .attached_terminal_id
+            .clone();
+        let terminal = app.state.terminals.get_mut(&terminal_id).unwrap();
+        terminal.set_agent_name("reviewer".into());
+        terminal.set_detected_state(Some(Agent::OpenCode), AgentState::Working);
+        let (runtime, mut rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        app.state.insert_test_runtime(pane_id, runtime);
+        let public_pane_id = app.public_pane_id(0, pane_id).unwrap();
+
+        app.enqueue_pending_agent_prompt(
+            public_pane_id.clone(),
+            AgentPromptParams {
+                target: public_pane_id.clone(),
+                text: "still busy".into(),
+                wait: None,
+                from_pane: None,
+                when_idle: Some(true),
+                when_idle_timeout_ms: None,
+                peer_pid: None,
+                origin_channel: None,
+            },
+        );
+
+        // A spurious drain trigger while the target is still `Working`: the replay
+        // hits the busy gate again and is re-queued, not lost.
+        app.drain_pending_agent_prompts(&public_pane_id);
+
+        assert!(
+            rx.try_recv().is_err(),
+            "still-busy replay must not dispatch bytes"
+        );
+        let queue = app
+            .pending_agent_prompts
+            .get(&public_pane_id)
+            .expect("prompt re-queued, not dropped");
+        assert_eq!(queue.len(), 1);
+        assert_eq!(queue[0].params.text, "still busy");
+    }
+
+    #[tokio::test]
+    async fn fail_pending_agent_prompts_drops_queue_without_replay() {
+        let mut app = app_with_agent();
+        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        let terminal_id = app.state.workspaces[0].tabs[0].panes[&pane_id]
+            .attached_terminal_id
+            .clone();
+        let terminal = app.state.terminals.get_mut(&terminal_id).unwrap();
+        terminal.set_agent_name("reviewer".into());
+        terminal.set_detected_state(Some(Agent::OpenCode), AgentState::Working);
+        let (runtime, mut rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        app.state.insert_test_runtime(pane_id, runtime);
+        let public_pane_id = app.public_pane_id(0, pane_id).unwrap();
+
+        app.enqueue_pending_agent_prompt(
+            public_pane_id.clone(),
+            AgentPromptParams {
+                target: public_pane_id.clone(),
+                text: "orphaned".into(),
+                wait: None,
+                from_pane: None,
+                when_idle: Some(true),
+                when_idle_timeout_ms: None,
+                peer_pid: None,
+                origin_channel: None,
+            },
+        );
+
+        app.fail_pending_agent_prompts(&public_pane_id);
+
+        assert!(!app.pending_agent_prompts.contains_key(&public_pane_id));
+        assert!(
+            rx.try_recv().is_err(),
+            "failed queue must not dispatch bytes"
+        );
+    }
+
+    #[tokio::test]
+    async fn fail_pending_agent_prompts_notifies_known_sender_without_recursion() {
+        let mut app = app_with_agent();
+        let target_pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        let target_terminal_id = app.state.workspaces[0].tabs[0].panes[&target_pane_id]
+            .attached_terminal_id
+            .clone();
+        app.state
+            .terminals
+            .get_mut(&target_terminal_id)
+            .unwrap()
+            .set_agent_name("reviewer".into());
+        let target_public_id = app.public_pane_id(0, target_pane_id).unwrap();
+
+        app.state.workspaces.push(Workspace::test_new("sender"));
+        app.state.ensure_test_terminals();
+        let sender_pane_id = app.state.workspaces[1].tabs[0].root_pane;
+        let sender_terminal_id = app.state.workspaces[1].tabs[0].panes[&sender_pane_id]
+            .attached_terminal_id
+            .clone();
+        {
+            let sender_terminal = app.state.terminals.get_mut(&sender_terminal_id).unwrap();
+            sender_terminal.set_agent_name("sender-agent".into());
+            sender_terminal.set_detected_state(Some(Agent::OpenCode), AgentState::Idle);
+        }
+        let (sender_runtime, mut sender_rx) =
+            crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        app.state
+            .insert_test_runtime(sender_pane_id, sender_runtime);
+        let sender_public_id = app.public_pane_id(1, sender_pane_id).unwrap();
+
+        app.enqueue_pending_agent_prompt(
+            target_public_id.clone(),
+            AgentPromptParams {
+                target: target_public_id.clone(),
+                text: "orphaned".into(),
+                wait: None,
+                from_pane: Some(sender_public_id.clone()),
+                when_idle: Some(true),
+                when_idle_timeout_ms: None,
+                peer_pid: None,
+                origin_channel: None,
+            },
+        );
+
+        app.fail_pending_agent_prompts(&target_public_id);
+
+        // The durable event is the record of truth...
+        let events = app.event_hub.events_after(0);
+        let dropped_events: Vec<_> = events
+            .iter()
+            .filter(|(_, envelope)| {
+                envelope.event == crate::api::schema::EventKind::QueuedPromptDropped
+            })
+            .collect();
+        assert_eq!(dropped_events.len(), 1, "exactly one drop, no recursion");
+        assert!(matches!(
+            &dropped_events[0].1.data,
+            crate::api::schema::EventData::QueuedPromptDropped {
+                target_pane,
+                from_pane,
+                reason: crate::api::schema::QueuedAgentPromptDropReason::PaneClosed,
+                ..
+            } if target_pane == &target_public_id && from_pane.as_deref() == Some(sender_public_id.as_str())
+        ));
+
+        // ...but the known, idle sender also gets a direct courtesy notice.
+        let notice_bytes = sender_rx
+            .try_recv()
+            .expect("notice injected into sender pty");
+        let notice_text = String::from_utf8(notice_bytes.to_vec()).unwrap();
+        assert!(notice_text.contains("[bora] prompt to"));
+        assert!(notice_text.contains(&target_public_id));
+        assert!(notice_text.contains("dropped"));
+
+        // The notice itself was never queued: the sender's own pending-prompt
+        // queue is untouched, so it can never trigger a second drop report.
+        assert!(!app.pending_agent_prompts.contains_key(&sender_public_id));
+        assert_eq!(
+            app.event_hub
+                .events_after(0)
+                .iter()
+                .filter(|(_, e)| e.event == crate::api::schema::EventKind::QueuedPromptDropped)
+                .count(),
+            1,
+            "the notice injection must never itself generate a drop event"
+        );
+    }
+
+    #[tokio::test]
+    async fn fail_pending_agent_prompts_skips_notice_when_sender_is_busy() {
+        let mut app = app_with_agent();
+        let target_pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        let target_terminal_id = app.state.workspaces[0].tabs[0].panes[&target_pane_id]
+            .attached_terminal_id
+            .clone();
+        app.state
+            .terminals
+            .get_mut(&target_terminal_id)
+            .unwrap()
+            .set_agent_name("reviewer".into());
+        let target_public_id = app.public_pane_id(0, target_pane_id).unwrap();
+
+        app.state.workspaces.push(Workspace::test_new("sender"));
+        app.state.ensure_test_terminals();
+        let sender_pane_id = app.state.workspaces[1].tabs[0].root_pane;
+        let sender_terminal_id = app.state.workspaces[1].tabs[0].panes[&sender_pane_id]
+            .attached_terminal_id
+            .clone();
+        {
+            let sender_terminal = app.state.terminals.get_mut(&sender_terminal_id).unwrap();
+            sender_terminal.set_agent_name("sender-agent".into());
+            // Busy sender: the courtesy notice must never interrupt it mid-task.
+            sender_terminal.set_detected_state(Some(Agent::OpenCode), AgentState::Working);
+        }
+        let (sender_runtime, mut sender_rx) =
+            crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        app.state
+            .insert_test_runtime(sender_pane_id, sender_runtime);
+        let sender_public_id = app.public_pane_id(1, sender_pane_id).unwrap();
+
+        app.enqueue_pending_agent_prompt(
+            target_public_id.clone(),
+            AgentPromptParams {
+                target: target_public_id.clone(),
+                text: "orphaned".into(),
+                wait: None,
+                from_pane: Some(sender_public_id),
+                when_idle: Some(true),
+                when_idle_timeout_ms: None,
+                peer_pid: None,
+                origin_channel: None,
+            },
+        );
+
+        app.fail_pending_agent_prompts(&target_public_id);
+
+        assert!(
+            sender_rx.try_recv().is_err(),
+            "busy sender must not receive a courtesy notice"
+        );
+        // The event is still the durable record even though the notice was skipped.
+        assert!(app.event_hub.events_after(0).iter().any(|(_, envelope)| {
+            envelope.event == crate::api::schema::EventKind::QueuedPromptDropped
+        }));
     }
 
     #[tokio::test]
@@ -513,6 +1236,11 @@ mod tests {
                 target: "reviewer".into(),
                 text: "A != B".into(),
                 wait: None,
+                from_pane: None,
+                when_idle: None,
+                when_idle_timeout_ms: None,
+                peer_pid: None,
+                origin_channel: None,
             },
         );
         let error: crate::api::schema::ErrorResponse = serde_json::from_str(&response).unwrap();
@@ -582,5 +1310,100 @@ mod tests {
                 Some("shell-pane")
             );
         }
+    }
+
+    #[tokio::test]
+    async fn agent_prompt_rate_limits_repeated_from_pane_pair_but_exempts_missing_from_pane() {
+        let mut app = app_with_agent();
+        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        let terminal_id = app.state.workspaces[0].tabs[0].panes[&pane_id]
+            .attached_terminal_id
+            .clone();
+        let terminal = app.state.terminals.get_mut(&terminal_id).unwrap();
+        terminal.set_agent_name("reviewer".into());
+        terminal.set_detected_state(Some(Agent::OpenCode), AgentState::Working);
+        let (runtime, mut rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        app.state.insert_test_runtime(pane_id, runtime);
+        let target_pane = app.public_pane_id(0, pane_id).unwrap();
+
+        let first = app.handle_agent_prompt(
+            "req-1".into(),
+            AgentPromptParams {
+                target: "reviewer".into(),
+                text: "first".into(),
+                wait: None,
+                from_pane: Some("w1:p9".into()),
+                when_idle: None,
+                when_idle_timeout_ms: None,
+                peer_pid: None,
+                origin_channel: None,
+            },
+        );
+        let success: SuccessResponse = serde_json::from_str(&first).unwrap();
+        assert!(matches!(
+            success.result,
+            ResponseResult::AgentPrompted { .. }
+        ));
+
+        // Immediate repeat from the same (from_pane, target) pair: rejected.
+        let second = app.handle_agent_prompt(
+            "req-2".into(),
+            AgentPromptParams {
+                target: "reviewer".into(),
+                text: "second".into(),
+                wait: None,
+                from_pane: Some("w1:p9".into()),
+                when_idle: None,
+                when_idle_timeout_ms: None,
+                peer_pid: None,
+                origin_channel: None,
+            },
+        );
+        let error: crate::api::schema::ErrorResponse = serde_json::from_str(&second).unwrap();
+        assert_eq!(error.error.code, "agent_prompt_rate_limited");
+        assert!(error.error.message.contains("w1:p9"));
+        assert!(error.error.message.contains(&target_pane));
+
+        // No from_pane at all: exempt, always succeeds regardless of cooldown.
+        let third = app.handle_agent_prompt(
+            "req-3".into(),
+            AgentPromptParams {
+                target: "reviewer".into(),
+                text: "third".into(),
+                wait: None,
+                from_pane: None,
+                when_idle: None,
+                when_idle_timeout_ms: None,
+                peer_pid: None,
+                origin_channel: None,
+            },
+        );
+        let success: SuccessResponse = serde_json::from_str(&third).unwrap();
+        assert!(matches!(
+            success.result,
+            ResponseResult::AgentPrompted { .. }
+        ));
+
+        // Different sender to the same target: not limited by the first pair.
+        let fourth = app.handle_agent_prompt(
+            "req-4".into(),
+            AgentPromptParams {
+                target: "reviewer".into(),
+                text: "fourth".into(),
+                wait: None,
+                from_pane: Some("w1:p7".into()),
+                when_idle: None,
+                when_idle_timeout_ms: None,
+                peer_pid: None,
+                origin_channel: None,
+            },
+        );
+        let success: SuccessResponse = serde_json::from_str(&fourth).unwrap();
+        assert!(matches!(
+            success.result,
+            ResponseResult::AgentPrompted { .. }
+        ));
+
+        assert!(rx.try_recv().is_ok());
     }
 }

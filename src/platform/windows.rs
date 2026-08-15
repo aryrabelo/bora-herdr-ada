@@ -1157,6 +1157,18 @@ fn process_is_ancestor(ancestor_pid: u32, descendant_pid: u32, snapshot: &Proces
     false
 }
 
+/// Returns true if `candidate_pid` is `ancestor_pid` itself or reachable by walking
+/// parent pids from `candidate_pid` up to the root. Used to verify a caller's peer PID
+/// (from the named pipe's peer process id) actually descends from a pane's shell
+/// process, rather than trusting a caller-supplied `from_pane` claim.
+pub fn pid_is_descendant_of(ancestor_pid: u32, candidate_pid: u32) -> bool {
+    if candidate_pid == ancestor_pid {
+        return true;
+    }
+    let snapshot = ProcessSnapshot::new(snapshot_processes());
+    process_is_ancestor(ancestor_pid, candidate_pid, &snapshot)
+}
+
 fn descendant_entries(root_pid: u32, snapshot: &ProcessSnapshot) -> Vec<&WindowsProcessEntry> {
     let mut output = Vec::new();
     let mut queue = VecDeque::new();

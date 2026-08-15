@@ -143,7 +143,7 @@ fn config_command() -> Command {
 
 fn channel_command() -> Command {
     Command::new("channel")
-        .about("Manage stable and preview update channels")
+        .about("Manage stable/preview update channels and agent #channels")
         .subcommand(Command::new("show").about("Print the configured update channel"))
         .subcommand(
             Command::new("set").about("Choose the update channel").arg(
@@ -152,6 +152,32 @@ fn channel_command() -> Command {
                     .required(true)
                     .value_parser(["stable", "preview"]),
             ),
+        )
+        .subcommand(
+            Command::new("create")
+                .about("Create a #channel workspace")
+                .arg(required("name", "NAME")),
+        )
+        .subcommand(Command::new("list").about("List #channel workspaces"))
+        .subcommand(
+            Command::new("send")
+                .about("Post a message to a #channel and prompt its agents")
+                .arg(required("name", "NAME"))
+                .arg(required("text", "TEXT"))
+                .args(current_pane_args()),
+        )
+        .subcommand(
+            Command::new("history")
+                .about("Print a #channel's message history")
+                .arg(required("name", "NAME"))
+                .arg(option("lines", "N"))
+                .arg(json_flag()),
+        )
+        .subcommand(
+            Command::new("members")
+                .about("List a #channel's member panes")
+                .arg(required("name", "NAME"))
+                .arg(json_flag()),
         )
 }
 
@@ -348,6 +374,11 @@ fn agent_command() -> Command {
                         .help("Wait for the first matching state observed after submission"),
                 )
                 .arg(
+                    flag("when-idle").help(
+                        "Block server-side until the target leaves the working state before submitting",
+                    ),
+                )
+                .arg(
                     option("until", "STATUS")
                         .action(ArgAction::Append)
                         .requires("wait")
@@ -355,9 +386,18 @@ fn agent_command() -> Command {
                         .help("State to match after --wait; repeat for more than one state"),
                 )
                 .arg(
-                    option("timeout", "MS")
-                        .requires("wait")
-                        .help("Fail after this many milliseconds"),
+                    option("timeout", "MS").help(
+                        "Fail after this many milliseconds; requires --wait or --when-idle",
+                    ),
+                )
+                .arg(
+                    option("from", "PANE")
+                        .help("Attribute the prompt to a sender pane (defaults to $HERDR_PANE_ID)"),
+                )
+                .arg(
+                    flag("no-from")
+                        .conflicts_with("from")
+                        .help("Suppress sender attribution even if HERDR_PANE_ID is set"),
                 )
                 .after_help(
                     "When submission starts from a non-working state, --wait first requires an observed state change within 5000ms; otherwise it returns agent_prompt_stalled. A shorter --timeout returns timeout instead. It then matches idle, done, or blocked by default, or any exact --until state. It does not track turns: if the agent is already working, that active turn's completion may match. Without --timeout, the settled-state wait is indefinite.",
