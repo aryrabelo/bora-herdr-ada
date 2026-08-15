@@ -141,6 +141,29 @@ impl App {
         let sender_name = self
             .pane_display_name(&sender_pane)
             .unwrap_or_else(|| "unknown".to_string());
+        // Loop guard, mirroring the direct agent-prompt limit: a verified
+        // sender pane may post to the same channel at most once per
+        // rate-limit window, so two agents cannot ping-pong through a
+        // channel faster than they could by prompting each other directly.
+        // CLI/human sends without a from_pane stay exempt, like no-from
+        // prompts. Checked after addressing validation so a rejected nick
+        // never burns the sender's window, and before seq assignment.
+        if !sender_pane.is_empty() {
+            if let Err(remaining) = self.check_agent_prompt_rate_limit(
+                &sender_pane,
+                &format!("#{name}"),
+                std::time::Instant::now(),
+            ) {
+                return encode_error(
+                    id,
+                    "channel_send_rate_limited",
+                    format!(
+                        "channel send from {sender_pane} to #{name} is rate-limited; retry in {}ms",
+                        remaining.as_millis()
+                    ),
+                );
+            }
+        }
         let message = ChannelMessage {
             ts: now_rfc3339(),
             seq: channels::next_seq(&name),
@@ -1012,6 +1035,80 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn channel_send_rate_limits_repeated_from_pane_but_exempts_missing_from_pane() {
+        let _isolated = IsolatedStateDir::new("send-rate-limit");
+        let mut app = test_app();
+        let (_, _, _rx) = channel_with_two_agents(&mut app, "reviewer", "worker");
+
+        let first = app.handle_channel_send(
+            "req1".into(),
+            ChannelSendParams {
+                name: "#eng".into(),
+                text: "primeira".into(),
+                from_pane: Some("w1A:p9".into()),
+                to: None,
+                in_reply_to: None,
+            },
+        );
+        assert!(
+            first.contains("channel_sent"),
+            "first send must pass: {first}"
+        );
+
+        let second = app.handle_channel_send(
+            "req2".into(),
+            ChannelSendParams {
+                name: "#eng".into(),
+                text: "segunda".into(),
+                from_pane: Some("w1A:p9".into()),
+                to: None,
+                in_reply_to: None,
+            },
+        );
+        let error: serde_json::Value = serde_json::from_str(&second).unwrap();
+        assert_eq!(
+            error["error"]["code"],
+            serde_json::json!("channel_send_rate_limited")
+        );
+        assert_eq!(
+            channels::read_tail("eng", 10).unwrap().len(),
+            1,
+            "a rate-limited send must append nothing"
+        );
+
+        // No-from sends (CLI/human) stay exempt, mirroring no-from prompts.
+        let third = app.handle_channel_send(
+            "req3".into(),
+            ChannelSendParams {
+                name: "#eng".into(),
+                text: "cli".into(),
+                from_pane: None,
+                to: None,
+                in_reply_to: None,
+            },
+        );
+        assert!(
+            third.contains("channel_sent"),
+            "no-from send must pass: {third}"
+        );
+        let fourth = app.handle_channel_send(
+            "req4".into(),
+            ChannelSendParams {
+                name: "#eng".into(),
+                text: "cli de novo".into(),
+                from_pane: None,
+                to: None,
+                in_reply_to: None,
+            },
+        );
+        assert!(
+            fourth.contains("channel_sent"),
+            "no-from resend must pass: {fourth}"
+        );
+        super::super::test_support::shutdown_test_runtimes(&mut app);
+    }
+
+    #[tokio::test]
     async fn leading_mention_targets_unique_nick() {
         let _isolated = IsolatedStateDir::new("mention-unique");
         let mut app = test_app();
@@ -1125,13 +1222,14 @@ mod tests {
         assert_eq!(history[0].to_pane, None);
         assert_eq!(history[0].text, "@reviewer hi #eng");
 
-        // Escapes still unescape on a targeted send.
+        // Escapes still unescape on a targeted send. Sent from a different
+        // pane: the same sender would trip the per-(pane, channel) rate limit.
         let targeted = app.handle_channel_send(
             "req2".into(),
             ChannelSendParams {
                 name: "#eng".into(),
                 text: "see \\#eng notes".into(),
-                from_pane: Some("w1A:p9".into()),
+                from_pane: Some("w1A:p8".into()),
                 to: Some("reviewer".into()),
                 in_reply_to: None,
             },
