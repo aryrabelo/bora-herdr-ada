@@ -1,7 +1,8 @@
 use crate::api::schema::{
     AgentPromptParams, AgentStatus, ChannelCreateParams, ChannelDelivery, ChannelDeliveryStatus,
-    ChannelHistoryParams, ChannelMember, ChannelMembersParams, ChannelMessage, ChannelSendParams,
-    ChannelSummary, ResponseResult,
+    ChannelHistoryParams, ChannelJoinParams, ChannelLeaveParams, ChannelMember,
+    ChannelMemberSource, ChannelMembersParams, ChannelMessage, ChannelSendParams, ChannelSummary,
+    ResponseResult,
 };
 use crate::app::App;
 use crate::persist::channels;
@@ -262,6 +263,113 @@ impl App {
         encode_success(id, ResponseResult::ChannelMembers { members })
     }
 
+    /// `channel.join`: record an explicit membership so a pane living
+    /// outside the channel's workspace still receives fan-out and can be
+    /// addressed by nick. Idempotent — joining twice, or joining a pane that
+    /// is already an implicit workspace member, succeeds and reports which
+    /// kind of membership the caller actually ended up with.
+    pub(super) fn handle_channel_join(&mut self, id: String, params: ChannelJoinParams) -> String {
+        let name = channels::normalize_channel_name(&params.name);
+        let Some(ws_idx) = self.find_channel_workspace(&name) else {
+            return encode_error(
+                id,
+                "channel_not_found",
+                format!("channel #{name} not found"),
+            );
+        };
+        let Some((public_id, owner_ws_idx)) = self.resolve_public_pane(&params.pane) else {
+            return encode_error(
+                id,
+                "pane_not_found",
+                format!("pane {} not found", params.pane),
+            );
+        };
+        if owner_ws_idx == ws_idx {
+            // A pane in the channel's own workspace is a member by
+            // construction. Succeed, but say so: recording it would imply a
+            // membership that `channel.leave` could take away.
+            return encode_success(
+                id,
+                ResponseResult::ChannelJoined {
+                    pane_id: public_id,
+                    source: ChannelMemberSource::Workspace,
+                },
+            );
+        }
+        let mut joined = self.joined_channel_members(&name);
+        if !joined.iter().any(|member| member == &public_id) {
+            joined.push(public_id.clone());
+            if let Err(err) = channels::write_joined_members(&name, &joined) {
+                return encode_error(id, "channel_join_failed", err.to_string());
+            }
+            tracing::info!(channel = %name, pane = %public_id, "pane joined channel");
+        }
+        encode_success(
+            id,
+            ResponseResult::ChannelJoined {
+                pane_id: public_id,
+                source: ChannelMemberSource::Joined,
+            },
+        )
+    }
+
+    /// `channel.leave`: drop an explicit membership. Idempotent —
+    /// `removed: false` means there was nothing to drop, either because the
+    /// pane never joined or because it lives in the channel's workspace and
+    /// is a member by construction.
+    pub(super) fn handle_channel_leave(
+        &mut self,
+        id: String,
+        params: ChannelLeaveParams,
+    ) -> String {
+        let name = channels::normalize_channel_name(&params.name);
+        if self.find_channel_workspace(&name).is_none() {
+            return encode_error(
+                id,
+                "channel_not_found",
+                format!("channel #{name} not found"),
+            );
+        }
+        let Some((public_id, _)) = self.resolve_public_pane(&params.pane) else {
+            return encode_error(
+                id,
+                "pane_not_found",
+                format!("pane {} not found", params.pane),
+            );
+        };
+        let mut joined = self.joined_channel_members(&name);
+        let before = joined.len();
+        joined.retain(|member| member != &public_id);
+        let removed = joined.len() != before;
+        if removed {
+            if let Err(err) = channels::write_joined_members(&name, &joined) {
+                return encode_error(id, "channel_leave_failed", err.to_string());
+            }
+            tracing::info!(channel = %name, pane = %public_id, "pane left channel");
+        }
+        encode_success(
+            id,
+            ResponseResult::ChannelLeft {
+                pane_id: public_id,
+                removed,
+            },
+        )
+    }
+
+    /// Canonical public id and owning workspace of `pane`, accepting every
+    /// form `parse_pane_id` does (raw id, alias, colon-free nick form) and
+    /// normalizing to the one form the roster stores.
+    fn resolve_public_pane(&self, pane: &str) -> Option<(String, usize)> {
+        let (ws_idx, pane_id) = self.parse_pane_id(pane.trim())?;
+        Some((self.public_pane_id(ws_idx, pane_id)?, ws_idx))
+    }
+
+    /// Persisted joined pane ids for `name`, minus any that no longer
+    /// resolve to a live pane.
+    fn joined_channel_members(&self, name: &str) -> Vec<String> {
+        channels::read_joined_members(name, |pane| self.parse_pane_id(pane).is_some())
+    }
+
     fn find_channel_workspace(&self, name: &str) -> Option<usize> {
         self.state
             .workspaces
@@ -270,47 +378,85 @@ impl App {
     }
 
     fn channel_summary(&self, ws_idx: usize, name: &str) -> ChannelSummary {
-        let ws = &self.state.workspaces[ws_idx];
-        let pane_ids: Vec<crate::layout::PaneId> = ws
-            .tabs
+        let members = self.channel_member_panes(ws_idx);
+        let agent_count = members
             .iter()
-            .flat_map(|tab| tab.layout.pane_ids())
-            .collect();
-        let pane_count = pane_ids.len();
-        let agent_count = pane_ids
-            .iter()
-            .filter(|&&pane_id| self.agent_info(ws_idx, pane_id).is_some())
+            .filter(|member| self.agent_info(member.ws_idx, member.pane_id).is_some())
             .count();
         ChannelSummary {
             name: format!("#{name}"),
-            pane_count,
+            pane_count: members.len(),
             agent_count,
             member_status_counts: self.channel_member_status_counts(ws_idx),
         }
     }
 
-    /// Every pane in the channel's workspace, as a `channel.members`
-    /// listing — who would receive a `channel.send`.
-    fn channel_members(&self, ws_idx: usize) -> Vec<ChannelMember> {
-        let ws = &self.state.workspaces[ws_idx];
-        let pane_ids: Vec<crate::layout::PaneId> = ws
+    /// Every member pane of the channel owning `ws_idx`: the panes living in
+    /// its `#name` workspace (implicit members), then panes elsewhere that
+    /// joined explicitly. De-duplicated by canonical public pane id, so a
+    /// pane that is both appears once, as `Workspace`. This is the single
+    /// traversal every other member query is built on — members listing,
+    /// summary counts, send fan-out, nick resolution — so the four can never
+    /// disagree about who is in a channel.
+    fn channel_member_panes(&self, ws_idx: usize) -> Vec<ChannelMemberPane> {
+        let Some(ws) = self.state.workspaces.get(ws_idx) else {
+            return Vec::new();
+        };
+        let mut members: Vec<ChannelMemberPane> = ws
             .tabs
             .iter()
             .flat_map(|tab| tab.layout.pane_ids())
-            .collect();
-        pane_ids
-            .into_iter()
             .filter_map(|pane_id| {
-                let public_id = self.public_pane_id(ws_idx, pane_id)?;
-                let agent = self.agent_info(ws_idx, pane_id);
+                Some(ChannelMemberPane {
+                    ws_idx,
+                    pane_id,
+                    public_id: self.public_pane_id(ws_idx, pane_id)?,
+                    source: ChannelMemberSource::Workspace,
+                })
+            })
+            .collect();
+        let Some(name) = workspace_channel_name(ws) else {
+            return members;
+        };
+        for stored in self.joined_channel_members(name) {
+            let Some((owner_ws_idx, pane_id)) = self.parse_pane_id(&stored) else {
+                continue;
+            };
+            // Canonical form, so an alias or colon-free spelling of a pane
+            // that is already a member can't slip past de-duplication.
+            let Some(public_id) = self.public_pane_id(owner_ws_idx, pane_id) else {
+                continue;
+            };
+            // ponytail: linear scan — member counts are tens, not thousands.
+            if members.iter().any(|member| member.public_id == public_id) {
+                continue;
+            }
+            members.push(ChannelMemberPane {
+                ws_idx: owner_ws_idx,
+                pane_id,
+                public_id,
+                source: ChannelMemberSource::Joined,
+            });
+        }
+        members
+    }
+
+    /// Every member pane of the channel, as a `channel.members` listing —
+    /// who would receive a `channel.send`, and how they got there.
+    fn channel_members(&self, ws_idx: usize) -> Vec<ChannelMember> {
+        self.channel_member_panes(ws_idx)
+            .into_iter()
+            .map(|member| {
+                let agent = self.agent_info(member.ws_idx, member.pane_id);
                 let name = agent
                     .as_ref()
                     .and_then(|info| info.display_agent.clone().or_else(|| info.name.clone()));
-                Some(ChannelMember {
-                    pane_id: public_id,
+                ChannelMember {
+                    pane_id: member.public_id,
                     name,
                     agent_status: agent.map(|info| info.agent_status),
-                })
+                    source: member.source,
+                }
             })
             .collect()
     }
@@ -322,10 +468,9 @@ impl App {
         &self,
         ws_idx: usize,
     ) -> std::collections::HashMap<String, usize> {
-        let ws = &self.state.workspaces[ws_idx];
         let mut counts = std::collections::HashMap::new();
-        for pane_id in ws.tabs.iter().flat_map(|tab| tab.layout.pane_ids()) {
-            if let Some(info) = self.agent_info(ws_idx, pane_id) {
+        for member in self.channel_member_panes(ws_idx) {
+            if let Some(info) = self.agent_info(member.ws_idx, member.pane_id) {
                 *counts
                     .entry(agent_status_key(info.agent_status).to_string())
                     .or_insert(0) += 1;
@@ -347,42 +492,30 @@ impl App {
         info.name.or(info.agent)
     }
 
-    /// Public pane ids of the channel workspace's agent-hosting member
-    /// panes — the broadcast delivery set.
+    /// Public pane ids of the channel's agent-hosting member panes —
+    /// workspace panes and joined panes alike — which is the broadcast
+    /// delivery set.
     fn channel_agent_member_pane_ids(&self, ws_idx: usize) -> Vec<String> {
-        self.state
-            .workspaces
-            .get(ws_idx)
-            .map(|ws| {
-                ws.tabs
-                    .iter()
-                    .flat_map(|tab| tab.layout.pane_ids())
-                    .filter(|&pane_id| self.agent_info(ws_idx, pane_id).is_some())
-                    .filter_map(|pane_id| self.public_pane_id(ws_idx, pane_id))
-                    .collect()
-            })
-            .unwrap_or_default()
+        self.channel_member_panes(ws_idx)
+            .into_iter()
+            .filter(|member| self.agent_info(member.ws_idx, member.pane_id).is_some())
+            .map(|member| member.public_id)
+            .collect()
     }
 
     /// Resolves a nick (`channel.send`'s `to`, or a leading in-body
-    /// `@nick`) against the channel workspace's agent member panes: exact
-    /// match on the raw public pane id or any of the pane's display names
-    /// (agent display name -> assigned name -> detected kind — the
-    /// `pane_display_name` rungs that are per-pane; the workspace
-    /// custom_name rung is the channel's own `#name` for every member and
-    /// carries no routing information). Exactly one match -> `Unique`;
-    /// two or more -> `Ambiguous` with `pane (name)` candidate labels;
-    /// none -> `Unknown`.
+    /// `@nick`) against the channel's agent member panes — workspace panes
+    /// and joined panes alike: exact match on the raw public pane id or any
+    /// of the pane's display names (agent display name -> assigned name ->
+    /// detected kind — the `pane_display_name` rungs that are per-pane; the
+    /// workspace custom_name rung is the channel's own `#name` for every
+    /// workspace member and carries no routing information). Exactly one
+    /// match -> `Unique`; two or more -> `Ambiguous` with `pane (name)`
+    /// candidate labels; none -> `Unknown`.
     fn resolve_channel_nick(&self, ws_idx: usize, nick: &str) -> NickResolution {
-        let Some(ws) = self.state.workspaces.get(ws_idx) else {
-            return NickResolution::Unknown;
-        };
         let mut matches: Vec<(String, Option<String>)> = Vec::new();
-        for pane_id in ws.tabs.iter().flat_map(|tab| tab.layout.pane_ids()) {
-            let Some(info) = self.agent_info(ws_idx, pane_id) else {
-                continue;
-            };
-            let Some(public_id) = self.public_pane_id(ws_idx, pane_id) else {
+        for member in self.channel_member_panes(ws_idx) {
+            let Some(info) = self.agent_info(member.ws_idx, member.pane_id) else {
                 continue;
             };
             let named = info
@@ -390,8 +523,8 @@ impl App {
                 .as_deref()
                 .or(info.name.as_deref())
                 .or(info.agent.as_deref());
-            if public_id == nick || named == Some(nick) {
-                matches.push((public_id, named.map(str::to_string)));
+            if member.public_id == nick || named == Some(nick) {
+                matches.push((member.public_id, named.map(str::to_string)));
             }
         }
         if matches.is_empty() {
@@ -410,6 +543,15 @@ impl App {
             .collect();
         NickResolution::Ambiguous(candidates)
     }
+}
+
+/// One resolved channel member pane: where it lives, its canonical public
+/// id, and whether membership is workspace-implicit or explicitly joined.
+struct ChannelMemberPane {
+    ws_idx: usize,
+    pane_id: crate::layout::PaneId,
+    public_id: String,
+    source: ChannelMemberSource,
 }
 
 /// Outcome of resolving a nick against a channel's member agents.
@@ -1288,5 +1430,353 @@ mod tests {
         assert_eq!(leading_mention_nick("@ hi"), None);
         assert_eq!(leading_mention_nick("hi @rev"), None);
         assert_eq!(leading_mention_nick("plain text"), None);
+    }
+
+    /// An idle agent pane in its own non-channel workspace — the
+    /// pre-existing agent `channel.join` exists for. Returns its public pane
+    /// id and the runtime receiver, which must stay alive for the pane to
+    /// stay promptable.
+    fn outside_agent_pane(
+        app: &mut App,
+        name: &str,
+    ) -> (String, tokio::sync::mpsc::Receiver<bytes::Bytes>) {
+        app.handle_workspace_create(
+            "req".into(),
+            crate::api::schema::WorkspaceCreateParams {
+                cwd: None,
+                focus: false,
+                label: None,
+                env: Default::default(),
+                group: None,
+            },
+        );
+        let ws_idx = app.state.workspaces.len() - 1;
+        let pane = app.state.workspaces[ws_idx].tabs[0].root_pane;
+        app.state.ensure_test_terminals();
+        let terminal_id = app.state.workspaces[ws_idx]
+            .pane_state(pane)
+            .unwrap()
+            .attached_terminal_id
+            .clone();
+        let terminal = app.state.terminals.get_mut(&terminal_id).unwrap();
+        terminal.set_agent_name(name.into());
+        terminal.set_detected_state(
+            Some(crate::detect::Agent::OpenCode),
+            crate::detect::AgentState::Idle,
+        );
+        let (runtime, rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        app.state.insert_test_runtime(pane, runtime);
+        (app.public_pane_id(ws_idx, pane).unwrap(), rx)
+    }
+
+    fn join(app: &mut App, name: &str, pane: &str) -> serde_json::Value {
+        let response = app.handle_channel_join(
+            "req".into(),
+            ChannelJoinParams {
+                name: name.into(),
+                pane: pane.into(),
+            },
+        );
+        serde_json::from_str(&response).unwrap()
+    }
+
+    fn leave(app: &mut App, name: &str, pane: &str) -> serde_json::Value {
+        let response = app.handle_channel_leave(
+            "req".into(),
+            ChannelLeaveParams {
+                name: name.into(),
+                pane: pane.into(),
+            },
+        );
+        serde_json::from_str(&response).unwrap()
+    }
+
+    fn broadcast(app: &mut App, from_pane: &str, text: &str) -> serde_json::Value {
+        // Each send uses a distinct sender pane: the same sender would trip
+        // the per-(pane, channel) rate limit.
+        let response = app.handle_channel_send(
+            "req".into(),
+            ChannelSendParams {
+                name: "#eng".into(),
+                text: text.into(),
+                from_pane: Some(from_pane.into()),
+                to: None,
+                in_reply_to: None,
+            },
+        );
+        serde_json::from_str(&response).unwrap()
+    }
+
+    fn member_sources(app: &mut App) -> Vec<(String, String)> {
+        let response =
+            app.handle_channel_members("req".into(), ChannelMembersParams { name: "eng".into() });
+        let response: serde_json::Value = serde_json::from_str(&response).unwrap();
+        response["result"]["members"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|member| {
+                (
+                    member["pane_id"].as_str().unwrap().to_string(),
+                    member["source"].as_str().unwrap().to_string(),
+                )
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn join_of_unknown_channel_errors() {
+        let _isolated = IsolatedStateDir::new("join-unknown-channel");
+        let mut app = test_app();
+        let (outsider, _rx) = outside_agent_pane(&mut app, "brandos");
+        let error = join(&mut app, "ghost", &outsider);
+        assert_eq!(
+            error["error"]["code"],
+            serde_json::json!("channel_not_found")
+        );
+        let leave_error = leave(&mut app, "ghost", &outsider);
+        assert_eq!(
+            leave_error["error"]["code"],
+            serde_json::json!("channel_not_found")
+        );
+        super::super::test_support::shutdown_test_runtimes(&mut app);
+    }
+
+    #[tokio::test]
+    async fn join_of_unknown_pane_errors() {
+        let _isolated = IsolatedStateDir::new("join-unknown-pane");
+        let mut app = test_app();
+        create_channel(&mut app, "eng");
+        let error = join(&mut app, "#eng", "w9Z:p9");
+        assert_eq!(error["error"]["code"], serde_json::json!("pane_not_found"));
+        assert!(
+            channels::read_joined_members("eng", |_| true).is_empty(),
+            "a rejected join must not record membership"
+        );
+        super::super::test_support::shutdown_test_runtimes(&mut app);
+    }
+
+    #[tokio::test]
+    async fn join_of_workspace_pane_reports_implicit_membership() {
+        let _isolated = IsolatedStateDir::new("join-implicit");
+        let mut app = test_app();
+        let (reviewer, _worker, _rx) = channel_with_two_agents(&mut app, "reviewer", "worker");
+
+        let joined = join(&mut app, "#eng", &reviewer);
+        assert_eq!(joined["result"]["pane_id"], serde_json::json!(reviewer));
+        assert_eq!(
+            joined["result"]["source"],
+            serde_json::json!("workspace"),
+            "a pane in the channel's own workspace was a member all along"
+        );
+        assert!(
+            channels::read_joined_members("eng", |_| true).is_empty(),
+            "implicit membership must not be recorded as explicit"
+        );
+        assert_eq!(member_sources(&mut app).len(), 2, "no member was added");
+        super::super::test_support::shutdown_test_runtimes(&mut app);
+    }
+
+    #[tokio::test]
+    async fn joined_pane_receives_broadcast_until_it_leaves() {
+        let _isolated = IsolatedStateDir::new("join-delivery");
+        let mut app = test_app();
+        let (reviewer, _worker, _rx) = channel_with_two_agents(&mut app, "reviewer", "worker");
+        let (outsider, mut outsider_rx) = outside_agent_pane(&mut app, "brandos");
+
+        let before = broadcast(&mut app, "w1A:p9", "before join");
+        let before = before["result"]["deliveries"].as_array().unwrap();
+        assert!(
+            !before.iter().any(|d| d["pane_id"] == json_str(&outsider)),
+            "a pane outside the workspace is not a member until it joins"
+        );
+
+        let joined = join(&mut app, "#eng", &outsider);
+        assert_eq!(joined["result"]["source"], serde_json::json!("joined"));
+
+        let after = broadcast(&mut app, "w1A:p8", "after join");
+        let after = after["result"]["deliveries"].as_array().unwrap();
+        let outsider_delivery = after
+            .iter()
+            .find(|d| d["pane_id"] == json_str(&outsider))
+            .expect("joined pane must be in the fan-out");
+        assert_eq!(
+            outsider_delivery["status"],
+            serde_json::json!("delivered"),
+            "delivery detail: {:?}",
+            outsider_delivery["detail"]
+        );
+        let injected = outsider_rx
+            .try_recv()
+            .expect("joined pane's runtime must receive the prefixed message");
+        let injected = String::from_utf8_lossy(&injected);
+        assert!(injected.contains("[#eng from "), "got {injected}");
+        assert!(injected.contains("after join"), "got {injected}");
+        assert!(
+            after.iter().any(|d| d["pane_id"] == json_str(&reviewer)),
+            "joining must not displace workspace members"
+        );
+
+        let left = leave(&mut app, "#eng", &outsider);
+        assert_eq!(left["result"]["removed"], serde_json::json!(true));
+        let post_leave = broadcast(&mut app, "w1A:p7", "after leave");
+        assert!(
+            !post_leave["result"]["deliveries"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|d| d["pane_id"] == json_str(&outsider)),
+            "leaving stops fan-out to the pane"
+        );
+        assert!(channels::read_joined_members("eng", |_| true).is_empty());
+        super::super::test_support::shutdown_test_runtimes(&mut app);
+    }
+
+    #[tokio::test]
+    async fn joined_pane_resolves_by_nick() {
+        let _isolated = IsolatedStateDir::new("join-nick");
+        let mut app = test_app();
+        let (_reviewer, _worker, _rx) = channel_with_two_agents(&mut app, "reviewer", "worker");
+        let (outsider, _outsider_rx) = outside_agent_pane(&mut app, "brandos");
+
+        let unknown = app.handle_channel_send(
+            "req".into(),
+            ChannelSendParams {
+                name: "#eng".into(),
+                text: "ping".into(),
+                from_pane: Some("w1A:p9".into()),
+                to: Some("brandos".into()),
+                in_reply_to: None,
+            },
+        );
+        let unknown: serde_json::Value = serde_json::from_str(&unknown).unwrap();
+        assert_eq!(
+            unknown["error"]["code"],
+            serde_json::json!("channel_nick_unknown"),
+            "a non-member nick does not resolve"
+        );
+
+        join(&mut app, "#eng", &outsider);
+        let sent = app.handle_channel_send(
+            "req".into(),
+            ChannelSendParams {
+                name: "#eng".into(),
+                text: "ping".into(),
+                from_pane: Some("w1A:p8".into()),
+                to: Some("brandos".into()),
+                in_reply_to: None,
+            },
+        );
+        let sent: serde_json::Value = serde_json::from_str(&sent).unwrap();
+        let deliveries = sent["result"]["deliveries"].as_array().unwrap();
+        assert_eq!(
+            deliveries.len(),
+            1,
+            "targeted send reaches exactly one pane"
+        );
+        assert_eq!(deliveries[0]["pane_id"], json_str(&outsider));
+
+        // The in-body `@nick` path resolves against the same member set.
+        let mention = app.handle_channel_send(
+            "req".into(),
+            ChannelSendParams {
+                name: "#eng".into(),
+                text: "@brandos please look".into(),
+                from_pane: Some("w1A:p7".into()),
+                to: None,
+                in_reply_to: None,
+            },
+        );
+        let mention: serde_json::Value = serde_json::from_str(&mention).unwrap();
+        let deliveries = mention["result"]["deliveries"].as_array().unwrap();
+        assert_eq!(deliveries.len(), 1);
+        assert_eq!(deliveries[0]["pane_id"], json_str(&outsider));
+        super::super::test_support::shutdown_test_runtimes(&mut app);
+    }
+
+    #[tokio::test]
+    async fn members_and_summary_report_joined_panes_once() {
+        let _isolated = IsolatedStateDir::new("join-members");
+        let mut app = test_app();
+        let (reviewer, worker, _rx) = channel_with_two_agents(&mut app, "reviewer", "worker");
+        let (outsider, _outsider_rx) = outside_agent_pane(&mut app, "brandos");
+
+        // Joining twice is a no-op success, and the roster keeps one entry.
+        join(&mut app, "#eng", &outsider);
+        let again = join(&mut app, "#eng", &outsider);
+        assert_eq!(again["result"]["source"], serde_json::json!("joined"));
+        assert_eq!(
+            channels::read_joined_members("eng", |_| true),
+            vec![outsider.clone()],
+            "membership is persisted once, on disk, so it survives a restart"
+        );
+
+        let mut sources = member_sources(&mut app);
+        sources.sort();
+        let mut expected = vec![
+            (reviewer, "workspace".to_string()),
+            (worker, "workspace".to_string()),
+            (outsider.clone(), "joined".to_string()),
+        ];
+        expected.sort();
+        assert_eq!(sources, expected);
+
+        let list = app.handle_channel_list("req".into());
+        let list: serde_json::Value = serde_json::from_str(&list).unwrap();
+        let channel = &list["result"]["channels"][0];
+        assert_eq!(
+            channel["pane_count"],
+            serde_json::json!(3),
+            "summary counts the joined pane"
+        );
+        assert_eq!(channel["agent_count"], serde_json::json!(3));
+        assert_eq!(
+            channel["member_status_counts"]["idle"],
+            serde_json::json!(2),
+            "the joined idle agent is counted with the workspace's own"
+        );
+        super::super::test_support::shutdown_test_runtimes(&mut app);
+    }
+
+    #[tokio::test]
+    async fn dead_joined_panes_are_pruned_and_leave_is_idempotent() {
+        let _isolated = IsolatedStateDir::new("join-prune");
+        let mut app = test_app();
+        let (reviewer, worker, _rx) = channel_with_two_agents(&mut app, "reviewer", "worker");
+        let (outsider, _outsider_rx) = outside_agent_pane(&mut app, "brandos");
+
+        // A roster written by a previous session: one live pane, one whose
+        // pane no longer exists.
+        channels::write_joined_members("eng", &[outsider.clone(), "w9Z:p9".into()]).unwrap();
+
+        let panes: Vec<String> = member_sources(&mut app)
+            .into_iter()
+            .map(|(pane, _)| pane)
+            .collect();
+        assert!(panes.contains(&outsider));
+        assert!(
+            !panes.iter().any(|pane| pane == "w9Z:p9"),
+            "a pane id that no longer resolves is not a member"
+        );
+        assert_eq!(panes.len(), 3);
+
+        // Leaving rewrites the roster without the dead entry.
+        let left = leave(&mut app, "eng", &outsider);
+        assert_eq!(left["result"]["removed"], serde_json::json!(true));
+        assert!(channels::read_joined_members("eng", |_| true).is_empty());
+
+        // Leaving again, and leaving a workspace-implicit member, are
+        // no-op successes rather than errors.
+        let again = leave(&mut app, "eng", &outsider);
+        assert_eq!(again["result"]["removed"], serde_json::json!(false));
+        let implicit = leave(&mut app, "eng", &reviewer);
+        assert_eq!(implicit["result"]["removed"], serde_json::json!(false));
+        assert_eq!(member_sources(&mut app).len(), 2);
+        assert!(worker.starts_with('w'));
+        super::super::test_support::shutdown_test_runtimes(&mut app);
+    }
+
+    fn json_str(value: &str) -> serde_json::Value {
+        serde_json::Value::String(value.to_string())
     }
 }

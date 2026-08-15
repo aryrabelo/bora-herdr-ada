@@ -503,6 +503,8 @@ fn api_method_name(method: &Method) -> &'static str {
         Method::ChannelSend(_) => "channel.send",
         Method::ChannelHistory(_) => "channel.history",
         Method::ChannelMembers(_) => "channel.members",
+        Method::ChannelJoin(_) => "channel.join",
+        Method::ChannelLeave(_) => "channel.leave",
     }
 }
 

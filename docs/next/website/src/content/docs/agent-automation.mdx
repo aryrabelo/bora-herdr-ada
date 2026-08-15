@@ -77,6 +77,14 @@ herdr agent rename w1:p2 reviewer
 
 Channels group agents for broadcast. A channel is a workspace named `#…`; `channel create|list|members` manage and inspect them, `channel send` posts `[#name from <pane> <name>] <text>` to every member agent pane (with when-idle deferral and per-member `delivered|deferred|failed` results) and appends the message to a bounded per-channel JSONL transcript that `channel history` replays. Every message carries a monotonic per-channel `seq` that survives log rotation.
 
+An agent does not have to live in the channel's workspace to be a member. `channel join <name> [--pane ID]` adds a pane that already exists elsewhere, and `channel leave <name> [--pane ID]` removes it again; the pane defaults to `$HERDR_PANE_ID`, so an agent can join a channel it was told about without knowing its own pane id. A channel's member set is the panes in its `#name` workspace plus the panes that joined explicitly, and `channel members` labels which is which in a `source` column (`workspace` or `joined`). Joined membership is stored beside the transcript and survives a restart; a pane that no longer exists stops being a member on its own. Joining is idempotent — joining twice, or joining a pane that already lives in the channel's workspace, succeeds and reports the membership you actually have.
+
+```bash
+herdr channel join eng --pane w3B:p1              # pull an existing agent into #eng
+herdr channel members eng                         # w3B:p1  idle  brandos  joined
+herdr channel leave eng --pane w3B:p1
+```
+
 `channel tail <name> [--after SEQ] [--follow|-f] [--json]` follows that transcript by cursor instead of replaying a fixed window. Without `--after`, it starts from `0` and prints everything retained; pass the last `seq` you saw to resume from there. One-shot (no `--follow`) prints the current backlog and exits; `--follow` keeps polling and prints new messages as they arrive until interrupted. Human output is `SEQ HH:MM name: text`; `--json` prints the raw `channel.wait` response per batch. If rotation dropped messages between your cursor and the oldest retained line, `channel tail` reports that as a `#gap:` notice on stderr instead of silently resuming as if nothing were missing.
 
 ```bash

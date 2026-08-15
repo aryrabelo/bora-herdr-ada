@@ -1,7 +1,11 @@
-//! Append-only JSONL transcript store for `#`-channel workspaces.
+//! Append-only JSONL transcript store for `#`-channel workspaces, plus the
+//! explicit-membership roster that lives beside it.
 //!
 //! Each channel's messages live at `state_dir()/channels/<name>.jsonl` (name
-//! without the leading `#`), one JSON object per line.
+//! without the leading `#`), one JSON object per line. Panes that joined a
+//! channel they don't live in are listed at
+//! `state_dir()/channels/<name>.members.json` as a JSON array of public pane
+//! ids.
 
 use std::fs::{self, OpenOptions};
 use std::io::{self, BufRead, Write};
@@ -22,6 +26,10 @@ fn channels_dir() -> PathBuf {
 
 pub fn channel_file_path(name: &str) -> PathBuf {
     channels_dir().join(format!("{}.jsonl", normalize_channel_name(name)))
+}
+
+pub fn channel_members_file_path(name: &str) -> PathBuf {
+    channels_dir().join(format!("{}.members.json", normalize_channel_name(name)))
 }
 
 /// Hard cap on JSONL lines kept per channel. Once `append_message` would
@@ -154,6 +162,55 @@ pub struct ChannelSince {
     /// Seq of the oldest retained (parseable) line; `None` when no history
     /// is retained at all.
     pub oldest_seq: Option<u64>,
+}
+
+/// Public pane ids that explicitly joined `name`, keeping only those `live`
+/// still resolves. Pruning is read-only: a pane id that stops resolving
+/// (closed pane, restarted session) simply stops being a member, and the
+/// next `write_joined_members` persists the pruned set. A missing or
+/// unparseable roster reads as no joined members — a corrupt roster must not
+/// take the channel down with it.
+pub fn read_joined_members(name: &str, live: impl Fn(&str) -> bool) -> Vec<String> {
+    let raw = match fs::read_to_string(channel_members_file_path(name)) {
+        Ok(raw) => raw,
+        Err(err) => {
+            if err.kind() != io::ErrorKind::NotFound {
+                tracing::warn!(channel = %name, error = %err, "channel roster unreadable");
+            }
+            return Vec::new();
+        }
+    };
+    let stored: Vec<String> = match serde_json::from_str(&raw) {
+        Ok(stored) => stored,
+        Err(err) => {
+            tracing::warn!(channel = %name, error = %err, "channel roster malformed");
+            return Vec::new();
+        }
+    };
+    stored.into_iter().filter(|pane_id| live(pane_id)).collect()
+}
+
+/// Replace `name`'s joined roster. Writes a sibling `.tmp` and renames over
+/// the roster so a concurrent reader never observes a half-written file. An
+/// empty roster removes the file rather than leaving `[]` behind.
+pub fn write_joined_members(name: &str, members: &[String]) -> io::Result<()> {
+    let path = channel_members_file_path(name);
+    if members.is_empty() {
+        return match fs::remove_file(&path) {
+            Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
+            other => other,
+        };
+    }
+    fs::create_dir_all(channels_dir())?;
+    let body = serde_json::to_string(members)
+        .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
+    let tmp_path = path.with_extension("json.tmp");
+    {
+        let mut tmp = fs::File::create(&tmp_path)?;
+        tmp.write_all(body.as_bytes())?;
+        tmp.flush()?;
+    }
+    fs::rename(&tmp_path, &path)
 }
 
 #[cfg(test)]
@@ -383,6 +440,48 @@ mod tests {
             let since = read_since("legacy", 0).unwrap();
             assert!(since.messages.is_empty());
             assert_eq!(since.oldest_seq, Some(0));
+        });
+    }
+
+    #[test]
+    fn joined_members_roundtrip_and_prune_dead_panes() {
+        with_isolated_state_dir("roster-roundtrip", || {
+            write_joined_members("#eng", &["w1A:p2".into(), "w3B:p1".into()]).unwrap();
+            assert_eq!(
+                read_joined_members("eng", |_| true),
+                vec!["w1A:p2".to_string(), "w3B:p1".to_string()]
+            );
+            // A pane that no longer resolves is simply not a member.
+            assert_eq!(
+                read_joined_members("eng", |pane| pane == "w1A:p2"),
+                vec!["w1A:p2".to_string()]
+            );
+        });
+    }
+
+    #[test]
+    fn joined_members_missing_or_malformed_roster_is_empty() {
+        with_isolated_state_dir("roster-absent", || {
+            assert!(read_joined_members("nope", |_| true).is_empty());
+            fs::create_dir_all(channels_dir()).unwrap();
+            fs::write(channel_members_file_path("broken"), "{not json").unwrap();
+            assert!(read_joined_members("broken", |_| true).is_empty());
+        });
+    }
+
+    #[test]
+    fn writing_roster_is_atomic_and_empty_removes_it() {
+        with_isolated_state_dir("roster-atomic", || {
+            write_joined_members("eng", &["w1A:p2".into()]).unwrap();
+            let path = channel_members_file_path("eng");
+            assert!(path.exists());
+            assert!(!path.with_extension("json.tmp").exists());
+
+            write_joined_members("eng", &[]).unwrap();
+            assert!(!path.exists());
+            assert!(read_joined_members("eng", |_| true).is_empty());
+            // Removing an already-absent roster is not an error.
+            write_joined_members("eng", &[]).unwrap();
         });
     }
 }

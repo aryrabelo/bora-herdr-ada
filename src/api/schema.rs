@@ -262,6 +262,10 @@ pub enum Method {
     ChannelHistory(ChannelHistoryParams),
     #[serde(rename = "channel.members")]
     ChannelMembers(ChannelMembersParams),
+    #[serde(rename = "channel.join")]
+    ChannelJoin(ChannelJoinParams),
+    #[serde(rename = "channel.leave")]
+    ChannelLeave(ChannelLeaveParams),
     #[serde(rename = "channel.wait")]
     ChannelWait(ChannelWaitParams),
 }

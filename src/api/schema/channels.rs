@@ -40,6 +40,26 @@ pub struct ChannelMembersParams {
     pub name: String,
 }
 
+/// `channel.join`: make `pane` an explicit member of a channel it does not
+/// live in, so `channel.send` fan-out and `@nick` addressing reach it. The
+/// pane keeps living in its own workspace; membership is the only thing
+/// recorded, and it survives a restart.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct ChannelJoinParams {
+    pub name: String,
+    /// Public pane id to add. The CLI defaults it to `$HERDR_PANE_ID`.
+    pub pane: String,
+}
+
+/// `channel.leave`: drop an explicitly joined pane from a channel. Panes that
+/// live in the channel's own workspace are members by construction and
+/// cannot be removed this way.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct ChannelLeaveParams {
+    pub name: String,
+    pub pane: String,
+}
+
 /// `channel.wait`: cursor-based tail follow. Returns every retained message
 /// with `seq > after_seq` (backlog first), then blocks until a new message
 /// is appended or `timeout_ms` elapses. `None` timeout waits forever;
@@ -72,8 +92,18 @@ pub struct ChannelSummary {
     pub member_status_counts: HashMap<String, usize>,
 }
 
-/// One pane in a channel's workspace, as reported by `channel.members` — who
-/// would receive a `channel.send`.
+/// How a pane came to be a channel member.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ChannelMemberSource {
+    /// The pane lives in the channel's `#name` workspace.
+    Workspace,
+    /// The pane lives elsewhere and joined explicitly (`channel.join`).
+    Joined,
+}
+
+/// One member pane of a channel, as reported by `channel.members` — who would
+/// receive a `channel.send`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ChannelMember {
     pub pane_id: String,
@@ -83,6 +113,8 @@ pub struct ChannelMember {
     /// `None` for panes not hosting a detected agent (plain shells).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_status: Option<AgentStatus>,
+    /// Workspace-implicit or explicitly joined membership.
+    pub source: ChannelMemberSource,
 }
 
 /// A single line of a channel's append-only JSONL transcript. Reused as both

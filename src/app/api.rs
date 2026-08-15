@@ -1322,6 +1322,12 @@ impl App {
             Method::ChannelMembers(params) => {
                 return self.handle_channel_members(request.id, params);
             }
+            Method::ChannelJoin(params) => {
+                return self.handle_channel_join(request.id, params);
+            }
+            Method::ChannelLeave(params) => {
+                return self.handle_channel_leave(request.id, params);
+            }
             _ => {
                 return responses::encode_error(
                     request.id,

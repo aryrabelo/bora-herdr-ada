@@ -303,6 +303,21 @@ pub enum ResponseResult {
     ChannelMembers {
         members: Vec<ChannelMember>,
     },
+    /// `channel.join` result. `source` is `joined` when explicit membership
+    /// was recorded, and `workspace` when the pane already lived in the
+    /// channel's workspace and was a member all along — the join succeeded
+    /// but changed nothing.
+    ChannelJoined {
+        pane_id: String,
+        source: super::channels::ChannelMemberSource,
+    },
+    /// `channel.leave` result. `removed: false` means the pane was not an
+    /// explicitly joined member to begin with (never joined, or a
+    /// workspace-implicit member that cannot be removed this way).
+    ChannelLeft {
+        pane_id: String,
+        removed: bool,
+    },
     /// `channel.wait` result. `messages` are every retained message with
     /// `seq > after_seq` in order — the last one's `seq` is the resume
     /// cursor. `gap: true` means rotation dropped messages between the

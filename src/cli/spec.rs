@@ -190,6 +190,18 @@ fn channel_command() -> Command {
                 .arg(required("name", "NAME"))
                 .arg(json_flag()),
         )
+        .subcommand(
+            Command::new("join")
+                .about("Add a pane living outside a #channel to its member set")
+                .arg(required("name", "NAME"))
+                .arg(option("pane", "ID").help("Pane to add; defaults to $HERDR_PANE_ID")),
+        )
+        .subcommand(
+            Command::new("leave")
+                .about("Drop an explicitly joined pane from a #channel")
+                .arg(required("name", "NAME"))
+                .arg(option("pane", "ID").help("Pane to drop; defaults to $HERDR_PANE_ID")),
+        )
 }
 
 fn server_command() -> Command {

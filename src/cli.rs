@@ -4,9 +4,9 @@ use serde::Serialize;
 
 use crate::api::client::{ApiClient, ApiClientError};
 use crate::api::schema::{
-    AgentStatus, ChannelCreateParams, ChannelHistoryParams, ChannelMembersParams,
-    ChannelSendParams, ChannelWaitParams, ClientWindowTitleSetParams, EmptyParams, Method,
-    PaneAgentState, ReadFormat, ReadSource, Request, SplitDirection,
+    AgentStatus, ChannelCreateParams, ChannelHistoryParams, ChannelJoinParams, ChannelLeaveParams,
+    ChannelMembersParams, ChannelSendParams, ChannelWaitParams, ClientWindowTitleSetParams,
+    EmptyParams, Method, PaneAgentState, ReadFormat, ReadSource, Request, SplitDirection,
 };
 
 mod agent;
@@ -121,6 +121,8 @@ fn run_channel_command(args: &[String]) -> std::io::Result<i32> {
         Some("history") => channel_history(&args[1..]),
         Some("tail") => channel_tail(&args[1..]),
         Some("members") => channel_members(&args[1..]),
+        Some("join") => channel_join(&args[1..]),
+        Some("leave") => channel_leave(&args[1..]),
         Some("help" | "--help" | "-h") => {
             print_channel_help();
             Ok(0)
@@ -400,9 +402,85 @@ fn channel_members(args: &[String]) -> std::io::Result<i32> {
         let pane_id = member["pane_id"].as_str().unwrap_or("?");
         let status = member["agent_status"].as_str().unwrap_or("-");
         let name = member["name"].as_str().unwrap_or("-");
-        println!("{pane_id}  {status}  {name}");
+        let source = member["source"].as_str().unwrap_or("-");
+        println!("{pane_id}  {status}  {name}  {source}");
     }
     Ok(0)
+}
+
+fn channel_join(args: &[String]) -> std::io::Result<i32> {
+    channel_membership(args, "join")
+}
+
+fn channel_leave(args: &[String]) -> std::io::Result<i32> {
+    channel_membership(args, "leave")
+}
+
+/// `bora channel join|leave <name> [--pane ID]`. The pane defaults to
+/// `$HERDR_PANE_ID`, so an agent can join the channel it was told about
+/// without knowing its own pane id.
+fn channel_membership(args: &[String], verb: &str) -> std::io::Result<i32> {
+    let usage = format!("usage: bora channel {verb} <name> [--pane ID]");
+    let Some(name) = args.first() else {
+        eprintln!("{usage}");
+        return Ok(2);
+    };
+    let pane = match parse_membership_pane(&args[1..]) {
+        Ok(Some(pane)) => pane,
+        Ok(None) => {
+            eprintln!(
+                "no pane to {verb}: pass --pane ID or run inside a bora pane (HERDR_PANE_ID)"
+            );
+            return Ok(2);
+        }
+        Err(err) => {
+            eprintln!("{err}");
+            eprintln!("{usage}");
+            return Ok(2);
+        }
+    };
+    let method = if verb == "join" {
+        Method::ChannelJoin(ChannelJoinParams {
+            name: name.clone(),
+            pane,
+        })
+    } else {
+        Method::ChannelLeave(ChannelLeaveParams {
+            name: name.clone(),
+            pane,
+        })
+    };
+    print_response(&send_request(&Request {
+        id: format!("cli:channel:{verb}"),
+        method,
+    })?)
+}
+
+/// Pane a membership verb acts on: `--pane ID` when given, else
+/// `$HERDR_PANE_ID`. `None` means neither was available — the caller reports
+/// that rather than guessing a pane.
+fn parse_membership_pane(args: &[String]) -> Result<Option<String>, String> {
+    let mut pane = std::env::var("HERDR_PANE_ID")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| normalize_pane_id(&value));
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--pane" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err("missing value for --pane".into());
+                };
+                if value.trim().is_empty() {
+                    return Err("--pane must not be empty".into());
+                }
+                pane = Some(normalize_pane_id(value));
+                index += 2;
+            }
+            option => return Err(format!("unknown option: {option}")),
+        }
+    }
+    Ok(pane)
 }
 
 fn channel_set(args: &[String]) -> std::io::Result<i32> {
@@ -533,6 +611,9 @@ fn print_channel_help() {
     );
     eprintln!("                                                optionally follow new ones");
     eprintln!("  bora channel members <name> [--json]         list a #channel's member panes");
+    eprintln!("  bora channel join <name> [--pane ID]         add a pane living outside the");
+    eprintln!("                                                channel to its member set");
+    eprintln!("  bora channel leave <name> [--pane ID]        drop a joined pane from a #channel");
 }
 
 fn run_config_command(args: &[String]) -> std::io::Result<i32> {

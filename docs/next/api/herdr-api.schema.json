@@ -1968,6 +1968,39 @@
           ],
           "type": "object"
         },
+        "ChannelJoinParams": {
+          "description": "`channel.join`: make `pane` an explicit member of a channel it does not\nlive in, so `channel.send` fan-out and `@nick` addressing reach it. The\npane keeps living in its own workspace; membership is the only thing\nrecorded, and it survives a restart.",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "pane": {
+              "description": "Public pane id to add. The CLI defaults it to `$HERDR_PANE_ID`.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "name",
+            "pane"
+          ],
+          "type": "object"
+        },
+        "ChannelLeaveParams": {
+          "description": "`channel.leave`: drop an explicitly joined pane from a channel. Panes that\nlive in the channel's own workspace are members by construction and\ncannot be removed this way.",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "pane": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "name",
+            "pane"
+          ],
+          "type": "object"
+        },
         "ChannelMembersParams": {
           "properties": {
             "name": {
@@ -6523,6 +6556,38 @@
         {
           "properties": {
             "method": {
+              "const": "channel.join",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/ChannelJoinParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "channel.leave",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/ChannelLeaveParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
               "const": "channel.wait",
               "type": "string"
             },
@@ -7034,7 +7099,7 @@
           "type": "string"
         },
         "ChannelMember": {
-          "description": "One pane in a channel's workspace, as reported by `channel.members` — who\nwould receive a `channel.send`.",
+          "description": "One member pane of a channel, as reported by `channel.members` — who would\nreceive a `channel.send`.",
           "properties": {
             "agent_status": {
               "anyOf": [
@@ -7056,12 +7121,32 @@
             },
             "pane_id": {
               "type": "string"
+            },
+            "source": {
+              "$ref": "#/schemas/success_response/$defs/ChannelMemberSource",
+              "description": "Workspace-implicit or explicitly joined membership."
             }
           },
           "required": [
-            "pane_id"
+            "pane_id",
+            "source"
           ],
           "type": "object"
+        },
+        "ChannelMemberSource": {
+          "description": "How a pane came to be a channel member.",
+          "oneOf": [
+            {
+              "const": "workspace",
+              "description": "The pane lives in the channel's `#name` workspace.",
+              "type": "string"
+            },
+            {
+              "const": "joined",
+              "description": "The pane lives elsewhere and joined explicitly (`channel.join`).",
+              "type": "string"
+            }
+          ]
         },
         "ChannelMessage": {
           "description": "A single line of a channel's append-only JSONL transcript. Reused as both\nthe on-disk storage record (`src/persist/channels.rs`) and the wire type,\nsince the two shapes are identical.",
@@ -11061,6 +11146,48 @@
               "required": [
                 "type",
                 "members"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "`channel.join` result. `source` is `joined` when explicit membership\nwas recorded, and `workspace` when the pane already lived in the\nchannel's workspace and was a member all along — the join succeeded\nbut changed nothing.",
+              "properties": {
+                "pane_id": {
+                  "type": "string"
+                },
+                "source": {
+                  "$ref": "#/schemas/success_response/$defs/ChannelMemberSource"
+                },
+                "type": {
+                  "const": "channel_joined",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "pane_id",
+                "source"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "`channel.leave` result. `removed: false` means the pane was not an\nexplicitly joined member to begin with (never joined, or a\nworkspace-implicit member that cannot be removed this way).",
+              "properties": {
+                "pane_id": {
+                  "type": "string"
+                },
+                "removed": {
+                  "type": "boolean"
+                },
+                "type": {
+                  "const": "channel_left",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "pane_id",
+                "removed"
               ],
               "type": "object"
             },
