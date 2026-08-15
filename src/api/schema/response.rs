@@ -303,6 +303,22 @@ pub enum ResponseResult {
     ChannelMembers {
         members: Vec<ChannelMember>,
     },
+    /// `channel.wait` result. `messages` are every retained message with
+    /// `seq > after_seq` in order — the last one's `seq` is the resume
+    /// cursor. `gap: true` means rotation dropped messages between the
+    /// caller's cursor and `oldest_seq` (or the history is empty while the
+    /// cursor is past 0): continuity is broken, not silent. `timed_out`
+    /// means the deadline elapsed with nothing new — a clean no-message,
+    /// never an error.
+    ChannelWait {
+        messages: Vec<ChannelMessage>,
+        #[serde(default)]
+        gap: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        oldest_seq: Option<u64>,
+        #[serde(default)]
+        timed_out: bool,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

@@ -196,6 +196,9 @@ pub enum EventMatch {
     PaneResultReported {
         pane_id: String,
     },
+    ChannelMessage {
+        channel: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -232,6 +235,7 @@ pub enum EventKind {
     GithubIssuesRefreshed,
     QueuedPromptDelivered,
     QueuedPromptDropped,
+    ChannelMessage,
 }
 
 impl EventKind {
@@ -268,6 +272,7 @@ impl EventKind {
             EventKind::GithubIssuesRefreshed => "github.issues_refreshed",
             EventKind::QueuedPromptDelivered => "agent_prompt.delivered",
             EventKind::QueuedPromptDropped => "agent_prompt.dropped",
+            EventKind::ChannelMessage => "channel.message",
         }
     }
 }
@@ -305,6 +310,7 @@ pub const KNOWN_EVENT_KINDS: &[EventKind] = &[
     EventKind::GithubIssuesRefreshed,
     EventKind::QueuedPromptDelivered,
     EventKind::QueuedPromptDropped,
+    EventKind::ChannelMessage,
 ];
 
 pub const PLUGIN_HOOK_EVENT_KINDS: &[EventKind] = &[
@@ -333,6 +339,7 @@ pub const PLUGIN_HOOK_EVENT_KINDS: &[EventKind] = &[
     EventKind::PaneResultReported,
     EventKind::QueuedPromptDelivered,
     EventKind::QueuedPromptDropped,
+    EventKind::ChannelMessage,
 ];
 
 #[cfg(test)]
@@ -616,7 +623,24 @@ pub enum EventData {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         detail: Option<String>,
     },
+    /// A message was appended to a `#`-channel transcript (emitted right
+    /// after the durable append, before fan-out). `channel` is the
+    /// normalized name without the leading `#`; `seq` is the message's
+    /// monotonic per-channel id; `from_pane` is `None` for unattributed
+    /// senders; `to_pane` is the resolved targeted pane id or `None` for
+    /// broadcast.
+    ChannelMessage {
+        channel: String,
+        seq: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        from_pane: Option<String>,
+        from_name: String,
+        text: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        to_pane: Option<String>,
+    },
 }
+
 /// Returns whether an emitted `EventEnvelope` satisfies an `events.wait` filter.
 pub fn event_matches(filter: &EventMatch, envelope: &EventEnvelope) -> bool {
     match (filter, &envelope.data) {
@@ -753,6 +777,12 @@ pub fn event_matches(filter: &EventMatch, envelope: &EventEnvelope) -> bool {
                 pane_id: actual, ..
             },
         ) => pane_id == actual,
+        (
+            EventMatch::ChannelMessage { channel },
+            EventData::ChannelMessage {
+                channel: actual, ..
+            },
+        ) => channel == actual,
         _ => false,
     }
 }
@@ -778,6 +808,35 @@ mod event_matches_tests {
             pane_id: "pane_1".into(),
         };
         assert!(event_matches(&filter, &result_envelope("pane_1")));
+    }
+
+    #[test]
+    fn channel_message_matches_same_channel_only() {
+        let envelope = EventEnvelope {
+            event: EventKind::ChannelMessage,
+            data: EventData::ChannelMessage {
+                channel: "eng".into(),
+                seq: 7,
+                from_pane: Some("w1A:p2".into()),
+                from_name: "brandos".into(),
+                text: "hello".into(),
+                to_pane: None,
+            },
+        };
+        let filter = EventMatch::ChannelMessage {
+            channel: "eng".into(),
+        };
+        assert!(event_matches(&filter, &envelope));
+
+        let other_channel = EventMatch::ChannelMessage {
+            channel: "ops".into(),
+        };
+        assert!(!event_matches(&other_channel, &envelope));
+
+        let other_kind = EventMatch::PaneResultReported {
+            pane_id: "eng".into(),
+        };
+        assert!(!event_matches(&other_kind, &envelope));
     }
 
     #[test]

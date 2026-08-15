@@ -227,6 +227,16 @@ impl App {
                     context.focused_pane_id = Some(target_pane.clone());
                     context
                 }),
+            EventData::ChannelMessage { channel, .. } => self
+                .state
+                .workspaces
+                .iter()
+                .position(|ws| {
+                    ws.visual_group.is_none()
+                        && ws.custom_name.as_deref() == Some(format!("#{channel}").as_str())
+                })
+                .map(|ws_idx| self.plugin_context_for_workspace(ws_idx, correlation_id))
+                .unwrap_or_else(|| empty_plugin_context(correlation_id)),
         }
     }
 

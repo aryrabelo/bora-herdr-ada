@@ -36,6 +36,7 @@ fn modified_url_click_modifier_matches_terminal_mouse_reporting() {
     assert_eq!(modified_url_click_modifier(), KeyModifiers::CONTROL);
 }
 
+mod chat;
 mod clipboard;
 mod copy_mode;
 mod lease;
@@ -115,6 +116,7 @@ impl App {
                 }
                 Mode::Settings => self.handle_settings_key(key_event),
                 Mode::GlobalMenu => handle_global_menu_key(&mut self.state, key_event),
+                Mode::Chat => self.handle_chat_key(key_event),
                 Mode::KeybindHelp => handle_keybind_help_key(&mut self.state, key),
                 Mode::Navigator => {
                     handle_navigator_key(&mut self.state, &self.terminal_runtimes, key_event)
@@ -208,9 +210,12 @@ impl App {
             }
         }
     }
-
     pub(crate) fn paste_into_active_text_input(&mut self, text: &str) -> bool {
         match self.state.mode {
+            Mode::Chat => {
+                self.state.chat.input.push_str(text);
+                true
+            }
             Mode::RenameWorkspace
             | Mode::RenameTab
             | Mode::RenamePane
@@ -784,6 +789,7 @@ pub(crate) fn modal_paste_target_active(state: &AppState) -> bool {
             .worktree_open
             .as_ref()
             .is_some_and(|open| open.search_focused),
+        Mode::Chat => true,
         Mode::Navigator => state.navigator.search_focused,
         Mode::KeybindHelp => state.keybind_help.search_focused,
         Mode::Copy => state

@@ -1048,6 +1048,160 @@ fn wait_matched_response(request_id: &str, event: serde_json::Value) -> String {
     .unwrap()
 }
 
+/// Result of a `channel.wait`: the durable answer to "what happened after
+/// my cursor", read from the retained transcript — never just an in-memory
+/// event.
+pub(super) struct ChannelWaitOutcome {
+    pub messages: Vec<crate::api::schema::ChannelMessage>,
+    pub gap: bool,
+    pub oldest_seq: Option<u64>,
+    pub timed_out: bool,
+}
+
+/// Snapshot truth for a cursor: every retained message with
+/// `seq > after_seq`, plus an explicit gap flag when the cursor predates
+/// the oldest retained line (rotation dropped messages in between) or the
+/// retained history is empty while the cursor is past 0. A gap is reported,
+/// never papered over.
+fn channel_wait_snapshot(name: &str, after_seq: u64) -> std::io::Result<ChannelWaitOutcome> {
+    let since = crate::persist::channels::read_since(name, after_seq)?;
+    let gap = match since.oldest_seq {
+        // Pre-seq lines read as seq 0, so a 0 cursor never gaps against them.
+        Some(oldest) => oldest > after_seq.saturating_add(1),
+        None => after_seq > 0,
+    };
+    Ok(ChannelWaitOutcome {
+        messages: since.messages,
+        gap,
+        oldest_seq: since.oldest_seq,
+        timed_out: false,
+    })
+}
+
+/// Poll ticks between belt-and-braces history re-reads when no matching
+/// event was observed — the event hub ring only retains 512 entries, so a
+/// busy server can evict our channel's event before we scan it. The
+/// transcript on disk is the truth; this bounds how stale the hub-only
+/// fast path can go (~1s at the 100ms poll interval).
+const CHANNEL_WAIT_SNAPSHOT_EVERY_TICKS: u32 = 10;
+
+/// `channel.wait` core loop, mirroring `wait_for_event`'s poll pattern:
+/// backlog first (a snapshot on the first tick returns before any waiting),
+/// then watch the event hub for a `channel.message` on this channel and
+/// re-read the transcript when one lands. `None` means the caller cancelled
+/// (client disconnected); a timeout is a clean `timed_out` outcome.
+fn poll_channel_wait(
+    name: &str,
+    after_seq: u64,
+    timeout_ms: Option<u64>,
+    event_hub: &EventHub,
+    mut cancelled: impl FnMut() -> bool,
+) -> std::io::Result<Option<ChannelWaitOutcome>> {
+    let deadline =
+        timeout_ms.map(|ms| std::time::Instant::now() + std::time::Duration::from_millis(ms));
+    let mut hub_sequence = event_hub.current_sequence();
+    let mut ticks: u32 = 0;
+    loop {
+        if cancelled() {
+            return Ok(None);
+        }
+        ticks += 1;
+
+        let mut new_message = false;
+        for (sequence, envelope) in event_hub.events_after(hub_sequence) {
+            hub_sequence = hub_sequence.max(sequence);
+            if matches!(
+                &envelope.data,
+                EventData::ChannelMessage { channel, .. } if *channel == name
+            ) {
+                new_message = true;
+            }
+        }
+
+        // First tick = the backlog check; later ticks re-read on a matching
+        // event or periodically so an evicted event can never strand us.
+        if ticks == 1 || new_message || ticks.is_multiple_of(CHANNEL_WAIT_SNAPSHOT_EVERY_TICKS) {
+            let outcome = channel_wait_snapshot(name, after_seq)?;
+            if !outcome.messages.is_empty() || outcome.gap {
+                return Ok(Some(outcome));
+            }
+        }
+
+        if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
+            // Last-chance read before declaring a timeout: the message may
+            // be on disk even if its event already rotated out of the hub.
+            let mut outcome = channel_wait_snapshot(name, after_seq)?;
+            if !outcome.messages.is_empty() || outcome.gap {
+                return Ok(Some(outcome));
+            }
+            outcome.timed_out = true;
+            return Ok(Some(outcome));
+        }
+
+        std::thread::sleep(crate::api::server::CONNECTION_POLL_INTERVAL);
+    }
+}
+
+/// `channel.wait` entry point: cursor-based tail follow over the durable
+/// channel transcript. Backlog-first, gap-honest, clean timeout — see
+/// [`ChannelWaitParams`] for the wire contract.
+pub(super) fn wait_for_channel_message(
+    request_id: String,
+    params: crate::api::schema::ChannelWaitParams,
+    stream: &mut LocalStream,
+    event_hub: &EventHub,
+    running: &Arc<AtomicBool>,
+) -> std::io::Result<Option<String>> {
+    let name = crate::persist::channels::normalize_channel_name(&params.name);
+    if name.is_empty() {
+        return Ok(Some(
+            serde_json::to_string(&ErrorResponse {
+                id: request_id,
+                error: ErrorBody {
+                    code: "invalid_channel_name".into(),
+                    message: "channel name must not be empty".into(),
+                },
+            })
+            .unwrap(),
+        ));
+    }
+    let outcome = match poll_channel_wait(
+        &name,
+        params.after_seq,
+        params.timeout_ms,
+        event_hub,
+        || should_stop_connection(stream, running).unwrap_or(true),
+    ) {
+        Ok(Some(outcome)) => outcome,
+        // The client went away mid-wait; there is nobody to answer.
+        Ok(None) => return Ok(None),
+        Err(err) => {
+            return Ok(Some(
+                serde_json::to_string(&ErrorResponse {
+                    id: request_id,
+                    error: ErrorBody {
+                        code: "channel_wait_failed".into(),
+                        message: err.to_string(),
+                    },
+                })
+                .unwrap(),
+            ));
+        }
+    };
+    Ok(Some(
+        serde_json::to_string(&SuccessResponse {
+            id: request_id,
+            result: ResponseResult::ChannelWait {
+                messages: outcome.messages,
+                gap: outcome.gap,
+                oldest_seq: outcome.oldest_seq,
+                timed_out: outcome.timed_out,
+            },
+        })
+        .unwrap(),
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1077,5 +1231,155 @@ mod tests {
         let unavailable: ErrorResponse = serde_json::from_str(&unavailable).unwrap();
         assert_eq!(unavailable.id, "wait");
         assert_eq!(unavailable.error.code, "server_unavailable");
+    }
+
+    mod channel_wait {
+        use super::super::*;
+        use crate::api::schema::{ChannelMessage, EventData, EventKind};
+        use crate::api::EventHub;
+
+        fn with_isolated_state_dir<T>(name: &str, f: impl FnOnce() -> T) -> T {
+            let _guard = crate::config::test_config_env_lock().lock().unwrap();
+            let old_state = std::env::var_os("XDG_STATE_HOME");
+            let dir = std::env::temp_dir().join(format!(
+                "bora-channel-wait-test-{name}-{}",
+                std::process::id()
+            ));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::env::set_var("XDG_STATE_HOME", &dir);
+            let result = f();
+            match old_state {
+                Some(value) => std::env::set_var("XDG_STATE_HOME", value),
+                None => std::env::remove_var("XDG_STATE_HOME"),
+            }
+            let _ = std::fs::remove_dir_all(&dir);
+            result
+        }
+
+        fn message(text: &str, seq: u64) -> ChannelMessage {
+            ChannelMessage {
+                ts: "2026-08-15T00:00:00Z".into(),
+                seq,
+                from_pane: "w1A:p2".into(),
+                from_name: "brandos".into(),
+                text: text.into(),
+                in_reply_to: None,
+                to_pane: None,
+            }
+        }
+
+        fn append(name: &str, text: &str) -> ChannelMessage {
+            let seq = crate::persist::channels::next_seq(name);
+            let appended = message(text, seq);
+            crate::persist::channels::append_message(name, &appended).unwrap();
+            appended
+        }
+
+        fn poll(
+            name: &str,
+            after_seq: u64,
+            timeout_ms: Option<u64>,
+            event_hub: &EventHub,
+        ) -> ChannelWaitOutcome {
+            poll_channel_wait(name, after_seq, timeout_ms, event_hub, || false)
+                .expect("channel wait poll")
+                .expect("not cancelled")
+        }
+
+        #[test]
+        fn returns_backlog_immediately_without_waiting() {
+            with_isolated_state_dir("backlog", || {
+                append("eng", "one");
+                append("eng", "two");
+                let event_hub = EventHub::default();
+                let started = std::time::Instant::now();
+                let outcome = poll("eng", 0, Some(2_000), &event_hub);
+                // Already-present history must satisfy the wait before any
+                // blocking: this returns far under the 2s timeout.
+                assert!(started.elapsed() < std::time::Duration::from_secs(1));
+                assert!(!outcome.timed_out);
+                assert!(!outcome.gap);
+                assert_eq!(
+                    outcome.messages.iter().map(|m| m.seq).collect::<Vec<_>>(),
+                    vec![1, 2]
+                );
+            });
+        }
+
+        #[test]
+        fn blocks_until_a_message_lands_then_returns_it() {
+            with_isolated_state_dir("block", || {
+                let event_hub = EventHub::default();
+                let hub = event_hub.clone();
+                let appender = std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(150));
+                    let appended = append("eng", "late");
+                    // Mirror what handle_channel_send does: durable append
+                    // first, then the wake-up event.
+                    hub.push(crate::api::schema::EventEnvelope {
+                        event: EventKind::ChannelMessage,
+                        data: EventData::ChannelMessage {
+                            channel: "eng".into(),
+                            seq: appended.seq,
+                            from_pane: Some("w1A:p2".into()),
+                            from_name: "brandos".into(),
+                            text: appended.text,
+                            to_pane: None,
+                        },
+                    });
+                });
+                let outcome = poll("eng", 0, Some(5_000), &event_hub);
+                appender.join().expect("appender");
+                assert!(!outcome.timed_out);
+                assert_eq!(outcome.messages.len(), 1);
+                assert_eq!(outcome.messages[0].text, "late");
+                assert_eq!(outcome.messages[0].seq, 1);
+            });
+        }
+
+        #[test]
+        fn detects_rotation_gap_instead_of_silent_loss() {
+            with_isolated_state_dir("gap", || {
+                for i in 0..10 {
+                    append("eng", &format!("msg{i}"));
+                }
+                let path = crate::persist::channels::channel_file_path("eng");
+                // 10 lines > cap 4 -> keep newest 2 (seq 9, 10).
+                rotate_for_test(&path, 4);
+                let outcome = poll("eng", 3, Some(2_000), &EventHub::default());
+                assert!(outcome.gap);
+                assert_eq!(outcome.oldest_seq, Some(9));
+                assert_eq!(
+                    outcome.messages.iter().map(|m| m.seq).collect::<Vec<_>>(),
+                    vec![9, 10]
+                );
+                assert!(!outcome.timed_out);
+            });
+        }
+
+        #[test]
+        fn timeout_is_a_clean_no_message_not_an_error() {
+            with_isolated_state_dir("timeout", || {
+                let outcome = poll("eng", 0, Some(120), &EventHub::default());
+                assert!(outcome.timed_out);
+                assert!(outcome.messages.is_empty());
+                assert!(!outcome.gap);
+                assert_eq!(outcome.oldest_seq, None);
+            });
+        }
+
+        /// Test seam for `persist::channels::rotate_to_cap` (private there).
+        fn rotate_for_test(path: &std::path::Path, max_lines: usize) {
+            // Rotation is reachable through append_message's cap policy in
+            // production; for a tight test we rewrite to the same newest-
+            // half shape directly.
+            let lines: Vec<String> = std::fs::read_to_string(path)
+                .expect("channel log")
+                .lines()
+                .map(str::to_string)
+                .collect();
+            let keep_from = lines.len() - max_lines / 2;
+            std::fs::write(path, lines[keep_from..].join("\n") + "\n").expect("rewrite");
+        }
     }
 }

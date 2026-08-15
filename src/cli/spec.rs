@@ -174,6 +174,17 @@ fn channel_command() -> Command {
                 .arg(json_flag()),
         )
         .subcommand(
+            Command::new("tail")
+                .about("Print messages after a seq cursor; --follow keeps watching")
+                .arg(required("name", "NAME"))
+                .arg(
+                    option("after", "SEQ")
+                        .help("Resume from this sequence id (messages with greater seq)"),
+                )
+                .arg(flag("follow").help("Keep watching for new messages (Ctrl-C to stop)"))
+                .arg(json_flag()),
+        )
+        .subcommand(
             Command::new("members")
                 .about("List a #channel's member panes")
                 .arg(required("name", "NAME"))

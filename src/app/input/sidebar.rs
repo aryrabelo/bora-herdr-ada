@@ -255,7 +255,12 @@ impl AppState {
     }
 
     pub(crate) fn global_menu_labels(&self) -> Vec<&'static str> {
-        let mut labels = vec!["settings", "keybinds", "reload config"];
+        let mut labels = vec!["settings"];
+        if self.chat_view {
+            labels.push("chat");
+        }
+        labels.push("keybinds");
+        labels.push("reload config");
         if self.update_available.is_some() {
             labels.push("update ready");
         } else if self.latest_release_notes_available {

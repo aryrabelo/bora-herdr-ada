@@ -5,8 +5,8 @@ use serde::Serialize;
 use crate::api::client::{ApiClient, ApiClientError};
 use crate::api::schema::{
     AgentStatus, ChannelCreateParams, ChannelHistoryParams, ChannelMembersParams,
-    ChannelSendParams, ClientWindowTitleSetParams, EmptyParams, Method, PaneAgentState, ReadFormat,
-    ReadSource, Request, SplitDirection,
+    ChannelSendParams, ChannelWaitParams, ClientWindowTitleSetParams, EmptyParams, Method,
+    PaneAgentState, ReadFormat, ReadSource, Request, SplitDirection,
 };
 
 mod agent;
@@ -119,6 +119,7 @@ fn run_channel_command(args: &[String]) -> std::io::Result<i32> {
         Some("list") if args.len() == 1 => channel_list(),
         Some("send") => channel_send(&args[1..]),
         Some("history") => channel_history(&args[1..]),
+        Some("tail") => channel_tail(&args[1..]),
         Some("members") => channel_members(&args[1..]),
         Some("help" | "--help" | "-h") => {
             print_channel_help();
@@ -193,6 +194,8 @@ fn channel_send(args: &[String]) -> std::io::Result<i32> {
             name: name.clone(),
             text: text.clone(),
             from_pane,
+            to: None,
+            in_reply_to: None,
         }),
     })?)
 }
@@ -257,6 +260,106 @@ fn channel_history(args: &[String]) -> std::io::Result<i32> {
         println!("{hhmm} {from_name}: {text}");
     }
     Ok(0)
+}
+
+/// Server-side poll window per `--follow` iteration; each round-trip is a
+/// fresh `channel.wait` connection, so Ctrl-C simply drops the socket and
+/// the server's disconnect check ends that wait.
+const CHANNEL_TAIL_FOLLOW_POLL_MS: u64 = 2_000;
+
+fn channel_tail(args: &[String]) -> std::io::Result<i32> {
+    let Some(name) = args.first() else {
+        eprintln!("usage: bora channel tail <name> [--after SEQ] [--follow] [--json]");
+        return Ok(2);
+    };
+    let mut after_seq: u64 = 0;
+    let mut follow = false;
+    let mut json = false;
+    let mut index = 1;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--after" => {
+                let Some(value) = args.get(index + 1) else {
+                    eprintln!("missing value for --after");
+                    return Ok(2);
+                };
+                after_seq = match value.parse::<u64>() {
+                    Ok(seq) => seq,
+                    Err(_) => {
+                        eprintln!("--after must be a non-negative integer");
+                        return Ok(2);
+                    }
+                };
+                index += 2;
+            }
+            "--follow" | "-f" => {
+                follow = true;
+                index += 1;
+            }
+            "--json" => {
+                json = true;
+                index += 1;
+            }
+            option => {
+                eprintln!("unknown option: {option}");
+                return Ok(2);
+            }
+        }
+    }
+
+    loop {
+        // One-shot (`--follow` absent) uses timeout 0: backlog snapshot,
+        // never blocks. Follow mode blocks server-side per poll window.
+        let response = send_request(&Request {
+            id: "cli:channel:tail".into(),
+            method: Method::ChannelWait(ChannelWaitParams {
+                name: name.clone(),
+                after_seq,
+                timeout_ms: Some(if follow {
+                    CHANNEL_TAIL_FOLLOW_POLL_MS
+                } else {
+                    0
+                }),
+            }),
+        })?;
+        if response.get("error").is_some() {
+            eprintln!("{}", serde_json::to_string(&response).unwrap());
+            return Ok(1);
+        }
+
+        let result = &response["result"];
+        if json {
+            println!("{}", serde_json::to_string(&response).unwrap());
+        } else {
+            if result["gap"].as_bool() == Some(true) {
+                match result["oldest_seq"].as_u64() {
+                    Some(oldest) => eprintln!(
+                        "#gap: messages between your cursor and seq {oldest} were rotated away; resuming from the oldest retained"
+                    ),
+                    None => eprintln!(
+                        "#gap: no history retained; cursor {after_seq} predates it"
+                    ),
+                }
+            }
+            for message in result["messages"].as_array().cloned().unwrap_or_default() {
+                let seq = message["seq"].as_u64().unwrap_or(0);
+                let ts = message["ts"].as_str().unwrap_or("");
+                let hhmm = ts.get(11..16).unwrap_or(ts);
+                let from_name = message["from_name"].as_str().unwrap_or("?");
+                let text = message["text"].as_str().unwrap_or("");
+                println!("{seq} {hhmm} {from_name}: {text}");
+            }
+        }
+
+        after_seq = result["messages"]
+            .as_array()
+            .and_then(|messages| messages.last())
+            .and_then(|message| message["seq"].as_u64())
+            .unwrap_or(after_seq);
+        if !follow {
+            return Ok(0);
+        }
+    }
 }
 
 fn channel_members(args: &[String]) -> std::io::Result<i32> {
@@ -424,6 +527,11 @@ fn print_channel_help() {
     );
     eprintln!("  bora channel history <name> [--lines N] [--json]");
     eprintln!("                                                print a #channel's message history");
+    eprintln!("  bora channel tail <name> [--after SEQ] [--follow] [--json]");
+    eprintln!(
+        "                                                print messages after a seq cursor and"
+    );
+    eprintln!("                                                optionally follow new ones");
     eprintln!("  bora channel members <name> [--json]         list a #channel's member panes");
 }
 

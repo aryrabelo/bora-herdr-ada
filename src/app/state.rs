@@ -886,6 +886,7 @@ pub enum Mode {
     GlobalMenu,
     KeybindHelp,
     Navigator,
+    Chat,
 }
 
 impl Mode {
@@ -1696,6 +1697,28 @@ pub struct KeybindHelpState {
     pub search_focused: bool,
 }
 
+/// TUI chat view presentation state (client layer). Channel data is fetched
+/// through the channel JSON API (`channel.list` / `channel.history` /
+/// `channel.members`) and cached here for render; live appends are pushed in
+/// by the send path while the view is open. Nothing here is server-authoritative.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ChatViewState {
+    /// Selected row in the channel list.
+    pub selected: usize,
+    /// Message-area scroll offset, in wrapped display lines from the top.
+    pub scroll: usize,
+    /// Compose buffer for the input line.
+    pub input: String,
+    /// Transient status line (send errors, hints); cleared on next success.
+    pub status: Option<String>,
+    /// Cached `channel.list` result.
+    pub channels: Vec<crate::api::schema::ChannelSummary>,
+    /// Cached `channel.history` for the selected channel.
+    pub messages: Vec<crate::api::schema::ChannelMessage>,
+    /// Cached `channel.members` for the selected channel.
+    pub members: Vec<crate::api::schema::ChannelMember>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SidebarWidthSource {
     ConfigDefault,
@@ -1763,6 +1786,10 @@ pub struct AppState {
     /// Set when UI interaction asked to run the configured flow command for
     /// a GitHub issue; drained by App to spawn the flow pane.
     pub request_flow_run: Option<FlowRunRequest>,
+    /// Set when UI interaction asked to open the chat view; drained by App,
+    /// which fetches channel data through the JSON API (mouse handlers stay
+    /// side-effect-light).
+    pub request_open_chat: bool,
     /// Set when the sidebar "+" affordance asked to open the Create worktree
     /// modal for a repo (by `repo_identity`); drained by App to trigger fetches
     /// and open the modal so the mouse handler stays side-effect-light.
@@ -1776,6 +1803,7 @@ pub struct AppState {
     pub rename_pane_target: Option<PaneId>,
     pub worktree_create: Option<WorktreeCreateState>,
     pub worktree_open: Option<WorktreeOpenState>,
+    pub chat: ChatViewState,
     pub worktree_remove: Option<WorktreeRemoveState>,
     pub worktree_directory: std::path::PathBuf,
     /// Global `[flow]` command template from config.toml. Repos can override
@@ -1874,6 +1902,8 @@ pub struct AppState {
     pub show_agent_labels_on_pane_borders: bool,
     pub show_pane_ids_on_pane_borders: bool,
     pub channel_group_name: String,
+    /// Whether the fork-only chat view surface is enabled (`ui.chat_view`).
+    pub chat_view: bool,
     pub hide_tab_bar_when_single_tab: bool,
     pub tab_bar_position: TabBarPositionConfig,
     pub tab_bar_right: Vec<TabBarStatusSegment>,
@@ -2271,6 +2301,8 @@ impl AppState {
                 split_borders: Vec::new(),
                 right_panel_rect: Rect::default(),
             },
+            chat: ChatViewState::default(),
+            request_open_chat: false,
             drag: None,
             workspace_press: None,
             tab_press: None,
@@ -2331,6 +2363,7 @@ impl AppState {
             show_agent_labels_on_pane_borders: false,
             show_pane_ids_on_pane_borders: false,
             channel_group_name: "channels".to_string(),
+            chat_view: false,
             hide_tab_bar_when_single_tab: false,
             tab_bar_position: TabBarPositionConfig::Top,
             tab_bar_right: Vec::new(),

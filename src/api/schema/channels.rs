@@ -15,6 +15,17 @@ pub struct ChannelSendParams {
     pub text: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub from_pane: Option<String>,
+    /// Structured addressing: a nick or raw pane id resolved server-side
+    /// against the channel's member panes. The primary addressing path for
+    /// model senders — never depend on in-body `@nick` parsing. Unique match
+    /// -> delivered to that pane only; 2+ matches -> `channel_nick_ambiguous`;
+    /// no match -> `channel_nick_unknown` (the send fails before append).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to: Option<String>,
+    /// Seq of the channel message this one replies to. Threading metadata
+    /// only — recorded on the message, never used for delivery.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub in_reply_to: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -27,6 +38,25 @@ pub struct ChannelHistoryParams {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ChannelMembersParams {
     pub name: String,
+}
+
+/// `channel.wait`: cursor-based tail follow. Returns every retained message
+/// with `seq > after_seq` (backlog first), then blocks until a new message
+/// is appended or `timeout_ms` elapses. `None` timeout waits forever;
+/// `Some(0)` never blocks (backlog-only snapshot). Timeout is a clean
+/// `timed_out: true` response, never an error. When `after_seq` predates
+/// the oldest retained line (rotation dropped messages in between), the
+/// response says so via `gap: true` + `oldest_seq` instead of pretending
+/// continuity.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct ChannelWaitParams {
+    pub name: String,
+    /// Resume cursor: only messages with a strictly greater seq are
+    /// returned. `0` skips pre-seq history (old lines default to seq 0).
+    #[serde(default)]
+    pub after_seq: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -62,9 +92,21 @@ pub struct ChannelMember {
 pub struct ChannelMessage {
     /// RFC 3339 timestamp.
     pub ts: String,
+    /// Monotonic per-channel sequence id, assigned server-side at append
+    /// time. Survives log rotation (`next = last + 1`, never a line count).
+    /// `0` marks pre-seq history written before this field existed.
+    #[serde(default)]
+    pub seq: u64,
     pub from_pane: String,
     pub from_name: String,
     pub text: String,
+    /// Seq of the message being replied to, when this was sent as a reply.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub in_reply_to: Option<u64>,
+    /// Pane id of a targeted recipient; `None` = broadcast to every member
+    /// agent pane.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to_pane: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

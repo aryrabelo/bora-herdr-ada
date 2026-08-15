@@ -682,6 +682,7 @@ impl App {
             request_open_url: None,
             request_open_pr_worktree: None,
             request_flow_run: None,
+            request_open_chat: false,
             request_open_create_worktree: None,
             pending_bora_command: None,
             bora_port_override: None,
@@ -713,6 +714,7 @@ impl App {
             }),
             keybind_help: state::KeybindHelpState::default(),
             navigator: state::NavigatorState::default(),
+            chat: state::ChatViewState::default(),
             copy_mode: None,
             workspace_scroll: 0,
             agent_panel_scroll: 0,
@@ -801,6 +803,7 @@ impl App {
             show_agent_labels_on_pane_borders: config.ui.show_agent_labels_on_pane_borders,
             show_pane_ids_on_pane_borders: config.ui.show_pane_ids_on_pane_borders,
             channel_group_name: config.ui.channel_group_name.clone(),
+            chat_view: config.ui.chat_view,
             hide_tab_bar_when_single_tab: config.ui.hide_tab_bar_when_single_tab,
             tab_bar_position: config.ui.tab_bar_position,
             tab_bar_right: Vec::new(),
@@ -1214,17 +1217,22 @@ impl App {
         if let Some(channel) = origin_channel {
             let line = crate::api::schema::ChannelMessage {
                 ts: rfc3339_now(),
+                seq: crate::persist::channels::next_seq(&channel),
                 from_pane: "system".to_string(),
                 from_name: "bora".to_string(),
                 text: format!("delivery to {target_pane} dropped: {reason_text}"),
+                in_reply_to: None,
+                to_pane: None,
             };
             if let Err(err) = crate::persist::channels::append_message(&channel, &line) {
                 tracing::warn!(
                     channel = %channel,
-                    target = %target_pane,
+                    target_pane = %target_pane,
                     error = %err,
                     "failed to append delivery-drop notice to channel history"
                 );
+            } else {
+                self.state.push_chat_message(&channel, line);
             }
         }
     }
@@ -1487,6 +1495,12 @@ impl App {
 
             if let Some(repo_identity) = self.state.request_open_create_worktree.take() {
                 self.open_create_worktree_modal(&repo_identity);
+                needs_render = true;
+            }
+
+            if self.state.request_open_chat {
+                self.state.request_open_chat = false;
+                self.open_chat_view();
                 needs_render = true;
             }
 
@@ -2026,6 +2040,7 @@ impl App {
                     config.ui.show_agent_labels_on_pane_borders;
                 self.state.show_pane_ids_on_pane_borders = config.ui.show_pane_ids_on_pane_borders;
                 self.state.channel_group_name = config.ui.channel_group_name.clone();
+                self.state.chat_view = config.ui.chat_view;
                 self.state.hide_tab_bar_when_single_tab = config.ui.hide_tab_bar_when_single_tab;
                 self.state.tab_bar_position = config.ui.tab_bar_position;
                 self.configure_tab_bar_status(
@@ -2622,6 +2637,7 @@ impl App {
             Mode::Navigator => {
                 input::handle_navigator_key(&mut self.state, &self.terminal_runtimes, key_event);
             }
+            Mode::Chat => self.handle_chat_key(key_event),
             Mode::Terminal => {
                 // Should not be called in terminal mode.
             }

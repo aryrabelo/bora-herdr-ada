@@ -452,6 +452,13 @@ impl App {
             NavigateAction::OpenNavigator => {
                 self.state.open_navigator_from(&self.terminal_runtimes)
             }
+            NavigateAction::OpenChat => {
+                if self.state.chat_view {
+                    self.open_chat_view();
+                } else {
+                    leave_navigate_mode(&mut self.state);
+                }
+            }
         }
 
         finish_action_context(&mut self.state, context, previous_mode);
@@ -1418,6 +1425,7 @@ pub(crate) enum NavigateAction {
     SwitchTab(usize),
     FocusAgent(usize),
     WorkspacePicker,
+    OpenChat,
     PreviousWorkspace,
     NextWorkspace,
     PreviousAgent,
@@ -1609,6 +1617,7 @@ fn non_indexed_action_for_key(
         ),
         (&kb.detach, NavigateAction::Detach),
         (&kb.goto, NavigateAction::OpenNavigator),
+        (&kb.chat, NavigateAction::OpenChat),
     ] {
         if action_matches(bindings, key, dispatch) {
             return Some(action);
@@ -1893,6 +1902,10 @@ pub(super) fn execute_navigate_action_in_context(
         }
         NavigateAction::Detach => {
             super::modal::request_detach(state);
+            leave_navigate_mode(state);
+        }
+        NavigateAction::OpenChat => {
+            state.request_open_chat = true;
             leave_navigate_mode(state);
         }
         NavigateAction::OpenNavigator => state.open_navigator_from(terminal_runtimes),

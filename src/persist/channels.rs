@@ -96,6 +96,66 @@ pub fn read_tail(name: &str, limit: usize) -> io::Result<Vec<ChannelMessage>> {
     Ok(all.split_off(start))
 }
 
+/// Next per-channel sequence id: last persisted seq + 1 (1 for a channel
+/// with no readable history). Reads the tail rather than counting lines so
+/// ids stay monotonic across rotation; pre-seq history lines default to 0,
+/// so the first seq'd message following old history is 1.
+pub fn next_seq(name: &str) -> u64 {
+    read_tail(name, 1)
+        .ok()
+        .and_then(|mut tail| tail.pop())
+        .map_or(1, |last| last.seq + 1)
+}
+
+/// Cursor read for `channel.wait`: every retained message with
+/// `seq > after_seq` (in append order), plus the oldest retained seq so the
+/// caller can detect a rotation gap (`oldest > after_seq + 1` means
+/// messages in between were dropped) instead of silently losing them.
+/// Pre-seq history lines (seq 0) count as the oldest retained line, so a
+/// cursor of 0 never reports a gap against them. A missing file reads as
+/// empty history.
+pub fn read_since(name: &str, after_seq: u64) -> io::Result<ChannelSince> {
+    let file = match fs::File::open(channel_file_path(name)) {
+        Ok(file) => file,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => {
+            return Ok(ChannelSince {
+                messages: Vec::new(),
+                oldest_seq: None,
+            });
+        }
+        Err(err) => return Err(err),
+    };
+    let mut since = ChannelSince {
+        messages: Vec::new(),
+        oldest_seq: None,
+    };
+    for line in io::BufReader::new(file).lines() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        if let Ok(message) = serde_json::from_str::<ChannelMessage>(&line) {
+            if since.oldest_seq.is_none() {
+                since.oldest_seq = Some(message.seq);
+            }
+            if message.seq > after_seq {
+                since.messages.push(message);
+            }
+        }
+    }
+    Ok(since)
+}
+
+/// Retained-history snapshot returned by [`read_since`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ChannelSince {
+    /// Retained messages with `seq > after_seq`, in append order.
+    pub messages: Vec<ChannelMessage>,
+    /// Seq of the oldest retained (parseable) line; `None` when no history
+    /// is retained at all.
+    pub oldest_seq: Option<u64>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -119,9 +179,12 @@ mod tests {
     fn message(text: &str) -> ChannelMessage {
         ChannelMessage {
             ts: "2026-08-15T00:00:00Z".into(),
+            seq: 0,
             from_pane: "w1A:p2".into(),
             from_name: "brandos".into(),
             text: text.into(),
+            in_reply_to: None,
+            to_pane: None,
         }
     }
 
@@ -220,6 +283,106 @@ mod tests {
             }
             let tail = read_tail("normal", 100).unwrap();
             assert_eq!(tail.len(), 5);
+        });
+    }
+
+    fn append_with_seq(name: &str, text: &str) -> u64 {
+        let seq = next_seq(name);
+        let mut message = message(text);
+        message.seq = seq;
+        append_message(name, &message).unwrap();
+        seq
+    }
+
+    #[test]
+    fn next_seq_stays_monotonic_across_rotation() {
+        with_isolated_state_dir("seq-rotation", || {
+            for i in 0..10 {
+                append_with_seq("rotate", &format!("msg{i}"));
+            }
+            let path = channel_file_path("rotate");
+            // 10 lines > cap 4 -> keep newest 2 (seq 9, 10).
+            rotate_to_cap(&path, 4).unwrap();
+            // The next seq must continue from the last persisted seq, never
+            // restart from the rotated line count.
+            assert_eq!(next_seq("rotate"), 11);
+            let since = read_since("rotate", 0).unwrap();
+            assert_eq!(
+                since.messages.iter().map(|m| m.seq).collect::<Vec<_>>(),
+                vec![9, 10]
+            );
+            assert_eq!(since.oldest_seq, Some(9));
+        });
+    }
+
+    #[test]
+    fn next_seq_seeds_from_last_persisted_line_after_restart() {
+        with_isolated_state_dir("seq-reseed", || {
+            // A log written by a previous process: last line seq 7.
+            fs::create_dir_all(channels_dir()).unwrap();
+            let path = channel_file_path("reseed");
+            let mut file = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+                .unwrap();
+            for seq in [5u64, 7] {
+                let mut message = message(&format!("msg{seq}"));
+                message.seq = seq;
+                writeln!(file, "{}", serde_json::to_string(&message).unwrap()).unwrap();
+            }
+            file.flush().unwrap();
+            drop(file);
+            assert_eq!(next_seq("reseed"), 8);
+        });
+    }
+
+    #[test]
+    fn read_since_slices_by_cursor_and_reports_oldest() {
+        with_isolated_state_dir("read-since", || {
+            for i in 0..5 {
+                append_with_seq("cursor", &format!("msg{i}"));
+            }
+            let all = read_since("cursor", 0).unwrap();
+            assert_eq!(
+                all.messages.iter().map(|m| m.seq).collect::<Vec<_>>(),
+                vec![1, 2, 3, 4, 5]
+            );
+            assert_eq!(all.oldest_seq, Some(1));
+
+            let tail = read_since("cursor", 3).unwrap();
+            assert_eq!(
+                tail.messages.iter().map(|m| m.seq).collect::<Vec<_>>(),
+                vec![4, 5]
+            );
+
+            let none = read_since("cursor", 5).unwrap();
+            assert!(none.messages.is_empty());
+            assert_eq!(none.oldest_seq, Some(1));
+        });
+    }
+
+    #[test]
+    fn old_jsonl_lines_default_to_pre_seq_values() {
+        with_isolated_state_dir("pre-seq", || {
+            fs::create_dir_all(channels_dir()).unwrap();
+            let path = channel_file_path("legacy");
+            fs::write(
+                &path,
+                "{\"ts\":\"2026-08-15T00:00:00Z\",\"from_pane\":\"w1A:p2\",\"from_name\":\"brandos\",\"text\":\"legacy\"}\n",
+            )
+            .unwrap();
+            let tail = read_tail("legacy", 10).unwrap();
+            let legacy = tail.first().expect("legacy line parses");
+            assert_eq!(legacy.seq, 0);
+            assert_eq!(legacy.in_reply_to, None);
+            assert_eq!(legacy.to_pane, None);
+            // First seq'd message after legacy history is 1, and a 0
+            // cursor skips the pre-seq line.
+            assert_eq!(next_seq("legacy"), 1);
+            let since = read_since("legacy", 0).unwrap();
+            assert!(since.messages.is_empty());
+            assert_eq!(since.oldest_seq, Some(0));
         });
     }
 }

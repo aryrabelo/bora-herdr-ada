@@ -79,14 +79,16 @@ pub(crate) enum GlobalMenuAction {
     Keybinds,
     ReloadConfig,
     Settings,
+    Chat,
 }
 
 pub(super) fn global_menu_actions(state: &AppState) -> Vec<GlobalMenuAction> {
-    let mut actions = vec![
-        GlobalMenuAction::Settings,
-        GlobalMenuAction::Keybinds,
-        GlobalMenuAction::ReloadConfig,
-    ];
+    let mut actions = vec![GlobalMenuAction::Settings];
+    if state.chat_view {
+        actions.push(GlobalMenuAction::Chat);
+    }
+    actions.push(GlobalMenuAction::Keybinds);
+    actions.push(GlobalMenuAction::ReloadConfig);
     if state.update_available.is_some() || state.latest_release_notes_available {
         actions.push(GlobalMenuAction::WhatsNew);
     }
@@ -141,6 +143,10 @@ pub(super) fn apply_global_menu_action(state: &mut AppState, action: GlobalMenuA
             leave_modal(state);
         }
         GlobalMenuAction::Settings => super::settings::open_settings(state),
+        GlobalMenuAction::Chat => {
+            state.request_open_chat = true;
+            leave_modal(state);
+        }
     }
 }
 

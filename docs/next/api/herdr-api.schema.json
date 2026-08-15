@@ -857,6 +857,49 @@
                 "reason"
               ],
               "type": "object"
+            },
+            {
+              "description": "A message was appended to a `#`-channel transcript (emitted right\nafter the durable append, before fan-out). `channel` is the\nnormalized name without the leading `#`; `seq` is the message's\nmonotonic per-channel id; `from_pane` is `None` for unattributed\nsenders; `to_pane` is the resolved targeted pane id or `None` for\nbroadcast.",
+              "properties": {
+                "channel": {
+                  "type": "string"
+                },
+                "from_name": {
+                  "type": "string"
+                },
+                "from_pane": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "seq": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "text": {
+                  "type": "string"
+                },
+                "to_pane": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "type": {
+                  "const": "channel_message",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "channel",
+                "seq",
+                "from_name",
+                "text"
+              ],
+              "type": "object"
             }
           ]
         },
@@ -892,7 +935,8 @@
             "github_prs_refreshed",
             "github_issues_refreshed",
             "queued_prompt_delivered",
-            "queued_prompt_dropped"
+            "queued_prompt_dropped",
+            "channel_message"
           ],
           "type": "string"
         },
@@ -1943,16 +1987,59 @@
                 "null"
               ]
             },
+            "in_reply_to": {
+              "description": "Seq of the channel message this one replies to. Threading metadata\nonly — recorded on the message, never used for delivery.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
             "name": {
               "type": "string"
             },
             "text": {
               "type": "string"
+            },
+            "to": {
+              "description": "Structured addressing: a nick or raw pane id resolved server-side\nagainst the channel's member panes. The primary addressing path for\nmodel senders — never depend on in-body `@nick` parsing. Unique match\n-> delivered to that pane only; 2+ matches -> `channel_nick_ambiguous`;\nno match -> `channel_nick_unknown` (the send fails before append).",
+              "type": [
+                "string",
+                "null"
+              ]
             }
           },
           "required": [
             "name",
             "text"
+          ],
+          "type": "object"
+        },
+        "ChannelWaitParams": {
+          "description": "`channel.wait`: cursor-based tail follow. Returns every retained message\nwith `seq > after_seq` (backlog first), then blocks until a new message\nis appended or `timeout_ms` elapses. `None` timeout waits forever;\n`Some(0)` never blocks (backlog-only snapshot). Timeout is a clean\n`timed_out: true` response, never an error. When `after_seq` predates\nthe oldest retained line (rotation dropped messages in between), the\nresponse says so via `gap: true` + `oldest_seq` instead of pretending\ncontinuity.",
+          "properties": {
+            "after_seq": {
+              "default": 0,
+              "description": "Resume cursor: only messages with a strictly greater seq are\nreturned. `0` skips pre-seq history (old lines default to seq 0).",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "name": {
+              "type": "string"
+            },
+            "timeout_ms": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "name"
           ],
           "type": "object"
         },
@@ -2337,6 +2424,22 @@
               "required": [
                 "event",
                 "pane_id"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "channel": {
+                  "type": "string"
+                },
+                "event": {
+                  "const": "channel_message",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "event",
+                "channel"
               ],
               "type": "object"
             }
@@ -6416,6 +6519,22 @@
             "params"
           ],
           "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "channel.wait",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/ChannelWaitParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
         }
       ],
       "properties": {
@@ -6953,8 +7072,31 @@
             "from_pane": {
               "type": "string"
             },
+            "in_reply_to": {
+              "description": "Seq of the message being replied to, when this was sent as a reply.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "seq": {
+              "default": 0,
+              "description": "Monotonic per-channel sequence id, assigned server-side at append\ntime. Survives log rotation (`next = last + 1`, never a line count).\n`0` marks pre-seq history written before this field existed.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
             "text": {
               "type": "string"
+            },
+            "to_pane": {
+              "description": "Pane id of a targeted recipient; `None` = broadcast to every member\nagent pane.",
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "ts": {
               "description": "RFC 3339 timestamp.",
@@ -7796,6 +7938,49 @@
                 "reason"
               ],
               "type": "object"
+            },
+            {
+              "description": "A message was appended to a `#`-channel transcript (emitted right\nafter the durable append, before fan-out). `channel` is the\nnormalized name without the leading `#`; `seq` is the message's\nmonotonic per-channel id; `from_pane` is `None` for unattributed\nsenders; `to_pane` is the resolved targeted pane id or `None` for\nbroadcast.",
+              "properties": {
+                "channel": {
+                  "type": "string"
+                },
+                "from_name": {
+                  "type": "string"
+                },
+                "from_pane": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "seq": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "text": {
+                  "type": "string"
+                },
+                "to_pane": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "type": {
+                  "const": "channel_message",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "channel",
+                "seq",
+                "from_name",
+                "text"
+              ],
+              "type": "object"
             }
           ]
         },
@@ -7846,7 +8031,8 @@
             "github_prs_refreshed",
             "github_issues_refreshed",
             "queued_prompt_delivered",
-            "queued_prompt_dropped"
+            "queued_prompt_dropped",
+            "channel_message"
           ],
           "type": "string"
         },
@@ -10875,6 +11061,42 @@
               "required": [
                 "type",
                 "members"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "`channel.wait` result. `messages` are every retained message with\n`seq > after_seq` in order — the last one's `seq` is the resume\ncursor. `gap: true` means rotation dropped messages between the\ncaller's cursor and `oldest_seq` (or the history is empty while the\ncursor is past 0): continuity is broken, not silent. `timed_out`\nmeans the deadline elapsed with nothing new — a clean no-message,\nnever an error.",
+              "properties": {
+                "gap": {
+                  "default": false,
+                  "type": "boolean"
+                },
+                "messages": {
+                  "items": {
+                    "$ref": "#/schemas/success_response/$defs/ChannelMessage"
+                  },
+                  "type": "array"
+                },
+                "oldest_seq": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "timed_out": {
+                  "default": false,
+                  "type": "boolean"
+                },
+                "type": {
+                  "const": "channel_wait",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "messages"
               ],
               "type": "object"
             }
