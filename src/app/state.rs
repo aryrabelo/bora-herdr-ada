@@ -1904,6 +1904,9 @@ pub struct AppState {
     pub channel_group_name: String,
     /// Whether the fork-only chat view surface is enabled (`ui.chat_view`).
     pub chat_view: bool,
+    /// Resolved human chat identity (`ui.chat_name`, else OS username, else
+    /// "you"). One source of truth for the chat send path and the renderer.
+    pub chat_name: String,
     pub hide_tab_bar_when_single_tab: bool,
     pub tab_bar_position: TabBarPositionConfig,
     pub tab_bar_right: Vec<TabBarStatusSegment>,
@@ -2364,6 +2367,7 @@ impl AppState {
             show_pane_ids_on_pane_borders: false,
             channel_group_name: "channels".to_string(),
             chat_view: false,
+            chat_name: "you".to_string(),
             hide_tab_bar_when_single_tab: false,
             tab_bar_position: TabBarPositionConfig::Top,
             tab_bar_right: Vec::new(),

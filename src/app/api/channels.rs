@@ -1,8 +1,8 @@
 use crate::api::schema::{
     AgentPromptParams, AgentStatus, ChannelCreateParams, ChannelDelivery, ChannelDeliveryStatus,
     ChannelHistoryParams, ChannelJoinParams, ChannelLeaveParams, ChannelMember,
-    ChannelMemberSource, ChannelMembersParams, ChannelMessage, ChannelSendParams, ChannelSummary,
-    ResponseResult,
+    ChannelMemberSource, ChannelMembersParams, ChannelMessage, ChannelSendParams,
+    ChannelSenderKind, ChannelSummary, ResponseResult,
 };
 use crate::app::App;
 use crate::persist::channels;
@@ -84,7 +84,10 @@ impl App {
         // appended or delivered. In-body `@nick` is convenience parsing for
         // human/TUI parity and never fails a send (orc aborts the whole
         // message on addressing it cannot parse — bora degrades instead).
+        // Either path can land on the human seat, which has no pane: the
+        // message is recorded as `to_human` and delivered to nobody.
         let mut to_pane: Option<String> = None;
+        let mut to_human = false;
         let raw_text = params.text.clone();
         let to = params
             .to
@@ -94,6 +97,7 @@ impl App {
         if let Some(to) = to {
             match self.resolve_channel_nick(ws_idx, to) {
                 NickResolution::Unique(pane_id) => to_pane = Some(pane_id),
+                NickResolution::Human => to_human = true,
                 NickResolution::Ambiguous(candidates) => {
                     return encode_error(
                         id,
@@ -120,6 +124,7 @@ impl App {
             // resolves; unknown or ambiguous degrades to literal broadcast.
             match self.resolve_channel_nick(ws_idx, &nick) {
                 NickResolution::Unique(pane_id) => to_pane = Some(pane_id),
+                NickResolution::Human => to_human = true,
                 NickResolution::Ambiguous(candidates) => tracing::debug!(
                     channel = %name,
                     nick = %nick,
@@ -138,10 +143,17 @@ impl App {
         // text where the backslash keeps an escaped token from addressing.
         let text = unescape_channel_text(&raw_text);
 
-        let sender_pane = params.from_pane.unwrap_or_default();
-        let sender_name = self
-            .pane_display_name(&sender_pane)
-            .unwrap_or_else(|| "unknown".to_string());
+        let sender_pane = if params.from_human {
+            String::new()
+        } else {
+            params.from_pane.unwrap_or_default()
+        };
+        let sender_name = if params.from_human {
+            self.state.chat_name.clone()
+        } else {
+            self.pane_display_name(&sender_pane)
+                .unwrap_or_else(|| "unknown".to_string())
+        };
         // Loop guard, mirroring the direct agent-prompt limit: a verified
         // sender pane may post to the same channel at most once per
         // rate-limit window, so two agents cannot ping-pong through a
@@ -170,14 +182,21 @@ impl App {
             seq: channels::next_seq(&name),
             from_pane: sender_pane.clone(),
             from_name: sender_name.clone(),
+            from_kind: if params.from_human {
+                ChannelSenderKind::Human
+            } else {
+                ChannelSenderKind::Agent
+            },
             text: text.clone(),
             in_reply_to: params.in_reply_to,
             to_pane: to_pane.clone(),
+            to_human,
         };
         if let Err(err) = channels::append_message(&name, &message) {
             return encode_error(id, "channel_send_failed", err.to_string());
         }
         self.state.push_chat_message(&name, message.clone());
+        self.notify_chat_to_human(&name, &message);
 
         // Durable-record event, mirroring the QueuedPromptDelivered emission:
         // the message is on disk, so `channel.wait` followers (and events.wait
@@ -202,11 +221,18 @@ impl App {
         let prefixed = format!("[#{name} from {sender_pane} {sender_name}] {text}");
 
         // Targeted delivery reaches only the resolved pane — and never the
-        // sender's own. Broadcast reaches every agent member pane as before.
-        let targets: Vec<String> = match &to_pane {
-            Some(target) if target != &sender_pane => vec![target.clone()],
-            Some(_) => Vec::new(),
-            None => self.channel_agent_member_pane_ids(ws_idx),
+        // sender's own. A message addressed to the human seat reaches no
+        // pane at all: the human reads it in the chat view transcript, and
+        // injecting it into agents would put words in the human's mouth.
+        // Broadcast reaches every agent member pane as before.
+        let targets: Vec<String> = if to_human {
+            Vec::new()
+        } else {
+            match &to_pane {
+                Some(target) if target != &sender_pane => vec![target.clone()],
+                Some(_) => Vec::new(),
+                None => self.channel_agent_member_pane_ids(ws_idx),
+            }
         };
         let deliveries = targets
             .into_iter()
@@ -505,13 +531,18 @@ impl App {
 
     /// Resolves a nick (`channel.send`'s `to`, or a leading in-body
     /// `@nick`) against the channel's agent member panes — workspace panes
-    /// and joined panes alike: exact match on the raw public pane id or any
-    /// of the pane's display names (agent display name -> assigned name ->
+    /// and joined panes alike — plus the human seat at the TUI: exact match
+    /// on the raw public pane id, case-insensitive match on any of the
+    /// pane's display names (agent display name -> assigned name ->
     /// detected kind — the `pane_display_name` rungs that are per-pane; the
     /// workspace custom_name rung is the channel's own `#name` for every
-    /// workspace member and carries no routing information). Exactly one
-    /// match -> `Unique`; two or more -> `Ambiguous` with `pane (name)`
-    /// candidate labels; none -> `Unknown`.
+    /// workspace member and carries no routing information), or on the
+    /// effective human name (`ui.chat_name` -> `state.chat_name`). The
+    /// human is a candidate in every channel: they read the chat view, not
+    /// a pane, so there is no membership to check. Exactly one match ->
+    /// `Unique` for a pane, `Human` for the seat; two or more ->
+    /// `Ambiguous` with `pane (name)` candidate labels and `human (name)`
+    /// for the seat; none -> `Unknown`.
     fn resolve_channel_nick(&self, ws_idx: usize, nick: &str) -> NickResolution {
         let mut matches: Vec<(String, Option<String>)> = Vec::new();
         for member in self.channel_member_panes(ws_idx) {
@@ -523,24 +554,34 @@ impl App {
                 .as_deref()
                 .or(info.name.as_deref())
                 .or(info.agent.as_deref());
-            if member.public_id == nick || named == Some(nick) {
+            let named_matches = named.is_some_and(|name| name.eq_ignore_ascii_case(nick));
+            if member.public_id == nick || named_matches {
                 matches.push((member.public_id, named.map(str::to_string)));
             }
         }
-        if matches.is_empty() {
-            return NickResolution::Unknown;
+        // The human seat collides with an agent of the same name exactly
+        // like two same-named agents collide: genuine ambiguity, reported
+        // rather than silently resolved in either's favour.
+        let human_matches = self.state.chat_name.eq_ignore_ascii_case(nick);
+        match matches.len() {
+            0 if human_matches => return NickResolution::Human,
+            0 => return NickResolution::Unknown,
+            1 if !human_matches => {
+                let (pane_id, _) = matches.swap_remove(0);
+                return NickResolution::Unique(pane_id);
+            }
+            _ => {}
         }
-        if matches.len() == 1 {
-            let (pane_id, _) = matches.swap_remove(0);
-            return NickResolution::Unique(pane_id);
-        }
-        let candidates = matches
+        let mut candidates: Vec<String> = matches
             .into_iter()
             .map(|(pane_id, name)| match name {
                 Some(name) => format!("{pane_id} ({name})"),
                 None => pane_id,
             })
             .collect();
+        if human_matches {
+            candidates.push(format!("human ({})", self.state.chat_name));
+        }
         NickResolution::Ambiguous(candidates)
     }
 }
@@ -554,9 +595,14 @@ struct ChannelMemberPane {
     source: ChannelMemberSource,
 }
 
-/// Outcome of resolving a nick against a channel's member agents.
+/// Outcome of resolving a nick against a channel's member agents and the
+/// human seat.
 enum NickResolution {
+    /// A single member pane, by its canonical public pane id.
     Unique(String),
+    /// The human at the TUI chat view — a seat, not a pane, so nothing is
+    /// delivered anywhere.
+    Human,
     Ambiguous(Vec<String>),
     Unknown,
 }
@@ -774,6 +820,7 @@ mod tests {
                 from_pane: Some("w1A:p2".into()),
                 to: None,
                 in_reply_to: None,
+                from_human: false,
             },
         );
         let sent: serde_json::Value = serde_json::from_str(&sent).unwrap();
@@ -835,6 +882,100 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn human_send_attributes_kind_and_name_without_pane() {
+        let _isolated = IsolatedStateDir::new("send-human");
+        let mut app = test_app();
+        app.state.chat_name = "tester".into();
+        let (_, _, _rx) = channel_with_two_agents(&mut app, "reviewer", "worker");
+
+        let sent = app.handle_channel_send(
+            "req".into(),
+            ChannelSendParams {
+                name: "#eng".into(),
+                text: "hi".into(),
+                from_pane: None,
+                to: None,
+                in_reply_to: None,
+                from_human: true,
+            },
+        );
+        let sent: serde_json::Value = serde_json::from_str(&sent).unwrap();
+        assert!(sent["result"].is_object(), "{sent}");
+
+        // Agent contrast: same channel, pane sender keeps agent attribution.
+        let agent_send = app.handle_channel_send(
+            "req".into(),
+            ChannelSendParams {
+                name: "#eng".into(),
+                text: "and I am an agent".into(),
+                from_pane: Some("w1A:p9".into()),
+                to: None,
+                in_reply_to: None,
+                from_human: false,
+            },
+        );
+        let agent_send: serde_json::Value = serde_json::from_str(&agent_send).unwrap();
+        assert!(agent_send["result"].is_object(), "{agent_send}");
+
+        let history = channels::read_tail("eng", 10).unwrap();
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[0].from_kind, ChannelSenderKind::Human);
+        assert_eq!(history[0].from_pane, "");
+        assert_eq!(history[0].from_name, "tester");
+        assert_eq!(history[1].from_kind, ChannelSenderKind::Agent);
+        assert_eq!(history[1].from_pane, "w1A:p9");
+
+        super::super::test_support::shutdown_test_runtimes(&mut app);
+    }
+
+    #[tokio::test]
+    async fn human_sends_stay_exempt_from_the_channel_rate_limit() {
+        let _isolated = IsolatedStateDir::new("send-human-rate");
+        let mut app = test_app();
+        app.state.chat_name = "tester".into();
+        let (_, _, _rx) = channel_with_two_agents(&mut app, "reviewer", "worker");
+
+        // Two back-to-back sends inside one rate-limit window: a pane sender
+        // would trip `channel_send_rate_limited` here (see the send-rate-limit
+        // test). The human rides the existing no-sender-pane exemption —
+        // there is no second rate-limit path for human sends.
+        for text in ["first", "second"] {
+            let sent = app.handle_channel_send(
+                "req".into(),
+                ChannelSendParams {
+                    name: "#eng".into(),
+                    text: text.into(),
+                    from_pane: None,
+                    to: None,
+                    in_reply_to: None,
+                    from_human: true,
+                },
+            );
+            let sent: serde_json::Value = serde_json::from_str(&sent).unwrap();
+            assert!(
+                sent["result"].is_object(),
+                "human send '{text}' was rejected: {sent}"
+            );
+        }
+        assert_eq!(channels::read_tail("eng", 10).unwrap().len(), 2);
+
+        super::super::test_support::shutdown_test_runtimes(&mut app);
+    }
+
+    #[test]
+    fn from_human_cannot_be_claimed_over_the_wire() {
+        let params: ChannelSendParams = serde_json::from_str(
+            r#"{"name":"eng","text":"spoofed","from_pane":"w1:p1","from_human":true}"#,
+        )
+        .unwrap();
+        assert!(
+            !params.from_human,
+            "#[serde(skip)] must drop a wire-claimed from_human: {:?}",
+            params
+        );
+    }
+
+    #[tokio::test]
     async fn history_on_missing_channel_is_empty_not_error() {
         let _isolated = IsolatedStateDir::new("missing");
         let mut app = test_app();
@@ -881,6 +1022,7 @@ mod tests {
                 from_pane: Some("w1A:p2".into()),
                 to: None,
                 in_reply_to: None,
+                from_human: false,
             },
         );
         let sent: serde_json::Value = serde_json::from_str(&sent).unwrap();
@@ -1058,6 +1200,7 @@ mod tests {
                 from_pane: Some("w1A:p9".into()),
                 to: Some("reviewer".into()),
                 in_reply_to: None,
+                from_human: false,
             },
         );
         let sent: serde_json::Value = serde_json::from_str(&sent).unwrap();
@@ -1092,6 +1235,7 @@ mod tests {
                 from_pane: Some(reviewer.clone()),
                 to: Some(worker.clone()),
                 in_reply_to: Some(1),
+                from_human: false,
             },
         );
         let reply: serde_json::Value = serde_json::from_str(&reply).unwrap();
@@ -1125,6 +1269,7 @@ mod tests {
                 from_pane: Some("w1A:p9".into()),
                 to: Some("dup".into()),
                 in_reply_to: None,
+                from_human: false,
             },
         );
         let error: serde_json::Value = serde_json::from_str(&error).unwrap();
@@ -1162,6 +1307,7 @@ mod tests {
                 from_pane: Some("w1A:p9".into()),
                 to: Some("ghost".into()),
                 in_reply_to: None,
+                from_human: false,
             },
         );
         let error: serde_json::Value = serde_json::from_str(&error).unwrap();
@@ -1173,6 +1319,147 @@ mod tests {
             channels::read_tail("eng", 10).unwrap().is_empty(),
             "a failed structured addressing must append nothing"
         );
+        super::super::test_support::shutdown_test_runtimes(&mut app);
+    }
+
+    #[tokio::test]
+    async fn send_to_param_resolves_human_seat_case_insensitively_and_delivers_to_no_pane() {
+        let _isolated = IsolatedStateDir::new("send-to-human");
+        let mut app = test_app();
+        app.state.chat_name = "arya".into();
+        let (reviewer, _worker, mut rx) = channel_with_two_agents(&mut app, "reviewer", "worker");
+
+        let sent = app.handle_channel_send(
+            "req".into(),
+            ChannelSendParams {
+                name: "#eng".into(),
+                text: "status?".into(),
+                from_pane: Some("w1A:p9".into()),
+                to: Some("ARYA".into()),
+                in_reply_to: None,
+                from_human: false,
+            },
+        );
+        let sent: serde_json::Value = serde_json::from_str(&sent).unwrap();
+        assert!(
+            sent["error"].is_null(),
+            "addressing the human seat must succeed: {sent}"
+        );
+        assert!(
+            sent["result"]["deliveries"].as_array().unwrap().is_empty(),
+            "a human-addressed message is delivered to no pane"
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "no member agent may be injected for a human-addressed message"
+        );
+        let history = channels::read_tail("eng", 10).unwrap();
+        assert_eq!(history.len(), 1, "the transcript still records it");
+        assert!(history[0].to_human);
+        assert_eq!(history[0].to_pane, None);
+        assert_eq!(history[0].from_kind, ChannelSenderKind::Agent);
+        assert_ne!(
+            history[0].from_pane, reviewer,
+            "sender attribution is untouched"
+        );
+        super::super::test_support::shutdown_test_runtimes(&mut app);
+    }
+
+    #[tokio::test]
+    async fn send_to_param_name_shared_with_agent_is_ambiguous_between_human_and_agent() {
+        let _isolated = IsolatedStateDir::new("send-to-human-collision");
+        let mut app = test_app();
+        app.state.chat_name = "reviewer".into();
+        let (reviewer, _worker, _rx) = channel_with_two_agents(&mut app, "reviewer", "worker");
+
+        let error = app.handle_channel_send(
+            "req".into(),
+            ChannelSendParams {
+                name: "#eng".into(),
+                text: "which one?".into(),
+                from_pane: Some("w1A:p9".into()),
+                to: Some("reviewer".into()),
+                in_reply_to: None,
+                from_human: false,
+            },
+        );
+        let error: serde_json::Value = serde_json::from_str(&error).unwrap();
+        assert_eq!(
+            error["error"]["code"],
+            serde_json::json!("channel_nick_ambiguous")
+        );
+        let message = error["error"]["message"].as_str().unwrap();
+        assert!(
+            message.contains("human (reviewer)"),
+            "candidates must label the human seat: {message}"
+        );
+        assert!(
+            message.contains(&reviewer),
+            "candidates must still list the agent pane: {message}"
+        );
+        assert!(
+            channels::read_tail("eng", 10).unwrap().is_empty(),
+            "an ambiguous structured addressing must append nothing"
+        );
+        super::super::test_support::shutdown_test_runtimes(&mut app);
+    }
+
+    #[tokio::test]
+    async fn leading_mention_to_human_targets_the_seat_and_unknown_still_broadcasts() {
+        let _isolated = IsolatedStateDir::new("mention-human");
+        let mut app = test_app();
+        app.state.chat_name = "arya".into();
+        let (_reviewer, _worker, _rx) = channel_with_two_agents(&mut app, "reviewer", "worker");
+
+        let sent = app.handle_channel_send(
+            "req".into(),
+            ChannelSendParams {
+                name: "#eng".into(),
+                text: "@arya ping".into(),
+                from_pane: Some("w1A:p9".into()),
+                to: None,
+                in_reply_to: None,
+                from_human: false,
+            },
+        );
+        let sent: serde_json::Value = serde_json::from_str(&sent).unwrap();
+        assert!(
+            sent["error"].is_null(),
+            "in-body tokens never error: {sent}"
+        );
+        assert!(
+            sent["result"]["deliveries"].as_array().unwrap().is_empty(),
+            "a human-addressed mention delivers to no pane"
+        );
+        let history = channels::read_tail("eng", 10).unwrap();
+        assert_eq!(history.len(), 1);
+        assert!(history[0].to_human);
+        assert_eq!(history[0].to_pane, None);
+
+        // A mention that matches neither the human nor any member still
+        // degrades to literal broadcast — the human seat changed nothing.
+        let degraded = app.handle_channel_send(
+            "req2".into(),
+            ChannelSendParams {
+                name: "#eng".into(),
+                text: "@ghost hi".into(),
+                from_pane: Some("w1A:p8".into()),
+                to: None,
+                in_reply_to: None,
+                from_human: false,
+            },
+        );
+        let degraded: serde_json::Value = serde_json::from_str(&degraded).unwrap();
+        assert!(degraded["error"].is_null());
+        assert_eq!(
+            degraded["result"]["deliveries"].as_array().unwrap().len(),
+            2,
+            "unknown mention broadcasts to every member agent"
+        );
+        let last = channels::read_tail("eng", 10).unwrap().pop().unwrap();
+        assert!(!last.to_human);
+        assert_eq!(last.to_pane, None);
+        assert_eq!(last.text, "@ghost hi");
         super::super::test_support::shutdown_test_runtimes(&mut app);
     }
 
@@ -1190,6 +1477,7 @@ mod tests {
                 from_pane: Some("w1A:p9".into()),
                 to: None,
                 in_reply_to: None,
+                from_human: false,
             },
         );
         assert!(
@@ -1205,6 +1493,7 @@ mod tests {
                 from_pane: Some("w1A:p9".into()),
                 to: None,
                 in_reply_to: None,
+                from_human: false,
             },
         );
         let error: serde_json::Value = serde_json::from_str(&second).unwrap();
@@ -1227,6 +1516,7 @@ mod tests {
                 from_pane: None,
                 to: None,
                 in_reply_to: None,
+                from_human: false,
             },
         );
         assert!(
@@ -1241,6 +1531,7 @@ mod tests {
                 from_pane: None,
                 to: None,
                 in_reply_to: None,
+                from_human: false,
             },
         );
         assert!(
@@ -1264,6 +1555,7 @@ mod tests {
                 from_pane: Some("w1A:p9".into()),
                 to: None,
                 in_reply_to: None,
+                from_human: false,
             },
         );
         let sent: serde_json::Value = serde_json::from_str(&sent).unwrap();
@@ -1293,6 +1585,7 @@ mod tests {
                 from_pane: Some("w1A:p9".into()),
                 to: None,
                 in_reply_to: None,
+                from_human: false,
             },
         );
         let sent: serde_json::Value = serde_json::from_str(&sent).unwrap();
@@ -1318,6 +1611,7 @@ mod tests {
                 from_pane: Some("w1A:p9".into()),
                 to: None,
                 in_reply_to: None,
+                from_human: false,
             },
         );
         let sent2: serde_json::Value = serde_json::from_str(&sent2).unwrap();
@@ -1351,6 +1645,7 @@ mod tests {
                 from_pane: Some("w1A:p9".into()),
                 to: None,
                 in_reply_to: None,
+                from_human: false,
             },
         );
         let sent: serde_json::Value = serde_json::from_str(&sent).unwrap();
@@ -1374,6 +1669,7 @@ mod tests {
                 from_pane: Some("w1A:p8".into()),
                 to: Some("reviewer".into()),
                 in_reply_to: None,
+                from_human: false,
             },
         );
         let targeted: serde_json::Value = serde_json::from_str(&targeted).unwrap();
@@ -1401,6 +1697,7 @@ mod tests {
                 from_pane: Some(reviewer.clone()),
                 to: Some("reviewer".into()),
                 in_reply_to: None,
+                from_human: false,
             },
         );
         let sent: serde_json::Value = serde_json::from_str(&sent).unwrap();
@@ -1502,6 +1799,7 @@ mod tests {
                 from_pane: Some(from_pane.into()),
                 to: None,
                 in_reply_to: None,
+                from_human: false,
             },
         );
         serde_json::from_str(&response).unwrap()
@@ -1647,6 +1945,7 @@ mod tests {
                 from_pane: Some("w1A:p9".into()),
                 to: Some("brandos".into()),
                 in_reply_to: None,
+                from_human: false,
             },
         );
         let unknown: serde_json::Value = serde_json::from_str(&unknown).unwrap();
@@ -1665,6 +1964,7 @@ mod tests {
                 from_pane: Some("w1A:p8".into()),
                 to: Some("brandos".into()),
                 in_reply_to: None,
+                from_human: false,
             },
         );
         let sent: serde_json::Value = serde_json::from_str(&sent).unwrap();
@@ -1685,6 +1985,7 @@ mod tests {
                 from_pane: Some("w1A:p7".into()),
                 to: None,
                 in_reply_to: None,
+                from_human: false,
             },
         );
         let mention: serde_json::Value = serde_json::from_str(&mention).unwrap();

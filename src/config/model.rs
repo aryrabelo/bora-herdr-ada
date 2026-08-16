@@ -939,6 +939,9 @@ pub struct UiConfig {
     /// Bora fork addition; upstream has no such surface, so it stays off
     /// unless explicitly enabled.
     pub chat_view: bool,
+    /// Human display name in the channel chat view. `None` (default)
+    /// resolves to the OS username, then "you".
+    pub chat_name: Option<String>,
     /// Hide the tab row when the workspace has one tab. Default: false.
     pub hide_tab_bar_when_single_tab: bool,
     /// Desktop tab row placement. Default: top.
@@ -1169,6 +1172,7 @@ impl Default for UiConfig {
             show_pane_ids_on_pane_borders: false,
             channel_group_name: "channels".to_string(),
             chat_view: false,
+            chat_name: None,
             hide_tab_bar_when_single_tab: false,
             tab_bar_position: TabBarPositionConfig::Top,
             tab_bar_right: Vec::new(),
@@ -1194,6 +1198,24 @@ impl UiConfig {
 
     pub fn right_click_passthrough_modifiers(&self) -> Option<KeyModifiers> {
         self.right_click_passthrough_modifier.modifiers()
+    }
+
+    /// Human chat identity: `ui.chat_name` when set (trimmed, non-empty),
+    /// else the OS username (`USER`, then `LOGNAME`), else "you". Resolved
+    /// at config load and reload; `AppState.chat_name` carries the result.
+    pub fn effective_chat_name(&self) -> String {
+        if let Some(name) = self
+            .chat_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+        {
+            return name.to_string();
+        }
+        ["USER", "LOGNAME"]
+            .iter()
+            .find_map(|key| std::env::var(key).ok().filter(|name| !name.is_empty()))
+            .unwrap_or_else(|| "you".to_string())
     }
 }
 
@@ -1292,6 +1314,45 @@ manifest_check = false
         assert_eq!(config.update.channel.as_str(), "preview");
         assert!(!config.update.version_check);
         assert!(!config.update.manifest_check);
+    }
+
+    #[test]
+    fn chat_name_parses_and_effective_resolution_falls_back() {
+        let _guard = crate::config::test_config_env_lock().lock().unwrap();
+        let old_user = std::env::var_os("USER");
+        let old_logname = std::env::var_os("LOGNAME");
+
+        let configured: Config = toml::from_str("[ui]\nchat_name = \"arya\"\n").unwrap();
+        assert_eq!(configured.ui.chat_name.as_deref(), Some("arya"));
+
+        std::env::set_var("USER", "envuser");
+        std::env::remove_var("LOGNAME");
+
+        // Configured name wins over the environment.
+        assert_eq!(configured.ui.effective_chat_name(), "arya");
+        // Blank/whitespace-only config falls through to the OS username.
+        let blank: Config = toml::from_str("[ui]\nchat_name = \"  \"\n").unwrap();
+        assert_eq!(blank.ui.effective_chat_name(), "envuser");
+        // Unset config resolves via USER...
+        let unset: Config = toml::from_str("").unwrap();
+        assert_eq!(unset.ui.chat_name, None);
+        assert_eq!(unset.ui.effective_chat_name(), "envuser");
+        // ...then LOGNAME...
+        std::env::remove_var("USER");
+        std::env::set_var("LOGNAME", "loginuser");
+        assert_eq!(unset.ui.effective_chat_name(), "loginuser");
+        // ...then the hard floor.
+        std::env::remove_var("LOGNAME");
+        assert_eq!(unset.ui.effective_chat_name(), "you");
+
+        match old_user {
+            Some(value) => std::env::set_var("USER", value),
+            None => std::env::remove_var("USER"),
+        }
+        match old_logname {
+            Some(value) => std::env::set_var("LOGNAME", value),
+            None => std::env::remove_var("LOGNAME"),
+        }
     }
 
     #[cfg(windows)]

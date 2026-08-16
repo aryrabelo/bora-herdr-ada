@@ -216,6 +216,7 @@ pub fn write_joined_members(name: &str, members: &[String]) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::api::schema::ChannelSenderKind;
 
     fn with_isolated_state_dir<T>(name: &str, f: impl FnOnce() -> T) -> T {
         let _guard = crate::config::test_config_env_lock().lock().unwrap();
@@ -239,10 +240,50 @@ mod tests {
             seq: 0,
             from_pane: "w1A:p2".into(),
             from_name: "brandos".into(),
+            from_kind: ChannelSenderKind::Agent,
             text: text.into(),
             in_reply_to: None,
             to_pane: None,
+            to_human: false,
         }
+    }
+
+    #[test]
+    fn human_fields_roundtrip_and_old_lines_default_to_agent() {
+        with_isolated_state_dir("human-roundtrip", || {
+            let mut human = message("from the human");
+            human.from_pane = String::new();
+            human.from_name = "arya".into();
+            human.from_kind = ChannelSenderKind::Human;
+            human.to_human = true;
+            append_message("eng", &human).unwrap();
+
+            // Pre-human-era line: no from_kind / to_human keys at all.
+            let path = channel_file_path("eng");
+            let mut file = OpenOptions::new().append(true).open(&path).unwrap();
+            writeln!(
+                file,
+                "{}",
+                serde_json::json!({
+                    "ts": "2026-08-15T00:00:01Z",
+                    "seq": 1,
+                    "from_pane": "w1A:p2",
+                    "from_name": "brandos",
+                    "text": "old line",
+                })
+            )
+            .unwrap();
+
+            let tail = read_tail("eng", 10).unwrap();
+            assert_eq!(tail.len(), 2);
+            assert_eq!(tail[0].from_kind, ChannelSenderKind::Human);
+            assert!(tail[0].to_human);
+            assert_eq!(tail[0].from_pane, "");
+            assert_eq!(tail[0].from_name, "arya");
+            assert_eq!(tail[1].from_kind, ChannelSenderKind::Agent);
+            assert!(!tail[1].to_human);
+            assert_eq!(tail[1].from_pane, "w1A:p2");
+        });
     }
 
     #[test]

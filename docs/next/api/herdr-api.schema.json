@@ -7151,6 +7151,11 @@
         "ChannelMessage": {
           "description": "A single line of a channel's append-only JSONL transcript. Reused as both\nthe on-disk storage record (`src/persist/channels.rs`) and the wire type,\nsince the two shapes are identical.",
           "properties": {
+            "from_kind": {
+              "$ref": "#/schemas/success_response/$defs/ChannelSenderKind",
+              "default": "agent",
+              "description": "Author kind: a member agent pane, or the human at the TUI."
+            },
             "from_name": {
               "type": "string"
             },
@@ -7176,6 +7181,11 @@
             "text": {
               "type": "string"
             },
+            "to_human": {
+              "default": false,
+              "description": "Addressed to the human seat rather than a pane: appended to the\ntranscript, delivered to no pane.",
+              "type": "boolean"
+            },
             "to_pane": {
               "description": "Pane id of a targeted recipient; `None` = broadcast to every member\nagent pane.",
               "type": [
@@ -7195,6 +7205,22 @@
             "text"
           ],
           "type": "object"
+        },
+        "ChannelSenderKind": {
+          "description": "Who authored a channel message: a member agent pane, or the human at the\nTUI. Lines written before this field existed parse as `Agent`.",
+          "oneOf": [
+            {
+              "enum": [
+                "agent"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "human",
+              "description": "The human at the TUI chat view. `from_pane` is empty for these lines;\n`from_name` is the effective chat name (`ui.chat_name`).",
+              "type": "string"
+            }
+          ]
         },
         "ChannelSummary": {
           "properties": {

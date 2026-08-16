@@ -26,6 +26,26 @@ pub struct ChannelSendParams {
     /// only — recorded on the message, never used for delivery.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub in_reply_to: Option<u64>,
+    /// Trust anchor, exactly like `peer_pid` on agent prompts: never part
+    /// of the wire shape (`#[serde(skip)]` drops it during deserialize), set
+    /// only in-process by the TUI chat send path. A socket client cannot
+    /// claim the human seat.
+    #[serde(skip)]
+    pub from_human: bool,
+}
+
+/// Who authored a channel message: a member agent pane, or the human at the
+/// TUI. Lines written before this field existed parse as `Agent`.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum ChannelSenderKind {
+    #[default]
+    Agent,
+    /// The human at the TUI chat view. `from_pane` is empty for these lines;
+    /// `from_name` is the effective chat name (`ui.chat_name`).
+    Human,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -131,6 +151,9 @@ pub struct ChannelMessage {
     pub seq: u64,
     pub from_pane: String,
     pub from_name: String,
+    /// Author kind: a member agent pane, or the human at the TUI.
+    #[serde(default)]
+    pub from_kind: ChannelSenderKind,
     pub text: String,
     /// Seq of the message being replied to, when this was sent as a reply.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -139,6 +162,10 @@ pub struct ChannelMessage {
     /// agent pane.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub to_pane: Option<String>,
+    /// Addressed to the human seat rather than a pane: appended to the
+    /// transcript, delivered to no pane.
+    #[serde(default)]
+    pub to_human: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

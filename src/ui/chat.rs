@@ -14,8 +14,8 @@ use super::{
     text::{display_width, middle_elide},
     widgets::{panel_contrast_fg, render_panel_shell},
 };
-use crate::api::schema::AgentStatus;
-use crate::app::state::{AppState, ChatViewState};
+use crate::api::schema::{AgentStatus, ChannelSenderKind};
+use crate::app::state::{AppState, ChatViewState, Palette};
 
 const TIME_WIDTH: usize = 5; // "HH:MM"
 const SENDER_WIDTH: usize = 14;
@@ -145,7 +145,7 @@ fn render_messages(app: &AppState, frame: &mut Frame, area: Rect) {
             );
         }
     }
-    let lines = chat_display_lines(&app.chat, area.width);
+    let lines = chat_display_lines(&app.chat, &app.palette, area.width);
     let start = app.chat.scroll.min(lines.len());
     let end = lines.len().min(start + area.height as usize);
     let visible: Vec<Line<'static>> = lines[start..end].to_vec();
@@ -265,8 +265,20 @@ fn short_time(ts: &str) -> &str {
 }
 
 /// Wrapped display lines for the message timeline. Shared by render and the
-/// AppState scroll math so both agree on line counts.
-pub(crate) fn chat_display_lines(chat: &ChatViewState, width: u16) -> Vec<Line<'static>> {
+/// AppState scroll math so both agree on line counts. Styling only — the
+/// wrap math is width-driven, so line counts are style-independent (the
+/// count helper passes a palette it never reads through).
+///
+/// Sender classification per the channel contract: `from_kind == Human`
+/// lines render their sender in the accent color (the composer prompt's
+/// treatment), while `to_human` lines get the accent band used by the
+/// selected channel row — an agent addressing the human seat must stay
+/// visible while scrolling.
+pub(crate) fn chat_display_lines(
+    chat: &ChatViewState,
+    p: &Palette,
+    width: u16,
+) -> Vec<Line<'static>> {
     let width = width.max(1) as usize;
     let text_width = width
         .saturating_sub(TIME_WIDTH + SENDER_WIDTH + COLUMN_GAP * 2)
@@ -280,6 +292,18 @@ pub(crate) fn chat_display_lines(chat: &ChatViewState, width: u16) -> Vec<Line<'
         }
         let sender = format!("{sender:>width$}", width = SENDER_WIDTH);
         let indent = " ".repeat(TIME_WIDTH + COLUMN_GAP + SENDER_WIDTH + COLUMN_GAP);
+        // The band restyles every span on the line, so the sender keeps
+        // only weight there — accent-on-accent would be invisible.
+        let band = message
+            .to_human
+            .then(|| Style::default().bg(p.accent).fg(p.panel_bg));
+        let sender_style = if message.to_human {
+            Style::default().add_modifier(Modifier::BOLD)
+        } else if message.from_kind == ChannelSenderKind::Human {
+            Style::default().fg(p.accent).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().add_modifier(Modifier::BOLD)
+        };
         for (wrapped_idx, chunk) in wrap_width(&message.text, text_width)
             .into_iter()
             .enumerate()
@@ -287,23 +311,23 @@ pub(crate) fn chat_display_lines(chat: &ChatViewState, width: u16) -> Vec<Line<'
             let mut spans = Vec::new();
             if wrapped_idx == 0 {
                 spans.push(Span::raw(format!("{time}{COLUMN_GAP}")));
-                spans.push(Span::styled(
-                    sender.clone(),
-                    Style::default().add_modifier(Modifier::BOLD),
-                ));
+                spans.push(Span::styled(sender.clone(), sender_style));
                 spans.push(Span::raw(" "));
             } else {
                 spans.push(Span::raw(indent.clone()));
             }
             spans.push(Span::raw(chunk));
-            lines.push(Line::from(spans));
+            lines.push(match band {
+                Some(style) => Line::from(spans).style(style),
+                None => Line::from(spans),
+            });
         }
     }
     lines
 }
 
 pub(crate) fn chat_display_line_count(chat: &ChatViewState, width: u16) -> usize {
-    chat_display_lines(chat, width).len()
+    chat_display_lines(chat, &Palette::catppuccin(), width).len()
 }
 
 /// Greedy word wrap on display width, breaking over-long words.
@@ -339,4 +363,113 @@ fn wrap_width(text: &str, max_width: usize) -> Vec<String> {
     }
     lines.push(current);
     lines
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::api::schema::ChannelSenderKind;
+    use crate::app::state::AppState;
+
+    fn agent_message(text: &str) -> crate::api::schema::ChannelMessage {
+        crate::api::schema::ChannelMessage {
+            ts: "2026-08-15T15:31:02Z".into(),
+            seq: 1,
+            from_pane: "w1:p1".into(),
+            from_name: "builder".into(),
+            from_kind: ChannelSenderKind::Agent,
+            text: text.into(),
+            in_reply_to: None,
+            to_pane: None,
+            to_human: false,
+        }
+    }
+
+    fn human_message(name: &str, text: &str) -> crate::api::schema::ChannelMessage {
+        crate::api::schema::ChannelMessage {
+            from_pane: String::new(),
+            from_name: name.into(),
+            from_kind: ChannelSenderKind::Human,
+            to_human: false,
+            ..agent_message(text)
+        }
+    }
+
+    fn to_human_message(text: &str) -> crate::api::schema::ChannelMessage {
+        crate::api::schema::ChannelMessage {
+            to_human: true,
+            ..agent_message(text)
+        }
+    }
+
+    /// The sender span of the first wrapped line of `message`.
+    fn sender_span<'a>(lines: &'a [Line<'static>], idx: usize) -> &'a Span<'static> {
+        &lines[idx].spans[1]
+    }
+
+    #[test]
+    fn human_and_agent_senders_render_distinctly() {
+        let mut state = AppState::test_new();
+        state.chat.messages = vec![
+            agent_message("deploying now"),
+            human_message("ary", "ship it"),
+        ];
+
+        let lines = chat_display_lines(&state.chat, &state.palette, 80);
+
+        assert_eq!(lines.len(), 2, "both messages fit on one line each");
+        let agent = sender_span(&lines, 0).style;
+        let human = sender_span(&lines, 1).style;
+        assert_eq!(agent.fg, None, "agent sender uses the default text color");
+        assert_eq!(
+            human.fg,
+            Some(state.palette.accent),
+            "human sender carries the accent color"
+        );
+        assert!(human.add_modifier.contains(Modifier::BOLD));
+        assert_ne!(agent, human, "human vs agent lines are visually distinct");
+
+        // The human's own line reads as them: the configured chat name is
+        // the sender label, right-aligned like every sender.
+        let label = sender_span(&lines, 1).content.to_string();
+        assert_eq!(label, format!("{:>width$}", "ary", width = SENDER_WIDTH));
+    }
+
+    #[test]
+    fn to_human_messages_get_the_highlight_band_on_every_wrapped_line() {
+        let mut state = AppState::test_new();
+        let long = "a to-human message long enough to wrap across several timeline rows so the band must cover continuation lines too";
+        state.chat.messages = vec![agent_message("chatter"), to_human_message(long)];
+
+        let lines = chat_display_lines(&state.chat, &state.palette, 60);
+
+        assert_eq!(lines[0].style.bg, None, "broadcast line has no band");
+        let band = Style::default()
+            .bg(state.palette.accent)
+            .fg(state.palette.panel_bg);
+        assert!(lines.len() > 3, "the long message wraps to multiple lines");
+        for line in &lines[1..] {
+            assert_eq!(line.style, band, "every wrapped line carries the band");
+        }
+        // The band leaves the sender readable: bold survives, no accent fg.
+        let sender = sender_span(&lines, 1).style;
+        assert!(sender.add_modifier.contains(Modifier::BOLD));
+        assert_ne!(sender.fg, Some(state.palette.accent));
+    }
+
+    #[test]
+    fn to_human_flag_does_not_change_wrapped_line_count() {
+        // The scroll math shares this wrap path; styling must stay
+        // count-neutral or scroll offsets drift between renders.
+        let mut state = AppState::test_new();
+        let text = "same text rendered twice, once plain and once addressed to the human seat";
+        state.chat.messages = vec![agent_message(text)];
+        let plain = chat_display_line_count(&state.chat, 50);
+
+        state.chat.messages = vec![to_human_message(text)];
+        let highlighted = chat_display_line_count(&state.chat, 50);
+
+        assert_eq!(plain, highlighted);
+        assert!(plain > 1);
+    }
 }

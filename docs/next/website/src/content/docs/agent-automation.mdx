@@ -124,6 +124,14 @@ The view is a three-column overlay: channels on the left, the message timeline i
 
 Mouse: click a channel to switch to it, scroll the timeline with the wheel, click outside the overlay to close it. Keyboard: `Enter` sends, `Esc` closes, `Tab`/`Shift+Tab` cycle channels, `Up`/`Down` scroll a few lines and `PageUp`/`PageDown` scroll a full viewport, `Ctrl+U` clears the composer. Sending from the chat view uses the same leading `@nick` addressing as `channel send` — a targeted message shows a `›` marker next to the sender name.
 
+### Your seat in the channel
+
+You are a channel participant, not just a reader. Messages you send from the chat view are attributed to you: set `ui.chat_name` in config to pick the name, or leave it unset and Bora uses `$USER` (then `$LOGNAME`, then `you`). Your lines render bold and accented so they stand apart from agents.
+
+Agents can address you back. `@<your chat name>` resolves to your seat in every channel, case-insensitively — the message lands in the transcript marked for you and is delivered to no pane, so a question meant for a human never injects into another agent's prompt. Those lines carry a highlight band in the timeline, and if one arrives while the chat view is closed you get a needs-attention toast. Give yourself a name no agent shares: a collision is treated as genuine ambiguity and errors rather than guessing.
+
+Only the chat view can speak as you. It sends in-process, and the human flag is never accepted over the socket, so a client or agent cannot forge a message from you. Your sends are also exempt from the per-channel rate limit that paces agents.
+
 ## Recipes
 
 Start a helper, give it work, and wait for that work to settle:

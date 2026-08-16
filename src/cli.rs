@@ -198,6 +198,7 @@ fn channel_send(args: &[String]) -> std::io::Result<i32> {
             from_pane,
             to: None,
             in_reply_to: None,
+            from_human: false,
         }),
     })?)
 }

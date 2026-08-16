@@ -98,6 +98,9 @@ impl App {
                 from_pane: None,
                 to: None,
                 in_reply_to: None,
+                // Trust anchor: in-process only, never deserializable from a
+                // socket body. This is the one place the human seat is claimed.
+                from_human: true,
             }),
         );
         let Ok(parsed) = serde_json::from_str::<SuccessResponse>(&response) else {
@@ -147,6 +150,28 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    /// Toast for an agent message addressed to the human seat when the chat
+    /// view is closed. While the view is open the highlighted timeline line
+    /// is the surface — and toasts render below interactive overlays, so a
+    /// toast would be hidden there anyway. Reuses the existing toast
+    /// notification surface (`ui.toast`); no new subsystem.
+    pub(crate) fn notify_chat_to_human(&mut self, channel: &str, message: &ChannelMessage) {
+        if !message.to_human || self.state.mode == Mode::Chat {
+            return;
+        }
+        let previous_toast = self.state.toast.clone();
+        self.state.toast = Some(crate::app::state::ToastNotification {
+            kind: crate::app::state::ToastKind::NeedsAttention,
+            title: format!("{} › you", message.from_name),
+            context: format!("#{channel}"),
+            position: None,
+            target: None,
+        });
+        self.sync_toast_deadline(previous_toast);
+        self.render_dirty.request_generic();
+        self.render_notify.notify_one();
     }
 }
 
@@ -213,7 +238,7 @@ impl AppState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::api::schema::{ChannelMessage, ChannelSummary};
+    use crate::api::schema::{ChannelMessage, ChannelSenderKind, ChannelSummary};
 
     fn channel(name: &str) -> ChannelSummary {
         ChannelSummary {
@@ -230,10 +255,33 @@ mod tests {
             seq: 1,
             from_pane: "w1:p1".into(),
             from_name: "builder".into(),
+            from_kind: ChannelSenderKind::Agent,
             text: text.into(),
             in_reply_to: None,
             to_pane: None,
+            to_human: false,
         }
+    }
+
+    fn to_human_message(from_name: &str, text: &str) -> ChannelMessage {
+        ChannelMessage {
+            from_pane: String::new(),
+            from_name: from_name.into(),
+            from_kind: ChannelSenderKind::Agent,
+            to_human: true,
+            ..message(text)
+        }
+    }
+
+    fn test_app() -> App {
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        App::new(
+            &crate::config::Config::default(),
+            true,
+            None,
+            api_rx,
+            crate::api::EventHub::default(),
+        )
     }
 
     #[test]
@@ -314,5 +362,41 @@ mod tests {
         // No view geometry in tests -> max scroll is 0, so scrolling up
         // saturates back to the top.
         assert_eq!(state.chat.scroll, 0);
+    }
+
+    #[test]
+    fn to_human_message_toasts_only_when_chat_view_is_closed() {
+        let mut app = test_app();
+        app.state.mode = Mode::Terminal; // any non-Chat mode = view closed
+
+        app.notify_chat_to_human("design", &to_human_message("builder", "status?"));
+
+        let toast = app.state.toast.as_ref().expect("toast fires while closed");
+        assert_eq!(toast.kind, crate::app::state::ToastKind::NeedsAttention);
+        assert_eq!(toast.title, "builder › you");
+        assert_eq!(toast.context, "#design");
+        assert!(
+            toast.target.is_none(),
+            "no pane to focus for the human seat"
+        );
+
+        // The trigger is view state, not the message: the same message with
+        // the view open must not stack a toast under the overlay.
+        app.state.open_chat_view();
+        app.state.toast = None; // the earlier toast stays until its deadline
+        app.notify_chat_to_human("design", &to_human_message("builder", "again"));
+        assert!(app.state.toast.is_none(), "open view is its own surface");
+    }
+
+    #[test]
+    fn broadcast_message_never_toasts_the_human() {
+        let mut app = test_app();
+
+        app.notify_chat_to_human("design", &message("plain broadcast"));
+
+        assert!(
+            app.state.toast.is_none(),
+            "to_human=false is ordinary channel chatter"
+        );
     }
 }

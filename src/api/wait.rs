@@ -1235,7 +1235,7 @@ mod tests {
 
     mod channel_wait {
         use super::super::*;
-        use crate::api::schema::{ChannelMessage, EventData, EventKind};
+        use crate::api::schema::{ChannelMessage, ChannelSenderKind, EventData, EventKind};
         use crate::api::EventHub;
 
         fn with_isolated_state_dir<T>(name: &str, f: impl FnOnce() -> T) -> T {
@@ -1262,9 +1262,11 @@ mod tests {
                 seq,
                 from_pane: "w1A:p2".into(),
                 from_name: "brandos".into(),
+                from_kind: ChannelSenderKind::Agent,
                 text: text.into(),
                 in_reply_to: None,
                 to_pane: None,
+                to_human: false,
             }
         }
 

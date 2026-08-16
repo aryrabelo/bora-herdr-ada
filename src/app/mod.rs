@@ -804,6 +804,7 @@ impl App {
             show_pane_ids_on_pane_borders: config.ui.show_pane_ids_on_pane_borders,
             channel_group_name: config.ui.channel_group_name.clone(),
             chat_view: config.ui.chat_view,
+            chat_name: config.ui.effective_chat_name(),
             hide_tab_bar_when_single_tab: config.ui.hide_tab_bar_when_single_tab,
             tab_bar_position: config.ui.tab_bar_position,
             tab_bar_right: Vec::new(),
@@ -1220,9 +1221,11 @@ impl App {
                 seq: crate::persist::channels::next_seq(&channel),
                 from_pane: "system".to_string(),
                 from_name: "bora".to_string(),
+                from_kind: crate::api::schema::ChannelSenderKind::Agent,
                 text: format!("delivery to {target_pane} dropped: {reason_text}"),
                 in_reply_to: None,
                 to_pane: None,
+                to_human: false,
             };
             if let Err(err) = crate::persist::channels::append_message(&channel, &line) {
                 tracing::warn!(
@@ -2039,8 +2042,8 @@ impl App {
                 self.state.show_agent_labels_on_pane_borders =
                     config.ui.show_agent_labels_on_pane_borders;
                 self.state.show_pane_ids_on_pane_borders = config.ui.show_pane_ids_on_pane_borders;
-                self.state.channel_group_name = config.ui.channel_group_name.clone();
                 self.state.chat_view = config.ui.chat_view;
+                self.state.chat_name = config.ui.effective_chat_name();
                 self.state.hide_tab_bar_when_single_tab = config.ui.hide_tab_bar_when_single_tab;
                 self.state.tab_bar_position = config.ui.tab_bar_position;
                 self.configure_tab_bar_status(
