@@ -15,11 +15,14 @@ use super::{
     widgets::{panel_contrast_fg, render_panel_shell},
 };
 use crate::api::schema::{AgentStatus, ChannelSenderKind};
-use crate::app::state::{AppState, ChatViewState, Palette};
+use crate::app::state::{AppState, ChatPrompt, ChatViewState, Palette};
 
 const TIME_WIDTH: usize = 5; // "HH:MM"
 const SENDER_WIDTH: usize = 14;
 const COLUMN_GAP: usize = 1;
+/// Bottom row of the channel column: click (or Ctrl+N) to create a channel.
+/// Same `+` vocabulary the sidebar uses for "new worktree" / "run command".
+pub(crate) const NEW_CHANNEL_LABEL: &str = "+ new channel";
 
 fn agent_state(status: AgentStatus) -> crate::detect::AgentState {
     match status {
@@ -50,6 +53,97 @@ pub(super) fn render_chat_overlay(app: &AppState, frame: &mut Frame) {
         render_members(app, frame, members);
     }
     render_input(app, frame, input);
+    // Last: the prompt is modal, so it draws over every column.
+    render_chat_prompt(app, frame);
+}
+
+/// The chat view's modal sub-mode: one small centered panel over the overlay,
+/// shared by both prompts so the two cannot drift apart visually.
+fn render_chat_prompt(app: &AppState, frame: &mut Frame) {
+    let Some(prompt) = app.chat.prompt.as_ref() else {
+        return;
+    };
+    let Some(rect) = app.chat_prompt_rect() else {
+        return;
+    };
+    let Some(_inner) = render_panel_shell(frame, rect, app.palette.accent, app.palette.panel_bg)
+    else {
+        return;
+    };
+    let p = &app.palette;
+    let (title, typed) = match prompt {
+        ChatPrompt::NewChannel { input } => ("new channel", input.as_str()),
+        ChatPrompt::AddMember { query, .. } => ("add agent", query.as_str()),
+    };
+    let Some(text) = app.chat_prompt_text_rect() else {
+        return;
+    };
+    frame.render_widget(
+        Paragraph::new(middle_elide(title, text.width as usize))
+            .style(Style::default().fg(p.accent).add_modifier(Modifier::BOLD)),
+        Rect::new(text.x, text.y.saturating_sub(1), text.width, 1),
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                "> ",
+                Style::default().fg(p.accent).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                truncate_input(typed, text.width.saturating_sub(3) as usize),
+                Style::default().fg(p.text),
+            ),
+        ])),
+        text,
+    );
+    let ChatPrompt::AddMember { selected, .. } = prompt else {
+        return;
+    };
+    let Some(rows) = app.chat_prompt_rows_rect() else {
+        return;
+    };
+    let candidates = app.chat_prompt_candidates();
+    if candidates.is_empty() {
+        frame.render_widget(
+            Paragraph::new("no agent matches").style(Style::default().fg(p.overlay0)),
+            Rect::new(rows.x, rows.y, rows.width, 1),
+        );
+        return;
+    }
+    let start = app.chat_prompt_window_start();
+    for (offset, candidate) in candidates
+        .iter()
+        .skip(start)
+        .take(rows.height as usize)
+        .enumerate()
+    {
+        let highlighted = start + offset == *selected;
+        let style = if highlighted {
+            Style::default().bg(p.accent).fg(p.panel_bg)
+        } else {
+            Style::default().fg(panel_contrast_fg(p))
+        };
+        let detail = match (candidate.status.as_str(), candidate.cwd.as_deref()) {
+            ("", None) => String::new(),
+            ("", Some(cwd)) => format!("  {cwd}"),
+            (status, None) => format!("  {status}"),
+            (status, Some(cwd)) => format!("  {status}  {cwd}"),
+        };
+        let label = middle_elide(
+            &format!("{}{detail}", candidate.name),
+            rows.width.saturating_sub(1) as usize,
+        );
+        // Same selection vocabulary as the channel column.
+        let content = if highlighted {
+            format!("▐{label}")
+        } else {
+            format!(" {label}")
+        };
+        frame.render_widget(
+            Paragraph::new(content).style(style),
+            Rect::new(rows.x, rows.y + offset as u16, rows.width, 1),
+        );
+    }
 }
 
 fn render_channel_list(app: &AppState, frame: &mut Frame, area: Rect) {
@@ -57,13 +151,12 @@ fn render_channel_list(app: &AppState, frame: &mut Frame, area: Rect) {
         return;
     }
     let p = &app.palette;
-    for (idx, channel) in app
-        .chat
-        .channels
-        .iter()
-        .enumerate()
-        .take(area.height as usize)
-    {
+    // The `+` row owns the last line of the column, so the channel rows get
+    // one fewer. Geometry lives in `chat_new_channel_rect` — both agree or
+    // clicks land on the wrong row.
+    let new_channel = app.chat_new_channel_rect();
+    let rows = area.height.saturating_sub(new_channel.height);
+    for (idx, channel) in app.chat.channels.iter().enumerate().take(rows as usize) {
         let selected = idx == app.chat.selected;
         let style = if selected {
             Style::default().bg(p.accent).fg(p.panel_bg)
@@ -81,10 +174,20 @@ fn render_channel_list(app: &AppState, frame: &mut Frame, area: Rect) {
             Rect::new(area.x, area.y + idx as u16, area.width, 1),
         );
     }
-    if app.chat.channels.is_empty() {
+    if app.chat.channels.is_empty() && rows > 0 {
         frame.render_widget(
             Paragraph::new("no channels").style(Style::default().fg(p.overlay0)),
-            area,
+            Rect::new(area.x, area.y, area.width, rows),
+        );
+    }
+    if new_channel.height > 0 {
+        frame.render_widget(
+            Paragraph::new(middle_elide(
+                NEW_CHANNEL_LABEL,
+                new_channel.width.saturating_sub(1) as usize,
+            ))
+            .style(Style::default().fg(p.overlay1)),
+            new_channel,
         );
     }
 }
@@ -152,8 +255,27 @@ fn render_messages(app: &AppState, frame: &mut Frame, area: Rect) {
     frame.render_widget(Paragraph::new(visible), area);
 }
 
+/// Right-edge remove control of a member row. Removal requires landing on
+/// this glyph — clicking the name mentions the member instead, so a stray
+/// click never ejects anyone.
+const REMOVE_GLYPH: &str = "×";
+/// Footer affordance of the members column.
+const ADD_MEMBER_LABEL: &str = "+ add agent";
+
+/// Live status label of an agent, shared by the members column and the
+/// add-member candidate rows.
+pub(crate) fn agent_status_label(status: AgentStatus) -> &'static str {
+    match status {
+        AgentStatus::Idle => "idle",
+        AgentStatus::Working => "working",
+        AgentStatus::Blocked => "blocked",
+        AgentStatus::Done => "done",
+        AgentStatus::Unknown => "",
+    }
+}
+
 fn render_members(app: &AppState, frame: &mut Frame, area: Rect) {
-    if area.height == 0 {
+    if area.height == 0 || area.width == 0 {
         return;
     }
     let p = &app.palette;
@@ -162,13 +284,9 @@ fn render_members(app: &AppState, frame: &mut Frame, area: Rect) {
         Paragraph::new(header).style(Style::default().fg(p.overlay0)),
         Rect::new(area.x, area.y, area.width, 1),
     );
-    for (idx, member) in app
-        .chat
-        .members
-        .iter()
-        .enumerate()
-        .take(area.height.saturating_sub(1) as usize)
-    {
+    // Header row plus the "+ add agent" footer row bracket the member rows.
+    let member_rows = area.height.saturating_sub(2) as usize;
+    for (idx, member) in app.chat.members.iter().enumerate().take(member_rows) {
         let row = Rect::new(area.x, area.y + 1 + idx as u16, area.width, 1);
         let state = member.agent_status.map(agent_state);
         let (icon, icon_style) = match state {
@@ -186,31 +304,44 @@ fn render_members(app: &AppState, frame: &mut Frame, area: Rect) {
             .name
             .clone()
             .unwrap_or_else(|| member.pane_id.clone());
+        let status = member.agent_status.map(agent_status_label).unwrap_or("");
+        // Icon + gap on the left, gap + remove control on the right.
+        let text_width = area.width.saturating_sub(4) as usize;
+        let status_width = if status.is_empty() {
+            0
+        } else {
+            display_width(status) + 1
+        };
+        let name_text = middle_elide(&name, text_width.saturating_sub(status_width));
         let mut spans = vec![
             Span::styled(icon, icon_style),
             Span::raw(" "),
             Span::styled(
-                middle_elide(&name, area.width.saturating_sub(2) as usize),
+                name_text.clone(),
                 Style::default().fg(match state {
                     Some(state) => state_label_color(state, true, &app.palette),
                     None => p.overlay0,
                 }),
             ),
         ];
-        if let Some(status) = member.agent_status {
-            let label = match status {
-                AgentStatus::Idle => "idle",
-                AgentStatus::Working => "working",
-                AgentStatus::Blocked => "blocked",
-                AgentStatus::Done => "done",
-                AgentStatus::Unknown => "",
-            };
+        if status_width > 0 {
             spans.push(Span::styled(
-                format!(" {label}"),
+                format!(" {status}"),
                 Style::default().fg(p.overlay0),
             ));
         }
+        let used = display_width(&name_text) + status_width;
+        spans.push(Span::raw(" ".repeat(text_width.saturating_sub(used) + 1)));
+        spans.push(Span::styled(REMOVE_GLYPH, Style::default().fg(p.overlay0)));
         frame.render_widget(Paragraph::new(Line::from(spans)), row);
+    }
+    let footer = app.chat_add_member_rect();
+    if footer.height > 0 && footer.width > 0 {
+        frame.render_widget(
+            Paragraph::new(middle_elide(ADD_MEMBER_LABEL, footer.width as usize))
+                .style(Style::default().fg(p.accent)),
+            footer,
+        );
     }
 }
 

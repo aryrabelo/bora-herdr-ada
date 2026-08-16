@@ -213,7 +213,8 @@ impl App {
     pub(crate) fn paste_into_active_text_input(&mut self, text: &str) -> bool {
         match self.state.mode {
             Mode::Chat => {
-                self.state.chat.input.push_str(text);
+                // An open prompt owns the keyboard, paste included.
+                self.state.paste_into_chat(text);
                 true
             }
             Mode::RenameWorkspace

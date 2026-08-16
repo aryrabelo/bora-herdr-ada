@@ -132,6 +132,40 @@ Agents can address you back. `@<your chat name>` resolves to your seat in every 
 
 Only the chat view can speak as you. It sends in-process, and the human flag is never accepted over the socket, so a client or agent cannot forge a message from you. Your sends are also exempt from the per-channel rate limit that paces agents.
 
+### Creating a channel from the view
+
+The channel column ends in a `+ new channel` row. Click it (or press `Ctrl+N`)
+and a small prompt asks for a name; a leading `#` is optional and stripped, so
+`#eng` and `eng` both make `#eng`. `Enter` creates the channel through
+`channel.create`, reloads the list, and selects the new room so you land in
+what you just made. `Esc` cancels the prompt without closing the chat view.
+
+A rejected name — one that already exists, or a workspace that could not be
+created — is reported on the status line with the server's own message, and
+the prompt stays open with your text intact so you can fix it rather than
+retype it.
+
+### Managing members from the view
+
+Membership is managed where you can see it, so recruiting an agent never means
+leaving the chat view for `bora channel join`.
+
+The members column ends in a `+ add agent` row. Click it (or press `Ctrl+A`) and
+Bora lists every running agent across all workspaces that is not already a
+member, with its live status and a shortened working directory so two agents
+with the same nick in different worktrees stay distinguishable. Type to filter
+by name or directory, `Up`/`Down` move the highlight, `Enter` joins the
+highlighted agent, and clicking a row joins it directly. `Esc` closes the
+prompt without closing the chat view. The members column refreshes on join, so
+you see the membership land rather than being told it did.
+
+Each member row carries a `×` at its right edge; clicking that removes the
+member (`channel.leave`). Clicking anywhere else on the row inserts
+`@<name> ` into the composer instead, so addressing someone is a click and a
+stray click cannot eject them. Panes that live in the channel's own `#name`
+workspace are members by construction: removing one is refused, and the status
+line says so instead of reporting a removal that did not happen.
+
 ## Recipes
 
 Start a helper, give it work, and wait for that work to settle:

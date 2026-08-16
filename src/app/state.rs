@@ -1697,6 +1697,37 @@ pub struct KeybindHelpState {
     pub search_focused: bool,
 }
 
+/// One candidate row of the `AddMember` prompt: a running agent pane that is
+/// not yet a member of the selected channel. Built from `agent.list`, the
+/// same agent inventory external clients read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChatMemberCandidate {
+    /// Public pane id, passed straight to `channel.join`.
+    pub pane_id: String,
+    pub name: String,
+    /// Shortened working directory, for telling same-named agents apart.
+    pub cwd: Option<String>,
+    /// Live agent status label ("idle", "working", ...).
+    pub status: String,
+}
+
+/// Modal sub-mode of the chat view, drawn as one small centered box over the
+/// overlay. While a prompt is open it owns the keyboard instead of the
+/// composer, and `Esc` cancels the prompt without closing the chat view.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ChatPrompt {
+    /// Create a channel by name (`channel.create`).
+    NewChannel { input: String },
+    /// Join a running agent to the selected channel (`channel.join`).
+    /// `candidates` is the unfiltered list; `query` narrows it and
+    /// `selected` indexes the narrowed view.
+    AddMember {
+        query: String,
+        selected: usize,
+        candidates: Vec<ChatMemberCandidate>,
+    },
+}
+
 /// TUI chat view presentation state (client layer). Channel data is fetched
 /// through the channel JSON API (`channel.list` / `channel.history` /
 /// `channel.members`) and cached here for render; live appends are pushed in
@@ -1717,6 +1748,8 @@ pub struct ChatViewState {
     pub messages: Vec<crate::api::schema::ChannelMessage>,
     /// Cached `channel.members` for the selected channel.
     pub members: Vec<crate::api::schema::ChannelMember>,
+    /// Open modal sub-mode (new channel / add member), when any.
+    pub prompt: Option<ChatPrompt>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -6,7 +6,7 @@ use ratatui::{
 };
 
 mod chat;
-pub(crate) use self::chat::chat_display_line_count;
+pub(crate) use self::chat::{agent_status_label, chat_display_line_count};
 mod dialogs;
 mod keybind_help;
 mod menus;

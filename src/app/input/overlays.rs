@@ -14,7 +14,7 @@ use super::{
     ScrollbarClickTarget,
 };
 
-fn rect_contains(rect: Rect, col: u16, row: u16) -> bool {
+pub(super) fn rect_contains(rect: Rect, col: u16, row: u16) -> bool {
     col >= rect.x && col < rect.x + rect.width && row >= rect.y && row < rect.y + rect.height
 }
 
@@ -261,11 +261,7 @@ impl App {
     fn handle_chat_mouse(&mut self, mouse: MouseEvent) -> bool {
         match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => {
-                if let Some(idx) = self.state.chat_channel_index_at(mouse.column, mouse.row) {
-                    self.select_chat_channel(idx);
-                } else if !self.state.chat_popup_contains(mouse.column, mouse.row) {
-                    leave_modal(&mut self.state);
-                }
+                self.handle_chat_click(mouse.column, mouse.row)
             }
             MouseEventKind::ScrollUp => self.state.scroll_chat(-3),
             MouseEventKind::ScrollDown => self.state.scroll_chat(3),
@@ -820,13 +816,32 @@ impl AppState {
         rect_contains(self.chat_popup_rect(), col, row)
     }
 
+    /// Bottom row of the channel column: the `+ new channel` affordance.
+    /// Zero height when the column is hidden or too short to spare a row —
+    /// the channel rows win, the affordance is the one that yields.
+    pub(crate) fn chat_new_channel_rect(&self) -> Rect {
+        let area = self.chat_channel_list_rect();
+        if area.width == 0 || area.height < 2 {
+            return Rect::new(area.x, area.y, area.width, 0);
+        }
+        Rect::new(area.x, area.y + area.height - 1, area.width, 1)
+    }
+
+    pub(crate) fn chat_new_channel_hit(&self, col: u16, row: u16) -> bool {
+        rect_contains(self.chat_new_channel_rect(), col, row)
+    }
+
     pub(crate) fn chat_channel_index_at(&self, col: u16, row: u16) -> Option<usize> {
         let area = self.chat_channel_list_rect();
         if !rect_contains(area, col, row) {
             return None;
         }
+        // The `+` row sits inside the column rect but is not a channel.
+        let rows = area
+            .height
+            .saturating_sub(self.chat_new_channel_rect().height) as usize;
         let idx = row.saturating_sub(area.y) as usize;
-        (idx < self.chat.channels.len()).then_some(idx)
+        (idx < rows.min(self.chat.channels.len())).then_some(idx)
     }
 }
 
