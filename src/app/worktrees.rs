@@ -1496,9 +1496,18 @@ impl App {
                 tracing::info!(branch = %branch, url = %url, "worktree open-pr completed");
                 // Refresh checks now for any workspace on this branch so the sidebar
                 // PR badge appears immediately instead of after the periodic refresh.
-                for id in self.workspace_ids_on_branch(&branch) {
-                    self.start_checks_fetch(&id);
+                let workspace_ids = self.workspace_ids_on_branch(&branch);
+                for id in &workspace_ids {
+                    self.start_checks_fetch(id);
                 }
+                self.emit_event(crate::api::schema::EventEnvelope {
+                    event: crate::api::schema::EventKind::GithubPrOpened,
+                    data: crate::api::schema::EventData::GithubPrOpened {
+                        branch: branch.clone(),
+                        url: url.clone(),
+                        workspace_ids,
+                    },
+                });
                 let context = if url.is_empty() { branch } else { url };
                 self.show_worktree_op_toast(
                     crate::app::state::ToastKind::Finished,

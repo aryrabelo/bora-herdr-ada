@@ -662,6 +662,8 @@ Worktree 事件订阅包括 `worktree.created`、`worktree.opened` 和 `worktree
 
 订阅 `github.prs_refreshed` 和 `github.issues_refreshed`,可以在后台刷新完成时收到通知。每个事件都包含被刷新的 `repo_identity`。
 
+`github.pr_opened` 会在 bora 成功为某个 worktree 分支打开 pull request 时触发一次。与上面基于轮询的刷新事件不同,它是在创建时立即推送的,而不是等到下一次定期刷新才被发现。该事件携带 `branch`、PR 的 `url` 以及受影响的 `workspace_ids`。它只覆盖 bora 自己打开的 PR;在智能体窗格中直接运行 `gh` 打开的 PR 不会触发它。
+
 ## 读取窗格
 
 除非你在编写协议客户端,否则通过 CLI 使用 `pane.read`。
