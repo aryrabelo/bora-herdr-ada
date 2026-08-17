@@ -1,0 +1,123 @@
+name: Independent PR Review
+
+on:
+  # `pull_request`, not `pull_request_target`: this job feeds PR-authored diff
+  # content to a model, and `pull_request_target` would run that with repo
+  # secrets exposed to fork PR code. `pull_request` keeps secrets out of the
+  # fork's reach; the checkout step below still reviews the exact head sha.
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  # A rapid second push cancels the still-running review of the prior push
+  # instead of racing it with a duplicate comment; the review takes ~10 minutes.
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  independent-review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      # The reviewer model is independent of whichever model authored the
+      # diff; override per repo via the INDEPENDENT_REVIEW_MODEL variable.
+      REVIEW_MODEL: ${{ vars.INDEPENDENT_REVIEW_MODEL || 'opus' }}
+    steps:
+      - name: Checkout PR head commit
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          # Check out the pushed commit explicitly, not GitHub's merge-preview
+          # ref and not the author's working tree: the review must judge the
+          # commit that will actually land, exactly like CI does.
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify reviewer credential is configured
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          # Fail closed, loudly, instead of silently skipping the gate: a
+          # gate nobody notices is missing is worse than no gate.
+          if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+            echo "::error::ANTHROPIC_API_KEY is not configured; the independent review cannot run."
+            echo "To fix: run 'ciops install' in the repo root to wire this secret into .github/secrets.yml,"
+            echo "'ciops missing' to confirm it's flagged, then have a human run 'ciops fill ANTHROPIC_API_KEY'"
+            echo "to store the value in the vault, followed by 'ciops push' to sync it to the GitHub secret."
+            exit 1
+          fi
+
+      - name: Install Claude CLI
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: Run independent review
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          # No tool access: the diff is already embedded in the prompt by
+          # independent_review.sh, and the diff is untrusted PR content, so
+          # the reviewer gets no filesystem/bash access to reduce blast radius.
+          REVIEW_CMD: claude -p --model ${{ env.REVIEW_MODEL }} --allowedTools ""
+        run: |
+          # Actions' default shell is `bash -e`, without pipefail, so the `|
+          # tee` below would otherwise report tee's status and swallow a
+          # crashing script entirely.
+          set -euo pipefail
+          # independent_review.sh runs under `set -euo pipefail`, so a crash or
+          # a nonzero from the review CLI fails this step. That is necessary but
+          # NOT sufficient: measured 2026-08-17, `claude -p` prints
+          # "Not logged in - Please run /login" and still exits 0. Trusting the
+          # exit code alone would post that string as the review and pass the
+          # gate green having verified nothing.
+          scripts/independent_review.sh | tee review-output.md
+
+          # So assert on the artifact instead. The prompt requires the review to
+          # end with a VERDICT line; if it is absent, no review happened,
+          # whatever the exit code claimed.
+          if ! grep -qE '^VERDICT: [0-9]+ critical, [0-9]+ high, [0-9]+ medium, [0-9]+ low' review-output.md; then
+            echo "::error::The reviewer produced no VERDICT line, so no review actually ran."
+            echo "First 20 lines of what it returned instead:"
+            sed -n '1,20p' review-output.md
+            exit 1
+          fi
+
+      - name: Post or update review comment
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+        with:
+          script: |
+            const fs = require('fs');
+            const marker = '<!-- independent-review -->';
+            const review = fs.readFileSync('review-output.md', 'utf8');
+            const body = `${marker}\n## Independent review\n\n${review}`;
+            const pullNumber = context.payload.pull_request.number;
+
+            // Update the existing review comment instead of posting a new
+            // one on every push, so a fast-moving PR doesn't accumulate a
+            // comment per commit.
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: pullNumber,
+              per_page: 100,
+            });
+            const existing = comments.find(comment => comment.body?.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: pullNumber,
+                body,
+              });
+            }

@@ -191,6 +191,37 @@ server:
 env -u HERDR_SOCKET_PATH -u HERDR_CLIENT_SOCKET_PATH cargo run -- <command>
 ```
 
+### Independent-review gate
+
+`.github/workflows/independent-review.yml` runs `scripts/independent_review.sh`
+on every push to a PR (`pull_request: synchronize`), diffing `base...head` so
+it reviews the pushed commit rather than the author's working tree. The rule
+it enforces is that verification must *happen*: the job fails if the review
+could not run. The model's findings are advisory and never block a merge.
+
+Independence has two levels, and the shipped default only reaches the first.
+**Context independence** is structural and always holds: the reviewer runs in a
+fresh process against `base...head` with no access to the authoring session, so
+it cannot be anchored by the reasoning that produced the change. **Vendor
+independence** is stronger and is *not* the default: the workflow installs
+`@anthropic-ai/claude-code`, which can only reach Anthropic models, so a Claude
+session reviewed by `INDEPENDENT_REVIEW_MODEL=opus` is a different context but
+the same family. To get a cross-family reviewer, swap the install step and
+`REVIEW_CMD` for another vendor's CLI and add that vendor's key — the model spec
+alone cannot do it. Do not describe this gate as cross-family until that swap
+has happened.
+
+Run it locally before pushing with:
+
+```bash
+BASE_SHA=main HEAD_SHA=HEAD REVIEW_CMD='omp -p --no-extensions --model <other-family-spec>' scripts/independent_review.sh
+```
+
+(learned 2026-08-17, binding: on its first real run against commit range
+93b464b8...b767eaef, the independent reviewer found a genuine defect that the
+authoring model and a full 3634-test suite both missed — branch-name-only
+workspace matching in `workspace_ids_on_branch`.)
+
 ## Local Can Machine Workflow
 
 This section applies only on Can's workstation or Windows VM setup when the
