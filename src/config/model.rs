@@ -942,6 +942,12 @@ pub struct UiConfig {
     /// Human display name in the channel chat view. `None` (default)
     /// resolves to the OS username, then "you".
     pub chat_name: Option<String>,
+    /// Open the chat view automatically when an agent message addresses the
+    /// human seat (`@<ui.chat_name>`) while the view is closed. Suppressed
+    /// while the human is typing or mid-modal, falling back to the toast.
+    /// Default: true; only meaningful when `chat_view` is on (itself
+    /// default false, so nobody is surprised into it).
+    pub chat_open_on_mention: bool,
     /// Hide the tab row when the workspace has one tab. Default: false.
     pub hide_tab_bar_when_single_tab: bool,
     /// Desktop tab row placement. Default: top.
@@ -1173,6 +1179,7 @@ impl Default for UiConfig {
             channel_group_name: "channels".to_string(),
             chat_view: false,
             chat_name: None,
+            chat_open_on_mention: true,
             hide_tab_bar_when_single_tab: false,
             tab_bar_position: TabBarPositionConfig::Top,
             tab_bar_right: Vec::new(),
@@ -1353,6 +1360,15 @@ manifest_check = false
             Some(value) => std::env::set_var("LOGNAME", value),
             None => std::env::remove_var("LOGNAME"),
         }
+    }
+
+    #[test]
+    fn chat_open_on_mention_defaults_true_and_parses() {
+        let default: Config = toml::from_str("").unwrap();
+        assert!(default.ui.chat_open_on_mention);
+
+        let off: Config = toml::from_str("[ui]\nchat_open_on_mention = false\n").unwrap();
+        assert!(!off.ui.chat_open_on_mention);
     }
 
     #[cfg(windows)]

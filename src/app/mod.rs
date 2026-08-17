@@ -236,6 +236,10 @@ pub struct App {
     pub(crate) next_api_worktree_operation_id: u64,
     pub(crate) last_sidebar_divider_click: Option<Instant>,
     pub(crate) last_pane_click: Option<PaneClickState>,
+    /// Last human keystroke (local TUI or attached client), for the chat
+    /// auto-open typing guard. One Instant write per key event; nothing
+    /// per-pane or per-render reads or writes it.
+    pub(crate) human_last_input_at: Instant,
     pub(crate) pending_url_click_sources: HashSet<InputSourceId>,
     pub(crate) next_resize_poll: Instant,
     pub(crate) next_animation_tick: Option<Instant>,
@@ -805,6 +809,7 @@ impl App {
             channel_group_name: config.ui.channel_group_name.clone(),
             chat_view: config.ui.chat_view,
             chat_name: config.ui.effective_chat_name(),
+            chat_open_on_mention: config.ui.chat_open_on_mention,
             hide_tab_bar_when_single_tab: config.ui.hide_tab_bar_when_single_tab,
             tab_bar_position: config.ui.tab_bar_position,
             tab_bar_right: Vec::new(),
@@ -937,6 +942,7 @@ impl App {
             next_pending_agent_prompt_queue_id: 1,
             last_sidebar_divider_click: None,
             last_pane_click: None,
+            human_last_input_at: Instant::now(),
             pending_url_click_sources: HashSet::new(),
             next_resize_poll: Instant::now() + RESIZE_POLL_INTERVAL,
             next_animation_tick: None,
@@ -2044,6 +2050,7 @@ impl App {
                 self.state.show_pane_ids_on_pane_borders = config.ui.show_pane_ids_on_pane_borders;
                 self.state.chat_view = config.ui.chat_view;
                 self.state.chat_name = config.ui.effective_chat_name();
+                self.state.chat_open_on_mention = config.ui.chat_open_on_mention;
                 self.state.hide_tab_bar_when_single_tab = config.ui.hide_tab_bar_when_single_tab;
                 self.state.tab_bar_position = config.ui.tab_bar_position;
                 self.configure_tab_bar_status(
@@ -2464,6 +2471,7 @@ impl App {
             let previous_mode = self.state.mode;
             match event {
                 crate::raw_input::RawInputEvent::Key(key) => {
+                    self.human_last_input_at = Instant::now();
                     let lease_key = input::InputLeaseKey::new(source_id, &key);
                     let key = self.input_leases.normalize_press(&lease_key, key);
                     match key.kind {

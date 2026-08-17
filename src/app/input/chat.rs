@@ -29,6 +29,17 @@ use super::overlays::rect_contains;
 /// the selection into view.
 const CHAT_PROMPT_ROWS: u16 = 8;
 
+/// How recently the human must have typed for the mention auto-open to
+/// stand down: never steal focus from someone mid-keystroke.
+const CHAT_AUTO_OPEN_TYPING_WINDOW: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// Modes the chat view may auto-open over. An explicit allowlist of the
+/// quiet browsing modes, so any mode added later defaults to "do not
+/// hijack" — onboarding, prompts, and modals are never interrupted.
+fn chat_auto_open_allowed(mode: Mode) -> bool {
+    matches!(mode, Mode::Terminal | Mode::Navigate)
+}
+
 /// The `error.message` an API rejection carries, for the chat status line.
 /// Falls back to `fallback` when the response is not a recognizable error.
 fn api_error_message(response: &str, fallback: &str) -> String {
@@ -422,7 +433,7 @@ impl App {
         if let Some(idx) = self.state.chat_channel_index_at(col, row) {
             self.select_chat_channel(idx);
         } else if !self.state.chat_popup_contains(col, row) {
-            leave_modal(&mut self.state);
+            self.close_chat_view();
         }
     }
 
@@ -463,7 +474,7 @@ impl App {
             return self.handle_chat_prompt_key(key);
         }
         match key.code {
-            KeyCode::Esc => leave_modal(&mut self.state),
+            KeyCode::Esc => self.close_chat_view(),
             KeyCode::Enter => self.send_chat_input(),
             // Enter/Esc/Tab/arrows/Ctrl+U are taken by the composer, so the
             // add-member prompt gets Ctrl+A ("add agent").
@@ -504,13 +515,17 @@ impl App {
         }
     }
 
-    /// Toast for an agent message addressed to the human seat when the chat
-    /// view is closed. While the view is open the highlighted timeline line
-    /// is the surface — and toasts render below interactive overlays, so a
-    /// toast would be hidden there anyway. Reuses the existing toast
-    /// notification surface (`ui.toast`); no new subsystem.
+    /// Surface for an agent message addressed to the human seat while the
+    /// chat view is closed: auto-open the view on the mentioning channel
+    /// when policy allows, else raise the existing NeedsAttention toast.
+    /// While the view is open the highlighted timeline line is the surface
+    /// — and toasts render below interactive overlays, so a toast would be
+    /// hidden there anyway. Reuses the existing surfaces; no new subsystem.
     pub(crate) fn notify_chat_to_human(&mut self, channel: &str, message: &ChannelMessage) {
         if !message.to_human || self.state.mode == Mode::Chat {
+            return;
+        }
+        if self.try_auto_open_chat(channel) {
             return;
         }
         let previous_toast = self.state.toast.clone();
@@ -524,6 +539,58 @@ impl App {
         self.sync_toast_deadline(previous_toast);
         self.render_dirty.request_generic();
         self.render_notify.notify_one();
+    }
+
+    /// Auto-open policy for a mention: open the chat view on the channel
+    /// that mentioned the human, unless a suppression rule says the human
+    /// is busy — a keystroke inside the typing window, or a mode outside
+    /// the quiet allowlist. A failed open (channel vanished from the list)
+    /// also returns false, so the caller falls back to the toast.
+    fn try_auto_open_chat(&mut self, channel: &str) -> bool {
+        if !self.state.chat_open_on_mention
+            || !chat_auto_open_allowed(self.state.mode)
+            || self.human_last_input_at.elapsed() < CHAT_AUTO_OPEN_TYPING_WINDOW
+            || !self.open_chat_view_on(channel)
+        {
+            return false;
+        }
+        tracing::debug!(channel, "chat view auto-opened on a mention");
+        self.render_dirty.request_generic();
+        self.render_notify.notify_one();
+        true
+    }
+
+    /// Open the chat view selecting the named channel, reusing the plain
+    /// open path (state reset + list/history fetch). The list is refreshed
+    /// before the mode switch, so a channel missing from it returns false
+    /// with the mode untouched — no opening on an arbitrary channel. Only
+    /// the auto-open path calls this, and it records where to return.
+    fn open_chat_view_on(&mut self, channel: &str) -> bool {
+        if !self.state.chat_view {
+            return false;
+        }
+        self.refresh_chat_channels();
+        let needle = crate::persist::channels::normalize_channel_name(channel);
+        let Some(idx) = self.state.chat.channels.iter().position(|summary| {
+            crate::persist::channels::normalize_channel_name(&summary.name) == needle
+        }) else {
+            return false;
+        };
+        let return_mode = self.state.mode;
+        self.state.open_chat_view();
+        self.state.chat.selected = idx;
+        self.state.chat.return_mode = Some(return_mode);
+        self.refresh_chat_channel_data();
+        true
+    }
+
+    /// Close the chat view. An auto-open recorded the mode it interrupted;
+    /// closing returns there. Manual opens keep today's `leave_modal`.
+    fn close_chat_view(&mut self) {
+        match self.state.chat.return_mode.take() {
+            Some(mode) if mode != Mode::Chat => self.state.mode = mode,
+            _ => leave_modal(&mut self.state),
+        }
     }
 }
 
@@ -940,6 +1007,174 @@ mod tests {
             app.state.toast.is_none(),
             "to_human=false is ordinary channel chatter"
         );
+    }
+
+    // ---- mention auto-open (ui.chat_open_on_mention) ---------------------
+
+    /// The auto-open posture: flag on, view enabled and closed, human idle
+    /// (last keystroke outside the 3 s window).
+    fn auto_open_app() -> App {
+        let mut app = test_app();
+        app.state.chat_view = true;
+        app.state.chat_open_on_mention = true;
+        app.state.mode = Mode::Terminal;
+        app.human_last_input_at = std::time::Instant::now() - std::time::Duration::from_secs(4);
+        app
+    }
+
+    #[test]
+    fn mention_with_the_flag_off_toasts_exactly_as_before() {
+        let mut app = auto_open_app();
+        app.state.chat_open_on_mention = false;
+
+        app.notify_chat_to_human("design", &to_human_message("builder", "status?"));
+
+        assert_eq!(app.state.mode, Mode::Terminal, "flag off never opens");
+        let toast = app.state.toast.as_ref().expect("the toast is the fallback");
+        assert_eq!(toast.kind, crate::app::state::ToastKind::NeedsAttention);
+        assert_eq!(toast.title, "builder › you");
+        assert_eq!(toast.context, "#design");
+        assert!(toast.target.is_none());
+    }
+
+    #[test]
+    fn a_keystroke_0s_ago_suppresses_the_open_and_toasts() {
+        let mut app = auto_open_app();
+        app.human_last_input_at = std::time::Instant::now();
+
+        app.notify_chat_to_human("design", &to_human_message("builder", "status?"));
+
+        assert_eq!(
+            app.state.mode,
+            Mode::Terminal,
+            "never eat keystrokes from someone working in a pane"
+        );
+        assert!(
+            app.state.toast.is_some(),
+            "suppression falls back to the toast"
+        );
+    }
+
+    #[test]
+    fn busy_modes_are_never_hijacked() {
+        for mode in [
+            Mode::Onboarding,
+            Mode::ReleaseNotes,
+            Mode::ProductAnnouncement,
+            Mode::Prefix,
+            Mode::Copy,
+            Mode::RenameWorkspace,
+            Mode::RenameTab,
+            Mode::RenamePane,
+            Mode::SetWorkspaceGroup,
+            Mode::LaunchProgramPrompt,
+            Mode::NewLinkedWorktree,
+            Mode::OpenExistingWorktree,
+            Mode::ConfirmRemoveWorktree,
+            Mode::Resize,
+            Mode::ConfirmClose,
+            Mode::ContextMenu,
+            Mode::Settings,
+            Mode::GlobalMenu,
+            Mode::KeybindHelp,
+            Mode::Navigator,
+        ] {
+            let mut app = auto_open_app();
+            app.state.mode = mode;
+
+            app.notify_chat_to_human("design", &to_human_message("builder", "hi"));
+
+            assert_eq!(app.state.mode, mode, "{mode:?} must not be hijacked");
+            assert!(app.state.toast.is_some(), "{mode:?} still gets the toast");
+        }
+    }
+
+    #[test]
+    fn broadcast_chatter_with_the_view_armed_still_does_nothing() {
+        let mut app = auto_open_app();
+
+        app.notify_chat_to_human("design", &message("plain broadcast"));
+
+        assert_eq!(app.state.mode, Mode::Terminal, "no open for chatter");
+        assert!(app.state.toast.is_none(), "and no toast either");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_mention_opens_the_view_on_the_mentioning_channel() {
+        let mut app = creating_app();
+        // Two channels, so "the right one" is distinguishable from row 0.
+        for name in ["eng", "ops"] {
+            app.open_new_channel_prompt();
+            for c in name.chars() {
+                press(&mut app, KeyCode::Char(c));
+            }
+            press(&mut app, KeyCode::Enter);
+        }
+        app.state.mode = Mode::Terminal; // view closed
+        app.human_last_input_at = std::time::Instant::now() - std::time::Duration::from_secs(4);
+
+        app.notify_chat_to_human("ops", &to_human_message("builder", "@arya status?"));
+
+        assert_eq!(app.state.mode, Mode::Chat, "idle human, flag on: it opens");
+        assert_eq!(
+            app.state.selected_chat_channel_name(),
+            Some("#ops"),
+            "on the channel that mentioned, not channel 0"
+        );
+        assert!(app.state.toast.is_none(), "no toast under the open view");
+        crate::app::api::test_support::shutdown_test_runtimes(&mut app);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn closing_after_an_auto_open_returns_to_the_prior_mode() {
+        let mut app = creating_app();
+        app.open_new_channel_prompt();
+        for c in "eng".chars() {
+            press(&mut app, KeyCode::Char(c));
+        }
+        press(&mut app, KeyCode::Enter);
+        app.state.mode = Mode::Navigate; // where the human was
+        app.human_last_input_at = std::time::Instant::now() - std::time::Duration::from_secs(4);
+
+        app.notify_chat_to_human("eng", &to_human_message("builder", "@arya ready"));
+        assert_eq!(app.state.mode, Mode::Chat);
+
+        press(&mut app, KeyCode::Esc);
+
+        assert_eq!(app.state.mode, Mode::Navigate, "back where they were");
+
+        // A manual open records nothing, so close keeps today's behaviour:
+        // workspaces exist, so it lands on Terminal.
+        app.state.open_chat_view();
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.state.mode, Mode::Terminal);
+        crate::app::api::test_support::shutdown_test_runtimes(&mut app);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_mention_naming_a_channel_absent_from_the_list_toasts_instead() {
+        let mut app = creating_app();
+        app.open_new_channel_prompt();
+        for c in "eng".chars() {
+            press(&mut app, KeyCode::Char(c));
+        }
+        press(&mut app, KeyCode::Enter);
+        app.state.mode = Mode::Terminal;
+        app.human_last_input_at = std::time::Instant::now() - std::time::Duration::from_secs(4);
+
+        app.notify_chat_to_human("ghost", &to_human_message("builder", "@arya hi"));
+
+        assert_eq!(
+            app.state.mode,
+            Mode::Terminal,
+            "no opening on an arbitrary channel"
+        );
+        let toast = app.state.toast.as_ref().expect("toast fallback");
+        assert_eq!(toast.context, "#ghost");
+        crate::app::api::test_support::shutdown_test_runtimes(&mut app);
     }
 
     /// A chat app whose `channel.create` builds a workspace that survives the

@@ -80,6 +80,7 @@ impl App {
         &mut self,
         key: TerminalKey,
     ) -> Option<super::TerminalInputTarget> {
+        self.human_last_input_at = std::time::Instant::now();
         if self.state.popup_pane.is_some() {
             return self.handle_terminal_key(key).await;
         }

@@ -1750,6 +1750,11 @@ pub struct ChatViewState {
     pub members: Vec<crate::api::schema::ChannelMember>,
     /// Open modal sub-mode (new channel / add member), when any.
     pub prompt: Option<ChatPrompt>,
+    /// Mode to return to when the view closes, recorded when the view
+    /// auto-opened over that mode (a mention while the human was away).
+    /// Manual opens leave it `None` and close through the standard
+    /// leave-modal path.
+    pub return_mode: Option<Mode>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1940,6 +1945,9 @@ pub struct AppState {
     /// Resolved human chat identity (`ui.chat_name`, else OS username, else
     /// "you"). One source of truth for the chat send path and the renderer.
     pub chat_name: String,
+    /// Whether a message addressing the human seat auto-opens the chat view
+    /// (`ui.chat_open_on_mention`). Only meaningful with `chat_view` on.
+    pub chat_open_on_mention: bool,
     pub hide_tab_bar_when_single_tab: bool,
     pub tab_bar_position: TabBarPositionConfig,
     pub tab_bar_right: Vec<TabBarStatusSegment>,
@@ -2401,6 +2409,7 @@ impl AppState {
             channel_group_name: "channels".to_string(),
             chat_view: false,
             chat_name: "you".to_string(),
+            chat_open_on_mention: true,
             hide_tab_bar_when_single_tab: false,
             tab_bar_position: TabBarPositionConfig::Top,
             tab_bar_right: Vec::new(),
