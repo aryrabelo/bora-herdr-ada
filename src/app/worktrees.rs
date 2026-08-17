@@ -3379,4 +3379,35 @@ mod tests {
         );
         assert!(App::should_shutdown_workspace_terminal_runtimes_for_worktree_remove(true));
     }
+
+    #[test]
+    fn open_pr_finished_emits_github_pr_opened_only_on_success() {
+        let event_hub = crate::api::EventHub::default();
+        let mut app = app_for_worktree_tests_with_event_hub(event_hub.clone());
+
+        app.handle_worktree_open_pr_finished("feature/pr-event".into(), Err("gh exploded".into()));
+        assert!(
+            !event_hub
+                .events_after(0)
+                .iter()
+                .any(|(_, event)| { event.event == crate::api::schema::EventKind::GithubPrOpened }),
+            "a failed PR creation must not announce an opened PR"
+        );
+
+        app.handle_worktree_open_pr_finished(
+            "feature/pr-event".into(),
+            Ok("https://github.com/owner/repo/pull/7570".into()),
+        );
+        assert!(
+            event_hub.events_after(0).iter().any(|(_, event)| {
+                matches!(
+                    &event.data,
+                    crate::api::schema::EventData::GithubPrOpened { branch, url, .. }
+                        if branch == "feature/pr-event"
+                            && url == "https://github.com/owner/repo/pull/7570"
+                )
+            }),
+            "a successful PR creation must emit github.pr_opened carrying branch and url"
+        );
+    }
 }
