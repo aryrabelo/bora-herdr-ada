@@ -19,6 +19,11 @@ use std::path::{Path, PathBuf};
 /// two ways: it must still exist, and it must still be UNREACHED by the dep
 /// info union -- an allowlisted file that starts compiling is a stale (lying)
 /// entry, not a pass.
+///
+/// The list is host-specific: CI runs this suite on both macOS and Linux, and
+/// each platform backend only compiles on its own OS, so a file that is
+/// allowlisted on one host is a live module on the other.
+#[cfg(target_os = "macos")]
 const PLATFORM_GATED_ALLOWLIST: &[(&str, &str)] = &[
     (
         "src/platform/windows.rs",
@@ -30,7 +35,7 @@ const PLATFORM_GATED_ALLOWLIST: &[(&str, &str)] = &[
     ),
     (
         "src/platform/fallback.rs",
-        "non-windows/linux fallback backend, not compiled on macOS",
+        "non-windows/linux/macos fallback backend, not compiled on macOS",
     ),
     (
         "src/platform/windows/clipboard_image.rs",
@@ -39,6 +44,32 @@ const PLATFORM_GATED_ALLOWLIST: &[(&str, &str)] = &[
     (
         "src/pane/terminal/windows_recent_fallback.rs",
         "windows-only pty fallback, not compiled on macOS",
+    ),
+];
+
+/// Linux CI host: same contract as the macOS list above -- windows-only
+/// backends and the macOS backend are legitimately unreached here.
+#[cfg(not(target_os = "macos"))]
+const PLATFORM_GATED_ALLOWLIST: &[(&str, &str)] = &[
+    (
+        "src/platform/windows.rs",
+        "windows-only platform backend, not compiled on Linux",
+    ),
+    (
+        "src/platform/macos.rs",
+        "macos-only platform backend, not compiled on Linux",
+    ),
+    (
+        "src/platform/fallback.rs",
+        "non-windows/linux/macos fallback backend, not compiled on Linux",
+    ),
+    (
+        "src/platform/windows/clipboard_image.rs",
+        "windows-only clipboard support, not compiled on Linux",
+    ),
+    (
+        "src/pane/terminal/windows_recent_fallback.rs",
+        "windows-only pty fallback, not compiled on Linux",
     ),
 ];
 
