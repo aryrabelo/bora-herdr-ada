@@ -15,7 +15,7 @@ use crate::{
     config::{StatusIndicatorStyle, ToastDelivery},
 };
 
-pub(crate) const SETTINGS_POPUP_WIDTH: u16 = 76;
+pub(crate) const SETTINGS_POPUP_WIDTH: u16 = 80;
 pub(crate) const SETTINGS_POPUP_BASE_HEIGHT: u16 = 22;
 
 pub(crate) fn settings_popup_height(app: &AppState) -> u16 {
@@ -159,6 +159,17 @@ pub(super) fn render_settings_overlay(app: &AppState, frame: &mut Frame, area: R
                 "agent border labels",
                 "show detected agent names in split pane borders",
                 app.agent_border_labels_enabled(),
+                app.settings.list.selected,
+            );
+        }
+        SettingsSection::Sidebar => {
+            render_settings_toggle(
+                frame,
+                content_area,
+                p,
+                "group workspaces by repo",
+                "group under repo headers; off shows a flat, freely drag-reorderable list",
+                app.group_workspaces_by_repo(),
                 app.settings.list.selected,
             );
         }

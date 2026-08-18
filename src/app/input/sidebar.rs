@@ -556,7 +556,9 @@ impl AppState {
                     .and_then(|ws| ws.worktree_space())
                     .map(|space| space.key.as_str())
             });
-            let inside_group_gap = card_group.is_some() && card_group == previous_group;
+            let inside_group_gap = self.group_workspaces_by_repo
+                && card_group.is_some()
+                && card_group == previous_group;
             if !inside_group_gap {
                 insert_indices.push(card.ws_idx);
             }
@@ -1636,6 +1638,111 @@ mod tests {
             .map(|ws| ws.custom_name.clone().unwrap())
             .collect();
         assert_eq!(captured_names, vec!["b", "a", "c"]);
+    }
+
+    #[test]
+    fn flat_mode_drag_reorders_linked_worktree() {
+        let mut app = app_for_mouse_test();
+        app.state.workspaces = vec![Workspace::test_new("main"), Workspace::test_new("issue")];
+        for (idx, checkout_path) in ["/repo/herdr", "/repo/herdr-issue"].into_iter().enumerate() {
+            app.state.workspaces[idx].worktree_space =
+                Some(crate::workspace::WorktreeSpaceMembership {
+                    key: "repo-key".into(),
+                    label: "herdr".into(),
+                    repo_root: "/repo/herdr".into(),
+                    checkout_path: checkout_path.into(),
+                    is_linked_worktree: idx > 0,
+                });
+            app.state.workspaces[idx].cached_git_space = Some(crate::workspace::GitSpaceMetadata {
+                key: "repo-key".into(),
+                repo_identity: "repo-key".into(),
+                checkout_key: checkout_path.to_string(),
+                repo_name: "herdr".into(),
+                repo_root: "/repo/herdr".into(),
+                is_linked_worktree: idx > 0,
+            });
+        }
+        app.state.active = None;
+        app.state.sidebar_spaces.rows = vec![vec![crate::config::SpaceSidebarToken::Workspace]];
+        app.state.sidebar_spaces.row_gap = 0;
+
+        // --- Grouped mode (default): the linked worktree row refuses the drag. ---
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 20));
+        let issue_row = app
+            .state
+            .view
+            .workspace_card_areas
+            .iter()
+            .find(|card| card.ws_idx == 1)
+            .expect("issue card present")
+            .rect
+            .y;
+        app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 2, issue_row));
+        app.handle_mouse(mouse(
+            MouseEventKind::Drag(MouseButton::Left),
+            2,
+            issue_row + 5,
+        ));
+        assert!(app.state.drag.is_none());
+        app.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 2, issue_row));
+        assert_eq!(
+            app.state
+                .workspaces
+                .iter()
+                .map(crate::workspace::Workspace::display_name)
+                .collect::<Vec<_>>(),
+            vec!["main", "issue"]
+        );
+
+        // --- Flat mode: the same linked worktree row is a free-standing,
+        // directly drag-reorderable card. `active` tracks it by id, not by
+        // index, so the drag must not lose the pointer.
+        app.state.group_workspaces_by_repo = false;
+        let active_id = app.state.workspaces[1].id.clone();
+        app.state.active = Some(1);
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 20));
+        let cards = app.state.view.workspace_card_areas.clone();
+        let source_row = cards
+            .iter()
+            .find(|card| card.ws_idx == 1)
+            .expect("issue card present")
+            .rect
+            .y;
+        let target_row =
+            crate::ui::workspace_drop_indicator_row(&cards, app.state.workspace_list_rect(), 0)
+                .expect("drop row for insert_idx 0");
+
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            2,
+            source_row,
+        ));
+        app.handle_mouse(mouse(
+            MouseEventKind::Drag(MouseButton::Left),
+            2,
+            target_row,
+        ));
+        assert!(matches!(
+            app.state.drag.as_ref().map(|drag| &drag.target),
+            Some(DragTarget::WorkspaceReorder {
+                source_ws_idx: 1,
+                insert_idx: Some(0),
+            })
+        ));
+        app.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 2, target_row));
+
+        assert_eq!(
+            app.state
+                .workspaces
+                .iter()
+                .map(crate::workspace::Workspace::display_name)
+                .collect::<Vec<_>>(),
+            vec!["issue", "main"]
+        );
+        // Identity survives the index shift: `active` still resolves to
+        // "issue" by id, now at index 0.
+        assert_eq!(app.state.active, Some(0));
+        assert_eq!(app.state.workspaces[0].id, active_id);
     }
 
     #[test]

@@ -944,8 +944,10 @@ impl AppState {
                         let delta_col = mouse.column.abs_diff(press.start_col);
                         let delta_row = mouse.row.abs_diff(press.start_row);
                         let can_reorder = self.workspaces.get(press.ws_idx).is_some_and(|ws| {
-                            ws.worktree_space()
-                                .is_none_or(|space| !space.is_linked_worktree)
+                            !self.group_workspaces_by_repo
+                                || ws
+                                    .worktree_space()
+                                    .is_none_or(|space| !space.is_linked_worktree)
                         });
                         if can_reorder && delta_col.max(delta_row) >= WORKSPACE_DRAG_THRESHOLD {
                             self.drag = Some(DragState {
@@ -1106,6 +1108,16 @@ impl AppState {
                                 insert_idx: Some(insert_idx),
                             },
                     }) => {
+                        if !self.group_workspaces_by_repo {
+                            // Flat mode: every row is an independent drag
+                            // target, never a block. `insert_idx` is already
+                            // a raw vec position; `move_workspace` no-ops on
+                            // an out-of-range or unchanged target.
+                            return Some(MouseAction::MoveWorkspace {
+                                source_ws_idx,
+                                insert_idx,
+                            });
+                        }
                         if let Some(params) =
                             self.workspace_move_block_params(source_ws_idx, insert_idx)
                         {

@@ -808,7 +808,27 @@ pub(crate) fn next_entry_is_indented_workspace(entries: &[WorkspaceListEntry], i
 }
 
 fn workspace_list_entries_inner(app: &AppState, force_expanded: bool) -> Vec<WorkspaceListEntry> {
-    // --- Worktree group setup ---
+    if !app.group_workspaces_by_repo {
+        // Flat sidebar: one row per workspace in workspace-vec order (which
+        // flat-mode drags mutate), with no grouping at all -- repo brackets,
+        // the channels group, and visual groups all dissolve while this is
+        // off. Workspaces hidden individually stay hidden via the shared
+        // post-filter; a repo hidden group-level in grouped mode has no
+        // header here to keep it hidden, so its rows reappear until grouping
+        // is turned back on.
+        let entries: Vec<WorkspaceListEntry> = (0..app.workspaces.len())
+            .map(|ws_idx| WorkspaceListEntry::Workspace {
+                ws_idx,
+                indented: false,
+                rail: BranchRail::None,
+            })
+            .collect();
+        if force_expanded {
+            return entries;
+        }
+        return apply_hidden_filter(app, &std::collections::HashSet::new(), entries);
+    }
+
     let mut members_by_key = std::collections::HashMap::<String, Vec<usize>>::new();
     for (ws_idx, ws) in app.workspaces.iter().enumerate() {
         if let Some(space) = grouping_git_space(ws) {
@@ -4568,6 +4588,121 @@ mod tests {
                     rail: BranchRail::None,
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn toggle_false_emits_flat_entries_no_headers() {
+        let mut app = AppState::test_new();
+        app.group_workspaces_by_repo = false;
+        let ws0 = git_space_member("main", "repo-key", false);
+        let ws1 = git_space_member("child", "repo-key", true);
+        app.workspaces = vec![ws0, ws1];
+
+        let entries = workspace_list_entries(&app);
+
+        // Flat mode: exactly one Workspace entry per workspace, in vec
+        // order, no ProjectHeader/BranchHeader/GroupHeader synthesis at all
+        // — even though these two share a repo and would bracket-group.
+        assert_eq!(
+            entries,
+            vec![
+                WorkspaceListEntry::Workspace {
+                    ws_idx: 0,
+                    indented: false,
+                    rail: BranchRail::None,
+                },
+                WorkspaceListEntry::Workspace {
+                    ws_idx: 1,
+                    indented: false,
+                    rail: BranchRail::None,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn toggle_true_groups_same_repo() {
+        // Control: with the toggle at its default (true), the same pair
+        // still brackets into a repo header the way it always has.
+        let mut app = AppState::test_new();
+        assert!(app.group_workspaces_by_repo);
+        let ws0 = git_space_member("main", "repo-key", false);
+        let ws1 = git_space_member("child", "repo-key", true);
+        app.workspaces = vec![ws0, ws1];
+
+        let entries = workspace_list_entries(&app);
+
+        assert_eq!(
+            entries,
+            vec![
+                WorkspaceListEntry::ProjectHeader {
+                    name: "herdr".into(),
+                    collapse_key: "repo-key".into(),
+                    indented: false,
+                    branch: None,
+                },
+                WorkspaceListEntry::Workspace {
+                    ws_idx: 0,
+                    indented: true,
+                    rail: BranchRail::Spine,
+                },
+                WorkspaceListEntry::Workspace {
+                    ws_idx: 1,
+                    indented: true,
+                    rail: BranchRail::Close,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn retoggle_restores_grouping() {
+        // Grouping is recomputed from workspace data on every call, never
+        // cached: flip off, mutate the vec order the way a flat-mode drag
+        // would, flip back on, and the bracket must reflect the new order.
+        let mut app = AppState::test_new();
+        let ws0 = git_space_member("main", "repo-key", false);
+        let ws1 = git_space_member("child", "repo-key", true);
+        app.workspaces = vec![ws0, ws1];
+
+        app.group_workspaces_by_repo = false;
+        let flat = workspace_list_entries(&app);
+        assert!(flat
+            .iter()
+            .all(|e| matches!(e, WorkspaceListEntry::Workspace { .. })));
+
+        // Simulate the drag reorder a user performs while flat.
+        app.workspaces.swap(0, 1);
+
+        app.group_workspaces_by_repo = true;
+        let grouped = workspace_list_entries(&app);
+        assert!(matches!(
+            grouped[0],
+            WorkspaceListEntry::ProjectHeader { .. }
+        ));
+        assert_eq!(grouped.len(), 3);
+        let WorkspaceListEntry::Workspace {
+            ws_idx: first_idx, ..
+        } = grouped[1]
+        else {
+            panic!("expected a Workspace entry");
+        };
+        let WorkspaceListEntry::Workspace {
+            ws_idx: second_idx, ..
+        } = grouped[2]
+        else {
+            panic!("expected a Workspace entry");
+        };
+        // Post-swap, "child" sits at vec index 0 and "main" at index 1;
+        // emission order follows the vec, so "child" now comes first.
+        assert_eq!(
+            app.workspaces[first_idx].custom_name.as_deref(),
+            Some("child")
+        );
+        assert_eq!(
+            app.workspaces[second_idx].custom_name.as_deref(),
+            Some("main")
         );
     }
 

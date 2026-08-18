@@ -805,6 +805,7 @@ impl App {
             pane_scrollbars: config.ui.pane_scrollbars,
             pane_gaps: config.ui.pane_gaps,
             show_agent_labels_on_pane_borders: config.ui.show_agent_labels_on_pane_borders,
+            group_workspaces_by_repo: config.ui.group_workspaces_by_repo,
             show_pane_ids_on_pane_borders: config.ui.show_pane_ids_on_pane_borders,
             channel_group_name: config.ui.channel_group_name.clone(),
             chat_view: config.ui.chat_view,
@@ -2047,6 +2048,7 @@ impl App {
                 self.state.pane_gaps = config.ui.pane_gaps;
                 self.state.show_agent_labels_on_pane_borders =
                     config.ui.show_agent_labels_on_pane_borders;
+                self.state.group_workspaces_by_repo = config.ui.group_workspaces_by_repo;
                 self.state.show_pane_ids_on_pane_borders = config.ui.show_pane_ids_on_pane_borders;
                 self.state.chat_view = config.ui.chat_view;
                 self.state.chat_name = config.ui.effective_chat_name();

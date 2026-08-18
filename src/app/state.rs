@@ -1068,6 +1068,7 @@ pub enum SettingsSection {
     Sound,
     Toast,
     PaneLabels,
+    Sidebar,
     Integrations,
 }
 
@@ -1078,6 +1079,7 @@ impl SettingsSection {
         Self::Sound,
         Self::Toast,
         Self::PaneLabels,
+        Self::Sidebar,
         Self::Integrations,
     ];
 
@@ -1088,6 +1090,7 @@ impl SettingsSection {
             Self::Sound => "sound",
             Self::Toast => "toasts",
             Self::PaneLabels => "pane labels",
+            Self::Sidebar => "sidebar",
             Self::Integrations => "integrations",
         }
     }
@@ -1938,6 +1941,8 @@ pub struct AppState {
     pub pane_scrollbars: bool,
     pub pane_gaps: bool,
     pub show_agent_labels_on_pane_borders: bool,
+    /// Group workspaces by repository in the sidebar (`ui.group_workspaces_by_repo`).
+    pub(crate) group_workspaces_by_repo: bool,
     pub show_pane_ids_on_pane_borders: bool,
     pub channel_group_name: String,
     /// Whether the fork-only chat view surface is enabled (`ui.chat_view`).
@@ -2100,6 +2105,10 @@ impl AppState {
 
     pub fn agent_border_labels_enabled(&self) -> bool {
         self.show_agent_labels_on_pane_borders
+    }
+
+    pub fn group_workspaces_by_repo(&self) -> bool {
+        self.group_workspaces_by_repo
     }
 
     pub(crate) fn pane_exposes_host_cursor(
@@ -2405,6 +2414,7 @@ impl AppState {
             pane_scrollbars: true,
             pane_gaps: false,
             show_agent_labels_on_pane_borders: false,
+            group_workspaces_by_repo: true,
             show_pane_ids_on_pane_borders: false,
             channel_group_name: "channels".to_string(),
             chat_view: false,

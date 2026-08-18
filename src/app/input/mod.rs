@@ -429,6 +429,9 @@ impl App {
                         SettingsAction::SaveAgentBorderLabels(enabled) => {
                             self.save_agent_border_labels(enabled)
                         }
+                        SettingsAction::SaveGroupWorkspacesByRepo(enabled) => {
+                            self.save_group_workspaces_by_repo(enabled)
+                        }
                         SettingsAction::InstallRecommendedIntegrations => {
                             self.install_recommended_integrations()
                         }

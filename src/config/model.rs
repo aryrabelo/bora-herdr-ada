@@ -927,6 +927,11 @@ pub struct UiConfig {
     pub pane_gaps: bool,
     /// Show agent labels in split pane borders when no manual pane label is set. Default: false.
     pub show_agent_labels_on_pane_borders: bool,
+    /// Group workspaces by repository in the sidebar. When off, the sidebar
+    /// shows a flat list that can be freely drag-reordered — repo, channel,
+    /// and visual groups all dissolve; turning it back on regroups
+    /// automatically. Default: true.
+    pub group_workspaces_by_repo: bool,
     /// Lead each split pane border with its public pane id (`w26:p1`) so two panes
     /// running the same agent stay distinguishable. Default: false.
     pub show_pane_ids_on_pane_borders: bool,
@@ -1175,6 +1180,7 @@ impl Default for UiConfig {
             pane_scrollbars: true,
             pane_gaps: true,
             show_agent_labels_on_pane_borders: false,
+            group_workspaces_by_repo: true,
             show_pane_ids_on_pane_borders: false,
             channel_group_name: "channels".to_string(),
             chat_view: false,
@@ -1554,6 +1560,7 @@ status_indicators = "symbols"
         assert!(default_config.ui.pane_scrollbars);
         assert!(default_config.ui.pane_gaps);
         assert!(!default_config.ui.show_agent_labels_on_pane_borders);
+        assert!(default_config.ui.group_workspaces_by_repo);
         assert!(!default_config.ui.hide_tab_bar_when_single_tab);
         assert_eq!(
             default_config.ui.tab_bar_position,
@@ -1569,6 +1576,7 @@ pane_outer_borders = false
 pane_scrollbars = false
 pane_gaps = true
 show_agent_labels_on_pane_borders = true
+group_workspaces_by_repo = false
 hide_tab_bar_when_single_tab = true
 tab_bar_position = "bottom"
 tab_bar_right = [
@@ -1586,6 +1594,7 @@ tab_bar_right_separator = " · "
         assert!(!config.ui.pane_scrollbars);
         assert!(config.ui.pane_gaps);
         assert!(config.ui.show_agent_labels_on_pane_borders);
+        assert!(!config.ui.group_workspaces_by_repo);
         assert!(config.ui.hide_tab_bar_when_single_tab);
         assert_eq!(config.ui.tab_bar_position, TabBarPositionConfig::Bottom);
         assert_eq!(config.ui.tab_bar_right.len(), 5);

@@ -820,6 +820,12 @@
           "type": "color",
           "default": "\"cyan\"",
           "description": "Accent color for highlights, borders, and navigation UI. Accepts hex (#89b4fa), named colors (cyan, blue), or RGB (rgb(137,180,250))."
+        },
+        {
+          "key": "ui.group_workspaces_by_repo",
+          "type": "boolean",
+          "default": "true",
+          "description": "Group workspaces by repository in the sidebar. When off, the sidebar shows a flat list that can be freely drag-reordered — repo, channel, and visual groups all dissolve; turning it back on regroups automatically."
         }
       ]
     },
