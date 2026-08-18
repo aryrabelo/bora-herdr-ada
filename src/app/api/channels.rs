@@ -12,6 +12,46 @@ use super::responses::{encode_error, encode_success};
 const DEFAULT_CHANNEL_HISTORY_LINES: u32 = 50;
 const MAX_CHANNEL_HISTORY_LINES: u32 = 1000;
 
+/// Bumped whenever [`CHANNEL_PROTOCOL`]'s content changes in a way an
+/// already-briefed pane needs to see again. `App::send_channel_protocol`
+/// re-sends only when a pane's recorded version (see
+/// `channels::read_protocol_sent`) is behind this.
+const CHANNEL_PROTOCOL_VERSION: u32 = 1;
+
+/// Injected once per pane into every channel it joins or is already a
+/// member of — see `App::send_channel_protocol`. Teaches an LLM agent, in
+/// its own terminal, how to use `#channel` messaging.
+const CHANNEL_PROTOCOL: &str = concat!(
+    "You are now on a bora #channel. Messages you receive look like:\n",
+    "  [#channel from <pane> <nick>] <text>   (channel)\n",
+    "  [from <pane> <nick>] <text>            (direct)\n",
+    "\n",
+    "Reply in-channel:\n",
+    "  bora channel send <name> \"<text>\" --current\n",
+    "  Your own pane id resolves automatically; you never need to pass it.\n",
+    "\n",
+    "Address one member by a leading @nick (e.g. \"@rev please check this\").\n",
+    "An unknown or ambiguous @nick silently degrades to a broadcast — never\n",
+    "resend because of that; the message already went out to everyone.\n",
+    "\n",
+    "Prefer explicit addressing when you know exactly who should act:\n",
+    "  bora channel send <name> \"<text>\" --to <nick>\n",
+    "This fails loudly on an unknown or ambiguous nick instead of degrading.\n",
+    "\n",
+    "Catch up on history you missed:\n",
+    "  bora channel tail <name> --after <seq>\n",
+    "\n",
+    "Sends are rate-limited (2s per sender->target) and deferred while the\n",
+    "target is busy. A `deferred` receipt means QUEUED for delivery — that\n",
+    "is not a failure, do not resend it.\n",
+    "\n",
+    "Discipline: when you finish delegated work, @mention the delegator in\n",
+    "your report. Never send a bare acknowledgement. Stay silent on a\n",
+    "message if you have nothing to add.\n",
+    "\n",
+    "Escape a literal @ or # in your own text with \\@ and \\#.",
+);
+
 impl App {
     pub(super) fn handle_channel_create(
         &mut self,
@@ -237,6 +277,7 @@ impl App {
         let deliveries = targets
             .into_iter()
             .map(|target| {
+                self.send_channel_protocol(&name, ws_idx, &target);
                 let response = self.handle_agent_prompt(
                     format!("{id}:channel:{target}"),
                     AgentPromptParams {
@@ -314,6 +355,7 @@ impl App {
             // A pane in the channel's own workspace is a member by
             // construction. Succeed, but say so: recording it would imply a
             // membership that `channel.leave` could take away.
+            self.send_channel_protocol(&name, ws_idx, &public_id);
             return encode_success(
                 id,
                 ResponseResult::ChannelJoined {
@@ -330,6 +372,7 @@ impl App {
             }
             tracing::info!(channel = %name, pane = %public_id, "pane joined channel");
         }
+        self.send_channel_protocol(&name, ws_idx, &public_id);
         encode_success(
             id,
             ResponseResult::ChannelJoined {
@@ -380,6 +423,80 @@ impl App {
                 removed,
             },
         )
+    }
+
+    /// Injects [`CHANNEL_PROTOCOL`] into `public_pane_id` once per channel,
+    /// deduped and made durable across restarts by
+    /// `channels::read_protocol_sent` / `channels::mark_protocol_sent`
+    /// (keyed on `CHANNEL_PROTOCOL_VERSION`, so a version bump re-sends).
+    /// Delivery goes through `handle_agent_prompt` with `from_pane: None` —
+    /// exempt from the agent-prompt rate limit and carries no `[from ...]`
+    /// prefix — and `when_idle: Some(true)`, so a `Working` pane gets it
+    /// queued rather than dropped. Always appends one system line to the
+    /// channel's transcript recording the delivery, mirroring
+    /// `App::report_queued_prompt_dropped`'s drop-notice line. `ws_idx` is
+    /// the channel's own workspace, kept only for tracing context — the
+    /// pane is always addressed by its already-resolved public id.
+    fn send_channel_protocol(&mut self, channel: &str, ws_idx: usize, public_pane_id: &str) {
+        let already_sent = channels::read_protocol_sent(channel)
+            .into_iter()
+            .any(|entry| entry.pane == public_pane_id && entry.version >= CHANNEL_PROTOCOL_VERSION);
+        if already_sent {
+            return;
+        }
+        tracing::debug!(
+            channel = %channel,
+            ws_idx,
+            pane = %public_pane_id,
+            version = CHANNEL_PROTOCOL_VERSION,
+            "sending channel protocol block"
+        );
+        self.handle_agent_prompt(
+            format!("channel-protocol:{channel}:{public_pane_id}"),
+            AgentPromptParams {
+                target: public_pane_id.to_string(),
+                text: format!(
+                    "[bora] channel protocol for #{channel} (v{CHANNEL_PROTOCOL_VERSION}):\n\n{CHANNEL_PROTOCOL}"
+                ),
+                wait: None,
+                from_pane: None,
+                when_idle: Some(true),
+                when_idle_timeout_ms: None,
+                peer_pid: None,
+                origin_channel: None,
+            },
+        );
+        if let Err(err) =
+            channels::mark_protocol_sent(channel, public_pane_id, CHANNEL_PROTOCOL_VERSION)
+        {
+            tracing::warn!(
+                channel = %channel,
+                pane = %public_pane_id,
+                error = %err,
+                "failed to record channel protocol delivery"
+            );
+        }
+        let line = ChannelMessage {
+            ts: now_rfc3339(),
+            seq: channels::next_seq(channel),
+            from_pane: "system".to_string(),
+            from_name: "bora".to_string(),
+            from_kind: ChannelSenderKind::Agent,
+            text: format!("channel protocol v{CHANNEL_PROTOCOL_VERSION} sent to {public_pane_id}"),
+            in_reply_to: None,
+            to_pane: None,
+            to_human: false,
+        };
+        if let Err(err) = channels::append_message(channel, &line) {
+            tracing::warn!(
+                channel = %channel,
+                pane = %public_pane_id,
+                error = %err,
+                "failed to append channel protocol notice"
+            );
+        } else {
+            self.state.push_chat_message(channel, line);
+        }
     }
 
     /// Canonical public id and owning workspace of `pane`, accepting every
@@ -729,6 +846,15 @@ mod tests {
         serde_json::from_str(&response).unwrap()
     }
 
+    /// Pre-marks `pane` as having already received the channel protocol
+    /// block for `name`, so tests unrelated to `App::send_channel_protocol`
+    /// can set up member panes without its injection consuming a runtime
+    /// receiver slot or appending a system line into their assertions.
+    fn skip_protocol(name: &str, pane: &str) {
+        channels::mark_protocol_sent(name, pane, CHANNEL_PROTOCOL_VERSION)
+            .expect("seeding the protocol record must not fail");
+    }
+
     struct IsolatedStateDir {
         _guard: std::sync::MutexGuard<'static, ()>,
         old_state: Option<std::ffi::OsString>,
@@ -886,7 +1012,9 @@ mod tests {
         let _isolated = IsolatedStateDir::new("send-human");
         let mut app = test_app();
         app.state.chat_name = "tester".into();
-        let (_, _, _rx) = channel_with_two_agents(&mut app, "reviewer", "worker");
+        let (reviewer, worker, _rx) = channel_with_two_agents(&mut app, "reviewer", "worker");
+        skip_protocol("eng", &reviewer);
+        skip_protocol("eng", &worker);
 
         let sent = app.handle_channel_send(
             "req".into(),
@@ -933,7 +1061,9 @@ mod tests {
         let _isolated = IsolatedStateDir::new("send-human-rate");
         let mut app = test_app();
         app.state.chat_name = "tester".into();
-        let (_, _, _rx) = channel_with_two_agents(&mut app, "reviewer", "worker");
+        let (reviewer, worker, _rx) = channel_with_two_agents(&mut app, "reviewer", "worker");
+        skip_protocol("eng", &reviewer);
+        skip_protocol("eng", &worker);
 
         // Two back-to-back sends inside one rate-limit window: a pane sender
         // would trip `channel_send_rate_limited` here (see the send-rate-limit
@@ -1013,6 +1143,7 @@ mod tests {
             terminal.state = crate::detect::AgentState::Working;
         }
         let public_pane_id = app.public_pane_id(ws_idx, pane_id).unwrap();
+        skip_protocol("eng", &public_pane_id);
 
         let sent = app.handle_channel_send(
             "req".into(),
@@ -1191,6 +1322,8 @@ mod tests {
         let _isolated = IsolatedStateDir::new("send-to-unique");
         let mut app = test_app();
         let (reviewer, worker, mut rx) = channel_with_two_agents(&mut app, "reviewer", "worker");
+        skip_protocol("eng", &reviewer);
+        skip_protocol("eng", &worker);
 
         let sent = app.handle_channel_send(
             "req".into(),
@@ -1409,7 +1542,9 @@ mod tests {
         let _isolated = IsolatedStateDir::new("mention-human");
         let mut app = test_app();
         app.state.chat_name = "arya".into();
-        let (_reviewer, _worker, _rx) = channel_with_two_agents(&mut app, "reviewer", "worker");
+        let (reviewer, worker, _rx) = channel_with_two_agents(&mut app, "reviewer", "worker");
+        skip_protocol("eng", &reviewer);
+        skip_protocol("eng", &worker);
 
         let sent = app.handle_channel_send(
             "req".into(),
@@ -1467,7 +1602,9 @@ mod tests {
     async fn channel_send_rate_limits_repeated_from_pane_but_exempts_missing_from_pane() {
         let _isolated = IsolatedStateDir::new("send-rate-limit");
         let mut app = test_app();
-        let (_, _, _rx) = channel_with_two_agents(&mut app, "reviewer", "worker");
+        let (reviewer, worker, _rx) = channel_with_two_agents(&mut app, "reviewer", "worker");
+        skip_protocol("eng", &reviewer);
+        skip_protocol("eng", &worker);
 
         let first = app.handle_channel_send(
             "req1".into(),
@@ -1574,7 +1711,9 @@ mod tests {
     async fn leading_mention_degrades_to_broadcast_when_not_uniquely_resolvable() {
         let _isolated = IsolatedStateDir::new("mention-degrade");
         let mut app = test_app();
-        let (_, _, _rx) = channel_with_two_agents(&mut app, "reviewer", "worker");
+        let (reviewer, worker, _rx) = channel_with_two_agents(&mut app, "reviewer", "worker");
+        skip_protocol("eng", &reviewer);
+        skip_protocol("eng", &worker);
 
         // Unknown nick: literal broadcast, message unchanged, never an error.
         let sent = app.handle_channel_send(
@@ -1602,7 +1741,9 @@ mod tests {
 
         // Ambiguous nick (two agents named "dup"): also literal broadcast.
         let mut app2 = test_app();
-        let (_, _, _rx2) = channel_with_two_agents(&mut app2, "dup", "dup");
+        let (dup1, dup2, _rx2) = channel_with_two_agents(&mut app2, "dup", "dup");
+        skip_protocol("eng", &dup1);
+        skip_protocol("eng", &dup2);
         let sent2 = app2.handle_channel_send(
             "req".into(),
             ChannelSendParams {
@@ -1633,7 +1774,9 @@ mod tests {
     async fn escapes_unescape_to_literal_and_never_address() {
         let _isolated = IsolatedStateDir::new("escapes");
         let mut app = test_app();
-        let (reviewer, _worker, _rx) = channel_with_two_agents(&mut app, "reviewer", "worker");
+        let (reviewer, worker, _rx) = channel_with_two_agents(&mut app, "reviewer", "worker");
+        skip_protocol("eng", &reviewer);
+        skip_protocol("eng", &worker);
 
         // `\@` keeps the mention from addressing (raw text starts with the
         // backslash), and both escapes unescape in the stored text.
@@ -1879,8 +2022,11 @@ mod tests {
     async fn joined_pane_receives_broadcast_until_it_leaves() {
         let _isolated = IsolatedStateDir::new("join-delivery");
         let mut app = test_app();
-        let (reviewer, _worker, _rx) = channel_with_two_agents(&mut app, "reviewer", "worker");
+        let (reviewer, worker, _rx) = channel_with_two_agents(&mut app, "reviewer", "worker");
+        skip_protocol("eng", &reviewer);
+        skip_protocol("eng", &worker);
         let (outsider, mut outsider_rx) = outside_agent_pane(&mut app, "brandos");
+        skip_protocol("eng", &outsider);
 
         let before = broadcast(&mut app, "w1A:p9", "before join");
         let before = before["result"]["deliveries"].as_array().unwrap();
@@ -2079,5 +2225,139 @@ mod tests {
 
     fn json_str(value: &str) -> serde_json::Value {
         serde_json::Value::String(value.to_string())
+    }
+
+    #[tokio::test]
+    async fn joined_pane_receives_protocol_once_and_broadcast_never_re_injects() {
+        let _isolated = IsolatedStateDir::new("protocol-join");
+        let mut app = test_app();
+        create_channel(&mut app, "eng");
+        let (outsider, mut outsider_rx) = outside_agent_pane(&mut app, "brandos");
+
+        let joined = join(&mut app, "#eng", &outsider);
+        assert_eq!(joined["result"]["source"], serde_json::json!("joined"));
+
+        let injected = outsider_rx
+            .try_recv()
+            .expect("join must inject the channel protocol block");
+        let injected = String::from_utf8_lossy(&injected);
+        assert!(
+            injected.contains("channel protocol for #eng"),
+            "got: {injected}"
+        );
+        assert!(
+            injected.contains(&format!("v{CHANNEL_PROTOCOL_VERSION}")),
+            "got: {injected}"
+        );
+
+        let history = channels::read_tail("eng", 10).unwrap();
+        let system_lines: Vec<_> = history.iter().filter(|m| m.from_pane == "system").collect();
+        assert_eq!(
+            system_lines.len(),
+            1,
+            "exactly one protocol system line: {history:?}"
+        );
+        assert_eq!(system_lines[0].from_name, "bora");
+
+        // A subsequent broadcast must not re-inject the protocol block.
+        let sent = broadcast(&mut app, "w1A:p9", "hello");
+        let deliveries = sent["result"]["deliveries"].as_array().unwrap();
+        let outsider_delivery = deliveries
+            .iter()
+            .find(|d| d["pane_id"] == json_str(&outsider))
+            .expect("outsider must be in the fan-out");
+        assert_eq!(outsider_delivery["status"], serde_json::json!("delivered"));
+
+        let delivered = outsider_rx
+            .try_recv()
+            .expect("broadcast delivery must reach the outsider pane");
+        let delivered = String::from_utf8_lossy(&delivered);
+        assert!(delivered.contains("hello"), "got: {delivered}");
+        assert!(
+            !delivered.contains("channel protocol"),
+            "must not re-inject: {delivered}"
+        );
+
+        let history_after = channels::read_tail("eng", 10).unwrap();
+        let system_lines_after: Vec<_> = history_after
+            .iter()
+            .filter(|m| m.from_pane == "system")
+            .collect();
+        assert_eq!(
+            system_lines_after.len(),
+            1,
+            "no second protocol system line after a later send"
+        );
+        super::super::test_support::shutdown_test_runtimes(&mut app);
+    }
+
+    #[tokio::test]
+    async fn channel_protocol_survives_restart_without_resend() {
+        let _isolated = IsolatedStateDir::new("protocol-restart");
+        let mut app = test_app();
+        create_channel(&mut app, "eng");
+        app.send_channel_protocol("eng", 0, "w1A:p2");
+        let history = channels::read_tail("eng", 10).unwrap();
+        assert_eq!(
+            history.iter().filter(|m| m.from_pane == "system").count(),
+            1,
+            "first send appends the protocol notice"
+        );
+        super::super::test_support::shutdown_test_runtimes(&mut app);
+
+        // A fresh App ("restart") against the same on-disk state dir: the
+        // persisted protocol.json record must suppress a resend for the
+        // same pane, even though this App instance never saw that pane.
+        let mut restarted = test_app();
+        restarted.send_channel_protocol("eng", 0, "w1A:p2");
+        let history_after = channels::read_tail("eng", 10).unwrap();
+        assert_eq!(
+            history_after
+                .iter()
+                .filter(|m| m.from_pane == "system")
+                .count(),
+            1,
+            "restart must not re-inject or re-append the protocol notice"
+        );
+        super::super::test_support::shutdown_test_runtimes(&mut restarted);
+    }
+
+    #[tokio::test]
+    async fn channel_protocol_is_deferred_for_a_working_target() {
+        let _isolated = IsolatedStateDir::new("protocol-deferred");
+        let mut app = test_app();
+        let (_reviewer, worker, _rx) = channel_with_two_agents(&mut app, "reviewer", "worker");
+
+        app.send_channel_protocol("eng", 0, &worker);
+
+        assert!(
+            app.pending_agent_prompts.contains_key(&worker),
+            "a Working target must have the protocol block queued, not dropped"
+        );
+        assert_eq!(app.pending_agent_prompts[&worker].len(), 1);
+        super::super::test_support::shutdown_test_runtimes(&mut app);
+    }
+
+    #[tokio::test]
+    async fn channel_protocol_send_never_records_a_rate_limit_entry() {
+        let _isolated = IsolatedStateDir::new("protocol-rate-limit");
+        let mut app = test_app();
+        create_channel(&mut app, "eng");
+        let (outsider, mut rx) = outside_agent_pane(&mut app, "brandos");
+
+        app.send_channel_protocol("eng", 0, &outsider);
+        let injected = rx
+            .try_recv()
+            .expect("protocol block must be injected immediately");
+        let injected = String::from_utf8_lossy(&injected);
+        assert!(injected.contains("channel protocol"), "got: {injected}");
+
+        assert!(
+            !app.agent_prompt_rate_limits
+                .keys()
+                .any(|(_, target)| target == &outsider),
+            "protocol delivery must use from_pane: None and never record a rate-limit entry"
+        );
+        super::super::test_support::shutdown_test_runtimes(&mut app);
     }
 }

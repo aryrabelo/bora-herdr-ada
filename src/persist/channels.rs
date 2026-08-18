@@ -11,6 +11,8 @@ use std::fs::{self, OpenOptions};
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 
+use serde::{Deserialize, Serialize};
+
 use crate::api::schema::ChannelMessage;
 use crate::config::state_dir;
 
@@ -30,6 +32,10 @@ pub fn channel_file_path(name: &str) -> PathBuf {
 
 pub fn channel_members_file_path(name: &str) -> PathBuf {
     channels_dir().join(format!("{}.members.json", normalize_channel_name(name)))
+}
+
+pub fn channel_protocol_file_path(name: &str) -> PathBuf {
+    channels_dir().join(format!("{}.protocol.json", normalize_channel_name(name)))
 }
 
 /// Hard cap on JSONL lines kept per channel. Once `append_message` would
@@ -203,6 +209,60 @@ pub fn write_joined_members(name: &str, members: &[String]) -> io::Result<()> {
     }
     fs::create_dir_all(channels_dir())?;
     let body = serde_json::to_string(members)
+        .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
+    let tmp_path = path.with_extension("json.tmp");
+    {
+        let mut tmp = fs::File::create(&tmp_path)?;
+        tmp.write_all(body.as_bytes())?;
+        tmp.flush()?;
+    }
+    fs::rename(&tmp_path, &path)
+}
+
+/// One pane's recorded channel-protocol delivery: the pane it was sent to
+/// and the protocol version it received.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProtocolSent {
+    pub pane: String,
+    pub version: u32,
+}
+
+/// Panes that have already received `name`'s channel protocol block, and at
+/// which version. A missing or unparseable record reads as empty — a
+/// corrupt record must not block delivery, only cause a harmless resend.
+pub fn read_protocol_sent(name: &str) -> Vec<ProtocolSent> {
+    let raw = match fs::read_to_string(channel_protocol_file_path(name)) {
+        Ok(raw) => raw,
+        Err(err) => {
+            if err.kind() != io::ErrorKind::NotFound {
+                tracing::warn!(channel = %name, error = %err, "channel protocol record unreadable");
+            }
+            return Vec::new();
+        }
+    };
+    match serde_json::from_str(&raw) {
+        Ok(entries) => entries,
+        Err(err) => {
+            tracing::warn!(channel = %name, error = %err, "channel protocol record malformed");
+            Vec::new()
+        }
+    }
+}
+
+/// Record that `pane` received `version` of `name`'s channel protocol,
+/// replacing any prior entry for that pane. Writes a sibling `.tmp` and
+/// renames over the record so a concurrent reader never observes a
+/// half-written file.
+pub fn mark_protocol_sent(name: &str, pane: &str, version: u32) -> io::Result<()> {
+    let mut entries = read_protocol_sent(name);
+    entries.retain(|entry| entry.pane != pane);
+    entries.push(ProtocolSent {
+        pane: pane.to_string(),
+        version,
+    });
+    fs::create_dir_all(channels_dir())?;
+    let path = channel_protocol_file_path(name);
+    let body = serde_json::to_string(&entries)
         .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
     let tmp_path = path.with_extension("json.tmp");
     {

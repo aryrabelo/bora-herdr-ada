@@ -184,6 +184,24 @@ Use `--format ansi` when colors and terminal styling are evidence. Otherwise use
 
 After that failed read, ask the agent to write its complete response as Markdown in a temporary directory and reply only with the file path, then read the file directly. Use this only as a fallback; do not request file output in the initial prompt.
 
+## Channels
+
+A channel is a workspace named `#name` that groups agent panes for broadcast messaging. Use it to coordinate with other agents instead of `agent prompt`-ing each one individually.
+
+```bash
+herdr channel send eng "done with the refactor" --current
+herdr channel send eng "@reviewer please check this"
+herdr channel send eng "please check this" --to reviewer
+herdr channel tail eng --after 42
+```
+
+- `channel send <name> "<text>" --current` replies in the channel; the sending pane resolves from `$HERDR_PANE_ID` automatically.
+- A leading `@nick ` token in the text addresses one member pane. An unknown or ambiguous nick silently degrades to an ordinary broadcast instead of erroring or dropping the message.
+- `--to NICK` addresses the same way but fails loudly with `channel_nick_unknown` or `channel_nick_ambiguous` on a miss instead of degrading — use it when a wrong target must stop the send.
+- `channel tail <name> --after SEQ` catches up on messages missed since the last seen `seq`, reporting a `#gap:` notice on stderr if log rotation dropped anything in between.
+
+Bora injects a one-time protocol block into a pane's own terminal the first time it joins a channel or receives a channel message, teaching the same verbs from inside the agent's session. This section is discovery; that injected block is the binding contract for a pane already on a channel.
+
 ## Safety and coordination rules
 
 - Use `--no-focus` for background work unless the user asked to switch context.
