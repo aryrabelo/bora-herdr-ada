@@ -233,13 +233,17 @@ def check_issue_closing_keywords(commits: list[Commit]) -> list[Finding]:
         match = CLOSING_KEYWORD_RE.search(message)
         if match is None:
             continue
+        # Quote the offending text, not just the keyword: the author has to find
+        # and rewrite this exact string, and a commit body may hold several
+        # issue references of which only one is bound to a closing keyword.
+        offending = " ".join(match.group(0).split())
         findings.append(
             Finding(
                 severity="high",
                 location=commit.sha,
                 message=(
-                    f"commit message binds closing keyword {match.group(1)!r} to an issue reference; "
-                    "master holds unreleased work, so use a bare `refs #<n>` instead and let release CI close it"
+                    f"commit message says {offending!r}; master holds unreleased work, so use "
+                    "a bare `refs #<n>` instead and let release CI close the issue"
                 ),
             )
         )
