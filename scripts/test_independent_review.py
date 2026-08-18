@@ -1,13 +1,11 @@
 from __future__ import annotations
 
-import os
 import re
 import unittest
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 WORKFLOW = REPO_ROOT / ".github/workflows/independent-review.yml"
-SCRIPT = REPO_ROOT / "scripts/independent_review.sh"
 
 # The workflow decides "did a review actually happen?" by grepping the reviewer's
 # output for this line. The predicate is extracted from the workflow itself
@@ -30,12 +28,11 @@ def gate_pattern() -> re.Pattern[str]:
 class IndependentReviewWiringTests(unittest.TestCase):
     def test_workflow_calls_the_script_instead_of_inlining_the_review(self) -> None:
         # A gate whose logic lives only in YAML cannot be run locally, so it is
-        # never tested before it fails on a PR.
-        self.assertTrue(SCRIPT.exists(), "scripts/independent_review.sh is missing")
-        self.assertTrue(
-            os.access(SCRIPT, os.X_OK), "scripts/independent_review.sh is not executable"
-        )
-        self.assertIn("scripts/independent_review.sh", WORKFLOW.read_text(encoding="utf-8"))
+        # never tested before it fails on a PR. scripts/review_rules.py is a
+        # peer deliverable that may not exist in this working tree yet, so
+        # assert on the workflow's reference to its path rather than on the
+        # file itself.
+        self.assertIn("scripts/review_rules.py", WORKFLOW.read_text(encoding="utf-8"))
 
     def test_workflow_reviews_the_pushed_commit_not_a_merge_preview(self) -> None:
         text = WORKFLOW.read_text(encoding="utf-8")
@@ -86,7 +83,9 @@ class VerdictGateTests(unittest.TestCase):
     The motivating case is measured, not hypothetical: on 2026-08-17 `claude -p`
     with no credential printed `Not logged in - Please run /login` and exited
     **0**, so an exit-code-only gate would have posted that as the review and
-    passed green.
+    passed green. The reviewer is now scripts/review_rules.py, a deterministic
+    local script with no credential to lack, but the same VERDICT-line check
+    still guards against it crashing or printing nothing before failing.
     """
 
     def setUp(self) -> None:
@@ -105,12 +104,20 @@ class VerdictGateTests(unittest.TestCase):
             "a real review must pass the gate",
         )
 
-    def test_findings_never_veto_the_merge(self) -> None:
-        # The gate enforces that verification happened, not that the model
-        # approved. A model opinion must not block a merge.
-        self.assert_accepted(
-            "CRITICAL - foo.rs:1: bad\n\nVERDICT: 3 critical, 2 high, 1 medium, 4 low\n",
-            "a review reporting critical findings still counts as a review",
+    def test_findings_do_not_swallow_a_nonzero_reviewer_exit(self) -> None:
+        # Deterministic findings are rule violations, not model opinions, so
+        # they now block the merge: the workflow must capture and propagate a
+        # nonzero reviewer exit instead of letting `| tee` swallow it.
+        text = WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn(
+            "|| review_status=$?",
+            text,
+            "the reviewer's exit status must be captured across the tee pipe",
+        )
+        self.assertIn(
+            'exit "$review_status"',
+            text,
+            "a nonzero reviewer exit must propagate and fail the job",
         )
 
     def test_unauthenticated_cli_that_exits_zero_is_rejected(self) -> None:

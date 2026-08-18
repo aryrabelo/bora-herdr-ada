@@ -191,36 +191,39 @@ server:
 env -u HERDR_SOCKET_PATH -u HERDR_CLIENT_SOCKET_PATH cargo run -- <command>
 ```
 
-### Independent-review gate
+### Rules-review gate
 
-`.github/workflows/independent-review.yml` runs `scripts/independent_review.sh`
-on every push to a PR (`pull_request: synchronize`), diffing `base...head` so
-it reviews the pushed commit rather than the author's working tree. The rule
-it enforces is that verification must *happen*: the job fails if the review
-could not run. The model's findings are advisory and never block a merge.
+`.github/workflows/independent-review.yml` runs `scripts/review_rules.py` on
+every push to a PR (`pull_request: synchronize`), diffing `base...head` so it
+reviews the pushed commit rather than the author's working tree. The reviewer
+is deterministic — a stdlib-only Python script, no model call, no credential —
+and enforces four diff-scoped rules that are already binding elsewhere in this
+file but that a lint or unit test cannot express, because each is about *the
+change* rather than the code state: the version bump on `Cargo.toml` package
+changes, the generated/published-path restriction (root `README.md`/
+`CHANGELOG.md`, `docs/preview/`, `docs/versions/`), the required justification
+comment on `#[allow]`, and the ban on GitHub closing keywords in commits.
+Findings **block the merge**: they are violations of a written rule, not a
+model's opinion, so unlike the old gate they are not advisory.
 
-Independence has two levels, and the shipped default only reaches the first.
-**Context independence** is structural and always holds: the reviewer runs in a
-fresh process against `base...head` with no access to the authoring session, so
-it cannot be anchored by the reasoning that produced the change. **Vendor
-independence** is stronger and is *not* the default: the workflow installs
-`@anthropic-ai/claude-code`, which can only reach Anthropic models, so a Claude
-session reviewed by `INDEPENDENT_REVIEW_MODEL=opus` is a different context but
-the same family. To get a cross-family reviewer, swap the install step and
-`REVIEW_CMD` for another vendor's CLI and add that vendor's key — the model spec
-alone cannot do it. Do not describe this gate as cross-family until that swap
-has happened.
+Two rules already have their own dedicated, more thorough checkers and are
+deliberately *not* duplicated here: `unwrap()` in production is
+`clippy::unwrap_used`, and root-vs-`docs/next` changelog divergence is
+`scripts/changelog.py check-history-sync`. When a rule is ambiguous on a given
+diff, the checker does not flag it — mass false positives are what make a team
+learn to ignore a gate.
 
 Run it locally before pushing with:
 
 ```bash
-BASE_SHA=main HEAD_SHA=HEAD REVIEW_CMD='omp -p --no-extensions --model <other-family-spec>' scripts/independent_review.sh
+BASE_SHA=main HEAD_SHA=HEAD scripts/review_rules.py
 ```
 
-(learned 2026-08-17, binding: on its first real run against commit range
-93b464b8...b767eaef, the independent reviewer found a genuine defect that the
-authoring model and a full 3634-test suite both missed — branch-name-only
-workspace matching in `workspace_ids_on_branch`.)
+(learned 2026-08-17, binding: measured across one review session, deterministic
+checks and plain execution of the rules above found four real defects while the
+prior independent-model reviewer found one, at roughly ten minutes and a
+per-push model-call cost. The model gate is retired in favor of these
+deterministic checks for that reason.)
 
 ## Local Can Machine Workflow
 

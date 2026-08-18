@@ -1,10 +1,10 @@
-name: Independent PR Review
+name: Deterministic Rules Review
 
 on:
-  # `pull_request`, not `pull_request_target`: this job feeds PR-authored diff
-  # content to a model, and `pull_request_target` would run that with repo
-  # secrets exposed to fork PR code. `pull_request` keeps secrets out of the
-  # fork's reach; the checkout step below still reviews the exact head sha.
+  # `pull_request`, not `pull_request_target`: the checkout step below still
+  # reviews the exact head sha, and running against a fork's diff needs no
+  # elevated token or secret now that the reviewer is a local script rather
+  # than a model call.
   pull_request:
     types: [opened, synchronize, reopened]
 
@@ -14,18 +14,14 @@ permissions:
 
 concurrency:
   # A rapid second push cancels the still-running review of the prior push
-  # instead of racing it with a duplicate comment; the review takes ~10 minutes.
+  # instead of racing it with a duplicate comment.
   group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
-  independent-review:
+  rules-review:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
-    env:
-      # The reviewer model is independent of whichever model authored the
-      # diff; override per repo via the INDEPENDENT_REVIEW_MODEL variable.
-      REVIEW_MODEL: ${{ vars.INDEPENDENT_REVIEW_MODEL || 'opus' }}
+    timeout-minutes: 5
     steps:
       - name: Checkout PR head commit
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
@@ -37,48 +33,35 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Verify reviewer credential is configured
-        env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-        run: |
-          # Fail closed, loudly, instead of silently skipping the gate: a
-          # gate nobody notices is missing is worse than no gate.
-          if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
-            echo "::error::ANTHROPIC_API_KEY is not configured; the independent review cannot run."
-            echo "To fix: run 'ciops install' in the repo root to wire this secret into .github/secrets.yml,"
-            echo "'ciops missing' to confirm it's flagged, then have a human run 'ciops fill ANTHROPIC_API_KEY'"
-            echo "to store the value in the vault, followed by 'ciops push' to sync it to the GitHub secret."
-            exit 1
-          fi
+      # No "Set up Python" step: ubuntu-latest ships python3 on PATH already,
+      # and scripts/review_rules.py is stdlib-only.
 
-      - name: Install Claude CLI
-        run: npm install -g @anthropic-ai/claude-code
-
-      - name: Run independent review
+      - name: Run rules review
         env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          # No tool access: the diff is already embedded in the prompt by
-          # independent_review.sh, and the diff is untrusted PR content, so
-          # the reviewer gets no filesystem/bash access to reduce blast radius.
-          REVIEW_CMD: claude -p --model ${{ env.REVIEW_MODEL }} --allowedTools ""
         run: |
           # Actions' default shell is `bash -e`, without pipefail, so the `|
           # tee` below would otherwise report tee's status and swallow a
           # crashing script entirely.
           set -euo pipefail
-          # independent_review.sh runs under `set -euo pipefail`, so a crash or
-          # a nonzero from the review CLI fails this step. That is necessary but
-          # NOT sufficient: measured 2026-08-17, `claude -p` prints
-          # "Not logged in - Please run /login" and still exits 0. Trusting the
-          # exit code alone would post that string as the review and pass the
-          # gate green having verified nothing.
-          scripts/independent_review.sh | tee review-output.md
 
-          # So assert on the artifact instead. The prompt requires the review to
-          # end with a VERDICT line; if it is absent, no review happened,
-          # whatever the exit code claimed.
+          # ${REVIEW_CMD:-scripts/review_rules.py} is the swap seam: set
+          # REVIEW_CMD in this step's env to drop in a different reviewer
+          # without touching the rest of this workflow. The `|| review_status=$?`
+          # keeps `-e` from exiting the step immediately on a nonzero reviewer
+          # exit, so the VERDICT check and the exit-code branching below still run.
+          "${REVIEW_CMD:-scripts/review_rules.py}" | tee review-output.md || review_status=$?
+          review_status="${review_status:-0}"
+
+          # Assert on the artifact, not just the exit code. The reviewer's
+          # contract requires the report to end with a VERDICT line; if it is
+          # absent, no review actually happened, whatever the exit code
+          # claimed. (Originally guarded against `claude -p` printing "Not
+          # logged in - Please run /login" and exiting 0, measured 2026-08-17.
+          # The deterministic reviewer has no such credential, but the same
+          # check still guards against a reviewer that crashed or printed
+          # nothing before failing.)
           if ! grep -qE '^VERDICT: [0-9]+ critical, [0-9]+ high, [0-9]+ medium, [0-9]+ low' review-output.md; then
             echo "::error::The reviewer produced no VERDICT line, so no review actually ran."
             echo "First 20 lines of what it returned instead:"
@@ -86,14 +69,30 @@ jobs:
             exit 1
           fi
 
+          # Deterministic findings are violations of written rules, not model
+          # opinions, so they now block the merge. Exit 2 means the reviewer
+          # could not run at all (bad env, git error) — an operational
+          # failure, distinct from exit 1's "rules were violated".
+          if [ "$review_status" -eq 2 ]; then
+            echo "::error::Reviewer exited 2: it could not run (operational failure), not a rule violation."
+            exit 2
+          elif [ "$review_status" -ne 0 ]; then
+            echo "::error::Reviewer exited ${review_status}: it found findings that violate written AGENTS.md rules."
+            exit "$review_status"
+          fi
+
       - name: Post or update review comment
+        # Runs even when the review step above failed — a review that found
+        # violations (or one that couldn't run) must still be visible on the
+        # PR, not buried in a failed job's logs.
+        if: always()
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         with:
           script: |
             const fs = require('fs');
-            const marker = '<!-- independent-review -->';
+            const marker = '<!-- rules-review -->';
             const review = fs.readFileSync('review-output.md', 'utf8');
-            const body = `${marker}\n## Independent review\n\n${review}`;
+            const body = `${marker}\n## Rules review\n\n${review}`;
             const pullNumber = context.payload.pull_request.number;
 
             // Update the existing review comment instead of posting a new
