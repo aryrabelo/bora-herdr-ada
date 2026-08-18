@@ -183,6 +183,7 @@ pub enum AppEvent {
     /// Background `gh pr create` for a worktree completed; Ok carries the PR URL.
     WorktreeOpenPrFinished {
         branch: String,
+        repo_identity: Option<String>,
         result: Result<String, String>,
     },
     /// Background sync (pull --ff-only + push) of a workspace branch completed.

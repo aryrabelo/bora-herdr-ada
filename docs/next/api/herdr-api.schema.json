@@ -768,6 +768,13 @@
                 "branch": {
                   "type": "string"
                 },
+                "repo_identity": {
+                  "description": "Repository the PR belongs to (`GitSpaceMetadata::repo_identity` of the\ninitiating workspace). `workspace_ids` is scoped to this repository.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
                 "type": {
                   "const": "github_pr_opened",
                   "type": "string"
@@ -8000,6 +8007,13 @@
               "properties": {
                 "branch": {
                   "type": "string"
+                },
+                "repo_identity": {
+                  "description": "Repository the PR belongs to (`GitSpaceMetadata::repo_identity` of the\ninitiating workspace). `workspace_ids` is scoped to this repository.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
                 },
                 "type": {
                   "const": "github_pr_opened",

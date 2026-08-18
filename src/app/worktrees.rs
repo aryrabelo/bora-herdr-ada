@@ -1137,6 +1137,21 @@ impl App {
         });
     }
 
+    /// Repository identity of the workspace at `ws_idx`, or `None` when it has
+    /// no git space metadata or the index is out of range.
+    ///
+    /// Separate from its caller so the index-to-identity mapping is testable
+    /// without spawning a background thread and running `gh`. Handing back the
+    /// wrong workspace's identity would scope a PR refresh to the wrong
+    /// repository, which is the defect this whole path exists to prevent.
+    pub(crate) fn workspace_repo_identity(&self, ws_idx: usize) -> Option<String> {
+        self.state
+            .workspaces
+            .get(ws_idx)
+            .and_then(|ws| ws.cached_git_space.as_ref())
+            .map(|space| space.repo_identity.clone())
+    }
+
     /// Push the linked worktree's branch and open a GitHub PR via `gh`. Runs in
     /// the background; result (PR URL or error) surfaces as a toast.
     pub(crate) fn start_worktree_open_pr(&mut self, ws_idx: usize) {
@@ -1149,11 +1164,19 @@ impl App {
             self.state.config_diagnostic = Some("Worktree has no branch to open a PR for.".into());
             return;
         };
+        // Cheap in-memory lookup (no git I/O): identifies which repository this
+        // PR belongs to so the completion handler only refreshes and announces
+        // that repository's workspaces, never a same-named branch elsewhere.
+        let repo_identity = self.workspace_repo_identity(ws_idx);
         tracing::info!(ws_idx, branch = %branch, "starting worktree open-pr");
         let event_tx = self.event_tx.clone();
         std::thread::spawn(move || {
             let result = crate::worktree::open_pull_request(&path, &branch);
-            let _ = event_tx.blocking_send(AppEvent::WorktreeOpenPrFinished { branch, result });
+            let _ = event_tx.blocking_send(AppEvent::WorktreeOpenPrFinished {
+                branch,
+                repo_identity,
+                result,
+            });
         });
     }
 
@@ -1475,13 +1498,46 @@ impl App {
         }
     }
 
-    /// Workspace ids whose cached branch equals `branch`. Targets an immediate
-    /// checks refresh when a PR is opened for that branch.
-    pub(crate) fn workspace_ids_on_branch(&self, branch: &str) -> Vec<String> {
+    /// Workspace ids on `branch` within the repository identified by
+    /// `repo_identity`. Targets an immediate checks refresh when a PR is
+    /// opened for that branch.
+    ///
+    /// Branch name alone is not a safe key: with several repos checked out
+    /// side by side, unrelated repos routinely share branch names (`main`,
+    /// `master`, or the same feature slug). Matching on name alone would
+    /// refresh — and announce via `github.pr_opened` — a workspace in a
+    /// completely different repository. `repo_identity` (shared by every
+    /// clone/worktree of the same repository, see `GitSpaceMetadata`) scopes
+    /// the match to the right repository while still covering every
+    /// checkout of it.
+    ///
+    /// `None` matches nothing: refreshing zero workspaces is a cosmetic miss
+    /// the periodic 30s refresh heals, whereas refreshing another repo's
+    /// workspace is wrong data. In practice this is unreachable from the PR
+    /// completion path, since `start_worktree_open_pr` requires a
+    /// Herdr-managed worktree, which always has git space metadata.
+    pub(crate) fn workspace_ids_on_branch(
+        &self,
+        branch: &str,
+        repo_identity: Option<&str>,
+    ) -> Vec<String> {
+        let Some(repo_identity) = repo_identity else {
+            tracing::warn!(
+                branch = %branch,
+                "workspace_ids_on_branch called without a repo_identity; matching nothing"
+            );
+            return Vec::new();
+        };
         self.state
             .workspaces
             .iter()
-            .filter(|ws| ws.cached_git_branch.as_deref() == Some(branch))
+            .filter(|ws| {
+                ws.cached_git_branch.as_deref() == Some(branch)
+                    && ws
+                        .cached_git_space
+                        .as_ref()
+                        .is_some_and(|space| space.repo_identity == repo_identity)
+            })
             .map(|ws| ws.id.clone())
             .collect()
     }
@@ -1489,14 +1545,16 @@ impl App {
     pub(crate) fn handle_worktree_open_pr_finished(
         &mut self,
         branch: String,
+        repo_identity: Option<String>,
         result: Result<String, String>,
     ) {
         match result {
             Ok(url) => {
                 tracing::info!(branch = %branch, url = %url, "worktree open-pr completed");
-                // Refresh checks now for any workspace on this branch so the sidebar
-                // PR badge appears immediately instead of after the periodic refresh.
-                let workspace_ids = self.workspace_ids_on_branch(&branch);
+                // Refresh checks now for any workspace on this branch, scoped to the
+                // same repository, so the sidebar PR badge appears immediately
+                // instead of after the periodic refresh.
+                let workspace_ids = self.workspace_ids_on_branch(&branch, repo_identity.as_deref());
                 for id in &workspace_ids {
                     self.start_checks_fetch(id);
                 }
@@ -1505,6 +1563,7 @@ impl App {
                     data: crate::api::schema::EventData::GithubPrOpened {
                         branch: branch.clone(),
                         url: url.clone(),
+                        repo_identity,
                         workspace_ids,
                     },
                 });
@@ -2108,14 +2167,169 @@ mod tests {
         let mut app = app_for_worktree_tests();
         let mut ws_a = crate::workspace::Workspace::test_new("a");
         ws_a.cached_git_branch = Some("feat-x".into());
+        ws_a.cached_git_space = Some(crate::workspace::GitSpaceMetadata {
+            key: "repo-key".into(),
+            repo_identity: "github.com/owner/herdr".into(),
+            checkout_key: "/repo/a".into(),
+            repo_name: "herdr".into(),
+            repo_root: "/repo/a".into(),
+            is_linked_worktree: false,
+        });
         let mut ws_b = crate::workspace::Workspace::test_new("b");
         ws_b.cached_git_branch = Some("main".into());
+        ws_b.cached_git_space = Some(crate::workspace::GitSpaceMetadata {
+            key: "repo-key".into(),
+            repo_identity: "github.com/owner/herdr".into(),
+            checkout_key: "/repo/b".into(),
+            repo_name: "herdr".into(),
+            repo_root: "/repo/b".into(),
+            is_linked_worktree: false,
+        });
         let id_a = ws_a.id.clone();
         app.state.workspaces.push(ws_a);
         app.state.workspaces.push(ws_b);
 
-        assert_eq!(app.workspace_ids_on_branch("feat-x"), vec![id_a]);
-        assert!(app.workspace_ids_on_branch("absent").is_empty());
+        assert_eq!(
+            app.workspace_ids_on_branch("feat-x", Some("github.com/owner/herdr")),
+            vec![id_a]
+        );
+        assert!(app
+            .workspace_ids_on_branch("absent", Some("github.com/owner/herdr"))
+            .is_empty());
+        shutdown_test_runtimes(&mut app);
+    }
+
+    #[test]
+    fn workspace_ids_on_branch_excludes_same_branch_in_another_repo() {
+        let mut app = app_for_worktree_tests();
+        let mut ws_a = crate::workspace::Workspace::test_new("a");
+        ws_a.cached_git_branch = Some("feature/thing".into());
+        ws_a.cached_git_space = Some(crate::workspace::GitSpaceMetadata {
+            key: "repo-a-key".into(),
+            repo_identity: "github.com/owner/repo-a".into(),
+            checkout_key: "/repo/a".into(),
+            repo_name: "repo-a".into(),
+            repo_root: "/repo/a".into(),
+            is_linked_worktree: false,
+        });
+        let mut ws_b = crate::workspace::Workspace::test_new("b");
+        ws_b.cached_git_branch = Some("feature/thing".into());
+        ws_b.cached_git_space = Some(crate::workspace::GitSpaceMetadata {
+            key: "repo-b-key".into(),
+            repo_identity: "github.com/owner/repo-b".into(),
+            checkout_key: "/repo/b".into(),
+            repo_name: "repo-b".into(),
+            repo_root: "/repo/b".into(),
+            is_linked_worktree: false,
+        });
+        let id_a = ws_a.id.clone();
+        app.state.workspaces.push(ws_a);
+        app.state.workspaces.push(ws_b);
+
+        assert_eq!(
+            app.workspace_ids_on_branch("feature/thing", Some("github.com/owner/repo-a")),
+            vec![id_a],
+            "a same-named branch in an unrelated repo must not be selected"
+        );
+        shutdown_test_runtimes(&mut app);
+    }
+
+    #[test]
+    fn workspace_ids_on_branch_matches_other_checkouts_of_the_same_repo() {
+        let mut app = app_for_worktree_tests();
+        let mut ws_main = crate::workspace::Workspace::test_new("main");
+        ws_main.cached_git_branch = Some("feature/thing".into());
+        ws_main.cached_git_space = Some(crate::workspace::GitSpaceMetadata {
+            key: "repo-key".into(),
+            repo_identity: "github.com/owner/herdr".into(),
+            checkout_key: "/repo/herdr".into(),
+            repo_name: "herdr".into(),
+            repo_root: "/repo/herdr".into(),
+            is_linked_worktree: false,
+        });
+        let mut ws_worktree = crate::workspace::Workspace::test_new("worktree");
+        ws_worktree.cached_git_branch = Some("feature/thing".into());
+        ws_worktree.cached_git_space = Some(crate::workspace::GitSpaceMetadata {
+            key: "repo-key".into(),
+            repo_identity: "github.com/owner/herdr".into(),
+            checkout_key: "/repo/herdr-worktree".into(),
+            repo_name: "herdr".into(),
+            repo_root: "/repo/herdr".into(),
+            is_linked_worktree: true,
+        });
+        let id_main = ws_main.id.clone();
+        let id_worktree = ws_worktree.id.clone();
+        app.state.workspaces.push(ws_main);
+        app.state.workspaces.push(ws_worktree);
+
+        let mut ids = app.workspace_ids_on_branch("feature/thing", Some("github.com/owner/herdr"));
+        ids.sort();
+        let mut expected = vec![id_main, id_worktree];
+        expected.sort();
+        assert_eq!(
+            ids, expected,
+            "different checkouts of the same repo must both be selected"
+        );
+        shutdown_test_runtimes(&mut app);
+    }
+
+    #[test]
+    fn workspace_ids_on_branch_with_no_repo_identity_matches_nothing() {
+        let mut app = app_for_worktree_tests();
+        let mut ws = crate::workspace::Workspace::test_new("a");
+        ws.cached_git_branch = Some("feat-x".into());
+        ws.cached_git_space = Some(crate::workspace::GitSpaceMetadata {
+            key: "repo-key".into(),
+            repo_identity: "github.com/owner/herdr".into(),
+            checkout_key: "/repo/a".into(),
+            repo_name: "herdr".into(),
+            repo_root: "/repo/a".into(),
+            is_linked_worktree: false,
+        });
+        app.state.workspaces.push(ws);
+
+        assert!(app.workspace_ids_on_branch("feat-x", None).is_empty());
+        shutdown_test_runtimes(&mut app);
+    }
+
+    #[test]
+    fn workspace_repo_identity_reads_the_requested_workspace() {
+        // Guards the dangerous producer regression: handing the completion
+        // handler a neighbour's identity would scope the refresh, and the
+        // github.pr_opened payload, to the wrong repository.
+        let mut app = app_for_worktree_tests();
+        let space = |identity: &str| {
+            Some(crate::workspace::GitSpaceMetadata {
+                key: format!("{identity}-key"),
+                repo_identity: identity.into(),
+                checkout_key: format!("/repo/{identity}"),
+                repo_name: identity.into(),
+                repo_root: format!("/repo/{identity}").into(),
+                is_linked_worktree: false,
+            })
+        };
+        let mut ws_a = crate::workspace::Workspace::test_new("a");
+        ws_a.cached_git_space = space("repo-a");
+        let mut ws_b = crate::workspace::Workspace::test_new("b");
+        ws_b.cached_git_space = space("repo-b");
+        let mut ws_plain = crate::workspace::Workspace::test_new("plain");
+        ws_plain.cached_git_space = None;
+        app.state.workspaces.push(ws_a);
+        app.state.workspaces.push(ws_b);
+        app.state.workspaces.push(ws_plain);
+
+        assert_eq!(
+            app.workspace_repo_identity(0).as_deref(),
+            Some("repo-a"),
+            "must read the requested index, not a neighbour"
+        );
+        assert_eq!(app.workspace_repo_identity(1).as_deref(), Some("repo-b"));
+        assert_eq!(
+            app.workspace_repo_identity(2),
+            None,
+            "no git space metadata"
+        );
+        assert_eq!(app.workspace_repo_identity(99), None, "index out of range");
         shutdown_test_runtimes(&mut app);
     }
 
@@ -3385,7 +3599,11 @@ mod tests {
         let event_hub = crate::api::EventHub::default();
         let mut app = app_for_worktree_tests_with_event_hub(event_hub.clone());
 
-        app.handle_worktree_open_pr_finished("feature/pr-event".into(), Err("gh exploded".into()));
+        app.handle_worktree_open_pr_finished(
+            "feature/pr-event".into(),
+            Some("github.com/owner/repo".into()),
+            Err("gh exploded".into()),
+        );
         assert!(
             !event_hub
                 .events_after(0)
@@ -3396,18 +3614,20 @@ mod tests {
 
         app.handle_worktree_open_pr_finished(
             "feature/pr-event".into(),
+            Some("github.com/owner/repo".into()),
             Ok("https://github.com/owner/repo/pull/7570".into()),
         );
         assert!(
             event_hub.events_after(0).iter().any(|(_, event)| {
                 matches!(
                     &event.data,
-                    crate::api::schema::EventData::GithubPrOpened { branch, url, .. }
+                    crate::api::schema::EventData::GithubPrOpened { branch, url, repo_identity, .. }
                         if branch == "feature/pr-event"
                             && url == "https://github.com/owner/repo/pull/7570"
+                            && repo_identity.as_deref() == Some("github.com/owner/repo")
                 )
             }),
-            "a successful PR creation must emit github.pr_opened carrying branch and url"
+            "a successful PR creation must emit github.pr_opened carrying branch, url, and repo_identity"
         );
     }
 }
