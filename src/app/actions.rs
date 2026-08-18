@@ -1311,9 +1311,15 @@ impl AppState {
             .into_iter()
             .filter_map(|entry| match entry {
                 crate::ui::WorkspaceListEntry::Workspace { ws_idx, .. } => Some(ws_idx),
+                // A branch with a single auto-named worktree workspace folds
+                // that workspace's row INTO the header (see
+                // `WorkspaceListEntry::BranchHeader` doc comment): the header
+                // renders and clicks like a workspace card, so cycling and
+                // numbered switching must see it too, or that worktree
+                // workspace becomes unreachable via keyboard entirely.
+                crate::ui::WorkspaceListEntry::BranchHeader { ws_idx, .. } => ws_idx,
                 crate::ui::WorkspaceListEntry::GroupHeader { .. }
                 | crate::ui::WorkspaceListEntry::ProjectHeader { .. }
-                | crate::ui::WorkspaceListEntry::BranchHeader { .. }
                 | crate::ui::WorkspaceListEntry::HiddenHeader { .. } => None,
             })
             .collect::<Vec<_>>();
@@ -4368,6 +4374,86 @@ mod tests {
         state.switch_workspace(2);
         assert_eq!(state.active, Some(2));
         assert_eq!(state.selected, 2);
+    }
+
+    /// Builds a two-workspace app where the second workspace is a linked
+    /// worktree of the same repo as the first, sharing repo group `repo-key`.
+    /// The worktree's custom name repeats its branch, so the sidebar folds
+    /// its row into the `BranchHeader` for that branch instead of emitting a
+    /// separate `WorkspaceListEntry::Workspace` row (see
+    /// `emit_branch_subgroups` in `src/ui/sidebar.rs`).
+    fn app_with_folded_worktree_workspace() -> AppState {
+        let mut state = app_with_workspaces(&["main", "clear-valley-ac3a"]);
+        for (idx, branch, linked) in [(0, "main", false), (1, "clear-valley-ac3a", true)] {
+            state.workspaces[idx].cached_git_branch = Some(branch.to_string());
+            state.workspaces[idx].cached_git_space = Some(crate::workspace::GitSpaceMetadata {
+                key: "repo-key".into(),
+                repo_identity: "repo-key".into(),
+                checkout_key: format!("checkout-{idx}"),
+                repo_name: "herdr".into(),
+                repo_root: "/repo/herdr".into(),
+                is_linked_worktree: linked,
+            });
+        }
+        state.active = Some(0);
+        state.selected = 0;
+        state
+    }
+
+    #[test]
+    fn visible_workspace_order_includes_worktree_workspace_folded_into_branch_header() {
+        let state = app_with_folded_worktree_workspace();
+
+        // Sanity check: the sidebar really does fold workspace 1 into a
+        // `BranchHeader` rather than emitting its own `Workspace` row.
+        let entries = crate::ui::workspace_list_entries(&state);
+        assert!(
+            entries.iter().any(|entry| matches!(
+                entry,
+                crate::ui::WorkspaceListEntry::BranchHeader {
+                    ws_idx: Some(1),
+                    ..
+                }
+            )),
+            "expected worktree workspace folded into a BranchHeader row: {entries:?}"
+        );
+        assert!(
+            !entries.iter().any(|entry| matches!(
+                entry,
+                crate::ui::WorkspaceListEntry::Workspace { ws_idx: 1, .. }
+            )),
+            "worktree workspace should not also have its own Workspace row: {entries:?}"
+        );
+
+        let order = state.visible_workspace_order();
+        assert_eq!(
+            order,
+            vec![0, 1],
+            "visible_workspace_order must include the folded worktree workspace"
+        );
+        assert_eq!(state.workspace_at_visible_position(1), Some(1));
+    }
+
+    #[test]
+    fn next_and_previous_workspace_visit_folded_worktree_workspace() {
+        let mut state = app_with_folded_worktree_workspace();
+
+        state.next_workspace();
+        assert_eq!(
+            state.active,
+            Some(1),
+            "next_workspace should reach the worktree workspace, not skip it"
+        );
+
+        state.next_workspace();
+        assert_eq!(state.active, Some(0), "cycling should wrap back around");
+
+        state.previous_workspace();
+        assert_eq!(
+            state.active,
+            Some(1),
+            "previous_workspace should also reach the worktree workspace"
+        );
     }
 
     #[test]
