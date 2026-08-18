@@ -79,19 +79,26 @@ Plugins instalados no bora desta máquina, com auditoria de segurança em
   arquivo git-aware num split. `prefix+f` abre.
   - Caveat: update-checker liga sozinho e busca conteúdo remoto do GitHub
     (`update_check` no config); desligável.
-- **board** (`bredebjorhovd/herdr-board`, ⚠️ HIGH finding, instalado mas SEM
-  credenciais configuradas — inerte) — board global de issues GitHub/Linear
-  → dispatch de agentes → review volta pro agente que abriu o PR.
-  - **NÃO configurar `.env`/`routing.toml` sem ler o achado abaixo primeiro.**
+- **board** (`bredebjorhovd/herdr-board`, ⚠️ HIGH finding, **desabilitado**
+  em 2026-08-17 — configurado, não mais inerte) — board global de issues
+  GitHub/Linear → dispatch de agentes → review volta pro agente que abriu o PR.
+  - **NÃO reabilitar sem ler o achado abaixo primeiro.**
     Reportado upstream: https://github.com/bredebjorhovd/herdr-board/issues/49
-  - `review.rs`: comentário de PR de **qualquer conta do GitHub** (repo
-    público) é digitado automaticamente no pane do agente vivo como se
-    fosse instrução — sem checar autor. `dispatch.rs`: título/corpo da
-    issue vai verbatim pro prompt de abertura, sem delimitador.
-    Mitigação até correção upstream: só repos privados seus,
-    `deliver_reviews = false`.
-  - Se/quando configurar: toggle `prefix+shift+o`; credenciais em
-    `bora plugin config-dir board`/`.env`; roteamento com `herdr-board init`.
+  - `review.rs`: comentário de PR de **qualquer conta com acesso ao repo**
+    é digitado automaticamente no pane do agente vivo como se fosse
+    instrução — sem checar autor. `dispatch.rs`: título/corpo da issue vai
+    verbatim pro prompt de abertura, sem delimitador.
+  - Config real desde 2026-08-13: `.env`/`routing.toml` em
+    `~/.config/bora/plugins/config/board/` — `routing.toml` é symlink para
+    `~/Sites/orchestrator/board-routing.toml` (versionado lá, branch
+    `board-deliver-reviews-false`), 4 repos privados do `postpilot-org`,
+    `pull_requests`/`writeback` já `false`. Faltava a mitigação real —
+    `doctor` mostrou `review delivery: on` por default mesmo com as outras
+    duas off, porque é uma chave própria — agora coberta por
+    `deliver_reviews = false` no routing.toml.
+  - Se/quando reabilitar: `bora plugin enable board`; toggle
+    `prefix+shift+o`; confirme com `herdr-board doctor` que `review
+    delivery` segue `off` antes de tirar o pé.
 
 Removido: `tam.pr-workflow` (prompt de merge automático indesejado; fork
 patchado ficou em `~/Sites/herdr-pr-workflow`).
