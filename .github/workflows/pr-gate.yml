@@ -8,10 +8,6 @@ concurrency:
   group: pr-gate-${{ github.event.pull_request.number }}
   cancel-in-progress: false
 
-concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
-
 jobs:
   check-contributor:
     if: github.repository == 'herdrdev/herdr'
