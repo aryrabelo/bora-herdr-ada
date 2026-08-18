@@ -588,6 +588,12 @@
           "type": "string",
           "default": "unset",
           "description": "Keybinding that toggles the right panel (Changes / Checks / Issues / PRs) open or closed."
+        },
+        {
+          "key": "keys.chat",
+          "type": "string",
+          "default": "\"prefix+i\"",
+          "description": "Open the chat view."
         }
       ]
     },
@@ -826,6 +832,36 @@
           "type": "boolean",
           "default": "true",
           "description": "Group workspaces by repository in the sidebar. When off, the sidebar shows a flat list that can be freely drag-reordered — repo, channel, and visual groups all dissolve; turning it back on regroups automatically."
+        },
+        {
+          "key": "ui.show_pane_ids_on_pane_borders",
+          "type": "boolean",
+          "default": "false",
+          "description": "Lead each split pane border with its public pane id (`w26:p1`) so two panes running the same agent stay distinguishable."
+        },
+        {
+          "key": "ui.channel_group_name",
+          "type": "string",
+          "default": "\"channels\"",
+          "description": "Sidebar group that collects `#`-labelled channel workspaces. The grouping rule keys off the `#` label, never off this string."
+        },
+        {
+          "key": "ui.chat_view",
+          "type": "boolean",
+          "default": "false",
+          "description": "Enable the fork-only channel chat view (prefix+i). Bora fork addition; stays off unless explicitly enabled."
+        },
+        {
+          "key": "ui.chat_name",
+          "type": "string",
+          "default": "null",
+          "description": "Human display name in the channel chat view. `null` resolves to the OS username, then \"you\"."
+        },
+        {
+          "key": "ui.chat_open_on_mention",
+          "type": "boolean",
+          "default": "true",
+          "description": "Open the chat view automatically when an agent message addresses the human seat (`@<ui.chat_name>`) while the view is closed. Suppressed while the human is typing or mid-modal, falling back to the toast. Only meaningful when `chat_view` is on."
         }
       ]
     },
