@@ -370,7 +370,7 @@ pub(crate) fn integration_update_instructions(
         .iter()
         .map(|target| {
             format!(
-                "`herdr integration install {}`",
+                "`bora integration install {}`",
                 integration_target_label(*target)
             )
         })
