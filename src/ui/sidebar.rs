@@ -3574,10 +3574,19 @@ mod tests {
     #[test]
     fn workspace_scroll_metrics_count_display_entries_not_raw_workspaces() {
         let mut app = AppState::test_new();
+        // `Workspace::test_new` derives `cached_git_branch` from the real
+        // process cwd (workspace.rs:1333) — a named-branch checkout picks one
+        // up, a detached-HEAD CI checkout does not, which silently changes
+        // this workspace from branchless to branched and shifts the entry
+        // count. Reset it like the sibling test below does, so the fixture
+        // stays hermetic instead of depending on how the test runner's
+        // working tree happens to be checked out.
+        let mut notes = Workspace::test_new("notes");
+        notes.cached_git_branch = None;
         app.workspaces = vec![
             workspace_with_worktree_space("main", Some("repo-key"), "/repo/herdr"),
             workspace_with_worktree_space("issue", Some("repo-key"), "/repo/herdr-issue"),
-            Workspace::test_new("notes"),
+            notes,
         ];
         app.collapsed_space_keys.insert("repo-key".into());
         app.active = None;
@@ -3590,7 +3599,9 @@ mod tests {
         let ws_area = Rect::new(0, 0, 30, 7);
         let metrics = workspace_list_scroll_metrics(&app, ws_area);
 
-        assert_eq!(metrics.viewport_rows, 3);
+        // 2 display entries (the collapsed repo-key header + branchless
+        // "notes"), not 3 raw workspaces — the case this test's name names.
+        assert_eq!(metrics.viewport_rows, 2);
         assert_eq!(metrics.max_offset_from_bottom, 0);
         assert_eq!(metrics.offset_from_bottom, 0);
     }
