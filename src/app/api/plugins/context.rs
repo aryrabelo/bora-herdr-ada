@@ -193,6 +193,16 @@ impl App {
             EventData::GithubPrsRefreshed { .. } | EventData::GithubIssuesRefreshed { .. } => {
                 empty_plugin_context(correlation_id)
             }
+            EventData::GithubPrOpened { workspace_ids, .. } => workspace_ids
+                .first()
+                .and_then(|workspace_id| {
+                    self.plugin_context_for_workspace_id(workspace_id, correlation_id)
+                })
+                .unwrap_or_else(|| {
+                    let mut context = empty_plugin_context(correlation_id);
+                    context.workspace_id = workspace_ids.first().cloned();
+                    context
+                }),
             EventData::QueuedPromptDelivered {
                 target_pane,
                 workspace_id,

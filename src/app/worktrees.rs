@@ -1496,9 +1496,18 @@ impl App {
                 tracing::info!(branch = %branch, url = %url, "worktree open-pr completed");
                 // Refresh checks now for any workspace on this branch so the sidebar
                 // PR badge appears immediately instead of after the periodic refresh.
-                for id in self.workspace_ids_on_branch(&branch) {
-                    self.start_checks_fetch(&id);
+                let workspace_ids = self.workspace_ids_on_branch(&branch);
+                for id in &workspace_ids {
+                    self.start_checks_fetch(id);
                 }
+                self.emit_event(crate::api::schema::EventEnvelope {
+                    event: crate::api::schema::EventKind::GithubPrOpened,
+                    data: crate::api::schema::EventData::GithubPrOpened {
+                        branch: branch.clone(),
+                        url: url.clone(),
+                        workspace_ids,
+                    },
+                });
                 let context = if url.is_empty() { branch } else { url };
                 self.show_worktree_op_toast(
                     crate::app::state::ToastKind::Finished,
@@ -3369,5 +3378,36 @@ mod tests {
             cfg!(windows)
         );
         assert!(App::should_shutdown_workspace_terminal_runtimes_for_worktree_remove(true));
+    }
+
+    #[test]
+    fn open_pr_finished_emits_github_pr_opened_only_on_success() {
+        let event_hub = crate::api::EventHub::default();
+        let mut app = app_for_worktree_tests_with_event_hub(event_hub.clone());
+
+        app.handle_worktree_open_pr_finished("feature/pr-event".into(), Err("gh exploded".into()));
+        assert!(
+            !event_hub
+                .events_after(0)
+                .iter()
+                .any(|(_, event)| { event.event == crate::api::schema::EventKind::GithubPrOpened }),
+            "a failed PR creation must not announce an opened PR"
+        );
+
+        app.handle_worktree_open_pr_finished(
+            "feature/pr-event".into(),
+            Ok("https://github.com/owner/repo/pull/7570".into()),
+        );
+        assert!(
+            event_hub.events_after(0).iter().any(|(_, event)| {
+                matches!(
+                    &event.data,
+                    crate::api::schema::EventData::GithubPrOpened { branch, url, .. }
+                        if branch == "feature/pr-event"
+                            && url == "https://github.com/owner/repo/pull/7570"
+                )
+            }),
+            "a successful PR creation must emit github.pr_opened carrying branch and url"
+        );
     }
 }

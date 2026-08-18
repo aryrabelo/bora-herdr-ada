@@ -191,6 +191,40 @@ server:
 env -u HERDR_SOCKET_PATH -u HERDR_CLIENT_SOCKET_PATH cargo run -- <command>
 ```
 
+### Rules-review gate
+
+`.github/workflows/independent-review.yml` runs `scripts/review_rules.py` on
+every push to a PR (`pull_request: synchronize`), diffing `base...head` so it
+reviews the pushed commit rather than the author's working tree. The reviewer
+is deterministic — a stdlib-only Python script, no model call, no credential —
+and enforces four diff-scoped rules that are already binding elsewhere in this
+file but that a lint or unit test cannot express, because each is about *the
+change* rather than the code state: the version bump on `Cargo.toml` package
+changes, the generated/published-path restriction (root `README.md`/
+`CHANGELOG.md`, `docs/preview/`, `docs/versions/`), the required justification
+comment on `#[allow]`, and the ban on GitHub closing keywords in commits.
+Findings **block the merge**: they are violations of a written rule, not a
+model's opinion, so unlike the old gate they are not advisory.
+
+Two rules already have their own dedicated, more thorough checkers and are
+deliberately *not* duplicated here: `unwrap()` in production is
+`clippy::unwrap_used`, and root-vs-`docs/next` changelog divergence is
+`scripts/changelog.py check-history-sync`. When a rule is ambiguous on a given
+diff, the checker does not flag it — mass false positives are what make a team
+learn to ignore a gate.
+
+Run it locally before pushing with:
+
+```bash
+BASE_SHA=main HEAD_SHA=HEAD scripts/review_rules.py
+```
+
+(learned 2026-08-17, binding: measured across one review session, deterministic
+checks and plain execution of the rules above found four real defects while the
+prior independent-model reviewer found one, at roughly ten minutes and a
+per-push model-call cost. The model gate is retired in favor of these
+deterministic checks for that reason.)
+
 ## Local Can Machine Workflow
 
 This section applies only on Can's workstation or Windows VM setup when the
@@ -281,6 +315,7 @@ Do not use GitHub closing keywords like `fixes #<issue-number>`, `closes #<issue
 - Don't add dependencies without a reason. Check whether existing dependencies cover the need first.
 - Integration asset versions (`HERDR_INTEGRATION_VERSION` markers and matching `*_INTEGRATION_VERSION` constants) are migration versions relative to the latest released tag, not per-commit counters on `master`. If an integration asset changes multiple times between releases, bump it once from the version in the latest release.
 - When changing the server/client wire protocol, compare `src/protocol/wire.rs::PROTOCOL_VERSION` against protocols published in both stable and preview releases. Bump it when the current source protocol has already been published in either channel and the wire format changes incompatibly. Do not bump it again for multiple incompatible changes before that protocol is published. Update hardcoded protocol expectations and manual protocol fixtures in tests.
+- Adding an `EventKind` is two lists, not one. A new variant reaches `events.subscribe` as soon as it is in `EventKind` with a `Subscription` arm, but a plugin manifest `[[events]] on = "..."` hook stays inert until the variant is also in `PLUGIN_HOOK_EVENT_KINDS` (`src/api/schema/events.rs`), because `run_plugin_event_hooks` returns early on any kind missing from that list (`src/app/api/plugins/runtime.rs:220`). The failure mode is a silent no-op: the manifest parses, the plugin installs, the hook never fires, and nothing logs. Give every new kind its own arm in the plugin-context match too — one that resolves a real workspace instead of falling into `empty_plugin_context` — or the hook fires with no context to act on. `github.prs_refreshed` is deliberately subscribe-only and is the counter-example, not the template. (learned 2026-08-17, binding: `github.pr_opened` was added this way; a mutation run confirmed that dropping the `PLUGIN_HOOK_EVENT_KINDS` entry is caught only by a test asserting membership directly, and that deleting the `emit_event` call is caught only by a test asserting the event is emitted.)
 
 ### Removed — do not reintroduce
 

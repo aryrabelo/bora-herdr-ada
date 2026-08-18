@@ -666,6 +666,8 @@ worktree のイベント購読には `worktree.created`、`worktree.opened`、`w
 
 `github.prs_refreshed` と `github.issues_refreshed` を購読すると、バックグラウンド更新が完了したときに通知を受け取れます。各イベントには、更新された `repo_identity` が含まれます。
 
+`github.pr_opened` は、bora が worktree のブランチに対してプルリクエストを開くことに成功した際に一度だけ発行されます。上記のポーリング型のリフレッシュイベントとは異なり、次回の定期リフレッシュを待たず、作成時点で即座にプッシュされます。イベントには `branch`、PR の `url`、影響を受けた `workspace_ids` が含まれます。これは bora 自身が開いた PR のみを対象としており、エージェントのペイン内で直接 `gh` を実行して開いた PR は対象になりません。
+
 ## ペインの読み取り
 
 プロトコルクライアントを書いているのでなければ、CLI 経由で `pane.read` を使ってください。

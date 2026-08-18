@@ -301,6 +301,10 @@ impl ActiveSubscription {
                 event_kind: crate::api::schema::EventKind::GithubPrsRefreshed,
                 last_sequence: 0,
             })),
+            Subscription::GithubPrOpened {} => Ok(Self::Event(ActiveEventSubscription {
+                event_kind: crate::api::schema::EventKind::GithubPrOpened,
+                last_sequence: 0,
+            })),
             Subscription::GithubIssuesRefreshed {} => Ok(Self::Event(ActiveEventSubscription {
                 event_kind: crate::api::schema::EventKind::GithubIssuesRefreshed,
                 last_sequence: 0,

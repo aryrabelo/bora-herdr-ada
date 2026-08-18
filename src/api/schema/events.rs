@@ -87,6 +87,8 @@ pub enum Subscription {
     LayoutUpdated {},
     #[serde(rename = "github.prs_refreshed")]
     GithubPrsRefreshed {},
+    #[serde(rename = "github.pr_opened")]
+    GithubPrOpened {},
     #[serde(rename = "github.issues_refreshed")]
     GithubIssuesRefreshed {},
 }
@@ -232,6 +234,7 @@ pub enum EventKind {
     LayoutUpdated,
     PaneResultReported,
     GithubPrsRefreshed,
+    GithubPrOpened,
     GithubIssuesRefreshed,
     QueuedPromptDelivered,
     QueuedPromptDropped,
@@ -269,6 +272,7 @@ impl EventKind {
             EventKind::LayoutUpdated => "layout.updated",
             EventKind::PaneResultReported => "pane.result_reported",
             EventKind::GithubPrsRefreshed => "github.prs_refreshed",
+            EventKind::GithubPrOpened => "github.pr_opened",
             EventKind::GithubIssuesRefreshed => "github.issues_refreshed",
             EventKind::QueuedPromptDelivered => "agent_prompt.delivered",
             EventKind::QueuedPromptDropped => "agent_prompt.dropped",
@@ -307,6 +311,7 @@ pub const KNOWN_EVENT_KINDS: &[EventKind] = &[
     EventKind::LayoutUpdated,
     EventKind::PaneResultReported,
     EventKind::GithubPrsRefreshed,
+    EventKind::GithubPrOpened,
     EventKind::GithubIssuesRefreshed,
     EventKind::QueuedPromptDelivered,
     EventKind::QueuedPromptDropped,
@@ -340,6 +345,7 @@ pub const PLUGIN_HOOK_EVENT_KINDS: &[EventKind] = &[
     EventKind::QueuedPromptDelivered,
     EventKind::QueuedPromptDropped,
     EventKind::ChannelMessage,
+    EventKind::GithubPrOpened,
 ];
 
 #[cfg(test)]
@@ -389,6 +395,12 @@ mod known_event_name_tests {
         assert!(!names.contains(&"workspace.metadata_updated"));
         assert!(!names.contains(&"pane.updated"));
         assert!(names.contains(&"pane.moved"));
+    }
+
+    #[test]
+    fn github_pr_opened_is_a_plugin_hook_event() {
+        assert!(PLUGIN_HOOK_EVENT_KINDS.contains(&EventKind::GithubPrOpened));
+        assert_eq!(EventKind::GithubPrOpened.dot_name(), "github.pr_opened");
     }
 }
 
@@ -593,6 +605,14 @@ pub enum EventData {
     },
     GithubPrsRefreshed {
         repo_identity: String,
+    },
+    /// Fires once when bora's own `gh pr create` succeeds for a worktree.
+    /// Does not cover PRs opened outside bora, e.g. a `gh` run inside an
+    /// agent pane.
+    GithubPrOpened {
+        branch: String,
+        url: String,
+        workspace_ids: Vec<String>,
     },
     GithubIssuesRefreshed {
         repo_identity: String,

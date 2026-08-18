@@ -18,6 +18,8 @@ Bora is a fork of [herdr](https://github.com/ogulcancelik/herdr). This changelog
 - Channel membership is managed inside the TUI chat view, so recruiting an agent no longer means dropping to `bora channel join` and memorizing a pane id. The members column ends in a clickable `+ add agent` row (`Ctrl+A`) that opens a modal prompt listing every running agent across all workspaces which is not already a member — built from the existing `agent.list` inventory, not a parallel discovery path — each row showing its live status and a shortened working directory so same-named agents in different worktrees stay distinguishable. Typing filters by name or directory, `Up`/`Down` move the highlight, `Enter` joins the highlighted agent through `channel.join`, clicking a row joins it directly, and `Esc` cancels the prompt without closing the view; the members column is re-read on join so the membership is seen landing rather than asserted. Each member row carries an explicit `×` remove control (`channel.leave`) at its right edge, deliberately separate from the rest of the row, which inserts `@<name> ` at the composer cursor instead — addressing a member is a click, and a stray click cannot eject one. A pane living in the channel's own `#name` workspace is a member by construction: `channel.leave` answers `removed: false` and that refusal is what the status line reports, rather than a removal that never happened.
 - Channels are created from inside the TUI chat view, so starting a room never means leaving the view for `bora channel create`. The channel column ends in a clickable `+ new channel` row (`Ctrl+N`) that opens a modal prompt for the name; a leading `#` is stripped before the call so a typed `#eng` cannot reach `channel.create` as `##eng`, and an empty or whitespace-only name is a no-op rather than an error. `Enter` creates the channel, reloads the list through `channel.list`, and selects the new room so the human lands in what they just made; `Esc` cancels the prompt without closing the view. A rejected create — a duplicate name, or a workspace that failed to spawn — surfaces the server's own `error.message` on the chat status line and leaves the prompt open with the typed text intact, instead of swallowing the failure or discarding the input. Because a channel is a workspace, a successful create requests a full repaint (the sidebar gains a row and pane content reflows without the outer terminal resizing).
 - The chat view opens itself when an agent summons the human: a `to_human` message (a `@<ui.chat_name>` mention) arriving while the view is closed now auto-opens the view on the channel that mentioned you — the "chama o $brandos aqui and the room assembles and opens itself" behaviour — under `ui.chat_open_on_mention` (default `true`; only meaningful with `ui.chat_view` on, which stays default false). Two suppression rules keep it polite, each falling back to today's needs-attention toast: the open never happens while the human typed within the last 3 seconds (a `human_last_input_at` Instant written once per keystroke on both the local and attached-client input paths — never in a per-pane or per-render loop), and it never happens outside an explicit quiet-mode allowlist (`Terminal`/`Navigate`), so onboarding, prompts, and modals are never hijacked and any mode added later defaults to not interrupting. The open selects the mentioning channel by name through the same `channel.list`/history fetch the manual open uses; if the channel is not in the refreshed list the toast fires instead of opening on an arbitrary channel. Closing an auto-opened view (`Esc` or click-outside) returns to the exact mode it interrupted — the auto-open records the prior mode; manual opens keep the existing leave-modal behaviour. `to_human: false` chatter remains toast-free and open-free, unchanged.
+- Added a `github.pr_opened` event, emitted once when bora successfully opens a pull request for a worktree branch. Unlike the periodic `github.prs_refreshed` poll, it fires immediately on creation and carries the `branch`, PR `url`, and affected `workspace_ids`. It is available to both `events.subscribe` and plugin manifest `[[events]]` hooks. It covers PRs opened by bora itself; a PR opened by running `gh` inside an agent pane does not trigger it.
+- CI now runs a deterministic rules review on every push to a PR (`.github/workflows/independent-review.yml`, driven by `scripts/review_rules.py`): it diffs `base...head` so it reviews the pushed commit, checks it against four diff-scoped AGENTS.md rules (version bump, generated/published paths, `#[allow]` justification, issue-closing keywords) with no model call and no credential, and fails the job both when the reviewer can't run and when it finds a violation. Findings block merge, replacing the retired model-based independent review, whose findings were advisory only.
 
 ### Fixed
 - Sidebar and right-panel toggle no longer leaves the terminal flickering (content painted a few rows off, alternating with the correct state) until an unrelated full redraw happens to fire. The toggle reflows every pane's column width without changing the outer terminal's size, so neither transport encoding noticed: the default `SemanticFrame` client encoder and the `terminal-ansi`/`--remote` `BlitEncoder` both decided full-vs-diff repaint purely from outer-frame dimensions, so a layout change alone never triggered a full repaint and the diff/scroll-shift path ran against already-reflowed content. `FrameData` now carries an explicit `force_full_repaint` signal (protocol version bumped 20 -> 21) that the server sets on any `AppState`-level layout change and both client encoders honor.
@@ -99,19 +101,26 @@ Plugins instalados no bora desta máquina, com auditoria de segurança em
   arquivo git-aware num split. `prefix+f` abre.
   - Caveat: update-checker liga sozinho e busca conteúdo remoto do GitHub
     (`update_check` no config); desligável.
-- **board** (`bredebjorhovd/herdr-board`, ⚠️ HIGH finding, instalado mas SEM
-  credenciais configuradas — inerte) — board global de issues GitHub/Linear
-  → dispatch de agentes → review volta pro agente que abriu o PR.
-  - **NÃO configurar `.env`/`routing.toml` sem ler o achado abaixo primeiro.**
+- **board** (`bredebjorhovd/herdr-board`, ⚠️ HIGH finding, **desabilitado**
+  em 2026-08-17 — configurado, não mais inerte) — board global de issues
+  GitHub/Linear → dispatch de agentes → review volta pro agente que abriu o PR.
+  - **NÃO reabilitar sem ler o achado abaixo primeiro.**
     Reportado upstream: https://github.com/bredebjorhovd/herdr-board/issues/49
-  - `review.rs`: comentário de PR de **qualquer conta do GitHub** (repo
-    público) é digitado automaticamente no pane do agente vivo como se
-    fosse instrução — sem checar autor. `dispatch.rs`: título/corpo da
-    issue vai verbatim pro prompt de abertura, sem delimitador.
-    Mitigação até correção upstream: só repos privados seus,
-    `deliver_reviews = false`.
-  - Se/quando configurar: toggle `prefix+shift+o`; credenciais em
-    `bora plugin config-dir board`/`.env`; roteamento com `herdr-board init`.
+  - `review.rs`: comentário de PR de **qualquer conta com acesso ao repo**
+    é digitado automaticamente no pane do agente vivo como se fosse
+    instrução — sem checar autor. `dispatch.rs`: título/corpo da issue vai
+    verbatim pro prompt de abertura, sem delimitador.
+  - Config real desde 2026-08-13: `.env`/`routing.toml` em
+    `~/.config/bora/plugins/config/board/` — `routing.toml` é symlink para
+    `~/Sites/orchestrator/board-routing.toml` (versionado lá, branch
+    `board-deliver-reviews-false`), 4 repos privados do `postpilot-org`,
+    `pull_requests`/`writeback` já `false`. Faltava a mitigação real —
+    `doctor` mostrou `review delivery: on` por default mesmo com as outras
+    duas off, porque é uma chave própria — agora coberta por
+    `deliver_reviews = false` no routing.toml.
+  - Se/quando reabilitar: `bora plugin enable board`; toggle
+    `prefix+shift+o`; confirme com `herdr-board doctor` que `review
+    delivery` segue `off` antes de tirar o pé.
 
 Removido: `tam.pr-workflow` (prompt de merge automático indesejado; fork
 patchado ficou em `~/Sites/herdr-pr-workflow`).

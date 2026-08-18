@@ -763,6 +763,34 @@
               "type": "object"
             },
             {
+              "description": "Fires once when bora's own `gh pr create` succeeds for a worktree.\nDoes not cover PRs opened outside bora, e.g. a `gh` run inside an\nagent pane.",
+              "properties": {
+                "branch": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "github_pr_opened",
+                  "type": "string"
+                },
+                "url": {
+                  "type": "string"
+                },
+                "workspace_ids": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                }
+              },
+              "required": [
+                "type",
+                "branch",
+                "url",
+                "workspace_ids"
+              ],
+              "type": "object"
+            },
+            {
               "properties": {
                 "repo_identity": {
                   "type": "string"
@@ -933,6 +961,7 @@
             "layout_updated",
             "pane_result_reported",
             "github_prs_refreshed",
+            "github_pr_opened",
             "github_issues_refreshed",
             "queued_prompt_delivered",
             "queued_prompt_dropped",
@@ -4529,6 +4558,18 @@
             {
               "properties": {
                 "type": {
+                  "const": "github.pr_opened",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "type": {
                   "const": "github.issues_refreshed",
                   "type": "string"
                 }
@@ -7955,6 +7996,34 @@
               "type": "object"
             },
             {
+              "description": "Fires once when bora's own `gh pr create` succeeds for a worktree.\nDoes not cover PRs opened outside bora, e.g. a `gh` run inside an\nagent pane.",
+              "properties": {
+                "branch": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "github_pr_opened",
+                  "type": "string"
+                },
+                "url": {
+                  "type": "string"
+                },
+                "workspace_ids": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                }
+              },
+              "required": [
+                "type",
+                "branch",
+                "url",
+                "workspace_ids"
+              ],
+              "type": "object"
+            },
+            {
               "properties": {
                 "repo_identity": {
                   "type": "string"
@@ -8140,6 +8209,7 @@
             "layout_updated",
             "pane_result_reported",
             "github_prs_refreshed",
+            "github_pr_opened",
             "github_issues_refreshed",
             "queued_prompt_delivered",
             "queued_prompt_dropped",
