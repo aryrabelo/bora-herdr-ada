@@ -190,6 +190,19 @@ impl App {
                     context.focused_pane_id = Some(pane_id.clone());
                     context
                 }),
+            EventData::AgentPrompted {
+                to_pane_id: pane_id,
+                to_workspace_id: workspace_id,
+                ..
+            } => self
+                .plugin_context_for_public_pane_id(pane_id, correlation_id)
+                .or_else(|| self.plugin_context_for_workspace_id(workspace_id, correlation_id))
+                .unwrap_or_else(|| {
+                    let mut context = empty_plugin_context(correlation_id);
+                    context.workspace_id = Some(workspace_id.clone());
+                    context.focused_pane_id = Some(pane_id.clone());
+                    context
+                }),
             EventData::GithubPrsRefreshed { .. } | EventData::GithubIssuesRefreshed { .. } => {
                 empty_plugin_context(correlation_id)
             }

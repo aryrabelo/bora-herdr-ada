@@ -4,7 +4,8 @@ use bytes::Bytes;
 
 use crate::api::schema::{
     AgentPromptOutcome, AgentPromptParams, AgentRenameParams, AgentSendKeysParams,
-    AgentStartParams, AgentTarget, PaneReadResult, ResponseResult,
+    AgentStartParams, AgentTarget, EventData, EventEnvelope, EventKind, PaneReadResult,
+    ResponseResult, AGENT_PROMPTED_TEXT_LIMIT,
 };
 use crate::app::App;
 
@@ -151,12 +152,32 @@ impl App {
                 return encode_error(id, "agent_prompt_failed", err.to_string());
             }
         }
+        // `params.text` already carries the `[from ...]`/`[from? claimed ...]` prefix
+        // (applied above via `agent_prompt_from_prefix`) when `from_pane` was set, so
+        // the announced text used for injection/event reporting is just the text as-is.
+        let announced_text = params.text.clone();
         let (text, enter) =
-            crate::app::api_helpers::encode_api_submission_parts(runtime, &params.text);
+            crate::app::api_helpers::encode_api_submission_parts(runtime, &announced_text);
         if let Err(err) = runtime.try_send_bytes(Bytes::from(text)) {
             return encode_error(id, "agent_prompt_failed", err.to_string());
         }
         runtime.send_bytes_after(Bytes::from(enter), AGENT_PROMPT_SUBMIT_DELAY);
+        let to_pane_id = self.public_pane_id(resolved.ws_idx, resolved.pane_id);
+        let to_workspace_id = self.public_workspace_id(resolved.ws_idx);
+        if let Some(to_pane_id) = to_pane_id {
+            let (text, text_truncated) = truncate_agent_prompt_text(&announced_text);
+            self.emit_event(EventEnvelope {
+                event: EventKind::AgentPrompted,
+                data: EventData::AgentPrompted {
+                    from_pane_id: params.from_pane.clone(),
+                    to_pane_id,
+                    to_workspace_id,
+                    text,
+                    text_truncated,
+                    text_len: announced_text.len(),
+                },
+            });
+        }
         let Some(agent) = self.agent_info(resolved.ws_idx, resolved.pane_id) else {
             return agent_not_found(id, &params.target);
         };
@@ -406,6 +427,20 @@ fn agent_prompt_should_reject_busy(
     when_idle == Some(true) && status == crate::api::schema::AgentStatus::Working
 }
 
+/// Truncates `text` to `AGENT_PROMPTED_TEXT_LIMIT` bytes at a UTF-8
+/// character boundary for `EventData::AgentPrompted`. Returns the
+/// (possibly-unchanged) text and whether it was truncated.
+fn truncate_agent_prompt_text(text: &str) -> (String, bool) {
+    if text.len() <= AGENT_PROMPTED_TEXT_LIMIT {
+        return (text.to_string(), false);
+    }
+    let mut end = AGENT_PROMPTED_TEXT_LIMIT;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    (text[..end].to_string(), true)
+}
+
 fn agent_not_ready(id: String, target: &str) -> String {
     encode_error(
         id,
@@ -508,6 +543,24 @@ mod tests {
             panic!("expected prompted response");
         };
         assert_eq!(agent.name.as_deref(), Some("reviewer"));
+        let to_pane_id = app.public_pane_id(0, pane_id).unwrap();
+        assert!(app.event_hub.events_after(0).iter().any(|(_, event)| {
+            matches!(
+                &event.data,
+                crate::api::schema::EventData::AgentPrompted {
+                    from_pane_id,
+                    to_pane_id: actual_pane_id,
+                    text,
+                    text_truncated,
+                    text_len,
+                    ..
+                } if from_pane_id.is_none()
+                    && actual_pane_id == &to_pane_id
+                    && text == "A != B"
+                    && !text_truncated
+                    && *text_len == "A != B".len()
+            )
+        }));
         assert_eq!(
             rx.try_recv().unwrap(),
             Bytes::from_static(b"\x1b[200~A != B\x1b[201~")

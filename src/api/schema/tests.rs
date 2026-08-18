@@ -111,7 +111,7 @@ fn agent_start_and_prompt_requests_round_trip() {
                 until: vec![AgentStatus::Idle, AgentStatus::Done],
                 timeout_ms: Some(120_000),
             }),
-            from_pane: None,
+            from_pane: Some("wS:p1".into()),
             when_idle: None,
             when_idle_timeout_ms: None,
             peer_pid: None,

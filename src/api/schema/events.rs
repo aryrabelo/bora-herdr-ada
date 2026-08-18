@@ -233,6 +233,7 @@ pub enum EventKind {
     PaneAgentStatusChanged,
     LayoutUpdated,
     PaneResultReported,
+    AgentPrompted,
     GithubPrsRefreshed,
     GithubPrOpened,
     GithubIssuesRefreshed,
@@ -271,6 +272,7 @@ impl EventKind {
             EventKind::PaneAgentStatusChanged => "pane.agent_status_changed",
             EventKind::LayoutUpdated => "layout.updated",
             EventKind::PaneResultReported => "pane.result_reported",
+            EventKind::AgentPrompted => "agent.prompted",
             EventKind::GithubPrsRefreshed => "github.prs_refreshed",
             EventKind::GithubPrOpened => "github.pr_opened",
             EventKind::GithubIssuesRefreshed => "github.issues_refreshed",
@@ -310,6 +312,7 @@ pub const KNOWN_EVENT_KINDS: &[EventKind] = &[
     EventKind::PaneAgentStatusChanged,
     EventKind::LayoutUpdated,
     EventKind::PaneResultReported,
+    EventKind::AgentPrompted,
     EventKind::GithubPrsRefreshed,
     EventKind::GithubPrOpened,
     EventKind::GithubIssuesRefreshed,
@@ -346,6 +349,7 @@ pub const PLUGIN_HOOK_EVENT_KINDS: &[EventKind] = &[
     EventKind::QueuedPromptDropped,
     EventKind::ChannelMessage,
     EventKind::GithubPrOpened,
+    EventKind::AgentPrompted,
 ];
 
 #[cfg(test)]
@@ -462,6 +466,12 @@ pub struct PaneScrollChangedEvent {
     pub workspace_id: String,
     pub scroll: PaneScrollInfo,
 }
+/// Max bytes of `EventData::AgentPrompted::text` kept in the event; longer
+/// prompts are truncated at a UTF-8 boundary. Bounds the 512-slot event ring
+/// against a single large paste, not a confidentiality control (see the
+/// `AgentPrompted` doc comment).
+pub const AGENT_PROMPTED_TEXT_LIMIT: usize = 4096;
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum EventData {
@@ -602,6 +612,20 @@ pub enum EventData {
         pane_id: String,
         workspace_id: String,
         result: serde_json::Value,
+    },
+    /// Emitted when `agent.prompt` writes text into another pane's terminal
+    /// (agent-to-agent coordination). `text` is truncated to
+    /// `AGENT_PROMPTED_TEXT_LIMIT` bytes at a UTF-8 boundary; truncation is
+    /// by size only, never to hide contents — a client that can already read
+    /// `to_pane_id`'s own output sees the same raw bytes on screen.
+    AgentPrompted {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        from_pane_id: Option<String>,
+        to_pane_id: String,
+        to_workspace_id: String,
+        text: String,
+        text_truncated: bool,
+        text_len: usize,
     },
     GithubPrsRefreshed {
         repo_identity: String,
