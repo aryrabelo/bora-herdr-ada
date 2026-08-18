@@ -286,8 +286,13 @@ impl App {
             return Vec::new();
         }
 
-        if let AppEvent::WorktreeOpenPrFinished { branch, result } = ev {
-            self.handle_worktree_open_pr_finished(branch, result);
+        if let AppEvent::WorktreeOpenPrFinished {
+            branch,
+            repo_identity,
+            result,
+        } = ev
+        {
+            self.handle_worktree_open_pr_finished(branch, repo_identity, result);
             return Vec::new();
         }
 

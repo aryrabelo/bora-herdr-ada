@@ -612,6 +612,9 @@ pub enum EventData {
     GithubPrOpened {
         branch: String,
         url: String,
+        /// Repository the PR belongs to (`GitSpaceMetadata::repo_identity` of the
+        /// initiating workspace). `workspace_ids` is scoped to this repository.
+        repo_identity: Option<String>,
         workspace_ids: Vec<String>,
     },
     GithubIssuesRefreshed {

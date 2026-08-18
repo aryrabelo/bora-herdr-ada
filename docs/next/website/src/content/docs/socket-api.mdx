@@ -841,7 +841,7 @@ Each response returns a `repos` array. Each repo entry includes `repo_identity`,
 
 Subscribe to `github.prs_refreshed` and `github.issues_refreshed` to be notified when a background refresh completes. Each event includes the `repo_identity` that was refreshed.
 
-`github.pr_opened` fires once when bora successfully opens a pull request for a worktree branch. Unlike the poll-based refresh events above, it is pushed immediately at creation time rather than discovered on the next periodic refresh. The event carries the `branch`, PR `url`, and affected `workspace_ids`. It only covers PRs opened by bora itself, not PRs opened by running `gh` directly in an agent pane.
+`github.pr_opened` fires once when bora successfully opens a pull request for a worktree branch. Unlike the poll-based refresh events above, it is pushed immediately at creation time rather than discovered on the next periodic refresh. The event carries the `branch`, PR `url`, `repo_identity`, and affected `workspace_ids`. `workspace_ids` only includes workspaces belonging to that same repository; branch name alone is not enough to identify a workspace when several repositories are open. It only covers PRs opened by bora itself, not PRs opened by running `gh` directly in an agent pane.
 
 
 ## Reading panes
