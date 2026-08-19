@@ -1,5 +1,5 @@
 use ratatui::{
-    layout::{Constraint, Layout, Rect},
+    layout::{Alignment, Constraint, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{List, ListItem, ListState, Paragraph, Tabs},
@@ -61,6 +61,22 @@ pub(super) fn render_settings_overlay(app: &AppState, frame: &mut Frame, area: R
             Style::default().fg(p.text).add_modifier(Modifier::BOLD),
         )])),
         header_rows[0],
+    );
+
+    let version_text = crate::build_info::fork_version_display();
+    let header_width = header_rows[0].width.saturating_sub(1);
+    let version_width = (version_text.len() as u16).min(header_width);
+    let version_area = Rect::new(
+        header_rows[0].x + header_rows[0].width.saturating_sub(1 + version_width),
+        header_rows[0].y,
+        version_width,
+        1,
+    );
+    frame.render_widget(
+        Paragraph::new(version_text)
+            .style(Style::default().fg(p.overlay1))
+            .alignment(Alignment::Right),
+        version_area,
     );
 
     let tab_labels = SettingsSection::ALL.iter().map(|section| {
@@ -432,4 +448,44 @@ fn render_settings_toggle(
         p,
         1,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    fn render_settings_title_row() -> String {
+        let app = AppState::test_new();
+        let area = Rect::new(0, 0, 100, 30);
+        let mut terminal = Terminal::new(TestBackend::new(area.width, area.height))
+            .expect("test terminal backend");
+        terminal
+            .draw(|frame| render_settings_overlay(&app, frame, area))
+            .expect("draw settings overlay");
+        let buffer = terminal.backend().buffer().clone();
+        let popup = centered_popup_rect(area, SETTINGS_POPUP_WIDTH, settings_popup_height(&app))
+            .expect("settings popup fits");
+        (popup.y..popup.y + popup.height)
+            .map(|y| {
+                (popup.x..popup.x + popup.width)
+                    .map(|x| buffer[(x, y)].symbol().to_string())
+                    .collect::<String>()
+                    .trim_matches('│')
+                    .to_string()
+            })
+            .find(|row| row.trim_start().starts_with("settings"))
+            .expect("settings title row")
+    }
+
+    #[test]
+    fn settings_header_pairs_the_title_with_a_right_aligned_fork_version() {
+        let title_row = render_settings_title_row();
+        let version = crate::build_info::fork_version_display();
+        assert!(
+            title_row.trim_end().ends_with(&version),
+            "fork version is not right-aligned beside the settings title: {title_row:?}"
+        );
+    }
 }

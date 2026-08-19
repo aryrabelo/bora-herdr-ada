@@ -740,7 +740,11 @@ fn main() -> io::Result<()> {
     }
 
     if args.iter().any(|a| a == "--version" || a == "-V") {
-        println!("bora {}", crate::build_info::version());
+        println!(
+            "bora {} ({})",
+            crate::build_info::version(),
+            crate::build_info::fork_version_display()
+        );
         return Ok(());
     }
 

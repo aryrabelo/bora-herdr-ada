@@ -129,6 +129,10 @@ classes, and how to resolve them, so the next sync is cheap:
   for — search all `match`/array-literal sites of the enum after merging, not just the ones
   the diff flags.
 
+Every upstream sync also updates `UPSTREAM_HERDR_VERSION`/`UPSTREAM_HERDR_COMMIT` in
+`src/build_info.rs` to the merged upstream tip, in the same commit as the merge — see
+"Fork version identity" under Global Contracts.
+
 (learned 2026-08-13, binding: these three classes caused the recurring merge conflicts in
 today's upstream sync.)
 
@@ -296,6 +300,18 @@ package, bump `version` in the same commit — never ship code without a version
 because the installed binary reports `bora --version` and an unbumped build is
 indistinguishable from the previous one at runtime. (learned 2026-08-14, binding:
 requested directly by Ary after an update shipped under the old version number.)
+
+### Fork version identity
+
+The fork's human-facing version is `v<upstream herdr version>[<upstream commit>].bora-<our
+minor>`, rendered by `build_info::fork_version_display()`. `UPSTREAM_HERDR_VERSION` and
+`UPSTREAM_HERDR_COMMIT` in `src/build_info.rs` must be updated in the same commit as any
+merge of `upstream/master`: set them to the upstream release the merged tip belongs to and
+the short SHA of that merged upstream tip — never the fork's own merge commit, which says
+nothing about herdr. `BASE_VERSION` and `version()` stay plain semver on purpose: update
+checks (`update::Version`), the wire protocol `version` field, live-handoff acceptance, and
+seen-state storage keys all compare them, and none of those comparisons may see the fork
+suffix. (learned 2026-08-19, binding.)
 
 ### Commit Style
 

@@ -1895,14 +1895,10 @@ fn render_workspace_list(
 
     let list_bottom = area.y + area.height.saturating_sub(1);
     if area.height > 0 {
-        let version_tag = concat!("v", env!("CARGO_PKG_VERSION"));
-        let header_line = Line::from(vec![
-            Span::styled(
-                " spaces",
-                Style::default().fg(p.overlay0).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(format!(" {version_tag}"), Style::default().fg(p.overlay0)),
-        ]);
+        let header_line = Line::from(vec![Span::styled(
+            " spaces",
+            Style::default().fg(p.overlay0).add_modifier(Modifier::BOLD),
+        )]);
         frame.render_widget(
             Paragraph::new(header_line),
             Rect::new(area.x, area.y, area.width, 1),

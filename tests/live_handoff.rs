@@ -307,6 +307,48 @@ fn wait_for_api(socket_path: &Path, timeout: Duration) {
     );
 }
 
+// `agent.start` synchronously checks whether the target pane's PTY child has
+// already exec'd into a recognized shell (see `available_shell_name` /
+// `available_pane_shell` in src/app/agents.rs and src/platform/*.rs). Right
+// after `workspace.create`, the new pane's child process may still be inside
+// the fork/exec transition, so the shell isn't recognized yet and the call
+// fails fast with `agent_pane_busy`. `timeout_ms` on `agent.start` only
+// bounds the *post-spawn* agent-detection wait (see `begin_managed_agent` in
+// src/app/agents.rs), not this pre-spawn readiness check, so callers that
+// race a freshly created pane must retry `agent.start` themselves. Retry
+// only on `agent_pane_busy`; anything else fails loudly.
+fn start_agent_when_ready(
+    socket_path: &Path,
+    request_id: &str,
+    params: serde_json::Value,
+    timeout: Duration,
+) -> serde_json::Value {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let response = request(
+            socket_path,
+            serde_json::json!({
+                "id": request_id,
+                "method": "agent.start",
+                "params": params,
+            }),
+        );
+        if response.get("result").is_some() {
+            return response;
+        }
+        let code = response["error"]["code"].as_str().unwrap_or_default();
+        assert_eq!(
+            code, "agent_pane_busy",
+            "agent.start failed with unexpected error: {response}"
+        );
+        assert!(
+            Instant::now() < deadline,
+            "agent target pane never became an available shell: {response}"
+        );
+        thread::sleep(Duration::from_millis(25));
+    }
+}
+
 fn write_plugin_manifest(root: &Path, plugin_id: &str) {
     fs::create_dir_all(root).unwrap();
     fs::write(
@@ -1449,18 +1491,16 @@ fn live_handoff_keeps_agent_started_pane_after_agent_exits() {
         .unwrap()
         .to_string();
 
-    let started = request(
+    let started = start_agent_when_ready(
         &api_socket,
+        "test:agent-start",
         serde_json::json!({
-            "id": "test:agent-start",
-            "method": "agent.start",
-            "params": {
-                "name": "handoff-agent",
-                "kind": "pi",
-                "pane_id": pane_id,
-                "timeout_ms": 5000
-            }
+            "name": "handoff-agent",
+            "kind": "pi",
+            "pane_id": pane_id,
+            "timeout_ms": 5000
         }),
+        Duration::from_secs(5),
     );
     assert_ok(started);
     support::wait_for_file(&started_marker, Duration::from_secs(5));
