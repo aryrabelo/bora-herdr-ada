@@ -2542,9 +2542,7 @@ mod tests {
         // suppressed" — `as_bool().unwrap_or(false)` reads both the same.
         for (i, response) in responses.iter().take(7).enumerate() {
             assert!(
-                !response["result"]["suppressed"]
-                    .as_bool()
-                    .unwrap_or(false),
+                !response["result"]["suppressed"].as_bool().unwrap_or(false),
                 "send {i} must not be suppressed below the threshold: {response}"
             );
             assert!(
