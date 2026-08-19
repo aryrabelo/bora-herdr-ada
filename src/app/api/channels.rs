@@ -421,7 +421,7 @@ impl App {
             from_pane: sender_pane.clone(),
             from_name: sender_name.clone(),
             from_kind: ChannelSenderKind::Agent,
-            text: text.clone(),
+            text,
             in_reply_to: None,
             to_pane: None,
             to_human: false,

@@ -352,10 +352,13 @@ fn parse_channel_ask_flags(
 /// the current pane. `--reply-to SEQ` answers a `channel.ask` question:
 /// threaded verbatim onto the sent message's `in_reply_to`, never validated
 /// client-side — the server rejects a seq past the channel's current max.
+/// `(from_pane, timeout_ms, reply_to)`-shaped flag bundle for `channel ask`.
+type ChannelAskFlags = (Option<String>, Option<String>, Option<u64>);
+
 fn parse_channel_send_flags(
     args: &[String],
     mut from_pane: Option<String>,
-) -> Result<(Option<String>, Option<String>, Option<u64>), String> {
+) -> Result<ChannelAskFlags, String> {
     let mut to = None;
     let mut in_reply_to = None;
     let mut index = 0;
