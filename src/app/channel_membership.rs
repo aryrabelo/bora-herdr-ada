@@ -13,7 +13,9 @@ fn channel_home_name(ws: &crate::workspace::Workspace) -> Option<&str> {
     if ws.visual_group.is_some() {
         return None;
     }
-    ws.custom_name.as_deref().and_then(|name| name.strip_prefix('#'))
+    ws.custom_name
+        .as_deref()
+        .and_then(|name| name.strip_prefix('#'))
 }
 
 impl App {
@@ -86,8 +88,10 @@ mod tests {
     fn with_isolated_state_dir<T>(name: &str, f: impl FnOnce() -> T) -> T {
         let _guard = crate::config::test_config_env_lock().lock().unwrap();
         let old_state = std::env::var_os("XDG_STATE_HOME");
-        let dir = std::env::temp_dir()
-            .join(format!("bora-channel-membership-test-{name}-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "bora-channel-membership-test-{name}-{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         std::env::set_var("XDG_STATE_HOME", &dir);
         let result = f();

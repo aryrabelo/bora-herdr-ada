@@ -18,7 +18,12 @@ use super::discovery::{git_rev_parse_verify, git_trimmed_stdout};
 fn default_branch_oid(repo_root: &Path) -> Option<String> {
     if let Some(short) = git_trimmed_stdout(
         repo_root,
-        &["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"],
+        &[
+            "symbolic-ref",
+            "--quiet",
+            "--short",
+            "refs/remotes/origin/HEAD",
+        ],
     ) {
         if let Some(oid) = git_rev_parse_verify(repo_root, &short) {
             return Some(oid);
