@@ -296,6 +296,12 @@ pub enum ResponseResult {
     },
     ChannelSent {
         deliveries: Vec<ChannelDelivery>,
+        /// `true` when the channel was inside an active burst and the bell
+        /// (agent injection fan-out) was cut for this send; the message was
+        /// still appended to the transcript and eventable as normal. See
+        /// `ui.channel_burst_messages` / `ui.channel_burst_window_secs`.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        suppressed: bool,
     },
     ChannelHistory {
         messages: Vec<ChannelMessage>,

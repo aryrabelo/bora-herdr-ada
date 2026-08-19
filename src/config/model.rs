@@ -953,6 +953,15 @@ pub struct UiConfig {
     /// Default: true; only meaningful when `chat_view` is on (itself
     /// default false, so nobody is surprised into it).
     pub chat_open_on_mention: bool,
+    /// `channel.send` burst damper: sends within `channel_burst_window_secs`
+    /// past this many still record and event as normal, but stop bell-ing
+    /// member panes (no `agent.prompt` fan-out, no protocol briefing) once
+    /// the threshold is hit — see `App::record_channel_burst_send`. Mirrors
+    /// orc's `ORC_BURST_N`. `0` disables the damper. Default: 8.
+    pub channel_burst_messages: u32,
+    /// Sliding window (seconds) for `channel_burst_messages`. Mirrors orc's
+    /// `ORC_BURST_MIN`. `0` disables the damper. Default: 600 (10 minutes).
+    pub channel_burst_window_secs: u64,
     /// Hide the tab row when the workspace has one tab. Default: false.
     pub hide_tab_bar_when_single_tab: bool,
     /// Desktop tab row placement. Default: top.
@@ -1186,6 +1195,8 @@ impl Default for UiConfig {
             chat_view: false,
             chat_name: None,
             chat_open_on_mention: true,
+            channel_burst_messages: 8,
+            channel_burst_window_secs: 600,
             hide_tab_bar_when_single_tab: false,
             tab_bar_position: TabBarPositionConfig::Top,
             tab_bar_right: Vec::new(),

@@ -11294,6 +11294,10 @@
                   },
                   "type": "array"
                 },
+                "suppressed": {
+                  "description": "`true` when the channel was inside an active burst and the bell\n(agent injection fan-out) was cut for this send; the message was\nstill appended to the transcript and eventable as normal. See\n`ui.channel_burst_messages` / `ui.channel_burst_window_secs`.",
+                  "type": "boolean"
+                },
                 "type": {
                   "const": "channel_sent",
                   "type": "string"
