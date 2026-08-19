@@ -232,6 +232,15 @@ pub fn notification_context(
             }
         }
     }
+    // The public pane id is the address a human uses in channel messages and
+    // CLI targets, so a notification names the pane it came from, not only its
+    // workspace.
+    if let Some(number) = ws.public_pane_number(pane_id) {
+        context.push_str(&format!(
+            " · {}",
+            crate::workspace::public_pane_id_for_number(&ws.id, number)
+        ));
+    }
     context
 }
 
@@ -3406,14 +3415,52 @@ mod tests {
         });
     }
 
+    /// Suffix `notification_context` appends for the pane a toast came from.
+    /// Workspace ids come from a process-global counter, so tests cannot hardcode them.
+    fn pane_suffix(ws: &Workspace, pane_id: PaneId) -> String {
+        format!(
+            " · {}",
+            crate::workspace::public_pane_id_for_number(
+                &ws.id,
+                ws.public_pane_number(pane_id).expect("pane is numbered"),
+            )
+        )
+    }
+
     #[test]
     fn notification_context_formats_resolved_workspace_label() {
         let state = app_with_workspaces(&["stale"]);
-        let root = state.workspaces[0].tabs[0].root_pane;
+        let ws = &state.workspaces[0];
+        let root = ws.tabs[0].root_pane;
 
         assert_eq!(
-            notification_context(&state.workspaces[0], "__herdr_projects__", 0, root),
-            "__herdr_projects__ · 1"
+            notification_context(ws, "__herdr_projects__", 0, root),
+            format!("__herdr_projects__ · 1 · {}:p1", ws.id)
+        );
+    }
+
+    #[test]
+    fn notification_context_names_the_public_pane_id() {
+        let mut state = app_with_workspaces(&["repo"]);
+        let split = state.workspaces[0].test_split(Direction::Horizontal);
+        state.ensure_test_terminals();
+        let ws = &state.workspaces[0];
+        let expected = crate::workspace::public_pane_id_for_number(
+            &ws.id,
+            ws.public_pane_number(split)
+                .expect("split pane is numbered"),
+        );
+
+        let context = notification_context(ws, "repo", 0, split);
+
+        assert!(
+            context.ends_with(&expected),
+            "context {context} must name the pane it came from, expected {expected}"
+        );
+        assert_ne!(
+            notification_context(ws, "repo", 0, ws.tabs[0].root_pane),
+            context,
+            "two panes in one workspace must not share a notification context"
         );
     }
 
@@ -5185,7 +5232,13 @@ mod tests {
         let toast = state.toast.as_ref().unwrap();
         assert_eq!(toast.kind, ToastKind::NeedsAttention);
         assert_eq!(toast.title, "pi needs attention");
-        assert_eq!(toast.context, "background · 2");
+        assert_eq!(
+            toast.context,
+            format!(
+                "background · 2{}",
+                pane_suffix(&state.workspaces[1], bg_pane_id)
+            )
+        );
     }
 
     #[test]
@@ -5216,7 +5269,13 @@ mod tests {
         let toast = state.toast.as_ref().unwrap();
         assert_eq!(toast.kind, ToastKind::NeedsAttention);
         assert_eq!(toast.title, "pi needs attention");
-        assert_eq!(toast.context, "background · 2");
+        assert_eq!(
+            toast.context,
+            format!(
+                "background · 2{}",
+                pane_suffix(&state.workspaces[1], bg_pane_id)
+            )
+        );
         assert!(state.pending_agent_notifications.is_empty());
     }
 
@@ -5353,7 +5412,13 @@ mod tests {
         let toast = state.toast.as_ref().unwrap();
         assert_eq!(toast.kind, ToastKind::NeedsAttention);
         assert_eq!(toast.title, "hermes needs attention");
-        assert_eq!(toast.context, "background · 2");
+        assert_eq!(
+            toast.context,
+            format!(
+                "background · 2{}",
+                pane_suffix(&state.workspaces[1], bg_pane_id)
+            )
+        );
     }
 
     #[test]
@@ -5671,7 +5736,13 @@ mod tests {
         let toast = state.toast.as_ref().unwrap();
         assert_eq!(toast.kind, ToastKind::Finished);
         assert_eq!(toast.title, "droid finished");
-        assert_eq!(toast.context, "background · 2");
+        assert_eq!(
+            toast.context,
+            format!(
+                "background · 2{}",
+                pane_suffix(&state.workspaces[1], bg_pane_id)
+            )
+        );
         let target = toast.target.as_ref().expect("toast target");
         assert_eq!(&target.workspace_id, &state.workspaces[1].id);
         assert_eq!(target.pane_id, bg_pane_id);
@@ -5700,7 +5771,13 @@ mod tests {
         let toast = state.toast.as_ref().unwrap();
         assert_eq!(toast.kind, ToastKind::NeedsAttention);
         assert_eq!(toast.title, "pi needs attention");
-        assert_eq!(toast.context, "background · 2 · logs");
+        assert_eq!(
+            toast.context,
+            format!(
+                "background · 2 · logs{}",
+                pane_suffix(&state.workspaces[1], bg_pane_id)
+            )
+        );
     }
 
     #[test]
@@ -5726,7 +5803,13 @@ mod tests {
         let toast = state.toast.as_ref().unwrap();
         assert_eq!(toast.kind, ToastKind::NeedsAttention);
         assert_eq!(toast.title, "pi needs attention");
-        assert_eq!(toast.context, "active · 1 · logs");
+        assert_eq!(
+            toast.context,
+            format!(
+                "active · 1 · logs{}",
+                pane_suffix(&state.workspaces[0], bg_pane_id)
+            )
+        );
     }
 
     #[test]

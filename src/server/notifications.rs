@@ -147,7 +147,13 @@ mod tests {
 
         assert_eq!(
             message.as_deref(),
-            Some("codex finished: __herdr_projects__ · 1")
+            Some(
+                format!(
+                    "codex finished: __herdr_projects__ · 1 · {}:p1",
+                    state.workspaces[0].id
+                )
+                .as_str()
+            )
         );
 
         for (_, runtime) in terminal_runtimes.drain() {

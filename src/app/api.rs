@@ -1998,7 +1998,7 @@ mod tests {
 
         assert_eq!(
             app.state.toast.as_ref().map(|toast| toast.context.as_str()),
-            Some("__herdr_projects__ · 1")
+            Some(format!("__herdr_projects__ · 1 · {}:p1", app.state.workspaces[0].id).as_str())
         );
 
         for (_, runtime) in app.terminal_runtimes.drain() {
@@ -2096,7 +2096,7 @@ mod tests {
         assert!(app.handle_scheduled_tasks(notification_deadline, false));
         assert_eq!(
             app.state.toast.as_ref().map(|toast| toast.context.as_str()),
-            Some("__herdr_projects__ · 1")
+            Some(format!("__herdr_projects__ · 1 · {}:p1", app.state.workspaces[0].id).as_str())
         );
 
         for (_, runtime) in app.terminal_runtimes.drain() {
