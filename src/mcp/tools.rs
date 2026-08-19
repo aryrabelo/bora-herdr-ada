@@ -39,13 +39,20 @@ const CHANNEL_NAME_SCOPED_TOOLS: &[&str] = &[
     "channel_history",
     "channel_tail",
     "channel_send",
+    "channel_note",
+    "channel_ask",
     "channel_join",
     "channel_leave",
 ];
 
 /// Tools whose params struct has a `from_pane` field the CLI would normally
 /// fill from `$HERDR_PANE_ID`. MCP callers get the same default.
-const FROM_PANE_TOOLS: &[&str] = &["channel_send", "agent_prompt"];
+const FROM_PANE_TOOLS: &[&str] = &[
+    "channel_send",
+    "channel_note",
+    "channel_ask",
+    "agent_prompt",
+];
 
 struct ToolEntry {
     name: String,
@@ -328,10 +335,6 @@ mod tests {
         let index = tool_index(true);
         // channel.create is deliberately not in the allowlist.
         assert!(!index.contains_key("channel_create"));
-        // channel.note / channel.ask are allowlisted but not (yet) on this
-        // branch's Method enum: must be skipped silently, not error.
-        assert!(!index.contains_key("channel_note"));
-        assert!(!index.contains_key("channel_ask"));
 
         for (tool, wire) in [
             ("channel_list", "channel.list"),
@@ -339,6 +342,8 @@ mod tests {
             ("channel_history", "channel.history"),
             ("channel_tail", "channel.wait"),
             ("channel_send", "channel.send"),
+            ("channel_note", "channel.note"),
+            ("channel_ask", "channel.ask"),
             ("channel_join", "channel.join"),
             ("channel_leave", "channel.leave"),
             ("agent_list", "agent.list"),
