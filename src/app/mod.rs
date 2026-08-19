@@ -205,6 +205,17 @@ pub struct App {
     /// Last `agent.prompt` timestamp per (from_pane, target_pane) pair, used
     /// to reject rapid-fire agent-to-agent prompts (loop guard).
     pub(crate) agent_prompt_rate_limits: HashMap<(String, String), Instant>,
+    /// Per-channel sliding window of recent `channel.send` timestamps,
+    /// used to detect a burst (`ui.channel_burst_messages` within
+    /// `ui.channel_burst_window_secs`) — see
+    /// `App::record_channel_burst_send` in `app::api::channels`. Pruned to
+    /// the configured window on every insert; in-memory only, resets
+    /// across a restart.
+    pub(crate) channel_burst_history: HashMap<String, VecDeque<Instant>>,
+    /// Channels currently inside an active burst, for edge detection: the
+    /// `[bora]` system line is appended only on the transition into
+    /// burst, never once per suppressed message.
+    pub(crate) channels_in_burst: HashSet<String>,
     /// `when_idle` prompts deferred because the in-process fast path found
     /// the target `Working`, keyed by the target's public pane id. Drained
     /// in FIFO order once the target's status is next observed to leave
@@ -811,6 +822,8 @@ impl App {
             chat_view: config.ui.chat_view,
             chat_name: config.ui.effective_chat_name(),
             chat_open_on_mention: config.ui.chat_open_on_mention,
+            channel_burst_messages: config.ui.channel_burst_messages,
+            channel_burst_window: Duration::from_secs(config.ui.channel_burst_window_secs),
             hide_tab_bar_when_single_tab: config.ui.hide_tab_bar_when_single_tab,
             tab_bar_position: config.ui.tab_bar_position,
             tab_bar_right: Vec::new(),
@@ -911,6 +924,8 @@ impl App {
             copy_feedback_deadline: None,
             last_api_notification_at: None,
             agent_prompt_rate_limits: HashMap::new(),
+            channel_burst_history: HashMap::new(),
+            channels_in_burst: HashSet::new(),
             pending_agent_prompts: HashMap::new(),
             state,
             pane_graphics: pane_graphics::Runtime::default(),
@@ -2053,6 +2068,9 @@ impl App {
                 self.state.chat_view = config.ui.chat_view;
                 self.state.chat_name = config.ui.effective_chat_name();
                 self.state.chat_open_on_mention = config.ui.chat_open_on_mention;
+                self.state.channel_burst_messages = config.ui.channel_burst_messages;
+                self.state.channel_burst_window =
+                    Duration::from_secs(config.ui.channel_burst_window_secs);
                 self.state.hide_tab_bar_when_single_tab = config.ui.hide_tab_bar_when_single_tab;
                 self.state.tab_bar_position = config.ui.tab_bar_position;
                 self.configure_tab_bar_status(

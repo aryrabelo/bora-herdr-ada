@@ -176,7 +176,7 @@ fn channel_send(args: &[String]) -> std::io::Result<i32> {
             return Ok(2);
         }
     };
-    print_response(&send_request(&Request {
+    let response = send_request(&Request {
         id: "cli:channel:send".into(),
         method: Method::ChannelSend(ChannelSendParams {
             name: name.clone(),
@@ -186,7 +186,14 @@ fn channel_send(args: &[String]) -> std::io::Result<i32> {
             in_reply_to: None,
             from_human: false,
         }),
-    })?)
+    })?;
+    // The bell (agent injection fan-out) was cut because the channel is
+    // mid-burst; the message was still recorded. Note it on stderr so the
+    // human at the CLI isn't left assuming silence meant delivery.
+    if response["result"]["suppressed"].as_bool() == Some(true) {
+        eprintln!("[bora] #{name} is in a burst: message recorded, agents not pinged");
+    }
+    print_response(&response)
 }
 
 /// Parses the flags accepted by `bora channel send` after `<name> <text>`.

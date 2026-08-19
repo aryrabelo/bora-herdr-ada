@@ -6,6 +6,7 @@ use crate::api::schema::{
 };
 use crate::app::App;
 use crate::persist::channels;
+use std::time::{Duration, Instant};
 
 use super::responses::{encode_error, encode_success};
 
@@ -102,7 +103,21 @@ impl App {
         encode_success(id, ResponseResult::ChannelList { channels })
     }
 
+    /// Thin wrapper over [`Self::handle_channel_send_inner`] with
+    /// `force_bell: false` — the only caller today. `force_bell` exists so
+    /// a future verb (orchestrator-dtq.2's `ask`/`hold`/`resume`) can pierce
+    /// an active burst without a new wire parameter on `channel.send`
+    /// itself; it is never part of `ChannelSendParams`.
     pub(super) fn handle_channel_send(&mut self, id: String, params: ChannelSendParams) -> String {
+        self.handle_channel_send_inner(id, params, false)
+    }
+
+    fn handle_channel_send_inner(
+        &mut self,
+        id: String,
+        params: ChannelSendParams,
+        force_bell: bool,
+    ) -> String {
         if params.text.is_empty() {
             return encode_error(
                 id,
@@ -254,6 +269,27 @@ impl App {
             },
         });
 
+        // Burst damper: a per-channel sliding window over `channel.send`
+        // timestamps (`ui.channel_burst_messages` within
+        // `ui.channel_burst_window_secs`), mirroring orc's
+        // `ORC_BURST_N`/`ORC_BURST_MIN`. The message is always recorded and
+        // eventable above, regardless — this only decides whether the
+        // fan-out below bells member panes. `force_bell` pierces it; today
+        // only ever `false` from `channel.send` itself (see
+        // `handle_channel_send`'s doc comment).
+        let burst = self.record_channel_burst_send(&name, Instant::now());
+        let suppressed = burst && !force_bell;
+        if burst {
+            if self.channels_in_burst.insert(name.clone()) {
+                // Edge-triggered: only the transition into burst gets a
+                // system line, so a storm doesn't double the transcript
+                // with one line per suppressed message.
+                self.append_channel_burst_notice(&name);
+            }
+        } else {
+            self.channels_in_burst.remove(&name);
+        }
+
         // The prefix is built here (not delegated to `handle_agent_prompt`'s
         // own from_pane attribution) so the delivered text carries the
         // channel name too; from_pane is passed as None below to avoid a
@@ -264,37 +300,108 @@ impl App {
         // sender's own. A message addressed to the human seat reaches no
         // pane at all: the human reads it in the chat view transcript, and
         // injecting it into agents would put words in the human's mouth.
-        // Broadcast reaches every agent member pane as before.
-        let targets: Vec<String> = if to_human {
+        // Broadcast reaches every agent member pane as before. A suppressed
+        // (burst-active, not pierced) send skips this loop entirely —
+        // including the protocol briefing — so nothing about a storm ever
+        // touches a pane, only its transcript.
+        let deliveries = if suppressed {
             Vec::new()
         } else {
-            match &to_pane {
-                Some(target) if target != &sender_pane => vec![target.clone()],
-                Some(_) => Vec::new(),
-                None => self.channel_agent_member_pane_ids(ws_idx),
-            }
+            let targets: Vec<String> = if to_human {
+                Vec::new()
+            } else {
+                match &to_pane {
+                    Some(target) if target != &sender_pane => vec![target.clone()],
+                    Some(_) => Vec::new(),
+                    None => self.channel_agent_member_pane_ids(ws_idx),
+                }
+            };
+            targets
+                .into_iter()
+                .map(|target| {
+                    self.send_channel_protocol(&name, ws_idx, &target);
+                    let response = self.handle_agent_prompt(
+                        format!("{id}:channel:{target}"),
+                        AgentPromptParams {
+                            target: target.clone(),
+                            text: prefixed.clone(),
+                            wait: None,
+                            from_pane: None,
+                            when_idle: Some(true),
+                            when_idle_timeout_ms: None,
+                            peer_pid: None,
+                            origin_channel: Some(name.clone()),
+                        },
+                    );
+                    classify_delivery(target, &response)
+                })
+                .collect()
         };
-        let deliveries = targets
-            .into_iter()
-            .map(|target| {
-                self.send_channel_protocol(&name, ws_idx, &target);
-                let response = self.handle_agent_prompt(
-                    format!("{id}:channel:{target}"),
-                    AgentPromptParams {
-                        target: target.clone(),
-                        text: prefixed.clone(),
-                        wait: None,
-                        from_pane: None,
-                        when_idle: Some(true),
-                        when_idle_timeout_ms: None,
-                        peer_pid: None,
-                        origin_channel: Some(name.clone()),
-                    },
-                );
-                classify_delivery(target, &response)
-            })
-            .collect();
-        encode_success(id, ResponseResult::ChannelSent { deliveries })
+        encode_success(
+            id,
+            ResponseResult::ChannelSent {
+                deliveries,
+                suppressed,
+            },
+        )
+    }
+
+    /// Records `now` in `channel`'s burst-detection sliding window and
+    /// reports whether the channel is (now, including this send) inside an
+    /// active burst. Reads `ui.channel_burst_messages` /
+    /// `ui.channel_burst_window_secs` from state (0 on either disables the
+    /// damper — see `burst_active`). Prunes entries older than the window on
+    /// every call, so the per-channel history never holds more than one
+    /// window's worth of traffic.
+    fn record_channel_burst_send(&mut self, channel: &str, now: Instant) -> bool {
+        let n = self.state.channel_burst_messages;
+        let window = self.state.channel_burst_window;
+        if n == 0 || window.is_zero() {
+            return false;
+        }
+        let times = self
+            .channel_burst_history
+            .entry(channel.to_string())
+            .or_default();
+        times.push_back(now);
+        while times
+            .front()
+            .is_some_and(|t| now.duration_since(*t) >= window)
+        {
+            times.pop_front();
+        }
+        burst_active(times.make_contiguous(), now, n, window)
+    }
+
+    /// Appends the honest `[bora]` system line marking a channel's
+    /// transition into burst — "recording without ringing" — using the same
+    /// `from_name: "bora"` / `from_pane: "system"` shape as the dropped-
+    /// delivery and protocol-sent notices.
+    fn append_channel_burst_notice(&mut self, channel: &str) {
+        let line = ChannelMessage {
+            ts: now_rfc3339(),
+            seq: channels::next_seq(channel),
+            from_pane: "system".to_string(),
+            from_name: "bora".to_string(),
+            from_kind: ChannelSenderKind::Agent,
+            text: format!(
+                "canal em surto ({} msgs em {}s): gravando sem sino",
+                self.state.channel_burst_messages,
+                self.state.channel_burst_window.as_secs()
+            ),
+            in_reply_to: None,
+            to_pane: None,
+            to_human: false,
+        };
+        if let Err(err) = channels::append_message(channel, &line) {
+            tracing::warn!(
+                channel = %channel,
+                error = %err,
+                "failed to append channel burst notice"
+            );
+        } else {
+            self.state.push_chat_message(channel, line);
+        }
     }
 
     pub(super) fn handle_channel_history(
@@ -812,6 +919,27 @@ fn classify_delivery(pane_id: String, response: &str) -> ChannelDelivery {
         status: ChannelDeliveryStatus::Delivered,
         detail: None,
     }
+}
+
+/// Pure burst decision for the per-channel damper: `true` when at least `n`
+/// of `times` fall within `window` of `now` — i.e. the last `n` channel
+/// sends (however spread) all landed inside `window`. Equivalent to counting
+/// how many landed in `[now - window, now]`: if that count is >= `n`, its
+/// `n` most recent members are trivially among them; if the `n` most recent
+/// are within `window`, everything else in the window is at least as
+/// recent. Mirrors orc's `ORC_BURST_N`/`ORC_BURST_MIN`. `n == 0` or a zero
+/// `window` disables the damper unconditionally. No clock reads: `now` is
+/// supplied by the caller so this stays deterministic and unit-testable.
+fn burst_active(times: &[Instant], now: Instant, n: u32, window: Duration) -> bool {
+    if n == 0 || window.is_zero() {
+        return false;
+    }
+    let n = n as usize;
+    times
+        .iter()
+        .filter(|t| now.duration_since(**t) < window)
+        .count()
+        >= n
 }
 
 fn now_rfc3339() -> String {
@@ -2358,6 +2486,151 @@ mod tests {
                 .any(|(_, target)| target == &outsider),
             "protocol delivery must use from_pane: None and never record a rate-limit entry"
         );
+        super::super::test_support::shutdown_test_runtimes(&mut app);
+    }
+
+    #[test]
+    fn burst_active_counts_within_window_and_disables_at_zero_threshold() {
+        let base = Instant::now();
+        let window = Duration::from_secs(600);
+        let times: Vec<Instant> = std::iter::repeat(base).take(8).collect();
+
+        // All 8 sends land at `base`, evaluated immediately: active.
+        assert!(burst_active(&times, base, 8, window));
+        // One fewer than the threshold: not active.
+        assert!(!burst_active(&times[..7], base, 8, window));
+        // The window has fully elapsed since every recorded send: inactive
+        // again, even though the count itself never changed.
+        let after_window = base + window + Duration::from_secs(1);
+        assert!(!burst_active(&times, after_window, 8, window));
+        // n == 0 or a zero window disables the damper unconditionally.
+        assert!(!burst_active(&times, base, 0, window));
+        assert!(!burst_active(&times, base, 8, Duration::ZERO));
+    }
+
+    #[tokio::test]
+    async fn channel_burst_suppresses_injection_at_default_threshold_and_appends_one_notice() {
+        let _isolated = IsolatedStateDir::new("burst-default");
+        let mut app = test_app();
+        let (reviewer, worker, _rx) = channel_with_two_agents(&mut app, "reviewer", "worker");
+        skip_protocol("eng", &reviewer);
+        skip_protocol("eng", &worker);
+        app.state.chat_name = "human".into();
+
+        // Human sends stay exempt from the per-pane cooldown, so this
+        // exercises the burst damper alone, the way a real storm of
+        // several distinct sender panes would.
+        let mut responses = Vec::new();
+        for i in 0..9 {
+            let sent = app.handle_channel_send(
+                format!("req{i}"),
+                ChannelSendParams {
+                    name: "#eng".into(),
+                    text: format!("msg {i}"),
+                    from_pane: None,
+                    to: None,
+                    in_reply_to: None,
+                    from_human: true,
+                },
+            );
+            responses.push(serde_json::from_str::<serde_json::Value>(&sent).unwrap());
+        }
+
+        // Below the default threshold (8): the bell still rings.
+        // `suppressed` is `skip_serializing_if` when false, so an absent
+        // key (not a literal `false`) is the on-the-wire shape for "not
+        // suppressed" — `as_bool().unwrap_or(false)` reads both the same.
+        for (i, response) in responses.iter().take(7).enumerate() {
+            assert!(
+                !response["result"]["suppressed"]
+                    .as_bool()
+                    .unwrap_or(false),
+                "send {i} must not be suppressed below the threshold: {response}"
+            );
+            assert!(
+                !response["result"]["deliveries"]
+                    .as_array()
+                    .unwrap()
+                    .is_empty(),
+                "send {i} must still fan out below the threshold"
+            );
+        }
+        // At and past the threshold: burst active, bell cut, message still
+        // recorded (asserted below via the transcript length).
+        for (i, response) in responses.iter().enumerate().skip(7) {
+            assert_eq!(
+                response["result"]["suppressed"],
+                serde_json::json!(true),
+                "send {i} must be suppressed at/after the burst threshold: {response}"
+            );
+            assert!(response["result"]["deliveries"]
+                .as_array()
+                .unwrap()
+                .is_empty());
+        }
+
+        let history = channels::read_tail("eng", 50).unwrap();
+        assert_eq!(history.len(), 10, "9 messages + exactly one burst notice");
+        let notices = history
+            .iter()
+            .filter(|m| m.from_pane == "system" && m.text.contains("surto"))
+            .count();
+        assert_eq!(
+            notices, 1,
+            "edge-triggered: one notice, not one per suppressed send: {history:?}"
+        );
+
+        super::super::test_support::shutdown_test_runtimes(&mut app);
+    }
+
+    #[tokio::test]
+    async fn channel_burst_force_bell_pierces_suppression() {
+        let _isolated = IsolatedStateDir::new("burst-force-bell");
+        let mut app = test_app();
+        let (reviewer, worker, _rx) = channel_with_two_agents(&mut app, "reviewer", "worker");
+        skip_protocol("eng", &reviewer);
+        skip_protocol("eng", &worker);
+
+        // Drive the channel into burst first. `channels::normalize_channel_name`
+        // strips the leading `#`, so the internal burst-tracking keys (and
+        // this assertion) use the bare "eng" form, matching how
+        // `channels::append_message`/`read_tail` are keyed elsewhere.
+        for i in 0..8 {
+            app.handle_channel_send(
+                format!("req{i}"),
+                ChannelSendParams {
+                    name: "#eng".into(),
+                    text: format!("msg {i}"),
+                    from_pane: None,
+                    to: None,
+                    in_reply_to: None,
+                    from_human: true,
+                },
+            );
+        }
+        assert!(app.channels_in_burst.contains("eng"));
+
+        let pierced = app.handle_channel_send_inner(
+            "req-pierce".into(),
+            ChannelSendParams {
+                name: "#eng".into(),
+                text: "urgent".into(),
+                from_pane: None,
+                to: None,
+                in_reply_to: None,
+                from_human: true,
+            },
+            true,
+        );
+        let pierced: serde_json::Value = serde_json::from_str(&pierced).unwrap();
+        // Omitted (skip_serializing_if) when false, same as the unsuppressed
+        // sends above.
+        assert!(!pierced["result"]["suppressed"].as_bool().unwrap_or(false));
+        assert!(!pierced["result"]["deliveries"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+
         super::super::test_support::shutdown_test_runtimes(&mut app);
     }
 }
