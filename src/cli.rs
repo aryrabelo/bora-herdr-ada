@@ -4,9 +4,10 @@ use serde::Serialize;
 
 use crate::api::client::{ApiClient, ApiClientError};
 use crate::api::schema::{
-    AgentStatus, ChannelCreateParams, ChannelHistoryParams, ChannelJoinParams, ChannelLeaveParams,
-    ChannelMembersParams, ChannelSendParams, ChannelWaitParams, ClientWindowTitleSetParams,
-    EmptyParams, Method, PaneAgentState, ReadFormat, ReadSource, Request, SplitDirection,
+    AgentStatus, ChannelAskParams, ChannelCreateParams, ChannelHistoryParams, ChannelJoinParams,
+    ChannelLeaveParams, ChannelMembersParams, ChannelNoteParams, ChannelSendParams,
+    ChannelWaitParams, ClientWindowTitleSetParams, EmptyParams, Method, PaneAgentState, ReadFormat,
+    ReadSource, Request, SplitDirection,
 };
 
 mod agent;
@@ -118,6 +119,8 @@ fn run_channel_command(args: &[String]) -> std::io::Result<i32> {
         Some("create") => channel_create(&args[1..]),
         Some("list") if args.len() == 1 => channel_list(),
         Some("send") => channel_send(&args[1..]),
+        Some("note") => channel_note(&args[1..]),
+        Some("ask") => channel_ask(&args[1..]),
         Some("history") => channel_history(&args[1..]),
         Some("tail") => channel_tail(&args[1..]),
         Some("members") => channel_members(&args[1..]),
@@ -157,19 +160,21 @@ fn channel_list() -> std::io::Result<i32> {
 }
 
 fn channel_send(args: &[String]) -> std::io::Result<i32> {
+    let usage =
+        "usage: bora channel send <name> <text> [--pane ID|--current] [--to NICK] [--reply-to SEQ]";
     let Some(name) = args.first() else {
-        eprintln!("usage: bora channel send <name> <text> [--pane ID|--current] [--to NICK]");
+        eprintln!("{usage}");
         return Ok(2);
     };
     let Some(text) = args.get(1) else {
-        eprintln!("usage: bora channel send <name> <text> [--pane ID|--current] [--to NICK]");
+        eprintln!("{usage}");
         return Ok(2);
     };
     let env_pane_id = std::env::var("HERDR_PANE_ID")
         .ok()
         .filter(|value| !value.trim().is_empty())
         .map(|value| normalize_pane_id(&value));
-    let (from_pane, to) = match parse_channel_send_flags(&args[2..], env_pane_id) {
+    let (from_pane, to, in_reply_to) = match parse_channel_send_flags(&args[2..], env_pane_id) {
         Ok(parsed) => parsed,
         Err(message) => {
             eprintln!("{message}");
@@ -183,7 +188,7 @@ fn channel_send(args: &[String]) -> std::io::Result<i32> {
             text: text.clone(),
             from_pane,
             to,
-            in_reply_to: None,
+            in_reply_to,
             from_human: false,
         }),
     })?;
@@ -196,15 +201,166 @@ fn channel_send(args: &[String]) -> std::io::Result<i32> {
     print_response(&response)
 }
 
+fn channel_note(args: &[String]) -> std::io::Result<i32> {
+    let Some(name) = args.first() else {
+        eprintln!("usage: bora channel note <name> <text> [--pane ID|--current]");
+        return Ok(2);
+    };
+    let Some(text) = args.get(1) else {
+        eprintln!("usage: bora channel note <name> <text> [--pane ID|--current]");
+        return Ok(2);
+    };
+    let env_pane_id = std::env::var("HERDR_PANE_ID")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| normalize_pane_id(&value));
+    let from_pane = match parse_channel_note_flags(&args[2..], env_pane_id) {
+        Ok(from_pane) => from_pane,
+        Err(message) => {
+            eprintln!("{message}");
+            return Ok(2);
+        }
+    };
+    print_response(&send_request(&Request {
+        id: "cli:channel:note".into(),
+        method: Method::ChannelNote(ChannelNoteParams {
+            name: name.clone(),
+            text: text.clone(),
+            from_pane,
+        }),
+    })?)
+}
+
+/// Parses the flags accepted by `bora channel note` after `<name> <text>`:
+/// just `--pane ID` / `--current`, the same pane-source pair `channel send`
+/// accepts — `note` never addresses a recipient.
+fn parse_channel_note_flags(
+    args: &[String],
+    mut from_pane: Option<String>,
+) -> Result<Option<String>, String> {
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--pane" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err("missing value for --pane".into());
+                };
+                from_pane = Some(normalize_pane_id(value));
+                index += 2;
+            }
+            "--current" => {
+                index += 1;
+            }
+            option => return Err(format!("unknown option: {option}")),
+        }
+    }
+    Ok(from_pane)
+}
+
+fn channel_ask(args: &[String]) -> std::io::Result<i32> {
+    let usage = "usage: bora channel ask <name> <nick> <text> [--pane ID|--current] [--timeout MS]";
+    let Some(name) = args.first() else {
+        eprintln!("{usage}");
+        return Ok(2);
+    };
+    let Some(to) = args.get(1) else {
+        eprintln!("{usage}");
+        return Ok(2);
+    };
+    let Some(text) = args.get(2) else {
+        eprintln!("{usage}");
+        return Ok(2);
+    };
+    let env_pane_id = std::env::var("HERDR_PANE_ID")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| normalize_pane_id(&value));
+    let (from_pane, timeout_ms) = match parse_channel_ask_flags(&args[3..], env_pane_id) {
+        Ok(parsed) => parsed,
+        Err(message) => {
+            eprintln!("{message}");
+            return Ok(2);
+        }
+    };
+    let response = send_request(&Request {
+        id: "cli:channel:ask".into(),
+        method: Method::ChannelAsk(ChannelAskParams {
+            name: name.clone(),
+            to: to.clone(),
+            text: text.clone(),
+            from_pane,
+            timeout_ms,
+        }),
+    })?;
+    if response.get("error").is_some() {
+        return print_response(&response);
+    }
+    if response["result"]["answered"].as_bool() == Some(true) {
+        let reply_text = response["result"]["reply"]["text"].as_str().unwrap_or("");
+        println!("{reply_text}");
+        return Ok(0);
+    }
+    let question_seq = response["result"]["question_seq"].as_u64().unwrap_or(0);
+    eprintln!(
+        "[bora] #{name} no reply to seq {question_seq} within the timeout — reply with: bora channel send {name} <text> --reply-to {question_seq}"
+    );
+    Ok(1)
+}
+
+/// Parses the flags accepted by `bora channel ask` after
+/// `<name> <nick> <text>`. Returns `(from_pane, timeout_ms)`; `timeout_ms`
+/// stays `None` (server default) unless `--timeout` is given.
+fn parse_channel_ask_flags(
+    args: &[String],
+    mut from_pane: Option<String>,
+) -> Result<(Option<String>, Option<u64>), String> {
+    let mut timeout_ms = None;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--pane" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err("missing value for --pane".into());
+                };
+                from_pane = Some(normalize_pane_id(value));
+                index += 2;
+            }
+            "--current" => {
+                index += 1;
+            }
+            "--timeout" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err("missing value for --timeout".into());
+                };
+                timeout_ms = Some(
+                    value
+                        .parse::<u64>()
+                        .map_err(|_| format!("invalid --timeout value: {value}"))?,
+                );
+                index += 2;
+            }
+            option => return Err(format!("unknown option: {option}")),
+        }
+    }
+    Ok((from_pane, timeout_ms))
+}
+
 /// Parses the flags accepted by `bora channel send` after `<name> <text>`.
-/// Returns `(from_pane, to)`; `from_pane` starts from `env_pane_id` and can
-/// be overridden by `--pane`. `--current` is accepted as a no-op flag for
-/// explicitness since `env_pane_id` already reflects the current pane.
+/// Returns `(from_pane, to, in_reply_to)`; `from_pane` starts from
+/// `env_pane_id` and can be overridden by `--pane`. `--current` is accepted
+/// as a no-op flag for explicitness since `env_pane_id` already reflects
+/// the current pane. `--reply-to SEQ` answers a `channel.ask` question:
+/// threaded verbatim onto the sent message's `in_reply_to`, never validated
+/// client-side — the server rejects a seq past the channel's current max.
+/// `(from_pane, timeout_ms, reply_to)`-shaped flag bundle for `channel ask`.
+type ChannelAskFlags = (Option<String>, Option<String>, Option<u64>);
+
 fn parse_channel_send_flags(
     args: &[String],
     mut from_pane: Option<String>,
-) -> Result<(Option<String>, Option<String>), String> {
+) -> Result<ChannelAskFlags, String> {
     let mut to = None;
+    let mut in_reply_to = None;
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
@@ -225,12 +381,23 @@ fn parse_channel_send_flags(
                 to = Some(value.clone());
                 index += 2;
             }
+            "--reply-to" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err("missing value for --reply-to".into());
+                };
+                in_reply_to = Some(
+                    value
+                        .parse::<u64>()
+                        .map_err(|_| format!("invalid --reply-to value: {value}"))?,
+                );
+                index += 2;
+            }
             option => {
                 return Err(format!("unknown option: {option}"));
             }
         }
     }
-    Ok((from_pane, to))
+    Ok((from_pane, to, in_reply_to))
 }
 
 fn channel_history(args: &[String]) -> std::io::Result<i32> {
@@ -630,7 +797,9 @@ fn print_channel_help() {
     eprintln!("  bora channel set <stable|preview>            choose the update channel");
     eprintln!("  bora channel create <name>                   create a #channel workspace");
     eprintln!("  bora channel list                            list #channel workspaces");
-    eprintln!("  bora channel send <name> <text> [--pane ID|--current] [--to NICK]");
+    eprintln!(
+        "  bora channel send <name> <text> [--pane ID|--current] [--to NICK] [--reply-to SEQ]"
+    );
     eprintln!(
         "                                                post to a #channel and prompt its agents"
     );
@@ -639,6 +808,23 @@ fn print_channel_help() {
     );
     eprintln!(
         "                                                loudly on an unknown or ambiguous nick"
+    );
+    eprintln!(
+        "                                                --reply-to SEQ answers a channel.ask"
+    );
+    eprintln!("  bora channel note <name> <text> [--pane ID|--current]");
+    eprintln!(
+        "                                                append to a #channel with ZERO bells —"
+    );
+    eprintln!(
+        "                                                no injection, never suppressed by burst"
+    );
+    eprintln!("  bora channel ask <name> <nick> <text> [--pane ID|--current] [--timeout MS]");
+    eprintln!(
+        "                                                ask one member and block for their reply"
+    );
+    eprintln!(
+        "                                                (default timeout 300000ms, cap 600000ms)"
     );
     eprintln!("  bora channel history <name> [--lines N] [--json]");
     eprintln!("                                                print a #channel's message history");
@@ -1473,18 +1659,20 @@ mod tests {
     #[test]
     fn parses_channel_send_to_flag() {
         let args = vec!["--to".to_string(), "worker".to_string()];
-        let (from_pane, to) = super::parse_channel_send_flags(&args, None).unwrap();
+        let (from_pane, to, in_reply_to) = super::parse_channel_send_flags(&args, None).unwrap();
         assert_eq!(from_pane, None);
         assert_eq!(to, Some("worker".to_string()));
+        assert_eq!(in_reply_to, None);
     }
 
     #[test]
     fn channel_send_flags_default_to_none_without_to() {
         let args = vec!["--current".to_string()];
-        let (from_pane, to) =
+        let (from_pane, to, in_reply_to) =
             super::parse_channel_send_flags(&args, Some("w1A:p2".to_string())).unwrap();
         assert_eq!(from_pane, Some("w1A:p2".to_string()));
         assert_eq!(to, None);
+        assert_eq!(in_reply_to, None);
     }
 
     #[test]
@@ -1504,9 +1692,28 @@ mod tests {
             "--to".to_string(),
             "reviewer".to_string(),
         ];
-        let (from_pane, to) = super::parse_channel_send_flags(&args, None).unwrap();
+        let (from_pane, to, in_reply_to) = super::parse_channel_send_flags(&args, None).unwrap();
         assert_eq!(from_pane, Some("w1A:p2".to_string()));
         assert_eq!(to, Some("reviewer".to_string()));
+        assert_eq!(in_reply_to, None);
+    }
+
+    #[test]
+    fn channel_send_flags_parse_reply_to() {
+        let args = vec!["--reply-to".to_string(), "7".to_string()];
+        let (from_pane, to, in_reply_to) = super::parse_channel_send_flags(&args, None).unwrap();
+        assert_eq!(from_pane, None);
+        assert_eq!(to, None);
+        assert_eq!(in_reply_to, Some(7));
+    }
+
+    #[test]
+    fn channel_send_flags_reply_to_rejects_non_numeric() {
+        let args = vec!["--reply-to".to_string(), "nope".to_string()];
+        assert_eq!(
+            super::parse_channel_send_flags(&args, None).unwrap_err(),
+            "invalid --reply-to value: nope"
+        );
     }
 
     #[test]

@@ -34,6 +34,40 @@ pub struct ChannelSendParams {
     pub from_human: bool,
 }
 
+/// `channel.note`: append-only record with ZERO injection — the cheapest
+/// verb, for facts nobody needs to be woken for. Same attribution and
+/// per-(sender,channel) rate limit as `channel.send`, but no addressing (no
+/// `to`, no leading-mention parsing) and never subject to the burst damper
+/// — there is no bell to suppress.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct ChannelNoteParams {
+    pub name: String,
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_pane: Option<String>,
+}
+
+/// `channel.ask`: exactly one bell, and blocks the asker until the
+/// addressee replies. `to` is mandatory and resolved exactly like a
+/// structured `channel.send` — loud `channel_nick_unknown` /
+/// `channel_nick_ambiguous` errors before anything is appended. The
+/// question always pierces the burst damper. The reply is correlated by
+/// `seq`: the server blocks for the first channel message whose
+/// `in_reply_to` equals the question's assigned seq (answered via
+/// `bora channel send <name> <text> --reply-to SEQ`), bounded by
+/// `timeout_ms` (default 300_000, capped at 600_000). A timeout is a clean
+/// `answered: false` result, never an error.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct ChannelAskParams {
+    pub name: String,
+    pub to: String,
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_pane: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
+}
+
 /// Who authored a channel message: a member agent pane, or the human at the
 /// TUI. Lines written before this field existed parse as `Agent`.
 #[derive(

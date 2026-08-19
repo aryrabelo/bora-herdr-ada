@@ -302,6 +302,9 @@ pub enum ResponseResult {
         /// `ui.channel_burst_messages` / `ui.channel_burst_window_secs`.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         suppressed: bool,
+        /// Monotonic per-channel seq assigned to the appended message —
+        /// the correlation key a reply threads back through `in_reply_to`.
+        seq: u64,
     },
     ChannelHistory {
         messages: Vec<ChannelMessage>,
@@ -339,6 +342,17 @@ pub enum ResponseResult {
         oldest_seq: Option<u64>,
         #[serde(default)]
         timed_out: bool,
+    },
+    /// `channel.ask` result. `question_seq` is the seq of the appended
+    /// question — the correlation key a reply threads back through
+    /// `in_reply_to`. `answered: false` means `timeout_ms` elapsed with no
+    /// matching reply (`reply: None`); `answered: true` carries the
+    /// matching reply message.
+    ChannelAsked {
+        answered: bool,
+        question_seq: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reply: Option<ChannelMessage>,
     },
 }
 

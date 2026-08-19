@@ -268,6 +268,10 @@ pub enum Method {
     ChannelLeave(ChannelLeaveParams),
     #[serde(rename = "channel.wait")]
     ChannelWait(ChannelWaitParams),
+    #[serde(rename = "channel.note")]
+    ChannelNote(ChannelNoteParams),
+    #[serde(rename = "channel.ask")]
+    ChannelAsk(ChannelAskParams),
 }
 
 #[cfg(test)]

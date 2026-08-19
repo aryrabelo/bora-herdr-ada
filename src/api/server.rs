@@ -15,7 +15,8 @@ use crate::api::schema::{
 };
 use crate::api::subscriptions::ActiveSubscription;
 use crate::api::wait::{
-    prompt_agent, wait_for_agent, wait_for_channel_message, wait_for_event, wait_for_output,
+    ask_channel, prompt_agent, wait_for_agent, wait_for_channel_message, wait_for_event,
+    wait_for_output,
 };
 use crate::api::{request_changes_ui, socket_path, ApiRequestMessage, ApiRequestSender, EventHub};
 use crate::ipc::{
@@ -266,6 +267,17 @@ fn handle_connection_with_stop(
             )?;
             finish_wait_response(&mut stream, response, &request_id, method, changes_ui)
         }
+        Method::ChannelAsk(params) => {
+            let response = ask_channel(
+                request_id.clone(),
+                params,
+                &mut stream,
+                api_tx,
+                event_hub,
+                running,
+            )?;
+            finish_wait_response(&mut stream, response, &request_id, method, changes_ui)
+        }
         Method::AgentPrompt(mut params) => {
             params.peer_pid = peer_pid;
             let response = prompt_agent(
@@ -505,6 +517,8 @@ fn api_method_name(method: &Method) -> &'static str {
         Method::ChannelMembers(_) => "channel.members",
         Method::ChannelJoin(_) => "channel.join",
         Method::ChannelLeave(_) => "channel.leave",
+        Method::ChannelNote(_) => "channel.note",
+        Method::ChannelAsk(_) => "channel.ask",
     }
 }
 
