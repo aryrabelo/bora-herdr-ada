@@ -7047,6 +7047,7 @@ next_tab = ""
                 ahead_behind: None,
                 space: None,
                 change_set: None,
+                collectible: None,
             }],
             cache_updates: Vec::new(),
         });
@@ -7074,6 +7075,7 @@ next_tab = ""
                 ahead_behind: None,
                 space: None,
                 change_set: None,
+                collectible: None,
             }],
             cache_updates: Vec::new(),
         });

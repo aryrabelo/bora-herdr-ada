@@ -14,6 +14,7 @@ pub(crate) use api_helpers::limit_snapshot_lines;
 mod config_io;
 mod creation;
 pub(crate) mod flow;
+mod channel_membership;
 mod git_refresh;
 mod ids;
 mod input;
@@ -85,6 +86,10 @@ pub(crate) const IDLE_AGE_TICK_INTERVAL: Duration = Duration::from_secs(1);
 pub(crate) const SELECTION_AUTOSCROLL_INTERVAL: Duration = Duration::from_millis(30);
 const RESIZE_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const GIT_REMOTE_STATUS_REFRESH_INTERVAL: Duration = Duration::from_millis(1500);
+/// Cadence for `App::refresh_channel_membership_if_due`: a handful of small
+/// local `channels/*.members.json` reads, cheap enough to not need the git
+/// refresh pipeline's threading, but still off the render path.
+const CHANNEL_MEMBERSHIP_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
 const GIT_REPO_DISCOVERY_REFRESH_INTERVAL: Duration = Duration::from_secs(5 * 60);
 const CHECKS_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 /// Default period between background open-PR refreshes; overridable via
@@ -225,6 +230,7 @@ pub struct App {
     /// `PendingAgentPrompt::queue_id`.
     pub(crate) next_pending_agent_prompt_queue_id: u64,
     pub(crate) last_git_remote_status_refresh: Instant,
+    pub(crate) last_channel_membership_refresh: Instant,
     pub(crate) last_git_repo_discovery_refresh: Instant,
     pub(crate) last_checks_refresh: Instant,
     pub(crate) last_open_prs_refresh: Instant,
@@ -936,6 +942,7 @@ impl App {
             event_tx,
             event_rx,
             last_git_remote_status_refresh: Instant::now() - GIT_REMOTE_STATUS_REFRESH_INTERVAL,
+            last_channel_membership_refresh: Instant::now() - CHANNEL_MEMBERSHIP_REFRESH_INTERVAL,
             last_git_repo_discovery_refresh: Instant::now(),
             last_checks_refresh: Instant::now() - CHECKS_REFRESH_INTERVAL,
             // checked_sub: the interval is user-configurable and subtracting a
@@ -3174,6 +3181,7 @@ mod tests {
                 ahead_behind: Some((1, 0)),
                 space: None,
                 change_set: None,
+                collectible: None,
             }],
             cache_updates: Vec::new(),
         });

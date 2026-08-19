@@ -2641,6 +2641,10 @@ impl AppState {
                 ws.cached_change_set = result.change_set;
                 changed = true;
             }
+            if result.demand.ahead_behind && ws.cached_collectible != result.collectible {
+                ws.cached_collectible = result.collectible;
+                changed = true;
+            }
         }
         changed
     }
@@ -4036,6 +4040,7 @@ mod tests {
                 ahead_behind: Some((2, 1)),
                 space: None,
                 change_set: None,
+                collectible: None,
             }],
         );
 
@@ -4066,6 +4071,7 @@ mod tests {
                 ahead_behind: Some((0, 1)),
                 space: None,
                 change_set: None,
+                collectible: None,
             }],
         );
 
@@ -4098,6 +4104,7 @@ mod tests {
                 ahead_behind: None,
                 space: None,
                 change_set: None,
+                collectible: None,
             }],
         );
 
@@ -4126,6 +4133,7 @@ mod tests {
                 ahead_behind: None,
                 space: None,
                 change_set: None,
+                collectible: None,
             }],
         );
 
@@ -4162,6 +4170,7 @@ mod tests {
                     is_linked_worktree: false,
                 }),
                 change_set: None,
+                collectible: None,
             }],
         );
 

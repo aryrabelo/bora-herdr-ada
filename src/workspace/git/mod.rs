@@ -1,6 +1,7 @@
 mod branches;
 mod change_set;
 mod check_status;
+mod collectible;
 mod config;
 #[cfg(test)]
 mod config_tests;
