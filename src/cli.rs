@@ -432,19 +432,44 @@ fn channel_members(args: &[String]) -> std::io::Result<i32> {
     Ok(0)
 }
 
+/// `bora channel join <name> [--pane ID] [--scope-write DIR]... [--scope-read DIR[,DIR]]...`.
+/// The pane defaults to `$HERDR_PANE_ID`, so an agent can join the channel
+/// it was told about without knowing its own pane id. `--scope-write` and
+/// `--scope-read` are repeatable; `--scope-read` also accepts a
+/// comma-separated list in one flag. See CANAL-ESCOPO.md Shape 2.
 fn channel_join(args: &[String]) -> std::io::Result<i32> {
-    channel_membership(args, "join")
+    let usage = "usage: bora channel join <name> [--pane ID] [--scope-write DIR]... [--scope-read DIR[,DIR]]...";
+    let Some(name) = args.first() else {
+        eprintln!("{usage}");
+        return Ok(2);
+    };
+    let parsed = match parse_channel_join_flags(&args[1..]) {
+        Ok(parsed) => parsed,
+        Err(err) => {
+            eprintln!("{err}");
+            eprintln!("{usage}");
+            return Ok(2);
+        }
+    };
+    let Some(pane) = parsed.pane else {
+        eprintln!("no pane to join: pass --pane ID or run inside a bora pane (HERDR_PANE_ID)");
+        return Ok(2);
+    };
+    print_response(&send_request(&Request {
+        id: "cli:channel:join".into(),
+        method: Method::ChannelJoin(ChannelJoinParams {
+            name: name.clone(),
+            pane,
+            scope_write: (!parsed.scope_write.is_empty()).then_some(parsed.scope_write),
+            scope_read: (!parsed.scope_read.is_empty()).then_some(parsed.scope_read),
+        }),
+    })?)
 }
 
+/// `bora channel leave <name> [--pane ID]`. Scope cleanup for the pane is
+/// entirely server-side (`channel.leave` also drops its scope entry).
 fn channel_leave(args: &[String]) -> std::io::Result<i32> {
-    channel_membership(args, "leave")
-}
-
-/// `bora channel join|leave <name> [--pane ID]`. The pane defaults to
-/// `$HERDR_PANE_ID`, so an agent can join the channel it was told about
-/// without knowing its own pane id.
-fn channel_membership(args: &[String], verb: &str) -> std::io::Result<i32> {
-    let usage = format!("usage: bora channel {verb} <name> [--pane ID]");
+    let usage = "usage: bora channel leave <name> [--pane ID]";
     let Some(name) = args.first() else {
         eprintln!("{usage}");
         return Ok(2);
@@ -452,9 +477,7 @@ fn channel_membership(args: &[String], verb: &str) -> std::io::Result<i32> {
     let pane = match parse_membership_pane(&args[1..]) {
         Ok(Some(pane)) => pane,
         Ok(None) => {
-            eprintln!(
-                "no pane to {verb}: pass --pane ID or run inside a bora pane (HERDR_PANE_ID)"
-            );
+            eprintln!("no pane to leave: pass --pane ID or run inside a bora pane (HERDR_PANE_ID)");
             return Ok(2);
         }
         Err(err) => {
@@ -463,21 +486,77 @@ fn channel_membership(args: &[String], verb: &str) -> std::io::Result<i32> {
             return Ok(2);
         }
     };
-    let method = if verb == "join" {
-        Method::ChannelJoin(ChannelJoinParams {
-            name: name.clone(),
-            pane,
-        })
-    } else {
-        Method::ChannelLeave(ChannelLeaveParams {
-            name: name.clone(),
-            pane,
-        })
-    };
     print_response(&send_request(&Request {
-        id: format!("cli:channel:{verb}"),
-        method,
+        id: "cli:channel:leave".into(),
+        method: Method::ChannelLeave(ChannelLeaveParams {
+            name: name.clone(),
+            pane,
+        }),
     })?)
+}
+
+/// Parsed `bora channel join` flags.
+struct ChannelJoinFlags {
+    pane: Option<String>,
+    scope_write: Vec<String>,
+    scope_read: Vec<String>,
+}
+
+fn parse_channel_join_flags(args: &[String]) -> Result<ChannelJoinFlags, String> {
+    let mut pane = std::env::var("HERDR_PANE_ID")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| normalize_pane_id(&value));
+    let mut scope_write = Vec::new();
+    let mut scope_read = Vec::new();
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--pane" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err("missing value for --pane".into());
+                };
+                if value.trim().is_empty() {
+                    return Err("--pane must not be empty".into());
+                }
+                pane = Some(normalize_pane_id(value));
+                index += 2;
+            }
+            "--scope-write" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err("missing value for --scope-write".into());
+                };
+                let value = value.trim();
+                if value.is_empty() {
+                    return Err("--scope-write must not be empty".into());
+                }
+                scope_write.push(value.to_string());
+                index += 2;
+            }
+            "--scope-read" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err("missing value for --scope-read".into());
+                };
+                let dirs: Vec<String> = value
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|dir| !dir.is_empty())
+                    .map(str::to_string)
+                    .collect();
+                if dirs.is_empty() {
+                    return Err("--scope-read must not be empty".into());
+                }
+                scope_read.extend(dirs);
+                index += 2;
+            }
+            option => return Err(format!("unknown option: {option}")),
+        }
+    }
+    Ok(ChannelJoinFlags {
+        pane,
+        scope_write,
+        scope_read,
+    })
 }
 
 /// Pane a membership verb acts on: `--pane ID` when given, else
@@ -643,6 +722,15 @@ fn print_channel_help() {
     eprintln!("  bora channel members <name> [--json]         list a #channel's member panes");
     eprintln!("  bora channel join <name> [--pane ID]         add a pane living outside the");
     eprintln!("                                                channel to its member set");
+    eprintln!(
+        "                                                [--scope-write DIR]... [--scope-read"
+    );
+    eprintln!(
+        "                                                DIR[,DIR]]... declare the pane's"
+    );
+    eprintln!(
+        "                                                write/read scope (write implies read)"
+    );
     eprintln!("  bora channel leave <name> [--pane ID]        drop a joined pane from a #channel");
 }
 

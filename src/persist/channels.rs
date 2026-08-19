@@ -1,11 +1,14 @@
 //! Append-only JSONL transcript store for `#`-channel workspaces, plus the
-//! explicit-membership roster that lives beside it.
+//! explicit-membership roster and per-pane scope registry that live beside
+//! it.
 //!
 //! Each channel's messages live at `state_dir()/channels/<name>.jsonl` (name
 //! without the leading `#`), one JSON object per line. Panes that joined a
 //! channel they don't live in are listed at
 //! `state_dir()/channels/<name>.members.json` as a JSON array of public pane
-//! ids.
+//! ids. Declared write/read directories per pane live at
+//! `state_dir()/channels/<name>.scope.json` (CANAL-ESCOPO.md Shape 2) — the
+//! registry the harness scope gate consults at runtime.
 
 use std::fs::{self, OpenOptions};
 use std::io::{self, BufRead, Write};
@@ -36,6 +39,10 @@ pub fn channel_members_file_path(name: &str) -> PathBuf {
 
 pub fn channel_protocol_file_path(name: &str) -> PathBuf {
     channels_dir().join(format!("{}.protocol.json", normalize_channel_name(name)))
+}
+
+pub fn channel_scope_file_path(name: &str) -> PathBuf {
+    channels_dir().join(format!("{}.scope.json", normalize_channel_name(name)))
 }
 
 /// Hard cap on JSONL lines kept per channel. Once `append_message` would
@@ -271,6 +278,92 @@ pub fn mark_protocol_sent(name: &str, pane: &str, version: u32) -> io::Result<()
         tmp.flush()?;
     }
     fs::rename(&tmp_path, &path)
+}
+
+/// One pane's declared write/read scope within a channel — CANAL-ESCOPO.md
+/// Shape 2's registry, the data the harness scope gate consults at runtime.
+/// Keyed by public pane id, never `terminal_id`: minted at runtime and
+/// reallocated on restore, less durable than anything else that could
+/// address a pane. `nick` rides along only for a readable error message,
+/// never as an address.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChannelScopeEntry {
+    pub pane: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nick: Option<String>,
+    #[serde(default)]
+    pub write: Vec<String>,
+    #[serde(default)]
+    pub read: Vec<String>,
+}
+
+/// Every pane's declared scope for `name`. A missing or unparseable record
+/// reads as empty — a corrupt scope file must not take the channel down,
+/// only make the gate see no declared scope for anyone.
+pub fn read_channel_scope(name: &str) -> Vec<ChannelScopeEntry> {
+    let raw = match fs::read_to_string(channel_scope_file_path(name)) {
+        Ok(raw) => raw,
+        Err(err) => {
+            if err.kind() != io::ErrorKind::NotFound {
+                tracing::warn!(channel = %name, error = %err, "channel scope record unreadable");
+            }
+            return Vec::new();
+        }
+    };
+    match serde_json::from_str(&raw) {
+        Ok(entries) => entries,
+        Err(err) => {
+            tracing::warn!(channel = %name, error = %err, "channel scope record malformed");
+            Vec::new()
+        }
+    }
+}
+
+/// Replace `name`'s whole scope record. Writes a sibling `.tmp` and renames
+/// over it, mirroring every other channel sidecar file. An empty list
+/// removes the file rather than leaving `[]` behind.
+fn write_channel_scope(name: &str, entries: &[ChannelScopeEntry]) -> io::Result<()> {
+    let path = channel_scope_file_path(name);
+    if entries.is_empty() {
+        return match fs::remove_file(&path) {
+            Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
+            other => other,
+        };
+    }
+    fs::create_dir_all(channels_dir())?;
+    let body = serde_json::to_string(entries)
+        .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
+    let tmp_path = path.with_extension("json.tmp");
+    {
+        let mut tmp = fs::File::create(&tmp_path)?;
+        tmp.write_all(body.as_bytes())?;
+        tmp.flush()?;
+    }
+    fs::rename(&tmp_path, &path)
+}
+
+/// Replace `entry.pane`'s scope entry for `name`, dropping any prior one —
+/// a re-join with a new scope replaces wholesale rather than merging
+/// (CANAL-ESCOPO.md Shape 2: "re-join REPLACES that pane's entry").
+pub fn upsert_channel_scope(name: &str, entry: ChannelScopeEntry) -> io::Result<()> {
+    let mut entries = read_channel_scope(name);
+    entries.retain(|existing| existing.pane != entry.pane);
+    entries.push(entry);
+    write_channel_scope(name, &entries)
+}
+
+/// Drop `pane`'s scope entry for `name`, if any. Returns whether an entry
+/// was actually removed. Called from `channel.leave` so a pane's declared
+/// scope does not outlive its membership.
+pub fn remove_channel_scope_entry(name: &str, pane: &str) -> io::Result<bool> {
+    let mut entries = read_channel_scope(name);
+    let before = entries.len();
+    entries.retain(|entry| entry.pane != pane);
+    let removed = entries.len() != before;
+    if removed {
+        write_channel_scope(name, &entries)?;
+    }
+    Ok(removed)
 }
 
 #[cfg(test)]
@@ -583,6 +676,87 @@ mod tests {
             assert!(read_joined_members("eng", |_| true).is_empty());
             // Removing an already-absent roster is not an error.
             write_joined_members("eng", &[]).unwrap();
+        });
+    }
+
+    fn scope_entry(pane: &str, write: &[&str], read: &[&str]) -> ChannelScopeEntry {
+        ChannelScopeEntry {
+            pane: pane.to_string(),
+            nick: Some(format!("{pane}-nick")),
+            write: write.iter().map(|s| s.to_string()).collect(),
+            read: read.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn channel_scope_roundtrips() {
+        with_isolated_state_dir("scope-roundtrip", || {
+            upsert_channel_scope("#eng", scope_entry("w1A:p2", &["/repo/a"], &["/repo/b"]))
+                .unwrap();
+            let entries = read_channel_scope("eng");
+            assert_eq!(entries.len(), 1);
+            assert_eq!(entries[0].pane, "w1A:p2");
+            assert_eq!(entries[0].nick.as_deref(), Some("w1A:p2-nick"));
+            assert_eq!(entries[0].write, vec!["/repo/a".to_string()]);
+            assert_eq!(entries[0].read, vec!["/repo/b".to_string()]);
+        });
+    }
+
+    #[test]
+    fn channel_scope_missing_or_malformed_record_is_empty() {
+        with_isolated_state_dir("scope-absent", || {
+            assert!(read_channel_scope("nope").is_empty());
+            fs::create_dir_all(channels_dir()).unwrap();
+            fs::write(channel_scope_file_path("broken"), "{not json").unwrap();
+            assert!(read_channel_scope("broken").is_empty());
+        });
+    }
+
+    #[test]
+    fn upsert_channel_scope_replaces_not_appends() {
+        with_isolated_state_dir("scope-replace", || {
+            upsert_channel_scope("eng", scope_entry("w1A:p2", &["/repo/a"], &[])).unwrap();
+            upsert_channel_scope("eng", scope_entry("w3B:p1", &[], &["/repo/c"])).unwrap();
+            upsert_channel_scope("eng", scope_entry("w1A:p2", &["/repo/z"], &["/repo/y"]))
+                .unwrap();
+
+            let entries = read_channel_scope("eng");
+            assert_eq!(entries.len(), 2, "re-join replaces, never duplicates");
+            let replaced = entries
+                .iter()
+                .find(|entry| entry.pane == "w1A:p2")
+                .expect("replaced entry still present");
+            assert_eq!(replaced.write, vec!["/repo/z".to_string()]);
+            assert_eq!(replaced.read, vec!["/repo/y".to_string()]);
+        });
+    }
+
+    #[test]
+    fn remove_channel_scope_entry_drops_pane_and_reports_removal() {
+        with_isolated_state_dir("scope-remove", || {
+            upsert_channel_scope("eng", scope_entry("w1A:p2", &["/repo/a"], &[])).unwrap();
+            upsert_channel_scope("eng", scope_entry("w3B:p1", &["/repo/b"], &[])).unwrap();
+
+            assert!(remove_channel_scope_entry("eng", "w1A:p2").unwrap());
+            let entries = read_channel_scope("eng");
+            assert_eq!(entries.len(), 1);
+            assert_eq!(entries[0].pane, "w3B:p1");
+
+            // Removing an already-absent pane is a no-op, not an error.
+            assert!(!remove_channel_scope_entry("eng", "w1A:p2").unwrap());
+        });
+    }
+
+    #[test]
+    fn writing_scope_is_atomic_and_empty_removes_it() {
+        with_isolated_state_dir("scope-atomic", || {
+            upsert_channel_scope("eng", scope_entry("w1A:p2", &["/repo/a"], &[])).unwrap();
+            let path = channel_scope_file_path("eng");
+            assert!(path.exists());
+            assert!(!path.with_extension("json.tmp").exists());
+
+            assert!(remove_channel_scope_entry("eng", "w1A:p2").unwrap());
+            assert!(!path.exists(), "removing the last entry deletes the file");
         });
     }
 }
