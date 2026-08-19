@@ -173,7 +173,7 @@ jobs:
             -PackagePath $package `
             -StageDir $stage `
             -OutputPath ${{ matrix.name }}
-          $version = (& (Join-Path $stage "bora.exe") --version | Out-String).Trim()
+          $version = (& (Join-Path $stage "herdr.exe") --version | Out-String).Trim()
           $tagVersion = $env:GITHUB_REF_NAME -replace '^v', ''
           if ($version -notmatch [regex]::Escape($tagVersion) -or $version -match "preview") {
             throw "Packaged Windows binary has unexpected version identity: $version"
