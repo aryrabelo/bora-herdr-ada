@@ -16,8 +16,11 @@ const MAX_CHANNEL_HISTORY_LINES: u32 = 1000;
 /// Bumped whenever [`CHANNEL_PROTOCOL`]'s content changes in a way an
 /// already-briefed pane needs to see again. `App::send_channel_protocol`
 /// re-sends only when a pane's recorded version (see
-/// `channels::read_protocol_sent`) is behind this.
-const CHANNEL_PROTOCOL_VERSION: u32 = 1;
+/// `channels::read_protocol_sent`) is behind this. v2: a pane with a
+/// recorded scope entry (`channels::ChannelScopeEntry`) now gets a
+/// formatted suffix naming its write/read directories, built by
+/// `channel_scope_briefing` — CANAL-ESCOPO.md Shape 3's T1 layer.
+const CHANNEL_PROTOCOL_VERSION: u32 = 2;
 
 /// Injected once per pane into every channel it joins or is already a
 /// member of — see `App::send_channel_protocol`. Teaches an LLM agent, in
@@ -575,7 +578,10 @@ impl App {
     /// outside the channel's workspace still receives fan-out and can be
     /// addressed by nick. Idempotent — joining twice, or joining a pane that
     /// is already an implicit workspace member, succeeds and reports which
-    /// kind of membership the caller actually ended up with.
+    /// kind of membership the caller actually ended up with. A `scope_write`
+    /// and/or `scope_read` on the request records/replaces the pane's scope
+    /// entry (CANAL-ESCOPO.md Shape 2) before the protocol briefing goes
+    /// out, so a first-time briefing already names the directories.
     pub(super) fn handle_channel_join(&mut self, id: String, params: ChannelJoinParams) -> String {
         let name = channels::normalize_channel_name(&params.name);
         let Some(ws_idx) = self.find_channel_workspace(&name) else {
@@ -592,6 +598,27 @@ impl App {
                 format!("pane {} not found", params.pane),
             );
         };
+        if params.scope_write.is_some() || params.scope_read.is_some() {
+            let write = params.scope_write.clone().unwrap_or_default();
+            let read = params.scope_read.unwrap_or_default();
+            if write.is_empty() && read.is_empty() {
+                return encode_error(
+                    id,
+                    "channel_join_invalid_scope",
+                    "scope_write/scope_read must name at least one directory",
+                );
+            }
+            let entry = channels::ChannelScopeEntry {
+                pane: public_id.clone(),
+                nick: self.pane_display_name(&public_id),
+                write,
+                read,
+            };
+            if let Err(err) = channels::upsert_channel_scope(&name, entry) {
+                return encode_error(id, "channel_join_failed", err.to_string());
+            }
+            tracing::info!(channel = %name, pane = %public_id, "pane scope recorded");
+        }
         if owner_ws_idx == ws_idx {
             // A pane in the channel's own workspace is a member by
             // construction. Succeed, but say so: recording it would imply a
@@ -623,10 +650,13 @@ impl App {
         )
     }
 
-    /// `channel.leave`: drop an explicit membership. Idempotent —
-    /// `removed: false` means there was nothing to drop, either because the
-    /// pane never joined or because it lives in the channel's workspace and
-    /// is a member by construction.
+    /// `channel.leave`: drop an explicit membership, and always drop the
+    /// pane's scope entry too — a departed pane's declared directories must
+    /// not outlive its membership. Idempotent — `removed: false` means
+    /// there was nothing to drop from the roster, either because the pane
+    /// never joined or because it lives in the channel's workspace and is a
+    /// member by construction; scope removal is independent and silent
+    /// either way.
     pub(super) fn handle_channel_leave(
         &mut self,
         id: String,
@@ -657,6 +687,14 @@ impl App {
             }
             tracing::info!(channel = %name, pane = %public_id, "pane left channel");
         }
+        if let Err(err) = channels::remove_channel_scope_entry(&name, &public_id) {
+            tracing::warn!(
+                channel = %name,
+                pane = %public_id,
+                error = %err,
+                "failed to remove channel scope entry"
+            );
+        }
         encode_success(
             id,
             ResponseResult::ChannelLeft {
@@ -670,14 +708,18 @@ impl App {
     /// deduped and made durable across restarts by
     /// `channels::read_protocol_sent` / `channels::mark_protocol_sent`
     /// (keyed on `CHANNEL_PROTOCOL_VERSION`, so a version bump re-sends).
-    /// Delivery goes through `handle_agent_prompt` with `from_pane: None` —
-    /// exempt from the agent-prompt rate limit and carries no `[from ...]`
-    /// prefix — and `when_idle: Some(true)`, so a `Working` pane gets it
-    /// queued rather than dropped. Always appends one system line to the
-    /// channel's transcript recording the delivery, mirroring
-    /// `App::report_queued_prompt_dropped`'s drop-notice line. `ws_idx` is
-    /// the channel's own workspace, kept only for tracing context — the
-    /// pane is always addressed by its already-resolved public id.
+    /// When the pane has a recorded scope entry, the briefing text gets a
+    /// suffix naming its write/read directories (`channel_scope_briefing`);
+    /// a pane with no scope entry gets no suffix — never an invented empty
+    /// section. Delivery goes through `handle_agent_prompt` with
+    /// `from_pane: None` — exempt from the agent-prompt rate limit and
+    /// carries no `[from ...]` prefix — and `when_idle: Some(true)`, so a
+    /// `Working` pane gets it queued rather than dropped. Always appends
+    /// one system line to the channel's transcript recording the delivery,
+    /// mirroring `App::report_queued_prompt_dropped`'s drop-notice line.
+    /// `ws_idx` is the channel's own workspace, kept only for tracing
+    /// context — the pane is always addressed by its already-resolved
+    /// public id.
     fn send_channel_protocol(&mut self, channel: &str, ws_idx: usize, public_pane_id: &str) {
         let already_sent = channels::read_protocol_sent(channel)
             .into_iter()
@@ -692,12 +734,17 @@ impl App {
             version = CHANNEL_PROTOCOL_VERSION,
             "sending channel protocol block"
         );
+        let scope_suffix = channels::read_channel_scope(channel)
+            .into_iter()
+            .find(|entry| entry.pane == public_pane_id)
+            .map(|entry| channel_scope_briefing(&entry))
+            .unwrap_or_default();
         self.handle_agent_prompt(
             format!("channel-protocol:{channel}:{public_pane_id}"),
             AgentPromptParams {
                 target: public_pane_id.to_string(),
                 text: format!(
-                    "[bora] channel protocol for #{channel} (v{CHANNEL_PROTOCOL_VERSION}):\n\n{CHANNEL_PROTOCOL}"
+                    "[bora] channel protocol for #{channel} (v{CHANNEL_PROTOCOL_VERSION}):\n\n{CHANNEL_PROTOCOL}{scope_suffix}"
                 ),
                 wait: None,
                 from_pane: None,
@@ -988,6 +1035,35 @@ fn leading_mention_nick(text: &str) -> Option<String> {
 /// keeps an escaped token from addressing.
 fn unescape_channel_text(text: &str) -> String {
     text.replace("\\@", "@").replace("\\#", "#")
+}
+
+/// Formats the per-pane scope suffix appended to [`CHANNEL_PROTOCOL`] when
+/// `entry` names `entry`'s declared write/read directories — CANAL-ESCOPO.md
+/// Shape 3's T1 layer: name the directories, then say where to ask for
+/// anything outside them. Only called for a pane that has a scope entry;
+/// a pane with none never gets this suffix, never an invented empty
+/// section.
+fn channel_scope_briefing(entry: &channels::ChannelScopeEntry) -> String {
+    let mut lines = vec![
+        String::new(),
+        String::new(),
+        "Your scope in this channel:".to_string(),
+    ];
+    if !entry.write.is_empty() {
+        lines.push(format!("  write: {}", entry.write.join(", ")));
+    }
+    if !entry.read.is_empty() {
+        lines.push(format!(
+            "  read:  {} (write dirs are readable too)",
+            entry.read.join(", ")
+        ));
+    }
+    lines.push(
+        "Anything outside these directories: ask, do not touch — address the owner \
+         with @nick in this channel."
+            .to_string(),
+    );
+    lines.join("\n")
 }
 
 fn agent_status_key(status: AgentStatus) -> &'static str {
@@ -2177,6 +2253,29 @@ mod tests {
             ChannelJoinParams {
                 name: name.into(),
                 pane: pane.into(),
+                scope_write: None,
+                scope_read: None,
+            },
+        );
+        serde_json::from_str(&response).unwrap()
+    }
+
+    fn join_with_scope(
+        app: &mut App,
+        name: &str,
+        pane: &str,
+        scope_write: Vec<&str>,
+        scope_read: Vec<&str>,
+    ) -> serde_json::Value {
+        let response = app.handle_channel_join(
+            "req".into(),
+            ChannelJoinParams {
+                name: name.into(),
+                pane: pane.into(),
+                scope_write: (!scope_write.is_empty())
+                    .then(|| scope_write.into_iter().map(str::to_string).collect()),
+                scope_read: (!scope_read.is_empty())
+                    .then(|| scope_read.into_iter().map(str::to_string).collect()),
             },
         );
         serde_json::from_str(&response).unwrap()
@@ -2485,6 +2584,135 @@ mod tests {
         super::super::test_support::shutdown_test_runtimes(&mut app);
     }
 
+    #[tokio::test]
+    async fn join_with_scope_persists_sidecar_and_leave_removes_it() {
+        let _isolated = IsolatedStateDir::new("join-scope-roundtrip");
+        let mut app = test_app();
+        create_channel(&mut app, "eng");
+        let (outsider, _outsider_rx) = outside_agent_pane(&mut app, "brandos");
+
+        let joined = join_with_scope(
+            &mut app,
+            "#eng",
+            &outsider,
+            vec!["/repo/work"],
+            vec!["/repo/read"],
+        );
+        assert_eq!(joined["result"]["source"], serde_json::json!("joined"));
+
+        let scope = channels::read_channel_scope("eng");
+        assert_eq!(scope.len(), 1);
+        assert_eq!(scope[0].pane, outsider);
+        assert_eq!(scope[0].nick.as_deref(), Some("brandos"));
+        assert_eq!(scope[0].write, vec!["/repo/work".to_string()]);
+        assert_eq!(scope[0].read, vec!["/repo/read".to_string()]);
+
+        let left = leave(&mut app, "eng", &outsider);
+        assert_eq!(left["result"]["removed"], serde_json::json!(true));
+        assert!(
+            channels::read_channel_scope("eng").is_empty(),
+            "leave must drop the pane's scope entry along with membership"
+        );
+        super::super::test_support::shutdown_test_runtimes(&mut app);
+    }
+
+    #[tokio::test]
+    async fn rejoin_with_new_scope_replaces_and_canonicalizes_pane_id() {
+        let _isolated = IsolatedStateDir::new("join-scope-replace");
+        let mut app = test_app();
+        create_channel(&mut app, "eng");
+        let (outsider, _outsider_rx) = outside_agent_pane(&mut app, "brandos");
+
+        join_with_scope(&mut app, "#eng", &outsider, vec!["/repo/a"], vec![]);
+        // Re-join through the colon-free spelling of the same pane id: must
+        // land on the same entry, never a duplicate (CANAL-ESCOPO.md Shape 2:
+        // "w2Ap1 and w2A:p1 land as one entry").
+        let colonless = outsider.replace(':', "");
+        join_with_scope(
+            &mut app,
+            "#eng",
+            &colonless,
+            vec!["/repo/b"],
+            vec!["/repo/c"],
+        );
+
+        let scope = channels::read_channel_scope("eng");
+        assert_eq!(scope.len(), 1, "re-join must replace, never duplicate");
+        assert_eq!(scope[0].pane, outsider, "stored under the canonical id");
+        assert_eq!(scope[0].write, vec!["/repo/b".to_string()]);
+        assert_eq!(scope[0].read, vec!["/repo/c".to_string()]);
+        super::super::test_support::shutdown_test_runtimes(&mut app);
+    }
+
+    #[tokio::test]
+    async fn join_scope_rejects_empty_write_and_read() {
+        let _isolated = IsolatedStateDir::new("join-scope-empty");
+        let mut app = test_app();
+        create_channel(&mut app, "eng");
+        let (outsider, _outsider_rx) = outside_agent_pane(&mut app, "brandos");
+
+        let response = app.handle_channel_join(
+            "req".into(),
+            ChannelJoinParams {
+                name: "#eng".into(),
+                pane: outsider,
+                scope_write: Some(Vec::new()),
+                scope_read: Some(Vec::new()),
+            },
+        );
+        let response: serde_json::Value = serde_json::from_str(&response).unwrap();
+        assert_eq!(
+            response["error"]["code"],
+            serde_json::json!("channel_join_invalid_scope")
+        );
+        assert!(channels::read_channel_scope("eng").is_empty());
+        super::super::test_support::shutdown_test_runtimes(&mut app);
+    }
+
+    #[tokio::test]
+    async fn channel_protocol_names_scope_when_present_and_stays_silent_otherwise() {
+        let _isolated = IsolatedStateDir::new("protocol-scope");
+        let mut app = test_app();
+        create_channel(&mut app, "eng");
+        let (scoped, mut scoped_rx) = outside_agent_pane(&mut app, "brandos");
+        let (unscoped, mut unscoped_rx) = outside_agent_pane(&mut app, "outro");
+
+        join_with_scope(
+            &mut app,
+            "#eng",
+            &scoped,
+            vec!["/repo/work"],
+            vec!["/repo/read"],
+        );
+        let scoped_injected = scoped_rx
+            .try_recv()
+            .expect("join must inject the channel protocol block");
+        let scoped_injected = String::from_utf8_lossy(&scoped_injected);
+        assert!(
+            scoped_injected.contains("/repo/work"),
+            "got: {scoped_injected}"
+        );
+        assert!(
+            scoped_injected.contains("/repo/read"),
+            "got: {scoped_injected}"
+        );
+        assert!(
+            scoped_injected.contains('@') && scoped_injected.contains("this channel"),
+            "must instruct asking via @nick in the channel: {scoped_injected}"
+        );
+
+        join(&mut app, "#eng", &unscoped);
+        let unscoped_injected = unscoped_rx
+            .try_recv()
+            .expect("join must inject the channel protocol block");
+        let unscoped_injected = String::from_utf8_lossy(&unscoped_injected);
+        assert!(
+            !unscoped_injected.contains("Your scope in this channel"),
+            "a pane with no scope entry must not get an invented section: {unscoped_injected}"
+        );
+        super::super::test_support::shutdown_test_runtimes(&mut app);
+    }
+
     fn json_str(value: &str) -> serde_json::Value {
         serde_json::Value::String(value.to_string())
     }
@@ -2581,6 +2809,27 @@ mod tests {
             1,
             "restart must not re-inject or re-append the protocol notice"
         );
+
+        // A pane that received an older protocol version (as if briefed
+        // before a `CHANNEL_PROTOCOL_VERSION` bump) must get a resend: the
+        // `entry.version >= CHANNEL_PROTOCOL_VERSION` gate is strict, not
+        // pane-presence, so v1-briefed panes see the v2 scope-aware text.
+        channels::mark_protocol_sent("eng", "w1A:p3", CHANNEL_PROTOCOL_VERSION - 1).unwrap();
+        restarted.send_channel_protocol("eng", 0, "w1A:p3");
+        let history_bump = channels::read_tail("eng", 10).unwrap();
+        assert_eq!(
+            history_bump
+                .iter()
+                .filter(|m| m.from_pane == "system")
+                .count(),
+            2,
+            "a pane on an older protocol version must get a resend"
+        );
+        let recorded = channels::read_protocol_sent("eng")
+            .into_iter()
+            .find(|entry| entry.pane == "w1A:p3")
+            .expect("resend must record the new version");
+        assert_eq!(recorded.version, CHANNEL_PROTOCOL_VERSION);
         super::super::test_support::shutdown_test_runtimes(&mut restarted);
     }
 

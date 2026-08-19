@@ -103,6 +103,16 @@ pub struct ChannelJoinParams {
     pub name: String,
     /// Public pane id to add. The CLI defaults it to `$HERDR_PANE_ID`.
     pub pane: String,
+    /// Directories `pane` may write in this channel. Write implies read —
+    /// do not also list a write dir under `scope_read`. `Some` (even
+    /// `Some(vec![])` combined with an empty `scope_read`) replaces any
+    /// prior scope entry for `pane` wholesale; `None` on both leaves an
+    /// existing entry untouched. See CANAL-ESCOPO.md Shape 2.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope_write: Option<Vec<String>>,
+    /// Directories `pane` may read only, beyond its write dirs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope_read: Option<Vec<String>>,
 }
 
 /// `channel.leave`: drop an explicitly joined pane from a channel. Panes that
