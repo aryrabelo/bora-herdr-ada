@@ -4,6 +4,9 @@ Bora is a fork of [herdr](https://github.com/ogulcancelik/herdr). This changelog
 
 ## Unreleased
 
+### Added
+- Sidebar workspace rows now show three identity badges after the name: ` @nome` for the pane's registered `agent rename` name (falling back to the detected agent kind), ` #canal` (` +N` for more than one) for a workspace with a pane explicitly joined to a channel elsewhere, and a dim `✓` for a linked worktree that's clean and fully merged into the repo's default branch — safe to close. Channel membership refreshes on the same 2s cadence as git status; the collectible mark piggybacks on the existing git-status refresh pipeline and caches its one expensive call (`git merge-base --is-ancestor`) by `(head_sha, default_branch_sha)`, only re-running it when either moves.
+
 ### Synced from herdr
 - Merged upstream `herdrdev/herdr` master (36 commits, through `a5c69bea`, upstream v0.8.1).
 - Windows is generally available on the stable channel, with `Ctrl+1`–`Ctrl+9` keybindings, PowerShell working-directory sync, verified-local-package updates, ARM64 installer retry while x64 emulation holds the executable, and native support for every agent integration.

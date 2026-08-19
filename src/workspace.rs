@@ -67,6 +67,10 @@ pub struct WorkspaceGitStatus {
     pub ahead_behind: Option<(usize, usize)>,
     pub space: Option<GitSpaceMetadata>,
     pub change_set: Option<WorkspaceChangeSet>,
+    /// Linked worktree only: `HEAD` clean and merged into the repo's
+    /// default branch. `None` for non-worktree workspaces or when the
+    /// refresh demand didn't cover ahead/behind.
+    pub collectible: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -76,6 +80,7 @@ pub struct WorkspaceGitStatusSnapshot {
     pub ahead_behind: Option<(usize, usize)>,
     pub space: Option<GitSpaceMetadata>,
     pub change_set: Option<WorkspaceChangeSet>,
+    pub collectible: Option<bool>,
 }
 
 pub(crate) fn discover_workspace_git_identity(
@@ -131,6 +136,7 @@ impl WorkspaceGitStatusSnapshot {
             ahead_behind: self.ahead_behind,
             space: self.space,
             change_set: self.change_set,
+            collectible: self.collectible,
         }
     }
 }
@@ -230,6 +236,14 @@ pub struct Workspace {
     pub(crate) cached_change_set: Option<WorkspaceChangeSet>,
     /// Cached PR + CI check status for the workspace branch.
     pub(crate) cached_check_status: Option<WorkspaceCheckStatus>,
+    /// `#`-channels this workspace has a pane explicitly joined into (not
+    /// counting the channel's own home workspace, whose name already shows
+    /// it). Refreshed periodically alongside git status, never in render.
+    pub(crate) cached_channels: Vec<String>,
+    /// Linked worktree only: `HEAD` clean and merged into the repo's
+    /// default branch — "safe to close". Populated by the git status
+    /// refresh pipeline; `None` for non-worktree workspaces.
+    pub(crate) cached_collectible: Option<bool>,
     /// Explicit Herdr-managed worktree grouping provenance.
     pub worktree_space: Option<WorktreeSpaceMembership>,
     pub(crate) metadata_tokens: crate::metadata_tokens::MetadataTokens,
@@ -307,6 +321,8 @@ impl Workspace {
             cached_git_space,
             cached_change_set: None,
             cached_check_status: None,
+            cached_channels: Vec::new(),
+            cached_collectible: None,
             worktree_space,
             metadata_tokens: crate::metadata_tokens::MetadataTokens::default(),
             metadata_token_sequences: HashMap::new(),
@@ -513,6 +529,8 @@ impl Workspace {
                 cached_git_space,
                 cached_change_set: None,
                 cached_check_status: None,
+                cached_channels: Vec::new(),
+                cached_collectible: None,
                 worktree_space,
                 metadata_tokens: crate::metadata_tokens::MetadataTokens::default(),
                 metadata_token_sequences: HashMap::new(),
@@ -1365,6 +1383,8 @@ impl Workspace {
             cached_git_space: None,
             cached_change_set: None,
             cached_check_status: None,
+            cached_channels: Vec::new(),
+            cached_collectible: None,
             worktree_space: None,
             metadata_tokens: crate::metadata_tokens::MetadataTokens::default(),
             metadata_token_sequences: HashMap::new(),
