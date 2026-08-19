@@ -25,127 +25,19 @@ pub enum Signal {
     Kill,
 }
 
-pub(crate) fn detached_custom_command_process(command: &str) -> std::process::Command {
-    let mut process = detached_custom_command_process_platform(command);
-    configure_background_command(&mut process);
-    process
-}
-
-pub(crate) fn pane_custom_command_pty_builder(command: &str) -> portable_pty::CommandBuilder {
-    pane_custom_command_pty_builder_platform(command)
-}
-
-pub(crate) fn apply_pane_runtime_marker(command: &mut portable_pty::CommandBuilder) {
-    apply_pane_runtime_marker_platform(command);
-}
-
-#[cfg(not(windows))]
-pub(crate) fn terminal_title_for_presentation(title: &str) -> &str {
-    title
-}
-
-#[cfg(not(windows))]
-fn apply_pane_runtime_marker_platform(_command: &mut portable_pty::CommandBuilder) {}
-
-pub(crate) fn configure_background_command(command: &mut std::process::Command) {
-    configure_background_command_platform(command);
-}
-
-#[cfg(not(windows))]
-fn configure_background_command_platform(_command: &mut std::process::Command) {}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct PlatformCapabilities {
     pub(crate) live_handoff: bool,
+    pub(crate) remote_attach: bool,
     pub(crate) direct_terminal_attach: bool,
-    pub(crate) preserve_legacy_doubled_escape_input: bool,
 }
 
 pub(crate) const fn capabilities() -> PlatformCapabilities {
     PlatformCapabilities {
         live_handoff: cfg!(unix),
+        remote_attach: cfg!(unix),
         direct_terminal_attach: cfg!(unix),
-        preserve_legacy_doubled_escape_input: cfg!(target_os = "macos"),
     }
-}
-
-#[cfg(not(windows))]
-pub fn launch_server_daemon_command(command: &mut std::process::Command) -> std::io::Result<u32> {
-    command.spawn().map(|child| child.id())
-}
-
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-pub fn detach_server_daemon_command(command: &mut std::process::Command) {
-    use std::os::unix::process::CommandExt;
-
-    unsafe {
-        command.pre_exec(|| {
-            if libc::setsid() < 0 {
-                return Err(std::io::Error::last_os_error());
-            }
-            Ok(())
-        });
-    }
-}
-
-/// Create a symlink at `dst` pointing to `src`. `src` is an absolute path into
-/// the root checkout. On Windows the link kind is chosen by the source type.
-#[cfg(unix)]
-pub(crate) fn symlink(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
-    std::os::unix::fs::symlink(src, dst)
-}
-
-#[cfg(windows)]
-pub(crate) fn symlink(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
-    if src.is_dir() {
-        std::os::windows::fs::symlink_dir(src, dst)
-    } else {
-        std::os::windows::fs::symlink_file(src, dst)
-    }
-}
-
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-pub fn current_process_is_detached_server_daemon() -> bool {
-    unsafe { libc::getsid(0) == libc::getpid() }
-}
-
-/// Raised by the SIGWINCH handler, consumed by the host resize watcher.
-#[cfg(unix)]
-static TERMINAL_RESIZE_SIGNALLED: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
-
-#[cfg(unix)]
-extern "C" fn record_terminal_resize_signal(_signal: libc::c_int) {
-    TERMINAL_RESIZE_SIGNALLED.store(true, std::sync::atomic::Ordering::Release);
-}
-
-/// Records SIGWINCH events that size polling can miss.
-#[cfg(unix)]
-pub(crate) fn watch_terminal_resize_signal() {
-    let mut action: libc::sigaction = unsafe { std::mem::zeroed() };
-    action.sa_sigaction =
-        record_terminal_resize_signal as extern "C" fn(libc::c_int) as libc::sighandler_t;
-    // Keep blocking stdin and socket reads from failing with EINTR.
-    action.sa_flags = libc::SA_RESTART;
-    unsafe {
-        libc::sigemptyset(&mut action.sa_mask);
-        libc::sigaction(libc::SIGWINCH, &action, std::ptr::null_mut());
-    }
-}
-
-#[cfg(not(unix))]
-pub(crate) fn watch_terminal_resize_signal() {}
-
-/// Returns whether a terminal size change was signalled since the last call.
-#[cfg(unix)]
-pub(crate) fn take_terminal_resize_signal() -> bool {
-    TERMINAL_RESIZE_SIGNALLED.swap(false, std::sync::atomic::Ordering::AcqRel)
-}
-
-/// Windows relies on size polling.
-#[cfg(not(unix))]
-pub(crate) fn take_terminal_resize_signal() -> bool {
-    false
 }
 
 #[cfg(unix)]
@@ -156,11 +48,14 @@ pub struct ClipboardCommand {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+// Windows does not wire clipboard-image bridging into semantic input yet.
+#[cfg_attr(windows, allow(dead_code))]
 pub struct ClipboardImage {
     pub bytes: Vec<u8>,
     pub extension: &'static str,
 }
 
+#[cfg(unix)]
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum LimitedRead {
     Empty,
@@ -168,6 +63,7 @@ pub(crate) enum LimitedRead {
     Oversized,
 }
 
+#[cfg(unix)]
 pub(crate) fn read_limited_reader(
     mut reader: impl std::io::Read,
     max_bytes: usize,
@@ -205,16 +101,6 @@ pub(crate) fn read_limited_reader(
     }
 }
 
-#[derive(Debug, Clone)]
-pub(crate) struct RemoteSshConfigPaths {
-    pub(crate) user_config: Option<std::path::PathBuf>,
-    pub(crate) system_config: Option<std::path::PathBuf>,
-    pub(crate) multiplexing: bool,
-}
-
-#[cfg(unix)]
-mod unix_common;
-
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "linux")]
@@ -235,117 +121,19 @@ mod fallback;
 #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
 pub use fallback::*;
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-pub(crate) fn available_pane_shell_from_job(child_pid: u32, job: ForegroundJob) -> Option<String> {
-    if job.process_group_id != child_pid
-        || job.processes.iter().any(|process| process.pid != child_pid)
-    {
-        return None;
-    }
-    job.processes
-        .into_iter()
-        .find(|process| process.pid == child_pid)
-        .map(|process| process.name)
-        .filter(|name| is_pane_shell_process_name(name))
-}
-
-fn normalized_process_name(name: &str) -> String {
-    name.rsplit(['/', '\\'])
-        .next()
-        .unwrap_or(name)
-        .trim_start_matches('-')
-        .trim_end_matches(".exe")
-        .to_ascii_lowercase()
-}
-
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-pub(crate) fn is_powershell_process_name(name: &str) -> bool {
-    matches!(
-        normalized_process_name(name).as_str(),
-        "pwsh" | "powershell"
-    )
-}
-
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-pub(crate) fn interactive_unix_shell_command(
-    argv: &[String],
-    shell_name: &str,
-    quote_posix_arg: fn(&str) -> String,
-) -> Option<String> {
-    let quote = if is_powershell_process_name(shell_name) {
-        quote_powershell_arg
-    } else {
-        quote_posix_arg
-    };
-    let mut parts = argv.iter();
-    let mut command = quote(parts.next()?);
-    for part in parts {
-        command.push(' ');
-        command.push_str(&quote(part));
-    }
-    Some(command)
-}
-
-pub(crate) fn quote_powershell_arg(value: &str) -> String {
-    if !value.is_empty()
-        && value.bytes().all(|byte| {
-            byte.is_ascii_alphanumeric()
-                || matches!(byte, b'_' | b'-' | b'.' | b'/' | b':' | b'+' | b'=')
-        })
-    {
-        return value.to_string();
-    }
-    format!("'{}'", value.replace('\'', "''"))
-}
-
-pub(crate) fn is_pane_shell_process_name(name: &str) -> bool {
-    let normalized = normalized_process_name(name);
-    matches!(
-        normalized.as_str(),
-        "sh" | "bash"
-            | "dash"
-            | "zsh"
-            | "fish"
-            | "ksh"
-            | "mksh"
-            | "csh"
-            | "tcsh"
-            | "elvish"
-            | "xonsh"
-            | "nu"
-            | "pwsh"
-            | "powershell"
-            | "cmd"
-    )
-}
-
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg(not(target_os = "linux"))]
 pub fn process_agent_hint(_pid: u32) -> Option<crate::detect::Agent> {
     None
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-pub(crate) fn parse_agent_env_hint(environ: &[u8]) -> Option<crate::detect::Agent> {
-    for record in environ.split(|&byte| byte == 0) {
-        let Some(value) = record.strip_prefix(b"HERDR_AGENT=") else {
-            continue;
-        };
-        return crate::detect::parse_agent_label(std::str::from_utf8(value).ok()?);
-    }
-    None
-}
-
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+#[cfg(not(target_os = "macos"))]
 #[derive(Debug)]
 pub(crate) struct InputSourceRestore;
 
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+#[cfg(not(target_os = "macos"))]
 pub(crate) fn switch_to_ascii_input_source() -> Option<InputSourceRestore> {
     None
 }
-
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
-pub(crate) fn pump_input_source_runloop() {}
 
 /// Switches the host keyboard input source while prefix mode is active.
 ///
@@ -372,9 +160,6 @@ pub(crate) struct RealPrefixInputSource {
 impl PrefixInputSource for RealPrefixInputSource {
     fn switch_to_ascii(&mut self) {
         if self.restore.is_none() {
-            // Drain pending input-source-change notifications so the read below is fresh (see
-            // `pump_input_source_runloop`); a no-op on non-macOS.
-            pump_input_source_runloop();
             self.restore = switch_to_ascii_input_source();
         }
     }
@@ -387,94 +172,6 @@ impl PrefixInputSource for RealPrefixInputSource {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
-
-    #[test]
-    fn terminal_resize_signal_is_recorded_once_per_delivery() {
-        watch_terminal_resize_signal();
-        assert!(!take_terminal_resize_signal());
-
-        unsafe {
-            libc::raise(libc::SIGWINCH);
-        }
-
-        assert!(take_terminal_resize_signal());
-        assert!(!take_terminal_resize_signal());
-    }
-
-    #[test]
-    fn pane_shell_process_names_reject_exec_replacement_programs() {
-        for shell in ["bash", "-zsh", "/bin/fish", "pwsh", "powershell.exe"] {
-            assert!(is_pane_shell_process_name(shell), "{shell}");
-        }
-        for program in ["vim", "nvim", "cargo", "test-runner", "opencode"] {
-            assert!(!is_pane_shell_process_name(program), "{program}");
-        }
-    }
-
-    #[test]
-    fn detached_custom_command_preserves_unix_login_shell_flag() {
-        let cmd = detached_custom_command_process("echo hello");
-        assert_eq!(cmd.get_program(), std::ffi::OsStr::new("/bin/sh"));
-        assert_eq!(
-            cmd.get_args().collect::<Vec<_>>(),
-            [
-                std::ffi::OsStr::new("-lc"),
-                std::ffi::OsStr::new("echo hello")
-            ]
-        );
-    }
-
-    #[test]
-    fn pane_custom_command_builder_preserves_unix_shell_flag() {
-        let expected: Vec<std::ffi::OsString> =
-            vec!["/bin/sh".into(), "-c".into(), "echo hello".into()];
-        assert_eq!(
-            pane_custom_command_pty_builder("echo hello").get_argv(),
-            &expected
-        );
-    }
-
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    #[test]
-    fn parse_agent_env_hint_accepts_known_agents() {
-        assert_eq!(
-            parse_agent_env_hint(b"PATH=/bin\0HERDR_AGENT=claude\0TERM=xterm\0"),
-            Some(crate::detect::Agent::Claude)
-        );
-        assert_eq!(
-            parse_agent_env_hint(b"HERDR_AGENT=codex"),
-            Some(crate::detect::Agent::Codex)
-        );
-    }
-
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    #[test]
-    fn parse_agent_env_hint_ignores_missing_or_unknown_agents() {
-        assert_eq!(parse_agent_env_hint(b"PATH=/bin\0TERM=xterm\0"), None);
-        assert_eq!(parse_agent_env_hint(b"HERDR_AGENT=not-an-agent\0"), None);
-    }
-
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    #[test]
-    fn interactive_shell_command_quotes_for_posix_and_powershell() {
-        let argv = vec![
-            "pi".into(),
-            String::new(),
-            "two words".into(),
-            "a'b".into(),
-            "$HOME".into(),
-            "semi;colon".into(),
-            "@options".into(),
-        ];
-        assert_eq!(
-            interactive_shell_command(&argv, "bash").as_deref(),
-            Some("pi '' 'two words' 'a'\\''b' '$HOME' 'semi;colon' @options")
-        );
-        assert_eq!(
-            interactive_shell_command(&argv, "pwsh").as_deref(),
-            Some("pi '' 'two words' 'a''b' '$HOME' 'semi;colon' '@options'")
-        );
-    }
 
     #[test]
     fn read_limited_reader_returns_complete_data_under_limit() {

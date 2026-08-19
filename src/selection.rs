@@ -4,10 +4,10 @@
 //!
 //!   MouseDown in pane → Anchor recorded (no visual yet)
 //!   MouseDrag         → Selection becomes active, cells highlighted
-//!   MouseUp           → Selection finalized; optionally copied by the caller
-//!   Next click / key  → A retained selection is cleared
+//!   MouseUp           → Text extracted, copied via OSC 52, highlight stays
+//!   Next click / key  → Selection cleared
 //!
-//! Double-click selects a word; the caller decides whether to copy it immediately.
+//! Double-click copy also briefly highlights the selected word.
 //!
 //! Rows are stored in screen-buffer coordinates instead of viewport-relative
 //! coordinates. That keeps selection stable while the pane scrolls.
@@ -25,8 +25,8 @@ enum Phase {
     Anchored,
     /// Mouse has moved from the anchor point. Cells are being highlighted.
     Dragging,
-    /// Mouse released after dragging. Selection is visible and the gesture is
-    /// complete. Clipboard policy is owned by the caller.
+    /// Mouse released after dragging. Selection is visible and text
+    /// has been copied to clipboard. Cleared on next interaction.
     Done,
 }
 
@@ -159,8 +159,8 @@ impl Selection {
         self.phase == Phase::Dragging || self.phase == Phase::Done
     }
 
-    /// Whether this selection was already finalized.
-    pub fn is_finalized(&self) -> bool {
+    /// Whether this selection was already finalized and copied.
+    pub fn is_done(&self) -> bool {
         self.phase == Phase::Done
     }
 
@@ -304,17 +304,15 @@ fn is_wsl() -> bool {
 fn should_prefer_osc52_for_env(
     ssh_connection: Option<&OsStr>,
     ssh_tty: Option<&OsStr>,
-    vscode_ipc_hook_cli: Option<&OsStr>,
     wsl: bool,
 ) -> bool {
-    ssh_connection.is_some() || ssh_tty.is_some() || vscode_ipc_hook_cli.is_some() || wsl
+    ssh_connection.is_some() || ssh_tty.is_some() || wsl
 }
 
 fn should_prefer_osc52() -> bool {
     should_prefer_osc52_for_env(
         std::env::var_os("SSH_CONNECTION").as_deref(),
         std::env::var_os("SSH_TTY").as_deref(),
-        std::env::var_os("VSCODE_IPC_HOOK_CLI").as_deref(),
         is_wsl(),
     )
 }
@@ -357,31 +355,19 @@ mod tests {
         assert!(should_prefer_osc52_for_env(
             Some(OsStr::new("1 2 3 4")),
             None,
-            None,
             false
         ));
         assert!(should_prefer_osc52_for_env(
             None,
             Some(OsStr::new("/dev/ttys001")),
-            None,
             false
         ));
-        assert!(!should_prefer_osc52_for_env(None, None, None, false));
+        assert!(!should_prefer_osc52_for_env(None, None, false));
     }
 
     #[test]
     fn wsl_sessions_prefer_osc52() {
-        assert!(should_prefer_osc52_for_env(None, None, None, true));
-    }
-
-    #[test]
-    fn vscode_remote_sessions_prefer_osc52() {
-        assert!(should_prefer_osc52_for_env(
-            None,
-            None,
-            Some(OsStr::new("/tmp/vscode-remote-cli.sock")),
-            false
-        ));
+        assert!(should_prefer_osc52_for_env(None, None, true));
     }
 
     #[test]

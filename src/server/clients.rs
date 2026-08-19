@@ -9,7 +9,6 @@ use crate::server::render_stream::ClientRenderState;
 pub(crate) enum ClientConnectionMode {
     App,
     TerminalAttach { terminal_id: String },
-    TerminalObserve { terminal_id: String },
 }
 
 pub(crate) type RenderTarget = (
@@ -19,13 +18,6 @@ pub(crate) type RenderTarget = (
     bool,
     ClientConnectionMode,
 );
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) enum DeferredRender {
-    #[default]
-    None,
-    Full,
-}
 
 /// A connected client tracked by the server.
 pub(crate) struct ClientConnection {
@@ -55,20 +47,12 @@ pub(crate) struct ClientConnection {
     pub(crate) render_state: ClientRenderState,
     /// Client-local host Kitty graphics cache.
     pub(crate) graphics_cache: crate::kitty_graphics::HostGraphicsCache,
-    /// Passive eligibility for audited local Kitty regular-file graphics.
-    pub(crate) direct_graphics: bool,
-    /// Whether this frontend preserves exact SGR pixel reports.
-    pub(crate) pixel_mouse: bool,
     /// Whether the next graphics frame must clear and rebuild host-side Kitty state.
     pub(crate) graphics_surface_reset_pending: bool,
-    /// Whether an ordinary render was skipped because the render channel was full.
+    /// Whether a render was skipped because the render channel was full.
     pub(crate) render_pending: bool,
     /// Last host mouse capture mode sent to this client.
     pub(crate) host_mouse_capture_active: Option<bool>,
-    /// Last SGR pixel provenance mode sent to this client.
-    pub(crate) host_sgr_pixels_active: Option<bool>,
-    /// Last Kitty report-all mode sent to this client's host terminal.
-    pub(crate) host_keyboard_report_all_active: Option<bool>,
     /// Temporary files staged from this client's local clipboard image pastes.
     pub(crate) staged_clipboard_files: Vec<PathBuf>,
     /// Channels for sending framed ServerMessage data to the client writer thread.
@@ -128,42 +112,17 @@ impl ClientConnection {
             last_activity,
             render_state: ClientRenderState::new(render_encoding),
             graphics_cache: crate::kitty_graphics::HostGraphicsCache::default(),
-            direct_graphics: false,
-            pixel_mouse: false,
             graphics_surface_reset_pending: false,
             render_pending: false,
             host_mouse_capture_active: None,
-            host_sgr_pixels_active: None,
-            host_keyboard_report_all_active: None,
             staged_clipboard_files: Vec::new(),
             writer,
         }
     }
 
-    pub(crate) fn request_repaint(&mut self) {
-        self.render_state.request_repaint();
-    }
-
-    pub(crate) fn deferred_render(&self) -> DeferredRender {
-        if self.render_pending {
-            DeferredRender::Full
-        } else {
-            DeferredRender::None
-        }
-    }
-
-    pub(crate) fn clear_deferred_render(&mut self) {
-        self.render_pending = false;
-    }
-
-    pub(crate) fn defer_full_render(&mut self) {
-        self.render_pending = true;
-    }
-
-    pub(crate) fn take_deferred_render(&mut self) -> DeferredRender {
-        let deferred = self.deferred_render();
-        self.clear_deferred_render();
-        deferred
+    pub(crate) fn request_full_redraw(&mut self) {
+        self.render_state.reset_baseline();
+        self.graphics_surface_reset_pending = true;
     }
 
     pub(crate) fn is_full_app_client(&self) -> bool {
@@ -189,11 +148,6 @@ impl ClientConnection {
                     {
                         changed |=
                             self.set_host_appearance(Some(color.inferred_appearance()), false);
-                    }
-                }
-                crate::raw_input::RawInputEvent::HostPaletteColors { colors } => {
-                    for &(index, color) in colors {
-                        next_theme = next_theme.with_palette_color(index, color);
                     }
                 }
                 crate::raw_input::RawInputEvent::HostColorSchemeChanged(appearance) => {
@@ -251,7 +205,6 @@ pub(crate) fn events_include_interaction(events: &[crate::raw_input::RawInputEve
         matches!(
             event,
             crate::raw_input::RawInputEvent::Key(_)
-                | crate::raw_input::RawInputEvent::Text(_)
                 | crate::raw_input::RawInputEvent::Mouse(_)
                 | crate::raw_input::RawInputEvent::Paste(_)
                 | crate::raw_input::RawInputEvent::OuterFocusGained
@@ -267,7 +220,7 @@ pub(crate) fn latest_app_client(clients: &HashMap<u64, ClientConnection>) -> Opt
         .map(|(&client_id, _)| client_id)
 }
 
-pub(crate) fn terminal_stream_client_ids(
+pub(crate) fn terminal_attach_client_ids(
     clients: &HashMap<u64, ClientConnection>,
     terminal_id: &str,
 ) -> Vec<u64> {
@@ -275,9 +228,6 @@ pub(crate) fn terminal_stream_client_ids(
         .iter()
         .filter_map(|(&client_id, client)| match &client.mode {
             ClientConnectionMode::TerminalAttach {
-                terminal_id: attached,
-            }
-            | ClientConnectionMode::TerminalObserve {
                 terminal_id: attached,
             } if attached == terminal_id => Some(client_id),
             _ => None,
@@ -294,11 +244,7 @@ pub(crate) fn render_targets(
         .filter(|(_, client)| {
             client.writer.is_some()
                 && (client.is_full_app_client()
-                    || matches!(
-                        client.mode,
-                        ClientConnectionMode::TerminalAttach { .. }
-                            | ClientConnectionMode::TerminalObserve { .. }
-                    ))
+                    || matches!(client.mode, ClientConnectionMode::TerminalAttach { .. }))
         })
         .map(|(&client_id, client)| {
             (

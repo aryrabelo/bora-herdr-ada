@@ -29,34 +29,25 @@ fn keybind_label(bindings: &crate::config::ActionKeybinds) -> String {
 
 fn indexed_label(bindings: &[crate::config::IndexedKeybind]) -> String {
     if bindings.is_empty() {
-        return "unset".to_string();
-    }
-
-    let mut parts = Vec::new();
-    let mut index = 0;
-    while index < bindings.len() {
-        if let Some(prefix) = indexed_range_prefix(&bindings[index..]) {
-            parts.push(format!("{prefix}1..9"));
-            index += 9;
+        "unset".to_string()
+    } else if bindings.len() == 9 {
+        let first = &bindings[0].label;
+        if first.ends_with('1') {
+            format!("{}1..9", first.trim_end_matches('1'))
         } else {
-            parts.push(bindings[index].label.clone());
-            index += 1;
+            bindings
+                .iter()
+                .map(|binding| binding.label.clone())
+                .collect::<Vec<_>>()
+                .join(" / ")
         }
+    } else {
+        bindings
+            .iter()
+            .map(|binding| binding.label.clone())
+            .collect::<Vec<_>>()
+            .join(" / ")
     }
-
-    parts.join(" / ")
-}
-
-fn indexed_range_prefix(bindings: &[crate::config::IndexedKeybind]) -> Option<&str> {
-    let run = bindings.get(..9)?;
-    let prefix = run[0].label.strip_suffix('1')?;
-    for (offset, binding) in run.iter().enumerate() {
-        let digit = char::from(b'1' + offset as u8);
-        if binding.label.strip_suffix(digit) != Some(prefix) {
-            return None;
-        }
-    }
-    Some(prefix)
 }
 
 pub(super) fn keybind_help_groups(app: &AppState) -> Vec<HelpGroup> {
@@ -112,7 +103,6 @@ pub(super) fn keybind_help_groups(app: &AppState) -> Vec<HelpGroup> {
     let workspace_tab = vec![
         help_entry(keybind_label(&kb.workspace_picker), "workspace navigation"),
         help_entry(keybind_label(&kb.goto), "session navigator"),
-        help_entry(keybind_label(&kb.chat), "channel chat view"),
         help_entry(keybind_label(&kb.new_workspace), "new workspace"),
         help_entry(keybind_label(&kb.new_worktree), "new worktree"),
         help_entry(keybind_label(&kb.open_worktree), "open worktree"),
@@ -132,8 +122,6 @@ pub(super) fn keybind_help_groups(app: &AppState) -> Vec<HelpGroup> {
         help_entry(keybind_label(&kb.rename_tab), "rename tab"),
         help_entry(keybind_label(&kb.previous_tab), "previous tab"),
         help_entry(keybind_label(&kb.next_tab), "next tab"),
-        help_entry(keybind_label(&kb.move_tab_previous), "move tab left"),
-        help_entry(keybind_label(&kb.move_tab_next), "move tab right"),
         help_entry(indexed_label(&kb.switch_tab), "switch tab 1-9"),
         help_entry(keybind_label(&kb.close_tab), "close tab"),
     ];
@@ -148,10 +136,6 @@ pub(super) fn keybind_help_groups(app: &AppState) -> Vec<HelpGroup> {
         help_entry(keybind_label(&kb.copy_mode), "copy mode"),
         help_entry(keybind_label(&kb.zoom), "zoom pane"),
         help_entry(keybind_label(&kb.resize_mode), "resize mode"),
-        help_entry(keybind_label(&kb.resize_pane_left), "resize pane left"),
-        help_entry(keybind_label(&kb.resize_pane_down), "resize pane down"),
-        help_entry(keybind_label(&kb.resize_pane_up), "resize pane up"),
-        help_entry(keybind_label(&kb.resize_pane_right), "resize pane right"),
         help_entry(keybind_label(&kb.toggle_sidebar), "toggle sidebar"),
         help_entry(keybind_label(&kb.focus_pane_left), "focus pane left"),
         help_entry(keybind_label(&kb.focus_pane_down), "focus pane down"),
@@ -188,26 +172,6 @@ pub(super) fn keybind_help_groups(app: &AppState) -> Vec<HelpGroup> {
     groups
 }
 
-fn filter_keybind_help_groups(groups: Vec<HelpGroup>, query: &str) -> Vec<HelpGroup> {
-    if query.is_empty() {
-        return groups;
-    }
-
-    let query = query.to_lowercase();
-    groups
-        .into_iter()
-        .filter_map(|(group, entries)| {
-            let entries = entries
-                .into_iter()
-                .filter(|(key, label)| {
-                    key.to_lowercase().contains(&query) || label.to_lowercase().contains(&query)
-                })
-                .collect::<Vec<_>>();
-            (!entries.is_empty()).then_some((group, entries))
-        })
-        .collect()
-}
-
 pub(crate) fn keybind_help_lines(app: &AppState) -> Vec<(usize, Line<'static>)> {
     let heading_style = Style::default()
         .fg(app.palette.accent)
@@ -217,7 +181,7 @@ pub(crate) fn keybind_help_lines(app: &AppState) -> Vec<(usize, Line<'static>)> 
         .add_modifier(Modifier::BOLD);
     let label_style = Style::default().fg(app.palette.text);
 
-    let groups = filter_keybind_help_groups(keybind_help_groups(app), &app.keybind_help.query);
+    let groups = keybind_help_groups(app);
     let key_width = groups
         .iter()
         .flat_map(|(_, entries)| entries.iter().map(|(key, _)| key.chars().count()))
@@ -225,17 +189,6 @@ pub(crate) fn keybind_help_lines(app: &AppState) -> Vec<(usize, Line<'static>)> 
         .unwrap_or(8);
 
     let mut lines = Vec::new();
-
-    if groups.is_empty() {
-        let message = " no matching keybinds";
-        return vec![(
-            message.chars().count(),
-            Line::from(Span::styled(
-                message,
-                Style::default().fg(app.palette.overlay1),
-            )),
-        )];
-    }
 
     for (group, entries) in groups {
         lines.push((
@@ -278,38 +231,17 @@ pub(super) fn render_keybind_help_overlay(app: &AppState, frame: &mut Frame) {
         frame,
         release_notes_close_button_rect(header_rows[0]),
         Some("esc"),
-        if app.keybind_help.search_focused {
-            "back"
-        } else {
-            "close"
-        },
+        "close",
         Style::default()
             .fg(panel_contrast_fg(&app.palette))
             .bg(app.palette.accent)
             .add_modifier(Modifier::BOLD),
     );
-    let search_line = if app.keybind_help.search_focused {
-        Line::from(vec![
-            Span::styled(
-                " / ",
-                Style::default()
-                    .fg(app.palette.accent)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                app.keybind_help.query.as_str(),
-                Style::default()
-                    .fg(app.palette.text)
-                    .add_modifier(Modifier::BOLD),
-            ),
-        ])
-    } else {
-        Line::from(Span::styled(
-            " press / to filter by command or shortcut",
-            Style::default().fg(app.palette.overlay0),
-        ))
-    };
-    frame.render_widget(Paragraph::new(search_line), header_rows[1]);
+    frame.render_widget(
+        Paragraph::new(" available commands and configured shortcuts")
+            .style(Style::default().fg(app.palette.overlay1)),
+        header_rows[1],
+    );
 
     let body_area = stack.content;
     let metrics = crate::pane::ScrollMetrics {
@@ -351,77 +283,17 @@ pub(super) fn render_keybind_help_overlay(app: &AppState, frame: &mut Frame) {
         );
     }
 
-    let footer = if app.keybind_help.search_focused {
-        Line::from(vec![
-            Span::styled(" filter ", Style::default().fg(app.palette.overlay0)),
-            Span::styled("type/backspace", Style::default().fg(app.palette.text)),
-            Span::styled(" · ", Style::default().fg(app.palette.overlay0)),
-            Span::styled("clear ", Style::default().fg(app.palette.overlay0)),
-            Span::styled("ctrl+u", Style::default().fg(app.palette.text)),
-            Span::styled(" · ", Style::default().fg(app.palette.overlay0)),
-            Span::styled("scroll ", Style::default().fg(app.palette.overlay0)),
-            Span::styled("↑↓/pgup/pgdn", Style::default().fg(app.palette.text)),
-            Span::styled(" · ", Style::default().fg(app.palette.overlay0)),
-            Span::styled("back ", Style::default().fg(app.palette.overlay0)),
-            Span::styled("esc", Style::default().fg(app.palette.text)),
-        ])
-    } else {
-        Line::from(vec![
-            Span::styled(" search ", Style::default().fg(app.palette.overlay0)),
-            Span::styled("/", Style::default().fg(app.palette.text)),
-            Span::styled(" · ", Style::default().fg(app.palette.overlay0)),
-            Span::styled("scroll ", Style::default().fg(app.palette.overlay0)),
-            Span::styled("j/k/↑↓/pgup/pgdn", Style::default().fg(app.palette.text)),
-            Span::styled(" · ", Style::default().fg(app.palette.overlay0)),
-            Span::styled("close ", Style::default().fg(app.palette.overlay0)),
-            Span::styled("esc/enter", Style::default().fg(app.palette.text)),
-        ])
-    };
-    frame.render_widget(Paragraph::new(footer), stack.footer.unwrap_or_default());
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn groups() -> Vec<HelpGroup> {
-        vec![
-            (
-                "workspaces / tabs",
-                vec![
-                    help_entry("w", "workspace navigation"),
-                    help_entry("c", "new tab"),
-                ],
-            ),
-            (
-                "panes",
-                vec![
-                    help_entry("v", "split vertical"),
-                    help_entry("x", "close pane"),
-                ],
-            ),
-        ]
-    }
-
-    #[test]
-    fn keybind_help_filter_matches_labels_case_insensitively() {
-        let filtered = filter_keybind_help_groups(groups(), "WoRk");
-
-        assert_eq!(filtered.len(), 1);
-        assert_eq!(filtered[0].0, "workspaces / tabs");
-        assert_eq!(filtered[0].1.len(), 1);
-        assert_eq!(filtered[0].1[0].1, "workspace navigation");
-    }
-
-    #[test]
-    fn keybind_help_filter_matches_shortcuts_without_matching_group_headings() {
-        let filtered = filter_keybind_help_groups(groups(), "x");
-
-        assert_eq!(filtered.len(), 1);
-        assert_eq!(filtered[0].0, "panes");
-        assert_eq!(filtered[0].1.len(), 1);
-        assert_eq!(filtered[0].1[0].1, "close pane");
-
-        assert!(filter_keybind_help_groups(groups(), "panes").is_empty());
-    }
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(" scroll ", Style::default().fg(app.palette.overlay0)),
+            Span::styled("wheel ↑↓", Style::default().fg(app.palette.text)),
+            Span::styled("  ·  ", Style::default().fg(app.palette.overlay0)),
+            Span::styled("jump", Style::default().fg(app.palette.overlay0)),
+            Span::styled(" pgup / pgdn ", Style::default().fg(app.palette.text)),
+            Span::styled("  ·  ", Style::default().fg(app.palette.overlay0)),
+            Span::styled("close", Style::default().fg(app.palette.overlay0)),
+            Span::styled(" esc / enter ", Style::default().fg(app.palette.text)),
+        ])),
+        stack.footer.unwrap_or_default(),
+    );
 }

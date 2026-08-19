@@ -2,7 +2,7 @@
 // managed by herdr; reinstalling or updating the integration overwrites this file.
 // add custom hooks/plugins beside this file instead of editing it.
 // HERDR_INTEGRATION_ID=pi
-// HERDR_INTEGRATION_VERSION=9
+// HERDR_INTEGRATION_VERSION=3
 // @ts-nocheck
 
 import { createConnection } from "node:net";
@@ -157,16 +157,6 @@ function releaseAgent(): Promise<void> {
   });
 }
 
-function shouldReleaseOnSessionShutdown(event: any): boolean {
-  // Pi tears down and rebinds extension runtimes for internal lifecycle actions
-  // such as /reload, /new, /resume, and /fork. Those do not mean the pane's
-  // agent process has exited, and releasing hook authority there can suppress
-  // legitimate reports from the replacement runtime. Only a user/process quit
-  // should release Herdr's full-lifecycle authority.
-  const reason = event?.reason;
-  return reason === "quit";
-}
-
 let sendInFlight = false;
 let queuedState: QueuedState | undefined;
 
@@ -226,7 +216,7 @@ export default function (pi) {
     return;
   }
 
-  let agentActiveCount = 0;
+  let agentActive = false;
   let retryHoldActive = false;
   let failureBlocked = false;
   let failureMessage: string | undefined;
@@ -237,7 +227,6 @@ export default function (pi) {
   let idleTimer: ReturnType<typeof setTimeout> | undefined;
   let retryTimer: ReturnType<typeof setTimeout> | undefined;
   let rootSession = false;
-  let turnRepairHold = false;
 
   function clearTimer(timer: ReturnType<typeof setTimeout> | undefined) {
     if (timer) {
@@ -265,7 +254,7 @@ export default function (pi) {
     if (failureBlocked) {
       return { state: "blocked" as const, message: failureMessage };
     }
-    if (agentActiveCount > 0 || retryHoldActive || turnRepairHold) {
+    if (agentActive || retryHoldActive) {
       return { state: "working" as const, message: undefined };
     }
     return { state: "idle" as const, message: undefined };
@@ -307,14 +296,6 @@ export default function (pi) {
     retryTimer.unref?.();
   }
 
-  function forceResetBlocked() {
-    // A turn ending is authoritative that nothing is blocked. Clear any leaked
-    // blockedCount (unmatched approval/ask or a dropped herdr:blocked deactivate)
-    // so a stuck block can't survive into Idle.
-    blockedCount = 0;
-    blockedMessage = undefined;
-  }
-
   pi.events.on("herdr:blocked", (data) => {
     if (!rootSession) {
       return;
@@ -334,10 +315,8 @@ export default function (pi) {
     publishState();
   });
 
-  pi.on("session_start", async (event, ctx) => {
-    // TUI only: RPC/JSON/print modes are headless (no PTY herdr can display),
-    // and RPC still reports hasUI=true, so mode is the reliable gate.
-    if (ctx?.mode !== "tui") {
+  pi.on("session_start", (_event, ctx) => {
+    if (ctx?.hasUI !== true) {
       return;
     }
     rootSession = true;
@@ -346,16 +325,13 @@ export default function (pi) {
     publishState(true);
   });
 
-  pi.on("agent_start", (_event, ctx) => {
+  pi.on("agent_start", () => {
     if (!rootSession) {
       return;
     }
-    updateSessionRef(ctx);
-    void reportSession();
     clearPendingTimers();
     clearFailureState();
-    turnRepairHold = false;
-    agentActiveCount += 1;
+    agentActive = true;
     publishState();
   });
 
@@ -363,29 +339,14 @@ export default function (pi) {
     if (!rootSession) {
       return;
     }
-    if (agentActiveCount === 0) {
-      if (turnRepairHold) {
-        // The loop we were holding Working for has ended (or a late duplicate
-        // end arrived mid-turn; the next turn_start re-holds). Release the
-        // repair hold and go idle normally.
-        turnRepairHold = false;
-        forceResetBlocked();
-        scheduleIdle();
-        return;
-      }
+    if (!agentActive) {
       // Pi can emit duplicate/late end events while auto-retry is already
-      // holding the pane in Working, and a concurrent subagent's end can
-      // arrive after the count already drained. Ignore unmatched ends so they
-      // cannot cancel a retry hold or publish a false Idle.
+      // holding the pane in Working. Do not let an unqualified duplicate end
+      // cancel the retry hold and publish a false Idle.
       return;
     }
 
-    agentActiveCount -= 1;
-    if (agentActiveCount > 0) {
-      // Other concurrent agents (e.g. parallel subagents) are still running;
-      // stay Working until the last one ends.
-      return;
-    }
+    agentActive = false;
 
     const retryableMessage = retryableErrorMessage(event);
     if (retryableMessage) {
@@ -393,42 +354,14 @@ export default function (pi) {
       return;
     }
 
-    forceResetBlocked();
     scheduleIdle();
   });
 
-  pi.on("turn_start", (_event, ctx) => {
-    if (!rootSession) {
-      // A runtime rebound by /reload, /new, /resume, or /fork can miss the
-      // original session_start; a turn with UI proves this is the
-      // interactive root runtime.
-      if (ctx?.hasUI !== true) {
-        return;
-      }
-      rootSession = true;
-      updateSessionRef(ctx);
-      void reportSession();
-    }
-    // A turn proves the agent loop is alive: duplicate/late agent_end events
-    // can drain agentActiveCount mid-run (e.g. concurrent subagent fan-out),
-    // and a fire-and-forget report can be dropped. Hold Working until real
-    // bookkeeping resumes (agent_start) or the loop ends (agent_end), and
-    // force a re-publish so the pane self-heals on every turn.
-    if (agentActiveCount === 0 && !turnRepairHold) {
-      clearPendingTimers();
-      clearFailureState();
-      turnRepairHold = true;
-    }
-    publishState(true);
-  });
-
-  pi.on("session_shutdown", async (event) => {
+  pi.on("session_shutdown", async () => {
     if (!rootSession) {
       return;
     }
     clearPendingTimers();
-    if (shouldReleaseOnSessionShutdown(event)) {
-      await releaseAgent();
-    }
+    await releaseAgent();
   });
 }

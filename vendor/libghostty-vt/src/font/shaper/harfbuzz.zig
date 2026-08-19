@@ -811,7 +811,7 @@ test "shape emoji width long" {
     );
     defer t.deinit(alloc);
 
-    var page = t.screens.active.pages.pages.first.?.page();
+    var page = t.screens.active.pages.pages.first.?.data;
     var row = page.getRow(1);
     const cell = &row.cells.ptr(page.memory)[0];
     cell.* = .{

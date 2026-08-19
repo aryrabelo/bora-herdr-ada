@@ -108,35 +108,34 @@ pub const GlobalShortcuts = extern struct {
 
     fn close(self: *Self) void {
         const priv = self.private();
+        const dbus = priv.dbus_connection orelse return;
 
-        if (priv.dbus_connection) |dbus| {
-            if (priv.response_subscription != 0) {
-                dbus.signalUnsubscribe(priv.response_subscription);
-                priv.response_subscription = 0;
-            }
+        if (priv.response_subscription != 0) {
+            dbus.signalUnsubscribe(priv.response_subscription);
+            priv.response_subscription = 0;
+        }
 
-            if (priv.activate_subscription != 0) {
-                dbus.signalUnsubscribe(priv.activate_subscription);
-                priv.activate_subscription = 0;
-            }
+        if (priv.activate_subscription != 0) {
+            dbus.signalUnsubscribe(priv.activate_subscription);
+            priv.activate_subscription = 0;
+        }
 
-            if (priv.handle) |handle| {
-                // Close existing session
-                dbus.call(
-                    "org.freedesktop.portal.Desktop",
-                    handle,
-                    "org.freedesktop.portal.Session",
-                    "Close",
-                    null,
-                    null,
-                    .{},
-                    -1,
-                    null,
-                    null,
-                    null,
-                );
-                priv.handle = null;
-            }
+        if (priv.handle) |handle| {
+            // Close existing session
+            dbus.call(
+                "org.freedesktop.portal.Desktop",
+                handle,
+                "org.freedesktop.portal.Session",
+                "Close",
+                null,
+                null,
+                .{},
+                -1,
+                null,
+                null,
+                null,
+            );
+            priv.handle = null;
         }
 
         if (priv.arena) |*arena| {
@@ -152,8 +151,7 @@ pub const GlobalShortcuts = extern struct {
 
         const priv = self.private();
 
-        // We need a dbus connection and configuration to proceed.
-        if (priv.dbus_connection == null) return;
+        // We need configuration to proceed.
         const config = if (priv.config) |v| v.get() else return;
 
         // Setup our new arena that we'll use for memory allocations.

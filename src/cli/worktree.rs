@@ -1,8 +1,8 @@
 use crate::api::schema::{
-    WorktreeCreateParams, WorktreeListParams, WorktreeOpenParams, WorktreeRemoveParams,
+    Method, Request, WorktreeCreateParams, WorktreeListParams, WorktreeOpenParams,
+    WorktreeRemoveParams,
 };
 
-// Worktree output is always JSON. The parsers retain `--json` as a hidden compatibility no-op.
 pub(super) fn run_worktree_command(args: &[String]) -> std::io::Result<i32> {
     let Some(subcommand) = args.first().map(std::string::String::as_str) else {
         print_worktree_help();
@@ -56,11 +56,14 @@ fn worktree_list(args: &[String]) -> std::io::Result<i32> {
         }
     }
     if workspace_id.is_some() && cwd.is_some() {
-        eprintln!("usage: bora worktree list [--workspace ID | --cwd PATH] [--json]");
+        eprintln!("usage: herdr worktree list [--workspace ID | --cwd PATH] [--json]");
         return Ok(2);
     }
 
-    super::runtime::worktree_list(WorktreeListParams { workspace_id, cwd })
+    super::print_response(&super::send_request(&Request {
+        id: "cli:worktree:list".into(),
+        method: Method::WorktreeList(WorktreeListParams { workspace_id, cwd }),
+    })?)
 }
 
 fn worktree_create(args: &[String]) -> std::io::Result<i32> {
@@ -68,11 +71,9 @@ fn worktree_create(args: &[String]) -> std::io::Result<i32> {
     let mut cwd = None;
     let mut branch = None;
     let mut base = None;
-    let mut pr = None;
     let mut path = None;
     let mut label = None;
     let mut focus = false;
-    let mut no_setup = false;
 
     let mut index = 0;
     while index < args.len() {
@@ -109,18 +110,6 @@ fn worktree_create(args: &[String]) -> std::io::Result<i32> {
                 base = Some(value.clone());
                 index += 2;
             }
-            "--pr" => {
-                let Some(value) = args.get(index + 1) else {
-                    eprintln!("missing value for --pr");
-                    return Ok(2);
-                };
-                let Ok(number) = value.parse::<u64>() else {
-                    eprintln!("invalid value for --pr: {value}");
-                    return Ok(2);
-                };
-                pr = Some(number);
-                index += 2;
-            }
             "--path" => {
                 let Some(value) = args.get(index + 1) else {
                     eprintln!("missing value for --path");
@@ -145,10 +134,6 @@ fn worktree_create(args: &[String]) -> std::io::Result<i32> {
                 focus = false;
                 index += 1;
             }
-            "--no-setup" => {
-                no_setup = true;
-                index += 1;
-            }
             "--json" => index += 1,
             other => {
                 eprintln!("unknown option: {other}");
@@ -156,26 +141,25 @@ fn worktree_create(args: &[String]) -> std::io::Result<i32> {
             }
         }
     }
-    if workspace_id.is_some() && cwd.is_some()
-        || pr.is_some() && (branch.is_some() || base.is_some())
-    {
+    if workspace_id.is_some() && cwd.is_some() {
         eprintln!(
-            "usage: bora worktree create [--workspace ID | --cwd PATH] [--branch NAME] [--base REF] [--pr NUMBER] [--path PATH] [--label TEXT] [--focus] [--no-focus] [--no-setup] [--json] (--pr is mutually exclusive with --branch/--base)"
+            "usage: herdr worktree create [--workspace ID | --cwd PATH] [--branch NAME] [--base REF] [--path PATH] [--label TEXT] [--focus] [--no-focus] [--json]"
         );
         return Ok(2);
     }
 
-    super::runtime::worktree_create(WorktreeCreateParams {
-        workspace_id,
-        cwd,
-        branch,
-        base,
-        pr,
-        path,
-        label,
-        focus,
-        no_setup,
-    })
+    super::print_response(&super::send_request(&Request {
+        id: "cli:worktree:create".into(),
+        method: Method::WorktreeCreate(WorktreeCreateParams {
+            workspace_id,
+            cwd,
+            branch,
+            base,
+            path,
+            label,
+            focus,
+        }),
+    })?)
 }
 
 fn worktree_open(args: &[String]) -> std::io::Result<i32> {
@@ -246,25 +230,28 @@ fn worktree_open(args: &[String]) -> std::io::Result<i32> {
     }
     if workspace_id.is_some() && cwd.is_some() {
         eprintln!(
-            "usage: bora worktree open [--workspace ID | --cwd PATH] (--path PATH | --branch NAME) [--label TEXT] [--focus] [--no-focus] [--json]"
+            "usage: herdr worktree open [--workspace ID | --cwd PATH] (--path PATH | --branch NAME) [--label TEXT] [--focus] [--no-focus] [--json]"
         );
         return Ok(2);
     }
     if path.is_some() == branch.is_some() {
         eprintln!(
-            "usage: bora worktree open [--workspace ID | --cwd PATH] (--path PATH | --branch NAME) [--label TEXT] [--focus] [--no-focus] [--json]"
+            "usage: herdr worktree open [--workspace ID | --cwd PATH] (--path PATH | --branch NAME) [--label TEXT] [--focus] [--no-focus] [--json]"
         );
         return Ok(2);
     }
 
-    super::runtime::worktree_open(WorktreeOpenParams {
-        workspace_id,
-        cwd,
-        path,
-        branch,
-        label,
-        focus,
-    })
+    super::print_response(&super::send_request(&Request {
+        id: "cli:worktree:open".into(),
+        method: Method::WorktreeOpen(WorktreeOpenParams {
+            workspace_id,
+            cwd,
+            path,
+            branch,
+            label,
+            focus,
+        }),
+    })?)
 }
 
 fn worktree_remove(args: &[String]) -> std::io::Result<i32> {
@@ -295,26 +282,29 @@ fn worktree_remove(args: &[String]) -> std::io::Result<i32> {
     }
 
     let Some(workspace_id) = workspace_id else {
-        eprintln!("usage: bora worktree remove --workspace ID [--force] [--json]");
+        eprintln!("usage: herdr worktree remove --workspace ID [--force] [--json]");
         return Ok(2);
     };
 
-    super::runtime::worktree_remove(WorktreeRemoveParams {
-        workspace_id,
-        force,
-    })
+    super::print_response(&super::send_request(&Request {
+        id: "cli:worktree:remove".into(),
+        method: Method::WorktreeRemove(WorktreeRemoveParams {
+            workspace_id,
+            force,
+        }),
+    })?)
 }
 
 fn print_worktree_help() {
-    eprintln!("bora worktree commands:");
-    eprintln!("  bora worktree list [--workspace ID | --cwd PATH] [--json]");
+    eprintln!("herdr worktree commands:");
+    eprintln!("  herdr worktree list [--workspace ID | --cwd PATH] [--json]");
     eprintln!(
-        "  bora worktree create [--workspace ID | --cwd PATH] [--branch NAME] [--base REF] [--pr NUMBER] [--path PATH] [--label TEXT] [--focus] [--no-focus] [--no-setup] [--json]"
+        "  herdr worktree create [--workspace ID | --cwd PATH] [--branch NAME] [--base REF] [--path PATH] [--label TEXT] [--focus] [--no-focus] [--json]"
     );
     eprintln!(
-        "  bora worktree open [--workspace ID | --cwd PATH] (--path PATH | --branch NAME) [--label TEXT] [--focus] [--no-focus] [--json]"
+        "  herdr worktree open [--workspace ID | --cwd PATH] (--path PATH | --branch NAME) [--label TEXT] [--focus] [--no-focus] [--json]"
     );
-    eprintln!("  bora worktree remove --workspace ID [--force] [--json]");
+    eprintln!("  herdr worktree remove --workspace ID [--force] [--json]");
 }
 
 fn normalize_path_arg(value: &str) -> std::io::Result<String> {

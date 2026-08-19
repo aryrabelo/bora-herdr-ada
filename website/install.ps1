@@ -3,7 +3,6 @@ param(
     [string]$Channel = $env:HERDR_CHANNEL,
     [string]$ManifestUrl = $env:HERDR_MANIFEST_URL,
     [string]$InstallDir = $env:HERDR_INSTALL_DIR,
-    [string]$ExpectedBuildId = $env:HERDR_EXPECTED_BUILD_ID,
     [int]$Retain = 3
 )
 
@@ -94,55 +93,6 @@ function Prepend-PathEntry {
     return ($segments -join ";")
 }
 
-function Update-PathRegistryEntry {
-    param(
-        [Microsoft.Win32.RegistryKey]$EnvironmentKey,
-        [string]$Entry
-    )
-
-    $options = [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames
-    $value = $EnvironmentKey.GetValue("Path", $null, $options)
-    $kind = if ($null -eq $value) {
-        [Microsoft.Win32.RegistryValueKind]::String
-    } else {
-        $EnvironmentKey.GetValueKind("Path")
-    }
-    $newValue = Prepend-PathEntry -PathValue $value -Entry $Entry
-    if ($newValue -ceq $value) {
-        return $false
-    }
-
-    $EnvironmentKey.SetValue("Path", $newValue, $kind)
-    return $true
-}
-
-function Publish-EnvironmentChange {
-    if (-not ("HerdrInstaller.EnvironmentNativeMethods" -as [type])) {
-        Add-Type -Namespace HerdrInstaller -Name EnvironmentNativeMethods -MemberDefinition @'
-[System.Runtime.InteropServices.DllImport("user32.dll", SetLastError = true, CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
-public static extern System.IntPtr SendMessageTimeout(
-    System.IntPtr hWnd,
-    uint message,
-    System.UIntPtr wParam,
-    string lParam,
-    uint flags,
-    uint timeout,
-    out System.UIntPtr result);
-'@
-    }
-
-    $result = [UIntPtr]::Zero
-    [HerdrInstaller.EnvironmentNativeMethods]::SendMessageTimeout(
-        [IntPtr]0xffff,
-        0x1a,
-        [UIntPtr]::Zero,
-        "Environment",
-        0x0002,
-        1000,
-        [ref]$result
-    ) | Out-Null
-}
-
 function Get-ManifestAsset {
     param(
         [object]$Manifest,
@@ -154,49 +104,21 @@ function Get-ManifestAsset {
         throw "Release manifest does not include a binary for $Target."
     }
 
-    $sha256 = $null
-    $shaMapProperty = $Manifest.PSObject.Properties["sha256"]
-    if ($null -ne $shaMapProperty -and $null -ne $shaMapProperty.Value) {
-        $targetShaProperty = $shaMapProperty.Value.PSObject.Properties[$Target]
-        if ($null -ne $targetShaProperty -and -not [string]::IsNullOrWhiteSpace([string]$targetShaProperty.Value)) {
-            $sha256 = [string]$targetShaProperty.Value
-        }
-    }
-
     $asset = $property.Value
     if ($asset -is [string]) {
-        $url = [string]$asset
         return [PSCustomObject]@{
-            Url = $url
-            Sha256 = $sha256
-            Format = if ($url.EndsWith(".zip", [System.StringComparison]::OrdinalIgnoreCase)) { "zip" } else { "exe" }
+            Url = $asset
+            Sha256 = $null
         }
     }
 
-    $urlProperty = $asset.PSObject.Properties["url"]
-    if ($null -eq $urlProperty -or [string]::IsNullOrWhiteSpace([string]$urlProperty.Value)) {
+    if ([string]::IsNullOrWhiteSpace([string]$asset.url)) {
         throw "Release manifest asset $Target is missing a URL."
     }
 
-    $url = [string]$urlProperty.Value
-    $formatProperty = $asset.PSObject.Properties["format"]
-    $format = if ($null -eq $formatProperty -or [string]::IsNullOrWhiteSpace([string]$formatProperty.Value)) {
-        if ($url.EndsWith(".zip", [System.StringComparison]::OrdinalIgnoreCase)) { "zip" } else { "exe" }
-    } else {
-        [string]$formatProperty.Value
-    }
-    if ($format -notin @("zip", "exe")) {
-        throw "Release manifest asset $Target has unsupported format '$format'."
-    }
-    $shaProperty = $asset.PSObject.Properties["sha256"]
-    if ($null -ne $shaProperty -and -not [string]::IsNullOrWhiteSpace([string]$shaProperty.Value)) {
-        $sha256 = [string]$shaProperty.Value
-    }
-
     return [PSCustomObject]@{
-        Url = $url
-        Sha256 = $sha256
-        Format = $format
+        Url = [string]$asset.url
+        Sha256 = if ([string]::IsNullOrWhiteSpace([string]$asset.sha256)) { $null } else { [string]$asset.sha256 }
     }
 }
 
@@ -208,8 +130,7 @@ function ConvertTo-ManifestObject {
     }
 
     $json = $Manifest.TrimStart([char]0xFEFF)
-    $utf8BomDecodedAsLatin1 = [string]::Concat([char]0x00EF, [char]0x00BB, [char]0x00BF)
-    if ($json.StartsWith($utf8BomDecodedAsLatin1)) {
+    if ($json.StartsWith("ï»¿")) {
         $json = $json.Substring(3)
     }
 
@@ -223,10 +144,7 @@ function Test-FileDigest {
     )
 
     if ([string]::IsNullOrWhiteSpace($ExpectedDigest)) {
-        throw "A SHA-256 checksum is required for $Path."
-    }
-    if ($ExpectedDigest -notmatch '^[0-9a-fA-F]{64}$') {
-        throw "Invalid SHA-256 checksum for $Path."
+        return
     }
 
     $sha256 = [System.Security.Cryptography.SHA256]::Create()
@@ -239,118 +157,6 @@ function Test-FileDigest {
     if ($actual -ne $ExpectedDigest.ToLowerInvariant()) {
         throw "Downloaded Bora checksum did not match. Expected $ExpectedDigest but got $actual."
     }
-}
-
-function Test-RegularFile {
-    param([string]$Path)
-
-    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
-        return $false
-    }
-    $item = Get-Item -LiteralPath $Path -Force
-    return -not ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)
-}
-
-function Test-RegularDirectory {
-    param([string]$Path)
-
-    if (-not (Test-Path -LiteralPath $Path -PathType Container)) {
-        return $false
-    }
-    $item = Get-Item -LiteralPath $Path -Force
-    return -not ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)
-}
-
-function Test-HerdrReleaseComplete {
-    param(
-        [string]$ReleaseDir,
-        [string]$Format
-    )
-
-    if (-not (Test-RegularDirectory -Path $ReleaseDir)) {
-        return $false
-    }
-    $herdrExe = Join-Path $ReleaseDir "bora.exe"
-    if (-not (Test-RegularFile -Path $herdrExe)) {
-        return $false
-    }
-    if ($Format -eq "exe") {
-        return $true
-    }
-
-    $conptyRoot = Join-Path $ReleaseDir "conpty"
-    if (-not (Test-RegularDirectory -Path $conptyRoot) -or
-        -not (Test-RegularDirectory -Path (Join-Path $conptyRoot "x64")) -or
-        -not (Test-RegularDirectory -Path (Join-Path $conptyRoot "arm64"))) {
-        return $false
-    }
-    $markerPath = Join-Path $conptyRoot "herdr-conpty.json"
-    $required = @(
-        "conpty/conpty.dll",
-        "conpty/x64/OpenConsole.exe",
-        "conpty/arm64/OpenConsole.exe",
-        "THIRD-PARTY-NOTICES/Microsoft.Windows.Console.ConPTY-LICENSE.txt",
-        "THIRD-PARTY-NOTICES/Microsoft.Windows.Console.ConPTY-NOTICE.md"
-    )
-    foreach ($relative in $required) {
-        if (-not (Test-RegularFile -Path (Join-Path $ReleaseDir ($relative -replace '/', '\')))) {
-            return $false
-        }
-    }
-    if (-not (Test-RegularFile -Path $markerPath)) {
-        return $false
-    }
-
-    try {
-        $marker = ConvertTo-ManifestObject -Manifest (Get-Content -LiteralPath $markerPath -Raw)
-        $schemaProperty = $marker.PSObject.Properties["schema_version"]
-        $packageProperty = $marker.PSObject.Properties["package"]
-        $versionProperty = $marker.PSObject.Properties["version"]
-        $architectureProperty = $marker.PSObject.Properties["architecture"]
-        $filesProperty = $marker.PSObject.Properties["files"]
-        if ($null -eq $schemaProperty -or [int]$schemaProperty.Value -ne 1 -or
-            $null -eq $packageProperty -or [string]$packageProperty.Value -ne "Microsoft.Windows.Console.ConPTY" -or
-            $null -eq $versionProperty -or [string]::IsNullOrWhiteSpace([string]$versionProperty.Value) -or
-            $null -eq $architectureProperty -or [string]$architectureProperty.Value -ne "x86_64" -or
-            $null -eq $filesProperty) {
-            return $false
-        }
-
-        $expectedConptyFiles = @(
-            "conpty/conpty.dll",
-            "conpty/x64/OpenConsole.exe",
-            "conpty/arm64/OpenConsole.exe"
-        )
-        $markerFileNames = @($filesProperty.Value.PSObject.Properties | ForEach-Object { $_.Name })
-        if (@(Compare-Object $expectedConptyFiles $markerFileNames).Count -ne 0) {
-            return $false
-        }
-
-        $bundleEntries = @(Get-ChildItem -LiteralPath $conptyRoot -Force -Recurse)
-        if (@($bundleEntries | Where-Object {
-            $_.Attributes -band [IO.FileAttributes]::ReparsePoint
-        }).Count -ne 0) {
-            return $false
-        }
-        $releaseRoot = [System.IO.Path]::GetFullPath($ReleaseDir).TrimEnd('\')
-        $actualBundleFiles = @($bundleEntries | Where-Object { -not $_.PSIsContainer } | ForEach-Object {
-            $_.FullName.Substring($releaseRoot.Length + 1).Replace('\', '/')
-        })
-        $expectedBundleFiles = @($expectedConptyFiles) + "conpty/herdr-conpty.json"
-        if (@(Compare-Object $expectedBundleFiles $actualBundleFiles).Count -ne 0) {
-            return $false
-        }
-        foreach ($relative in $expectedConptyFiles) {
-            $digestProperty = $filesProperty.Value.PSObject.Properties[$relative]
-            if ($null -eq $digestProperty) {
-                return $false
-            }
-            Test-FileDigest -Path (Join-Path $ReleaseDir ($relative -replace '/', '\')) -ExpectedDigest ([string]$digestProperty.Value)
-        }
-    } catch {
-        return $false
-    }
-    return $true
 }
 
 function Invoke-WithInstallLock {
@@ -480,7 +286,7 @@ function Remove-OldReleases {
 
     $currentFullPath = [System.IO.Path]::GetFullPath($CurrentReleaseDir)
     $releaseDirs = Get-ChildItem -LiteralPath $ReleasesDir -Force -Directory -ErrorAction SilentlyContinue |
-        Where-Object { -not $_.Name.StartsWith(".staging.") -and -not $_.Name.StartsWith(".backup.") } |
+        Where-Object { -not $_.Name.StartsWith(".staging.") } |
         Sort-Object LastWriteTimeUtc -Descending
     $kept = 0
     foreach ($dir in $releaseDirs) {
@@ -516,6 +322,64 @@ function Resolve-HerdrVersion {
     return [string]$Manifest.version
 }
 
+function Get-HerdrConfigPath {
+    if (-not [string]::IsNullOrWhiteSpace($env:HERDR_CONFIG_PATH)) {
+        return $env:HERDR_CONFIG_PATH
+    }
+
+    $appDir = "herdr"
+    if (-not [string]::IsNullOrWhiteSpace($env:XDG_CONFIG_HOME)) {
+        return Join-Path (Join-Path $env:XDG_CONFIG_HOME $appDir) "config.toml"
+    }
+    if (-not [string]::IsNullOrWhiteSpace($env:APPDATA)) {
+        return Join-Path (Join-Path $env:APPDATA $appDir) "config.toml"
+    }
+    if (-not [string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
+        return Join-Path (Join-Path (Join-Path (Join-Path $env:USERPROFILE "AppData") "Roaming") $appDir) "config.toml"
+    }
+    if (-not [string]::IsNullOrWhiteSpace($env:HOME)) {
+        return Join-Path (Join-Path (Join-Path $env:HOME ".config") $appDir) "config.toml"
+    }
+
+    return Join-Path (Join-Path ([System.IO.Path]::GetTempPath()) $appDir) "config.toml"
+}
+
+function Set-HerdrUpdateChannelConfig {
+    param([string]$SelectedChannel)
+
+    $configPath = Get-HerdrConfigPath
+    $configDir = Split-Path -Parent $configPath
+    if (-not [string]::IsNullOrWhiteSpace($configDir)) {
+        New-Item -ItemType Directory -Force -Path $configDir | Out-Null
+    }
+
+    $content = if (Test-Path -LiteralPath $configPath -PathType Leaf) {
+        Get-Content -LiteralPath $configPath -Raw
+    } else {
+        ""
+    }
+
+    $valueLine = "channel = `"$SelectedChannel`""
+    $match = [regex]::Match($content, "(?ms)^(\s*\[update\]\s*)(.*?)(?=^\s*\[|\z)")
+    if ($match.Success) {
+        $body = $match.Groups[2].Value
+        if ($body -match "(?m)^\s*channel\s*=") {
+            $updatedBody = [regex]::Replace($body, "(?m)^\s*channel\s*=.*$", $valueLine, 1)
+        } else {
+            $updatedBody = $body.TrimEnd() + "`r`n$valueLine`r`n"
+        }
+        $bodyStart = $match.Groups[2].Index
+        $updated = $content.Substring(0, $bodyStart) + $updatedBody + $content.Substring($bodyStart + $body.Length)
+    } elseif ([string]::IsNullOrWhiteSpace($content)) {
+        $updated = "[update]`r`n$valueLine`r`n"
+    } else {
+        $updated = $content.TrimEnd() + "`r`n`r`n[update]`r`n$valueLine`r`n"
+    }
+
+    Set-Content -LiteralPath $configPath -Value $updated -NoNewline
+    Write-Step "Herdr update channel set to $SelectedChannel in $configPath."
+}
+
 if ($env:OS -ne "Windows_NT") {
     Write-Error "install.ps1 supports Windows only. Use install.sh on Linux or macOS."
     exit 1
@@ -537,11 +401,6 @@ switch ($architecture) {
         $target = "windows-x86_64"
         $targetTriple = "x86_64-pc-windows-msvc"
     }
-    "Arm64" {
-        $target = "windows-x86_64"
-        $targetTriple = "x86_64-pc-windows-msvc"
-        Write-Step "Windows ARM64 detected; installing the x86_64 build under Windows emulation."
-    }
     default {
         Write-Error "Unsupported Windows architecture: $architecture"
         exit 1
@@ -561,7 +420,6 @@ $herdrHome = if ([string]::IsNullOrWhiteSpace($env:HERDR_HOME)) {
 } else {
     $env:HERDR_HOME
 }
-$herdrHome = [System.IO.Path]::GetFullPath($herdrHome)
 $standaloneRoot = Join-Path $herdrHome "packages\standalone"
 $releasesDir = Join-Path $standaloneRoot "releases"
 $currentDir = Join-Path $standaloneRoot "current"
@@ -591,9 +449,6 @@ if (-not [string]::IsNullOrWhiteSpace($existingBora) -and -not (Test-PathStartsW
 
 Write-Step "Fetching bora $Channel manifest"
 $manifest = ConvertTo-ManifestObject -Manifest (Invoke-RestMethod -Uri $ManifestUrl)
-if (-not [string]::IsNullOrWhiteSpace($ExpectedBuildId) -and [string]$manifest.build_id -ne $ExpectedBuildId) {
-    throw "Preview manifest changed while updating. Expected build $ExpectedBuildId but found $($manifest.build_id). Run herdr update again."
-}
 $versionIdentity = Resolve-HerdrVersion -Manifest $manifest -SelectedChannel $Channel
 $asset = Get-ManifestAsset -Manifest $manifest -Target $target
 $safeVersionIdentity = $versionIdentity -replace '[^0-9A-Za-z._-]', '-'
@@ -608,53 +463,21 @@ try {
     Invoke-WithInstallLock -LockPath $lockPath -Script {
         Remove-StaleInstallArtifacts -ReleasesDir $releasesDir
 
-        if (-not (Test-HerdrReleaseComplete -ReleaseDir $releaseDir -Format $asset.Format)) {
-            $downloadPath = Join-Path $tempDir "bora-download.$($asset.Format)"
+        if (-not (Test-Path -LiteralPath (Join-Path $releaseDir "bora.exe") -PathType Leaf)) {
+            if (Test-Path -LiteralPath $releaseDir) {
+                Remove-Item -LiteralPath $releaseDir -Recurse -Force
+            }
+
+            $downloadPath = Join-Path $tempDir "bora.exe"
             $stagingDir = Join-Path $releasesDir ".staging.$releaseName.$PID"
             Write-Step "Downloading bora"
             Invoke-WebRequest -Uri $asset.Url -OutFile $downloadPath
             Test-FileDigest -Path $downloadPath -ExpectedDigest $asset.Sha256
 
-            if ($asset.Format -eq "zip") {
-                Expand-Archive -LiteralPath $downloadPath -DestinationPath $stagingDir
-            } else {
-                New-Item -ItemType Directory -Force -Path $stagingDir | Out-Null
-                Copy-Item -LiteralPath $downloadPath -Destination (Join-Path $stagingDir "bora.exe")
-            }
-            if (-not (Test-HerdrReleaseComplete -ReleaseDir $stagingDir -Format $asset.Format)) {
-                throw "Downloaded bora package is incomplete or failed ConPTY verification."
-            }
-            $stagedHerdr = Join-Path $stagingDir "bora.exe"
-            & $stagedHerdr --version *> $null
-            if ($LASTEXITCODE -ne 0) {
-                throw "Downloaded bora command failed verification: $stagedHerdr --version"
-            }
-            $backupDir = $null
-            if (Test-Path -LiteralPath $releaseDir) {
-                $backupDir = Join-Path $releasesDir ".backup.$releaseName.$([System.Guid]::NewGuid().ToString('N'))"
-                [System.IO.Directory]::Move($releaseDir, $backupDir)
-            }
-            try {
-                [System.IO.Directory]::Move($stagingDir, $releaseDir)
-            } catch {
-                if ($null -ne $backupDir -and -not (Test-Path -LiteralPath $releaseDir)) {
-                    [System.IO.Directory]::Move($backupDir, $releaseDir)
-                }
-                Write-WarningStep "Windows could not activate the downloaded release. Another process may have a package file open, such as antivirus or indexing. No incomplete release was activated. Run herdr update again."
-                throw
-            }
-            if ($null -ne $backupDir) {
-                Remove-Item -LiteralPath $backupDir -Recurse -Force -ErrorAction SilentlyContinue
-            }
+            New-Item -ItemType Directory -Force -Path $stagingDir | Out-Null
+            Copy-Item -LiteralPath $downloadPath -Destination (Join-Path $stagingDir "bora.exe")
+            Move-Item -LiteralPath $stagingDir -Destination $releaseDir
         }
-
-        $releaseHerdr = Join-Path $releaseDir "bora.exe"
-        & $releaseHerdr --version *> $null
-        if ($LASTEXITCODE -ne 0) {
-            throw "Installed bora command failed verification: $releaseHerdr --version"
-        }
-        Get-ChildItem -LiteralPath $releasesDir -Force -Directory -Filter ".backup.$releaseName.*" -ErrorAction SilentlyContinue |
-            Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
 
         Set-ManagedJunction -LinkPath $currentDir -TargetPath $releaseDir -ManagedTargetPrefix $releasesDir
         Set-ManagedJunction -LinkPath $visibleBinDir -TargetPath $releaseDir -ManagedTargetPrefix $standaloneRoot -AllowLegacyHerdrBinMigration $allowLegacyVisibleBinMigration
@@ -664,23 +487,19 @@ try {
         if ($LASTEXITCODE -ne 0) {
             throw "Installed bora command failed verification: $boraCommand --version"
         }
+
         Remove-OldReleases -ReleasesDir $releasesDir -CurrentReleaseDir $releaseDir -Keep $Retain
     }
 } finally {
     Remove-Item -LiteralPath $tempDir -Recurse -Force -ErrorAction SilentlyContinue
 }
 
-$userEnvironmentKey = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey("Environment")
-if ($null -eq $userEnvironmentKey) {
-    throw "Unable to open the current user's environment registry key."
-}
-try {
-    $userPathChanged = Update-PathRegistryEntry -EnvironmentKey $userEnvironmentKey -Entry $visibleBinDir
-} finally {
-    $userEnvironmentKey.Dispose()
-}
-if ($userPathChanged) {
-    Publish-EnvironmentChange
+Set-HerdrUpdateChannelConfig -SelectedChannel $Channel
+
+$userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+$newUserPath = Prepend-PathEntry -PathValue $userPath -Entry $visibleBinDir
+if ($newUserPath -cne $userPath) {
+    [Environment]::SetEnvironmentVariable("Path", $newUserPath, "User")
     Write-Step "PATH updated for future PowerShell sessions."
 } else {
     Write-Step "$visibleBinDir is already first on PATH."

@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 
-use crate::api::schema::{TabCreateParams, TabListParams, TabRenameParams};
+use crate::api::schema::{
+    Method, Request, TabCreateParams, TabListParams, TabRenameParams, TabTarget,
+};
 
 pub(super) fn run_tab_command(args: &[String]) -> std::io::Result<i32> {
     let Some(subcommand) = args.first().map(std::string::String::as_str) else {
@@ -47,7 +49,10 @@ fn tab_list(args: &[String]) -> std::io::Result<i32> {
         }
     }
 
-    super::runtime::tab_list(TabListParams { workspace_id })
+    super::print_response(&super::send_request(&Request {
+        id: "cli:tab:list".into(),
+        method: Method::TabList(TabListParams { workspace_id }),
+    })?)
 }
 
 fn tab_create(args: &[String]) -> std::io::Result<i32> {
@@ -114,74 +119,95 @@ fn tab_create(args: &[String]) -> std::io::Result<i32> {
         }
     }
 
-    super::runtime::tab_create(TabCreateParams {
-        workspace_id,
-        cwd,
-        focus,
-        label,
-        env,
-    })
+    super::print_response(&super::send_request(&Request {
+        id: "cli:tab:create".into(),
+        method: Method::TabCreate(TabCreateParams {
+            workspace_id,
+            cwd,
+            focus,
+            label,
+            env,
+        }),
+    })?)
 }
 
 fn tab_get(args: &[String]) -> std::io::Result<i32> {
     let Some(raw_tab_id) = args.first() else {
-        eprintln!("usage: bora tab get <tab_id>");
+        eprintln!("usage: herdr tab get <tab_id>");
         return Ok(2);
     };
     if args.len() != 1 {
-        eprintln!("usage: bora tab get <tab_id>");
+        eprintln!("usage: herdr tab get <tab_id>");
         return Ok(2);
     }
 
-    super::runtime::tab_get(super::normalize_tab_id(raw_tab_id))
+    super::print_response(&super::send_request(&Request {
+        id: "cli:tab:get".into(),
+        method: Method::TabGet(TabTarget {
+            tab_id: super::normalize_tab_id(raw_tab_id),
+        }),
+    })?)
 }
 
 fn tab_focus(args: &[String]) -> std::io::Result<i32> {
     let Some(raw_tab_id) = args.first() else {
-        eprintln!("usage: bora tab focus <tab_id>");
+        eprintln!("usage: herdr tab focus <tab_id>");
         return Ok(2);
     };
     if args.len() != 1 {
-        eprintln!("usage: bora tab focus <tab_id>");
+        eprintln!("usage: herdr tab focus <tab_id>");
         return Ok(2);
     }
 
-    super::runtime::tab_focus(super::normalize_tab_id(raw_tab_id))
+    super::print_response(&super::send_request(&Request {
+        id: "cli:tab:focus".into(),
+        method: Method::TabFocus(TabTarget {
+            tab_id: super::normalize_tab_id(raw_tab_id),
+        }),
+    })?)
 }
 
 fn tab_rename(args: &[String]) -> std::io::Result<i32> {
     if args.len() < 2 {
-        eprintln!("usage: bora tab rename <tab_id> <label>");
+        eprintln!("usage: herdr tab rename <tab_id> <label>");
         return Ok(2);
     }
 
-    super::runtime::tab_rename(TabRenameParams {
-        tab_id: super::normalize_tab_id(&args[0]),
-        label: args[1..].join(" "),
-    })
+    super::print_response(&super::send_request(&Request {
+        id: "cli:tab:rename".into(),
+        method: Method::TabRename(TabRenameParams {
+            tab_id: super::normalize_tab_id(&args[0]),
+            label: args[1..].join(" "),
+        }),
+    })?)
 }
 
 fn tab_close(args: &[String]) -> std::io::Result<i32> {
     let Some(raw_tab_id) = args.first() else {
-        eprintln!("usage: bora tab close <tab_id>");
+        eprintln!("usage: herdr tab close <tab_id>");
         return Ok(2);
     };
     if args.len() != 1 {
-        eprintln!("usage: bora tab close <tab_id>");
+        eprintln!("usage: herdr tab close <tab_id>");
         return Ok(2);
     }
 
-    super::runtime::tab_close(super::normalize_tab_id(raw_tab_id))
+    super::print_response(&super::send_request(&Request {
+        id: "cli:tab:close".into(),
+        method: Method::TabClose(TabTarget {
+            tab_id: super::normalize_tab_id(raw_tab_id),
+        }),
+    })?)
 }
 
 fn print_tab_help() {
-    eprintln!("bora tab commands:");
-    eprintln!("  bora tab list [--workspace <workspace_id>]");
+    eprintln!("herdr tab commands:");
+    eprintln!("  herdr tab list [--workspace <workspace_id>]");
     eprintln!(
-        "  bora tab create [--workspace <workspace_id>] [--cwd PATH] [--label TEXT] [--env KEY=VALUE] [--focus] [--no-focus]"
+        "  herdr tab create [--workspace <workspace_id>] [--cwd PATH] [--label TEXT] [--env KEY=VALUE] [--focus] [--no-focus]"
     );
-    eprintln!("  bora tab get <tab_id>");
-    eprintln!("  bora tab focus <tab_id>");
-    eprintln!("  bora tab rename <tab_id> <label>");
-    eprintln!("  bora tab close <tab_id>");
+    eprintln!("  herdr tab get <tab_id>");
+    eprintln!("  herdr tab focus <tab_id>");
+    eprintln!("  herdr tab rename <tab_id> <label>");
+    eprintln!("  herdr tab close <tab_id>");
 }

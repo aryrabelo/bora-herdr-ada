@@ -12,64 +12,9 @@ use super::{
     LimitedRead, Signal,
 };
 
-pub(crate) use super::unix_common::{
-    configure_status_command, create_remote_private_dir, create_remote_ssh_config_dir,
-    create_remote_ssh_config_file, hostname, local_datetime, remote_bridge_endpoint_path,
-    remote_private_temp_base, remote_reattach_argument, remote_reattach_program,
-    remote_ssh_config_paths, status_commands_supported, StatusCommandGuard,
-};
-
 const PROC_PGRP_ONLY: u32 = 2;
 const SERVER_NOFILE_LIMIT_TARGET: libc::rlim_t = 8192;
-
-pub(crate) fn should_draw_host_cursor_by_default() -> bool {
-    false
-}
-
-fn raw_command_argv(command: &str, flag: &str) -> Vec<std::ffi::OsString> {
-    vec!["/bin/sh".into(), flag.into(), command.into()]
-}
-
-pub(crate) fn detached_custom_command_process_platform(command: &str) -> std::process::Command {
-    let argv = raw_command_argv(command, "-lc");
-    let mut command = std::process::Command::new(&argv[0]);
-    command.args(&argv[1..]);
-    command
-}
-
-pub(crate) fn pane_custom_command_pty_builder_platform(
-    command: &str,
-) -> portable_pty::CommandBuilder {
-    portable_pty::CommandBuilder::from_argv(raw_command_argv(command, "-c"))
-}
-
-pub(crate) fn scrollback_editor_argv(path: &Path) -> std::io::Result<Vec<String>> {
-    let quoted_path = shell_quote(&path.display().to_string());
-    let command = format!(
-        r#"scrollback_file={quoted_path}; eval "${{EDITOR:-vi}} \"\$scrollback_file\""; status=$?; rm -f "$scrollback_file"; exit $status"#
-    );
-    Ok(vec!["/bin/sh".to_string(), "-c".to_string(), command])
-}
-
-pub(crate) fn interactive_shell_command(argv: &[String], shell_name: &str) -> Option<String> {
-    super::interactive_unix_shell_command(argv, shell_name, shell_quote)
-}
-
-fn shell_quote(value: &str) -> String {
-    if !value.is_empty()
-        && value.chars().all(|ch| {
-            ch.is_ascii_alphanumeric()
-                || matches!(
-                    ch,
-                    '@' | '%' | '_' | '+' | '=' | ':' | ',' | '.' | '/' | '-'
-                )
-        })
-    {
-        return value.to_string();
-    }
-
-    format!("'{}'", value.replace('\'', "'\\''"))
-}
+const CF_STRING_ENCODING_UTF8: u32 = 0x0800_0100;
 
 #[repr(C)]
 struct TisInputSource {
@@ -81,6 +26,7 @@ type CfTypeRef = *const libc::c_void;
 type CfStringRef = *const libc::c_void;
 type OsStatus = libc::c_int;
 type Boolean = libc::c_uchar;
+type CfIndex = isize;
 
 #[link(name = "Carbon", kind = "framework")]
 extern "C" {
@@ -111,106 +57,143 @@ extern "C" {
     #[link_name = "CFEqual"]
     fn cf_equal(left: CfTypeRef, right: CfTypeRef) -> Boolean;
 
-    #[link_name = "kCFRunLoopDefaultMode"]
-    static CF_RUN_LOOP_DEFAULT_MODE: CfStringRef;
+    #[link_name = "CFStringGetCStringPtr"]
+    fn cf_string_get_cstring_ptr(value: CfStringRef, encoding: u32) -> *const libc::c_char;
 
-    #[link_name = "CFRunLoopRunInMode"]
-    fn cf_run_loop_run_in_mode(
-        mode: CfStringRef,
-        seconds: f64,
-        return_after_source_handled: Boolean,
-    ) -> libc::c_int;
-}
+    #[link_name = "CFStringGetLength"]
+    fn cf_string_get_length(value: CfStringRef) -> CfIndex;
 
-/// Pump the main thread's run loop once (non-blocking) so the process receives the
-/// `kTISNotifySelectedKeyboardInputSourceChanged` notification and refreshes the per-process cache
-/// that `TISCopyCurrentKeyboardInputSource` reads. That notification arrives only via the main
-/// thread's run loop, so a process that never runs a CFRunLoop (the headless server) reads a stale
-/// source. Must run on the main thread.
-pub(crate) fn pump_input_source_runloop() {
-    debug_assert!(
-        // SAFETY: `pthread_main_np` is always safe to call.
-        unsafe { libc::pthread_main_np() } != 0,
-        "pump_input_source_runloop must run on the main thread"
-    );
-    // SAFETY: `CFRunLoopRunInMode` is thread-safe; a 0-second call drains the ready sources and
-    // returns immediately (no blocking). `CF_RUN_LOOP_DEFAULT_MODE` is a framework-owned constant.
-    unsafe {
-        let _ = cf_run_loop_run_in_mode(CF_RUN_LOOP_DEFAULT_MODE, 0.0, 0);
-    }
-}
+    #[link_name = "CFStringGetMaximumSizeForEncoding"]
+    fn cf_string_get_maximum_size_for_encoding(length: CfIndex, encoding: u32) -> CfIndex;
 
-#[derive(Debug)]
-struct RetainedInputSource(NonNull<TisInputSource>);
-
-impl RetainedInputSource {
-    /// Takes ownership of a retained reference returned by a TIS `Copy` function.
-    unsafe fn from_copy(raw: TisInputSourceRef) -> Option<Self> {
-        NonNull::new(raw as *mut TisInputSource).map(Self)
-    }
-
-    fn select(&self) -> OsStatus {
-        // SAFETY: this wrapper keeps the retained input source alive for the call.
-        unsafe { tis_select_input_source(self.0.as_ptr()) }
-    }
-
-    fn has_same_id(&self, other: &Self) -> bool {
-        // SAFETY: TIS property values stay valid while their input sources are alive;
-        // both wrappers outlive this comparison.
-        unsafe {
-            let left = tis_get_input_source_property(self.0.as_ptr(), TIS_PROPERTY_INPUT_SOURCE_ID);
-            let right =
-                tis_get_input_source_property(other.0.as_ptr(), TIS_PROPERTY_INPUT_SOURCE_ID);
-            !left.is_null() && !right.is_null() && cf_equal(left, right) != 0
-        }
-    }
-}
-
-impl Drop for RetainedInputSource {
-    fn drop(&mut self) {
-        // SAFETY: `from_copy` gives this wrapper ownership of one retain.
-        unsafe { cf_release(self.0.as_ptr().cast()) }
-    }
+    #[link_name = "CFStringGetCString"]
+    fn cf_string_get_cstring(
+        value: CfStringRef,
+        buffer: *mut libc::c_char,
+        buffer_size: CfIndex,
+        encoding: u32,
+    ) -> Boolean;
 }
 
 #[derive(Debug)]
 pub(crate) struct InputSourceRestore {
-    previous: RetainedInputSource,
+    previous: NonNull<TisInputSource>,
 }
 
 impl Drop for InputSourceRestore {
     fn drop(&mut self) {
-        let status = self.previous.select();
-        if status != 0 {
-            tracing::debug!(
-                status,
-                "failed to restore host input source after prefix mode"
-            );
+        // SAFETY: `previous` is a retained TIS input source created by
+        // `TISCopyCurrentKeyboardInputSource`; selecting it and releasing that
+        // retain follows the Carbon Input Source Services ownership contract.
+        unsafe {
+            let previous = self.previous.as_ptr();
+            let status = tis_select_input_source(previous);
+            cf_release(previous.cast());
+            if status != 0 {
+                tracing::debug!(
+                    status,
+                    "failed to restore host input source after prefix mode"
+                );
+            }
         }
     }
 }
 
 pub(crate) fn switch_to_ascii_input_source() -> Option<InputSourceRestore> {
-    // SAFETY: both Carbon `Copy` functions transfer one retain to the caller.
-    let current =
-        unsafe { RetainedInputSource::from_copy(tis_copy_current_keyboard_input_source())? };
-    let ascii = unsafe {
-        RetainedInputSource::from_copy(
-            tis_copy_current_ascii_capable_keyboard_layout_input_source(),
-        )?
-    };
+    // SAFETY: TISCopy* functions return retained references or null. Each
+    // retained reference is either transferred into `InputSourceRestore` or
+    // released before returning; TISSelectInputSource accepts live TIS refs.
+    unsafe {
+        let current =
+            NonNull::new(tis_copy_current_keyboard_input_source() as *mut TisInputSource)?;
+        let Some(ascii) = NonNull::new(
+            tis_copy_current_ascii_capable_keyboard_layout_input_source() as *mut TisInputSource,
+        ) else {
+            cf_release(current.as_ptr().cast());
+            return None;
+        };
 
-    if current.has_same_id(&ascii) {
+        if input_source_ids_equal(current.as_ptr(), ascii.as_ptr()) {
+            cf_release(current.as_ptr().cast());
+            cf_release(ascii.as_ptr().cast());
+            return None;
+        }
+
+        let debug_ids = tracing::enabled!(tracing::Level::DEBUG).then(|| {
+            (
+                input_source_id(current.as_ptr()),
+                input_source_id(ascii.as_ptr()),
+            )
+        });
+
+        let status = tis_select_input_source(ascii.as_ptr());
+        cf_release(ascii.as_ptr().cast());
+        if status != 0 {
+            cf_release(current.as_ptr().cast());
+            tracing::debug!(status, "failed to switch host input source for prefix mode");
+            return None;
+        }
+
+        if let Some((Some(from), Some(to))) = debug_ids {
+            tracing::debug!(from, to, "switched host input source for prefix mode");
+        }
+
+        Some(InputSourceRestore { previous: current })
+    }
+}
+
+unsafe fn input_source_ids_equal(left: TisInputSourceRef, right: TisInputSourceRef) -> bool {
+    let left_property = tis_get_input_source_property(left, TIS_PROPERTY_INPUT_SOURCE_ID);
+    let right_property = tis_get_input_source_property(right, TIS_PROPERTY_INPUT_SOURCE_ID);
+    !left_property.is_null()
+        && !right_property.is_null()
+        && cf_equal(left_property, right_property) != 0
+}
+
+unsafe fn input_source_id(input_source: TisInputSourceRef) -> Option<String> {
+    let property =
+        tis_get_input_source_property(input_source, TIS_PROPERTY_INPUT_SOURCE_ID) as CfStringRef;
+    cf_string_to_string(property)
+}
+
+unsafe fn cf_string_to_string(value: CfStringRef) -> Option<String> {
+    if value.is_null() {
         return None;
     }
 
-    let status = ascii.select();
-    if status != 0 {
-        tracing::debug!(status, "failed to switch host input source for prefix mode");
+    let direct = cf_string_get_cstring_ptr(value, CF_STRING_ENCODING_UTF8);
+    if !direct.is_null() {
+        return std::ffi::CStr::from_ptr(direct)
+            .to_str()
+            .ok()
+            .map(str::to_owned);
+    }
+
+    let length = cf_string_get_length(value);
+    if length < 0 {
+        return None;
+    }
+    let max_bytes = cf_string_get_maximum_size_for_encoding(length, CF_STRING_ENCODING_UTF8);
+    if max_bytes < 0 {
+        return None;
+    }
+    let buffer_len = usize::try_from(max_bytes).ok()?.checked_add(1)?;
+    let mut buffer = vec![0 as libc::c_char; buffer_len];
+    let buffer_size = CfIndex::try_from(buffer.len()).ok()?;
+    if cf_string_get_cstring(
+        value,
+        buffer.as_mut_ptr(),
+        buffer_size,
+        CF_STRING_ENCODING_UTF8,
+    ) == 0
+    {
         return None;
     }
 
-    Some(InputSourceRestore { previous: current })
+    std::ffi::CStr::from_ptr(buffer.as_ptr())
+        .to_str()
+        .ok()
+        .map(str::to_owned)
 }
 
 pub fn raise_server_nofile_limit() {
@@ -257,10 +240,6 @@ fn target_nofile_soft_limit(
     };
 
     (current < target).then_some(target)
-}
-
-pub(crate) fn available_pane_shell(child_pid: u32) -> Option<String> {
-    super::available_pane_shell_from_job(child_pid, foreground_job(child_pid)?)
 }
 
 /// Collect the foreground terminal job for a given child PID.
@@ -771,32 +750,6 @@ fn process_bsdinfo(pid: u32) -> Option<libc::proc_bsdinfo> {
     (ret == size).then_some(info)
 }
 
-/// Walks the parent-pid chain from `candidate_pid` up to the root, returning true if
-/// `ancestor_pid` is `candidate_pid` itself or one of its ancestors. Used to verify a
-/// caller's peer PID (from the API socket's `LOCAL_PEERCRED`) actually descends from a
-/// pane's shell process, rather than trusting a caller-supplied `from_pane` claim.
-pub fn pid_is_descendant_of(ancestor_pid: u32, candidate_pid: u32) -> bool {
-    if ancestor_pid == 0 || candidate_pid == 0 {
-        return false;
-    }
-    let mut current = candidate_pid;
-    let mut visited = std::collections::HashSet::new();
-    while visited.insert(current) {
-        if current == ancestor_pid {
-            return true;
-        }
-        let Some(info) = process_bsdinfo(current) else {
-            return false;
-        };
-        let parent = info.pbi_ppid;
-        if parent == 0 || parent == current {
-            return false;
-        }
-        current = parent;
-    }
-    false
-}
-
 fn comm_from_bsdinfo(info: &libc::proc_bsdinfo) -> Option<String> {
     let end = info
         .pbi_comm
@@ -816,33 +769,6 @@ fn process_argv(pid: u32) -> Option<Vec<String>> {
     procargs2_argv(&buf)
 }
 
-/// Read a Herdr agent identity hint from a process environment.
-pub fn process_agent_hint(pid: u32) -> Option<crate::detect::Agent> {
-    if pid == 0 {
-        return None;
-    }
-    let buf = kern_procargs2(pid)?;
-    super::parse_agent_env_hint(procargs2_env(&buf)?)
-}
-
-fn procargs2_argv_start(rest: &[u8]) -> Option<usize> {
-    let exec_end = rest.iter().position(|&byte| byte == 0)?;
-    let mut pos = exec_end;
-    while pos < rest.len() && rest[pos] == 0 {
-        pos += 1;
-    }
-    (pos < rest.len()).then_some(pos)
-}
-
-fn skip_nul_strings(bytes: &[u8], start: usize, count: usize) -> Option<usize> {
-    let mut current = start;
-    for _ in 0..count {
-        let end = bytes.get(current..)?.iter().position(|&byte| byte == 0)?;
-        current = current.checked_add(end)?.checked_add(1)?;
-    }
-    Some(current)
-}
-
 fn procargs2_argv(buf: &[u8]) -> Option<Vec<String>> {
     if buf.len() < 4 {
         return None;
@@ -853,10 +779,19 @@ fn procargs2_argv(buf: &[u8]) -> Option<Vec<String>> {
         return None;
     }
 
-    // Layout: [argc: i32] [exec_path\0] [padding\0...] [argv[0]\0] ... [env\0] ...
+    // Layout: [argc: i32] [exec_path\0] [padding\0...] [argv[0]\0] [argv[1]\0] ... [env\0] ...
     let rest = &buf[4..];
-    let mut current = procargs2_argv_start(rest)?;
+    let exec_end = rest.iter().position(|&b| b == 0)?;
+    let mut pos = exec_end;
+    while pos < rest.len() && rest[pos] == 0 {
+        pos += 1;
+    }
+    if pos >= rest.len() {
+        return None;
+    }
+
     let mut argv = Vec::with_capacity(argc as usize);
+    let mut current = pos;
     for _ in 0..argc {
         if current >= rest.len() {
             return None;
@@ -874,22 +809,6 @@ fn procargs2_argv(buf: &[u8]) -> Option<Vec<String>> {
     }
 
     Some(argv)
-}
-
-fn procargs2_env(buf: &[u8]) -> Option<&[u8]> {
-    if buf.len() < 4 {
-        return None;
-    }
-
-    let argc = i32::from_ne_bytes([buf[0], buf[1], buf[2], buf[3]]);
-    if argc < 1 {
-        return None;
-    }
-
-    let rest = &buf[4..];
-    let argv_start = procargs2_argv_start(rest)?;
-    let env_start = skip_nul_strings(rest, argv_start, argc as usize)?;
-    rest.get(env_start..)
 }
 
 /// Get the current working directory of a process.
@@ -1076,33 +995,6 @@ mod tests {
     }
 
     #[test]
-    fn procargs2_env_reads_agent_hint_after_argv() {
-        let buf = build_procargs2(
-            "/opt/homebrew/bin/nono",
-            &["nono", "run", "HERDR_AGENT=codex", "--", "claude"],
-            &["PATH=/usr/bin", "HERDR_AGENT=claude", "TERM=xterm-256color"],
-        );
-
-        let env = procargs2_env(&buf).expect("expected env block");
-        assert_eq!(
-            crate::platform::parse_agent_env_hint(env),
-            Some(crate::detect::Agent::Claude)
-        );
-    }
-
-    #[test]
-    fn procargs2_env_does_not_treat_argv_as_environment() {
-        let buf = build_procargs2(
-            "/opt/homebrew/bin/nono",
-            &["nono", "run", "HERDR_AGENT=claude"],
-            &["PATH=/usr/bin"],
-        );
-
-        let env = procargs2_env(&buf).expect("expected env block");
-        assert_eq!(crate::platform::parse_agent_env_hint(env), None);
-    }
-
-    #[test]
     fn terminal_bundle_identifier_maps_known_terminal_env() {
         assert_eq!(
             terminal_bundle_identifier_from_env(Some("ghostty"), None, false, false),
@@ -1224,53 +1116,5 @@ printf '%s\n' "$@" > "$HERDR_NOTIFY_ARGS"
             args,
             "-e\non run argv\n-e\ndisplay notification (item 2 of argv) with title (item 1 of argv)\n-e\nend run\ntitle\nbody\n"
         );
-    }
-
-    #[test]
-    fn scrollback_editor_argv_preserves_unix_editor_shell_semantics() {
-        let path = std::path::Path::new("/tmp/herdr scrollback.txt");
-        let argv = scrollback_editor_argv(path).unwrap();
-
-        assert_eq!(argv[0], "/bin/sh");
-        assert_eq!(argv[1], "-c");
-        assert!(argv[2].contains("EDITOR:-vi"));
-        assert!(argv[2].contains("/tmp/herdr scrollback.txt"));
-    }
-
-    #[test]
-    fn pid_is_descendant_of_matches_self() {
-        let me = std::process::id();
-        assert!(super::pid_is_descendant_of(me, me));
-    }
-
-    #[test]
-    fn pid_is_descendant_of_walks_real_child_process_tree() {
-        let mut child = Command::new("/bin/sleep")
-            .arg("30")
-            .spawn()
-            .expect("spawn real child process");
-        let child_pid = child.id();
-        let test_process_pid = std::process::id();
-
-        // The spawned child's parent is this test process: a direct ancestry walk,
-        // not a self-match short circuit.
-        assert!(super::pid_is_descendant_of(test_process_pid, child_pid));
-        // Not reflexive: the test process does not descend from its own child.
-        assert!(!super::pid_is_descendant_of(child_pid, test_process_pid));
-
-        let _ = child.kill();
-        let _ = child.wait();
-    }
-
-    #[test]
-    fn pid_is_descendant_of_fails_closed_for_unrelated_pid() {
-        // A pid far outside any real process range and unrelated to the test
-        // process: no ancestry claim should be trusted for it.
-        assert!(!super::pid_is_descendant_of(
-            std::process::id(),
-            999_999_999
-        ));
-        assert!(!super::pid_is_descendant_of(0, std::process::id()));
-        assert!(!super::pid_is_descendant_of(std::process::id(), 0));
     }
 }

@@ -27,22 +27,11 @@
 //! and minimize cursor movement.
 
 use std::cmp;
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
 use std::io::Write;
 
 use unicode_width::UnicodeWidthStr;
 
-use crate::protocol::{underline_style_from_modifier, CellData, FrameData};
-
-const REVERSED_MODIFIER: u16 = 1 << 6;
-const SYNC_OUTPUT_END: &[u8] = b"\x1b[?2026l";
-
-pub(crate) fn final_sync_output_end(bytes: &[u8]) -> Option<usize> {
-    bytes
-        .windows(SYNC_OUTPUT_END.len())
-        .rposition(|window| window == SYNC_OUTPUT_END)
-}
+use crate::protocol::{CellData, FrameData};
 
 /// Bytes produced by a [`BlitEncoder`] for one terminal frame.
 pub(crate) struct EncodedBlit {
@@ -67,45 +56,32 @@ impl BlitEncoder {
         Self::default()
     }
 
-    pub(crate) fn encode(&self, frame: &FrameData, repaint: bool) -> EncodedBlit {
-        self.encode_inner(frame, repaint, false)
+    pub(crate) fn encode(&self, frame: &FrameData, force_full: bool) -> EncodedBlit {
+        self.encode_inner(frame, force_full)
     }
 
-    pub(crate) fn encode_with_suppressed_visible_cursor(
-        &self,
-        frame: &FrameData,
-        repaint: bool,
-    ) -> EncodedBlit {
-        self.encode_inner(frame, repaint, true)
-    }
-
-    fn encode_inner(
-        &self,
-        frame: &FrameData,
-        repaint: bool,
-        suppress_visible_cursor: bool,
-    ) -> EncodedBlit {
-        let previous_frame = self.last_frame.as_ref();
-        let prev = if repaint { None } else { previous_frame };
-        let full = repaint
+    fn encode_inner(&self, frame: &FrameData, force_full: bool) -> EncodedBlit {
+        let prev = if force_full {
+            None
+        } else {
+            self.last_frame.as_ref()
+        };
+        let full = force_full
             || prev.is_none()
             || prev.is_some_and(|p| p.width != frame.width || p.height != frame.height);
-        let clear_before_full_redraw = previous_frame.is_none();
         let prof_stats =
             crate::render_prof::enabled().then(|| compute_prof_blit_stats(frame, prev, full));
         let prof_started = crate::render_prof::timer();
         let mut bytes = Vec::new();
         let mut next_last_visible_cursor = self.last_visible_cursor;
         let mut next_last_cursor_shape = self.last_cursor_shape;
-        blit_frame_to_with_cursor_memory_and_clear_policy(
+        blit_frame_to_with_cursor_memory(
             &mut bytes,
             frame,
             prev,
             &mut next_last_visible_cursor,
             &mut next_last_cursor_shape,
-            repeat_ime_anchor_after_sync(),
-            clear_before_full_redraw,
-            suppress_visible_cursor,
+            false,
         );
         if let Some(stats) = prof_stats {
             crate::render_prof::duration_since("ansi_encode.total", prof_started);
@@ -140,19 +116,6 @@ impl BlitEncoder {
     pub(crate) fn last_frame(&self) -> Option<&FrameData> {
         self.last_frame.as_ref()
     }
-}
-
-pub(crate) fn frame_with_drawn_cursor(mut frame: FrameData) -> FrameData {
-    if let Some(cursor) = frame.cursor.as_ref().filter(|cursor| cursor.visible) {
-        let (x, y) = clamp_cursor_position(&frame, cursor.x, cursor.y);
-        let idx = (y as usize)
-            .saturating_mul(frame.width as usize)
-            .saturating_add(x as usize);
-        if let Some(cell) = frame.cells.get_mut(idx) {
-            cell.modifier ^= REVERSED_MODIFIER;
-        }
-    }
-    frame
 }
 
 #[derive(Clone, Copy, Default)]
@@ -317,6 +280,7 @@ fn modifier_to_sgr_parts(val: u16) -> Vec<&'static str> {
     const UNDERLINED: u16 = 1 << 3; // 0x08
     const SLOW_BLINK: u16 = 1 << 4; // 0x10
     const RAPID_BLINK: u16 = 1 << 5; // 0x20
+    const REVERSED: u16 = 1 << 6; // 0x40
     const HIDDEN: u16 = 1 << 7; // 0x80
     const CROSSED_OUT: u16 = 1 << 8; // 0x100
 
@@ -330,13 +294,7 @@ fn modifier_to_sgr_parts(val: u16) -> Vec<&'static str> {
         parts.push("3");
     }
     if val & UNDERLINED != 0 {
-        parts.push(match underline_style_from_modifier(val) {
-            2 => "4:2",
-            3 => "4:3",
-            4 => "4:4",
-            5 => "4:5",
-            _ => "4",
-        });
+        parts.push("4");
     }
     if val & SLOW_BLINK != 0 {
         parts.push("5");
@@ -344,7 +302,7 @@ fn modifier_to_sgr_parts(val: u16) -> Vec<&'static str> {
     if val & RAPID_BLINK != 0 {
         parts.push("6");
     }
-    if val & REVERSED_MODIFIER != 0 {
+    if val & REVERSED != 0 {
         parts.push("7");
     }
     if val & HIDDEN != 0 {
@@ -404,9 +362,8 @@ fn blit_frame_to(writer: impl Write, frame: &FrameData, prev: Option<&FrameData>
     );
 }
 
-#[cfg(test)]
 fn blit_frame_to_with_cursor_memory(
-    writer: impl Write,
+    mut writer: impl Write,
     frame: &FrameData,
     prev: Option<&FrameData>,
     last_visible_cursor: &mut Option<(u16, u16)>,
@@ -414,7 +371,7 @@ fn blit_frame_to_with_cursor_memory(
     suppress_visible_cursor: bool,
 ) {
     blit_frame_to_with_cursor_memory_and_policy(
-        writer,
+        &mut writer,
         frame,
         prev,
         last_visible_cursor,
@@ -424,50 +381,29 @@ fn blit_frame_to_with_cursor_memory(
     );
 }
 
-#[cfg(test)]
 fn blit_frame_to_with_cursor_memory_and_policy(
-    writer: impl Write,
-    frame: &FrameData,
-    prev: Option<&FrameData>,
-    last_visible_cursor: &mut Option<(u16, u16)>,
-    last_cursor_shape: &mut u8,
-    repeat_ime_anchor: bool,
-    suppress_visible_cursor: bool,
-) {
-    blit_frame_to_with_cursor_memory_and_clear_policy(
-        writer,
-        frame,
-        prev,
-        last_visible_cursor,
-        last_cursor_shape,
-        repeat_ime_anchor,
-        true,
-        suppress_visible_cursor,
-    );
-}
-
-fn blit_frame_to_with_cursor_memory_and_clear_policy(
     mut writer: impl Write,
     frame: &FrameData,
     prev: Option<&FrameData>,
     last_visible_cursor: &mut Option<(u16, u16)>,
     last_cursor_shape: &mut u8,
     repeat_ime_anchor: bool,
-    clear_before_full_redraw: bool,
     suppress_visible_cursor: bool,
 ) {
     // On first frame or size change, do a full redraw.
     let full_redraw =
         prev.is_none() || prev.is_some_and(|p| p.width != frame.width || p.height != frame.height);
 
+    // Hide cursor before any cell writes to avoid stray cursor artifacts
+    // on terminals that render the hardware cursor at intermediate CUP positions.
+    // Keep this outside synchronized output so terminals that defer sync-block
+    // side effects still hide the cursor before frame painting begins.
+    let _ = writer.write_all(b"\x1b[?25l");
+
     // Ask terminals that support synchronized output to apply the whole frame
     // atomically. This keeps IMEs and cursor trackers from observing the
     // intermediate CUP positions used while painting changed cells.
     let _ = writer.write_all(b"\x1b[?2026h");
-
-    // Hide cursor before any cell writes to avoid stray cursor artifacts
-    // on terminals that render the hardware cursor at intermediate CUP positions.
-    let _ = writer.write_all(b"\x1b[?25l");
 
     // Start each frame from a known OSC 8 state. If a previous write was
     // interrupted or the outer terminal had an active hyperlink, unlinked cells
@@ -475,36 +411,13 @@ fn blit_frame_to_with_cursor_memory_and_clear_policy(
     let _ = writer.write_all(b"\x1b]8;;\x1b\\");
 
     if full_redraw {
-        if clear_before_full_redraw {
-            let _ = writer.write_all(b"\x1b[2J");
-        }
+        // Clear the screen and write all cells.
+        let _ = writer.write_all(b"\x1b[2J\x1b[H");
         write_all_cells(&mut writer, frame);
     } else {
-        // Diff-based update: only write changed cells. When the content
-        // scrolled uniformly, emit a real terminal scroll first so the
-        // client applies a move instead of repainting every shifted row.
+        // Diff-based update: only write changed cells.
         let prev = prev.unwrap();
-        let shift = detect_scroll_shift(frame, prev);
-        if let Some(shift) = shift {
-            // DECSLRM only takes effect while DECLRMM (mode 69) is enabled,
-            // and only needs to be emitted when the shift does not already
-            // span the full width — mirroring libghostty-vt's own formatter
-            // convention of only emitting margins that aren't the default.
-            let full_width = shift.left == 0 && shift.right == frame.width - 1;
-            if !full_width {
-                let _ = writer.write_all(b"\x1b[?69h");
-            }
-            let _ = write!(writer, "\x1b[{};{}r", shift.top + 1, shift.bottom + 1);
-            if !full_width {
-                let _ = write!(writer, "\x1b[{};{}s", shift.left + 1, shift.right + 1);
-            }
-            let _ = write!(writer, "\x1b[{}S", shift.lines);
-            let _ = writer.write_all(b"\x1b[r");
-            if !full_width {
-                let _ = writer.write_all(b"\x1b[?69l");
-            }
-        }
-        write_changed_cells(&mut writer, frame, prev, shift);
+        write_changed_cells(&mut writer, frame, prev);
     }
 
     // Position the cursor while it is still hidden, then restore visibility.
@@ -546,23 +459,7 @@ fn repeat_ime_anchor_after_sync() -> bool {
 
 /// Writes all cells in the frame (full redraw).
 fn cell_width(cell: &CellData) -> usize {
-    if is_halfwidth_katakana_voiced_grapheme(&cell.symbol) {
-        return 2;
-    }
     cell.symbol.width()
-}
-
-fn is_halfwidth_katakana_voiced_grapheme(symbol: &str) -> bool {
-    let mut chars = symbol.chars();
-    let Some(base) = chars.next() else {
-        return false;
-    };
-    let Some(mark) = chars.next() else {
-        return false;
-    };
-    chars.next().is_none()
-        && ('\u{ff66}'..='\u{ff9d}').contains(&base)
-        && matches!(mark, '\u{ff9e}' | '\u{ff9f}')
 }
 
 #[derive(Clone, Copy)]
@@ -657,11 +554,9 @@ fn write_ime_anchor_cursor_state(writer: &mut impl Write, cursor: HostCursorStat
 }
 
 fn write_all_cells(writer: &mut impl Write, frame: &FrameData) {
-    let mut last_sgr = String::new();
     let mut active_hyperlink = None;
     for row in 0..frame.height {
         let mut to_skip = 0usize;
-        let mut next_inline_col = None;
         for col in 0..frame.width {
             if to_skip > 0 {
                 to_skip -= 1;
@@ -672,23 +567,25 @@ fn write_all_cells(writer: &mut impl Write, frame: &FrameData) {
             let cell = &frame.cells[idx];
 
             if cell.skip {
-                next_inline_col = None;
                 continue;
             }
 
-            let cursor_position = (next_inline_col != Some(col)).then_some((col, row));
-            write_cell(
+            // Move cursor to position (1-based).
+            let _ = write!(writer, "\x1b[{};{}H", row + 1, col + 1);
+
+            // Set style.
+            let sgr = build_sgr(cell.fg, cell.bg, cell.modifier);
+            let _ = writer.write_all(sgr.as_bytes());
+
+            write_hyperlink_if_changed(
                 writer,
-                cursor_position,
-                cell,
-                &mut last_sgr,
                 &mut active_hyperlink,
-                frame,
+                cell_hyperlink_uri(frame, cell),
             );
-            let width = cell_width(cell);
-            next_inline_col =
-                (cell.symbol.is_ascii() && width == 1).then_some(col.saturating_add(1));
-            to_skip = width.saturating_sub(1);
+
+            // Write the symbol.
+            let _ = writer.write_all(cell.symbol.as_bytes());
+            to_skip = cell_width(cell).saturating_sub(1);
         }
     }
 
@@ -754,7 +651,8 @@ fn close_hyperlink(writer: &mut impl Write, active: &mut Option<String>) {
 
 fn write_cell(
     writer: &mut impl Write,
-    cursor_position: Option<(u16, u16)>,
+    row: u16,
+    col: u16,
     cell: &CellData,
     last_sgr: &mut String,
     active_hyperlink: &mut Option<String>,
@@ -764,9 +662,7 @@ fn write_cell(
         return;
     }
 
-    if let Some(position) = cursor_position {
-        write_cursor_position(writer, position);
-    }
+    let _ = write!(writer, "\x1b[{};{}H", row + 1, col + 1);
 
     let sgr = build_sgr(cell.fg, cell.bg, cell.modifier);
     if sgr != *last_sgr {
@@ -794,382 +690,43 @@ fn cells_visually_equal(
     // Skip flag is only for ratatui internal use, not visual.
 }
 
-/// Describes a uniform vertical shift of screen content between two frames,
-/// confined to a column range.
-///
-/// When a pane scrolls, every row below the scrolled band moves by the same
-/// number of lines. Detecting that shift lets the blit emit a real terminal
-/// scroll (`SU`) instead of repainting every cell as if it changed. Columns
-/// outside `[left, right]` are excluded because they did not move — most
-/// commonly a sidebar sitting next to the pane that scrolled.
-#[derive(Clone, Copy)]
-struct ScrollShift {
-    /// First row of the scrolled band, inclusive, 0-based.
-    top: u16,
-    /// Last row of the scrolled band, inclusive, 0-based.
-    bottom: u16,
-    /// How many rows the band's content moved up by.
-    lines: u16,
-    /// First column that moved, inclusive, 0-based.
-    left: u16,
-    /// Last column that moved, inclusive, 0-based.
-    right: u16,
-}
-
-/// Hashes every field [`cells_visually_equal`] compares, for the `[left,
-/// right]` segment of one row.
-///
-/// Hashes the *resolved* hyperlink string rather than the raw
-/// `CellData::hyperlink` index: the two frames' hyperlink tables are
-/// independent, so the same index can resolve to different URIs in each.
-fn hash_row_segment_for_scroll_shift(
-    frame: &FrameData,
-    sanitized_hyperlinks: &[Option<String>],
-    row: u16,
-    left: u16,
-    right: u16,
-) -> u64 {
-    let width = frame.width as usize;
-    let start = (row as usize) * width;
-    let mut hasher = DefaultHasher::new();
-    for cell in &frame.cells[start + left as usize..=start + right as usize] {
-        cell.symbol.hash(&mut hasher);
-        cell.fg.hash(&mut hasher);
-        cell.bg.hash(&mut hasher);
-        cell.modifier.hash(&mut hasher);
-        cell.skip.hash(&mut hasher);
-        sanitized_cell_hyperlink_uri(sanitized_hyperlinks, cell).hash(&mut hasher);
-    }
-    hasher.finish()
-}
-
-/// Checks whether `col` belongs to the shifted rectangle: for every row `y`
-/// in `top..=shifted_bottom`, `frame` at `(y, col)` must be visually
-/// identical to `prev` at `(y + lines, col)`. Used to expand a column range
-/// outward from a probe so a changing sidebar/gutter or a moving scrollbar
-/// — anything that does not participate in the scroll — stops the expansion
-/// rather than being folded into the rectangle.
-fn column_shifts_uniformly(
-    frame: &FrameData,
-    prev: &FrameData,
-    frame_hyperlinks: &[Option<String>],
-    prev_hyperlinks: &[Option<String>],
-    top: u16,
-    shifted_bottom: u16,
-    lines: u16,
-    col: u16,
-) -> bool {
-    let width = frame.width as usize;
-    for y in top..=shifted_bottom {
-        let frame_idx = (y as usize) * width + col as usize;
-        let prev_idx = ((y + lines) as usize) * width + col as usize;
-        if !cells_visually_equal(
-            frame_hyperlinks,
-            &frame.cells[frame_idx],
-            prev_hyperlinks,
-            &prev.cells[prev_idx],
-        ) {
-            return false;
-        }
-    }
-    true
-}
-
-/// Verifies a candidate scroll band cell-by-cell, restricted to
-/// `shift.left..=shift.right`, so a row-hash collision can never cause a bad
-/// skip. Costs one pass over the band — the same order as the diff it
-/// replaces, so this is not a new asymptotic cost.
-fn scroll_shift_band_matches(
-    frame: &FrameData,
-    prev: &FrameData,
-    shift: ScrollShift,
-    frame_hyperlinks: &[Option<String>],
-    prev_hyperlinks: &[Option<String>],
-) -> bool {
-    let width = frame.width as usize;
-    for y in shift.top..=(shift.bottom - shift.lines) {
-        let frame_start = (y as usize) * width;
-        let prev_start = ((y + shift.lines) as usize) * width;
-        for col in shift.left..=shift.right {
-            let cell = &frame.cells[frame_start + col as usize];
-            let prev_cell = &prev.cells[prev_start + col as usize];
-            if !cells_visually_equal(frame_hyperlinks, cell, prev_hyperlinks, prev_cell) {
-                return false;
-            }
-        }
-    }
-    true
-}
-
-/// Detects a uniform vertical scroll between `prev` and `frame`, confined to
-/// the column range that actually shifted.
-///
-/// Uses a probe-then-expand strategy instead of a bounding box over changed
-/// cells: a bounding box would stretch to the full width whenever a sidebar
-/// gutter carries a live indicator (e.g. a per-workspace status dot) that
-/// changes almost every frame, degenerating to the same full-width detection
-/// that already fails to fire on a real, gutter-bearing layout. Instead:
-/// 1. Hash only a central probe column range (the middle half of the width)
-///    and run the shift search on that segment. In every realistic layout
-///    the probe sits inside the pane that actually scrolls, so a gutter at
-///    the edges cannot pollute the candidate.
-/// 2. Expand the column range outward from the probe, one column at a time,
-///    stopping at the first column that does not shift uniformly. This
-///    naturally excludes a changing gutter or a moving scrollbar without
-///    needing to know anything about layout.
-///
-/// Only meaningful when both frames share the same dimensions; callers must
-/// check that before relying on the result (this function also checks, and
-/// returns `None` on mismatch, as a defensive guard).
-fn detect_scroll_shift(frame: &FrameData, prev: &FrameData) -> Option<ScrollShift> {
-    if frame.width != prev.width || frame.height != prev.height {
-        crate::render_prof::event("scroll_shift.miss_dims");
-        return None;
-    }
-    let width = frame.width;
-    let height = frame.height;
-    let threshold = cmp::max(8, (height / 3) as usize);
-
-    let probe_left = width / 4;
-    let probe_right = (3 * width / 4).saturating_sub(1);
-    if probe_right < probe_left {
-        // Too narrow to have a meaningful probe range.
-        crate::render_prof::event("scroll_shift.miss_dims");
-        return None;
-    }
-
-    let frame_hyperlinks = sanitized_frame_hyperlinks(frame);
-    let prev_hyperlinks = sanitized_frame_hyperlinks(prev);
-
-    let curr_hash: Vec<u64> = (0..height)
-        .map(|row| {
-            hash_row_segment_for_scroll_shift(
-                frame,
-                &frame_hyperlinks,
-                row,
-                probe_left,
-                probe_right,
-            )
-        })
-        .collect();
-    let prev_hash: Vec<u64> = (0..height)
-        .map(|row| {
-            hash_row_segment_for_scroll_shift(prev, &prev_hyperlinks, row, probe_left, probe_right)
-        })
-        .collect();
-
-    // Find the shift amount (in lines) with the most matching rows.
-    let mut best_lines: Option<u16> = None;
-    let mut best_count = 0usize;
-    for lines in 1..height {
-        let span = (height - lines) as usize;
-        let count = (0..span)
-            .filter(|&y| curr_hash[y] == prev_hash[y + lines as usize])
-            .count();
-        if count > best_count {
-            best_count = count;
-            best_lines = Some(lines);
-        }
-    }
-    let Some(lines) = best_lines.filter(|_| best_count >= threshold) else {
-        crate::render_prof::event("scroll_shift.miss_threshold");
-        return None;
-    };
-
-    // Find the longest contiguous run of matching rows for that shift amount.
-    let span = (height - lines) as usize;
-    let mut run_start: Option<usize> = None;
-    let mut best_run: Option<(usize, usize)> = None;
-    for y in 0..span {
-        let is_match = curr_hash[y] == prev_hash[y + lines as usize];
-        if is_match {
-            run_start.get_or_insert(y);
-        } else if let Some(start) = run_start.take() {
-            let end = y - 1;
-            if best_run.is_none_or(|(bs, be)| end - start > be - bs) {
-                best_run = Some((start, end));
-            }
-        }
-    }
-    if let Some(start) = run_start {
-        let end = span - 1;
-        if best_run.is_none_or(|(bs, be)| end - start > be - bs) {
-            best_run = Some((start, end));
-        }
-    }
-    let Some((run_start, run_end)) = best_run else {
-        crate::render_prof::event("scroll_shift.miss_run");
-        return None;
-    };
-    if run_end - run_start + 1 < threshold {
-        crate::render_prof::event("scroll_shift.miss_run");
-        return None;
-    }
-
-    let top = run_start as u16;
-    let bottom = run_end as u16 + lines;
-    if bottom >= height {
-        crate::render_prof::event("scroll_shift.miss_band");
-        return None;
-    }
-    let shifted_bottom = bottom - lines;
-
-    // Expand outward from the probe range: a column joins the rectangle only
-    // if every row in the shifted sub-band shows identical content between
-    // `frame` at that column and `prev` shifted by `lines` at that column.
-    let mut left = probe_left;
-    while left > 0
-        && column_shifts_uniformly(
-            frame,
-            prev,
-            &frame_hyperlinks,
-            &prev_hyperlinks,
-            top,
-            shifted_bottom,
-            lines,
-            left - 1,
-        )
-    {
-        left -= 1;
-    }
-    let mut right = probe_right;
-    while right + 1 < width
-        && column_shifts_uniformly(
-            frame,
-            prev,
-            &frame_hyperlinks,
-            &prev_hyperlinks,
-            top,
-            shifted_bottom,
-            lines,
-            right + 1,
-        )
-    {
-        right += 1;
-    }
-
-    let cols = right - left + 1;
-    crate::render_prof::counter("scroll_shift.cols", u64::from(cols));
-
-    // Require a sane minimum width before bothering with a DECLRMM/DECSLRM
-    // round-trip: a sliver this narrow is not worth the overhead.
-    let min_cols = cmp::max(16, (width / 3) as usize);
-    if usize::from(cols) < min_cols {
-        crate::render_prof::event("scroll_shift.miss_band");
-        return None;
-    }
-
-    let shift = ScrollShift {
-        top,
-        bottom,
-        lines,
-        left,
-        right,
-    };
-
-    if scroll_shift_band_matches(frame, prev, shift, &frame_hyperlinks, &prev_hyperlinks) {
-        crate::render_prof::event("scroll_shift.hit");
-        crate::render_prof::counter("scroll_shift.lines", u64::from(shift.lines));
-        Some(shift)
-    } else {
-        crate::render_prof::event("scroll_shift.miss_verify");
-        None
-    }
-}
-
-/// Resolves which row of `prev` the terminal currently shows at `(row,
-/// col)`, given an optional scroll `shift` already emitted for this frame.
-///
-/// Columns outside `shift.left..=shift.right` never moved even when `row`
-/// falls inside the scrolled band, because the scroll region was confined to
-/// that column range (e.g. a sidebar next to a scrolling pane).
-///
-/// `None` means the scroll exposed a blank row with no prior content: every
-/// non-skip cell there must be written unconditionally.
-fn scroll_shift_prev_row(row: u16, col: u16, shift: Option<ScrollShift>) -> Option<u16> {
-    match shift {
-        None => Some(row),
-        Some(shift) => {
-            let in_band = row >= shift.top && row <= shift.bottom;
-            let in_columns = col >= shift.left && col <= shift.right;
-            if !in_band || !in_columns {
-                Some(row)
-            } else if row <= shift.bottom - shift.lines {
-                Some(row + shift.lines)
-            } else {
-                None
-            }
-        }
-    }
-}
-
-fn write_changed_cells(
-    writer: &mut impl Write,
-    frame: &FrameData,
-    prev: &FrameData,
-    shift: Option<ScrollShift>,
-) {
+fn write_changed_cells(writer: &mut impl Write, frame: &FrameData, prev: &FrameData) {
     let mut last_sgr = String::new(); // Track last SGR to avoid redundant style changes.
     let mut active_hyperlink = None;
     let sanitized_hyperlinks = sanitized_frame_hyperlinks(frame);
     let prev_sanitized_hyperlinks = sanitized_frame_hyperlinks(prev);
-    let width = frame.width as usize;
 
     for row in 0..frame.height {
         let mut invalidated = 0usize;
         let mut to_skip = 0usize;
-        // Herdr clients disable host autowrap, so safe cells can advance inline
-        // without spilling into adjacent rows during a resize race.
-        let mut next_inline_col = None;
 
         for col in 0..frame.width {
-            let idx = (row as usize) * width + (col as usize);
+            let idx = (row as usize) * (frame.width as usize) + (col as usize);
             let cell = &frame.cells[idx];
-            // A scroll already emitted for this frame means the terminal shows
-            // `prev`'s content at a different row than before for columns
-            // inside the scrolled rectangle: resolve which one. Columns
-            // outside the rectangle (e.g. a sidebar next to a scrolling
-            // pane) never moved even on a row inside the scrolled band.
-            // `None` means the scroll exposed a blank cell with no prior
-            // content.
-            let prev_row = scroll_shift_prev_row(row, col, shift);
-            let prev_cell = prev_row.map(|pr| &prev.cells[(pr as usize) * width + (col as usize)]);
+            let prev_cell = &prev.cells[idx];
 
-            let cell_changed = match prev_cell {
-                Some(prev_cell) => {
-                    !cell.skip
-                        && (!cells_visually_equal(
-                            &sanitized_hyperlinks,
-                            cell,
-                            &prev_sanitized_hyperlinks,
-                            prev_cell,
-                        ) || invalidated > 0)
-                }
-                // Exposed by the scroll: no previous content to diff against,
-                // so every non-skip cell must be written unconditionally.
-                None => !cell.skip,
-            };
-
-            if cell_changed && to_skip == 0 {
-                let cursor_position =
-                    (next_inline_col != Some(col) || invalidated > 0).then_some((col, row));
+            if !cell.skip
+                && (!cells_visually_equal(
+                    &sanitized_hyperlinks,
+                    cell,
+                    &prev_sanitized_hyperlinks,
+                    prev_cell,
+                ) || invalidated > 0)
+                && to_skip == 0
+            {
                 write_cell(
                     writer,
-                    cursor_position,
+                    row,
+                    col,
                     cell,
                     &mut last_sgr,
                     &mut active_hyperlink,
                     frame,
                 );
-                next_inline_col = (cell.symbol.is_ascii() && cell_width(cell) == 1)
-                    .then_some(col.saturating_add(1));
             }
 
             to_skip = cell_width(cell).saturating_sub(1);
-            let affected_width = match prev_cell {
-                Some(prev_cell) => cmp::max(cell_width(cell), cell_width(prev_cell)),
-                None => cell_width(cell),
-            };
+            let affected_width = cmp::max(cell_width(cell), cell_width(prev_cell));
             invalidated = cmp::max(affected_width, invalidated).saturating_sub(1);
         }
     }
@@ -1192,7 +749,6 @@ mod tests {
     use crate::protocol::{CellData, CursorState};
 
     const WIDE_GRAPHEME: &str = "💡";
-    const HALFWIDTH_VOICED_KANA: &str = "ｶ\u{ff9e}";
 
     fn make_cell(symbol: &str, fg: u32, bg: u32, modifier: u16) -> CellData {
         CellData {
@@ -1205,12 +761,6 @@ mod tests {
         }
     }
 
-    fn make_skip_cell(symbol: &str, fg: u32, bg: u32, modifier: u16) -> CellData {
-        let mut cell = make_cell(symbol, fg, bg, modifier);
-        cell.skip = true;
-        cell
-    }
-
     fn make_frame(width: u16, height: u16, cells: Vec<CellData>) -> FrameData {
         FrameData {
             cells,
@@ -1219,7 +769,6 @@ mod tests {
             cursor: None,
             hyperlinks: Vec::new(),
             graphics: Vec::new(),
-            force_full_repaint: false,
         }
     }
 
@@ -1294,18 +843,6 @@ mod tests {
     }
 
     #[test]
-    fn build_sgr_preserves_curly_underline_style() {
-        let modifier = crate::protocol::modifier_to_u16(
-            crate::protocol::modifier_with_underline_style(ratatui::style::Modifier::UNDERLINED, 3),
-        );
-
-        assert_eq!(
-            build_sgr(0x00_00_00_00, 0x00_00_00_00, modifier),
-            "\x1b[0;4:3;39;49m"
-        );
-    }
-
-    #[test]
     fn cells_equal_identical() {
         let a = make_cell("A", 2, 1, 0);
         let b = make_cell("A", 2, 1, 0);
@@ -1344,8 +881,8 @@ mod tests {
 
         let output_str = String::from_utf8(output).unwrap();
         assert!(
-            output_str.starts_with("\x1b[?2026h\x1b[?25l"),
-            "should hide cursor inside synchronized frame painting during full redraw"
+            output_str.starts_with("\x1b[?25l\x1b[?2026h"),
+            "should hide cursor before synchronized frame painting during full redraw"
         );
     }
 
@@ -1378,8 +915,8 @@ mod tests {
 
         let output_str = String::from_utf8(output).unwrap();
         assert!(
-            output_str.starts_with("\x1b[?2026h\x1b[?25l"),
-            "should hide cursor inside synchronized frame painting during diff"
+            output_str.starts_with("\x1b[?25l\x1b[?2026h"),
+            "should hide cursor before synchronized frame painting during diff"
         );
     }
 
@@ -1392,7 +929,7 @@ mod tests {
 
         let output_str = String::from_utf8(output).unwrap();
         assert!(
-            output_str.starts_with("\x1b[?2026h\x1b[?25l"),
+            output_str.starts_with("\x1b[?25l\x1b[?2026h"),
             "should begin synchronized output before frame writes"
         );
         let sync_end = output_str
@@ -1401,74 +938,6 @@ mod tests {
         assert!(
             sync_end > 0,
             "should end synchronized output after frame writes"
-        );
-    }
-
-    #[test]
-    fn blit_frame_begins_sync_before_hiding_cursor_after_visible_cursor_repeat() {
-        let visible = FrameData {
-            cells: vec![make_cell("A", 0, 0, 0); 9],
-            width: 3,
-            height: 3,
-            cursor: Some(CursorState {
-                x: 2,
-                y: 1,
-                visible: true,
-                shape: 0,
-            }),
-            hyperlinks: Vec::new(),
-            graphics: Vec::new(),
-            force_full_repaint: false,
-        };
-        let mut changed = visible.clone();
-        changed.cells[0] = make_cell("B", 0, 0, 0);
-
-        let mut last_visible_cursor = None;
-        let mut last_cursor_shape = 0;
-        let mut first_output = Vec::new();
-        blit_frame_to_with_cursor_memory_and_policy(
-            &mut first_output,
-            &visible,
-            None,
-            &mut last_visible_cursor,
-            &mut last_cursor_shape,
-            true,
-            false,
-        );
-
-        let mut second_output = Vec::new();
-        blit_frame_to_with_cursor_memory_and_policy(
-            &mut second_output,
-            &changed,
-            Some(&visible),
-            &mut last_visible_cursor,
-            &mut last_cursor_shape,
-            true,
-            false,
-        );
-
-        let second_output_str = std::str::from_utf8(&second_output).unwrap();
-        assert!(
-            second_output_str.starts_with("\x1b[?2026h\x1b[?25l"),
-            "next frame should enter synchronized output before hiding the cursor"
-        );
-
-        let hide = second_output_str
-            .find("\x1b[?25l")
-            .expect("second frame should hide cursor before painting");
-        let first_paint = second_output_str
-            .find("\x1b[1;1H")
-            .expect("second frame should paint changed cell");
-        assert!(
-            hide < first_paint,
-            "cursor should still hide before painting"
-        );
-
-        first_output.extend_from_slice(&second_output);
-        let combined = String::from_utf8(first_output).unwrap();
-        assert!(
-            combined.contains("\x1b[?2026l\x1b[2;3H\x1b[?25h\x1b[?2026h\x1b[?25l"),
-            "post-sync cursor repeat should be followed by a synchronized cursor hide"
         );
     }
 
@@ -1486,7 +955,6 @@ mod tests {
             }),
             hyperlinks: Vec::new(),
             graphics: Vec::new(),
-            force_full_repaint: false,
         };
 
         let mut last_visible_cursor = None;
@@ -1527,7 +995,6 @@ mod tests {
             }),
             hyperlinks: Vec::new(),
             graphics: Vec::new(),
-            force_full_repaint: false,
         };
 
         let mut last_visible_cursor = None;
@@ -1555,64 +1022,6 @@ mod tests {
     }
 
     #[test]
-    fn drawn_cursor_reverses_visible_cursor_cell() {
-        let frame = FrameData {
-            cells: vec![make_cell("A", 0, 0, 0); 9],
-            width: 3,
-            height: 3,
-            cursor: Some(CursorState {
-                x: 2,
-                y: 1,
-                visible: true,
-                shape: 6,
-            }),
-            hyperlinks: Vec::new(),
-            graphics: Vec::new(),
-            force_full_repaint: false,
-        };
-        let drawn = frame_with_drawn_cursor(frame.clone());
-
-        assert_eq!(drawn.cells[5].modifier, REVERSED_MODIFIER);
-        assert_eq!(frame.cells[5].modifier, 0);
-
-        let encoded = BlitEncoder::new().encode_with_suppressed_visible_cursor(&drawn, false);
-        let output_str = String::from_utf8(encoded.bytes).unwrap();
-
-        assert!(
-            output_str.contains("\x1b[2;3H\x1b[6 q\x1b[?25l"),
-            "drawn cursor mode should park the host cursor hidden at the focused cursor position"
-        );
-        assert!(
-            !output_str.contains("\x1b[?25h"),
-            "drawn cursor mode should not show the host cursor"
-        );
-        assert!(
-            output_str.contains("\x1b[0;7;39;49mA"),
-            "drawn cursor should be emitted as reverse-video cell content"
-        );
-    }
-
-    #[test]
-    fn drawn_cursor_ignores_hidden_cursor() {
-        let frame = FrameData {
-            cells: vec![make_cell("A", 0, 0, 0)],
-            width: 1,
-            height: 1,
-            cursor: Some(CursorState {
-                x: 0,
-                y: 0,
-                visible: false,
-                shape: 0,
-            }),
-            hyperlinks: Vec::new(),
-            graphics: Vec::new(),
-            force_full_repaint: false,
-        };
-
-        assert_eq!(frame_with_drawn_cursor(frame.clone()), frame);
-    }
-
-    #[test]
     fn blit_frame_emits_cursor_shape_before_visibility_without_touching_ime_anchor() {
         let frame = FrameData {
             cells: vec![make_cell("A", 0, 0, 0)],
@@ -1626,7 +1035,6 @@ mod tests {
             }),
             hyperlinks: Vec::new(),
             graphics: Vec::new(),
-            force_full_repaint: false,
         };
 
         let mut last_visible_cursor = None;
@@ -1674,7 +1082,6 @@ mod tests {
             }),
             hyperlinks: Vec::new(),
             graphics: Vec::new(),
-            force_full_repaint: false,
         };
         let hidden = FrameData {
             cells: vec![make_cell("B", 0, 0, 0); 9],
@@ -1688,7 +1095,6 @@ mod tests {
             }),
             hyperlinks: Vec::new(),
             graphics: Vec::new(),
-            force_full_repaint: false,
         };
         let mut last_visible_cursor = None;
         let mut last_cursor_shape = 0;
@@ -1828,457 +1234,19 @@ mod tests {
     }
 
     #[test]
-    fn scroll_sized_ascii_shift_batches_changed_cells_by_row() {
-        const WIDTH: u16 = 140;
-        const HEIGHT: u16 = 50;
-        let prev = make_frame(
-            WIDTH,
-            HEIGHT,
-            vec![make_cell("A", 0, 0, 0); usize::from(WIDTH) * usize::from(HEIGHT)],
-        );
-        let curr = make_frame(
-            WIDTH,
-            HEIGHT,
-            vec![make_cell("B", 0, 0, 0); usize::from(WIDTH) * usize::from(HEIGHT)],
-        );
+    fn blit_frame_size_change_triggers_full_redraw() {
+        let prev = make_frame(2, 2, vec![make_cell("A", 0, 0, 0); 4]);
+
+        let curr = make_frame(3, 2, vec![make_cell("B", 0, 0, 0); 6]);
 
         let mut output = Vec::new();
         blit_frame_to(&mut output, &curr, Some(&prev));
 
-        let cup_count = output.iter().filter(|&&byte| byte == b'H').count();
+        let output_str = String::from_utf8(output).unwrap();
         assert!(
-            cup_count <= usize::from(HEIGHT) + 2,
-            "one dense scroll frame should need at most one CUP per row plus cursor anchors, got {cup_count}"
+            output_str.contains("\x1b[2J"),
+            "size change should trigger full redraw"
         );
-        assert!(
-            output.len() <= 16_290,
-            "one dense scroll frame should stay below 25% of the 65,161-byte live baseline, got {} bytes",
-            output.len()
-        );
-    }
-
-    #[test]
-    fn batched_ascii_diff_replays_to_current_frame() {
-        let prev = make_frame(4, 3, vec![make_cell("A", 0, 0, 0); 12]);
-        let curr = make_frame(4, 3, vec![make_cell("B", 0, 0, 0); 12]);
-        let mut terminal = crate::ghostty::Terminal::new(4, 3, 0).unwrap();
-
-        let mut initial = Vec::new();
-        blit_frame_to(&mut initial, &prev, None);
-        terminal.write(&initial);
-
-        let mut diff = Vec::new();
-        blit_frame_to(&mut diff, &curr, Some(&prev));
-        terminal.write(&diff);
-
-        for row in 0..3 {
-            for col in 0..4 {
-                let (_, graphemes) = terminal.screen_cell(col, row).unwrap();
-                assert_eq!(graphemes, vec![u32::from('B')]);
-            }
-        }
-    }
-
-    /// Builds a `(prev, curr)` pair where every row of `curr` equals `prev`
-    /// shifted up by one row, with a fresh bottom row. Distinct content and
-    /// color per absolute row keeps row hashes from colliding by accident.
-    /// Every column holds the same content within a row, so the shift spans
-    /// the full width.
-    fn uniform_single_row_scroll_frames(width: u16, height: u16) -> (FrameData, FrameData) {
-        fn row_cell(row: u16) -> CellData {
-            make_cell(
-                &((b'a' + (row as u8 % 26)) as char).to_string(),
-                u32::from(row) + 1,
-                0,
-                0,
-            )
-        }
-
-        let mut prev_cells = Vec::with_capacity(usize::from(width) * usize::from(height));
-        for row in 0..height {
-            prev_cells.extend(std::iter::repeat_n(row_cell(row), usize::from(width)));
-        }
-
-        let mut curr_cells = Vec::with_capacity(usize::from(width) * usize::from(height));
-        for row in 0..height {
-            let cell = if row + 1 < height {
-                row_cell(row + 1)
-            } else {
-                make_cell("Z", 999, 0, 0)
-            };
-            curr_cells.extend(std::iter::repeat_n(cell, usize::from(width)));
-        }
-
-        (
-            make_frame(width, height, prev_cells),
-            make_frame(width, height, curr_cells),
-        )
-    }
-
-    /// Builds a `(prev, curr)` pair with a `left_gutter`-wide static-layout
-    /// column band on the left, a `right_gutter`-wide one on the right, and
-    /// a scrolling pane (shifted up by one row, fresh bottom row) in
-    /// between. Gutter content varies by absolute row (like real sidebar
-    /// text) so it never shifts with the pane; when `gutters_change` is
-    /// true, `curr`'s gutter cells additionally differ from `prev`'s at the
-    /// same row (like a live status indicator), using a disjoint symbol
-    /// range so a replay can tell whether the new content actually landed.
-    fn gutter_scroll_frames(
-        width: u16,
-        height: u16,
-        left_gutter: u16,
-        right_gutter: u16,
-        gutters_change: bool,
-    ) -> (FrameData, FrameData) {
-        let pane_width = width - left_gutter - right_gutter;
-
-        fn pane_symbol(row: u16) -> String {
-            ((b'a' + (row as u8 % 26)) as char).to_string()
-        }
-        fn pane_fg(row: u16) -> u32 {
-            u32::from(row) + 1
-        }
-        fn left_symbol(row: u16, changed: bool) -> String {
-            let offset = if changed { 5 } else { 0 };
-            (((row % 5) as u8 + offset + b'0') as char).to_string()
-        }
-        fn right_symbol(row: u16, changed: bool) -> String {
-            let offset = if changed { 13 } else { 0 };
-            (((row % 13) as u8 + offset + b'A') as char).to_string()
-        }
-
-        let mut prev_cells = Vec::with_capacity(usize::from(width) * usize::from(height));
-        let mut curr_cells = Vec::with_capacity(usize::from(width) * usize::from(height));
-
-        for row in 0..height {
-            let prev_pane = make_cell(&pane_symbol(row), pane_fg(row), 0, 0);
-            let curr_pane = if row + 1 < height {
-                make_cell(&pane_symbol(row + 1), pane_fg(row + 1), 0, 0)
-            } else {
-                make_cell("Z", 999, 0, 0)
-            };
-            let prev_left = make_cell(&left_symbol(row, false), 10, 0, 0);
-            let curr_left = make_cell(&left_symbol(row, gutters_change), 10, 0, 0);
-            let prev_right = make_cell(&right_symbol(row, false), 20, 0, 0);
-            let curr_right = make_cell(&right_symbol(row, gutters_change), 20, 0, 0);
-
-            prev_cells.extend(std::iter::repeat_n(prev_left, usize::from(left_gutter)));
-            prev_cells.extend(std::iter::repeat_n(prev_pane, usize::from(pane_width)));
-            prev_cells.extend(std::iter::repeat_n(prev_right, usize::from(right_gutter)));
-
-            curr_cells.extend(std::iter::repeat_n(curr_left, usize::from(left_gutter)));
-            curr_cells.extend(std::iter::repeat_n(curr_pane, usize::from(pane_width)));
-            curr_cells.extend(std::iter::repeat_n(curr_right, usize::from(right_gutter)));
-        }
-
-        (
-            make_frame(width, height, prev_cells),
-            make_frame(width, height, curr_cells),
-        )
-    }
-
-    /// Asserts every cell of a real, replayed `terminal` matches `frame`
-    /// exactly, grapheme for grapheme.
-    fn assert_replay_matches_frame(terminal: &crate::ghostty::Terminal, frame: &FrameData) {
-        for row in 0..frame.height {
-            for col in 0..frame.width {
-                let idx = usize::from(row) * usize::from(frame.width) + usize::from(col);
-                let expected: Vec<u32> = frame.cells[idx].symbol.chars().map(u32::from).collect();
-                let (_, graphemes) = terminal.screen_cell(col, u32::from(row)).unwrap();
-                assert_eq!(
-                    graphemes, expected,
-                    "row {row} col {col} mismatch after replay"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn scroll_shift_emits_terminal_scroll_instead_of_repainting_every_row() {
-        const WIDTH: u16 = 20;
-        const HEIGHT: u16 = 9;
-        let (prev, curr) = uniform_single_row_scroll_frames(WIDTH, HEIGHT);
-
-        let mut scroll_output = Vec::new();
-        blit_frame_to(&mut scroll_output, &curr, Some(&prev));
-
-        let mut naive_output = Vec::new();
-        write_changed_cells(&mut naive_output, &curr, &prev, None);
-
-        let scroll_text = String::from_utf8_lossy(&scroll_output);
-        assert!(
-            scroll_text.contains("\x1b[1;9r"),
-            "expected a DECSTBM scroll-region sequence (rows 1..9) in output: {scroll_text:?}"
-        );
-        assert!(
-            scroll_text.contains("\x1b[1S"),
-            "expected an SU scroll-up-by-1 sequence in output: {scroll_text:?}"
-        );
-        assert!(
-            !scroll_text.contains("\x1b[?69h"),
-            "a full-width shift needs no DECLRMM/DECSLRM margins: {scroll_text:?}"
-        );
-
-        // Budget: DECSTBM (~7 bytes) + SU (~4 bytes) + region reset (~3 bytes)
-        // + one freshly exposed WIDTH-cell row + the fixed cursor/sync
-        // wrapper bytes every blit emits. 500 bytes covers that with margin
-        // while still being dramatically smaller than repainting all 180
-        // cells the naive per-cell diff would rewrite.
-        assert!(
-            scroll_output.len() < 500,
-            "scroll-shift blit for a {WIDTH}x{HEIGHT} single-row scroll should stay under a \
-             500-byte budget (DECSTBM+SU+one new row+wrapper bytes), got {} bytes",
-            scroll_output.len()
-        );
-        assert!(
-            scroll_output.len() * 2 < naive_output.len(),
-            "scroll-shift blit ({} bytes) should be well under half the naive full-diff byte \
-             count ({} bytes) for a shift this large",
-            scroll_output.len(),
-            naive_output.len()
-        );
-    }
-
-    #[test]
-    fn scroll_shift_replays_exactly_with_thin_gutters_on_both_edges() {
-        // The primary fixture: this is the user's real layout. A collapsed
-        // sidebar keeps a thin left gutter (status dot etc.) and there is a
-        // thin gutter on the right edge too, so no full-width row ever
-        // shifts uniformly — only the rectangle detector can fire here.
-        const WIDTH: u16 = 30;
-        const HEIGHT: u16 = 9;
-        const LEFT_GUTTER: u16 = 3;
-        const RIGHT_GUTTER: u16 = 2;
-        let (prev, curr) = gutter_scroll_frames(WIDTH, HEIGHT, LEFT_GUTTER, RIGHT_GUTTER, false);
-
-        let mut terminal = crate::ghostty::Terminal::new(WIDTH, HEIGHT, 0).unwrap();
-        let mut initial = Vec::new();
-        blit_frame_to(&mut initial, &prev, None);
-        terminal.write(&initial);
-
-        let mut diff = Vec::new();
-        blit_frame_to(&mut diff, &curr, Some(&prev));
-        let diff_text = String::from_utf8_lossy(&diff);
-        assert!(
-            diff_text.contains("\x1b[?69h") && diff_text.contains('s') && diff_text.contains('S'),
-            "expected DECLRMM+DECSLRM+SU in output for a gutter-bounded shift: {diff_text:?}"
-        );
-        terminal.write(&diff);
-
-        assert_replay_matches_frame(&terminal, &curr);
-
-        // Explicit gutter check: both edges are static between frames, so
-        // they must show exactly their original (unchanged) content, proven
-        // directly against `prev` rather than only via the full-frame check.
-        for row in 0..HEIGHT {
-            for col in 0..LEFT_GUTTER {
-                let idx = usize::from(row) * usize::from(WIDTH) + usize::from(col);
-                let expected: Vec<u32> = prev.cells[idx].symbol.chars().map(u32::from).collect();
-                let (_, graphemes) = terminal.screen_cell(col, u32::from(row)).unwrap();
-                assert_eq!(
-                    graphemes, expected,
-                    "left gutter row {row} col {col} corrupted"
-                );
-            }
-            for col in (WIDTH - RIGHT_GUTTER)..WIDTH {
-                let idx = usize::from(row) * usize::from(WIDTH) + usize::from(col);
-                let expected: Vec<u32> = prev.cells[idx].symbol.chars().map(u32::from).collect();
-                let (_, graphemes) = terminal.screen_cell(col, u32::from(row)).unwrap();
-                assert_eq!(
-                    graphemes, expected,
-                    "right gutter row {row} col {col} corrupted"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn scroll_shift_replays_exactly_with_wide_left_sidebar_and_thin_right_gutter() {
-        const WIDTH: u16 = 100;
-        const HEIGHT: u16 = 9;
-        const LEFT_GUTTER: u16 = 20;
-        const RIGHT_GUTTER: u16 = 3;
-        let (prev, curr) = gutter_scroll_frames(WIDTH, HEIGHT, LEFT_GUTTER, RIGHT_GUTTER, false);
-
-        let mut terminal = crate::ghostty::Terminal::new(WIDTH, HEIGHT, 0).unwrap();
-        let mut initial = Vec::new();
-        blit_frame_to(&mut initial, &prev, None);
-        terminal.write(&initial);
-
-        let mut diff = Vec::new();
-        blit_frame_to(&mut diff, &curr, Some(&prev));
-        assert!(
-            String::from_utf8_lossy(&diff).contains("\x1b[?69h"),
-            "a wide sidebar must still let the pane's rectangle be detected"
-        );
-        terminal.write(&diff);
-
-        assert_replay_matches_frame(&terminal, &curr);
-    }
-
-    #[test]
-    fn scroll_shift_detects_pane_scroll_despite_changing_gutters_on_both_sides() {
-        // Pins the exact failure mode: both gutters carry live content (a
-        // status dot on the left, something on the right) that changes on
-        // almost every frame, while the pane between them scrolls by one
-        // row. Detection must still fire, restricted to the pane's columns.
-        const WIDTH: u16 = 30;
-        const HEIGHT: u16 = 9;
-        const LEFT_GUTTER: u16 = 4;
-        const RIGHT_GUTTER: u16 = 2;
-        let (prev, curr) = gutter_scroll_frames(WIDTH, HEIGHT, LEFT_GUTTER, RIGHT_GUTTER, true);
-
-        assert!(
-            detect_scroll_shift(&curr, &prev).is_some(),
-            "a live indicator in both gutters must not block detecting the pane's scroll"
-        );
-
-        let mut scroll_output = Vec::new();
-        blit_frame_to(&mut scroll_output, &curr, Some(&prev));
-        let mut naive_output = Vec::new();
-        write_changed_cells(&mut naive_output, &curr, &prev, None);
-        assert!(
-            scroll_output.len() * 5 < naive_output.len() * 4,
-            "detection firing should still collapse the byte count even with both gutters \
-             changing: scroll {} bytes vs naive {} bytes",
-            scroll_output.len(),
-            naive_output.len()
-        );
-
-        let mut terminal = crate::ghostty::Terminal::new(WIDTH, HEIGHT, 0).unwrap();
-        let mut initial = Vec::new();
-        blit_frame_to(&mut initial, &prev, None);
-        terminal.write(&initial);
-        terminal.write(&scroll_output);
-
-        assert_replay_matches_frame(&terminal, &curr);
-    }
-
-    #[test]
-    fn scroll_shift_is_rejected_when_content_does_not_shift_uniformly() {
-        const WIDTH: u16 = 20;
-        const HEIGHT: u16 = 9;
-        let prev = make_frame(
-            WIDTH,
-            HEIGHT,
-            vec![make_cell("A", 0, 0, 0); usize::from(WIDTH) * usize::from(HEIGHT)],
-        );
-        let curr = make_frame(
-            WIDTH,
-            HEIGHT,
-            vec![make_cell("B", 0, 0, 0); usize::from(WIDTH) * usize::from(HEIGHT)],
-        );
-
-        assert!(
-            detect_scroll_shift(&curr, &prev).is_none(),
-            "content that changed everywhere with no shift relationship must not be mistaken \
-             for a scroll"
-        );
-
-        let mut blit_output = Vec::new();
-        blit_frame_to(&mut blit_output, &curr, Some(&prev));
-        let mut naive_output = Vec::new();
-        write_changed_cells(&mut naive_output, &curr, &prev, None);
-
-        assert!(
-            blit_output
-                .windows(naive_output.len())
-                .any(|window| window == naive_output.as_slice()),
-            "with no shift detected, the diff bytes must be byte-identical to the pre-change \
-             per-cell diff path"
-        );
-    }
-
-    #[test]
-    fn scroll_shift_is_rejected_when_the_shifting_region_is_too_narrow() {
-        // The probe-only column range here is exactly 10 columns wide
-        // (bordered on both sides by content that does not shift), which is
-        // below the minimum-width gate: detection must decline rather than
-        // emit a DECLRMM/DECSLRM round-trip for a sliver this small.
-        const WIDTH: u16 = 20;
-        const HEIGHT: u16 = 9;
-        let (prev, curr) = gutter_scroll_frames(WIDTH, HEIGHT, 5, 5, false);
-
-        assert!(
-            detect_scroll_shift(&curr, &prev).is_none(),
-            "a shifting island narrower than the minimum-width gate must be rejected"
-        );
-
-        let mut blit_output = Vec::new();
-        blit_frame_to(&mut blit_output, &curr, Some(&prev));
-        let mut naive_output = Vec::new();
-        write_changed_cells(&mut naive_output, &curr, &prev, None);
-        assert!(
-            blit_output
-                .windows(naive_output.len())
-                .any(|window| window == naive_output.as_slice()),
-            "with no shift detected, the diff bytes must be byte-identical to the pre-change \
-             per-cell diff path"
-        );
-    }
-
-    #[test]
-    fn scroll_shift_band_verification_rejects_a_hash_collision_with_one_differing_cell() {
-        const WIDTH: u16 = 4;
-        const HEIGHT: u16 = 6;
-        let (prev, mut curr) = uniform_single_row_scroll_frames(WIDTH, HEIGHT);
-
-        // A real hash collision cannot be forced deterministically, so this
-        // exercises the verification step directly: construct a shift whose
-        // band the row-hash stage would have accepted, but flip one cell
-        // inside the band so it visually differs. The verifier must reject
-        // the whole band rather than trust the hash match.
-        let shift = ScrollShift {
-            top: 0,
-            bottom: HEIGHT - 1,
-            lines: 1,
-            left: 0,
-            right: WIDTH - 1,
-        };
-        let frame_hyperlinks = sanitized_frame_hyperlinks(&curr);
-        let prev_hyperlinks = sanitized_frame_hyperlinks(&prev);
-        assert!(
-            scroll_shift_band_matches(&curr, &prev, shift, &frame_hyperlinks, &prev_hyperlinks),
-            "sanity: the untouched band should match before corrupting a cell"
-        );
-
-        curr.cells[0] = make_cell("!", 42, 0, 0);
-        assert!(
-            !scroll_shift_band_matches(&curr, &prev, shift, &frame_hyperlinks, &prev_hyperlinks),
-            "a single differing cell inside the band must reject the whole shift, even if row \
-             hashes had matched"
-        );
-    }
-
-    #[test]
-    fn encoder_size_change_repaints_without_clearing() {
-        let prev = make_frame(2, 2, vec![make_cell("A", 0, 0, 0); 4]);
-        let curr = make_frame(3, 2, vec![make_cell("B", 0, 0, 0); 6]);
-        let mut encoder = BlitEncoder::new();
-        let initial = encoder.encode(&prev, false);
-        encoder.commit(prev, initial);
-
-        let encoded = encoder.encode(&curr, false);
-        assert!(encoded.full);
-        let output = String::from_utf8(encoded.bytes).unwrap();
-
-        assert!(!output.contains("\x1b[2J"));
-        assert!(output.bytes().filter(|byte| *byte == b'B').count() >= 6);
-    }
-
-    #[test]
-    fn encoder_forced_repaint_writes_all_cells_without_clearing() {
-        let frame = make_frame(3, 2, vec![make_cell("A", 0, 0, 0); 6]);
-        let mut encoder = BlitEncoder::new();
-        let initial = encoder.encode(&frame, false);
-        encoder.commit(frame.clone(), initial);
-
-        let encoded = encoder.encode(&frame, true);
-        assert!(encoded.full);
-        let output = String::from_utf8(encoded.bytes).unwrap();
-
-        assert!(!output.contains("\x1b[2J"));
-        assert!(output.bytes().filter(|byte| *byte == b'A').count() >= 6);
     }
 
     #[test]
@@ -2295,7 +1263,6 @@ mod tests {
             }),
             hyperlinks: Vec::new(),
             graphics: Vec::new(),
-            force_full_repaint: false,
         };
 
         let mut output = Vec::new();
@@ -2322,7 +1289,6 @@ mod tests {
             }),
             hyperlinks: Vec::new(),
             graphics: Vec::new(),
-            force_full_repaint: false,
         };
 
         let mut output = Vec::new();
@@ -2344,7 +1310,6 @@ mod tests {
             cursor: None,
             hyperlinks: Vec::new(),
             graphics: Vec::new(),
-            force_full_repaint: false,
         };
 
         let mut output = Vec::new();
@@ -2372,7 +1337,6 @@ mod tests {
             }),
             hyperlinks: Vec::new(),
             graphics: Vec::new(),
-            force_full_repaint: false,
         };
 
         let mut output = Vec::new();
@@ -2395,7 +1359,6 @@ mod tests {
             }),
             hyperlinks: Vec::new(),
             graphics: Vec::new(),
-            force_full_repaint: false,
         };
 
         let mut output = Vec::new();
@@ -2425,7 +1388,6 @@ mod tests {
             }),
             hyperlinks: Vec::new(),
             graphics: Vec::new(),
-            force_full_repaint: false,
         };
         let mut curr = prev.clone();
         curr.cells[0] = make_cell("B", 0, 0, 0);
@@ -2466,7 +1428,6 @@ mod tests {
             }),
             hyperlinks: Vec::new(),
             graphics: Vec::new(),
-            force_full_repaint: false,
         };
         let hidden = FrameData {
             cells: vec![make_cell("B", 0, 0, 0); 9],
@@ -2475,7 +1436,6 @@ mod tests {
             cursor: None,
             hyperlinks: Vec::new(),
             graphics: Vec::new(),
-            force_full_repaint: false,
         };
         let mut last_visible_cursor = None;
         let mut last_cursor_shape = 0;
@@ -2518,7 +1478,6 @@ mod tests {
             cursor: None,
             hyperlinks: Vec::new(),
             graphics: Vec::new(),
-            force_full_repaint: false,
         };
         let mut last_visible_cursor = None;
         let mut last_cursor_shape = 0;
@@ -2554,7 +1513,6 @@ mod tests {
             }),
             hyperlinks: Vec::new(),
             graphics: Vec::new(),
-            force_full_repaint: false,
         };
         let curr = FrameData {
             cells: vec![make_cell("B", 0, 0, 0)],
@@ -2563,7 +1521,6 @@ mod tests {
             cursor: None,
             hyperlinks: Vec::new(),
             graphics: Vec::new(),
-            force_full_repaint: false,
         };
 
         let mut output = Vec::new();
@@ -2588,32 +1545,6 @@ mod tests {
             cursor: None,
             hyperlinks: Vec::new(),
             graphics: Vec::new(),
-            force_full_repaint: false,
-        };
-
-        let mut output = Vec::new();
-        blit_frame_to(&mut output, &frame, None);
-        let output_str = String::from_utf8(output).unwrap();
-
-        assert!(output_str.contains("\x1b[1;1H"));
-        assert!(!output_str.contains("\x1b[1;2H"));
-        assert!(output_str.contains("\x1b[1;3H"));
-    }
-
-    #[test]
-    fn full_redraw_skips_trailing_cells_covered_by_halfwidth_voiced_kana() {
-        let frame = FrameData {
-            cells: vec![
-                make_cell(HALFWIDTH_VOICED_KANA, 0, 0, 0),
-                make_skip_cell(" ", 0, 0, 0),
-                make_cell("Z", 0, 0, 0),
-            ],
-            width: 3,
-            height: 1,
-            cursor: None,
-            hyperlinks: Vec::new(),
-            graphics: Vec::new(),
-            force_full_repaint: false,
         };
 
         let mut output = Vec::new();
@@ -2638,7 +1569,6 @@ mod tests {
             cursor: None,
             hyperlinks: Vec::new(),
             graphics: Vec::new(),
-            force_full_repaint: false,
         };
         let curr = FrameData {
             cells: vec![
@@ -2651,7 +1581,6 @@ mod tests {
             cursor: None,
             hyperlinks: Vec::new(),
             graphics: Vec::new(),
-            force_full_repaint: false,
         };
 
         let mut output = Vec::new();
@@ -2678,7 +1607,6 @@ mod tests {
             cursor: None,
             hyperlinks: Vec::new(),
             graphics: Vec::new(),
-            force_full_repaint: false,
         };
         let curr = FrameData {
             cells: vec![
@@ -2691,7 +1619,6 @@ mod tests {
             cursor: None,
             hyperlinks: Vec::new(),
             graphics: Vec::new(),
-            force_full_repaint: false,
         };
 
         let mut output = Vec::new();
@@ -2700,45 +1627,5 @@ mod tests {
 
         assert!(output_str.contains("\x1b[1;1H"));
         assert!(!output_str.contains("\x1b[1;2H"));
-    }
-
-    #[test]
-    fn diff_redraw_reveals_cells_hidden_by_previous_halfwidth_voiced_kana() {
-        let prev = FrameData {
-            cells: vec![
-                make_cell(HALFWIDTH_VOICED_KANA, 0, 0, 0),
-                make_skip_cell(" ", 0, 0, 0),
-                make_cell("Z", 0, 0, 0),
-            ],
-            width: 3,
-            height: 1,
-            cursor: None,
-            hyperlinks: Vec::new(),
-            graphics: Vec::new(),
-            force_full_repaint: false,
-        };
-        let curr = FrameData {
-            cells: vec![
-                make_cell("A", 0, 0, 0),
-                make_cell(" ", 0, 0, 0),
-                make_cell("Z", 0, 0, 0),
-            ],
-            width: 3,
-            height: 1,
-            cursor: None,
-            hyperlinks: Vec::new(),
-            graphics: Vec::new(),
-            force_full_repaint: false,
-        };
-
-        let mut output = Vec::new();
-        blit_frame_to(&mut output, &curr, Some(&prev));
-        let output_str = String::from_utf8(output).unwrap();
-
-        assert!(output_str.contains("\x1b[1;1H"));
-        assert!(
-            output_str.contains("\x1b[1;2H"),
-            "cells hidden by a previous halfwidth voiced kana must be redrawn when visible"
-        );
     }
 }

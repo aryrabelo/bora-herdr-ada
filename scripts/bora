@@ -3,19 +3,14 @@
 #
 # Branch model:
 #   master  1:1 mirror of upstream ogulcancelik/herdr:master, only fast-forwarded.
-#   main    default branch = master + our features. kept current by MERGING
-#           master into main (`scripts/bora sync`) — never rebase; main
-#           carries its own merge commits from prior syncs (see `git log
-#           --merges main`), and rebasing replays the fork's entire commit
-#           history against the new master instead of just the delta,
-#           producing a multi-hundred-conflict rebase. (learned 2026-08-05,
-#           binding)
+#   main    default branch = master + our features (squash-merged PRs).
+#           kept current by rebasing onto master (`scripts/bora sync`).
 #
 # The built binary is `bora` with its own config namespace (bora/bora-dev), so
 # it coexists with a stock herdr from brew/mise without overwriting it.
 #
 # Usage:
-#   scripts/bora sync       fast-forward master to upstream, then merge it into main
+#   scripts/bora sync       fast-forward master to upstream, then rebase main onto it
 #   scripts/bora build      cargo build --release, install bin as bora
 #   scripts/bora ci-build   trigger the GitHub Actions macOS build on the fork (main)
 #   scripts/bora ci-install download the latest macOS CI artifact, install it
@@ -34,12 +29,9 @@ REPO_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 BIN_DIR="${HERDR_BORA_BIN_DIR:-$HOME/.local/bin}"
 BIN="$BIN_DIR/bora"
 SESSION="${HERDR_BORA_SESSION:-bora}"
-# Remote names match the actual checkout: `upstream` -> ogulcancelik/herdr,
-# `origin` -> aryrabelo/bora-herdr-ada (the fork). Override via env if a
-# checkout uses different names.
-UPSTREAM_REMOTE="${HERDR_BORA_UPSTREAM:-upstream}"
+UPSTREAM_REMOTE="${HERDR_BORA_UPSTREAM:-origin}"
 UPSTREAM_BRANCH="${HERDR_BORA_UPSTREAM_BRANCH:-master}"
-FORK_REMOTE="${HERDR_BORA_FORK:-origin}"
+FORK_REMOTE="${HERDR_BORA_FORK:-fork}"
 
 cmd=${1:-help}
 [ $# -gt 0 ] && shift || true
@@ -48,37 +40,10 @@ cmd=${1:-help}
 # signed ("Code Signature Invalid" / taskgated). cargo emits a *linker-signed*
 # adhoc signature (flags 0x20002) that AMFI rejects, and CI-downloaded binaries
 # are quarantined. Re-signing ad-hoc (codesign --force --sign -, flags 0x2)
-# fixes both. It must run on a temp file that is then atomically renamed onto
-# $BIN: overwriting $BIN in place reuses its inode, so the kernel keeps the
-# stale cached signature and SIGKILLs the binary. Used by build, install, ci-install.
-install_file() {
-  tmp="$BIN_DIR/.bora-install.$$"
-  cp "$1" "$tmp"
-  chmod +x "$tmp"
-  xattr -cr "$tmp" 2>/dev/null || true
-  command -v codesign >/dev/null 2>&1 && codesign --force --sign - "$tmp" 2>/dev/null || true
-  mv -f "$tmp" "$BIN"
-}
-
-# Smoke-test the freshly installed binary. On macOS an invalid code signature
-# is not a run error — the kernel SIGKILLs the process at exec, so `--version`
-# dies with exit 137 (128+SIGKILL) and no output. Fail loudly so a dead install
-# is never mistaken for a good one.
-verify_bin() {
-  if "$BIN" --version >/dev/null 2>&1; then
-    return
-  else
-    rc=$?
-    if [ "$rc" -eq 137 ]; then
-      echo "bora: FATAL: macOS killed the binary at exec (SIGKILL, exit 137) — invalid code signature." >&2
-      echo "bora:   AppleSystemPolicy rejected it; the kernel log shows 'load code signature error 2'." >&2
-      echo "bora:   Inspect: log show --last 2m --predicate 'eventMessage CONTAINS \"bora\"'" >&2
-      echo "bora:   Fix: re-sign a fresh copy with codesign --force --sign - (never re-sign in place)." >&2
-    else
-      echo "bora: FATAL: installed binary failed to run (exit $rc)" >&2
-    fi
-    exit 1
-  fi
+# fixes both. Used by build, install, and ci-install.
+sign_bin() {
+  xattr -cr "$BIN" 2>/dev/null || true
+  command -v codesign >/dev/null 2>&1 && codesign --force --sign - "$BIN" 2>/dev/null || true
 }
 
 case "$cmd" in
@@ -87,27 +52,23 @@ case "$cmd" in
     git fetch "$UPSTREAM_REMOTE" "$UPSTREAM_BRANCH"
     # master mirrors upstream 1:1 — fast-forward only, never carries fork commits.
     git push "$FORK_REMOTE" "$UPSTREAM_REMOTE/$UPSTREAM_BRANCH:refs/heads/master"
-    # `git push src:refs/heads/master` only moves the ref on $FORK_REMOTE;
-    # it never touches the local `master` branch, so update it explicitly
-    # or the merge below silently runs against a stale local ref.
-    git update-ref refs/heads/master "$UPSTREAM_REMOTE/$UPSTREAM_BRANCH"
-    # Merge (not rebase) master into main: main already carries merge
-    # commits from prior syncs, so `git merge-base main master` finds the
-    # true delta and only the genuinely new upstream commits need conflict
-    # resolution. A rebase here replays main's ENTIRE unique history
-    # instead, which explodes into hundreds of conflicts once main has any
-    # merge commit in its ancestry.
+    git fetch "$FORK_REMOTE" master
+    # replay main's feature commits on top of the refreshed master.
     git checkout main
-    git merge master
-    echo "bora: master fast-forwarded to $UPSTREAM_REMOTE/$UPSTREAM_BRANCH and merged into main."
-    echo "bora: resolve any conflicts, run 'just test', review, then publish with: git push $FORK_REMOTE main"
+    git rebase "$FORK_REMOTE/master"
+    echo "bora: master fast-forwarded to $UPSTREAM_REMOTE/$UPSTREAM_BRANCH and main rebased onto it."
+    echo "bora: review, then publish with: git push --force-with-lease $FORK_REMOTE main"
     ;;
   build)
     cd "$REPO_DIR"
     cargo build --release --locked
     mkdir -p "$BIN_DIR"
-    install_file target/release/bora
-    verify_bin
+    cp target/release/bora "$BIN"
+    chmod +x "$BIN"
+    sign_bin   # cargo's linker-signed adhoc sig is rejected on macOS 26 (SIGKILL); re-sign
+    if ! "$BIN" --version >/dev/null 2>&1; then
+      echo "bora: WARNING: installed binary will not run (code signing?). Try: codesign --force --sign - $BIN" >&2
+    fi
     echo "bora: installed $("$BIN" --version 2>/dev/null || echo '(run failed)') -> $BIN"
     ;;
   ci-build)
@@ -125,16 +86,18 @@ case "$cmd" in
     found=$(find "$tmp" -type f -name 'bora*' ! -name '*.txt' ! -name '*.json' | head -1)
     [ -n "$found" ] || { echo "bora: no bora binary found in artifacts under $tmp" >&2; exit 1; }
     mkdir -p "$BIN_DIR"
-    install_file "$found"
-    verify_bin
+    cp "$found" "$BIN"
+    chmod +x "$BIN"
+    sign_bin
     rm -rf "$tmp"
     echo "bora: installed CI binary -> $BIN"
     ;;
   install)
     [ $# -ge 1 ] || { echo "usage: scripts/bora install <file>" >&2; exit 1; }
     mkdir -p "$BIN_DIR"
-    install_file "$1"
-    verify_bin
+    cp "$1" "$BIN"
+    chmod +x "$BIN"
+    sign_bin
     echo "bora: installed $1 -> $BIN"
     ;;
   reload)
