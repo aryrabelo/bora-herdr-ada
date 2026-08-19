@@ -32,6 +32,19 @@ Bora is a fork of [herdr](https://github.com/ogulcancelik/herdr). This changelog
 - `github.pr_opened` and the post-PR checks refresh it triggers are now scoped to the repository, not just the branch name: `WorktreeOpenPrFinished`/`GithubPrOpened` now carry `repo_identity`, and `workspace_ids_on_branch` matches on branch *and* `repo_identity` instead of branch alone. With several repositories open at once, a branch name shared between them (e.g. `main`) could refresh — and be announced in the event payload against — a workspace belonging to an unrelated repository.
 - Cycling workspaces (`next_workspace`/`previous_workspace`, e.g. `cmd+shift+]`/`cmd+shift+[`) and numbered workspace switching no longer skip a worktree workspace whose branch has exactly one member: the sidebar folds that workspace's row into its `BranchHeader` instead of emitting a separate `Workspace` entry (so the header itself renders and clicks like a workspace card), but `visible_workspace_order`'s `filter_map` only read `WorkspaceListEntry::Workspace`, silently dropping the folded workspace and everything it carried. `visible_workspace_order` now also reads the `ws_idx` folded into `BranchHeader`.
 
+### Synced from herdr
+- Merged upstream `herdrdev/herdr` master (36 commits, through `a5c69bea`, upstream v0.8.1).
+- Windows is generally available on the stable channel, with `Ctrl+1`–`Ctrl+9` keybindings, PowerShell working-directory sync, verified-local-package updates, ARM64 installer retry while x64 emulation holds the executable, and native support for every agent integration.
+- Headless servers use a configurable 120×40 virtual terminal instead of 80×24 when no client is attached.
+- Hidden panes no longer flood the server loop with redundant wakeups, and foreground typing no longer waits behind render cadence consumed by hidden-tab output.
+- Alternate-screen history reads are faster, and experimental pane graphics support high-DPI direct file frames.
+- macOS Chinese IME commits reach panes in report-all mode; Ctrl-click URL openers are reaped on Unix; remote terminal hangups are handled on the client.
+- Active sidebar rows stay visible, default active rows stay subtle with a new navigate cursor color, and tab/sidebar clicks survive a stray drag report from the terminal.
+- Qwen Code detection uses locale-independent title states with localized confirmation fallbacks; Claude Code half-circle spinner frames are all stripped.
+- Prompts to blocked agents are rejected, and new panes wait for shell readiness before input.
+- OSC 4 palette query bursts are skipped under WSL.
+- CLI help points agents at the plain-text guide, documentation index, and built-in control skill; documentation is published in agent-readable and channel-aware indexes; the plugin marketplace gained trending and new-arrival discovery shelves.
+
 ## [0.14.4] - 2026-08-13
 
 ### Fixed
@@ -168,11 +181,25 @@ Keybinds versionados em `dotfiles-2026/dotfiles/bora/config.toml`.
 - Idle, not-yet-seen panes now show an animated braille "sand" glyph whose color ramps gray to red by idle age, and working panes show an animated spinner; the animation timer only schedules redraws while an animation is actually visible.
 - Pull request rows have been removed from the left sidebar. PRs are now managed exclusively through the right panel's "PRs" tab, which provides a cleaner dedicated surface with mergeable status, draft markers, and the same context-menu actions (Open in worktree / browser / copy URL). The Create-worktree modal's GitHub tab continues to offer a separate path to open a PR worktree.
 - Settings and `ui.status_indicators = "symbols"` can now use distinct static shapes for blocked, working, done, idle, and unknown agent states. (#2260)
+- Navigate-mode selection rows now use a dedicated per-theme cursor color, customizable via `theme.custom.selection_bg`, so the cursor stays distinguishable from the active Space and Agent highlight.
+- Copy mode now supports `B`, `E`, and `W` motions over whitespace-delimited big words. (#2270, thanks @jplew)
 - The plugin marketplace now discovers valid manifests at repository roots and subdirectories, groups multiple plugins under each repository, and publishes their versions and exact default-branch commits.
 
 ### Fixed
 - Claude Code confirmation prompts using `Enter to confirm · Esc to cancel` now report `blocked` instead of `idle`. (#2268)
+- Kiro CLI prompts now have positive idle detection instead of remaining in an unknown state. (#2301, thanks @smileynet)
+- Cursor's Run Everything footer no longer produces a false blocked state. (#1763, #2220, thanks @Nagi-ovo)
+- Versioned Python agent wrappers such as `python3.13` are now detected. (#2188, thanks @plarson)
+- Pi state reporting now ignores RPC, JSON, and print-mode helper processes that are not interactive TUI sessions. (#2159, thanks @rhjoh)
+- Collapsed workspace and Agent rows keep their status and active indicators visible, including with ten or more workspaces. (#2216, #2239, #2382, thanks @ianks)
 - Sidebar agent lists keep scrolling when differently sized clients are attached to the same session. (#2255, thanks @aiworkflowpro)
+- The Session Navigator now searches renamed single-tab labels. (#2320)
+- New splits return focus to the pane they were opened from. (#2266, thanks @jondkinney)
+- Halfwidth Katakana voiced and semi-voiced marks now render in the correct cell. (#2257, thanks @kazunari-kamata)
+- Ctrl-clicking a URL no longer forwards its release after the browser takes host focus, preventing duplicate tabs. (#2290, #2291, thanks @kataokatsuki)
+- OSC 4 palette overrides now render with the requested color instead of forwarding the palette index. (#2162, thanks @hamidi-dev)
+- Host terminal appearance is re-queried when focus returns, keeping automatic light and dark themes current. (#2416, #2417)
+- The bundled and installable Herdr agent skill now matches this stable release's CLI and lifecycle behavior. (#2847)
 - `pane send-keys` and `agent send-keys` now preserve Shift when sending `shift+tab`, allowing agent permission modes to be cycled programmatically. (#1561, thanks @keinstn and @tomohisa)
 
 ## [0.8.0] - 2026-08-03

@@ -970,7 +970,7 @@ mod tests {
     }
 
     #[test]
-    fn agent_panel_fixed_row_heights_preserve_card_gaps_and_trailing_mouse_targets() {
+    fn agent_panel_configured_row_heights_pack_entries_and_trailing_mouse_targets() {
         let mut app = app_for_mouse_test();
         let first = Workspace::test_new("one");
         let first_pane = first.tabs[0].root_pane;
@@ -998,9 +998,10 @@ mod tests {
             crate::ui::should_show_scrollbar(metrics),
         );
 
-        // The fork's agent panel uses fixed two-row entries (a one-row gap
-        // between entries); per-agent token row heights (5cfe5e5e) are not
-        // ported yet. Entry 0 spans body.y..body.y+2, entry 1 starts at +3.
+        // `sidebar_agents.row_gap` defaults to 0, so with the default
+        // two-row entries (state_icon+workspace+tab, then agent) consecutive
+        // entries pack back-to-back: entry 0 spans body.y..body.y+2, entry 1
+        // starts immediately at body.y+2 with no gap row between them.
         assert_eq!(
             app.state.agent_detail_target_at(body.y),
             Some((0, 0, first_pane))
@@ -1009,7 +1010,10 @@ mod tests {
             app.state.agent_detail_target_at(body.y + 1),
             Some((0, 0, first_pane))
         );
-        assert_eq!(app.state.agent_detail_target_at(body.y + 2), None);
+        assert_eq!(
+            app.state.agent_detail_target_at(body.y + 2),
+            Some((1, 0, second_pane))
+        );
         assert_eq!(
             app.state.agent_detail_target_at(body.y + 3),
             Some((1, 0, second_pane))
@@ -1420,12 +1424,12 @@ mod tests {
             target_row,
         ));
         assert_eq!(app.state.active, Some(0));
-        assert!(app.state.workspace_press.is_some());
+        assert_eq!(app.state.workspace_presses.len(), 1);
 
         app.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 2, target_row));
         assert_eq!(app.state.active, Some(1));
         assert_eq!(app.state.selected, 1);
-        assert!(app.state.workspace_press.is_none());
+        assert!(app.state.workspace_presses.is_empty());
         let snapshot = capture_snapshot(&app.state);
         assert_eq!(snapshot.active, Some(1));
         assert_eq!(snapshot.selected, 1);
@@ -1508,7 +1512,7 @@ mod tests {
         ));
 
         assert_eq!(app.state.active, None);
-        assert!(app.state.workspace_press.is_none());
+        assert!(app.state.workspace_presses.is_empty());
         assert!(app.state.collapsed_space_keys.contains("repo-key"));
 
         app.handle_mouse(mouse(
@@ -1607,6 +1611,7 @@ mod tests {
             Some(DragTarget::WorkspaceReorder {
                 source_ws_idx: 1,
                 insert_idx: Some(0),
+                ..
             })
         ));
         app.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 2, target_row));
@@ -1725,6 +1730,7 @@ mod tests {
         assert!(matches!(
             app.state.drag.as_ref().map(|drag| &drag.target),
             Some(DragTarget::WorkspaceReorder {
+                source_id: _,
                 source_ws_idx: 1,
                 insert_idx: Some(0),
             })
@@ -1847,6 +1853,7 @@ mod tests {
                 ws_idx: 0,
                 source_tab_idx: 0,
                 insert_idx: Some(3),
+                ..
             })
         ));
         app.handle_mouse(mouse(
