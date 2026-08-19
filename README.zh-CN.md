@@ -38,7 +38,7 @@ https://github.com/user-attachments/assets/043ec09f-4bdd-41d5-aee0-8fda6b83e267
 
 ## 安装
 
-推荐使用预编译二进制——linux（x86_64、aarch64）和 macos（x86_64、aarch64）；windows 将在下一个版本中提供：
+推荐使用预编译二进制——linux（x86_64、aarch64）、macos（x86_64、aarch64）和 windows（x86_64）：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/aryrabelo/bora-herdr-ada/main/website/install.sh | sh
