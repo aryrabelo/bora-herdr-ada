@@ -359,7 +359,7 @@ impl App {
         };
         if params.scope_write.is_some() || params.scope_read.is_some() {
             let write = params.scope_write.clone().unwrap_or_default();
-            let read = params.scope_read.clone().unwrap_or_default();
+            let read = params.scope_read.unwrap_or_default();
             if write.is_empty() && read.is_empty() {
                 return encode_error(
                     id,
@@ -2393,7 +2393,7 @@ mod tests {
             "req".into(),
             ChannelJoinParams {
                 name: "#eng".into(),
-                pane: outsider.clone(),
+                pane: outsider,
                 scope_write: Some(Vec::new()),
                 scope_read: Some(Vec::new()),
             },

@@ -683,8 +683,8 @@ mod tests {
         ChannelScopeEntry {
             pane: pane.to_string(),
             nick: Some(format!("{pane}-nick")),
-            write: write.iter().map(|s| s.to_string()).collect(),
-            read: read.iter().map(|s| s.to_string()).collect(),
+            write: write.iter().map(std::string::ToString::to_string).collect(),
+            read: read.iter().map(std::string::ToString::to_string).collect(),
         }
     }
 
