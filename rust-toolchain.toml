@@ -4,5 +4,5 @@
 # stable rustfmt advances past the version the tree was last formatted with,
 # breaking `cargo fmt --check` on otherwise-untouched files. Bump deliberately
 # (and reformat the tree in the same commit) when adopting a newer toolchain.
-channel = "1.96.1"
-components = ["clippy", "rustfmt"]
+channel = "1.93.0"
+components = ["rustfmt", "clippy"]

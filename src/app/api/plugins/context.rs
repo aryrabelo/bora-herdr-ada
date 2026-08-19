@@ -44,7 +44,6 @@ impl App {
         match &event.data {
             EventData::WorkspaceCreated { workspace }
             | EventData::WorkspaceUpdated { workspace }
-            | EventData::WorkspaceMetadataUpdated { workspace }
             | EventData::WorktreeCreated { workspace, .. }
             | EventData::WorktreeOpened { workspace, .. } => {
                 self.plugin_context_for_workspace_info(workspace, correlation_id)
@@ -63,14 +62,7 @@ impl App {
                             context
                         })
                 }),
-            EventData::WorkspaceReordered { workspace_ids, .. } => workspace_ids
-                .first()
-                .and_then(|workspace_id| {
-                    self.plugin_context_for_workspace_id(workspace_id, correlation_id)
-                })
-                .unwrap_or_else(|| empty_plugin_context(correlation_id)),
             EventData::WorkspaceRenamed { workspace_id, .. }
-            | EventData::WorkspaceMoved { workspace_id, .. }
             | EventData::WorkspaceFocused { workspace_id } => self
                 .plugin_context_for_workspace_id(workspace_id, correlation_id)
                 .unwrap_or_else(|| {
@@ -111,11 +103,6 @@ impl App {
                 workspace_id,
                 ..
             }
-            | EventData::TabMoved {
-                tab_id,
-                workspace_id,
-                ..
-            }
             | EventData::TabFocused {
                 tab_id,
                 workspace_id,
@@ -128,18 +115,7 @@ impl App {
                     context.tab_id = Some(tab_id.clone());
                     context
                 }),
-            EventData::LayoutUpdated { layout } => self
-                .plugin_context_for_tab_id(&layout.tab_id, correlation_id)
-                .or_else(|| {
-                    self.plugin_context_for_workspace_id(&layout.workspace_id, correlation_id)
-                })
-                .unwrap_or_else(|| {
-                    let mut context = empty_plugin_context(correlation_id);
-                    context.workspace_id = Some(layout.workspace_id.clone());
-                    context.tab_id = Some(layout.tab_id.clone());
-                    context
-                }),
-            EventData::PaneCreated { pane } | EventData::PaneUpdated { pane } => {
+            EventData::PaneCreated { pane } => {
                 self.plugin_context_for_pane_info(pane, correlation_id)
             }
             EventData::PaneMoved { pane, .. } => {
@@ -190,76 +166,6 @@ impl App {
                     context.focused_pane_id = Some(pane_id.clone());
                     context
                 }),
-            EventData::AgentPrompted {
-                to_pane_id: pane_id,
-                to_workspace_id: workspace_id,
-                ..
-            } => self
-                .plugin_context_for_public_pane_id(pane_id, correlation_id)
-                .or_else(|| self.plugin_context_for_workspace_id(workspace_id, correlation_id))
-                .unwrap_or_else(|| {
-                    let mut context = empty_plugin_context(correlation_id);
-                    context.workspace_id = Some(workspace_id.clone());
-                    context.focused_pane_id = Some(pane_id.clone());
-                    context
-                }),
-            EventData::GithubPrsRefreshed { .. } | EventData::GithubIssuesRefreshed { .. } => {
-                empty_plugin_context(correlation_id)
-            }
-            EventData::GithubPrOpened { workspace_ids, .. } => workspace_ids
-                .first()
-                .and_then(|workspace_id| {
-                    self.plugin_context_for_workspace_id(workspace_id, correlation_id)
-                })
-                .unwrap_or_else(|| {
-                    let mut context = empty_plugin_context(correlation_id);
-                    context.workspace_id = workspace_ids.first().cloned();
-                    context
-                }),
-            EventData::QueuedPromptDelivered {
-                target_pane,
-                workspace_id,
-                ..
-            } => self
-                .plugin_context_for_public_pane_id(target_pane, correlation_id)
-                .or_else(|| {
-                    workspace_id.as_ref().and_then(|workspace_id| {
-                        self.plugin_context_for_workspace_id(workspace_id, correlation_id)
-                    })
-                })
-                .unwrap_or_else(|| {
-                    let mut context = empty_plugin_context(correlation_id);
-                    context.workspace_id = workspace_id.clone();
-                    context.focused_pane_id = Some(target_pane.clone());
-                    context
-                }),
-            EventData::QueuedPromptDropped {
-                target_pane,
-                workspace_id,
-                ..
-            } => self
-                .plugin_context_for_public_pane_id(target_pane, correlation_id)
-                .or_else(|| {
-                    workspace_id.as_ref().and_then(|workspace_id| {
-                        self.plugin_context_for_workspace_id(workspace_id, correlation_id)
-                    })
-                })
-                .unwrap_or_else(|| {
-                    let mut context = empty_plugin_context(correlation_id);
-                    context.workspace_id = workspace_id.clone();
-                    context.focused_pane_id = Some(target_pane.clone());
-                    context
-                }),
-            EventData::ChannelMessage { channel, .. } => self
-                .state
-                .workspaces
-                .iter()
-                .position(|ws| {
-                    ws.visual_group.is_none()
-                        && ws.custom_name.as_deref() == Some(format!("#{channel}").as_str())
-                })
-                .map(|ws_idx| self.plugin_context_for_workspace(ws_idx, correlation_id))
-                .unwrap_or_else(|| empty_plugin_context(correlation_id)),
         }
     }
 

@@ -19,10 +19,8 @@ pub(crate) fn init_file_logging(file_name: &str) {
         return;
     };
 
-    // The crate is `bora` after the fork rebrand; a `herdr=` filter matches no
-    // tracing target and silently disables all default logging.
     let filter =
-        EnvFilter::try_from_env("HERDR_LOG").unwrap_or_else(|_| EnvFilter::new("bora=info"));
+        EnvFilter::try_from_env("HERDR_LOG").unwrap_or_else(|_| EnvFilter::new("herdr=info"));
 
     let _ = tracing_subscriber::fmt()
         .with_env_filter(filter)
@@ -256,7 +254,6 @@ pub(crate) fn workspace_renamed(workspace_id: &str) {
     );
 }
 
-#[cfg(test)]
 pub(crate) fn tab_created(workspace_id: &str, tab_id: &str, root_pane_id: u32) {
     tracing::info!(
         event = "tab.create",
@@ -280,7 +277,6 @@ pub(crate) fn tab_focused(workspace_id: &str, tab_id: &str) {
     );
 }
 
-#[cfg(test)]
 pub(crate) fn tab_closed(workspace_id: &str, tab_id: &str) {
     tracing::info!(
         event = "tab.close",

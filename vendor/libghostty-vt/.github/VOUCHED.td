@@ -33,12 +33,10 @@ adrum
 agoodkind
 aindriu80
 ajiblock
-ajr-khll
 akimiojr
 alaasdk
 alanmoyano
 alaviss
-alexbathome
 alexfeijoo44
 alexjuca
 alosarjos
@@ -47,10 +45,8 @@ andrejdaskalov
 anhthang
 anmitalidev
 anthonyzhoon
-arvin7liu
 athaapa
 atomk
-aymanbagabas
 b0uks
 b1nar10
 balazs-szucs
@@ -66,7 +62,6 @@ bleikurr
 bo2themax
 brentschroeter
 brianc442
-c0x0o
 cespare
 charliie-dev
 chernetskyi
@@ -105,9 +100,6 @@ ephemera
 -eric-assetpass Try talking, not botting
 eriksremess
 erral
-escalonc
-eunos-1128
-exlee
 -f1813483-netizen
 faukah
 filip7
@@ -136,7 +128,6 @@ illiakrauchanka
 j0hnm4r5
 jacobsandlund
 jake-stewart
-jamesarch
 jamylak
 jarred-sumner
 jcollie
@@ -163,7 +154,6 @@ kloneets
 knu
 -kody-w
 koranir
-kostich
 kristina8888
 kristofersoler
 kylesower
@@ -205,15 +195,12 @@ mpatankar6
 mrconnorkenway
 mrmage
 mtak
-mustafa0x
-nagato-yuzuru
 natesmyth
 neo773
 neurosnap
 nicholas-ochoa
 nicosuave
 nikicat
-nilsherzig
 nmggithub
 noib3
 nolinmcfarland
@@ -226,7 +213,6 @@ paaloeye
 pan93412
 pangoraw
 pauley-unsaturated
-pearkes
 peilingjiang
 peterdavehello
 philocalyst
@@ -238,8 +224,6 @@ poweruser64
 prakhar54-byte
 priyans-hu
 puzza007
-qappell
-quinnypig
 qwerasd205
 raphamorim
 reo101
@@ -252,18 +236,14 @@ rmengelbrecht
 rmunn
 rockorager
 rpfaeffle
-ruoyouz
-sahilkmishra
 samasaur1
 sandydoo
--schickling-assistant NHITL
 secrus
 seruman
 seyoungjeong
 silveirapf
 slsrepo
 sunshine-syz
-tasselx
 tbrundige
 tdgroot
 tdslot
@@ -280,14 +260,11 @@ unphased
 uzaaft
 vancluever
 vaughanandrews
--vectorpeak Stupid bot cosplaying as a maintainer
 viruslobster
 vlsi
 voidnv
-williamhcarter
 wyounas
 yabbal
-yak3d
 yamshta
 ydah
 -zaviro

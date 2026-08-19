@@ -1,26 +1,11 @@
 use std::fs;
-use std::io::{self, Read};
+use std::io;
 #[cfg(unix)]
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::Path;
 
-#[cfg(unix)]
-use interprocess::local_socket::traits::Stream as _;
-
 pub(crate) type LocalListener = interprocess::local_socket::Listener;
 pub(crate) type LocalStream = interprocess::local_socket::Stream;
-
-pub(crate) enum LocalStreamRead {
-    Data,
-    Pending,
-    Closed,
-}
-
-pub(crate) enum LocalStreamReadCount {
-    Data(usize),
-    Pending,
-    Closed,
-}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct SocketFileIdentity {
@@ -114,213 +99,6 @@ fn stale_socket_connect_error(kind: io::ErrorKind) -> bool {
     ) || (cfg!(windows) && kind == io::ErrorKind::WouldBlock)
 }
 
-pub(crate) fn local_stream_peer_closed(stream: &mut LocalStream) -> io::Result<bool> {
-    probe_stream_closed(stream)
-}
-
-/// Best-effort caller PID derived from OS-level socket peer credentials.
-///
-/// macOS's `xucred`-based `LOCAL_PEERCRED` exposes only uid/gid, not a pid, so this
-/// queries `LOCAL_PEEREPID` directly via `getsockopt`. Linux (`ucred`-based
-/// `SO_PEERCRED`) and Windows (named pipe peer process id) both carry a pid already
-/// and go through `interprocess`'s cross-platform `peer_creds()`.
-///
-/// Returns `None` when the platform/socket kind doesn't expose peer credentials;
-/// callers must treat that as "cannot verify", never as an implicit pass.
-#[cfg(target_os = "macos")]
-pub(crate) fn local_stream_peer_pid(stream: &LocalStream) -> Option<u32> {
-    use std::os::unix::io::AsRawFd;
-
-    let LocalStream::UdSocket(uds) = stream;
-    let fd = uds.inner().as_raw_fd();
-    let mut pid: libc::pid_t = 0;
-    let mut len = std::mem::size_of::<libc::pid_t>() as libc::socklen_t;
-    let ret = unsafe {
-        libc::getsockopt(
-            fd,
-            libc::SOL_LOCAL,
-            libc::LOCAL_PEEREPID,
-            &mut pid as *mut libc::pid_t as *mut libc::c_void,
-            &mut len,
-        )
-    };
-    (ret == 0 && pid > 0).then_some(pid as u32)
-}
-
-#[cfg(not(target_os = "macos"))]
-pub(crate) fn local_stream_peer_pid(stream: &LocalStream) -> Option<u32> {
-    use interprocess::local_socket::traits::StreamCommon as _;
-
-    let pid = stream.peer_creds().ok()?.pid()?;
-    u32::try_from(pid).ok()
-}
-
-pub(crate) fn set_local_stream_polling(stream: &mut LocalStream, enabled: bool) -> io::Result<()> {
-    #[cfg(unix)]
-    {
-        stream.set_nonblocking(enabled)
-    }
-
-    #[cfg(windows)]
-    {
-        let _ = (stream, enabled);
-        Ok(())
-    }
-}
-
-#[cfg(unix)]
-pub(crate) fn shutdown_local_stream_write(stream: &LocalStream) -> io::Result<()> {
-    match stream {
-        LocalStream::UdSocket(stream) => stream.inner().shutdown(std::net::Shutdown::Write),
-    }
-}
-
-/// Binds a listener for private terminal traffic. Unix callers restrict the
-/// socket file after binding; Windows must set the named-pipe DACL at creation.
-pub(crate) fn bind_private_local_listener(path: &Path) -> io::Result<LocalListener> {
-    #[cfg(unix)]
-    {
-        bind_local_listener(path)
-    }
-
-    #[cfg(windows)]
-    {
-        use interprocess::local_socket::{prelude::*, GenericNamespaced, ListenerOptions};
-        use interprocess::os::windows::local_socket::ListenerOptionsExt as _;
-        use interprocess::os::windows::security_descriptor::SecurityDescriptor;
-        use widestring::U16CString;
-
-        let sddl = U16CString::from_str("D:P(A;;GA;;;SY)(A;;GA;;;OW)")
-            .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
-        let security_descriptor = SecurityDescriptor::deserialize(&sddl)?;
-        let name = path.to_string_lossy().to_string();
-        let name = name.to_ns_name::<GenericNamespaced>()?;
-        let listener = ListenerOptions::new()
-            .name(name)
-            .reclaim_name(false)
-            .security_descriptor(security_descriptor)
-            .create_sync()?;
-        fs::write(path, windows_socket_marker())?;
-        Ok(listener)
-    }
-}
-
-pub(crate) fn poll_local_stream_read(
-    stream: &mut LocalStream,
-    buf: &mut [u8],
-) -> io::Result<LocalStreamRead> {
-    match poll_local_stream_read_count(stream, buf)? {
-        LocalStreamReadCount::Data(read) => {
-            let _ = read;
-            Ok(LocalStreamRead::Data)
-        }
-        LocalStreamReadCount::Pending => Ok(LocalStreamRead::Pending),
-        LocalStreamReadCount::Closed => Ok(LocalStreamRead::Closed),
-    }
-}
-
-pub(crate) fn poll_local_stream_read_count(
-    stream: &mut LocalStream,
-    buf: &mut [u8],
-) -> io::Result<LocalStreamReadCount> {
-    #[cfg(unix)]
-    {
-        match stream.read(buf) {
-            Ok(0) => Ok(LocalStreamReadCount::Closed),
-            Ok(read) => Ok(LocalStreamReadCount::Data(read)),
-            Err(err) if err.kind() == io::ErrorKind::WouldBlock => {
-                Ok(LocalStreamReadCount::Pending)
-            }
-            Err(err) => Err(err),
-        }
-    }
-
-    #[cfg(windows)]
-    {
-        match windows_named_pipe_available(stream)? {
-            None => Ok(LocalStreamReadCount::Closed),
-            Some(0) => Ok(LocalStreamReadCount::Pending),
-            Some(_) => match stream.read(buf) {
-                Ok(0) => Ok(LocalStreamReadCount::Closed),
-                Ok(read) => Ok(LocalStreamReadCount::Data(read)),
-                Err(err) if is_connection_closed_error(&err) => Ok(LocalStreamReadCount::Closed),
-                Err(err) => Err(err),
-            },
-        }
-    }
-}
-
-#[cfg(unix)]
-fn probe_stream_closed(stream: &mut LocalStream) -> io::Result<bool> {
-    stream.set_nonblocking(true)?;
-    let mut probe = [0u8; 1];
-    let status = match stream.read(&mut probe) {
-        Ok(0) => Ok(true),
-        Ok(_) => Ok(true),
-        Err(err)
-            if matches!(
-                err.kind(),
-                io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
-            ) =>
-        {
-            Ok(false)
-        }
-        Err(err) if is_connection_closed_error(&err) => Ok(true),
-        Err(err) => Err(err),
-    };
-    stream.set_nonblocking(false)?;
-    status
-}
-
-#[cfg(windows)]
-fn probe_stream_closed(stream: &mut LocalStream) -> io::Result<bool> {
-    Ok(windows_named_pipe_available(stream)?.is_none())
-}
-
-#[cfg(windows)]
-fn windows_named_pipe_available(stream: &mut LocalStream) -> io::Result<Option<u32>> {
-    use std::os::windows::io::{AsHandle, AsRawHandle};
-
-    let LocalStream::NamedPipe(pipe) = stream;
-    let mut available = 0;
-    let ok = unsafe {
-        windows_sys::Win32::System::Pipes::PeekNamedPipe(
-            pipe.as_handle().as_raw_handle(),
-            std::ptr::null_mut(),
-            0,
-            std::ptr::null_mut(),
-            &mut available,
-            std::ptr::null_mut(),
-        )
-    };
-    if ok != 0 {
-        return Ok(Some(available));
-    }
-
-    let err = io::Error::last_os_error();
-    if is_connection_closed_error(&err) || windows_named_pipe_closed_error(&err) {
-        return Ok(None);
-    }
-    Err(err)
-}
-
-pub(crate) fn is_connection_closed_error(err: &io::Error) -> bool {
-    matches!(
-        err.kind(),
-        io::ErrorKind::BrokenPipe
-            | io::ErrorKind::ConnectionAborted
-            | io::ErrorKind::ConnectionReset
-            | io::ErrorKind::NotConnected
-            | io::ErrorKind::UnexpectedEof
-            | io::ErrorKind::WriteZero
-    )
-}
-
-#[cfg(windows)]
-fn windows_named_pipe_closed_error(err: &io::Error) -> bool {
-    matches!(err.raw_os_error(), Some(6 | 109 | 232 | 233))
-}
-
 pub(crate) fn socket_file_identity(path: &Path) -> io::Result<SocketFileIdentity> {
     #[cfg(windows)]
     {
@@ -385,8 +163,6 @@ pub(crate) fn restrict_socket_permissions(_path: &Path, _mode: u32) -> io::Resul
 mod tests {
     use super::*;
     #[cfg(windows)]
-    use interprocess::local_socket::traits::Listener as _;
-    #[cfg(windows)]
     use std::path::PathBuf;
 
     #[test]
@@ -398,31 +174,6 @@ mod tests {
             stale_socket_connect_error(io::ErrorKind::WouldBlock),
             cfg!(windows)
         );
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn private_named_pipe_accepts_same_user() {
-        use std::io::Write as _;
-
-        let path = temp_socket_marker_path("private-pipe");
-        let _ = fs::remove_file(&path);
-        let listener = bind_private_local_listener(&path).unwrap();
-        let mut client = connect_local_stream(&path).unwrap();
-        let mut server = listener.accept().unwrap();
-        client.write_all(b"remote").unwrap();
-
-        let mut buffer = [0_u8; 16];
-        assert!(matches!(
-            poll_local_stream_read_count(&mut server, &mut buffer).unwrap(),
-            LocalStreamReadCount::Data(6)
-        ));
-        assert_eq!(&buffer[..6], b"remote");
-
-        drop(client);
-        drop(server);
-        drop(listener);
-        let _ = fs::remove_file(path);
     }
 
     #[cfg(windows)]
@@ -440,34 +191,6 @@ mod tests {
         assert!(path.exists(), "same-length replacement marker must survive");
 
         let _ = fs::remove_file(&path);
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn idle_named_pipe_peer_is_not_treated_as_closed() {
-        let path = temp_socket_marker_path("idle-pipe");
-        let listener = bind_local_listener(&path).unwrap();
-        let _client = connect_local_stream(&path).unwrap();
-        let mut server = listener.accept().unwrap();
-
-        assert!(!local_stream_peer_closed(&mut server).unwrap());
-
-        let _ = fs::remove_file(path);
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn disconnected_named_pipe_peer_is_treated_as_closed() {
-        let path = temp_socket_marker_path("disconnected-pipe");
-        let listener = bind_local_listener(&path).unwrap();
-        let client = connect_local_stream(&path).unwrap();
-        let mut server = listener.accept().unwrap();
-
-        drop(client);
-
-        assert!(local_stream_peer_closed(&mut server).unwrap());
-
-        let _ = fs::remove_file(path);
     }
 
     #[cfg(windows)]

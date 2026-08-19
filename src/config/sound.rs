@@ -43,8 +43,6 @@ pub struct AgentSoundOverrides {
     pub hermes: AgentSoundSetting,
     pub kilo: AgentSoundSetting,
     pub qodercli: AgentSoundSetting,
-    pub qwen: AgentSoundSetting,
-    pub maki: AgentSoundSetting,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
@@ -129,7 +127,6 @@ impl AgentSoundOverrides {
             Some(Agent::Devin) => self.devin,
             Some(Agent::Antigravity) => self.agy,
             Some(Agent::Cline) => self.cline,
-            Some(Agent::Mastracode) => AgentSoundSetting::Default,
             Some(Agent::OpenCode) => self.open_code,
             Some(Agent::GithubCopilot) => self.github_copilot,
             Some(Agent::Kimi) => self.kimi,
@@ -140,8 +137,6 @@ impl AgentSoundOverrides {
             Some(Agent::Hermes) => self.hermes,
             Some(Agent::Kilo) => self.kilo,
             Some(Agent::Qodercli) => self.qodercli,
-            Some(Agent::Qwen) => self.qwen,
-            Some(Agent::Maki) => self.maki,
             None => AgentSoundSetting::Default,
         }
     }
@@ -180,8 +175,6 @@ impl Default for AgentSoundOverrides {
             hermes: AgentSoundSetting::Default,
             kilo: AgentSoundSetting::Default,
             qodercli: AgentSoundSetting::Default,
-            qwen: AgentSoundSetting::Default,
-            maki: AgentSoundSetting::Default,
         }
     }
 }

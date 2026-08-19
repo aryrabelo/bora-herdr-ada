@@ -12,19 +12,14 @@
 //! - Forwards OSC 52 clipboard writes from server to its own stdout
 //! - Displays sound/toast notifications forwarded from server
 
-#[cfg(unix)]
-mod direct_graphics;
 mod input;
 
 use std::collections::HashSet;
-#[cfg(unix)]
-use std::io::IsTerminal as _;
-use std::io::{self, BufRead, Write as _};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::io::{self, Write as _};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
-use base64::Engine;
 use crossterm::event::{
     DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
     EnableFocusChange, EnableMouseCapture,
@@ -34,19 +29,18 @@ use crossterm::event::{KeyCode, KeyEventKind, KeyModifiers, MouseEventKind};
 #[cfg(not(windows))]
 use crossterm::event::{PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags};
 use crossterm::execute;
-use crossterm::terminal::{DisableLineWrap, EnableLineWrap};
 use interprocess::local_socket::traits::Stream as _;
 use interprocess::TryClone as _;
 use tracing::{debug, info, warn};
 
 use crate::ipc::LocalStream;
 use crate::protocol::render_ansi;
-use crate::protocol::MAX_CLIPBOARD_IMAGE_PAYLOAD;
 use crate::protocol::{
-    self, AttachScrollDirection, AttachScrollSource, ClientKeybindings, ClientLaunchMode,
-    ClientMessage, NotifyKind, RenderEncoding, ServerMessage, MAX_FRAME_SIZE,
-    MAX_GRAPHICS_FRAME_SIZE, PROTOCOL_VERSION,
+    self, ClientKeybindings, ClientLaunchMode, ClientMessage, NotifyKind, RenderEncoding,
+    ServerMessage, MAX_FRAME_SIZE, MAX_GRAPHICS_FRAME_SIZE, PROTOCOL_VERSION,
 };
+#[cfg(unix)]
+use crate::protocol::{AttachScrollDirection, AttachScrollSource, MAX_CLIPBOARD_IMAGE_PAYLOAD};
 use crate::server::socket_paths::client_socket_path;
 
 static RECEIVED_KITTY_GRAPHICS_IDS: OnceLock<Mutex<HashSet<u32>>> = OnceLock::new();
@@ -59,9 +53,9 @@ struct ClientLoopConfig {
     sound_config: crate::config::SoundConfig,
     mouse_scroll_lines: usize,
     redraw_on_focus_gained: bool,
-    host_cursor: crate::config::HostCursorModeConfig,
     kitty_graphics_enabled: bool,
     mouse_capture_active: bool,
+    #[cfg(unix)]
     remote_image_paste_key: Option<(crossterm::event::KeyCode, crossterm::event::KeyModifiers)>,
 }
 
@@ -71,33 +65,22 @@ struct ClientState {
     blit_encoder: render_ansi::BlitEncoder,
     /// Whether host mouse capture is currently active.
     mouse_capture_active: bool,
-    /// Whether the host terminal currently reports all keys as Kitty sequences.
-    keyboard_report_all_active: bool,
     /// The terminal size we reported to the server in our last Hello/Resize.
     reported_size: (u16, u16),
     /// Client-local sound playback config, refreshed on server request.
     sound_config: crate::config::SoundConfig,
     /// Whether this client may write Kitty graphics bytes to its host terminal.
     kitty_graphics_enabled: bool,
-    /// One bounded matcher, inactive unless a direct transmission is armed.
-    #[cfg(unix)]
-    direct_graphics_response: Arc<Mutex<direct_graphics::ResponseMatcher>>,
-    /// One server-retired direct transfer to suppress if it was still queued.
-    #[cfg(unix)]
-    retired_direct_graphics: Option<(u64, u32)>,
     /// Direct attach prefix escape state. None for full-app clients.
     attach_escape: Option<AttachEscapeState>,
     /// Rows scrolled for one direct-attach wheel notch.
     #[cfg(unix)]
     mouse_scroll_lines: usize,
     /// Local-client shortcut that sends a clipboard image to a remote Herdr session.
+    #[cfg(unix)]
     remote_image_paste_key: Option<(crossterm::event::KeyCode, crossterm::event::KeyModifiers)>,
     /// Whether outer focus gain should force a full host-terminal redraw.
     redraw_on_focus_gained: bool,
-    /// Whether the next semantic frame must repaint every cell without clearing the surface.
-    repaint_pending: bool,
-    /// Whether this client draws the cursor into frame cells instead of using the host cursor.
-    draw_host_cursor: bool,
 }
 
 #[derive(Debug, Default)]
@@ -229,8 +212,8 @@ fn attach_scroll_action(
 }
 
 impl ClientState {
-    fn request_repaint(&mut self) {
-        self.repaint_pending = true;
+    fn request_full_redraw(&mut self) {
+        self.blit_encoder = render_ansi::BlitEncoder::new();
     }
 }
 
@@ -295,14 +278,7 @@ impl std::fmt::Display for ClientError {
                 Ok(())
             }
             ClientError::ConnectionLost(err) => {
-                if let Ok(reattach_command) = std::env::var(crate::remote::REATTACH_COMMAND_ENV_VAR)
-                {
-                    write!(f, "lost connection to remote Herdr: {err}")?;
-                    write!(f, "\nIf the remote server survived the SSH or network drop, its panes may still be running.")?;
-                    write!(f, "\nRun `{reattach_command}` to reattach")
-                } else {
-                    write!(f, "lost connection to server: {err}")
-                }
+                write!(f, "lost connection to server: {err}")
             }
             ClientError::Protocol(err) => {
                 write!(f, "protocol error: {err}")
@@ -324,14 +300,7 @@ impl std::error::Error for ClientError {
 
 impl From<protocol::FramingError> for ClientError {
     fn from(err: protocol::FramingError) -> Self {
-        match err {
-            protocol::FramingError::UnexpectedEof => ClientError::ConnectionLost(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "server closed connection",
-            )),
-            protocol::FramingError::Io(err) => ClientError::ConnectionLost(err),
-            err => ClientError::Protocol(err),
-        }
+        ClientError::Protocol(err)
     }
 }
 
@@ -360,15 +329,14 @@ fn setup_terminal_with_capabilities(
     mouse_capture: bool,
 ) -> io::Result<TerminalGuard> {
     ratatui::init();
-    crate::terminal_modes::clear_host_mouse_reporting(&mut io::stdout())?;
     let host_color_scheme_reports =
         should_enable_host_color_scheme_reports(enable_client_protocols);
 
     if enable_client_protocols {
         if mouse_capture {
-            set_mouse_capture(true, false)?;
+            set_mouse_capture(true)?;
         } else {
-            set_mouse_capture(false, false)?;
+            set_mouse_capture(false)?;
         }
         execute!(io::stdout(), EnableBracketedPaste, EnableFocusChange)?;
         if host_color_scheme_reports {
@@ -380,9 +348,9 @@ fn setup_terminal_with_capabilities(
             write_host_color_scheme_report_mode(&mut io::stdout(), false)?;
         }
         if mouse_capture {
-            set_mouse_capture(true, false)?;
+            set_mouse_capture(true)?;
         } else {
-            set_mouse_capture(false, false)?;
+            set_mouse_capture(false)?;
         }
     }
 
@@ -415,8 +383,6 @@ fn setup_terminal_with_capabilities(
         io::stdout().write_all(mode.set_sequence())?;
         io::stdout().flush()?;
     }
-
-    execute!(io::stdout(), DisableLineWrap)?;
 
     Ok(TerminalGuard {
         reset_modify_other_keys: modify_other_keys_mode.is_some(),
@@ -463,16 +429,6 @@ fn write_terminal_restore_postlude(
     // Restore a visible cursor and reset DECSCUSR back to the terminal default.
     writer.write_all(b"\x1b[?25h\x1b[0 q")?;
     writer.flush()
-}
-
-fn should_draw_host_cursor(mode: crate::config::HostCursorModeConfig) -> bool {
-    match mode {
-        crate::config::HostCursorModeConfig::Auto => {
-            crate::platform::should_draw_host_cursor_by_default()
-        }
-        crate::config::HostCursorModeConfig::Native => false,
-        crate::config::HostCursorModeConfig::Drawn => true,
-    }
 }
 
 #[cfg(windows)]
@@ -559,15 +515,9 @@ fn restore_windows_input_mode_value(mode: u32) {
     }
 }
 
-fn set_mouse_capture(enabled: bool, sgr_pixels: bool) -> io::Result<()> {
-    crate::terminal_modes::clear_host_mouse_reporting(&mut io::stdout())?;
+fn set_mouse_capture(enabled: bool) -> io::Result<()> {
     if enabled {
-        execute!(io::stdout(), EnableMouseCapture)?;
-        if sgr_pixels {
-            io::stdout().write_all(b"\x1b[?1016h")?;
-            io::stdout().flush()?;
-        }
-        Ok(())
+        execute!(io::stdout(), EnableMouseCapture)
     } else {
         match execute!(io::stdout(), DisableMouseCapture) {
             Ok(()) => Ok(()),
@@ -595,18 +545,16 @@ fn restore_terminal_state(
 
     let _ = execute!(
         io::stdout(),
-        EnableLineWrap,
         DisableFocusChange,
         DisableBracketedPaste,
         DisableMouseCapture
     );
-    let _ = crate::terminal_modes::clear_host_mouse_reporting(&mut io::stdout());
     #[cfg(windows)]
     if let Some(mode) = restore_windows_input_mode {
         restore_windows_input_mode_value(mode);
     }
 
-    let _ = ratatui::try_restore();
+    ratatui::restore();
     let _ = write_terminal_restore_postlude(&mut io::stdout(), reset_host_color_scheme_reports);
 
     #[cfg(windows)]
@@ -679,6 +627,7 @@ fn requested_render_encoding() -> RenderEncoding {
     }
 }
 
+#[cfg(unix)]
 fn is_remote_client_process() -> bool {
     std::env::var(crate::remote::REMOTE_KEYBINDINGS_ENV_VAR).is_ok()
 }
@@ -691,51 +640,15 @@ fn is_remote_client_process() -> bool {
 /// window; on a high-latency link that easily exceeds 5s, so it gets a far
 /// larger budget. See issue #753.
 const LOCAL_HANDSHAKE_READ_TIMEOUT: Duration = Duration::from_secs(5);
+#[cfg(unix)]
 const REMOTE_HANDSHAKE_READ_TIMEOUT: Duration = Duration::from_secs(60);
 
 fn handshake_read_timeout() -> Duration {
+    #[cfg(unix)]
     if is_remote_client_process() {
         return REMOTE_HANDSHAKE_READ_TIMEOUT;
     }
     LOCAL_HANDSHAKE_READ_TIMEOUT
-}
-
-#[cfg(any(unix, test))]
-fn direct_graphics_profile_values(
-    term_program: &str,
-    term: &str,
-    kitty_window: bool,
-    blocked_transport: bool,
-    terminals: bool,
-) -> bool {
-    let supported = term_program.eq_ignore_ascii_case("ghostty")
-        || term_program.eq_ignore_ascii_case("wezterm")
-        || matches!(term, "xterm-ghostty" | "xterm-kitty" | "xterm-wezterm")
-        || kitty_window;
-    supported && !blocked_transport && terminals
-}
-
-#[cfg(unix)]
-fn direct_graphics_profile_allowed(direct_attach: bool) -> bool {
-    let term_program = std::env::var("TERM_PROGRAM").unwrap_or_default();
-    let term = std::env::var("TERM").unwrap_or_default();
-    direct_graphics_profile_values(
-        &term_program,
-        &term,
-        std::env::var_os("KITTY_WINDOW_ID").is_some(),
-        direct_attach
-            || is_remote_client_process()
-            || std::env::var_os("SSH_CONNECTION").is_some()
-            || std::env::var_os("SSH_TTY").is_some()
-            || std::env::var_os("TMUX").is_some()
-            || std::env::var_os("STY").is_some(),
-        io::stdin().is_terminal() && io::stdout().is_terminal(),
-    )
-}
-
-#[cfg(not(unix))]
-fn direct_graphics_profile_allowed(_direct_attach: bool) -> bool {
-    false
 }
 
 fn requested_keybindings() -> ClientKeybindings {
@@ -779,25 +692,6 @@ fn set_handshake_recv_timeout(
         .map_err(ClientError::ConnectionFailed)
 }
 
-fn client_launch_mode(
-    direct_attach_requested: bool,
-    exact_cell_size: bool,
-    cell_width_px: u32,
-    cell_height_px: u32,
-) -> ClientLaunchMode {
-    if direct_attach_requested {
-        ClientLaunchMode::TerminalAttach
-    } else if exact_cell_size
-        && cell_width_px > 0
-        && cell_height_px > 0
-        && direct_graphics_profile_allowed(false)
-    {
-        ClientLaunchMode::AppDirectGraphics
-    } else {
-        ClientLaunchMode::App
-    }
-}
-
 /// Performs the client→server handshake.
 ///
 /// Sends Hello with the terminal size and protocol version, reads the Welcome
@@ -808,7 +702,6 @@ fn do_handshake(
     rows: u16,
     cell_width_px: u32,
     cell_height_px: u32,
-    exact_cell_size: bool,
     requested_encoding: RenderEncoding,
     direct_attach_requested: bool,
 ) -> Result<RenderEncoding, ClientError> {
@@ -825,12 +718,11 @@ fn do_handshake(
         cell_height_px,
         requested_encoding,
         keybindings: requested_keybindings(),
-        launch_mode: client_launch_mode(
-            direct_attach_requested,
-            exact_cell_size,
-            cell_width_px,
-            cell_height_px,
-        ),
+        launch_mode: if direct_attach_requested {
+            ClientLaunchMode::TerminalAttach
+        } else {
+            ClientLaunchMode::App
+        },
     };
     protocol::write_message(stream, &hello)
         .map_err(|e| ClientError::ConnectionFailed(io::Error::other(e.to_string())))?;
@@ -875,11 +767,6 @@ enum ClientLoopEvent {
     /// Raw input bytes from stdin.
     #[cfg(unix)]
     StdinInput(Vec<u8>),
-    /// One confirmed SGR pixel report with geometry captured by the reader.
-    #[cfg(unix)]
-    PixelMouse(Vec<u8>, crate::input::mouse::HostGeometry),
-    #[cfg(unix)]
-    DirectGraphicsResponse(direct_graphics::Response),
     /// Structured input events from platforms without Unix-style stdin bytes.
     #[cfg(windows)]
     StdinEvents(Vec<crate::protocol::ClientInputEvent>),
@@ -927,264 +814,6 @@ pub fn run_terminal_attach(_terminal_id: String, _takeover: bool) -> io::Result<
     ))
 }
 
-/// Runs a read-only terminal session observer and prints one JSON envelope per frame.
-pub fn run_terminal_session_observe(target: String, cols: u16, rows: u16) -> io::Result<()> {
-    let mut stream =
-        connect_terminal_session_stream(target.clone(), cols, rows, "observing terminal session")?;
-    write_to_server(&mut stream, &ClientMessage::ObserveTerminal { target })?;
-    write_terminal_session_output(stream)
-}
-
-/// Runs a writable terminal session controller.
-pub fn run_terminal_session_control(
-    target: String,
-    takeover: bool,
-    cols: u16,
-    rows: u16,
-) -> io::Result<()> {
-    let mut stream = connect_terminal_session_stream(
-        target.clone(),
-        cols,
-        rows,
-        "controlling terminal session",
-    )?;
-    write_to_server(
-        &mut stream,
-        &ClientMessage::ControlTerminal { target, takeover },
-    )?;
-
-    let mut write_stream = stream.try_clone()?;
-    let _input_thread = std::thread::spawn(move || {
-        let stdin = io::stdin();
-        for line in stdin.lock().lines() {
-            let Ok(line) = line else {
-                break;
-            };
-            if line.trim().is_empty() {
-                continue;
-            }
-            match terminal_control_command_from_json(&line) {
-                Ok(message) => {
-                    let release = matches!(message, ClientMessage::Detach);
-                    if write_to_server(&mut write_stream, &message).is_err() {
-                        return;
-                    }
-                    if release {
-                        return;
-                    }
-                }
-                Err(err) => eprintln!("herdr: terminal session control input ignored: {err}"),
-            }
-        }
-        let _ = write_to_server(&mut write_stream, &ClientMessage::Detach);
-    });
-
-    write_terminal_session_output(stream)
-}
-
-fn connect_terminal_session_stream(
-    target: String,
-    cols: u16,
-    rows: u16,
-    log_message: &'static str,
-) -> io::Result<LocalStream> {
-    init_logging();
-
-    let socket_path = client_socket_path();
-    crate::logging::startup("client");
-    info!(path = %socket_path.display(), target = %target, cols, rows, "{log_message}");
-
-    let mut stream = match crate::ipc::connect_local_stream(&socket_path) {
-        Ok(stream) => stream,
-        Err(err) => {
-            eprintln!("herdr: {}", ClientError::ConnectionFailed(err));
-            std::process::exit(1);
-        }
-    };
-
-    match do_handshake(
-        &mut stream,
-        cols,
-        rows,
-        0,
-        0,
-        false,
-        RenderEncoding::TerminalAnsi,
-        true,
-    ) {
-        Ok(RenderEncoding::TerminalAnsi) => {}
-        Ok(encoding) => {
-            eprintln!(
-                "herdr: terminal session observe negotiated unsupported encoding {encoding:?}"
-            );
-            std::process::exit(1);
-        }
-        Err(err) => {
-            eprintln!("herdr: {err}");
-            std::process::exit(1);
-        }
-    }
-
-    stream.set_nonblocking(false)?;
-    Ok(stream)
-}
-
-fn write_terminal_session_output(mut stream: LocalStream) -> io::Result<()> {
-    let mut stdout = io::stdout().lock();
-    loop {
-        match protocol::read_message(&mut stream, MAX_GRAPHICS_FRAME_SIZE) {
-            Ok(ServerMessage::Terminal(frame)) => {
-                let encoded = base64::engine::general_purpose::STANDARD.encode(&frame.bytes);
-                let line = serde_json::json!({
-                    "type": "terminal.frame",
-                    "seq": frame.seq,
-                    "encoding": "ansi",
-                    "width": frame.width,
-                    "height": frame.height,
-                    "full": frame.full,
-                    "bytes": encoded,
-                });
-                serde_json::to_writer(&mut stdout, &line)?;
-                stdout.write_all(b"\n")?;
-                stdout.flush()?;
-            }
-            Ok(ServerMessage::ServerShutdown { reason }) => {
-                let line = serde_json::json!({
-                    "type": "terminal.closed",
-                    "reason": reason,
-                });
-                serde_json::to_writer(&mut stdout, &line)?;
-                stdout.write_all(b"\n")?;
-                stdout.flush()?;
-                return Ok(());
-            }
-            Ok(ServerMessage::Graphics { .. }) => {}
-            Ok(_) => {}
-            Err(protocol::FramingError::UnexpectedEof) => return Ok(()),
-            Err(err) => return Err(io::Error::other(err.to_string())),
-        }
-    }
-}
-
-#[derive(serde::Deserialize)]
-#[serde(tag = "type")]
-enum TerminalControlCommand {
-    #[serde(rename = "terminal.input")]
-    Input {
-        text: Option<String>,
-        bytes: Option<String>,
-    },
-    #[serde(rename = "terminal.resize")]
-    Resize {
-        cols: u16,
-        rows: u16,
-        #[serde(default)]
-        cell_width_px: u32,
-        #[serde(default)]
-        cell_height_px: u32,
-    },
-    #[serde(rename = "terminal.scroll")]
-    Scroll {
-        direction: TerminalControlScrollDirection,
-        lines: u16,
-        #[serde(default)]
-        source: TerminalControlScrollSource,
-        #[serde(default)]
-        column: Option<u16>,
-        #[serde(default)]
-        row: Option<u16>,
-        #[serde(default)]
-        modifiers: u8,
-    },
-    #[serde(rename = "terminal.release")]
-    Release {},
-}
-
-#[derive(Clone, Copy, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum TerminalControlScrollDirection {
-    Up,
-    Down,
-}
-
-#[derive(Clone, Copy, Default, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum TerminalControlScrollSource {
-    #[default]
-    Wheel,
-    PageKey,
-}
-
-fn terminal_control_command_from_json(raw: &str) -> Result<ClientMessage, String> {
-    let command = serde_json::from_str::<TerminalControlCommand>(raw)
-        .map_err(|err| format!("invalid json command: {err}"))?;
-    match command {
-        TerminalControlCommand::Input { text, bytes } => {
-            let data = match (text, bytes) {
-                (Some(_), Some(_)) => {
-                    return Err("terminal.input accepts text or bytes, not both".into())
-                }
-                (Some(text), None) => text.into_bytes(),
-                (None, Some(bytes)) => base64::engine::general_purpose::STANDARD
-                    .decode(bytes)
-                    .map_err(|err| format!("invalid terminal.input bytes: {err}"))?,
-                (None, None) => Vec::new(),
-            };
-            Ok(ClientMessage::Input { data })
-        }
-        TerminalControlCommand::Resize {
-            cols,
-            rows,
-            cell_width_px,
-            cell_height_px,
-        } => {
-            if cols == 0 || rows == 0 {
-                return Err("terminal.resize cols and rows must be greater than 0".into());
-            }
-            Ok(ClientMessage::Resize {
-                cols,
-                rows,
-                cell_width_px,
-                cell_height_px,
-            })
-        }
-        TerminalControlCommand::Scroll {
-            direction,
-            lines,
-            source,
-            column,
-            row,
-            modifiers,
-        } => {
-            if lines == 0 {
-                return Err("terminal.scroll lines must be greater than 0".into());
-            }
-            let direction = match direction {
-                TerminalControlScrollDirection::Up => AttachScrollDirection::Up,
-                TerminalControlScrollDirection::Down => AttachScrollDirection::Down,
-            };
-            let source = match source {
-                TerminalControlScrollSource::Wheel => AttachScrollSource::Wheel,
-                TerminalControlScrollSource::PageKey => AttachScrollSource::PageKey {
-                    input: match direction {
-                        AttachScrollDirection::Up => b"\x1b[5~".to_vec(),
-                        AttachScrollDirection::Down => b"\x1b[6~".to_vec(),
-                    },
-                },
-            };
-            Ok(ClientMessage::AttachScroll {
-                source,
-                direction,
-                lines,
-                column,
-                row,
-                modifiers,
-            })
-        }
-        TerminalControlCommand::Release {} => Ok(ClientMessage::Detach),
-    }
-}
-
 fn run_client_with_mode(
     requested_encoding: RenderEncoding,
     attach_request: Option<(String, bool)>,
@@ -1194,12 +823,11 @@ fn run_client_with_mode(
     init_logging();
 
     let loaded_config = crate::config::Config::load();
-    crate::terminal_modes::clear_host_mouse_reporting(&mut io::stdout())?;
     let mouse_capture = loaded_config.config.ui.mouse_capture;
     let mouse_scroll_lines = loaded_config.config.ui.mouse_scroll_lines();
     let redraw_on_focus_gained = loaded_config.config.ui.redraw_on_focus_gained;
-    let host_cursor = loaded_config.config.ui.host_cursor;
     let direct_attach_requested = attach_request.is_some();
+    #[cfg(unix)]
     let remote_image_paste_key = client_remote_image_paste_key(&loaded_config.config);
     let kitty_graphics_enabled =
         loaded_config.config.experimental.kitty_graphics && !direct_attach_requested;
@@ -1207,9 +835,9 @@ fn run_client_with_mode(
         sound_config: loaded_config.config.ui.sound,
         mouse_scroll_lines,
         redraw_on_focus_gained,
-        host_cursor,
         kitty_graphics_enabled,
         mouse_capture_active: mouse_capture,
+        #[cfg(unix)]
         remote_image_paste_key,
     };
 
@@ -1229,8 +857,8 @@ fn run_client_with_mode(
     };
 
     // Get the terminal geometry before handshake (before raw mode).
-    let (cols, rows, cell_width_px, cell_height_px, exact_cell_size) =
-        initial_terminal_geometry(kitty_graphics_enabled);
+    let (cols, rows, cell_width_px, cell_height_px) =
+        current_terminal_geometry(kitty_graphics_enabled);
 
     // Perform handshake while the stream is still in blocking mode.
     let negotiated_encoding = match do_handshake(
@@ -1239,7 +867,6 @@ fn run_client_with_mode(
         rows,
         cell_width_px,
         cell_height_px,
-        exact_cell_size,
         requested_encoding,
         direct_attach_requested,
     ) {
@@ -1298,22 +925,17 @@ fn run_client_with_mode(
 
     let should_quit = Arc::new(AtomicBool::new(false));
 
-    // ctrlc's "termination" feature also catches SIGTERM/SIGHUP so direct
-    // termination signals still run the quit path and TerminalGuard::Drop.
+    // Install Ctrl+C handler.
     let quit_flag = should_quit.clone();
-    if let Err(err) = ctrlc::set_handler(move || {
+    let _ = ctrlc::set_handler(move || {
         quit_flag.store(true, Ordering::Release);
-    }) {
-        warn!(%err, "failed to install termination handler; terminal restore relies on TerminalGuard::Drop and the panic hook");
-    }
+    });
 
     let result = rt.block_on(async {
         run_client_loop(
             stream,
             cols,
             rows,
-            cell_width_px,
-            cell_height_px,
             should_quit,
             loop_config,
             negotiated_encoding,
@@ -1358,8 +980,6 @@ async fn run_client_loop(
     stream: LocalStream,
     cols: u16,
     rows: u16,
-    initial_cell_width_px: u32,
-    initial_cell_height_px: u32,
     should_quit: Arc<AtomicBool>,
     config: ClientLoopConfig,
     negotiated_encoding: RenderEncoding,
@@ -1367,34 +987,21 @@ async fn run_client_loop(
 ) -> Result<(), ClientError> {
     #[cfg(windows)]
     let _ = config.mouse_scroll_lines;
-    let draw_host_cursor = attach_escape.is_none() && should_draw_host_cursor(config.host_cursor);
-    let is_remote_client = is_remote_client_process();
 
     let mut state = ClientState {
         blit_encoder: render_ansi::BlitEncoder::new(),
         mouse_capture_active: config.mouse_capture_active,
-        keyboard_report_all_active: false,
         reported_size: (cols, rows),
         sound_config: config.sound_config,
         kitty_graphics_enabled: config.kitty_graphics_enabled,
-        #[cfg(unix)]
-        direct_graphics_response: Arc::new(Mutex::new(direct_graphics::ResponseMatcher::default())),
-        #[cfg(unix)]
-        retired_direct_graphics: None,
         attach_escape,
         #[cfg(unix)]
         mouse_scroll_lines: config.mouse_scroll_lines,
+        #[cfg(unix)]
         remote_image_paste_key: config.remote_image_paste_key,
         redraw_on_focus_gained: config.redraw_on_focus_gained,
-        repaint_pending: false,
-        draw_host_cursor,
     };
     debug!(?negotiated_encoding, "client render encoding active");
-    let host_mouse_capture_active = Arc::new(AtomicBool::new(state.mouse_capture_active));
-    // Cell size reported by the host terminal, packed as width<<32 | height.
-    // Zero means the host has not reported one.
-    let reported_cell_size = Arc::new(AtomicU64::new(0));
-    let host_sgr_pixels_active = Arc::new(AtomicBool::new(false));
 
     // Channel for events from the stdin, resize, and server reader threads.
     let (event_tx, mut event_rx) = tokio::sync::mpsc::channel::<ClientLoopEvent>(256);
@@ -1402,60 +1009,22 @@ async fn run_client_loop(
     // Spawn the stdin reader thread.
     let will_query_host_terminal_theme =
         state.attach_escape.is_none() && should_query_host_terminal_theme();
-    // Terminals behind ConPTY report no pixel size through the ioctl, so ask the
-    // host terminal directly instead of falling back to an assumed cell size.
-    let will_query_host_cell_size = state.attach_escape.is_none()
-        && host_cell_size_query_required(state.kitty_graphics_enabled);
     let stdin_quit = should_quit.clone();
     let stdin_tx = event_tx.clone();
-    let stdin_mouse_capture_active = host_mouse_capture_active.clone();
-    let stdin_sgr_pixels_active = host_sgr_pixels_active.clone();
-    #[cfg(unix)]
-    let stdin_direct_response = state.direct_graphics_response.clone();
-    #[cfg(unix)]
-    let stdin_direct_response_active = stdin_direct_response
-        .lock()
-        .map(|matcher| matcher.active_handle())
-        .unwrap_or_default();
     std::thread::spawn(move || {
-        input::stdin_reader_loop(
-            stdin_tx,
-            &stdin_quit,
-            will_query_host_terminal_theme,
-            will_query_host_cell_size,
-            stdin_mouse_capture_active,
-            stdin_sgr_pixels_active,
-            #[cfg(unix)]
-            stdin_direct_response,
-            #[cfg(unix)]
-            stdin_direct_response_active,
-        );
+        input::stdin_reader_loop(stdin_tx, &stdin_quit, will_query_host_terminal_theme);
     });
 
     if will_query_host_terminal_theme {
         query_host_terminal_theme();
     }
 
-    if will_query_host_cell_size {
-        query_host_cell_size();
-    }
-
     // Spawn the resize poller thread.
     let resize_quit = should_quit.clone();
     let resize_tx = event_tx.clone();
-    let resize_cell_size = reported_cell_size.clone();
     let kitty_graphics_enabled = state.kitty_graphics_enabled;
     std::thread::spawn(move || {
-        resize_poll_loop(
-            resize_tx,
-            cols,
-            rows,
-            initial_cell_width_px,
-            initial_cell_height_px,
-            kitty_graphics_enabled,
-            &resize_cell_size,
-            &resize_quit,
-        );
+        resize_poll_loop(resize_tx, cols, rows, kitty_graphics_enabled, &resize_quit);
     });
 
     // Spawn the server reader thread (blocking reads from the socket).
@@ -1483,11 +1052,6 @@ async fn run_client_loop(
     write_stream
         .set_nonblocking(false)
         .map_err(ClientError::ConnectionFailed)?;
-
-    // This (foreground) client owns the prefix ASCII input-source switch
-    // (implemented on macOS and Windows; a no-op on other platforms).
-    use crate::platform::PrefixInputSource;
-    let mut prefix_input_source = crate::platform::RealPrefixInputSource::default();
 
     // Main event loop.
     while !should_quit.load(Ordering::Acquire) {
@@ -1539,85 +1103,49 @@ async fn run_client_loop(
                         &events,
                         state.redraw_on_focus_gained,
                     ) {
-                        state.request_repaint();
-                    }
-                    if crate::raw_input::events_require_host_terminal_appearance_query(&events) {
-                        query_host_terminal_appearance();
+                        state.request_full_redraw();
                     }
                     if crate::raw_input::events_require_host_terminal_theme_query(&events) {
                         query_host_terminal_theme();
                     }
-                    if let Some((width_px, height_px)) = reported_cell_size_from_events(&events) {
-                        store_reported_cell_size(&reported_cell_size, width_px, height_px);
-                    }
                     data
                 };
-                if should_bridge_clipboard_image_paste(
-                    &data,
-                    is_remote_client,
-                    state.remote_image_paste_key,
-                ) {
+                if should_bridge_clipboard_image_paste(&data, state.remote_image_paste_key) {
                     if let Some(image) = crate::platform::read_clipboard_image() {
-                        write_remote_image_to_server(&mut write_stream, image, "clipboard paste")?;
+                        if image.bytes.len() > MAX_CLIPBOARD_IMAGE_PAYLOAD {
+                            warn!(
+                                bytes = image.bytes.len(),
+                                max = MAX_CLIPBOARD_IMAGE_PAYLOAD,
+                                "local clipboard image is too large to bridge"
+                            );
+                            continue;
+                        }
+                        info!(
+                            bytes = image.bytes.len(),
+                            extension = image.extension,
+                            "bridging local clipboard image paste to remote server"
+                        );
+                        let msg = ClientMessage::ClipboardImage {
+                            extension: image.extension.to_owned(),
+                            data: image.bytes,
+                        };
+                        if let Err(e) = write_to_server(&mut write_stream, &msg) {
+                            return Err(ClientError::ConnectionLost(e));
+                        }
                         continue;
                     }
                     info!(
                         "clipboard image paste trigger received, but local clipboard has no image"
                     );
-                }
-                if let Some(image) = read_image_file_from_terminal_drop(&data, is_remote_client) {
-                    write_remote_image_to_server(&mut write_stream, image, "file drop")?;
-                    continue;
                 }
                 let msg = ClientMessage::Input { data };
                 if let Err(e) = write_to_server(&mut write_stream, &msg) {
                     return Err(ClientError::ConnectionLost(e));
                 }
             }
-            #[cfg(unix)]
-            ClientLoopEvent::DirectGraphicsResponse(response) => {
-                let message = ClientMessage::GraphicsTransmissionResult {
-                    transfer_id: response.transfer_id,
-                    image_id: response.image_id,
-                    success: response.success,
-                };
-                if let Err(err) = write_to_server(&mut write_stream, &message) {
-                    return Err(ClientError::ConnectionLost(err));
-                }
-            }
-            #[cfg(unix)]
-            ClientLoopEvent::PixelMouse(data, geometry) => {
-                let message = ClientMessage::InputPixels {
-                    data,
-                    cols: geometry.cols,
-                    rows: geometry.rows,
-                    width_px: geometry.width_px,
-                    height_px: geometry.height_px,
-                };
-                if let Err(err) = write_to_server(&mut write_stream, &message) {
-                    return Err(ClientError::ConnectionLost(err));
-                }
-            }
             #[cfg(windows)]
             ClientLoopEvent::StdinEvents(events) => {
                 if state.attach_escape.is_some() {
-                    continue;
-                }
-                if should_bridge_clipboard_image_events(
-                    &events,
-                    is_remote_client,
-                    state.remote_image_paste_key,
-                ) {
-                    if let Some(image) = crate::platform::read_clipboard_image() {
-                        write_remote_image_to_server(&mut write_stream, image, "clipboard paste")?;
-                        continue;
-                    }
-                    info!(
-                        "clipboard image paste trigger received, but local clipboard has no image"
-                    );
-                }
-                if let Some(image) = read_image_file_from_client_events(&events, is_remote_client) {
-                    write_remote_image_to_server(&mut write_stream, image, "file drop")?;
                     continue;
                 }
                 let raw_events = events
@@ -1628,7 +1156,7 @@ async fn run_client_loop(
                     &raw_events,
                     state.redraw_on_focus_gained,
                 ) {
-                    state.request_repaint();
+                    state.request_full_redraw();
                 }
                 let msg = ClientMessage::InputEvents { events };
                 if let Err(e) = write_to_server(&mut write_stream, &msg) {
@@ -1637,8 +1165,6 @@ async fn run_client_loop(
             }
             ClientLoopEvent::Resize(new_cols, new_rows, cell_width_px, cell_height_px) => {
                 state.reported_size = (new_cols, new_rows);
-                // Resizing invalidates the host-side blit baseline.
-                state.request_repaint();
                 let msg = ClientMessage::Resize {
                     cols: new_cols,
                     rows: new_rows,
@@ -1651,19 +1177,7 @@ async fn run_client_loop(
             }
             ClientLoopEvent::ServerMessage(msg) => match msg {
                 ServerMessage::Frame(frame_data) => {
-                    let frame_data = if state.draw_host_cursor {
-                        render_ansi::frame_with_drawn_cursor(frame_data)
-                    } else {
-                        frame_data
-                    };
-                    let repaint = state.repaint_pending || frame_data.force_full_repaint;
-                    let encoded = if state.draw_host_cursor {
-                        state
-                            .blit_encoder
-                            .encode_with_suppressed_visible_cursor(&frame_data, repaint)
-                    } else {
-                        state.blit_encoder.encode(&frame_data, repaint)
-                    };
+                    let encoded = state.blit_encoder.encode(&frame_data, false);
                     let mut stdout = io::stdout();
                     let graphics = if state.kitty_graphics_enabled {
                         frame_data.graphics.as_slice()
@@ -1674,7 +1188,6 @@ async fn run_client_loop(
                         write_encoded_frame_with_graphics(&mut stdout, &encoded.bytes, graphics);
                     let _ = stdout.flush();
                     state.blit_encoder.commit(frame_data, encoded);
-                    state.repaint_pending = false;
                 }
                 ServerMessage::Terminal(frame) => {
                     if state.kitty_graphics_enabled && contains_kitty_graphics_bytes(&frame.bytes) {
@@ -1692,105 +1205,6 @@ async fn run_client_loop(
                         let _ = stdout.flush();
                     }
                 }
-                ServerMessage::TerminalBell { count } => {
-                    if let Err(err) =
-                        crate::terminal_effects::write_terminal_bells(&mut io::stdout(), count)
-                    {
-                        warn!(err = %err, "failed to emit terminal bell");
-                    }
-                }
-                ServerMessage::GraphicsFile {
-                    path,
-                    expected_len,
-                    image_id,
-                    transfer_id,
-                    leading,
-                    control,
-                } => {
-                    #[cfg(unix)]
-                    {
-                        if state.retired_direct_graphics.take() == Some((transfer_id, image_id)) {
-                            continue;
-                        }
-                        let valid = state.kitty_graphics_enabled
-                            && usize::try_from(expected_len).ok().is_some_and(|len| {
-                                crate::pane_graphics_files::validate_direct_source(
-                                    std::path::Path::new(&path),
-                                    len,
-                                )
-                                .is_ok()
-                            })
-                            && direct_graphics::valid_control(&control, image_id)
-                            && state
-                                .direct_graphics_response
-                                .lock()
-                                .is_ok_and(|mut matcher| matcher.arm(transfer_id, image_id));
-                        let sent = if valid {
-                            let mut command = Vec::new();
-                            crate::kitty_graphics::encode_kitty_regular_file(
-                                &mut command,
-                                &leading,
-                                &control,
-                                &path,
-                            );
-                            let mut stdout = io::stdout();
-                            let written = stdout
-                                .write_all(&command)
-                                .and_then(|()| stdout.flush())
-                                .is_ok();
-                            if written {
-                                record_received_kitty_graphics(&command);
-                            }
-                            written
-                        } else {
-                            false
-                        };
-                        if sent {
-                            if let Ok(mut matcher) = state.direct_graphics_response.lock() {
-                                matcher.start(transfer_id);
-                            }
-                            let started = ClientMessage::GraphicsTransmissionStarted {
-                                transfer_id,
-                                image_id,
-                            };
-                            if let Err(err) = write_to_server(&mut write_stream, &started) {
-                                return Err(ClientError::ConnectionLost(err));
-                            }
-                        } else {
-                            if let Ok(mut matcher) = state.direct_graphics_response.lock() {
-                                if valid {
-                                    matcher.retire(transfer_id);
-                                } else {
-                                    matcher.cancel(transfer_id);
-                                }
-                            }
-                            let result = ClientMessage::GraphicsTransmissionResult {
-                                transfer_id,
-                                image_id,
-                                success: false,
-                            };
-                            if let Err(err) = write_to_server(&mut write_stream, &result) {
-                                return Err(ClientError::ConnectionLost(err));
-                            }
-                        }
-                    }
-                    #[cfg(not(unix))]
-                    let _ = (path, expected_len, image_id, transfer_id, leading, control);
-                }
-                ServerMessage::GraphicsTransmissionRetired {
-                    transfer_id,
-                    image_id,
-                } => {
-                    #[cfg(unix)]
-                    {
-                        state.retired_direct_graphics = Some((transfer_id, image_id));
-                        if let Ok(mut matcher) = state.direct_graphics_response.lock() {
-                            matcher.retire(transfer_id);
-                        }
-                    }
-                    #[cfg(not(unix))]
-                    let _ = (transfer_id, image_id);
-                }
                 ServerMessage::ServerShutdown { reason } => {
                     return Err(ClientError::ServerShutdown { reason });
                 }
@@ -1806,53 +1220,26 @@ async fn run_client_loop(
                     let _ = io::stdout().flush();
                 }
                 ServerMessage::WindowTitle { title } => {
-                    let _ = crate::terminal_effects::write_window_title(
-                        &mut io::stdout(),
-                        title.as_deref(),
-                    );
+                    write_window_title(title.as_deref());
+                    let _ = io::stdout().flush();
                 }
                 ServerMessage::ReloadSoundConfig => {
                     reload_local_client_config(
                         &mut state.sound_config,
                         &mut state.redraw_on_focus_gained,
-                        &mut state.draw_host_cursor,
+                        #[cfg(unix)]
                         &mut state.remote_image_paste_key,
                     );
                 }
-                ServerMessage::MouseCapture {
-                    enabled,
-                    sgr_pixels,
-                } => {
-                    let next_sgr_pixels = enabled && sgr_pixels;
-                    let mouse_mode_changed = enabled != state.mouse_capture_active
-                        || next_sgr_pixels != host_sgr_pixels_active.load(Ordering::Acquire);
-                    if mouse_mode_changed {
-                        set_mouse_capture(enabled, next_sgr_pixels)
-                            .map_err(ClientError::ConnectionFailed)?;
+                ServerMessage::MouseCapture { enabled } => {
+                    let desired = enabled;
+                    if desired != state.mouse_capture_active {
+                        set_mouse_capture(desired).map_err(ClientError::ConnectionFailed)?;
                         #[cfg(windows)]
-                        if enabled && windows_vti_input_backend_enabled() {
+                        if windows_vti_input_backend_enabled() {
                             let _ = enable_windows_virtual_terminal_input();
                         }
-                    }
-                    state.mouse_capture_active = enabled;
-                    host_mouse_capture_active.store(enabled, Ordering::Release);
-                    host_sgr_pixels_active.store(next_sgr_pixels, Ordering::Release);
-                }
-                ServerMessage::KittyKeyboardReportAll { enabled } => {
-                    if enabled != state.keyboard_report_all_active {
-                        crate::terminal_modes::set_host_kitty_keyboard_report_all(
-                            &mut io::stdout(),
-                            enabled,
-                        )
-                        .map_err(ClientError::ConnectionFailed)?;
-                        state.keyboard_report_all_active = enabled;
-                    }
-                }
-                ServerMessage::PrefixInputSource { active } => {
-                    if active {
-                        prefix_input_source.switch_to_ascii();
-                    } else {
-                        prefix_input_source.restore();
+                        state.mouse_capture_active = desired;
                     }
                 }
                 ServerMessage::Welcome { .. } => {
@@ -1865,12 +1252,7 @@ async fn run_client_loop(
                     "server closed connection",
                 )));
             }
-            ClientLoopEvent::Timer => {
-                #[cfg(unix)]
-                if let Ok(mut matcher) = state.direct_graphics_response.lock() {
-                    matcher.expire();
-                }
-            }
+            ClientLoopEvent::Timer => {}
         }
     }
 
@@ -1946,41 +1328,11 @@ fn write_to_server(stream: &mut LocalStream, msg: &ClientMessage) -> io::Result<
     protocol::write_message(stream, msg).map_err(|e| io::Error::other(e.to_string()))
 }
 
-fn write_remote_image_to_server(
-    stream: &mut LocalStream,
-    image: crate::platform::ClipboardImage,
-    source: &'static str,
-) -> Result<(), ClientError> {
-    if image.bytes.len() > MAX_CLIPBOARD_IMAGE_PAYLOAD {
-        warn!(
-            bytes = image.bytes.len(),
-            max = MAX_CLIPBOARD_IMAGE_PAYLOAD,
-            source,
-            "local image is too large to bridge"
-        );
-        return Ok(());
-    }
-
-    info!(
-        bytes = image.bytes.len(),
-        extension = image.extension,
-        source,
-        "bridging local image to remote server"
-    );
-    write_to_server(
-        stream,
-        &ClientMessage::ClipboardImage {
-            extension: image.extension.to_owned(),
-            data: image.bytes,
-        },
-    )
-    .map_err(ClientError::ConnectionLost)
-}
-
 // ---------------------------------------------------------------------------
 // Notifications
 // ---------------------------------------------------------------------------
 
+#[cfg(unix)]
 fn client_remote_image_paste_key(
     config: &crate::config::Config,
 ) -> Option<(crossterm::event::KeyCode, crossterm::event::KeyModifiers)> {
@@ -2000,8 +1352,7 @@ fn client_remote_image_paste_key(
 fn reload_local_client_config(
     sound_config: &mut crate::config::SoundConfig,
     redraw_on_focus_gained: &mut bool,
-    draw_host_cursor: &mut bool,
-    remote_image_paste_key: &mut Option<(
+    #[cfg(unix)] remote_image_paste_key: &mut Option<(
         crossterm::event::KeyCode,
         crossterm::event::KeyModifiers,
     )>,
@@ -2011,11 +1362,14 @@ fn reload_local_client_config(
             for diagnostic in loaded.config.ui.sound.diagnostics() {
                 warn!(diagnostic = %diagnostic, "local sound config diagnostic");
             }
+            #[cfg(unix)]
             let loaded_remote_image_paste_key = client_remote_image_paste_key(&loaded.config);
             *sound_config = loaded.config.ui.sound;
             *redraw_on_focus_gained = loaded.config.ui.redraw_on_focus_gained;
-            *draw_host_cursor = should_draw_host_cursor(loaded.config.ui.host_cursor);
-            *remote_image_paste_key = loaded_remote_image_paste_key;
+            #[cfg(unix)]
+            {
+                *remote_image_paste_key = loaded_remote_image_paste_key;
+            }
             debug!("reloaded local client config");
         }
         Err(diagnostics) => {
@@ -2093,11 +1447,10 @@ fn sound_from_notify_message(message: &str) -> Option<crate::sound::Sound> {
 #[cfg(unix)]
 fn should_bridge_clipboard_image_paste(
     data: &[u8],
-    is_remote_client: bool,
     remote_image_paste_key: Option<(crossterm::event::KeyCode, crossterm::event::KeyModifiers)>,
 ) -> bool {
     if data == b"\x1b[200~\x1b[201~" {
-        return is_remote_client;
+        return true;
     }
 
     let Some(remote_image_paste_key) = remote_image_paste_key else {
@@ -2109,177 +1462,8 @@ fn should_bridge_clipboard_image_paste(
         events.as_slice(),
         [crate::raw_input::RawInputEvent::Key(key)]
             if key.kind == crossterm::event::KeyEventKind::Press
-                && crate::config::terminal_key_matches_combo(key, remote_image_paste_key)
+                && crate::config::terminal_key_matches_combo(*key, remote_image_paste_key)
     )
-}
-
-#[cfg(any(windows, test))]
-fn should_bridge_clipboard_image_events(
-    events: &[crate::protocol::ClientInputEvent],
-    is_remote_client: bool,
-    remote_image_paste_key: Option<(crossterm::event::KeyCode, crossterm::event::KeyModifiers)>,
-) -> bool {
-    if !is_remote_client {
-        return false;
-    }
-    if matches!(
-        events,
-        [crate::protocol::ClientInputEvent::Paste { text }] if text.is_empty()
-    ) {
-        return true;
-    }
-
-    let Some(remote_image_paste_key) = remote_image_paste_key else {
-        return false;
-    };
-    matches!(
-        events,
-        [event]
-            if matches!(
-                event.to_raw_input_event(),
-                crate::raw_input::RawInputEvent::Key(key)
-                    if key.kind == crossterm::event::KeyEventKind::Press
-                        && crate::config::terminal_key_matches_combo(
-                            &key,
-                            remote_image_paste_key,
-                        )
-            )
-    )
-}
-
-#[cfg(unix)]
-fn read_image_file_from_terminal_drop(
-    data: &[u8],
-    is_remote_client: bool,
-) -> Option<crate::platform::ClipboardImage> {
-    let (path, extension) = image_path_from_terminal_drop(data, is_remote_client)?;
-    read_image_file(path, extension)
-}
-
-#[cfg(any(windows, test))]
-fn read_image_file_from_client_events(
-    events: &[crate::protocol::ClientInputEvent],
-    is_remote_client: bool,
-) -> Option<crate::platform::ClipboardImage> {
-    let [crate::protocol::ClientInputEvent::Paste { text }] = events else {
-        return None;
-    };
-    let text = normalized_terminal_drop_text(text)?;
-    // Windows events already carry native paths; Unix backslash unescaping would corrupt them.
-    let (path, extension) =
-        image_path_from_drop_text(strip_matching_path_quotes(text), is_remote_client)?;
-    read_image_file(path, extension)
-}
-
-fn read_image_file(
-    path: std::path::PathBuf,
-    extension: &'static str,
-) -> Option<crate::platform::ClipboardImage> {
-    let metadata = std::fs::metadata(&path).ok()?;
-    if !metadata.is_file() {
-        return None;
-    }
-
-    let file = std::fs::File::open(&path).ok()?;
-    let bytes =
-        match crate::platform::read_limited_reader(file, MAX_CLIPBOARD_IMAGE_PAYLOAD).ok()? {
-            crate::platform::LimitedRead::Complete(bytes) => bytes,
-            crate::platform::LimitedRead::Empty => return None,
-            crate::platform::LimitedRead::Oversized => {
-                warn!(
-                    max = MAX_CLIPBOARD_IMAGE_PAYLOAD,
-                    "local image file drop is too large to bridge"
-                );
-                return None;
-            }
-        };
-
-    Some(crate::platform::ClipboardImage { bytes, extension })
-}
-
-#[cfg(unix)]
-fn image_path_from_terminal_drop(
-    data: &[u8],
-    is_remote_client: bool,
-) -> Option<(std::path::PathBuf, &'static str)> {
-    let bytes = bracketed_paste_payload(data).unwrap_or(data);
-    let text = std::str::from_utf8(bytes).ok()?;
-    let text = normalized_terminal_drop_text(text)?;
-    let text = unescape_terminal_drop_path(strip_matching_path_quotes(text));
-    image_path_from_drop_text(&text, is_remote_client)
-}
-
-fn normalized_terminal_drop_text(text: &str) -> Option<&str> {
-    let text = text.trim_end_matches(['\r', '\n']);
-    (!text.is_empty() && !text.contains(['\r', '\n'])).then_some(text)
-}
-
-fn image_path_from_drop_text(
-    text: &str,
-    is_remote_client: bool,
-) -> Option<(std::path::PathBuf, &'static str)> {
-    if !is_remote_client {
-        return None;
-    }
-    let path = std::path::PathBuf::from(text);
-    if !path.is_absolute() {
-        return None;
-    }
-    let extension = recognized_image_extension(path.extension()?.to_str()?)?;
-    Some((path, extension))
-}
-
-#[cfg(unix)]
-fn bracketed_paste_payload(data: &[u8]) -> Option<&[u8]> {
-    const START: &[u8] = b"\x1b[200~";
-    const END: &[u8] = b"\x1b[201~";
-    data.strip_prefix(START)?.strip_suffix(END)
-}
-
-fn strip_matching_path_quotes(text: &str) -> &str {
-    if text.len() < 2 {
-        return text;
-    }
-
-    let bytes = text.as_bytes();
-    match (bytes.first(), bytes.last()) {
-        (Some(b'\''), Some(b'\'')) | (Some(b'"'), Some(b'"')) => &text[1..text.len() - 1],
-        _ => text,
-    }
-}
-
-#[cfg(unix)]
-fn unescape_terminal_drop_path(text: &str) -> String {
-    let mut unescaped = String::with_capacity(text.len());
-    let mut chars = text.chars();
-    while let Some(ch) = chars.next() {
-        if ch == '\\' {
-            if let Some(escaped) = chars.next() {
-                unescaped.push(escaped);
-            } else {
-                unescaped.push(ch);
-            }
-        } else {
-            unescaped.push(ch);
-        }
-    }
-    unescaped
-}
-
-fn recognized_image_extension(extension: &str) -> Option<&'static str> {
-    if extension.eq_ignore_ascii_case("png") {
-        Some("png")
-    } else if extension.eq_ignore_ascii_case("jpg") || extension.eq_ignore_ascii_case("jpeg") {
-        Some("jpg")
-    } else if extension.eq_ignore_ascii_case("gif") {
-        Some("gif")
-    } else if extension.eq_ignore_ascii_case("webp") {
-        Some("webp")
-    } else if extension.eq_ignore_ascii_case("bmp") {
-        Some("bmp")
-    } else {
-        None
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2302,6 +1486,19 @@ fn forward_clipboard(data: &str) {
     crate::selection::write_osc52_bytes(&bytes);
 }
 
+fn window_title_osc(title: Option<&str>) -> Vec<u8> {
+    let title = title.unwrap_or("herdr");
+    let safe_title = title
+        .chars()
+        .filter(|ch| !matches!(*ch, '\u{1b}' | '\u{7}' | '\u{9c}'))
+        .collect::<String>();
+    format!("\x1b]0;{safe_title}\x07").into_bytes()
+}
+
+fn write_window_title(title: Option<&str>) {
+    let _ = io::stdout().write_all(&window_title_osc(title));
+}
+
 // ---------------------------------------------------------------------------
 // Frame output
 // ---------------------------------------------------------------------------
@@ -2311,18 +1508,15 @@ fn write_encoded_frame_with_graphics(
     encoded: &[u8],
     graphics: &[u8],
 ) -> io::Result<()> {
+    writer.write_all(encoded)?;
     if graphics.is_empty() {
-        return writer.write_all(encoded);
+        return Ok(());
     }
 
-    let insertion = render_ansi::final_sync_output_end(encoded).unwrap_or(encoded.len());
-
-    writer.write_all(&encoded[..insertion])?;
     record_received_kitty_graphics(graphics);
     writer.write_all(b"\x1b7")?;
     writer.write_all(graphics)?;
-    writer.write_all(b"\x1b8")?;
-    writer.write_all(&encoded[insertion..])
+    writer.write_all(b"\x1b8")
 }
 
 fn contains_kitty_graphics_bytes(bytes: &[u8]) -> bool {
@@ -2400,100 +1594,35 @@ fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 // Resize polling
 // ---------------------------------------------------------------------------
 
-/// Cell size assumed when neither the terminal size ioctl nor the host
-/// terminal reports pixel dimensions.
-const DEFAULT_CELL_WIDTH_PX: u32 = 8;
-const DEFAULT_CELL_HEIGHT_PX: u32 = 16;
-
-/// Cell size derived from the terminal size ioctl, if it reports pixels.
-fn ioctl_cell_size() -> Option<(u32, u32)> {
-    let size = crossterm::terminal::window_size().ok()?;
-    if size.columns == 0 || size.rows == 0 || size.width == 0 || size.height == 0 {
-        return None;
-    }
-    Some((
-        (u32::from(size.width) / u32::from(size.columns)).max(1),
-        (u32::from(size.height) / u32::from(size.rows)).max(1),
-    ))
-}
-
-/// Cell size used when the ioctl reports no pixels.
-fn cell_size_fallback(reported: u64, last: Option<(u32, u32)>) -> (u32, u32) {
-    unpack_cell_size(reported)
-        .or(last.filter(|(width, height)| *width > 0 && *height > 0))
-        .unwrap_or((DEFAULT_CELL_WIDTH_PX, DEFAULT_CELL_HEIGHT_PX))
-}
-
-#[cfg(any(unix, test))]
-fn pack_cell_size(width_px: u32, height_px: u32) -> u64 {
-    (u64::from(width_px) << 32) | u64::from(height_px)
-}
-
-fn unpack_cell_size(packed: u64) -> Option<(u32, u32)> {
-    let width_px = (packed >> 32) as u32;
-    let height_px = (packed & u64::from(u32::MAX)) as u32;
-    (width_px > 0 && height_px > 0).then_some((width_px, height_px))
-}
-
-fn current_terminal_geometry(
-    kitty_graphics_enabled: bool,
-    reported_cell_size: &AtomicU64,
-    last_cell_size: Option<(u32, u32)>,
-) -> (u16, u16, u32, u32) {
+fn current_terminal_geometry(kitty_graphics_enabled: bool) -> (u16, u16, u32, u32) {
     let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));
     if !kitty_graphics_enabled {
         return (cols, rows, 0, 0);
     }
-    let (cell_width_px, cell_height_px) = ioctl_cell_size().unwrap_or_else(|| {
-        cell_size_fallback(reported_cell_size.load(Ordering::Acquire), last_cell_size)
-    });
-    (cols, rows, cell_width_px, cell_height_px)
-}
-
-/// Reads terminal geometry before the handshake. Direct graphics is eligible
-/// only when the host supplied exact pixel dimensions through the ioctl.
-fn initial_terminal_geometry(kitty_graphics_enabled: bool) -> (u16, u16, u32, u32, bool) {
-    let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));
-    if !kitty_graphics_enabled {
-        return (cols, rows, 0, 0, false);
+    let Ok(size) = crossterm::terminal::window_size() else {
+        return (cols, rows, 8, 16);
+    };
+    if size.columns == 0 || size.rows == 0 || size.width == 0 || size.height == 0 {
+        return (cols, rows, 8, 16);
     }
-    match ioctl_cell_size() {
-        Some((width, height)) => (cols, rows, width, height, true),
-        None => (
-            cols,
-            rows,
-            DEFAULT_CELL_WIDTH_PX,
-            DEFAULT_CELL_HEIGHT_PX,
-            false,
-        ),
-    }
+    (
+        cols,
+        rows,
+        (u32::from(size.width) / u32::from(size.columns)).max(1),
+        (u32::from(size.height) / u32::from(size.rows)).max(1),
+    )
 }
 
-/// Reports polled changes and signalled resizes that return to the same size.
-fn resize_report_required(
-    signalled: bool,
-    new_size: (u16, u16, u32, u32),
-    last_size: (u16, u16, u32, u32),
-) -> bool {
-    signalled || new_size != last_size
-}
-
-/// Watches the terminal size and sends resize events when it changes.
-///
-/// The baseline cell size must match what the handshake sent to the server:
-/// reading a fresh one here would race the host cell size reply and could
-/// swallow the first change.
+/// Polls the terminal size and sends resize events when it changes.
 fn resize_poll_loop(
     resize_tx: tokio::sync::mpsc::Sender<ClientLoopEvent>,
     initial_cols: u16,
     initial_rows: u16,
-    initial_cell_width: u32,
-    initial_cell_height: u32,
     kitty_graphics_enabled: bool,
-    reported_cell_size: &AtomicU64,
     should_quit: &Arc<AtomicBool>,
 ) {
-    crate::platform::watch_terminal_resize_signal();
+    let (_, _, initial_cell_width, initial_cell_height) =
+        current_terminal_geometry(kitty_graphics_enabled);
     let mut last_size = (
         initial_cols,
         initial_rows,
@@ -2502,13 +1631,8 @@ fn resize_poll_loop(
     );
     while !should_quit.load(Ordering::Acquire) {
         std::thread::sleep(Duration::from_millis(100));
-        let signalled = crate::platform::take_terminal_resize_signal();
-        let new_size = current_terminal_geometry(
-            kitty_graphics_enabled,
-            reported_cell_size,
-            Some((last_size.2, last_size.3)),
-        );
-        if resize_report_required(signalled, new_size, last_size) {
+        let new_size = current_terminal_geometry(kitty_graphics_enabled);
+        if new_size != last_size {
             last_size = new_size;
             if resize_tx
                 .blocking_send(ClientLoopEvent::Resize(
@@ -2526,17 +1650,6 @@ fn resize_poll_loop(
 // Logging
 // ---------------------------------------------------------------------------
 
-#[cfg(any(not(windows), test))]
-fn query_host_terminal_appearance() {
-    let _ = write_host_terminal_appearance_query(io::stdout());
-}
-
-#[cfg(any(not(windows), test))]
-fn write_host_terminal_appearance_query(mut writer: impl io::Write) -> io::Result<()> {
-    writer.write_all(crate::terminal_theme::HOST_COLOR_SCHEME_QUERY_SEQUENCE.as_bytes())?;
-    writer.flush()
-}
-
 /// Initialize logging for the client process.
 fn query_host_terminal_theme() {
     let _ = write_host_terminal_theme_query(io::stdout());
@@ -2547,52 +1660,8 @@ fn should_query_host_terminal_theme() -> bool {
 }
 
 fn write_host_terminal_theme_query(mut writer: impl io::Write) -> io::Result<()> {
-    let query = crate::terminal_theme::host_terminal_theme_query_sequence();
-    writer.write_all(query.as_bytes())?;
+    writer.write_all(crate::terminal_theme::HOST_COLOR_QUERY_SEQUENCE.as_bytes())?;
     writer.flush()
-}
-
-/// XTWINOPS request for the host terminal cell size in pixels.
-const HOST_CELL_SIZE_QUERY: &[u8] = b"\x1b[16t";
-
-fn query_host_cell_size() {
-    let _ = write_host_cell_size_query(io::stdout());
-}
-
-fn should_query_host_cell_size() -> bool {
-    !cfg!(windows)
-}
-
-/// Only pane graphics need pixel dimensions, and only when the ioctl cannot
-/// provide them.
-fn host_cell_size_query_required(kitty_graphics_enabled: bool) -> bool {
-    kitty_graphics_enabled && should_query_host_cell_size() && ioctl_cell_size().is_none()
-}
-
-fn write_host_cell_size_query(mut writer: impl io::Write) -> io::Result<()> {
-    writer.write_all(HOST_CELL_SIZE_QUERY)?;
-    writer.flush()
-}
-
-#[cfg(any(unix, test))]
-fn store_reported_cell_size(reported_cell_size: &AtomicU64, width_px: u32, height_px: u32) {
-    let packed = pack_cell_size(width_px, height_px);
-    if reported_cell_size.swap(packed, Ordering::AcqRel) != packed {
-        debug!(width_px, height_px, "host terminal reported cell size");
-    }
-}
-
-#[cfg(any(unix, test))]
-fn reported_cell_size_from_events(
-    events: &[crate::raw_input::RawInputEvent],
-) -> Option<(u32, u32)> {
-    events.iter().rev().find_map(|event| match event {
-        crate::raw_input::RawInputEvent::HostCellSizeReport {
-            width_px,
-            height_px,
-        } => Some((*width_px, *height_px)),
-        _ => None,
-    })
 }
 
 fn init_logging() {
@@ -2612,49 +1681,6 @@ mod tests {
     fn env_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(()))
-    }
-
-    #[test]
-    fn resize_signal_reports_even_when_polled_size_is_unchanged() {
-        let size = (120, 40, 8, 16);
-        assert!(resize_report_required(true, size, size));
-        assert!(!resize_report_required(false, size, size));
-        assert!(resize_report_required(false, (120, 41, 8, 16), size));
-        assert!(resize_report_required(false, (120, 40, 9, 18), size));
-    }
-
-    #[test]
-    fn approximate_cell_size_never_enables_direct_graphics() {
-        assert_eq!(
-            client_launch_mode(false, false, 8, 16),
-            ClientLaunchMode::App
-        );
-        assert_eq!(
-            client_launch_mode(true, false, 8, 16),
-            ClientLaunchMode::TerminalAttach
-        );
-    }
-
-    #[test]
-    fn direct_graphics_profile_is_narrow_and_transport_safe() {
-        for (program, term, kitty, expected) in [
-            ("ghostty", "", false, true),
-            ("WezTerm", "", false, true),
-            ("", "xterm-kitty", false, true),
-            ("", "xterm-256color", true, true),
-            ("", "xterm-256color", false, false),
-        ] {
-            assert_eq!(
-                direct_graphics_profile_values(program, term, kitty, false, true),
-                expected
-            );
-        }
-        assert!(!direct_graphics_profile_values(
-            "ghostty", "", false, true, true
-        ));
-        assert!(!direct_graphics_profile_values(
-            "ghostty", "", false, false, false
-        ));
     }
 
     fn restore_env_var(key: &str, value: Option<OsString>) {
@@ -2715,207 +1741,29 @@ mod tests {
         }
     }
 
-    #[test]
-    fn remote_client_uses_extended_handshake_timeout() {
-        let _guard = env_lock().lock().unwrap();
-        let _remote = EnvVarGuard::set(crate::remote::REMOTE_KEYBINDINGS_ENV_VAR, "local");
-
-        assert_eq!(handshake_read_timeout(), REMOTE_HANDSHAKE_READ_TIMEOUT);
-    }
-
-    #[test]
-    fn host_cursor_policy_auto_uses_platform_default() {
-        assert_eq!(
-            should_draw_host_cursor(crate::config::HostCursorModeConfig::Auto),
-            crate::platform::should_draw_host_cursor_by_default()
-        );
-    }
-
-    #[test]
-    fn host_cursor_policy_native_and_drawn_override_auto_detection() {
-        let _guard = env_lock().lock().unwrap();
-        let _env = EnvVarGuard::set("TERM_PROGRAM", "WezTerm");
-
-        assert!(!should_draw_host_cursor(
-            crate::config::HostCursorModeConfig::Native
-        ));
-        assert!(should_draw_host_cursor(
-            crate::config::HostCursorModeConfig::Drawn
-        ));
-    }
-
     #[cfg(unix)]
     #[test]
     fn clipboard_image_paste_bridge_triggers_on_configured_key_and_empty_paste() {
         let ctrl_v = crate::config::parse_key_combo("ctrl+v").unwrap();
-        assert!(should_bridge_clipboard_image_paste(
-            &[0x16],
-            true,
-            Some(ctrl_v)
-        ));
+        assert!(should_bridge_clipboard_image_paste(&[0x16], Some(ctrl_v)));
         assert!(should_bridge_clipboard_image_paste(
             b"\x1b[118;5u",
-            true,
             Some(ctrl_v)
         ));
         assert!(should_bridge_clipboard_image_paste(
             b"\x1b[200~\x1b[201~",
-            true,
             None
         ));
         assert!(!should_bridge_clipboard_image_paste(
-            b"\x1b[200~\x1b[201~",
-            false,
-            Some(ctrl_v)
-        ));
-        assert!(!should_bridge_clipboard_image_paste(
             b"\x1b[200~text\x1b[201~",
-            true,
             Some(ctrl_v)
         ));
-        assert!(!should_bridge_clipboard_image_paste(&[0x16], true, None));
-        assert!(!should_bridge_clipboard_image_paste(
-            b"v",
-            true,
-            Some(ctrl_v)
-        ));
-    }
-
-    struct TempImageFile {
-        path: std::path::PathBuf,
-    }
-
-    impl TempImageFile {
-        fn new(extension: &str, bytes: &[u8]) -> Self {
-            Self::with_name_fragment("test", extension, bytes)
-        }
-
-        fn with_name_fragment(name_fragment: &str, extension: &str, bytes: &[u8]) -> Self {
-            let nanos = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos();
-            let path = std::env::temp_dir().join(format!(
-                "herdr-client-drop-{name_fragment}-{}-{nanos}.{extension}",
-                std::process::id()
-            ));
-            std::fs::write(&path, bytes).unwrap();
-            Self { path }
-        }
-    }
-
-    impl Drop for TempImageFile {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_file(&self.path);
-        }
+        assert!(!should_bridge_clipboard_image_paste(&[0x16], None));
+        assert!(!should_bridge_clipboard_image_paste(b"v", Some(ctrl_v)));
     }
 
     #[test]
-    fn clipboard_image_event_bridge_matches_remote_key_and_empty_paste() {
-        let ctrl_v = crate::config::parse_key_combo("ctrl+v").unwrap();
-        let key = crate::protocol::ClientInputEvent::Key {
-            code: crate::protocol::ClientKeyCode::Char('v'),
-            modifiers: crossterm::event::KeyModifiers::CONTROL.bits(),
-            kind: crate::protocol::ClientKeyKind::Press,
-            repeat_count: 1,
-            generated_text: None,
-            source: crate::protocol::ClientKeySource::Synthesized,
-        };
-        let empty_paste = crate::protocol::ClientInputEvent::Paste {
-            text: String::new(),
-        };
-
-        assert!(should_bridge_clipboard_image_events(
-            std::slice::from_ref(&key),
-            true,
-            Some(ctrl_v),
-        ));
-        assert!(should_bridge_clipboard_image_events(
-            std::slice::from_ref(&empty_paste),
-            true,
-            None,
-        ));
-        assert!(!should_bridge_clipboard_image_events(
-            &[key],
-            false,
-            Some(ctrl_v),
-        ));
-        assert!(!should_bridge_clipboard_image_events(
-            &[crate::protocol::ClientInputEvent::Paste {
-                text: "text".to_string(),
-            }],
-            true,
-            Some(ctrl_v),
-        ));
-    }
-
-    #[test]
-    fn remote_image_file_drop_bridge_reads_semantic_paste_path() {
-        let file = TempImageFile::new("PNG", b"image-bytes");
-        let events = [crate::protocol::ClientInputEvent::Paste {
-            text: format!("\"{}\"", file.path.display()),
-        }];
-
-        let image = read_image_file_from_client_events(&events, true).unwrap();
-
-        assert_eq!(image.extension, "png");
-        assert_eq!(image.bytes, b"image-bytes");
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn remote_image_file_drop_bridge_reads_bracketed_absolute_image_path() {
-        let file = TempImageFile::new("PNG", b"image-bytes");
-        let input = format!("\x1b[200~{}\x1b[201~", file.path.display());
-
-        let image = read_image_file_from_terminal_drop(input.as_bytes(), true).unwrap();
-
-        assert_eq!(image.extension, "png");
-        assert_eq!(image.bytes, b"image-bytes");
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn remote_image_file_drop_bridge_reads_plain_quoted_path_with_newline() {
-        let file = TempImageFile::new("jpeg", b"jpeg-bytes");
-        let input = format!("'{}'\n", file.path.display());
-
-        let image = read_image_file_from_terminal_drop(input.as_bytes(), true).unwrap();
-
-        assert_eq!(image.extension, "jpg");
-        assert_eq!(image.bytes, b"jpeg-bytes");
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn remote_image_file_drop_bridge_unescapes_spaces_in_paths() {
-        let file = TempImageFile::with_name_fragment("space test", "png", b"image-bytes");
-        let escaped_path = file.path.display().to_string().replace(' ', "\\ ");
-
-        let image = read_image_file_from_terminal_drop(escaped_path.as_bytes(), true).unwrap();
-
-        assert_eq!(image.extension, "png");
-        assert_eq!(image.bytes, b"image-bytes");
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn remote_image_file_drop_bridge_ignores_non_remote_and_non_image_input() {
-        let file = TempImageFile::new("png", b"image-bytes");
-        let path = file.path.display().to_string();
-
-        assert!(read_image_file_from_terminal_drop(path.as_bytes(), false).is_none());
-        assert!(read_image_file_from_terminal_drop(b"relative.png\n", true).is_none());
-        assert!(read_image_file_from_terminal_drop(b"/tmp/file.txt\n", true).is_none());
-        assert!(read_image_file_from_terminal_drop(
-            format!("{}\nextra", file.path.display()).as_bytes(),
-            true
-        )
-        .is_none());
-    }
-
-    #[test]
-    fn graphics_bytes_are_written_inside_synchronized_blit_with_saved_cursor() {
+    fn graphics_bytes_are_written_after_blit_with_saved_cursor() {
         let mut output = Vec::new();
         write_encoded_frame_with_graphics(
             &mut output,
@@ -2926,7 +1774,7 @@ mod tests {
 
         assert_eq!(
             output,
-            b"\x1b[?2026htext\x1b7graphics\x1b8\x1b[?2026lcursor"
+            b"\x1b[?2026htext\x1b[?2026lcursor\x1b7graphics\x1b8"
         );
     }
 
@@ -2963,24 +1811,13 @@ mod tests {
     }
 
     #[test]
-    fn write_host_terminal_appearance_query_emits_mode_2031_query() {
-        let mut output = Vec::new();
-        write_host_terminal_appearance_query(&mut output).unwrap();
-        assert_eq!(output, b"\x1b[?996n");
-    }
-
-    #[test]
     fn write_host_terminal_theme_query_emits_osc_queries() {
         let mut output = Vec::new();
         write_host_terminal_theme_query(&mut output).unwrap();
         assert_eq!(
             output,
-            crate::terminal_theme::host_terminal_theme_query_sequence().as_bytes()
+            crate::terminal_theme::HOST_COLOR_QUERY_SEQUENCE.as_bytes()
         );
-        assert!(!output
-            .windows(crate::terminal_theme::HOST_COLOR_SCHEME_QUERY_SEQUENCE.len())
-            .any(|window| window
-                == crate::terminal_theme::HOST_COLOR_SCHEME_QUERY_SEQUENCE.as_bytes()));
     }
 
     #[test]
@@ -3011,40 +1848,6 @@ mod tests {
     #[test]
     fn host_terminal_theme_query_is_disabled_on_windows() {
         assert_eq!(should_query_host_terminal_theme(), !cfg!(windows));
-    }
-
-    #[test]
-    fn write_host_cell_size_query_emits_xtwinops_request() {
-        let mut output = Vec::new();
-        write_host_cell_size_query(&mut output).unwrap();
-
-        assert_eq!(output, b"\x1b[16t");
-    }
-
-    #[test]
-    fn host_cell_size_query_is_disabled_on_windows() {
-        assert_eq!(should_query_host_cell_size(), !cfg!(windows));
-    }
-
-    #[test]
-    fn cell_size_fallback_prefers_reported_then_previous_size() {
-        assert_eq!(cell_size_fallback(0, None), (8, 16));
-        assert_eq!(cell_size_fallback(0, Some((11, 22))), (11, 22));
-        assert_eq!(
-            cell_size_fallback(pack_cell_size(10, 21), Some((11, 22))),
-            (10, 21)
-        );
-        assert_eq!(cell_size_fallback(pack_cell_size(10, 0), None), (8, 16));
-        assert_eq!(cell_size_fallback(pack_cell_size(0, 21), None), (8, 16));
-    }
-
-    #[test]
-    fn reported_cell_size_is_taken_from_host_cell_size_events() {
-        let events = crate::raw_input::parse_raw_input_bytes_sync(b"\x1b[?997;1n");
-        assert_eq!(reported_cell_size_from_events(&events), None);
-
-        let events = crate::raw_input::parse_raw_input_bytes_sync(b"\x1b[6;21;10t\x1b[6;18;9t");
-        assert_eq!(reported_cell_size_from_events(&events), Some((9, 18)));
     }
 
     #[test]
@@ -3310,38 +2113,12 @@ mod tests {
 
     #[test]
     fn client_error_display_connection_lost() {
-        let _guard = env_lock().lock().unwrap();
-        let _env = EnvVarsRemovedGuard::new(&[crate::remote::REATTACH_COMMAND_ENV_VAR]);
         let err =
             ClientError::ConnectionLost(io::Error::new(io::ErrorKind::BrokenPipe, "broken pipe"));
         let msg = err.to_string();
         assert!(
             msg.contains("lost connection to server"),
             "should mention lost connection: {msg}"
-        );
-    }
-
-    #[test]
-    fn client_error_display_remote_connection_lost_has_reattach_hint() {
-        let _guard = env_lock().lock().unwrap();
-        let _remote_env = EnvVarGuard::set(
-            crate::remote::REATTACH_COMMAND_ENV_VAR,
-            "herdr --remote host --session work",
-        );
-        let err =
-            ClientError::ConnectionLost(io::Error::new(io::ErrorKind::BrokenPipe, "broken pipe"));
-        let msg = err.to_string();
-        assert!(
-            msg.contains("lost connection to remote Herdr"),
-            "should mention remote connection loss: {msg}"
-        );
-        assert!(
-            msg.contains("panes may still be running"),
-            "should explain possible persistence: {msg}"
-        );
-        assert!(
-            msg.contains("Run `herdr --remote host --session work` to reattach"),
-            "should show remote reattach command: {msg}"
         );
     }
 
@@ -3367,7 +2144,7 @@ mod tests {
     }
 
     #[test]
-    fn reload_local_client_config_refreshes_local_client_presentation_state() {
+    fn reload_local_client_config_refreshes_redraw_on_focus_gained() {
         let _guard = crate::config::test_config_env_lock().lock().unwrap();
         let path = std::env::temp_dir().join(format!(
             "herdr-client-config-reload-{}-{}.toml",
@@ -3377,27 +2154,22 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        std::fs::write(
-            &path,
-            "[ui]\nredraw_on_focus_gained = false\nhost_cursor = \"drawn\"\n",
-        )
-        .unwrap();
+        std::fs::write(&path, "[ui]\nredraw_on_focus_gained = false\n").unwrap();
         let path_string = path.to_string_lossy().to_string();
         let _env = EnvVarGuard::set(crate::config::CONFIG_PATH_ENV_VAR, &path_string);
         let mut sound_config = crate::config::SoundConfig::default();
         let mut redraw_on_focus_gained = true;
-        let mut draw_host_cursor = false;
+        #[cfg(unix)]
         let mut remote_image_paste_key = None;
 
         reload_local_client_config(
             &mut sound_config,
             &mut redraw_on_focus_gained,
-            &mut draw_host_cursor,
+            #[cfg(unix)]
             &mut remote_image_paste_key,
         );
 
         assert!(!redraw_on_focus_gained);
-        assert!(draw_host_cursor);
         let _ = std::fs::remove_file(path);
     }
 
@@ -3484,69 +2256,6 @@ mod tests {
     }
 
     #[test]
-    fn terminal_control_input_command_accepts_text() {
-        let action =
-            terminal_control_command_from_json(r#"{"type":"terminal.input","text":"hello"}"#)
-                .unwrap();
-        let ClientMessage::Input { data } = action else {
-            panic!("expected input command");
-        };
-        assert_eq!(data, b"hello");
-    }
-
-    #[test]
-    fn terminal_control_input_command_accepts_base64_bytes() {
-        let action =
-            terminal_control_command_from_json(r#"{"type":"terminal.input","bytes":"G1tB"}"#)
-                .unwrap();
-        let ClientMessage::Input { data } = action else {
-            panic!("expected input command");
-        };
-        assert_eq!(data, b"\x1b[A");
-    }
-
-    #[test]
-    fn terminal_control_resize_command_maps_to_client_resize() {
-        let action = terminal_control_command_from_json(
-            r#"{"type":"terminal.resize","cols":100,"rows":30,"cell_width_px":8,"cell_height_px":16}"#,
-        )
-        .unwrap();
-        let ClientMessage::Resize {
-            cols,
-            rows,
-            cell_width_px,
-            cell_height_px,
-        } = action
-        else {
-            panic!("expected resize command");
-        };
-        assert_eq!(
-            (cols, rows, cell_width_px, cell_height_px),
-            (100, 30, 8, 16)
-        );
-    }
-
-    #[test]
-    fn terminal_control_scroll_command_maps_to_attach_scroll() {
-        let action = terminal_control_command_from_json(
-            r#"{"type":"terminal.scroll","direction":"up","lines":3}"#,
-        )
-        .unwrap();
-        let ClientMessage::AttachScroll {
-            source,
-            direction,
-            lines,
-            ..
-        } = action
-        else {
-            panic!("expected scroll command");
-        };
-        assert_eq!(source, AttachScrollSource::Wheel);
-        assert_eq!(direction, AttachScrollDirection::Up);
-        assert_eq!(lines, 3);
-    }
-
-    #[test]
     fn forward_clipboard_uses_local_clipboard_path() {
         unsafe {
             std::env::set_var("SSH_CONNECTION", "1 2 3 4");
@@ -3555,5 +2264,14 @@ mod tests {
         unsafe {
             std::env::remove_var("SSH_CONNECTION");
         }
+    }
+
+    #[test]
+    fn window_title_osc_strips_terminators_and_defaults_to_herdr() {
+        assert_eq!(
+            window_title_osc(Some("herdr\x1b api\u{7}\u{9c}")),
+            b"\x1b]0;herdr api\x07"
+        );
+        assert_eq!(window_title_osc(None), b"\x1b]0;herdr\x07");
     }
 }

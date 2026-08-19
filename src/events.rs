@@ -7,10 +7,7 @@ use std::time::Instant;
 
 use crate::detect::{Agent, AgentState};
 use crate::layout::PaneId;
-use crate::workspace::{
-    GitStatusCacheEntry, RepoBranches, RepoIssues, RepoOpenPrs, WorkspaceCheckStatus,
-    WorkspaceGitStatus,
-};
+use crate::workspace::{GitStatusCacheEntry, WorkspaceCheckStatus, WorkspaceGitStatus};
 
 #[derive(Debug)]
 pub struct ApiWorktreeAddRequest {
@@ -33,7 +30,6 @@ pub struct WorktreeAddResult {
     pub path: std::path::PathBuf,
     pub api_request: Option<ApiWorktreeAddRequest>,
     pub result: Result<(), String>,
-    pub setup: crate::bora_settings::SetupStatus,
 }
 
 #[derive(Debug)]
@@ -60,12 +56,6 @@ pub struct WorktreeRemoveResult {
 pub enum AppEvent {
     /// A pane's child process exited.
     PaneDied { pane_id: PaneId },
-    /// Process detection identified an agent before its screen state was confirmed.
-    AgentProcessDetected {
-        pane_id: PaneId,
-        agent: Agent,
-        observed_at: Instant,
-    },
     /// Fallback detector state changed in a pane.
     StateChanged {
         pane_id: PaneId,
@@ -83,6 +73,7 @@ pub enum AppEvent {
         agent_label: String,
         state: AgentState,
         message: Option<String>,
+        custom_status: Option<String>,
         seq: Option<u64>,
         session_ref: Option<crate::agent_resume::AgentSessionRef>,
     },
@@ -103,9 +94,11 @@ pub enum AppEvent {
         applies_to_source: Option<String>,
         title: Option<String>,
         display_agent: Option<String>,
+        custom_status: Option<String>,
         state_labels: std::collections::HashMap<String, String>,
         clear_title: bool,
         clear_display_agent: bool,
+        clear_custom_status: bool,
         clear_state_labels: bool,
         seq: Option<u64>,
         ttl: Option<std::time::Duration>,
@@ -134,17 +127,9 @@ pub enum AppEvent {
         updated: Vec<crate::detect::manifest_update::ManifestUpdateCommit>,
         status: crate::detect::manifest_update::ManifestUpdateStatus,
     },
-    /// A pane child emitted one or more executable BEL characters.
-    /// The host-facing process forwards them to its outer terminal.
-    TerminalBell { pane_id: PaneId, count: u16 },
     /// A pane child emitted a valid OSC 52 clipboard write. The main loop
     /// re-emits it through herdr's own clipboard writer.
     ClipboardWrite { content: Vec<u8> },
-    /// Prefix-mode ASCII input-source request, emitted on entering/leaving the ASCII input
-    /// realm. The foreground process applies the host-local TIS switch (`active = true`) /
-    /// restore (`active = false`): the client in server mode (via server forwarding), the
-    /// app itself in monolithic mode.
-    PrefixInputSource { active: bool },
     /// A pane child reported its shell current directory through terminal
     /// metadata such as OSC 7.
     TerminalCwdReported {
@@ -155,12 +140,6 @@ pub enum AppEvent {
     GitStatusRefreshed {
         results: Vec<WorkspaceGitStatus>,
         cache_updates: Vec<(std::path::PathBuf, GitStatusCacheEntry)>,
-    },
-    /// A configured tab bar status command finished.
-    TabBarCommandFinished {
-        generation: u64,
-        segment_index: usize,
-        result: Result<Option<String>, String>,
     },
     /// A plugin action or event command finished.
     PluginCommandFinished {
@@ -183,7 +162,6 @@ pub enum AppEvent {
     /// Background `gh pr create` for a worktree completed; Ok carries the PR URL.
     WorktreeOpenPrFinished {
         branch: String,
-        repo_identity: Option<String>,
         result: Result<String, String>,
     },
     /// Background sync (pull --ff-only + push) of a workspace branch completed.
@@ -196,20 +174,5 @@ pub enum AppEvent {
     WorkspaceChecksRefreshed {
         workspace_id: String,
         result: WorkspaceCheckStatus,
-    },
-    /// Background `gh pr list` for a repo completed.
-    RepoPrsRefreshed {
-        repo_identity: String,
-        result: RepoOpenPrs,
-    },
-    /// Background `gh issue list` for a repo completed.
-    RepoIssuesRefreshed {
-        repo_identity: String,
-        result: RepoIssues,
-    },
-    /// Background `git for-each-ref` for a repo completed.
-    RepoBranchesRefreshed {
-        repo_identity: String,
-        result: RepoBranches,
     },
 }

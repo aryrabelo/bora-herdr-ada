@@ -14,41 +14,14 @@ stock `herdr` install (brew/mise) instead of overwriting it.
   manifest keyed on the `π  /` status bar (working = braille spinner / `⟦esc⟧`).
   See commit `fix(detect): recognize omp (oh-my-pi) as a first-class agent`.
 
-- **Sidebar "Programs" launcher.** The workspace-list sidebar shows a fixed
-  band above the "new"/"menu" footer: one row per pane-mode `.bora.toml`
-  `[[commands]]` entry for the active workspace's branch, plus an always-on
-  "+ run command…" row that opens a free-text prompt (reuses the
-  rename-modal text-input pattern; `Mode::LaunchProgramPrompt`). Clicking an
-  entry runs the same `PendingBoraCommand` path the right-click context menu
-  already used, so external editors/tools (Helix via `hx .`, `gitui`, `bd
-  ready`) configured in `.bora.toml` are one click away instead of only
-  reachable through the workspace context menu. See
-  `src/app/input/mouse.rs` (`MouseAction::LaunchProgram*`), `src/ui/sidebar.rs`
-  (`sidebar_programs_band_rect`), and this repo's own `.bora.toml`.
-
 ## Branch layout
 
-- `upstream` -> upstream `herdrdev/herdr` (the org was renamed from
-  `ogulcancelik/herdr`; the old path still redirects).
-- `origin`   -> our repo `aryrabelo/bora-herdr-ada`.
+- `origin` / `upstream` -> upstream `ogulcancelik/herdr`.
+- `fork`   -> our repo `aryrabelo/bora-herdr-ada`.
 - `master` -> 1:1 mirror of upstream `master`. Never carries fork commits;
   only fast-forwarded (`scripts/bora sync`).
-- `main`   -> default branch = `master` + our features. Kept current by
-  merging `master` in (never rebasing — see "Keeping current with upstream").
-
-### Worktree location (learned 2026-08-11, binding)
-
-Task worktrees for this repo live at `~/Sites/worktrees/bora/<slug>/` — the
-machine-wide convention is `~/Sites/worktrees/{repo}/{slug}/`. This overrides
-root `AGENTS.md`'s upstream `../herdr-worktrees/<task-slug>` layout, which does
-not apply on this workstation. Never create sibling worktrees next to the
-checkout (e.g. `~/Sites/bora-<something>`).
-
-```sh
-git worktree add ~/Sites/worktrees/bora/<slug> <ref>
-# when done:
-git worktree remove ~/Sites/worktrees/bora/<slug>
-```
+- `main`   -> default branch = `master` + our features, each landed as a
+  squash-merged PR. Kept current by rebasing onto `master`.
 
 ## Build / install
 
@@ -112,24 +85,18 @@ workflow, and return to a pure from-source build.
 
 ## Keeping current with upstream
 
-`master` is a pristine mirror; `main` carries the fork's work and takes
-`master` in by **merge**, never rebase — `main` already holds merge commits
-from prior syncs, so `git merge-base` finds the true delta and only genuinely
-new upstream commits need conflict resolution. A rebase replays `main`'s entire
-unique history instead and explodes into hundreds of conflicts. (learned
-2026-08-05, binding; enforced in `scripts/bora sync`.)
+`master` is a pristine mirror; `main` is rebased onto it.
 
 ```sh
-scripts/bora sync   # fast-forward master to upstream, then merge it into main
-# resolve conflicts, run `just check`, then publish:
-git push origin main
+scripts/bora sync   # fast-forward master to upstream, rebase main onto it
+# review the rebase, then publish:
+git push --force-with-lease fork main
 ```
 
-Conflicts cluster in the fork's own surfaces (`src/detect/*`,
+Rebase conflicts are localized to the feature commits (`src/detect/*`,
 `src/config/sound.rs`, `src/terminal/state.rs`, the worktree-action files,
-`src/ui/sidebar.rs`, `src/ui/dialogs.rs`, and the rebrand string changes —
-including `bora-*` release asset names and `CARGO_BIN_EXE_bora`). Resolve,
-commit the merge, then rebuild (`scripts/bora build`).
+`src/ui/sidebar.rs`, and the rebrand string changes). Resolve, finish the
+rebase, then rebuild (`scripts/bora build`).
 
 ## Releases
 
@@ -148,130 +115,3 @@ tag; `.github/workflows/release.yml` builds the four `bora-*` binaries
   `bora-dev` (`app_dir_name`), so a bora install never clobbers a stock
   `herdr`. The `HERDR_*` env var names (including `HERDR_CONFIG_PATH`) are
   unchanged for plugin/agent compatibility.
-
-## Workspace configuration — `.bora/settings.toml`
-
-Per-project workspace configuration, modeled on Conductor's
-`.conductor/settings.toml`. Lives at the repo root in `.bora/settings.toml` and
-is read when a worktree/workspace is created. It supersedes the legacy
-`.worktreeinclude` (which still works as a fallback when the file is absent or
-has no `[files]` section). Unrelated to the separate `.bora.toml` config.
-
-### Isolation contract
-
-Each workspace is an isolated place for one agent to work:
-
-- Code changes stay on that workspace's branch (one branch per workspace).
-- File edits happen in that workspace's own working tree.
-- Setup and run scripts execute from the workspace directory, with
-  workspace-specific environment variables (see the env table below).
-- App processes can bind a stable, workspace-specific `BORA_PORT`.
-- Notes and handoffs live in the workspace's `.context/` folder, auto-created on
-  provisioning and never committed. It is git-ignored by appending a `.context/`
-  line to the shared `.git/info/exclude`.
-
-> [!NOTE]
-> Worktrees created off a shared `.git` all read the **same**
-> `.git/info/exclude`. Any copied or symlinked meta file whose name is excluded
-> there stays excluded in every worktree — no per-worktree `.gitignore`
-> juggling. This is why `.context/` is excluded once, centrally.
-
-### `[scripts]`
-
-```toml
-# .bora/settings.toml
-[scripts]
-# Runs once in the new worktree right after creation, before any agent is
-# launched in it. A non-zero exit is surfaced as setup: "failed" in the
-# `worktree create --json` result — creation does not silently continue.
-setup = """
-pnpm install
-cp "$BORA_ROOT_PATH/.env" .env
-pnpm run build
-"""
-
-# The project's dev command, executed by `bora workspace run`.
-run = "pnpm dev --port $BORA_PORT"
-
-# concurrent (default): every workspace may run `run` simultaneously, each on
-#                       its own $BORA_PORT.
-# exclusive:            starting `run` in one workspace stops the previous run
-#                       (tracked via a pidfile at .git/info/bora-run.pid).
-run_mode = "concurrent"
-```
-
-### `[files]` — copy vs symlink
-
-```toml
-[files]
-# copy: snapshot taken at creation time (the legacy .worktreeinclude behavior).
-#       Edits made to the root copy afterwards are NOT reflected in the worktree.
-copy = ["CLAUDE.md", ".env.example"]
-
-# symlink: a live view into the root checkout. The worktree entry is a symlink
-#          whose target is the absolute path in the root repo, so later edits in
-#          the root are visible immediately in every workspace.
-symlink = [".claude", ".claude-plugin", "docs", "harness.toml", "hooks", "Plans.md"]
-```
-
-Semantics:
-
-- **copy** = snapshot at creation. **symlink** = live view into the root
-  checkout (target is an absolute path into `BORA_ROOT_PATH`).
-- Existing paths in the worktree are **never overwritten** — a conflicting entry
-  is logged and skipped. Missing sources are skipped too.
-- **Precedence:** `.bora/settings.toml [files]` wins over `.worktreeinclude`.
-  When `[files]` is present it fully governs file provisioning; when it is
-  absent, `.worktreeinclude` is used and every listed entry is treated as
-  `copy`. `.worktreeinclude` continues to work unchanged for projects without a
-  settings file.
-
-### Injected environment variables
-
-Injected into both `setup` and `run` scripts:
-
-| Variable | Value |
-|---|---|
-| `BORA_ROOT_PATH` | Main repo checkout path |
-| `BORA_WORKSPACE_PATH` | This worktree's path |
-| `BORA_WORKSPACE_ID` | The worktree directory name |
-| `BORA_BRANCH` | The workspace branch (empty if unknown) |
-| `BORA_PORT` | Stable per-branch port (only set when allocatable) |
-
-`BORA_PORT` is resolved through a single function, so a workspace always sees one
-port regardless of which surface asks — the `[[commands]]` UI, the `setup`/`run`
-scripts, and `bora workspace run` all agree.
-
-Resolution precedence:
-
-1. If `.bora/settings.toml` defines `[ports]` (`base`/`max`, default
-   `4100`–`4199`), the **stable persisted allocator** is used: a port is
-   allocated once per branch and kept forever. New workspaces take the lowest
-   free port among `base + k*step` (for `k = 0, 1, 2, ...`) within the range;
-   when the range is exhausted `BORA_PORT` is not set. `step` defaults to `1`
-   (contiguous ports); `0` is treated as `1`. Assignments persist in
-   `.git/info/bora-ports.json` (`{"<branch>": <port>}`).
-
-   ```toml
-   [ports]
-   base = 4100
-   step = 10   # optional; reserve a block of ports per workspace
-   max  = 4199
-   ```
-
-2. Otherwise, if legacy `.bora.toml` defines `[ports]`, its **index-based
-   scheme** is used for compatibility: `base + index * per_worktree`, where
-   `index` is the workspace's position among branch-sorted worktrees.
-
-3. Otherwise, if `.bora/settings.toml` exists but has no `[ports]`, the
-   persisted allocator is used with the default `4100`–`4199` range. With
-   neither config present, `BORA_PORT` is not set.
-
-### CLI
-
-- `bora worktree create` gains `--no-setup` to skip the setup script. The
-  `--json` output includes a `setup` field: `"ok"`, `"failed"`, or `"skipped"`
-  (skipped when `--no-setup` is passed or no setup script is configured).
-- `bora workspace run [--cwd PATH]` executes the `run` script in a workspace,
-  respecting `run_mode`. With `run_mode = "exclusive"`, starting a run stops the
-  previous one, tracked via a pidfile at `.git/info/bora-run.pid`.

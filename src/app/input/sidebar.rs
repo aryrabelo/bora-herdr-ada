@@ -1,6 +1,6 @@
 use ratatui::layout::Rect;
 
-use crate::app::state::{AppState, ViewLayout};
+use crate::app::state::{AppState, Mode, ViewLayout};
 
 use super::ScrollbarClickTarget;
 
@@ -21,64 +21,6 @@ impl AppState {
         let (_, detail_area) =
             crate::ui::expanded_sidebar_sections(sidebar, self.sidebar_section_split);
         detail_area
-    }
-
-    /// Hit area for the sidebar Programs launcher band (pane-mode
-    /// `.bora.toml` commands for the active workspace, plus the
-    /// "+ run command…" row). Sits directly above the workspace list's
-    /// "new"/"menu" footer row; MUST derive from `sidebar_programs_band_rect`
-    /// so rendering and hit-testing agree.
-    pub(super) fn sidebar_programs_rect(&self) -> Rect {
-        let ws_area = self.workspace_list_rect();
-        crate::ui::sidebar_programs_band_rect(self, ws_area)
-    }
-
-    /// Pane-mode `.bora.toml` commands for the active workspace, in display
-    /// order. Loaded fresh (no cache) — mirrors the workspace context menu's
-    /// on-demand `.bora.toml` read.
-    pub(crate) fn sidebar_program_commands(&self) -> Vec<crate::bora_config::BoraCommand> {
-        let Some(ws_idx) = self.active else {
-            return Vec::new();
-        };
-        let Some(ws) = self.workspaces.get(ws_idx) else {
-            return Vec::new();
-        };
-        crate::bora_config::workspace_commands(ws)
-            .into_iter()
-            .filter(|c| c.mode == crate::bora_config::BoraCommandMode::Pane)
-            .collect()
-    }
-
-    /// Resolve the sidebar Programs entry at `idx` (0-based, in
-    /// `sidebar_program_commands` order) into a dispatchable
-    /// `PendingBoraCommand`, including `$BORA_PORT` resolution.
-    pub(crate) fn sidebar_program_launch(
-        &self,
-        idx: usize,
-    ) -> Option<crate::app::state::PendingBoraCommand> {
-        let ws_idx = self.active?;
-        let ws = self.workspaces.get(ws_idx)?;
-        let cmd = self.sidebar_program_commands().into_iter().nth(idx)?;
-        let branch = ws.cached_git_branch.as_deref();
-        let checkout_path = ws
-            .worktree_space()
-            .map(|s| s.checkout_path.as_path())
-            .unwrap_or(&ws.identity_cwd);
-        let key = branch.map(str::to_string).unwrap_or_else(|| {
-            checkout_path
-                .file_name()
-                .map(|name| name.to_string_lossy().into_owned())
-                .unwrap_or_default()
-        });
-        let port = ws
-            .bora_config_root()
-            .and_then(|root| crate::bora_settings::resolve_port(root, checkout_path, &key));
-        Some(crate::app::state::PendingBoraCommand {
-            ws_idx,
-            command: cmd.command,
-            mode: cmd.mode,
-            port,
-        })
     }
 
     pub(super) fn workspace_list_scrollbar_target_at(
@@ -255,12 +197,7 @@ impl AppState {
     }
 
     pub(crate) fn global_menu_labels(&self) -> Vec<&'static str> {
-        let mut labels = vec!["settings"];
-        if self.chat_view {
-            labels.push("chat");
-        }
-        labels.push("keybinds");
-        labels.push("reload config");
+        let mut labels = vec!["settings", "keybinds", "reload config"];
         if self.update_available.is_some() {
             labels.push("update ready");
         } else if self.latest_release_notes_available {
@@ -408,54 +345,6 @@ impl AppState {
         None
     }
 
-    /// Map a screen row in the right panel Issues tab to `(issue number, url)`.
-    ///
-    /// Walks the same flat layout as `render_issues_tab` (one row per issue,
-    /// offset by `right_panel_scroll`). Returns `None` when the row is out of
-    /// range, the cache is missing/errored, or the workspace has no repo.
-    pub(super) fn right_panel_issue_at_row(&self, screen_row: u16) -> Option<(u64, String)> {
-        let rp = self.view.right_panel_rect;
-        let body_start = rp.y + 1; // tab header is row rp.y
-        if screen_row < body_start {
-            return None;
-        }
-        let row_in_body = (screen_row - body_start) as usize;
-        let flat_index = row_in_body + self.right_panel_scroll as usize;
-
-        let ws = self.active.and_then(|i| self.workspaces.get(i))?;
-        let repo_identity = ws.git_space().map(|space| space.repo_identity.clone())?;
-        let cache = self.repo_issues.get(&repo_identity)?;
-        if cache.error.is_some() {
-            return None;
-        }
-        let issue = cache.issues.get(flat_index)?;
-        Some((issue.number, issue.url.clone()))
-    }
-
-    /// Map a screen row in the right panel PRs tab to `(number, url, head_ref)`.
-    ///
-    /// Walks the same flat layout as `render_prs_tab` (one row per PR, offset
-    /// by `right_panel_scroll`). Returns `None` when the row is out of range,
-    /// the cache is missing/errored, or the workspace has no repo.
-    pub(super) fn right_panel_pr_at_row(&self, screen_row: u16) -> Option<(u64, String, String)> {
-        let rp = self.view.right_panel_rect;
-        let body_start = rp.y + 1; // tab header is row rp.y
-        if screen_row < body_start {
-            return None;
-        }
-        let row_in_body = (screen_row - body_start) as usize;
-        let flat_index = row_in_body + self.right_panel_scroll as usize;
-
-        let ws = self.active.and_then(|i| self.workspaces.get(i))?;
-        let repo_identity = ws.git_space().map(|space| space.repo_identity.clone())?;
-        let cache = self.repo_open_prs.get(&repo_identity)?;
-        if cache.error.is_some() {
-            return None;
-        }
-        let pr = cache.prs.get(flat_index)?;
-        Some((pr.number, pr.url.clone(), pr.head_ref_name.clone()))
-    }
-
     pub(super) fn set_sidebar_section_split(&mut self, row: u16) {
         let sidebar = self.view.sidebar_rect;
         let content_height = sidebar.height;
@@ -499,6 +388,25 @@ impl AppState {
         (idx < self.workspaces.len()).then_some(idx)
     }
 
+    fn collapsed_detail_workspace_idx(&self) -> Option<usize> {
+        if matches!(
+            self.mode,
+            Mode::Navigate
+                | Mode::RenameWorkspace
+                | Mode::SetWorkspaceGroup
+                | Mode::Resize
+                | Mode::ConfirmClose
+                | Mode::ContextMenu
+                | Mode::Settings
+                | Mode::GlobalMenu
+                | Mode::KeybindHelp
+        ) {
+            Some(self.selected)
+        } else {
+            self.active
+        }
+    }
+
     pub(super) fn collapsed_agent_detail_target_at(
         &self,
         row: u16,
@@ -521,10 +429,12 @@ impl AppState {
             return None;
         }
 
+        let ws_idx = self.collapsed_detail_workspace_idx()?;
+        let ws = self.workspaces.get(ws_idx)?;
         let detail_idx = (row - detail_content_area.y) as usize;
-        let details = crate::ui::agent_panel_entries(self);
+        let details = ws.pane_details(&self.terminals);
         let detail = details.get(detail_idx)?;
-        Some((detail.ws_idx, detail.tab_idx, detail.pane_id))
+        Some((ws_idx, detail.tab_idx, detail.pane_id))
     }
 
     pub(super) fn workspace_drop_index_at_row(&self, row: u16) -> Option<usize> {
@@ -556,9 +466,7 @@ impl AppState {
                     .and_then(|ws| ws.worktree_space())
                     .map(|space| space.key.as_str())
             });
-            let inside_group_gap = self.group_workspaces_by_repo
-                && card_group.is_some()
-                && card_group == previous_group;
+            let inside_group_gap = card_group.is_some() && card_group == previous_group;
             if !inside_group_gap {
                 insert_indices.push(card.ws_idx);
             }
@@ -583,114 +491,8 @@ impl AppState {
         best.map(|(insert_idx, _)| insert_idx)
     }
 
-    pub(super) fn workspace_move_block_params(
-        &self,
-        source_ws_idx: usize,
-        insert_idx: usize,
-    ) -> Option<crate::api::schema::WorkspaceMoveBlockParams> {
-        let source = self.workspaces.get(source_ws_idx)?;
-        if source
-            .worktree_space()
-            .is_some_and(|space| space.is_linked_worktree)
-        {
-            return None;
-        }
-
-        let roots = crate::ui::workspace_list_entries_expanded(self)
-            .into_iter()
-            .filter_map(|entry| match entry {
-                crate::ui::WorkspaceListEntry::Workspace {
-                    ws_idx,
-                    indented: false,
-                    ..
-                } => Some(ws_idx),
-                crate::ui::WorkspaceListEntry::Workspace { .. } => None,
-                crate::ui::WorkspaceListEntry::GroupHeader { .. }
-                | crate::ui::WorkspaceListEntry::ProjectHeader { .. }
-                | crate::ui::WorkspaceListEntry::BranchHeader { .. }
-                | crate::ui::WorkspaceListEntry::HiddenHeader { .. } => None,
-            })
-            .collect::<Vec<_>>();
-        let source_pos = roots.iter().position(|ws_idx| *ws_idx == source_ws_idx)?;
-        let remaining_roots = roots
-            .iter()
-            .copied()
-            .filter(|ws_idx| *ws_idx != source_ws_idx)
-            .collect::<Vec<_>>();
-        // A group parent dragged to the bottom yields an insert_idx of
-        // `last_card.ws_idx + 1`, which can collide with a member of the source's
-        // own (moving) group. Treat any insert target that belongs to the source
-        // block as "end", so the whole block lands after the remaining roots.
-        let source_group_key = source.worktree_space().map(|space| space.key.clone());
-        let target_in_source_block = self
-            .workspaces
-            .get(insert_idx)
-            .and_then(|target| target.worktree_space())
-            .zip(source_group_key.as_ref())
-            .is_some_and(|(target_space, key)| target_space.key == *key);
-        let effective_end = self.workspaces.get(insert_idx).is_none() || target_in_source_block;
-        let insert_pos = if effective_end {
-            remaining_roots.len()
-        } else {
-            remaining_roots
-                .iter()
-                .position(|ws_idx| *ws_idx == insert_idx)?
-        };
-        if insert_pos == source_pos {
-            return None;
-        }
-
-        let workspace_ids = match source.worktree_space() {
-            Some(source_space) => {
-                let mut ids = vec![source.id.clone()];
-                ids.extend(
-                    self.workspaces
-                        .iter()
-                        .filter(|workspace| workspace.id != source.id)
-                        .filter(|workspace| {
-                            workspace
-                                .worktree_space()
-                                .is_some_and(|space| space.key == source_space.key)
-                        })
-                        .map(|workspace| workspace.id.clone()),
-                );
-                ids
-            }
-            None => vec![source.id.clone()],
-        };
-        let before_workspace_id = if effective_end {
-            None
-        } else {
-            match self.workspaces.get(insert_idx) {
-                Some(target) => {
-                    let anchor = match crate::ui::workspace_parent_group_state(self, insert_idx)
-                        .and_then(|_| target.worktree_space())
-                    {
-                        Some(target_space) => self
-                            .workspaces
-                            .iter()
-                            .find(|workspace| {
-                                workspace
-                                    .worktree_space()
-                                    .is_some_and(|space| space.key == target_space.key)
-                            })
-                            .unwrap_or(target),
-                        None => target,
-                    };
-                    Some(anchor.id.clone())
-                }
-                None => None,
-            }
-        };
-
-        Some(crate::api::schema::WorkspaceMoveBlockParams {
-            workspace_ids,
-            before_workspace_id,
-        })
-    }
-
     pub(super) fn on_agent_panel_sort_toggle(&self, col: u16, row: u16) -> bool {
-        if self.sidebar_collapsed || self.agent_view_override.is_some() {
+        if self.sidebar_collapsed {
             return false;
         }
 
@@ -720,26 +522,25 @@ impl AppState {
             detail_area,
             crate::ui::should_show_scrollbar(metrics),
         );
-        if body.height == 0 || row < body.y || row >= body.y + body.height {
+        if body.height < 2 || row < body.y || row >= body.y + body.height {
             return None;
         }
 
         let mut row_y = body.y;
-        let body_bottom = body.y + body.height;
-        let entries = crate::ui::agent_panel_entries(self);
-        let scroll = self.agent_panel_scroll.min(metrics.max_offset_from_bottom);
-        for (index, detail) in entries.iter().enumerate().skip(scroll) {
-            let height = crate::ui::agent_entry_height_in_body(self, detail, body.height);
-            if row_y.saturating_add(height) > body_bottom {
+        for detail in crate::ui::agent_panel_entries(self)
+            .into_iter()
+            .skip(self.agent_panel_scroll)
+        {
+            if row_y.saturating_add(1) >= body.y + body.height {
                 break;
             }
-            if row >= row_y && row < row_y.saturating_add(height) {
+            if row == row_y || row == row_y + 1 {
                 return Some((detail.ws_idx, detail.tab_idx, detail.pane_id));
             }
-            row_y = row_y
-                .saturating_add(height)
-                .saturating_add(crate::ui::agent_entry_gap(self, index, entries.len()))
-                .min(body_bottom);
+            row_y = row_y.saturating_add(2);
+            if row_y < body.y + body.height {
+                row_y = row_y.saturating_add(1);
+            }
         }
         None
     }
@@ -755,8 +556,7 @@ mod tests {
     use super::super::{app_for_mouse_test, capture_snapshot, mouse, unique_temp_path};
     use crate::{
         app::state::{AgentPanelSort, DragTarget, Mode},
-        config::SidebarCollapsedModeConfig,
-        detect::{Agent, AgentState},
+        detect::Agent,
         workspace::Workspace,
     };
 
@@ -970,97 +770,6 @@ mod tests {
     }
 
     #[test]
-    fn agent_panel_fixed_row_heights_preserve_card_gaps_and_trailing_mouse_targets() {
-        let mut app = app_for_mouse_test();
-        let first = Workspace::test_new("one");
-        let first_pane = first.tabs[0].root_pane;
-        let second = Workspace::test_new("two");
-        let second_pane = second.tabs[0].root_pane;
-        app.state.workspaces = vec![first, second];
-        app.state.ensure_test_terminals();
-        for (ws_idx, pane_id, agent) in
-            [(0, first_pane, Agent::Pi), (1, second_pane, Agent::Claude)]
-        {
-            let terminal_id = app.state.workspaces[ws_idx].tabs[0].panes[&pane_id]
-                .attached_terminal_id
-                .clone();
-            app.state
-                .terminals
-                .get_mut(&terminal_id)
-                .unwrap()
-                .detected_agent = Some(agent);
-        }
-
-        let detail_area = app.state.agent_panel_rect();
-        let metrics = crate::ui::agent_panel_scroll_metrics(&app.state, detail_area);
-        let body = crate::ui::agent_panel_body_rect(
-            detail_area,
-            crate::ui::should_show_scrollbar(metrics),
-        );
-
-        // The fork's agent panel uses fixed two-row entries (a one-row gap
-        // between entries); per-agent token row heights (5cfe5e5e) are not
-        // ported yet. Entry 0 spans body.y..body.y+2, entry 1 starts at +3.
-        assert_eq!(
-            app.state.agent_detail_target_at(body.y),
-            Some((0, 0, first_pane))
-        );
-        assert_eq!(
-            app.state.agent_detail_target_at(body.y + 1),
-            Some((0, 0, first_pane))
-        );
-        assert_eq!(app.state.agent_detail_target_at(body.y + 2), None);
-        assert_eq!(
-            app.state.agent_detail_target_at(body.y + 3),
-            Some((1, 0, second_pane))
-        );
-    }
-
-    #[test]
-    fn agent_hit_testing_clamps_scroll_after_dynamic_filter_shrink() {
-        let mut app = app_for_mouse_test();
-        let first = Workspace::test_new("one");
-        let first_pane = first.tabs[0].root_pane;
-        let second = Workspace::test_new("two");
-        let second_pane = second.tabs[0].root_pane;
-        app.state.workspaces = vec![first, second];
-        app.state.ensure_test_terminals();
-        app.state.active = Some(0);
-        app.state.selected = 0;
-        for (ws_idx, pane_id) in [(0, first_pane), (1, second_pane)] {
-            let terminal_id = app.state.workspaces[ws_idx].tabs[0].panes[&pane_id]
-                .attached_terminal_id
-                .clone();
-            app.state
-                .terminals
-                .get_mut(&terminal_id)
-                .unwrap()
-                .detected_agent = Some(Agent::Claude);
-        }
-        app.state.agent_view_override = Some(crate::api::schema::AgentViewSetParams {
-            source: "example.views".to_string(),
-            label: None,
-            filter: Some(crate::api::schema::AgentViewFilter::Eq {
-                field: crate::api::schema::AgentViewField::Builtin(
-                    crate::api::schema::AgentViewBuiltinField::WorkspaceId,
-                ),
-                value: crate::api::schema::AgentViewValue::Context {
-                    context: crate::api::schema::AgentViewContext::CurrentWorkspaceId,
-                },
-            }),
-            sort: Vec::new(),
-        });
-        app.state.agent_panel_scroll = 10;
-        let detail_area = app.state.agent_panel_rect();
-        let body = crate::ui::agent_panel_body_rect(detail_area, false);
-
-        assert_eq!(
-            app.state.agent_detail_target_at(body.y),
-            Some((0, 0, first_pane))
-        );
-    }
-
-    #[test]
     fn clicking_agent_panel_toggle_switches_sort() {
         let mut app = app_for_mouse_test();
         app.state.workspaces = vec![Workspace::test_new("test")];
@@ -1235,14 +944,6 @@ mod tests {
         app.state.active = Some(0);
         app.state.selected = 0;
         app.state.mode = Mode::Terminal;
-        app.state.sidebar_agents.rows = vec![vec![crate::config::AgentSidebarToken::Agent]];
-        app.state.sidebar_agents.rows_by_agent.insert(
-            "claude".into(),
-            vec![
-                vec![crate::config::AgentSidebarToken::Agent],
-                vec![crate::config::AgentSidebarToken::Workspace],
-            ],
-        );
         app.state.agent_panel_scroll = 1;
 
         let detail_area = app.state.agent_panel_rect();
@@ -1250,7 +951,7 @@ mod tests {
         app.handle_mouse(mouse(
             MouseEventKind::Down(MouseButton::Left),
             body.x + 1,
-            body.y + 1,
+            body.y,
         ));
 
         assert_eq!(app.state.workspaces[0].active_tab, second_tab);
@@ -1310,51 +1011,6 @@ mod tests {
     }
 
     #[test]
-    fn clicking_collapsed_priority_agent_row_switches_to_matching_workspace() {
-        let mut app = app_for_mouse_test();
-        let first = Workspace::test_new("one");
-        let first_pane = first.tabs[0].root_pane;
-        let second = Workspace::test_new("two");
-        let second_pane = second.tabs[0].root_pane;
-
-        app.state.workspaces = vec![first, second];
-        app.state.ensure_test_terminals();
-        app.state.active = Some(0);
-        app.state.selected = 0;
-        app.state.mode = Mode::Terminal;
-        app.state.sidebar_collapsed = true;
-        app.state.agent_panel_sort = AgentPanelSort::Priority;
-        app.state.view.sidebar_rect = Rect::new(0, 0, 4, 20);
-        app.state.view.terminal_area = Rect::new(4, 0, 80, 20);
-
-        let set_state = |app: &mut crate::app::App, ws_idx: usize, pane_id, state| {
-            let terminal_id = app.state.workspaces[ws_idx].tabs[0].panes[&pane_id]
-                .attached_terminal_id
-                .clone();
-            let terminal = app.state.terminals.get_mut(&terminal_id).unwrap();
-            terminal.detected_agent = Some(Agent::Claude);
-            terminal.state = state;
-        };
-        set_state(&mut app, 0, first_pane, AgentState::Working);
-        set_state(&mut app, 1, second_pane, AgentState::Blocked);
-
-        let (_, _, detail_area) =
-            crate::ui::collapsed_sidebar_sections(app.state.view.sidebar_rect);
-        app.handle_mouse(mouse(
-            MouseEventKind::Down(MouseButton::Left),
-            detail_area.x,
-            detail_area.y,
-        ));
-
-        assert_eq!(app.state.active, Some(1));
-        assert_eq!(app.state.selected, 1);
-        assert_eq!(
-            app.state.workspaces[1].tabs[0].layout.focused(),
-            second_pane
-        );
-    }
-
-    #[test]
     fn clicking_collapsed_sidebar_toggle_expands_sidebar() {
         let mut app = app_for_mouse_test();
         app.state.sidebar_collapsed = true;
@@ -1369,19 +1025,6 @@ mod tests {
         ));
 
         assert!(!app.state.sidebar_collapsed);
-    }
-
-    #[test]
-    fn hidden_collapsed_sidebar_has_no_mouse_expand_hotspot() {
-        let mut app = app_for_mouse_test();
-        app.state.sidebar_collapsed = true;
-        app.state.sidebar_collapsed_mode = SidebarCollapsedModeConfig::Hidden;
-        app.state.view.sidebar_rect = Rect::new(0, 0, 0, 20);
-        app.state.view.terminal_area = Rect::new(0, 0, 80, 20);
-
-        app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 0, 19));
-
-        assert!(app.state.sidebar_collapsed);
     }
 
     #[test]
@@ -1448,7 +1091,7 @@ mod tests {
                 key: "repo-key".into(),
                 repo_identity: "repo-key".into(),
                 checkout_key: checkout_path.to_string(),
-                repo_name: "herdr".into(),
+                label: "herdr".into(),
                 repo_root: "/repo/herdr".into(),
                 is_linked_worktree: idx > 0,
             });
@@ -1490,7 +1133,7 @@ mod tests {
                 key: "repo-key".into(),
                 repo_identity: "repo-key".into(),
                 checkout_key: checkout_path.to_string(),
-                repo_name: "herdr".into(),
+                label: "herdr".into(),
                 repo_root: "/repo/herdr".into(),
                 is_linked_worktree: idx > 0,
             });
@@ -1498,13 +1141,12 @@ mod tests {
         app.state.active = None;
         app.state.mode = Mode::Terminal;
         crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 20));
-        let parent = app.state.view.workspace_card_areas[0];
-        let chevron = crate::ui::workspace_group_chevron_rect(&parent);
+        let parent = app.state.view.workspace_card_areas[0].rect;
 
         app.handle_mouse(mouse(
             MouseEventKind::Down(MouseButton::Left),
-            chevron.x,
-            chevron.y,
+            parent.x,
+            parent.y,
         ));
 
         assert_eq!(app.state.active, None);
@@ -1513,8 +1155,8 @@ mod tests {
 
         app.handle_mouse(mouse(
             MouseEventKind::Down(MouseButton::Left),
-            chevron.x,
-            chevron.y,
+            parent.x,
+            parent.y,
         ));
 
         assert!(!app.state.collapsed_space_keys.contains("repo-key"));
@@ -1541,7 +1183,7 @@ mod tests {
                 key: "repo-key".into(),
                 repo_identity: "repo-key".into(),
                 checkout_key: checkout_path.to_string(),
-                repo_name: "herdr".into(),
+                label: "herdr".into(),
                 repo_root: "/repo/herdr".into(),
                 is_linked_worktree: idx != 0,
             });
@@ -1568,8 +1210,6 @@ mod tests {
             Workspace::test_new("b"),
             Workspace::test_new("c"),
         ];
-        app.state.sidebar_spaces.rows = vec![vec![crate::config::SpaceSidebarToken::Workspace]];
-        app.state.sidebar_spaces.row_gap = 0;
         for ws in &mut app.state.workspaces {
             ws.cached_git_branch = None;
         }
@@ -1578,12 +1218,6 @@ mod tests {
         app.state.active = Some(1);
         app.state.selected = 2;
         crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 20));
-        let packed_boundary_row = app.state.view.workspace_card_areas[1].rect.y;
-        assert_eq!(
-            app.state.workspace_drop_index_at_row(packed_boundary_row),
-            Some(2)
-        );
-
         let source_row = app.state.view.workspace_card_areas[1].rect.y;
         let target_row = crate::ui::workspace_drop_indicator_row(
             &app.state.view.workspace_card_areas,
@@ -1622,15 +1256,6 @@ mod tests {
         assert_eq!(app.state.selected, 2);
         assert_eq!(app.state.workspaces[0].id, active_id);
         assert_eq!(app.state.workspaces[2].id, selected_id);
-        let events = app.event_hub.events_after(0);
-        assert!(events.iter().any(|(_, event)| matches!(
-            event.data,
-            crate::api::schema::EventData::WorkspaceMoved { .. }
-        )));
-        assert!(!events.iter().any(|(_, event)| matches!(
-            event.data,
-            crate::api::schema::EventData::WorkspaceReordered { .. }
-        )));
         let snapshot = capture_snapshot(&app.state);
         let captured_names: Vec<_> = snapshot
             .workspaces
@@ -1638,111 +1263,6 @@ mod tests {
             .map(|ws| ws.custom_name.clone().unwrap())
             .collect();
         assert_eq!(captured_names, vec!["b", "a", "c"]);
-    }
-
-    #[test]
-    fn flat_mode_drag_reorders_linked_worktree() {
-        let mut app = app_for_mouse_test();
-        app.state.workspaces = vec![Workspace::test_new("main"), Workspace::test_new("issue")];
-        for (idx, checkout_path) in ["/repo/herdr", "/repo/herdr-issue"].into_iter().enumerate() {
-            app.state.workspaces[idx].worktree_space =
-                Some(crate::workspace::WorktreeSpaceMembership {
-                    key: "repo-key".into(),
-                    label: "herdr".into(),
-                    repo_root: "/repo/herdr".into(),
-                    checkout_path: checkout_path.into(),
-                    is_linked_worktree: idx > 0,
-                });
-            app.state.workspaces[idx].cached_git_space = Some(crate::workspace::GitSpaceMetadata {
-                key: "repo-key".into(),
-                repo_identity: "repo-key".into(),
-                checkout_key: checkout_path.to_string(),
-                repo_name: "herdr".into(),
-                repo_root: "/repo/herdr".into(),
-                is_linked_worktree: idx > 0,
-            });
-        }
-        app.state.active = None;
-        app.state.sidebar_spaces.rows = vec![vec![crate::config::SpaceSidebarToken::Workspace]];
-        app.state.sidebar_spaces.row_gap = 0;
-
-        // --- Grouped mode (default): the linked worktree row refuses the drag. ---
-        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 20));
-        let issue_row = app
-            .state
-            .view
-            .workspace_card_areas
-            .iter()
-            .find(|card| card.ws_idx == 1)
-            .expect("issue card present")
-            .rect
-            .y;
-        app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 2, issue_row));
-        app.handle_mouse(mouse(
-            MouseEventKind::Drag(MouseButton::Left),
-            2,
-            issue_row + 5,
-        ));
-        assert!(app.state.drag.is_none());
-        app.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 2, issue_row));
-        assert_eq!(
-            app.state
-                .workspaces
-                .iter()
-                .map(crate::workspace::Workspace::display_name)
-                .collect::<Vec<_>>(),
-            vec!["main", "issue"]
-        );
-
-        // --- Flat mode: the same linked worktree row is a free-standing,
-        // directly drag-reorderable card. `active` tracks it by id, not by
-        // index, so the drag must not lose the pointer.
-        app.state.group_workspaces_by_repo = false;
-        let active_id = app.state.workspaces[1].id.clone();
-        app.state.active = Some(1);
-        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 20));
-        let cards = app.state.view.workspace_card_areas.clone();
-        let source_row = cards
-            .iter()
-            .find(|card| card.ws_idx == 1)
-            .expect("issue card present")
-            .rect
-            .y;
-        let target_row =
-            crate::ui::workspace_drop_indicator_row(&cards, app.state.workspace_list_rect(), 0)
-                .expect("drop row for insert_idx 0");
-
-        app.handle_mouse(mouse(
-            MouseEventKind::Down(MouseButton::Left),
-            2,
-            source_row,
-        ));
-        app.handle_mouse(mouse(
-            MouseEventKind::Drag(MouseButton::Left),
-            2,
-            target_row,
-        ));
-        assert!(matches!(
-            app.state.drag.as_ref().map(|drag| &drag.target),
-            Some(DragTarget::WorkspaceReorder {
-                source_ws_idx: 1,
-                insert_idx: Some(0),
-            })
-        ));
-        app.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 2, target_row));
-
-        assert_eq!(
-            app.state
-                .workspaces
-                .iter()
-                .map(crate::workspace::Workspace::display_name)
-                .collect::<Vec<_>>(),
-            vec!["issue", "main"]
-        );
-        // Identity survives the index shift: `active` still resolves to
-        // "issue" by id, now at index 0.
-        assert_eq!(app.state.active, Some(0));
-        assert_eq!(app.state.workspaces[0].id, active_id);
     }
 
     #[test]
@@ -1899,7 +1419,7 @@ mod tests {
             key: key.into(),
             repo_identity: key.into(),
             checkout_key: format!("/repo/{name}"),
-            repo_name: "herdr".into(),
+            label: "herdr".into(),
             repo_root: "/repo/herdr".into(),
             is_linked_worktree: name != "main",
         });
@@ -1936,13 +1456,15 @@ mod tests {
             .get_mut(&second_terminal_id)
             .unwrap()
             .cwd = second_repo.clone();
-        app.state.sidebar_spaces.row_gap = 1;
         crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 20));
 
+        // Layout (gapless brackets, each workspace gets ProjectHeader + BranchHeader + card):
+        // rows 0-4 are closest to the slot above the first card (row 3) → insert_idx 0
+        // rows 5+ are closest to the slot below the first card (row 6) → insert_idx 1
         assert_eq!(app.state.workspace_drop_index_at_row(0), Some(0));
-        assert_eq!(app.state.workspace_drop_index_at_row(1), Some(0));
-        assert_eq!(app.state.workspace_drop_index_at_row(2), Some(0));
-        assert_eq!(app.state.workspace_drop_index_at_row(3), Some(1));
+        assert_eq!(app.state.workspace_drop_index_at_row(3), Some(0));
+        assert_eq!(app.state.workspace_drop_index_at_row(4), Some(0));
+        assert_eq!(app.state.workspace_drop_index_at_row(5), Some(1));
 
         let _ = fs::remove_dir_all(first_repo);
         let _ = fs::remove_dir_all(second_repo);
@@ -1962,11 +1484,10 @@ mod tests {
         crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 30));
 
         let cards = &app.state.view.workspace_card_areas;
-        let end_idx = cards.last().map(|card| card.ws_idx + 1).unwrap();
         let bottom_slot = crate::ui::workspace_drop_indicator_row(
             cards,
             app.state.workspace_list_rect(),
-            end_idx,
+            cards.len(),
         )
         .unwrap();
 
@@ -1994,13 +1515,8 @@ mod tests {
         let normal = cards.iter().find(|card| card.ws_idx == 1).unwrap();
 
         assert_eq!(app.state.workspace_drop_index_at_row(issue.rect.y), Some(1));
-        let end_idx = cards.last().map(|card| card.ws_idx + 1).unwrap();
         assert_eq!(
-            crate::ui::workspace_drop_indicator_row(
-                cards,
-                app.state.workspace_list_rect(),
-                end_idx,
-            ),
+            crate::ui::workspace_drop_indicator_row(cards, app.state.workspace_list_rect(), 2),
             Some(normal.rect.y + normal.rect.height)
         );
     }

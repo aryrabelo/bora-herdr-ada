@@ -1,5 +1,3 @@
-mod tokens;
-
 use std::time::Instant;
 
 use ratatui::{
@@ -10,12 +8,8 @@ use ratatui::{
     Frame,
 };
 
-use self::tokens::{ResolvedToken, ResolvedTokenKind, SpaceTokenContext};
 use super::scrollbar::{render_scrollbar, should_show_scrollbar};
-use super::status::{
-    agent_icon, format_idle_age, idle_age_color, state_dot, state_label, state_label_color,
-};
-use super::text::{display_width, display_width_u16, truncate_end};
+use super::status::{agent_icon, state_dot, state_label, state_label_color};
 use crate::app::state::{AgentPanelSort, Palette};
 use crate::app::{AppState, Mode};
 use crate::detect::AgentState;
@@ -24,19 +18,6 @@ use crate::terminal::TerminalRuntimeRegistry;
 const WORKSPACE_SECTION_HEADER_ROWS: u16 = 2;
 const AGENT_PANEL_HEADER_ROWS: u16 = 3;
 
-/// Glyph + style for a PR's rolled-up check status, shown after the PR badge.
-fn checks_badge(
-    checks: &[crate::workspace::CheckRun],
-    p: &Palette,
-) -> Option<(&'static str, Style)> {
-    use crate::workspace::ChecksRollup;
-    match crate::workspace::checks_rollup(checks)? {
-        ChecksRollup::Passing => Some((" ✓", Style::default().fg(p.green))),
-        ChecksRollup::Failing => Some((" ✗", Style::default().fg(p.red))),
-        ChecksRollup::Pending => Some((" ●", Style::default().fg(p.yellow))),
-    }
-}
-
 pub(crate) struct AgentPanelEntry {
     pub ws_idx: usize,
     pub tab_idx: usize,
@@ -44,18 +25,11 @@ pub(crate) struct AgentPanelEntry {
     pub primary_label: String,
     pub primary_tab_label: Option<String>,
     pub agent_label: Option<String>,
-    pub pane_label: Option<String>,
-    pub terminal_title: Option<String>,
-    pub terminal_title_stripped: Option<String>,
-    pub agent_kind_label: Option<String>,
-    pub agent: Option<crate::detect::Agent>,
     pub state: AgentState,
     pub seen: bool,
-    pub idle_since: Option<std::time::Instant>,
     pub last_agent_state_change_seq: Option<u64>,
     pub custom_status: Option<String>,
     pub state_labels: std::collections::HashMap<String, String>,
-    pub tokens: std::collections::HashMap<String, String>,
 }
 
 fn sidebar_section_heights(total_h: u16, split_ratio: f32) -> (u16, u16) {
@@ -105,15 +79,12 @@ fn agent_panel_sort_label(sort: AgentPanelSort) -> &'static str {
 }
 
 pub(crate) fn agent_panel_toggle_rect(area: Rect, sort: AgentPanelSort) -> Rect {
-    agent_panel_header_label_rect(area, agent_panel_sort_label(sort))
-}
-
-fn agent_panel_header_label_rect(area: Rect, label: &str) -> Rect {
     if area.width == 0 || area.height < 2 {
         return Rect::default();
     }
 
-    let width = display_width_u16(label).min(area.width);
+    let label = agent_panel_sort_label(sort);
+    let width = label.chars().count() as u16;
     Rect::new(
         area.x + area.width.saturating_sub(width),
         area.y + 1,
@@ -122,18 +93,8 @@ fn agent_panel_header_label_rect(area: Rect, label: &str) -> Rect {
     )
 }
 
-fn active_agent_view_label(app: &AppState) -> Option<&str> {
-    app.agent_view_override
-        .as_ref()
-        .map(|view| view.label.as_deref().unwrap_or("filtered"))
-}
-
 pub(crate) fn agent_panel_entries(app: &AppState) -> Vec<AgentPanelEntry> {
     agent_panel_entries_with_runtimes(app, None)
-}
-
-pub(crate) fn all_agent_panel_entries(app: &AppState) -> Vec<AgentPanelEntry> {
-    collect_agent_panel_entries_with_runtimes(app, None)
 }
 
 pub(crate) fn agent_panel_entries_from(
@@ -147,21 +108,6 @@ fn agent_panel_entries_with_runtimes(
     app: &AppState,
     terminal_runtimes: Option<&TerminalRuntimeRegistry>,
 ) -> Vec<AgentPanelEntry> {
-    let mut entries = collect_agent_panel_entries_with_runtimes(app, terminal_runtimes);
-    // `apply_agent_view`'s fallback (no explicit sort spec) re-sorts newest-first
-    // within a tier, conflicting with the fork's oldest-first tie-break applied
-    // in `collect_agent_panel_entries_with_runtimes`. Only invoke it when an
-    // override is actually active (filtering and/or an explicit custom sort).
-    if app.agent_view_override.is_some() {
-        crate::app::agent_view::apply_agent_view(app, &mut entries);
-    }
-    entries
-}
-
-fn collect_agent_panel_entries_with_runtimes(
-    app: &AppState,
-    terminal_runtimes: Option<&TerminalRuntimeRegistry>,
-) -> Vec<AgentPanelEntry> {
     let empty_runtimes;
     let terminal_runtimes = match terminal_runtimes {
         Some(terminal_runtimes) => terminal_runtimes,
@@ -171,7 +117,7 @@ fn collect_agent_panel_entries_with_runtimes(
         }
     };
 
-    let mut entries: Vec<AgentPanelEntry> = app
+    let mut entries: Vec<_> = app
         .workspaces
         .iter()
         .enumerate()
@@ -180,32 +126,18 @@ fn collect_agent_panel_entries_with_runtimes(
             let workspace_label = ws.display_name_from(&app.terminals, terminal_runtimes);
             ws.pane_details(&app.terminals)
                 .into_iter()
-                .map(move |detail| {
-                    let show_tab = multi_tab
-                        || ws
-                            .tabs
-                            .get(detail.tab_idx)
-                            .is_some_and(|tab| !tab.is_auto_named());
-                    AgentPanelEntry {
-                        ws_idx,
-                        tab_idx: detail.tab_idx,
-                        pane_id: detail.pane_id,
-                        primary_label: workspace_label.clone(),
-                        primary_tab_label: show_tab.then_some(detail.tab_label),
-                        pane_label: detail.pane_label,
-                        terminal_title: detail.terminal_title,
-                        terminal_title_stripped: detail.terminal_title_stripped,
-                        agent_label: Some(detail.agent_label),
-                        agent_kind_label: detail.agent_kind_label,
-                        agent: detail.agent,
-                        state: detail.state,
-                        seen: detail.seen,
-                        idle_since: detail.idle_since,
-                        last_agent_state_change_seq: detail.last_agent_state_change_seq,
-                        custom_status: detail.custom_status,
-                        state_labels: detail.state_labels,
-                        tokens: detail.tokens,
-                    }
+                .map(move |detail| AgentPanelEntry {
+                    ws_idx,
+                    tab_idx: detail.tab_idx,
+                    pane_id: detail.pane_id,
+                    primary_label: workspace_label.clone(),
+                    primary_tab_label: multi_tab.then_some(detail.tab_label),
+                    agent_label: Some(detail.agent_label),
+                    state: detail.state,
+                    seen: detail.seen,
+                    last_agent_state_change_seq: detail.last_agent_state_change_seq,
+                    custom_status: detail.custom_status,
+                    state_labels: detail.state_labels,
                 })
         })
         .collect();
@@ -214,9 +146,7 @@ fn collect_agent_panel_entries_with_runtimes(
         entries.sort_by_key(|entry| {
             (
                 std::cmp::Reverse(workspace_attention_priority(entry.state, entry.seen)),
-                // Oldest state change first: the agent waiting the longest
-                // tops its tier; panes without a recorded change sort last.
-                entry.last_agent_state_change_seq.unwrap_or(u64::MAX),
+                std::cmp::Reverse(entry.last_agent_state_change_seq),
             )
         });
     }
@@ -234,221 +164,30 @@ pub(super) fn agent_panel_status_key(state: AgentState, seen: bool) -> &'static 
     }
 }
 
-fn resolved_agent_rows(app: &AppState, entry: &AgentPanelEntry) -> Vec<Vec<ResolvedToken>> {
-    let label = entry
-        .state_labels
-        .get(agent_panel_status_key(entry.state, entry.seen))
-        .map(String::as_str)
-        .unwrap_or_else(|| state_label(entry.state, entry.seen));
-    tokens::agent_rows(&app.sidebar_agents, entry, label)
-}
-
-fn resolved_token_spans(
-    resolved: &[ResolvedToken],
-    state_icon: (&str, Style),
-    state_text_style: Style,
-    workspace_style: Style,
-    secondary_style: Style,
-    custom_style: Style,
-    p: &Palette,
-    max_width: usize,
-) -> Vec<Span<'static>> {
-    let fixed_widths = resolved
-        .iter()
-        .map(|token| match &token.kind {
-            ResolvedTokenKind::StateIcon => display_width(state_icon.0),
-            ResolvedTokenKind::GitStatus { ahead, behind } => {
-                usize::from(*ahead > 0) * display_width(&format!("↑{ahead}"))
-                    + usize::from(*behind > 0) * display_width(&format!("↓{behind}"))
-                    + usize::from(*ahead > 0 && *behind > 0)
-            }
-            _ => 0,
-        })
-        .collect::<Vec<_>>();
-    let flexible_widths = resolved
-        .iter()
-        .map(|token| match &token.kind {
-            ResolvedTokenKind::StateText(text)
-            | ResolvedTokenKind::Workspace(text)
-            | ResolvedTokenKind::Tab(text)
-            | ResolvedTokenKind::Pane(text)
-            | ResolvedTokenKind::Agent(text)
-            | ResolvedTokenKind::TerminalTitle(text)
-            | ResolvedTokenKind::Branch(text)
-            | ResolvedTokenKind::Custom(text) => display_width(text),
-            _ => 0,
-        })
-        .collect::<Vec<_>>();
-    let minimum_width = |active: &[bool]| {
-        let indices = active
-            .iter()
-            .enumerate()
-            .filter_map(|(index, active)| active.then_some(index))
-            .collect::<Vec<_>>();
-        let content = indices
-            .iter()
-            .map(|index| fixed_widths[*index] + usize::from(flexible_widths[*index] > 0))
-            .sum::<usize>();
-        let separators = indices
-            .windows(2)
-            .map(|pair| display_width(tokens::separator(&resolved[pair[0]], &resolved[pair[1]])))
-            .sum::<usize>();
-        content + separators
-    };
-    let mut active = resolved.iter().map(|_| true).collect::<Vec<_>>();
-    if minimum_width(&active) > max_width {
-        for (index, width) in flexible_widths.iter().enumerate() {
-            if *width > 0 {
-                active[index] = false;
-            }
-        }
-        for index in (0..resolved.len()).rev() {
-            if flexible_widths[index] == 0 {
-                continue;
-            }
-            active[index] = true;
-            if minimum_width(&active) > max_width {
-                active[index] = false;
-            }
-        }
+fn truncate_text(text: &str, max_width: usize) -> String {
+    let len = text.chars().count();
+    if len <= max_width {
+        return text.to_string();
     }
-    let visible_indices = active
-        .iter()
-        .enumerate()
-        .filter_map(|(index, active)| active.then_some(index))
-        .collect::<Vec<_>>();
-    let separator_width = visible_indices
-        .windows(2)
-        .map(|pair| display_width(tokens::separator(&resolved[pair[0]], &resolved[pair[1]])))
-        .sum::<usize>();
-    let fixed_width = visible_indices
-        .iter()
-        .map(|index| fixed_widths[*index])
-        .sum::<usize>();
-    let mut budgets = flexible_widths
-        .iter()
-        .enumerate()
-        .map(|(index, width)| usize::from(active[index] && *width > 0))
-        .collect::<Vec<_>>();
-    let minimum = budgets.iter().sum::<usize>();
-    let mut remaining = max_width
-        .saturating_sub(separator_width + fixed_width)
-        .saturating_sub(minimum);
-    while remaining > 0 {
-        let mut grew = false;
-        for (budget, width) in budgets.iter_mut().zip(&flexible_widths) {
-            if *budget > 0 && *budget < *width {
-                *budget += 1;
-                remaining -= 1;
-                grew = true;
-                if remaining == 0 {
-                    break;
-                }
-            }
-        }
-        if !grew {
-            break;
-        }
+    if max_width == 0 {
+        return String::new();
     }
-    let mut spans = Vec::new();
-    for (position, index) in visible_indices.iter().copied().enumerate() {
-        let token = &resolved[index];
-        if position > 0 {
-            let previous = &resolved[visible_indices[position - 1]];
-            spans.push(Span::styled(
-                tokens::separator(previous, token),
-                Style::default().fg(p.overlay0).add_modifier(Modifier::DIM),
-            ));
-        }
-        match &token.kind {
-            ResolvedTokenKind::StateIcon => {
-                spans.push(Span::styled(
-                    state_icon.0.to_string(),
-                    apply_token_style(state_icon.1, token.style),
-                ));
-            }
-            ResolvedTokenKind::StateText(text) => {
-                spans.push(Span::styled(
-                    truncate_end(text, budgets[index]),
-                    apply_token_style(state_text_style, token.style),
-                ));
-            }
-            ResolvedTokenKind::Workspace(text) => {
-                spans.push(Span::styled(
-                    truncate_end(text, budgets[index]),
-                    apply_token_style(workspace_style, token.style),
-                ));
-            }
-            ResolvedTokenKind::Tab(text)
-            | ResolvedTokenKind::Pane(text)
-            | ResolvedTokenKind::Agent(text)
-            | ResolvedTokenKind::Branch(text) => {
-                spans.push(Span::styled(
-                    truncate_end(text, budgets[index]),
-                    apply_token_style(secondary_style, token.style),
-                ));
-            }
-            ResolvedTokenKind::GitStatus { ahead, behind } => {
-                if *ahead > 0 {
-                    spans.push(Span::styled(
-                        format!("↑{ahead}"),
-                        apply_token_style(Style::default().fg(p.green), token.style),
-                    ));
-                }
-                if *ahead > 0 && *behind > 0 {
-                    spans.push(Span::styled(
-                        " ",
-                        apply_token_style(Style::default(), token.style),
-                    ));
-                }
-                if *behind > 0 {
-                    spans.push(Span::styled(
-                        format!("↓{behind}"),
-                        apply_token_style(Style::default().fg(p.red), token.style),
-                    ));
-                }
-            }
-            ResolvedTokenKind::TerminalTitle(text) | ResolvedTokenKind::Custom(text) => {
-                spans.push(Span::styled(
-                    truncate_end(text, budgets[index]),
-                    apply_token_style(custom_style, token.style),
-                ));
-            }
-        }
+    if max_width == 1 {
+        return "…".to_string();
     }
-    spans
-}
-
-fn apply_token_style(mut style: Style, patch: crate::config::SidebarTokenStyle) -> Style {
-    if let Some(fg) = patch.fg {
-        style = style.fg(fg.ratatui());
-    }
-    if let Some(bold) = patch.bold {
-        style = if bold {
-            style.add_modifier(Modifier::BOLD)
-        } else {
-            style.remove_modifier(Modifier::BOLD)
-        };
-    }
-    if let Some(dim) = patch.dim {
-        style = if dim {
-            style.add_modifier(Modifier::DIM)
-        } else {
-            style.remove_modifier(Modifier::DIM)
-        };
-    }
-    style
+    let prefix: String = text.chars().take(max_width.saturating_sub(1)).collect();
+    format!("{prefix}…")
 }
 
 fn format_agent_panel_primary_label(entry: &AgentPanelEntry, max_width: usize) -> String {
     let Some(tab_label) = entry.primary_tab_label.as_deref() else {
-        return truncate_end(&entry.primary_label, max_width);
+        return truncate_text(&entry.primary_label, max_width);
     };
 
     let separator = " · ";
     let separator_width = separator.chars().count();
     if max_width <= separator_width + 2 {
-        return truncate_end(
+        return truncate_text(
             &format!("{}{}{}", entry.primary_label, separator, tab_label),
             max_width,
         );
@@ -462,8 +201,8 @@ fn format_agent_panel_primary_label(entry: &AgentPanelEntry, max_width: usize) -
         .max(1);
     let mut tab_budget = available.saturating_sub(workspace_budget);
 
-    let workspace_len = display_width(&entry.primary_label);
-    let tab_len = display_width(tab_label);
+    let workspace_len = entry.primary_label.chars().count();
+    let tab_len = tab_label.chars().count();
 
     if workspace_len < workspace_budget {
         let spare = workspace_budget - workspace_len;
@@ -478,9 +217,9 @@ fn format_agent_panel_primary_label(entry: &AgentPanelEntry, max_width: usize) -
 
     format!(
         "{}{}{}",
-        truncate_end(&entry.primary_label, workspace_budget),
+        truncate_text(&entry.primary_label, workspace_budget),
         separator,
-        truncate_end(tab_label, tab_budget)
+        truncate_text(tab_label, tab_budget)
     )
 }
 
@@ -489,11 +228,8 @@ fn format_agent_panel_primary_label(entry: &AgentPanelEntry, max_width: usize) -
 pub(crate) enum BranchRail {
     /// Loose workspace with no detected branch — no tree spine.
     None,
-    /// Under an open bracket; the project spine continues down (│).
+    /// Under a branch; the project spine continues down to the closer (│).
     Spine,
-    /// Last row of a bracketed group — draws the closing elbow (╰──). Every
-    /// group closes on a workspace row, so no rail is ever left blank.
-    Close,
 }
 
 /// Per-tab aggregate dot states in tab order: (AgentState, seen).
@@ -513,32 +249,6 @@ fn tab_dot_states(
                 .map(|d| (d.state, d.seen))
                 .max_by_key(|(s, seen)| workspace_display_priority(*s, *seen))
                 .unwrap_or((AgentState::Unknown, true))
-        })
-        .collect()
-}
-
-/// Per-tab oldest unseen-idle age in tab order, parallel to `tab_dot_states`.
-fn tab_dot_idle_ages(
-    ws: &crate::workspace::Workspace,
-    terminals: &std::collections::HashMap<
-        crate::terminal::TerminalId,
-        crate::terminal::TerminalState,
-    >,
-    now: std::time::Instant,
-) -> Vec<Option<std::time::Duration>> {
-    let details = ws.pane_details(terminals);
-    (0..ws.tabs.len())
-        .map(|t| {
-            details
-                .iter()
-                .filter(|d| {
-                    d.tab_idx == t
-                        && !d.seen
-                        && matches!(d.state, AgentState::Idle | AgentState::Unknown)
-                })
-                .filter_map(|d| d.idle_since)
-                .map(|since| now.saturating_duration_since(since))
-                .max()
         })
         .collect()
 }
@@ -578,23 +288,6 @@ fn space_aggregate_display_state(app: &AppState, key: &str) -> (AgentState, bool
         .unwrap_or((AgentState::Unknown, true))
 }
 
-/// Oldest unseen-idle age across a space's workspaces, parallel to
-/// `space_aggregate_display_state`. Drives the age color of a collapsed group.
-fn space_aggregate_idle_age(
-    app: &AppState,
-    key: &str,
-    now: std::time::Instant,
-) -> Option<std::time::Duration> {
-    app.workspaces
-        .iter()
-        .filter(|ws| {
-            ws.git_space()
-                .is_some_and(|space| space.repo_identity == key)
-        })
-        .filter_map(|ws| ws.oldest_unseen_idle_age(&app.terminals, now))
-        .max()
-}
-
 pub(crate) fn workspace_parent_group_state(
     app: &AppState,
     ws_idx: usize,
@@ -624,15 +317,6 @@ fn branch_display_label(branch: &str) -> &str {
     branch.strip_prefix("worktree/").unwrap_or(branch)
 }
 
-/// Folded first-branch summary carried inline on a top-level project header
-/// (`╭─name [label] ↑a ↓b`).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ProjectHeaderBranch {
-    pub label: String,
-    pub ahead: usize,
-    pub behind: usize,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum WorkspaceListEntry {
     Workspace {
@@ -643,57 +327,21 @@ pub(crate) enum WorkspaceListEntry {
     /// A collapsible group header row: a user-defined visual group, or a
     /// synthesized repo header when no main checkout of the repo is open.
     GroupHeader { name: String, collapse_key: String },
-    /// Repo/project header (no chevron). Top-level headers open the bracket
-    /// rail (`╭─`) and fold the group's first branch into `branch`; headers
-    /// nested under a visual group are `indented` and carry `branch: None`.
+    /// Repo/project header (no chevron); indented when nested under a visual group.
     ProjectHeader {
         name: String,
         collapse_key: String,
         indented: bool,
-        branch: Option<ProjectHeaderBranch>,
     },
-    /// Branch sub-header inside a project group. Headers draw `├── ` (or
-    /// `╰── ` when `last`); all connectors are 4 cells wide.
-    ///
-    /// `ws_idx`: a branch holding exactly one auto-named worktree printed
-    /// its name on this header AND again on the child `Workspace` row below
-    /// (both derive from the same checkout). `Some(idx)` folds that single
-    /// workspace INTO the header — the row renders and clicks like a
-    /// `Workspace` row (dot, idle age, selection highlight) instead of a
-    /// plain label, and no separate `Workspace` entry is emitted for it.
-    /// `None` is the plain non-clickable label: a branch with 2+ workspaces
-    /// (a worktree can host two), or a workspace the user renamed by hand.
+    /// Non-clickable branch sub-header inside a project group (╭ label ↑a ↓b).
     BranchHeader {
         label: String,
         ahead: usize,
         behind: usize,
         indented: bool,
-        last: bool,
-        ws_idx: Option<usize>,
     },
-    /// Collapsible header for the bottom "Hidden" section; `count` is the
-    /// number of temporarily-hidden workspaces beneath it.
-    HiddenHeader { count: usize },
-}
-
-/// Derive the repo-header "+" (create worktree) hit areas from the sidebar
-/// group-header areas: only headers whose collapse key is a raw repo identity
-/// (not a `vg:` visual group) get a 3-cell "+" at the row's trailing edge.
-/// Shared by `compute_view` and mouse hit-testing.
-pub(crate) fn worktree_new_hit_areas_from_headers(
-    headers: &[crate::app::state::GroupHeaderCardArea],
-) -> Vec<crate::app::state::WorktreeNewHitArea> {
-    headers
-        .iter()
-        .filter(|header| {
-            !header.collapse_key.starts_with("vg:") && header.collapse_key != "hidden:"
-        })
-        .filter(|header| header.rect.width >= 3)
-        .map(|header| crate::app::state::WorktreeNewHitArea {
-            repo_identity: header.collapse_key.clone(),
-            rect: Rect::new(header.rect.x + header.rect.width - 3, header.rect.y, 3, 1),
-        })
-        .collect()
+    /// Closing line for a project's branch sub-tree (╰───).
+    ProjectFooter { indented: bool },
 }
 
 /// Shared row-height for a single entry. ALL three lockstep passes
@@ -708,14 +356,14 @@ fn entry_row_height(
         WorkspaceListEntry::GroupHeader { .. } => 1,
         WorkspaceListEntry::ProjectHeader { .. } => 1,
         WorkspaceListEntry::BranchHeader { .. } => 1,
-        WorkspaceListEntry::Workspace { .. } => 1,
-        WorkspaceListEntry::HiddenHeader { .. } => 1,
+        WorkspaceListEntry::ProjectFooter { .. } => 1,
+        WorkspaceListEntry::Workspace { .. } => 2,
     }
 }
 
 pub(crate) fn normalized_workspace_scroll(app: &AppState, area: Rect, requested: usize) -> usize {
     let ws_area = workspace_list_rect(area, app.sidebar_section_split);
-    let body = workspace_list_body_rect(app, ws_area, false);
+    let body = workspace_list_body_rect(ws_area, false);
     if body.height == 0 {
         return requested;
     }
@@ -728,110 +376,11 @@ pub(crate) fn normalized_workspace_scroll(app: &AppState, area: Rect, requested:
     }
 }
 
-/// Display label for an indented (grouped child) workspace row in the mobile
-/// switcher: auto-named children show their short branch name.
-pub(crate) fn grouped_child_display_label(
-    label: &str,
-    branch: Option<&str>,
-    has_custom_name: bool,
-) -> String {
-    if has_custom_name {
-        return label.to_string();
-    }
-    let Some(branch) = branch else {
-        return label.to_string();
-    };
-    branch
-        .strip_prefix("worktree/")
-        .unwrap_or(branch)
-        .to_string()
-}
-
-/// A workspace auto-filed as a channel: `#`-labelled and not placed in a group
-/// by hand.
-fn is_auto_channel(ws: &crate::workspace::Workspace) -> bool {
-    ws.visual_group.is_none()
-        && ws
-            .custom_name
-            .as_deref()
-            .is_some_and(|name| name.starts_with('#'))
-}
-
-/// Group a workspace belongs to for sidebar purposes. An explicit group set by
-/// the user always wins, so a channel can still be filed somewhere else.
-///
-/// `channel_group` is the configured display name; the rule that decides WHAT is
-/// a channel keys off the `#` label, never off this string, so renaming the group
-/// cannot change which workspaces land in it.
-fn effective_visual_group<'a>(
-    ws: &'a crate::workspace::Workspace,
-    channel_group: &'a str,
-) -> Option<&'a str> {
-    if let Some(group) = ws.visual_group.as_deref() {
-        return Some(group);
-    }
-    is_auto_channel(ws).then_some(channel_group)
-}
-
-/// Git space a workspace contributes to repo grouping, which for a channel is
-/// none at all.
-///
-/// A channel lives in whatever checkout hosted it, and orc hosts every channel
-/// in the orchestrator hub — a NON-linked checkout. Letting that count as repo
-/// membership does two wrong things at once: the channel joins the repo's branch
-/// bracket, and, being a non-linked checkout with a group of its own, it drags
-/// the repo's entire member list inside the channel group.
-fn grouping_git_space(
-    ws: &crate::workspace::Workspace,
-) -> Option<&crate::workspace::GitSpaceMetadata> {
-    if is_auto_channel(ws) {
-        return None;
-    }
-    ws.git_space()
-}
-
 pub(crate) fn workspace_list_entries(app: &AppState) -> Vec<WorkspaceListEntry> {
-    workspace_list_entries_inner(app, false)
-}
-
-/// Like [`workspace_list_entries`] but always expands collapsed groups. The
-/// mobile switcher has no collapse affordance and always shows the full tree.
-pub(crate) fn workspace_list_entries_expanded(app: &AppState) -> Vec<WorkspaceListEntry> {
-    workspace_list_entries_inner(app, true)
-}
-
-pub(crate) fn next_entry_is_indented_workspace(entries: &[WorkspaceListEntry], idx: usize) -> bool {
-    matches!(
-        entries.get(idx.saturating_add(1)),
-        Some(WorkspaceListEntry::Workspace { indented: true, .. })
-    )
-}
-
-fn workspace_list_entries_inner(app: &AppState, force_expanded: bool) -> Vec<WorkspaceListEntry> {
-    if !app.group_workspaces_by_repo {
-        // Flat sidebar: one row per workspace in workspace-vec order (which
-        // flat-mode drags mutate), with no grouping at all -- repo brackets,
-        // the channels group, and visual groups all dissolve while this is
-        // off. Workspaces hidden individually stay hidden via the shared
-        // post-filter; a repo hidden group-level in grouped mode has no
-        // header here to keep it hidden, so its rows reappear until grouping
-        // is turned back on.
-        let entries: Vec<WorkspaceListEntry> = (0..app.workspaces.len())
-            .map(|ws_idx| WorkspaceListEntry::Workspace {
-                ws_idx,
-                indented: false,
-                rail: BranchRail::None,
-            })
-            .collect();
-        if force_expanded {
-            return entries;
-        }
-        return apply_hidden_filter(app, &std::collections::HashSet::new(), entries);
-    }
-
+    // --- Worktree group setup ---
     let mut members_by_key = std::collections::HashMap::<String, Vec<usize>>::new();
     for (ws_idx, ws) in app.workspaces.iter().enumerate() {
-        if let Some(space) = grouping_git_space(ws) {
+        if let Some(space) = ws.git_space() {
             members_by_key
                 .entry(space.repo_identity.clone())
                 .or_default()
@@ -859,9 +408,9 @@ fn workspace_list_entries_inner(app: &AppState, force_expanded: bool) -> Vec<Wor
     // --- Visual group setup ---
     let mut visual_group_members = std::collections::HashMap::<String, Vec<usize>>::new();
     for (ws_idx, ws) in app.workspaces.iter().enumerate() {
-        if let Some(group_name) = effective_visual_group(ws, &app.channel_group_name) {
+        if let Some(ref group_name) = ws.visual_group {
             visual_group_members
-                .entry(group_name.to_owned())
+                .entry(group_name.clone())
                 .or_default()
                 .push(ws_idx);
         }
@@ -875,16 +424,18 @@ fn workspace_list_entries_inner(app: &AppState, force_expanded: bool) -> Vec<Wor
     // by the visual group handler and must be skipped in the main loop.
     let mut consumed = std::collections::HashSet::<usize>::new();
     for (ws_idx, ws) in app.workspaces.iter().enumerate() {
-        if effective_visual_group(ws, &app.channel_group_name).is_some() {
-            if let Some(space) = grouping_git_space(ws)
+        if ws.visual_group.is_some() {
+            if let Some(space) = ws
+                .git_space()
                 .filter(|s| grouped_keys.contains(&s.repo_identity) && !s.is_linked_worktree)
             {
                 if let Some(members) = members_by_key.get(&space.repo_identity) {
                     for &m in members {
                         if m != ws_idx
-                            && app.workspaces.get(m).is_some_and(|w| {
-                                effective_visual_group(w, &app.channel_group_name).is_none()
-                            })
+                            && app
+                                .workspaces
+                                .get(m)
+                                .is_some_and(|w| w.visual_group.is_none())
                         {
                             consumed.insert(m);
                         }
@@ -898,31 +449,18 @@ fn workspace_list_entries_inner(app: &AppState, force_expanded: bool) -> Vec<Wor
     let mut emitted_visual_groups = std::collections::HashSet::<String>::new();
     let mut entries = Vec::new();
 
-    // Channels lead, then everything else in its own order.
-    //
-    // A group is emitted where its FIRST member sits, so with creation order the
-    // channel block landed in the middle of the repo groups — anything created
-    // after the first `#` workspace ended up below the channels, which reads as
-    // if that repo belonged under them. Channels and workspaces are two separate
-    // kinds, so they get two separate blocks. The sort is stable, so the repo
-    // groups keep their relative order exactly as before.
-    let mut emission_order: Vec<usize> = (0..app.workspaces.len()).collect();
-    emission_order.sort_by_key(|&idx| !is_auto_channel(&app.workspaces[idx]));
-
-    for ws_idx in emission_order {
-        let ws = &app.workspaces[ws_idx];
+    for (ws_idx, ws) in app.workspaces.iter().enumerate() {
         if consumed.contains(&ws_idx) {
             continue;
         }
 
-        let in_worktree_group = grouping_git_space(ws)
+        let in_worktree_group = ws
+            .git_space()
             .filter(|space| grouped_keys.contains(&space.repo_identity))
             .is_some();
 
         if in_worktree_group && !in_visual_group.contains(&ws_idx) {
-            let Some(space) = grouping_git_space(ws) else {
-                continue;
-            };
+            let space = ws.git_space().unwrap();
             if emitted_worktree_groups.contains(&space.repo_identity) {
                 continue;
             }
@@ -933,13 +471,11 @@ fn workspace_list_entries_inner(app: &AppState, force_expanded: bool) -> Vec<Wor
             };
             // Always synthesize a project header (the repo label); every checkout
             // of the repo becomes a member inside a branch bracket beneath it.
-            let collapsed =
-                !force_expanded && app.collapsed_space_keys.contains(&space.repo_identity);
+            let collapsed = app.collapsed_space_keys.contains(&space.repo_identity);
             entries.push(WorkspaceListEntry::ProjectHeader {
-                name: space.repo_name.clone(),
+                name: space.label.clone(),
                 collapse_key: space.repo_identity.clone(),
                 indented: false,
-                branch: None,
             });
             if collapsed {
                 if let Some(active_idx) = visible_group_idx
@@ -952,12 +488,13 @@ fn workspace_list_entries_inner(app: &AppState, force_expanded: bool) -> Vec<Wor
                     });
                 }
             } else {
-                emit_branch_subgroups(app, members, true, true, &mut entries);
+                emit_branch_subgroups(app, members, true, &mut entries);
             }
             continue;
         }
 
-        if let Some(space) = grouping_git_space(ws).filter(|_| in_worktree_group) {
+        if in_worktree_group {
+            let space = ws.git_space().unwrap();
             if emitted_worktree_groups.contains(&space.repo_identity) {
                 continue;
             }
@@ -965,39 +502,25 @@ fn workspace_list_entries_inner(app: &AppState, force_expanded: bool) -> Vec<Wor
 
         // --- Visual group handling ---
         if in_visual_group.contains(&ws_idx) {
-            let group_name = effective_visual_group(ws, &app.channel_group_name)
-                .expect("in_visual_group only set for workspaces with a group");
+            let group_name = ws
+                .visual_group
+                .as_deref()
+                .expect("in_visual_group only set for workspaces with visual_group");
             if emitted_visual_groups.insert(group_name.to_owned()) {
                 let vg_key = format!("vg:{group_name}");
-                let collapsed = !force_expanded && app.collapsed_space_keys.contains(&vg_key);
+                let collapsed = app.collapsed_space_keys.contains(&vg_key);
                 entries.push(WorkspaceListEntry::GroupHeader {
                     name: group_name.to_owned(),
                     collapse_key: vg_key,
                 });
                 if !collapsed {
                     if let Some(vg_members) = visual_group_members.get(group_name) {
-                        let last_member = vg_members.len().saturating_sub(1);
-                        for (position, &member_idx) in vg_members.iter().enumerate() {
+                        for &member_idx in vg_members {
                             let member_ws = &app.workspaces[member_idx];
-                            if is_auto_channel(member_ws) {
-                                // A channel row is just the channel: no repo header
-                                // and no branch bracket, because the checkout that
-                                // hosts it is not what the row is about. The rail
-                                // still closes on the group's last row.
-                                entries.push(WorkspaceListEntry::Workspace {
-                                    ws_idx: member_idx,
-                                    indented: true,
-                                    rail: if position == last_member {
-                                        BranchRail::Close
-                                    } else {
-                                        BranchRail::Spine
-                                    },
-                                });
-                                continue;
-                            }
-                            let repo = grouping_git_space(member_ws)
+                            let repo = member_ws
+                                .git_space()
                                 .filter(|s| grouped_keys.contains(&s.repo_identity))
-                                .map(|s| (s.repo_identity.clone(), s.repo_name.clone()));
+                                .map(|s| (s.repo_identity.clone(), s.label.clone()));
 
                             if let Some((repo_id, label)) = repo {
                                 // One synthesized project header per repo group; skip
@@ -1005,41 +528,26 @@ fn workspace_list_entries_inner(app: &AppState, force_expanded: bool) -> Vec<Wor
                                 if !emitted_worktree_groups.insert(repo_id.clone()) {
                                     continue;
                                 }
-                                let wt_collapsed =
-                                    !force_expanded && app.collapsed_space_keys.contains(&repo_id);
+                                let wt_collapsed = app.collapsed_space_keys.contains(&repo_id);
                                 entries.push(WorkspaceListEntry::ProjectHeader {
                                     name: label,
                                     collapse_key: repo_id.clone(),
                                     indented: true,
-                                    branch: None,
                                 });
                                 if !wt_collapsed {
                                     if let Some(members) = members_by_key.get(&repo_id) {
-                                        emit_branch_subgroups(
-                                            app,
-                                            members,
-                                            true,
-                                            false,
-                                            &mut entries,
-                                        );
+                                        emit_branch_subgroups(app, members, true, &mut entries);
                                     }
                                 }
                             } else {
                                 if let Some(space) = member_ws.git_space() {
                                     entries.push(WorkspaceListEntry::ProjectHeader {
-                                        name: space.repo_name.clone(),
+                                        name: space.label.clone(),
                                         collapse_key: space.repo_identity.clone(),
                                         indented: true,
-                                        branch: None,
                                     });
                                 }
-                                emit_branch_subgroups(
-                                    app,
-                                    &[member_idx],
-                                    true,
-                                    false,
-                                    &mut entries,
-                                );
+                                emit_branch_subgroups(app, &[member_idx], true, &mut entries);
                             }
                         }
                     }
@@ -1049,147 +557,23 @@ fn workspace_list_entries_inner(app: &AppState, force_expanded: bool) -> Vec<Wor
         }
 
         // --- Flat (ungrouped) workspace: project header (if git) + branch bracket ---
-        let flat_has_header = if let Some(space) = ws.git_space() {
+        if let Some(space) = ws.git_space() {
             entries.push(WorkspaceListEntry::ProjectHeader {
-                name: space.repo_name.clone(),
+                name: space.label.clone(),
                 collapse_key: space.repo_identity.clone(),
                 indented: false,
-                branch: None,
             });
-            true
-        } else {
-            false
-        };
-        emit_branch_subgroups(app, &[ws_idx], false, flat_has_header, &mut entries);
+        }
+        emit_branch_subgroups(app, &[ws_idx], false, &mut entries);
     }
-    if force_expanded {
-        return entries;
-    }
-    apply_hidden_filter(app, &grouped_keys, entries)
-}
-
-/// Post-process the raw entry list (desktop only): drop temporarily-hidden
-/// workspaces and any group/branch header whose members all became hidden,
-/// then append a collapsible "Hidden" section. Never applied to the mobile
-/// (force-expanded) list.
-fn apply_hidden_filter(
-    app: &AppState,
-    grouped_keys: &std::collections::HashSet<String>,
-    raw: Vec<WorkspaceListEntry>,
-) -> Vec<WorkspaceListEntry> {
-    let level = |e: &WorkspaceListEntry| match e {
-        WorkspaceListEntry::GroupHeader { .. } | WorkspaceListEntry::HiddenHeader { .. } => 0u8,
-        WorkspaceListEntry::ProjectHeader { .. } => 1,
-        WorkspaceListEntry::BranchHeader { .. } => 2,
-        WorkspaceListEntry::Workspace { .. } => 3,
-    };
-    let ws_hidden = |ws_idx: usize| -> bool {
-        let Some(ws) = app.workspaces.get(ws_idx) else {
-            return false;
-        };
-        if app.is_hidden(&AppState::workspace_hide_key(ws)) {
-            return true;
-        }
-        if let Some(group) = effective_visual_group(ws, &app.channel_group_name) {
-            if app.is_hidden(&format!("vg:{group}")) {
-                return true;
-            }
-        }
-        if let Some(space) = ws.git_space() {
-            if grouped_keys.contains(&space.repo_identity) && app.is_hidden(&space.repo_identity) {
-                return true;
-            }
-        }
-        false
-    };
-
-    // Mark, per header, whether it had any workspace child in the raw list and
-    // whether any of those children survive. A collapsed header legitimately
-    // has no children and must be kept.
-    let n = raw.len();
-    let mut had_child = vec![false; n];
-    let mut has_kept_child = vec![false; n];
-    let mut open: Vec<usize> = Vec::new();
-    for (i, entry) in raw.iter().enumerate() {
-        let lvl = level(entry);
-        while let Some(&top) = open.last() {
-            if level(&raw[top]) >= lvl {
-                open.pop();
-            } else {
-                break;
-            }
-        }
-        match entry {
-            WorkspaceListEntry::Workspace { ws_idx, .. } => {
-                let hidden = ws_hidden(*ws_idx);
-                for &h in &open {
-                    had_child[h] = true;
-                    has_kept_child[h] |= !hidden;
-                }
-            }
-            WorkspaceListEntry::GroupHeader { .. }
-            | WorkspaceListEntry::ProjectHeader { .. }
-            | WorkspaceListEntry::BranchHeader { .. } => open.push(i),
-            WorkspaceListEntry::HiddenHeader { .. } => {}
-        }
-    }
-
-    let mut result = Vec::with_capacity(n);
-    let mut hidden_ws: Vec<usize> = Vec::new();
-    for (i, entry) in raw.into_iter().enumerate() {
-        match &entry {
-            WorkspaceListEntry::Workspace { ws_idx, .. } => {
-                if ws_hidden(*ws_idx) {
-                    hidden_ws.push(*ws_idx);
-                } else {
-                    result.push(entry);
-                }
-            }
-            WorkspaceListEntry::GroupHeader { collapse_key, .. }
-            | WorkspaceListEntry::ProjectHeader { collapse_key, .. } => {
-                let drop = app.is_hidden(collapse_key) || (had_child[i] && !has_kept_child[i]);
-                if !drop {
-                    result.push(entry);
-                }
-            }
-            WorkspaceListEntry::BranchHeader { .. } => {
-                if !had_child[i] || has_kept_child[i] {
-                    result.push(entry);
-                }
-            }
-            WorkspaceListEntry::HiddenHeader { .. } => result.push(entry),
-        }
-    }
-
-    if !hidden_ws.is_empty() {
-        result.push(WorkspaceListEntry::HiddenHeader {
-            count: hidden_ws.len(),
-        });
-        if app.hidden_section_expanded {
-            for ws_idx in hidden_ws {
-                result.push(WorkspaceListEntry::Workspace {
-                    ws_idx,
-                    indented: true,
-                    rail: BranchRail::None,
-                });
-            }
-        }
-    }
-
-    result
+    entries
 }
 
 /// Emit branch sub-groups for a list of project-group member indices.
-///
-/// `bracket` is true when THIS call is rooted by a just-pushed top-level
-/// project header: the first branch folds into that header and the last branch
-/// closes the rounded bracket. When false (nested visual-group repos, or flat
-/// non-git workspaces) the legacy header-per-branch layout is used.
 fn emit_branch_subgroups(
     app: &AppState,
     member_indices: &[usize],
     indented: bool,
-    bracket: bool,
     entries: &mut Vec<WorkspaceListEntry>,
 ) {
     let mut branch_order: Vec<String> = Vec::new();
@@ -1206,131 +590,40 @@ fn emit_branch_subgroups(
         }
     }
 
-    let bracketed = bracket;
-
-    let branch_meta = |members: &[usize]| -> (usize, usize) {
-        members
+    // One branch sub-tree per branch; members stack under it on the spine.
+    let has_branches = !branch_order.is_empty();
+    for branch in &branch_order {
+        let members = &by_branch[branch];
+        let (ahead, behind) = members
             .iter()
             .find_map(|&i| app.workspaces[i].git_ahead_behind())
-            .unwrap_or((0, 0))
-    };
-
-    // Bracket mode: branchless members stay INSIDE the bracket, emitted right
-    // after the folded first-branch members. The bracket closes (╰──) on the
-    // last of these rows only when no further branch headers follow.
-    let has_header_branches = branch_order.len() > usize::from(!branch_order.is_empty());
-
-    // Fold the first branch group into the preceding project header.
-    let folded = bracketed && !branch_order.is_empty();
-    if folded {
-        let first = &branch_order[0];
-        let members = &by_branch[first];
-        let (ahead, behind) = branch_meta(members);
-        if let Some(WorkspaceListEntry::ProjectHeader { branch, .. }) = entries.last_mut() {
-            *branch = Some(ProjectHeaderBranch {
-                label: branch_display_label(first).to_string(),
-                ahead,
-                behind,
-            });
-        }
-    }
-
-    if bracketed {
-        // Rows directly under the header: folded-branch members, then loose
-        // (branchless) members.
-        let mut under_header: Vec<usize> = Vec::new();
-        if folded {
-            under_header.extend_from_slice(&by_branch[&branch_order[0]]);
-        }
-        under_header.extend_from_slice(&no_branch);
-        let last_member = under_header.len().saturating_sub(1);
-        for (k, &idx) in under_header.iter().enumerate() {
-            let rail = if !has_header_branches && k == last_member {
-                BranchRail::Close
-            } else {
-                BranchRail::Spine
-            };
-            entries.push(WorkspaceListEntry::Workspace {
-                ws_idx: idx,
-                indented,
-                rail,
-            });
-        }
-    }
-
-    // Remaining branches become header rows. The bracket closes on the group's
-    // last ROW, never on a header: a header with members beneath it draws a tee
-    // and the final member draws the elbow, so the rail runs unbroken to the
-    // bottom of the group. Closing on the header instead left every row under
-    // the last branch hanging with no rail beside it.
-    let start = usize::from(folded);
-    let header_branches = &branch_order[start..];
-    for (bi, branch) in header_branches.iter().enumerate() {
-        let members = &by_branch[branch];
-        let (ahead, behind) = branch_meta(members);
-        let is_last_branch = bracketed && bi + 1 == header_branches.len();
-        // A branch with exactly one workspace whose name REPEATS the branch
-        // prints the identical string twice: once as the header label, once as
-        // the child row below it. Fold that workspace INTO the header instead.
-        //
-        // The test is the repetition itself, not how the name was set. An
-        // auto-named checkout repeats by construction; a workspace renamed by
-        // hand to the same string repeats just as visibly, and one measured live
-        // does exactly that. A workspace named something else keeps its own row,
-        // and 2+ workspaces always keep the header-plus-rows shape, because a
-        // worktree can host two workspaces and the header then groups them.
-        let branch_label = branch_display_label(branch);
-        let repeats_branch = |ws: &crate::workspace::Workspace| match ws.custom_name.as_deref() {
-            None => true,
-            Some(name) => {
-                name == branch_label
-                    || branch_label
-                        .rsplit('/')
-                        .next()
-                        .is_some_and(|short| name == short)
-            }
-        };
-        let collapse_idx = match members.as_slice() {
-            [only] if repeats_branch(&app.workspaces[*only]) => Some(*only),
-            _ => None,
-        };
+            .unwrap_or((0, 0));
         entries.push(WorkspaceListEntry::BranchHeader {
             label: branch_display_label(branch).to_string(),
             ahead,
             behind,
-            // Top-level bracket headers draw the bracket tee/elbow at column 0;
-            // nested ones keep the legacy indented connector.
-            indented: indented && !bracketed,
-            // A childless last branch, or one collapsed into this header,
-            // closes the bracket itself — there is no child row left to.
-            last: is_last_branch && (members.is_empty() || collapse_idx.is_some()),
-            ws_idx: collapse_idx,
+            indented,
         });
-        if collapse_idx.is_none() {
-            let last_member = members.len().saturating_sub(1);
-            for (mi, &idx) in members.iter().enumerate() {
-                let rail = if is_last_branch && mi == last_member {
-                    BranchRail::Close
-                } else {
-                    BranchRail::Spine
-                };
-                entries.push(WorkspaceListEntry::Workspace {
-                    ws_idx: idx,
-                    indented,
-                    rail,
-                });
-            }
-        }
-    }
-
-    if !bracketed {
-        for &idx in &no_branch {
+        for &idx in members {
             entries.push(WorkspaceListEntry::Workspace {
                 ws_idx: idx,
                 indented,
-                rail: BranchRail::None,
+                rail: BranchRail::Spine,
             });
         }
+    }
+
+    for &idx in &no_branch {
+        entries.push(WorkspaceListEntry::Workspace {
+            ws_idx: idx,
+            indented,
+            rail: BranchRail::None,
+        });
+    }
+
+    // Close the project's branch sub-tree with a footer line.
+    if has_branches {
+        entries.push(WorkspaceListEntry::ProjectFooter { indented });
     }
 }
 
@@ -1339,44 +632,20 @@ pub(crate) fn workspace_list_rect(area: Rect, split_ratio: f32) -> Rect {
     ws_area
 }
 
-/// Rows the sidebar Programs launcher band occupies: one per pane-mode
-/// `.bora.toml` command for the active workspace, plus the fixed
-/// "+ run command…" row.
-pub(crate) fn sidebar_program_row_count(app: &AppState) -> u16 {
-    app.sidebar_program_commands().len() as u16 + 1
-}
-
-/// Hit/render area for the sidebar Programs launcher band: sits directly
-/// above the workspace list's "new"/"menu" footer row, within `ws_area`
-/// (the first section returned by `expanded_sidebar_sections`). Reserving
-/// this band is `workspace_list_body_rect`'s job too — both MUST agree on
-/// `sidebar_program_row_count`, or scrolling and hit-testing will disagree
-/// about where the workspace list body ends.
-pub(crate) fn sidebar_programs_band_rect(app: &AppState, ws_area: Rect) -> Rect {
-    if ws_area.height == 0 {
-        return Rect::default();
-    }
-    let footer_rows = 1u16;
-    let rows = sidebar_program_row_count(app).min(ws_area.height.saturating_sub(footer_rows));
-    let y = ws_area.y + ws_area.height - footer_rows - rows;
-    Rect::new(ws_area.x, y, ws_area.width, rows)
-}
-
-pub(crate) fn workspace_list_body_rect(app: &AppState, area: Rect, has_scrollbar: bool) -> Rect {
+pub(crate) fn workspace_list_body_rect(area: Rect, has_scrollbar: bool) -> Rect {
     if area.width == 0 || area.height <= WORKSPACE_SECTION_HEADER_ROWS {
         return Rect::default();
     }
 
-    let programs_rows = sidebar_programs_band_rect(app, area).height;
     let body_y = area.y.saturating_add(WORKSPACE_SECTION_HEADER_ROWS);
-    let footer_y = (area.y + area.height).saturating_sub(1 + programs_rows);
+    let footer_y = area.y + area.height.saturating_sub(1);
     let body_height = footer_y.saturating_sub(body_y);
     let body_width = area.width.saturating_sub(u16::from(has_scrollbar));
     Rect::new(area.x, body_y, body_width, body_height)
 }
 
 fn workspace_list_visible_count(app: &AppState, area: Rect, scroll: usize) -> usize {
-    let body = workspace_list_body_rect(app, area, false);
+    let body = workspace_list_body_rect(area, false);
     if body.width == 0 || body.height == 0 {
         return 0;
     }
@@ -1417,7 +686,7 @@ pub(crate) fn workspace_list_scroll_metrics(
 
 pub(crate) fn workspace_list_scrollbar_rect(app: &AppState, area: Rect) -> Option<Rect> {
     let metrics = workspace_list_scroll_metrics(app, area);
-    let body = workspace_list_body_rect(app, area, true);
+    let body = workspace_list_body_rect(area, true);
     (should_show_scrollbar(metrics) && body.width > 0 && body.height > 0).then_some(Rect::new(
         area.x + area.width.saturating_sub(1),
         body.y,
@@ -1437,29 +706,7 @@ pub(crate) fn agent_panel_body_rect(area: Rect, has_scrollbar: bool) -> Rect {
     Rect::new(area.x, body_y, body_width, body_height)
 }
 
-/// Rows one agent entry occupies in the panel body. The fork's agent panel
-/// renders fixed two-row entries; upstream callers use this to hit-test and
-/// scroll by entry height.
-pub(crate) fn agent_entry_height_in_body(
-    _app: &AppState,
-    _entry: &AgentPanelEntry,
-    body_height: u16,
-) -> u16 {
-    2u16.min(body_height)
-}
-
-pub(crate) fn agent_entry_gap(_app: &AppState, entry_idx: usize, entry_count: usize) -> u16 {
-    // The fork's agent panel uses fixed two-row entries with a fixed one-row gap
-    // between them; upstream's row_gap-driven variable spacing (the sidebar token
-    // engine) is not ported, so row_gap is ignored here.
-    if entry_idx + 1 < entry_count {
-        1
-    } else {
-        0
-    }
-}
-
-fn agent_panel_visible_count_from(app: &AppState, area: Rect, scroll: usize) -> usize {
+fn agent_panel_visible_count(area: Rect) -> usize {
     let body = agent_panel_body_rect(area, false);
     if body.width == 0 || body.height < 2 {
         return 0;
@@ -1467,67 +714,27 @@ fn agent_panel_visible_count_from(app: &AppState, area: Rect, scroll: usize) -> 
 
     let mut used_rows = 0u16;
     let mut visible = 0usize;
-    let entries = agent_panel_entries(app);
-    for (index, entry) in entries.iter().enumerate().skip(scroll) {
-        let height = agent_entry_height_in_body(app, entry, body.height);
-        if used_rows.saturating_add(height) > body.height {
-            break;
-        }
-        used_rows = used_rows.saturating_add(height);
+    while used_rows.saturating_add(2) <= body.height {
+        used_rows = used_rows.saturating_add(2);
         visible += 1;
-        used_rows = used_rows
-            .saturating_add(agent_entry_gap(app, index, entries.len()))
-            .min(body.height);
+        if used_rows < body.height {
+            used_rows = used_rows.saturating_add(1);
+        }
     }
     visible
 }
 
-fn agent_panel_bottom_start(app: &AppState, area: Rect) -> usize {
-    let body = agent_panel_body_rect(area, false);
-    let entries = agent_panel_entries(app);
-    let mut used_rows = 0u16;
-    let mut start = entries.len();
-    for (index, entry) in entries.iter().enumerate().rev() {
-        let gap = agent_entry_gap(app, index, entries.len());
-        let needed = agent_entry_height_in_body(app, entry, body.height).saturating_add(gap);
-        if used_rows.saturating_add(needed) > body.height {
-            break;
-        }
-        used_rows = used_rows.saturating_add(needed);
-        start = index;
-    }
-    start.min(entries.len().saturating_sub(1))
-}
-
-pub(crate) fn agent_panel_scroll_for_target(
-    app: &AppState,
-    area: Rect,
-    current_scroll: usize,
-    target: usize,
-) -> usize {
-    let max_scroll = agent_panel_bottom_start(app, area);
-    if target < current_scroll {
-        return target.min(max_scroll);
-    }
-    let mut scroll = current_scroll.min(max_scroll);
-    while scroll < target {
-        let visible = agent_panel_visible_count_from(app, area, scroll);
-        if visible > 0 && target < scroll.saturating_add(visible) {
-            break;
-        }
-        scroll += 1;
-    }
-    scroll.min(max_scroll)
-}
-
 pub(crate) fn agent_panel_scroll_metrics(app: &AppState, area: Rect) -> crate::pane::ScrollMetrics {
-    let max_scroll = agent_panel_bottom_start(app, area);
-    let scroll = app.agent_panel_scroll.min(max_scroll);
-    let viewport_rows = agent_panel_visible_count_from(app, area, scroll);
+    let viewport_rows = agent_panel_visible_count(area);
+    let total_rows = agent_panel_entries(app).len();
+    let max_offset_from_bottom = total_rows.saturating_sub(viewport_rows);
+    let offset_from_bottom = total_rows
+        .saturating_sub(app.agent_panel_scroll)
+        .saturating_sub(viewport_rows);
 
     crate::pane::ScrollMetrics {
-        offset_from_bottom: max_scroll.saturating_sub(scroll),
-        max_offset_from_bottom: max_scroll,
+        offset_from_bottom,
+        max_offset_from_bottom,
         viewport_rows,
     }
 }
@@ -1556,7 +763,7 @@ pub(crate) fn compute_workspace_list_areas(
     }
 
     let metrics = workspace_list_scroll_metrics(app, ws_area);
-    let body = workspace_list_body_rect(app, ws_area, should_show_scrollbar(metrics));
+    let body = workspace_list_body_rect(ws_area, should_show_scrollbar(metrics));
     if body.width == 0 || body.height == 0 {
         return (Vec::new(), Vec::new());
     }
@@ -1590,37 +797,19 @@ pub(crate) fn compute_workspace_list_areas(
                     rect: Rect::new(body.x, row_y, body.width, 1),
                 });
             }
-            WorkspaceListEntry::BranchHeader {
-                ws_idx, indented, ..
-            } => {
-                // `Some` means this header folded its sole workspace's row
-                // into itself (see `WorkspaceListEntry::BranchHeader`); it
-                // must stay clickable, so push the same card a `Workspace`
-                // row would have. `None` is the plain non-clickable label.
-                if let Some(idx) = *ws_idx {
-                    cards.push(crate::app::state::WorkspaceCardArea {
-                        ws_idx: idx,
-                        rect: Rect::new(body.x, row_y, body.width, 1),
-                        indented: *indented,
-                    });
-                }
+            WorkspaceListEntry::BranchHeader { .. } => {
+                // BranchHeader is a non-clickable label — no card or header area.
             }
-            WorkspaceListEntry::HiddenHeader { .. } => {
-                // Reuse the group-header hit-test path so a click toggles the
-                // Hidden section; keyed with a sentinel that no repo can produce.
-                headers.push(crate::app::state::GroupHeaderCardArea {
-                    name: "Hidden".to_string(),
-                    collapse_key: "hidden:".to_string(),
-                    rect: Rect::new(body.x, row_y, body.width, 1),
-                });
+            WorkspaceListEntry::ProjectFooter { .. } => {
+                // ProjectFooter is a non-clickable closer line — no card.
             }
             WorkspaceListEntry::Workspace {
                 ws_idx, indented, ..
             } => {
-                // Workspace card spans 1 row (name + inline dots).
+                // Workspace card spans 2 rows (name + dots).
                 cards.push(crate::app::state::WorkspaceCardArea {
                     ws_idx: *ws_idx,
-                    rect: Rect::new(body.x, row_y, body.width, 1),
+                    rect: Rect::new(body.x, row_y, body.width, 2),
                     indented: *indented,
                 });
             }
@@ -1636,19 +825,6 @@ pub(crate) fn compute_workspace_card_areas(
     area: Rect,
 ) -> Vec<crate::app::state::WorkspaceCardArea> {
     compute_workspace_list_areas(app, area).0
-}
-
-pub(crate) fn workspace_group_chevron_rect(card: &crate::app::state::WorkspaceCardArea) -> Rect {
-    if card.rect.width == 0 || card.rect.height == 0 {
-        return Rect::default();
-    }
-
-    Rect::new(
-        card.rect.x + card.rect.width.saturating_sub(1),
-        card.rect.y,
-        1,
-        1,
-    )
 }
 
 /// Auto-scale sidebar width based on workspace identity + agent summary.
@@ -1677,16 +853,9 @@ pub(crate) fn collapsed_sidebar_sections(area: Rect) -> (Rect, Option<u16>, Rect
 
 /// Collapsed sidebar: workspace glance on top, compact agent list below.
 pub(super) fn render_sidebar_collapsed(app: &AppState, frame: &mut Frame, area: Rect) {
-    if area.width == 0 || area.height == 0 {
-        return;
-    }
-
     let is_navigating = matches!(app.mode, Mode::Navigate);
 
     let p = &app.palette;
-    frame
-        .buffer_mut()
-        .set_style(area, Style::default().bg(p.sidebar_bg));
     let sep_style = if is_navigating {
         Style::default().fg(p.accent)
     } else {
@@ -1711,15 +880,10 @@ pub(super) fn render_sidebar_collapsed(app: &AppState, frame: &mut Frame, area: 
             break;
         }
         let (agg_state, agg_seen) = ws.aggregate_display_state(&app.terminals);
-        let idle_age = ws.oldest_unseen_idle_age(&app.terminals, Instant::now());
-        let (icon, icon_style) = state_dot(
-            agg_state,
-            agg_seen,
-            app.spinner_tick,
-            app.status_indicators,
-            p,
-            idle_age,
-        );
+        let idle_stale = ws.last_activity_at.is_some_and(|t| {
+            Instant::now().duration_since(t) >= crate::app::WORKSPACE_IDLE_TIMEOUT
+        });
+        let (icon, icon_style) = state_dot(agg_state, agg_seen, app.spinner_tick, p, idle_stale);
         let is_selected = visible_idx == app.selected && is_navigating;
         let is_active = Some(visible_idx) == app.active;
         let row_style = if is_selected {
@@ -1746,7 +910,8 @@ pub(super) fn render_sidebar_collapsed(app: &AppState, frame: &mut Frame, area: 
 
         frame.render_widget(
             Paragraph::new(Line::from(vec![
-                Span::styled(format!("{:<2}", visible_idx + 1), num_style),
+                Span::styled(format!("{}", visible_idx + 1), num_style),
+                Span::styled(" ", row_style),
                 Span::styled(icon, icon_style),
             ])),
             Rect::new(ws_area.x, y, ws_area.width, 1),
@@ -1755,17 +920,17 @@ pub(super) fn render_sidebar_collapsed(app: &AppState, frame: &mut Frame, area: 
 
     if let Some(divider_y) = divider_y {
         let buf = frame.buffer_mut();
-        let divider_color = if app.agent_view_override.is_some() {
-            p.accent
-        } else {
-            p.surface_dim
-        };
         for x in ws_area.x..ws_area.x + ws_area.width {
             buf[(x, divider_y)].set_symbol("─");
-            buf[(x, divider_y)].set_style(Style::default().fg(divider_color));
+            buf[(x, divider_y)].set_style(Style::default().fg(p.surface_dim));
         }
     }
 
+    let detail_ws_idx = if is_navigating {
+        Some(app.selected)
+    } else {
+        app.active
+    };
     let detail_content_area = Rect::new(
         detail_area.x,
         detail_area.y,
@@ -1773,43 +938,29 @@ pub(super) fn render_sidebar_collapsed(app: &AppState, frame: &mut Frame, area: 
         detail_area.height.saturating_sub(1),
     );
     if detail_content_area != Rect::default() {
-        for (detail_idx, detail) in agent_panel_entries(app).iter().enumerate() {
-            let y = detail_content_area.y + detail_idx as u16;
-            if y >= detail_content_area.y + detail_content_area.height {
-                break;
-            }
-            let position = detail_idx + 1;
-            let is_active = app.is_active_pane(detail.ws_idx, detail.tab_idx, detail.pane_id);
-            let position_style = if is_active {
-                Style::default().fg(p.text).bg(p.surface_dim)
-            } else {
-                Style::default().fg(p.overlay0)
-            };
-            let idle_age = detail
-                .idle_since
-                .map(|since| Instant::now().saturating_duration_since(since));
-            let (icon, icon_style) = agent_icon(
-                detail.state,
-                detail.seen,
-                app.spinner_tick,
-                app.status_indicators,
-                p,
-                idle_age,
-            );
-
-            if is_active {
-                let buf = frame.buffer_mut();
-                for x in detail_content_area.x..detail_content_area.x + detail_content_area.width {
-                    buf[(x, y)].set_style(Style::default().bg(p.surface_dim));
+        if let Some(ws_idx) = detail_ws_idx {
+            if let Some(ws) = app.workspaces.get(ws_idx) {
+                for (detail_idx, detail) in ws.pane_details(&app.terminals).iter().enumerate() {
+                    let y = detail_content_area.y + detail_idx as u16;
+                    if y >= detail_content_area.y + detail_content_area.height {
+                        break;
+                    }
+                    let pane_num = ws
+                        .public_pane_number(detail.pane_id)
+                        .unwrap_or(detail_idx + 1);
+                    let pane_style = Style::default().fg(p.overlay0);
+                    let (icon, icon_style) =
+                        agent_icon(detail.state, detail.seen, app.spinner_tick, p);
+                    frame.render_widget(
+                        Paragraph::new(Line::from(vec![
+                            Span::styled(format!("{pane_num}"), pane_style),
+                            Span::styled(" ", pane_style),
+                            Span::styled(icon, icon_style),
+                        ])),
+                        Rect::new(detail_content_area.x, y, detail_content_area.width, 1),
+                    );
                 }
             }
-            frame.render_widget(
-                Paragraph::new(Line::from(vec![
-                    Span::styled(format!("{position:<2}"), position_style),
-                    Span::styled(icon, icon_style),
-                ])),
-                Rect::new(detail_content_area.x, y, detail_content_area.width, 1),
-            );
         }
     }
 
@@ -1854,9 +1005,6 @@ pub(super) fn render_sidebar(
     area: Rect,
 ) {
     let p = &app.palette;
-    frame
-        .buffer_mut()
-        .set_style(area, Style::default().bg(p.sidebar_bg));
     let is_navigating = matches!(app.mode, Mode::Navigate);
     let sep_style = if is_navigating {
         Style::default().fg(p.accent)
@@ -1874,46 +1022,10 @@ pub(super) fn render_sidebar(
     let (ws_area, detail_area) = expanded_sidebar_sections(area, app.sidebar_section_split);
 
     render_workspace_list(app, terminal_runtimes, frame, ws_area, is_navigating);
-    render_programs_section(app, frame, sidebar_programs_band_rect(app, ws_area));
     render_agent_detail(app, terminal_runtimes, frame, detail_area);
     render_sidebar_toggle(app, frame, area, false, p);
 }
 
-/// Sidebar "Programs" launcher band: one row per pane-mode `.bora.toml`
-/// command for the active workspace, plus a fixed "+ run command…" row.
-/// Row count/geometry MUST match `sidebar_programs_band_rect` exactly.
-fn render_programs_section(app: &AppState, frame: &mut Frame, area: Rect) {
-    if area.width == 0 || area.height == 0 {
-        return;
-    }
-    let p = &app.palette;
-    let commands = app.sidebar_program_commands();
-    let mut row_y = area.y;
-    let bottom = area.y + area.height;
-    for cmd in &commands {
-        if row_y >= bottom {
-            return;
-        }
-        let label = truncate_end(&cmd.label, (area.width as usize).saturating_sub(1));
-        frame.render_widget(
-            Paragraph::new(Span::styled(
-                format!(" {label}"),
-                Style::default().fg(p.text),
-            )),
-            Rect::new(area.x, row_y, area.width, 1),
-        );
-        row_y = row_y.saturating_add(1);
-    }
-    if row_y < bottom {
-        frame.render_widget(
-            Paragraph::new(Span::styled(
-                " + run command…",
-                Style::default().fg(p.overlay0),
-            )),
-            Rect::new(area.x, row_y, area.width, 1),
-        );
-    }
-}
 fn render_workspace_list(
     app: &AppState,
     terminal_runtimes: &TerminalRuntimeRegistry,
@@ -1954,13 +1066,13 @@ fn render_workspace_list(
 
     let metrics = workspace_list_scroll_metrics(app, area);
     let scrollbar_rect = workspace_list_scrollbar_rect(app, area);
+    let now = Instant::now();
 
     // --- Render entries using the same lockstep iteration ---
     let entries = workspace_list_entries(app);
     let scroll = app.workspace_scroll;
-    let body = workspace_list_body_rect(app, area, scrollbar_rect.is_some());
+    let body = workspace_list_body_rect(area, scrollbar_rect.is_some());
     let mut row_y = body.y;
-    let now = Instant::now();
 
     for (entry_idx, entry) in entries.iter().enumerate().skip(scroll) {
         let needed = entry_row_height(entry, &entries, entry_idx);
@@ -1982,125 +1094,38 @@ fn render_workspace_list(
                     ];
                     if collapsed && !collapse_key.starts_with("vg:") {
                         let (state, seen) = space_aggregate_display_state(app, collapse_key);
-                        let age = space_aggregate_idle_age(app, collapse_key, now);
-                        let (dot, dot_style) =
-                            state_dot(state, seen, app.spinner_tick, app.status_indicators, p, age);
+                        let (dot, dot_style) = state_dot(state, seen, app.spinner_tick, p, false);
                         spans.push(Span::styled(" ", Style::default()));
                         spans.push(Span::styled(dot, dot_style));
-                        if let Some(age) = age {
-                            spans.push(Span::styled(
-                                format!(" {}", format_idle_age(age)),
-                                Style::default().fg(idle_age_color(Some(age), p)),
-                            ));
-                        }
                     }
                     frame.render_widget(
                         Paragraph::new(Line::from(spans)),
                         Rect::new(body.x, row_y, body.width, 1),
                     );
-                    if app.mouse_capture
-                        && body.width >= 3
-                        && !collapse_key.starts_with("vg:")
-                        && !collapse_key.starts_with("prs:")
-                    {
-                        frame.render_widget(
-                            Paragraph::new(" + ").style(Style::default().fg(p.overlay1)),
-                            Rect::new(body.x + body.width - 3, row_y, 3, 1),
-                        );
-                    }
                 }
             }
             WorkspaceListEntry::ProjectHeader {
                 name,
                 collapse_key,
                 indented,
-                branch,
             } => {
                 if row_y < list_bottom {
                     let collapsed = app.collapsed_space_keys.contains(collapse_key);
-                    let name_style = Style::default().fg(p.accent).add_modifier(Modifier::BOLD);
-                    let mut spans = if *indented {
-                        // Nested under a visual group: legacy plain label.
-                        vec![Span::styled(format!(" {name}"), name_style)]
-                    } else {
-                        // Top-level: open the rounded bracket rail.
-                        vec![
-                            Span::styled("╭─", Style::default().fg(p.overlay0)),
-                            Span::styled(name.clone(), name_style),
-                        ]
-                    };
-                    if let Some(b) = branch {
-                        spans.push(Span::styled(" ", Style::default()));
-                        spans.push(Span::styled(
-                            format!("[{}]", b.label),
-                            Style::default().fg(p.overlay1),
-                        ));
-                        if b.ahead > 0 {
-                            spans.push(Span::styled(" ", Style::default()));
-                            spans.push(Span::styled(
-                                format!("↑{}", b.ahead),
-                                Style::default().fg(p.green),
-                            ));
-                        }
-                        if b.behind > 0 {
-                            spans.push(Span::styled(" ", Style::default()));
-                            spans.push(Span::styled(
-                                format!("↓{}", b.behind),
-                                Style::default().fg(p.red),
-                            ));
-                        }
-                        // PR badge for the folded first-branch workspace (the
-                        // next entry), mirroring the branch-header badge.
-                        if let Some(WorkspaceListEntry::Workspace { ws_idx, .. }) =
-                            entries.get(entry_idx + 1)
-                        {
-                            if let Some(cs) = app
-                                .workspaces
-                                .get(*ws_idx)
-                                .and_then(|w| w.cached_check_status.as_ref())
-                            {
-                                if let Some(pr) = cs.pr.as_ref() {
-                                    let pr_color = match pr.state.as_str() {
-                                        "MERGED" => p.mauve,
-                                        "CLOSED" => p.red,
-                                        _ => p.green,
-                                    };
-                                    spans.push(Span::styled(" ", Style::default()));
-                                    spans.push(Span::styled(
-                                        format!("#{}", pr.number),
-                                        Style::default().fg(pr_color),
-                                    ));
-                                    if let Some((glyph, style)) = checks_badge(&cs.checks, p) {
-                                        spans.push(Span::styled(glyph, style));
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    let indent = if *indented { " " } else { "" };
+                    let mut spans = vec![Span::styled(
+                        format!("{indent}{name}"),
+                        Style::default().fg(p.accent).add_modifier(Modifier::BOLD),
+                    )];
                     if collapsed {
                         let (state, seen) = space_aggregate_display_state(app, collapse_key);
-                        let age = space_aggregate_idle_age(app, collapse_key, now);
-                        let (dot, dot_style) =
-                            state_dot(state, seen, app.spinner_tick, app.status_indicators, p, age);
+                        let (dot, dot_style) = state_dot(state, seen, app.spinner_tick, p, false);
                         spans.push(Span::styled(" ", Style::default()));
                         spans.push(Span::styled(dot, dot_style));
-                        if let Some(age) = age {
-                            spans.push(Span::styled(
-                                format!(" {}", format_idle_age(age)),
-                                Style::default().fg(idle_age_color(Some(age), p)),
-                            ));
-                        }
                     }
                     frame.render_widget(
                         Paragraph::new(Line::from(spans)),
                         Rect::new(body.x, row_y, body.width, 1),
                     );
-                    if app.mouse_capture && body.width >= 3 {
-                        frame.render_widget(
-                            Paragraph::new(" + ").style(Style::default().fg(p.overlay1)),
-                            Rect::new(body.x + body.width - 3, row_y, 3, 1),
-                        );
-                    }
                 }
             }
             WorkspaceListEntry::BranchHeader {
@@ -2108,75 +1133,17 @@ fn render_workspace_list(
                 ahead,
                 behind,
                 indented,
-                last,
-                ws_idx,
             } => {
                 if row_y < list_bottom {
                     let indent = if *indented { " " } else { "" };
-                    // All connectors are 4 cells wide so branch labels align
-                    // across mid (├──), last (╰──), and nested rows.
-                    let connector = if *last { "╰── " } else { "├── " };
-                    let mut spans = vec![Span::styled(
-                        format!("{indent}{connector}"),
-                        Style::default().fg(p.overlay0),
-                    )];
-
-                    // `Some` means this header folded its sole workspace's
-                    // row into itself: draw it (dot, idle age, selection
-                    // highlight) the way the `Workspace` arm does, with the
-                    // branch label standing in for the name.
-                    let collapsed_ws = ws_idx.map(|idx| &app.workspaces[idx]);
-                    let highlighted = ws_idx.is_some_and(|idx| {
-                        (idx == app.selected && is_navigating)
-                            || Some(idx) == app.active
-                            || dragged_ws_idx == Some(idx)
-                    });
-                    if let Some(idx) = *ws_idx {
-                        if highlighted {
-                            let selected = idx == app.selected && is_navigating;
-                            let bg = if selected {
-                                p.surface0
-                            } else if dragged_ws_idx == Some(idx) {
-                                p.surface1
-                            } else {
-                                p.surface_dim
-                            };
-                            let buf = frame.buffer_mut();
-                            for x in body.x..body.x + body.width {
-                                buf[(x, row_y)].set_style(Style::default().bg(bg));
-                            }
-                        }
-                    }
-                    let name_style = if highlighted {
-                        Style::default().fg(p.text).add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default().fg(p.overlay1)
-                    };
-                    if let Some(ws) = collapsed_ws {
-                        let dots = tab_dot_states(ws, &app.terminals);
-                        let dot_ages = tab_dot_idle_ages(ws, &app.terminals, now);
-                        for (tab_idx, &(state, seen)) in dots.iter().enumerate() {
-                            let (dot_glyph, mut dot_style) = state_dot(
-                                state,
-                                seen,
-                                app.spinner_tick,
-                                app.status_indicators,
-                                p,
-                                dot_ages.get(tab_idx).copied().flatten(),
-                            );
-                            if tab_idx == ws.active_tab {
-                                dot_style = dot_style.add_modifier(Modifier::BOLD);
-                            }
-                            if tab_idx > 0 {
-                                spans.push(Span::styled(" ", Style::default()));
-                            }
-                            spans.push(Span::styled(dot_glyph, dot_style));
-                        }
-                        if !dots.is_empty() {
-                            spans.push(Span::styled(" ", Style::default()));
-                        }
-                    }
-                    spans.push(Span::styled(label.clone(), name_style));
+                    let connector = "├── ";
+                    let mut spans = vec![
+                        Span::styled(
+                            format!("{indent}{connector}"),
+                            Style::default().fg(p.overlay0),
+                        ),
+                        Span::styled(label.clone(), Style::default().fg(p.overlay1)),
+                    ];
                     if *ahead > 0 {
                         spans.push(Span::styled(" ", Style::default()));
                         spans.push(Span::styled(
@@ -2191,62 +1158,27 @@ fn render_workspace_list(
                             Style::default().fg(p.red),
                         ));
                     }
-                    if let Some(ws) = collapsed_ws {
-                        let idle_age = ws
-                            .oldest_unseen_idle_age(&app.terminals, now)
-                            .or_else(|| ws.oldest_idle_age(&app.terminals, now));
-                        if let Some(age) = idle_age {
-                            spans.push(Span::styled(
-                                format!(" {}", format_idle_age(age)),
-                                Style::default().fg(idle_age_color(Some(age), p)),
-                            ));
-                        }
-                    } else if let Some(WorkspaceListEntry::Workspace { ws_idx, .. }) =
+                    if let Some(WorkspaceListEntry::Workspace { ws_idx, .. }) =
                         entries.get(entry_idx + 1)
                     {
-                        if let Some(cs) = app
+                        if let Some(pr) = app
                             .workspaces
                             .get(*ws_idx)
                             .and_then(|w| w.cached_check_status.as_ref())
+                            .and_then(|cs| cs.pr.as_ref())
                         {
-                            if let Some(pr) = cs.pr.as_ref() {
-                                let pr_color = match pr.state.as_str() {
-                                    "MERGED" => p.mauve,
-                                    "CLOSED" => p.red,
-                                    _ => p.green,
-                                };
-                                spans.push(Span::styled(" ", Style::default()));
-                                spans.push(Span::styled(
-                                    format!("#{}", pr.number),
-                                    Style::default().fg(pr_color),
-                                ));
-                                if let Some((glyph, style)) = checks_badge(&cs.checks, p) {
-                                    spans.push(Span::styled(glyph, style));
-                                }
-                            }
+                            let pr_color = match pr.state.as_str() {
+                                "MERGED" => p.teal,
+                                "CLOSED" => p.red,
+                                _ => p.green,
+                            };
+                            spans.push(Span::styled(" ", Style::default()));
+                            spans.push(Span::styled(
+                                format!("#{}", pr.number),
+                                Style::default().fg(pr_color),
+                            ));
                         }
                     }
-                    frame.render_widget(
-                        Paragraph::new(Line::from(spans)),
-                        Rect::new(body.x, row_y, body.width, 1),
-                    );
-                }
-            }
-            WorkspaceListEntry::HiddenHeader { count } => {
-                if row_y < list_bottom {
-                    let chevron = if app.hidden_section_expanded {
-                        "▾"
-                    } else {
-                        "▸"
-                    };
-                    let spans = vec![
-                        Span::styled(chevron, Style::default().fg(p.overlay0)),
-                        Span::styled(" ", Style::default()),
-                        Span::styled(
-                            format!("Hidden ({count})"),
-                            Style::default().fg(p.overlay0).add_modifier(Modifier::BOLD),
-                        ),
-                    ];
                     frame.render_widget(
                         Paragraph::new(Line::from(spans)),
                         Rect::new(body.x, row_y, body.width, 1),
@@ -2265,8 +1197,8 @@ fn render_workspace_list(
                 let is_dragged = dragged_ws_idx == Some(i);
                 let highlighted = selected || is_active || is_dragged;
 
-                // Card rect spans 1 row (name + inline dots).
-                let card_height = 1u16;
+                // Card rect spans 2 rows (name + dots).
+                let card_height = 2u16;
                 if highlighted {
                     let bg = if selected {
                         p.surface0
@@ -2289,22 +1221,17 @@ fn render_workspace_list(
                 let name_style = if highlighted {
                     Style::default().fg(p.text).add_modifier(Modifier::BOLD)
                 } else {
-                    Style::default().fg(p.subtext0)
+                    Style::default().fg(p.text)
                 };
                 let rail_style = Style::default().fg(p.overlay0);
 
-                // --- Single row: name + inline tab dots ---
+                // --- Line 1: name ---
                 let mut line1 = Vec::new();
                 let indent_prefix = if *indented { " " } else { "" };
                 match rail {
                     BranchRail::Spine => {
-                        // Bracket rails anchor at column 0 under the header's `╭─`.
-                        // All bracket rails are 4 cells wide so workspace names
-                        // align across │ / ╰── / blank rows.
-                        line1.push(Span::styled("│   ", rail_style));
-                    }
-                    BranchRail::Close => {
-                        line1.push(Span::styled("╰── ", rail_style));
+                        line1.push(Span::styled(indent_prefix, Style::default()));
+                        line1.push(Span::styled("│ ", rail_style));
                     }
                     BranchRail::None => {
                         if let Some((key, collapsed)) =
@@ -2314,23 +1241,9 @@ fn render_workspace_list(
                             line1.push(Span::styled(chevron, Style::default().fg(p.accent)));
                             if collapsed {
                                 let (state, seen) = space_aggregate_display_state(app, &key);
-                                let age = space_aggregate_idle_age(app, &key, now);
-                                let (si, ss) = state_dot(
-                                    state,
-                                    seen,
-                                    app.spinner_tick,
-                                    app.status_indicators,
-                                    p,
-                                    age,
-                                );
+                                let (si, ss) = state_dot(state, seen, app.spinner_tick, p, false);
                                 line1.push(Span::styled(" ", Style::default()));
                                 line1.push(Span::styled(si, ss));
-                                if let Some(age) = age {
-                                    line1.push(Span::styled(
-                                        format!(" {}", format_idle_age(age)),
-                                        Style::default().fg(idle_age_color(Some(age), p)),
-                                    ));
-                                }
                             }
                             line1.push(Span::styled(" ", Style::default()));
                         } else {
@@ -2339,156 +1252,62 @@ fn render_workspace_list(
                     }
                 }
 
-                // Build the tab dots, placed to the LEFT of the name on this
-                // same row. Preserve the existing glyph/style logic verbatim;
-                // one space separates each dot, and one space separates the
-                // dots group from the name.
-                let dots = tab_dot_states(ws, &app.terminals);
-                let dot_ages = tab_dot_idle_ages(ws, &app.terminals, now);
-                let mut dot_spans: Vec<Span> = Vec::new();
-                for (tab_idx, &(state, seen)) in dots.iter().enumerate() {
-                    let (dot_glyph, mut dot_style) = state_dot(
-                        state,
-                        seen,
-                        app.spinner_tick,
-                        app.status_indicators,
-                        p,
-                        dot_ages.get(tab_idx).copied().flatten(),
-                    );
-                    if tab_idx == ws.active_tab {
-                        dot_style = dot_style.add_modifier(Modifier::BOLD);
-                    }
-                    if tab_idx > 0 {
-                        dot_spans.push(Span::styled(" ", Style::default()));
-                    }
-                    dot_spans.push(Span::styled(dot_glyph, dot_style));
-                }
-                // One space between the dots group and the name.
-                let sep = if dot_spans.is_empty() { "" } else { " " };
-
-                // Truncate the name so the dots + separator still fit.
-                let prefix_width: usize = line1
-                    .iter()
-                    .map(|s| display_width(s.content.as_ref()))
-                    .sum();
-                let dots_width: usize = dot_spans
-                    .iter()
-                    .map(|s| display_width(s.content.as_ref()))
-                    .sum();
-                // Idle time follows the same age color ramp whether the idle
-                // pane was already seen or not.
-                let idle_age = ws
-                    .oldest_unseen_idle_age(&app.terminals, now)
-                    .or_else(|| ws.oldest_idle_age(&app.terminals, now));
-                let idle_color = idle_age_color(idle_age, p);
-                let idle_suffix = idle_age.map(|age| format!(" {}", format_idle_age(age)));
-                let idle_width = idle_suffix
-                    .as_deref()
-                    .map(display_width)
-                    .unwrap_or_default();
-                // Metadata tokens reported through `bora workspace
-                // report-metadata` (a channel's unread badge, a `$pr` chip).
-                //
-                // Only the CUSTOM tokens of the configured row are drawn here:
-                // this fork renders the state dot, name, branch and git status
-                // itself, so painting the whole resolved row would repeat them —
-                // the default `[ui.sidebar.spaces] rows` starts with
-                // `state_icon, workspace`, which showed every name twice.
-                //
-                // When the config names no custom token, every reported value is
-                // drawn instead, so a badge is visible without the reporter and
-                // the reader having to agree on a key in config first. Config
-                // then only decides ordering and style.
-                let full_label = ws.display_name_from(&app.terminals, terminal_runtimes);
-                let token_spans: Vec<Span<'static>> = if ws.metadata_tokens.is_empty() {
-                    Vec::new()
-                } else {
-                    let (row_state, row_seen) = ws.aggregate_state(&app.terminals);
-                    let branch = ws.branch();
-                    let token_values = ws.metadata_tokens.values();
-                    let rows = tokens::space_rows(
-                        &app.sidebar_spaces,
-                        SpaceTokenContext {
-                            workspace: &full_label,
-                            branch: branch.as_deref(),
-                            state_text: state_label(row_state, row_seen),
-                            ahead_behind: ws.git_ahead_behind(),
-                            tokens: &token_values,
-                            suppress_git_details: *indented,
-                        },
-                    );
-                    let mut customs: Vec<ResolvedToken> = rows
-                        .into_iter()
-                        .flatten()
-                        .filter(|token| matches!(token.kind, ResolvedTokenKind::Custom(_)))
-                        .collect();
-                    if customs.is_empty() {
-                        let mut values: Vec<(&String, &String)> = token_values.iter().collect();
-                        values.sort_unstable_by_key(|(key, _)| *key);
-                        customs = values
-                            .into_iter()
-                            .map(|(_, value)| ResolvedToken {
-                                kind: ResolvedTokenKind::Custom(value.clone()),
-                                style: crate::config::SidebarTokenStyle::default(),
-                            })
-                            .collect();
-                    }
-                    if customs.is_empty() {
-                        Vec::new()
-                    } else {
-                        let state_icon = state_dot(
-                            row_state,
-                            row_seen,
-                            app.spinner_tick,
-                            app.status_indicators,
-                            p,
-                            idle_age,
-                        );
-                        let state_text_style = Style::default()
-                            .fg(state_label_color(row_state, row_seen, p))
-                            .add_modifier(Modifier::DIM);
-                        let branch_style =
-                            Style::default().fg(if highlighted { p.mauve } else { p.overlay0 });
-                        resolved_token_spans(
-                            &customs,
-                            state_icon,
-                            state_text_style,
-                            name_style,
-                            branch_style,
-                            branch_style,
-                            p,
-                            (body.width as usize).saturating_sub(
-                                prefix_width + dots_width + display_width(sep) + idle_width,
-                            ),
-                        )
-                    }
-                };
-                let token_width: usize = if token_spans.is_empty() {
-                    0
-                } else {
-                    1 + token_spans
-                        .iter()
-                        .map(|s| display_width(s.content.as_ref()))
-                        .sum::<usize>()
-                };
-                let avail = (body.width as usize).saturating_sub(
-                    prefix_width + dots_width + display_width(sep) + idle_width + token_width,
-                );
-                let label = truncate_end(&full_label, avail);
-                line1.extend(dot_spans);
-                line1.push(Span::styled(sep, Style::default()));
+                let label = ws.display_name_from(&app.terminals, terminal_runtimes);
                 line1.push(Span::styled(label, name_style));
-                if !token_spans.is_empty() {
-                    line1.push(Span::raw(" "));
-                    line1.extend(token_spans);
-                }
-                if let Some(suffix) = idle_suffix {
-                    line1.push(Span::styled(suffix, Style::default().fg(idle_color)));
-                }
 
                 if row_y < list_bottom {
                     frame.render_widget(
                         Paragraph::new(Line::from(line1)),
+                        Rect::new(body.x, row_y, body.width, 1),
+                    );
+                }
+
+                // --- Line 2: tab dots ---
+                let dots_y = row_y + 1;
+                if dots_y < list_bottom {
+                    let mut line2 = Vec::new();
+                    match rail {
+                        BranchRail::Spine => {
+                            line2.push(Span::styled(indent_prefix, Style::default()));
+                            line2.push(Span::styled("│ ", rail_style));
+                        }
+                        BranchRail::None => {
+                            line2.push(Span::styled(indent_prefix, Style::default()));
+                            // Align with name: extra space for non-rail.
+                            if !*indented && workspace_parent_group_state(app, i).is_some() {
+                                line2.push(Span::styled("  ", Style::default()));
+                            }
+                        }
+                    }
+                    let idle_stale = ws.last_activity_at.is_some_and(|t| {
+                        now.duration_since(t) >= crate::app::WORKSPACE_IDLE_TIMEOUT
+                    });
+                    let dots = tab_dot_states(ws, &app.terminals);
+                    for (tab_idx, &(state, seen)) in dots.iter().enumerate() {
+                        let (dot_glyph, mut dot_style) =
+                            state_dot(state, seen, app.spinner_tick, p, idle_stale);
+                        if tab_idx == ws.active_tab {
+                            dot_style = dot_style.add_modifier(Modifier::BOLD);
+                        }
+                        if tab_idx > 0 {
+                            line2.push(Span::styled(" ", Style::default()));
+                        }
+                        line2.push(Span::styled(dot_glyph, dot_style));
+                    }
+                    frame.render_widget(
+                        Paragraph::new(Line::from(line2)),
+                        Rect::new(body.x, dots_y, body.width, 1),
+                    );
+                }
+            }
+            WorkspaceListEntry::ProjectFooter { indented } => {
+                if row_y < list_bottom {
+                    let indent = if *indented { " " } else { "" };
+                    frame.render_widget(
+                        Paragraph::new(Line::from(Span::styled(
+                            format!("{indent}╰───────"),
+                            Style::default().fg(p.overlay0),
+                        ))),
                         Rect::new(body.x, row_y, body.width, 1),
                     );
                 }
@@ -2563,19 +1382,12 @@ fn render_agent_detail(
         )])),
         Rect::new(area.x, area.y + 1, area.width, 1),
     );
-    let control_label = active_agent_view_label(app)
-        .unwrap_or_else(|| agent_panel_sort_label(app.agent_panel_sort));
-    let toggle_rect = agent_panel_header_label_rect(area, control_label);
+    let toggle_rect = agent_panel_toggle_rect(area, app.agent_panel_sort);
     if toggle_rect != Rect::default() {
-        let color = if app.agent_view_override.is_some() {
-            p.accent
-        } else {
-            p.overlay0
-        };
         frame.render_widget(
             Paragraph::new(Span::styled(
-                control_label,
-                Style::default().fg(color).add_modifier(Modifier::BOLD),
+                agent_panel_sort_label(app.agent_panel_sort),
+                Style::default().fg(p.overlay0).add_modifier(Modifier::BOLD),
             ))
             .alignment(Alignment::Right),
             toggle_rect,
@@ -2589,14 +1401,6 @@ fn render_agent_detail(
     if body == Rect::default() {
         return;
     }
-    if details.is_empty() && app.agent_view_override.is_some() {
-        frame.render_widget(
-            Paragraph::new(" no matching agents")
-                .style(Style::default().fg(p.overlay0).add_modifier(Modifier::DIM)),
-            Rect::new(body.x, body.y, body.width, 1),
-        );
-        return;
-    }
 
     let mut row_y = body.y;
     let body_bottom = body.y + body.height;
@@ -2608,17 +1412,7 @@ fn render_agent_detail(
         // Check if this agent entry corresponds to the active session
         let is_active = app.is_active_pane(detail.ws_idx, detail.tab_idx, detail.pane_id);
 
-        let idle_age = detail
-            .idle_since
-            .map(|since| Instant::now().saturating_duration_since(since));
-        let (icon, icon_style) = agent_icon(
-            detail.state,
-            detail.seen,
-            app.spinner_tick,
-            app.status_indicators,
-            p,
-            idle_age,
-        );
+        let (icon, icon_style) = agent_icon(detail.state, detail.seen, app.spinner_tick, p);
         let label_color = state_label_color(detail.state, detail.seen, p);
         let label = detail
             .state_labels
@@ -2669,29 +1463,6 @@ fn render_agent_detail(
         if let Some(custom_status) = &detail.custom_status {
             status_spans.push(Span::styled(" · ", agent_style));
             status_spans.push(Span::styled(custom_status.clone(), agent_style));
-        }
-        // Custom tokens configured under `[ui.sidebar.agents] rows`, e.g. the
-        // `$pr` chip fed by the gh-pr plugin. Same reasoning as the workspace
-        // row: the state icon, workspace, agent and title are already drawn
-        // above, so only the custom tokens are appended here — painting the
-        // whole resolved row would repeat what the reader can already see.
-        let agent_customs: Vec<ResolvedToken> = resolved_agent_rows(app, detail)
-            .into_iter()
-            .flatten()
-            .filter(|token| matches!(token.kind, ResolvedTokenKind::Custom(_)))
-            .collect();
-        if !agent_customs.is_empty() {
-            status_spans.push(Span::styled(" · ", agent_style));
-            status_spans.extend(resolved_token_spans(
-                &agent_customs,
-                (icon, icon_style),
-                status_style,
-                name_style,
-                agent_style,
-                agent_style,
-                p,
-                body.width.saturating_sub(3) as usize,
-            ));
         }
         frame.render_widget(
             Paragraph::new(Line::from(status_spans)).style(row_style),
@@ -2758,135 +1529,8 @@ fn render_sidebar_toggle(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{detect::Agent, layout::PaneId, workspace::Workspace};
-    use ratatui::{backend::TestBackend, layout::Direction, Terminal};
-
-    fn row_text(buffer: &ratatui::buffer::Buffer, row: u16, width: u16) -> String {
-        (0..width)
-            .map(|x| buffer[(x, row)].symbol())
-            .collect::<String>()
-            .trim_end()
-            .to_string()
-    }
-
-    fn find_symbol_x(buffer: &ratatui::buffer::Buffer, row: u16, width: u16, symbol: &str) -> u16 {
-        (0..width)
-            .find(|x| buffer[(*x, row)].symbol() == symbol)
-            .unwrap_or_else(|| {
-                panic!(
-                    "missing symbol {symbol:?} in row {}",
-                    row_text(buffer, row, width)
-                )
-            })
-    }
-
-    #[test]
-    fn expanded_and_collapsed_sidebars_use_custom_background() {
-        let mut app = crate::app::state::AppState::test_new();
-        app.workspaces.clear();
-        app.active = None;
-        app.palette.sidebar_bg = ratatui::style::Color::Rgb(12, 34, 56);
-        let area = Rect::new(0, 0, 26, 20);
-
-        let mut expanded = Terminal::new(TestBackend::new(26, 20)).unwrap();
-        expanded
-            .draw(|frame| render_sidebar(&app, &TerminalRuntimeRegistry::new(), frame, area))
-            .unwrap();
-        assert!(expanded
-            .backend()
-            .buffer()
-            .content
-            .iter()
-            .all(|cell| cell.bg == app.palette.sidebar_bg));
-
-        let mut collapsed = Terminal::new(TestBackend::new(26, 20)).unwrap();
-        collapsed
-            .draw(|frame| render_sidebar_collapsed(&app, frame, area))
-            .unwrap();
-        assert!(collapsed
-            .backend()
-            .buffer()
-            .content
-            .iter()
-            .all(|cell| cell.bg == app.palette.sidebar_bg));
-    }
-
-    #[test]
-    fn default_space_workspace_style_tracks_active_state() {
-        let mut app = crate::app::state::AppState::test_new();
-        app.workspaces = vec![Workspace::test_new("one"), Workspace::test_new("two")];
-        app.active = Some(0);
-        app.mode = Mode::Terminal;
-        let area = Rect::new(0, 0, 26, 20);
-        app.view.workspace_card_areas = compute_workspace_card_areas(&app, area);
-        let first_row = app.view.workspace_card_areas[0].rect.y;
-        let second_row = app.view.workspace_card_areas[1].rect.y;
-        let mut terminal = Terminal::new(TestBackend::new(26, 20)).unwrap();
-        terminal
-            .draw(|frame| render_sidebar(&app, &TerminalRuntimeRegistry::new(), frame, area))
-            .unwrap();
-        let buffer = terminal.backend().buffer();
-
-        let active = buffer[(find_symbol_x(buffer, first_row, 25, "o"), first_row)].style();
-        assert_eq!(active.fg, Some(app.palette.text));
-        assert!(active.add_modifier.contains(Modifier::BOLD));
-        assert!(!active.add_modifier.contains(Modifier::DIM));
-        assert_eq!(active.bg, Some(app.palette.surface_dim));
-
-        let inactive = buffer[(find_symbol_x(buffer, second_row, 25, "t"), second_row)].style();
-        assert_eq!(inactive.fg, Some(app.palette.subtext0));
-        assert!(!inactive
-            .add_modifier
-            .intersects(Modifier::BOLD | Modifier::DIM));
-        assert_eq!(inactive.bg, Some(ratatui::style::Color::Reset));
-    }
-
-    #[test]
-    fn narrow_agent_rows_preserve_later_tab_tokens() {
-        let mut app = crate::app::state::AppState::test_new();
-        let mut workspace = Workspace::test_new("very-long-workspace-name");
-        let tab_idx = workspace.test_add_tab(Some("logs"));
-        let pane_id = workspace.tabs[tab_idx].root_pane;
-        app.workspaces = vec![workspace];
-        app.ensure_test_terminals();
-        let terminal_id = app.workspaces[0].tabs[tab_idx].panes[&pane_id]
-            .attached_terminal_id
-            .clone();
-        app.terminals.get_mut(&terminal_id).unwrap().detected_agent = Some(Agent::Pi);
-
-        let area = Rect::new(0, 0, 18, 20);
-        let mut terminal = Terminal::new(TestBackend::new(18, 20)).unwrap();
-        terminal
-            .draw(|frame| render_sidebar(&app, &TerminalRuntimeRegistry::new(), frame, area))
-            .unwrap();
-        let buffer = terminal.backend().buffer();
-        let (_, agent_area) = expanded_sidebar_sections(area, app.sidebar_section_split);
-        let body = agent_panel_body_rect(agent_area, false);
-        let first = row_text(buffer, body.y, 17);
-
-        assert!(first.contains("logs"), "rendered row: {first:?}");
-        assert!(first.contains('·'), "rendered row: {first:?}");
-    }
-
-    #[test]
-    fn worktree_new_hit_areas_only_for_repo_headers() {
-        let headers = vec![
-            crate::app::state::GroupHeaderCardArea {
-                name: "herdr".into(),
-                collapse_key: "github.com/owner/herdr".into(),
-                rect: Rect::new(0, 0, 26, 1),
-            },
-            crate::app::state::GroupHeaderCardArea {
-                name: "mygroup".into(),
-                collapse_key: "vg:mygroup".into(),
-                rect: Rect::new(0, 1, 26, 1),
-            },
-        ];
-        let hits = worktree_new_hit_areas_from_headers(&headers);
-        assert_eq!(hits.len(), 1, "only the repo ProjectHeader gets a +");
-        assert_eq!(hits[0].repo_identity, "github.com/owner/herdr");
-        assert_eq!(hits[0].rect, Rect::new(23, 0, 3, 1));
-    }
+    use crate::{detect::Agent, workspace::Workspace};
+    use ratatui::{backend::TestBackend, Terminal};
 
     #[test]
     fn render_sidebar_toggle_draws_expanded_collapse_icon() {
@@ -2994,222 +1638,6 @@ mod tests {
 
         assert_eq!(labels, ["four", "two", "one", "three"]);
     }
-    #[test]
-    fn collapsed_sidebar_uses_all_workspaces_agent_panel_order() {
-        let mut app = crate::app::state::AppState::test_new();
-        app.workspaces = vec![Workspace::test_new("one"), Workspace::test_new("two")];
-        app.ensure_test_terminals();
-        app.active = Some(0);
-        app.selected = 0;
-        app.agent_panel_sort = crate::app::state::AgentPanelSort::Priority;
-        app.status_indicators = crate::config::StatusIndicatorStyle::Symbols;
-
-        let set_state = |app: &mut crate::app::state::AppState, ws_idx: usize, state| {
-            let pane = app.workspaces[ws_idx].tabs[0].root_pane;
-            let terminal_id = app.workspaces[ws_idx].tabs[0].panes[&pane]
-                .attached_terminal_id
-                .clone();
-            let terminal = app.terminals.get_mut(&terminal_id).unwrap();
-            terminal.detected_agent = Some(Agent::Claude);
-            terminal.state = state;
-        };
-        set_state(&mut app, 0, AgentState::Working);
-        set_state(&mut app, 1, AgentState::Blocked);
-
-        let area = Rect::new(0, 0, 5, 12);
-        let (_, _, detail_area) = collapsed_sidebar_sections(area);
-        let first_detail_y = detail_area.y;
-        let mut terminal = Terminal::new(TestBackend::new(area.width, area.height))
-            .expect("test terminal should initialize");
-
-        terminal
-            .draw(|frame| render_sidebar_collapsed(&app, frame, area))
-            .expect("collapsed sidebar should render");
-
-        let buffer = terminal.backend().buffer();
-        assert_eq!(buffer[(detail_area.x + 2, first_detail_y)].symbol(), "×");
-        assert_eq!(
-            buffer[(detail_area.x + 2, first_detail_y)].style().fg,
-            Some(app.palette.red)
-        );
-        assert_eq!(buffer[(detail_area.x + 2, detail_area.y + 1)].symbol(), "⠋");
-        assert_eq!(
-            buffer[(detail_area.x + 2, detail_area.y + 1)].style().fg,
-            Some(app.palette.overlay0)
-        );
-    }
-
-    /// Two agent panes in one workspace plus a second workspace, so the
-    /// assertions can tell pane-level highlighting apart from workspace-level.
-    fn collapsed_agent_app() -> (crate::app::state::AppState, PaneId, PaneId) {
-        let mut app = crate::app::state::AppState::test_new();
-        let mut first = Workspace::test_new("one");
-        let second_pane = first.test_split(Direction::Horizontal);
-        let first_pane = first.tabs[0].root_pane;
-        app.workspaces = vec![first, Workspace::test_new("two")];
-        app.ensure_test_terminals();
-
-        let terminal_ids: Vec<_> = app
-            .workspaces
-            .iter()
-            .flat_map(|ws| ws.tabs.iter())
-            .flat_map(|tab| tab.panes.values())
-            .map(|pane| pane.attached_terminal_id.clone())
-            .collect();
-        for terminal_id in terminal_ids {
-            app.terminals.get_mut(&terminal_id).unwrap().detected_agent = Some(Agent::Claude);
-        }
-
-        (app, first_pane, second_pane)
-    }
-
-    fn collapsed_agent_row_styles(
-        app: &crate::app::state::AppState,
-        area: Rect,
-        detail_area: Rect,
-        rows: u16,
-    ) -> Vec<Vec<ratatui::style::Style>> {
-        let mut terminal = Terminal::new(TestBackend::new(area.width, area.height))
-            .expect("test terminal should initialize");
-        terminal
-            .draw(|frame| render_sidebar_collapsed(app, frame, area))
-            .expect("collapsed sidebar should render");
-        let buffer = terminal.backend().buffer();
-        (0..rows)
-            .map(|row| {
-                (detail_area.x..detail_area.x + detail_area.width)
-                    .map(|x| buffer[(x, detail_area.y + row)].style())
-                    .collect()
-            })
-            .collect()
-    }
-
-    #[test]
-    fn collapsed_sidebar_highlights_only_the_focused_agent_pane() {
-        let (mut app, first_pane, second_pane) = collapsed_agent_app();
-        app.active = Some(0);
-        app.workspaces[0].tabs[0].layout.focus_pane(second_pane);
-        assert!(app.is_active_pane(0, 0, second_pane));
-        assert!(!app.is_active_pane(0, 0, first_pane));
-
-        let area = Rect::new(0, 0, 4, 14);
-        let (_, _, detail_area) = collapsed_sidebar_sections(area);
-        let rows = collapsed_agent_row_styles(&app, area, detail_area, 3);
-
-        let highlighted: Vec<_> = rows
-            .iter()
-            .filter(|cells| {
-                cells
-                    .iter()
-                    .all(|style| style.bg == Some(app.palette.surface_dim))
-            })
-            .collect();
-        assert_eq!(
-            highlighted.len(),
-            1,
-            "only the focused agent pane should be highlighted, across the whole row"
-        );
-        assert_eq!(highlighted[0][0].fg, Some(app.palette.text));
-
-        let muted = rows
-            .iter()
-            .filter(|cells| cells[0].fg == Some(app.palette.overlay0))
-            .count();
-        assert_eq!(
-            muted, 2,
-            "the sibling pane in the active workspace and the other workspace stay muted"
-        );
-    }
-
-    #[test]
-    fn collapsed_sidebar_does_not_highlight_agents_without_active_workspace() {
-        let (mut app, _, _) = collapsed_agent_app();
-        app.active = None;
-
-        let area = Rect::new(0, 0, 4, 14);
-        let (_, _, detail_area) = collapsed_sidebar_sections(area);
-        let rows = collapsed_agent_row_styles(&app, area, detail_area, 3);
-
-        for cells in rows {
-            assert_eq!(cells[0].fg, Some(app.palette.overlay0));
-            for style in cells {
-                assert_ne!(style.bg, Some(app.palette.surface_dim));
-            }
-        }
-    }
-
-    #[test]
-    fn collapsed_sidebar_keeps_workspace_status_visible_for_two_digit_positions() {
-        let mut app = crate::app::state::AppState::test_new();
-        app.workspaces = (1..=10)
-            .map(|idx| Workspace::test_new(&format!("workspace-{idx}")))
-            .collect();
-        app.ensure_test_terminals();
-
-        for ws_idx in 0..app.workspaces.len() {
-            let pane = app.workspaces[ws_idx].tabs[0].root_pane;
-            let terminal_id = app.workspaces[ws_idx].tabs[0].panes[&pane]
-                .attached_terminal_id
-                .clone();
-            app.terminals.get_mut(&terminal_id).unwrap().detected_agent = Some(Agent::Claude);
-        }
-
-        let area = Rect::new(0, 0, 4, 25);
-        let (workspace_area, _, _) = collapsed_sidebar_sections(area);
-        let mut terminal = Terminal::new(TestBackend::new(area.width, area.height))
-            .expect("test terminal should initialize");
-
-        terminal
-            .draw(|frame| render_sidebar_collapsed(&app, frame, area))
-            .expect("collapsed sidebar should render");
-
-        let tenth_row = workspace_area.y + 9;
-        let buffer = terminal.backend().buffer();
-        assert_eq!(buffer[(workspace_area.x, workspace_area.y)].symbol(), "1");
-        assert_eq!(
-            buffer[(workspace_area.x + 1, workspace_area.y)].symbol(),
-            " "
-        );
-        assert_eq!(
-            buffer[(workspace_area.x + 2, workspace_area.y)].symbol(),
-            "◰"
-        );
-        assert_eq!(buffer[(workspace_area.x, tenth_row)].symbol(), "1");
-        assert_eq!(buffer[(workspace_area.x + 1, tenth_row)].symbol(), "0");
-        assert_eq!(buffer[(workspace_area.x + 2, tenth_row)].symbol(), "◰");
-    }
-
-    #[test]
-    fn collapsed_sidebar_keeps_status_visible_for_two_digit_positions() {
-        let mut app = crate::app::state::AppState::test_new();
-        app.workspaces = (1..=10)
-            .map(|idx| Workspace::test_new(&format!("workspace-{idx}")))
-            .collect();
-        app.ensure_test_terminals();
-
-        for ws_idx in 0..app.workspaces.len() {
-            let pane = app.workspaces[ws_idx].tabs[0].root_pane;
-            let terminal_id = app.workspaces[ws_idx].tabs[0].panes[&pane]
-                .attached_terminal_id
-                .clone();
-            app.terminals.get_mut(&terminal_id).unwrap().detected_agent = Some(Agent::Claude);
-        }
-
-        let area = Rect::new(0, 0, 4, 25);
-        let (_, _, detail_area) = collapsed_sidebar_sections(area);
-        let mut terminal = Terminal::new(TestBackend::new(area.width, area.height))
-            .expect("test terminal should initialize");
-
-        terminal
-            .draw(|frame| render_sidebar_collapsed(&app, frame, area))
-            .expect("collapsed sidebar should render");
-
-        let tenth_row = detail_area.y + 9;
-        let buffer = terminal.backend().buffer();
-        assert_eq!(buffer[(detail_area.x, tenth_row)].symbol(), "1");
-        assert_eq!(buffer[(detail_area.x + 1, tenth_row)].symbol(), "0");
-        assert_eq!(buffer[(detail_area.x + 2, tenth_row)].symbol(), "○");
-    }
 
     #[cfg(unix)]
     #[tokio::test]
@@ -3253,12 +1681,11 @@ mod tests {
             live_cwd.clone(),
             0,
             crate::terminal_theme::TerminalTheme::default(),
-            None,
             crate::pane::PaneShellConfig::new("/bin/sh", crate::config::ShellModeConfig::NonLogin),
             &crate::pane::PaneLaunchEnv::default(),
             events,
             std::sync::Arc::new(tokio::sync::Notify::new()),
-            std::sync::Arc::new(crate::render_signal::RenderSignal::new()),
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         )
         .unwrap();
 
@@ -3315,19 +1742,12 @@ mod tests {
             pane_id: crate::layout::PaneId::from_raw(1),
             primary_label: "agent-browser".into(),
             primary_tab_label: Some("test-escalation".into()),
-            pane_label: None,
-            terminal_title: None,
-            terminal_title_stripped: None,
             agent_label: Some("claude".into()),
-            agent_kind_label: None,
-            agent: None,
             state: AgentState::Idle,
             seen: true,
-            idle_since: None,
             last_agent_state_change_seq: None,
             custom_status: None,
             state_labels: std::collections::HashMap::new(),
-            tokens: std::collections::HashMap::new(),
         };
 
         let label = format_agent_panel_primary_label(&entry, 18);
@@ -3409,6 +1829,10 @@ mod tests {
             .collect::<String>();
 
         assert!(text.contains("herdr"), "project header label: {text:?}");
+        assert!(
+            text.contains("╰─"),
+            "branch tree connector present: {text:?}"
+        );
         assert!(text.contains("main"), "branch label present: {text:?}");
         assert!(text.contains("strider"), "member name present: {text:?}");
         assert_eq!(
@@ -3479,7 +1903,7 @@ mod tests {
                 key: key.into(),
                 repo_identity: key.into(),
                 checkout_key: checkout_key.into(),
-                repo_name: "herdr".into(),
+                label: "herdr".into(),
                 repo_root: std::path::PathBuf::from("/repo/herdr"),
                 is_linked_worktree: is_linked,
             });
@@ -3494,7 +1918,7 @@ mod tests {
             key: key.into(),
             repo_identity: key.into(),
             checkout_key: format!("/repo/{name}"),
-            repo_name: "herdr".into(),
+            label: "herdr".into(),
             repo_root: std::path::PathBuf::from(format!("/repo/{name}")),
             is_linked_worktree: false,
         });
@@ -3512,7 +1936,7 @@ mod tests {
             key: key.into(),
             repo_identity: key.into(),
             checkout_key: format!("/repo/{name}"),
-            repo_name: "herdr".into(),
+            label: "herdr".into(),
             repo_root: std::path::PathBuf::from("/repo/herdr"),
             is_linked_worktree,
         });
@@ -3526,7 +1950,6 @@ mod tests {
             workspace_with_worktree_space("main", Some("repo-key"), "/repo/herdr"),
             workspace_with_worktree_space("issue", Some("repo-key"), "/repo/herdr-issue"),
         ];
-        app.sidebar_spaces.row_gap = 1;
 
         let (cards, headers) = compute_workspace_list_areas(&app, Rect::new(0, 0, 30, 40));
 
@@ -3556,17 +1979,16 @@ mod tests {
                     name: "herdr".into(),
                     collapse_key: "repo-key".into(),
                     indented: false,
-                    branch: None,
                 },
                 WorkspaceListEntry::Workspace {
                     ws_idx: 0,
                     indented: true,
-                    rail: BranchRail::Spine,
+                    rail: BranchRail::None,
                 },
                 WorkspaceListEntry::Workspace {
                     ws_idx: 1,
                     indented: true,
-                    rail: BranchRail::Close,
+                    rail: BranchRail::None,
                 },
             ]
         );
@@ -3594,36 +2016,21 @@ mod tests {
     #[test]
     fn workspace_scroll_metrics_count_display_entries_not_raw_workspaces() {
         let mut app = AppState::test_new();
-        // `Workspace::test_new` derives `cached_git_branch` from the real
-        // process cwd (workspace.rs:1333) — a named-branch checkout picks one
-        // up, a detached-HEAD CI checkout does not, which silently changes
-        // this workspace from branchless to branched and shifts the entry
-        // count. Reset it like the sibling test below does, so the fixture
-        // stays hermetic instead of depending on how the test runner's
-        // working tree happens to be checked out.
-        let mut notes = Workspace::test_new("notes");
-        notes.cached_git_branch = None;
         app.workspaces = vec![
             workspace_with_worktree_space("main", Some("repo-key"), "/repo/herdr"),
             workspace_with_worktree_space("issue", Some("repo-key"), "/repo/herdr-issue"),
-            notes,
+            Workspace::test_new("notes"),
         ];
         app.collapsed_space_keys.insert("repo-key".into());
         app.active = None;
         app.mode = Mode::Terminal;
 
-        // +1 row vs. the original fixture height to absorb the always-on
-        // "+ run command…" Programs launcher row reserved at the bottom of
-        // the workspace list, so this still exercises the "everything fits"
-        // (zero scroll) case the test name describes.
-        let ws_area = Rect::new(0, 0, 30, 7);
+        let ws_area = Rect::new(0, 0, 30, 6);
         let metrics = workspace_list_scroll_metrics(&app, ws_area);
 
-        // 2 display entries (the collapsed repo-key header + branchless
-        // "notes"), not 3 raw workspaces — the case this test's name names.
         assert_eq!(metrics.viewport_rows, 2);
-        assert_eq!(metrics.max_offset_from_bottom, 0);
-        assert_eq!(metrics.offset_from_bottom, 0);
+        assert_eq!(metrics.max_offset_from_bottom, 2);
+        assert_eq!(metrics.offset_from_bottom, 2);
     }
 
     #[test]
@@ -3663,17 +2070,16 @@ mod tests {
                     name: "herdr".into(),
                     collapse_key: "repo-key".into(),
                     indented: false,
-                    branch: None,
                 },
                 WorkspaceListEntry::Workspace {
                     ws_idx: 0,
                     indented: true,
-                    rail: BranchRail::Spine,
+                    rail: BranchRail::None,
                 },
                 WorkspaceListEntry::Workspace {
                     ws_idx: 1,
                     indented: true,
-                    rail: BranchRail::Close,
+                    rail: BranchRail::None,
                 },
             ]
         );
@@ -3695,28 +2101,26 @@ mod tests {
                     name: "herdr".into(),
                     collapse_key: "repo-key".into(),
                     indented: false,
-                    branch: None,
                 },
                 WorkspaceListEntry::Workspace {
                     ws_idx: 0,
                     indented: true,
-                    rail: BranchRail::Spine,
+                    rail: BranchRail::None,
                 },
                 WorkspaceListEntry::Workspace {
                     ws_idx: 2,
                     indented: true,
-                    rail: BranchRail::Close,
+                    rail: BranchRail::None,
                 },
                 WorkspaceListEntry::ProjectHeader {
                     name: "herdr".into(),
                     collapse_key: "other-key".into(),
                     indented: false,
-                    branch: None,
                 },
                 WorkspaceListEntry::Workspace {
                     ws_idx: 1,
                     indented: false,
-                    rail: BranchRail::Close,
+                    rail: BranchRail::None,
                 },
             ]
         );
@@ -3739,17 +2143,16 @@ mod tests {
                     name: "herdr".into(),
                     collapse_key: "repo-key".into(),
                     indented: false,
-                    branch: None,
                 },
                 WorkspaceListEntry::Workspace {
                     ws_idx: 0,
                     indented: true,
-                    rail: BranchRail::Spine,
+                    rail: BranchRail::None,
                 },
                 WorkspaceListEntry::Workspace {
                     ws_idx: 1,
                     indented: true,
-                    rail: BranchRail::Close,
+                    rail: BranchRail::None,
                 },
             ]
         );
@@ -3776,22 +2179,21 @@ mod tests {
                     name: "herdr".into(),
                     collapse_key: "github.com/owner/resume-builder".into(),
                     indented: false,
-                    branch: None,
                 },
                 WorkspaceListEntry::Workspace {
                     ws_idx: 0,
                     indented: true,
-                    rail: BranchRail::Spine,
+                    rail: BranchRail::None,
                 },
                 WorkspaceListEntry::Workspace {
                     ws_idx: 1,
                     indented: true,
-                    rail: BranchRail::Spine,
+                    rail: BranchRail::None,
                 },
                 WorkspaceListEntry::Workspace {
                     ws_idx: 2,
                     indented: true,
-                    rail: BranchRail::Close,
+                    rail: BranchRail::None,
                 },
             ]
         );
@@ -3815,23 +2217,21 @@ mod tests {
                     name: "herdr".into(),
                     collapse_key: "github.com/owner/a".into(),
                     indented: false,
-                    branch: None,
                 },
                 WorkspaceListEntry::Workspace {
                     ws_idx: 0,
                     indented: false,
-                    rail: BranchRail::Close,
+                    rail: BranchRail::None,
                 },
                 WorkspaceListEntry::ProjectHeader {
                     name: "herdr".into(),
                     collapse_key: "github.com/owner/b".into(),
                     indented: false,
-                    branch: None,
                 },
                 WorkspaceListEntry::Workspace {
                     ws_idx: 1,
                     indented: false,
-                    rail: BranchRail::Close,
+                    rail: BranchRail::None,
                 },
             ]
         );
@@ -3855,22 +2255,21 @@ mod tests {
                     name: "herdr".into(),
                     collapse_key: "repo-key".into(),
                     indented: false,
-                    branch: None,
                 },
                 WorkspaceListEntry::Workspace {
                     ws_idx: 0,
                     indented: true,
-                    rail: BranchRail::Spine,
+                    rail: BranchRail::None,
                 },
                 WorkspaceListEntry::Workspace {
                     ws_idx: 1,
                     indented: true,
-                    rail: BranchRail::Spine,
+                    rail: BranchRail::None,
                 },
                 WorkspaceListEntry::Workspace {
                     ws_idx: 2,
                     indented: true,
-                    rail: BranchRail::Close,
+                    rail: BranchRail::None,
                 },
             ]
         );
@@ -3895,33 +2294,31 @@ mod tests {
                     name: "herdr".into(),
                     collapse_key: "repo-key".into(),
                     indented: false,
-                    branch: None,
                 },
                 WorkspaceListEntry::Workspace {
                     ws_idx: 0,
                     indented: true,
-                    rail: BranchRail::Spine,
+                    rail: BranchRail::None,
                 },
                 WorkspaceListEntry::Workspace {
                     ws_idx: 2,
                     indented: true,
-                    rail: BranchRail::Spine,
+                    rail: BranchRail::None,
                 },
                 WorkspaceListEntry::Workspace {
                     ws_idx: 3,
                     indented: true,
-                    rail: BranchRail::Close,
+                    rail: BranchRail::None,
                 },
                 WorkspaceListEntry::ProjectHeader {
                     name: "herdr".into(),
                     collapse_key: "other-key".into(),
                     indented: false,
-                    branch: None,
                 },
                 WorkspaceListEntry::Workspace {
                     ws_idx: 1,
                     indented: false,
-                    rail: BranchRail::Close,
+                    rail: BranchRail::None,
                 },
             ]
         );
@@ -3944,17 +2341,16 @@ mod tests {
                     name: "herdr".into(),
                     collapse_key: "repo-key".into(),
                     indented: false,
-                    branch: None,
                 },
                 WorkspaceListEntry::Workspace {
                     ws_idx: 0,
                     indented: true,
-                    rail: BranchRail::Spine,
+                    rail: BranchRail::None,
                 },
                 WorkspaceListEntry::Workspace {
                     ws_idx: 1,
                     indented: true,
-                    rail: BranchRail::Close,
+                    rail: BranchRail::None,
                 },
             ]
         );
@@ -3978,7 +2374,6 @@ mod tests {
                 name: "herdr".into(),
                 collapse_key: "repo-key".into(),
                 indented: false,
-                branch: None,
             }]
         );
     }
@@ -3998,12 +2393,11 @@ mod tests {
                     name: "herdr".into(),
                     collapse_key: "repo-key".into(),
                     indented: false,
-                    branch: None,
                 },
                 WorkspaceListEntry::Workspace {
                     ws_idx: 0,
                     indented: false,
-                    rail: BranchRail::Close,
+                    rail: BranchRail::None,
                 },
                 WorkspaceListEntry::Workspace {
                     ws_idx: 1,
@@ -4032,7 +2426,6 @@ mod tests {
                     name: "herdr".into(),
                     collapse_key: "repo-key".into(),
                     indented: false,
-                    branch: None,
                 },
                 WorkspaceListEntry::Workspace {
                     ws_idx: 1,
@@ -4050,7 +2443,6 @@ mod tests {
                 name: "herdr".into(),
                 collapse_key: "repo-key".into(),
                 indented: false,
-                branch: None,
             }]
         );
     }
@@ -4074,7 +2466,6 @@ mod tests {
                     name: "herdr".into(),
                     collapse_key: "repo-key".into(),
                     indented: false,
-                    branch: None,
                 },
                 WorkspaceListEntry::Workspace {
                     ws_idx: 1,
@@ -4152,274 +2543,6 @@ mod tests {
     }
 
     #[test]
-    fn hash_prefixed_workspaces_auto_group_as_channels() {
-        // orc channels are created as `--label "#<name>"` and hosted by whatever
-        // checkout was convenient, so repo grouping scatters them. They collect
-        // under one channel group instead, with unrelated workspaces untouched.
-        let mut app = AppState::test_new();
-        let mut chan_a = Workspace::test_new("canal-ary");
-        chan_a.set_custom_name("#canal-ary".into());
-        chan_a.cached_git_branch = None;
-        let mut plain = Workspace::test_new("orchestrator");
-        plain.cached_git_branch = None;
-        let mut chan_b = Workspace::test_new("part3");
-        chan_b.set_custom_name("#part3-model-status".into());
-        chan_b.cached_git_branch = None;
-        app.workspaces = vec![chan_a, plain, chan_b];
-
-        let entries = workspace_list_entries(&app);
-
-        assert_eq!(
-            entries,
-            vec![
-                WorkspaceListEntry::GroupHeader {
-                    // Literal, not CHANNEL_GROUP_NAME: asserting against the
-                    // constant the production code reads means a rename changes
-                    // both sides together and the test cannot see it.
-                    name: "channels".into(),
-                    collapse_key: "vg:channels".into(),
-                },
-                WorkspaceListEntry::Workspace {
-                    ws_idx: 0,
-                    indented: true,
-                    rail: BranchRail::Spine,
-                },
-                WorkspaceListEntry::Workspace {
-                    ws_idx: 2,
-                    indented: true,
-                    rail: BranchRail::Close,
-                },
-                WorkspaceListEntry::Workspace {
-                    ws_idx: 1,
-                    indented: false,
-                    rail: BranchRail::None,
-                },
-            ]
-        );
-    }
-
-    #[test]
-    fn explicit_group_beats_the_channel_prefix() {
-        // The `#` rule is a default, not a cage: a channel filed into a group by
-        // hand stays there.
-        let mut app = AppState::test_new();
-        let mut chan = Workspace::test_new("canal-ary");
-        chan.set_custom_name("#canal-ary".into());
-        chan.visual_group = Some("mine".into());
-        chan.cached_git_branch = None;
-        app.workspaces = vec![chan];
-
-        let entries = workspace_list_entries(&app);
-
-        assert_eq!(
-            entries.first(),
-            Some(&WorkspaceListEntry::GroupHeader {
-                name: "mine".into(),
-                collapse_key: "vg:mine".into(),
-            })
-        );
-    }
-
-    #[test]
-    fn workspace_row_renders_configured_custom_token() {
-        // `bora workspace report-metadata` is how an outside process (the orc
-        // channel code) flags unread traffic. This exercises the real
-        // `[ui.sidebar.spaces] rows` config path (`tokens::space_rows` +
-        // `resolved_token_spans`), not an ad-hoc suffix.
-        let mut app = AppState::test_new();
-        app.sidebar_spaces.rows = vec![vec![crate::config::SpaceSidebarToken::Custom(
-            "unread".into(),
-        )]];
-        let mut ws = Workspace::test_new("canal-ary");
-        ws.set_custom_name("#canal-ary".into());
-        ws.cached_git_branch = None;
-        ws.metadata_tokens.patch(
-            std::collections::HashMap::from([("unread".to_string(), Some("3 msg".to_string()))]),
-            None,
-            std::time::Instant::now(),
-        );
-        app.workspaces = vec![ws];
-
-        let runtimes = crate::terminal::TerminalRuntimeRegistry::new();
-        let area = Rect::new(0, 0, 40, 8);
-        let mut terminal = Terminal::new(TestBackend::new(40, 8)).expect("test terminal");
-        terminal
-            .draw(|frame| render_workspace_list(&app, &runtimes, frame, area, false))
-            .expect("workspace list should render");
-        let rows: Vec<String> = (0..8)
-            .map(|row| {
-                (0..40)
-                    .map(|col| terminal.backend().buffer()[(col, row)].symbol().to_string())
-                    .collect()
-            })
-            .collect();
-
-        assert!(
-            rows.iter().any(|row| row.contains("3 msg")),
-            "configured $unread token is drawn on the workspace row via the real config path: {rows:?}"
-        );
-    }
-
-    #[test]
-    fn agent_row_renders_configured_custom_token() {
-        // Same restoration, agent side: a configured `$pr` custom token in
-        // `[ui.sidebar.agents] rows` must draw on the agent panel's status
-        // line via `resolved_agent_rows` + `resolved_token_spans`.
-        let mut app = AppState::test_new();
-        app.sidebar_agents.rows = vec![vec![crate::config::AgentSidebarToken::Custom("pr".into())]];
-        let ws = Workspace::test_new("agent-ws");
-        let root_pane = ws.tabs[0].root_pane;
-        let terminal_id = ws.terminal_id(root_pane).unwrap().clone();
-        let mut terminal_state =
-            crate::terminal::TerminalState::new(terminal_id.clone(), "/tmp".into());
-        terminal_state.set_agent_name("planner".into());
-        terminal_state.metadata_tokens.patch(
-            std::collections::HashMap::from([("pr".to_string(), Some("#42".to_string()))]),
-            None,
-            std::time::Instant::now(),
-        );
-        app.workspaces = vec![ws];
-        app.terminals.insert(terminal_id, terminal_state);
-
-        let runtimes = crate::terminal::TerminalRuntimeRegistry::new();
-        let area = Rect::new(0, 0, 40, 8);
-        let mut terminal = Terminal::new(TestBackend::new(40, 8)).expect("test terminal");
-        terminal
-            .draw(|frame| render_agent_detail(&app, &runtimes, frame, area))
-            .expect("agent detail should render");
-        let rows: Vec<String> = (0..8)
-            .map(|row| {
-                (0..40)
-                    .map(|col| terminal.backend().buffer()[(col, row)].symbol().to_string())
-                    .collect()
-            })
-            .collect();
-
-        assert!(
-            rows.iter().any(|row| row.contains("#42")),
-            "configured $pr token is drawn on the agent panel row: {rows:?}"
-        );
-    }
-
-    #[test]
-    fn channels_leave_their_host_repo_group_in_the_live_fleet_shape() {
-        // Transcribed from the running session, because smaller branchless cases
-        // could not reproduce the failure: every `#` channel is a NON-linked
-        // checkout of a repo that also has real work workspaces, since orc hosts
-        // all channels in the orchestrator hub. That combination made the channel
-        // group swallow the entire repo — project header, branches and all — while
-        // leaving the channels themselves inside the repo's bracket.
-        let mut app = AppState::test_new();
-        let mk = |name: &str, repo: &str, linked: bool, branch: &str, custom: Option<&str>| {
-            let mut ws = git_space_member_on_branch(name, repo, linked, branch);
-            ws.cached_git_space.as_mut().unwrap().repo_identity = repo.into();
-            ws.cached_git_space.as_mut().unwrap().repo_name = repo.into();
-            if let Some(custom) = custom {
-                ws.set_custom_name(custom.into());
-            }
-            ws
-        };
-        app.workspaces = vec![
-            mk("orchestrator", "orchestrator", false, "main", None),
-            mk("bora", "bora", false, "main", None),
-            mk("canal", "orchestrator", false, "main", Some("#canal-ary")),
-            mk("orcbin", "orchestrator", true, "orcbin", None),
-            mk("orchestrator-review", "orchestrator", false, "main", None),
-            mk(
-                "part3",
-                "orchestrator",
-                false,
-                "main",
-                Some("#part3-model-status"),
-            ),
-        ];
-
-        let runtimes = crate::terminal::TerminalRuntimeRegistry::new();
-        let area = Rect::new(0, 0, 34, 20);
-        let mut terminal = Terminal::new(TestBackend::new(34, 20)).expect("test terminal");
-        terminal
-            .draw(|frame| render_workspace_list(&app, &runtimes, frame, area, false))
-            .expect("render");
-        let rows: Vec<String> = (0..20)
-            .map(|row| {
-                (0..34)
-                    .map(|col| terminal.backend().buffer()[(col, row)].symbol().to_string())
-                    .collect::<String>()
-                    .trim_end()
-                    .to_string()
-            })
-            .collect();
-
-        let repo_at = rows
-            .iter()
-            .position(|row| row.starts_with("╭─orchestrator"))
-            .unwrap_or_else(|| panic!("orchestrator keeps a top-level project header: {rows:?}"));
-        let group_at = rows
-            .iter()
-            .position(|row| row.contains("channels"))
-            .unwrap_or_else(|| panic!("channels get their own group: {rows:?}"));
-        assert!(
-            group_at < repo_at,
-            "channels form their own leading block, above the repo groups: {rows:?}"
-        );
-        // No `#` row may sit inside the repo bracket, which now runs from the repo
-        // header to the end of the drawn rows.
-        let inside_repo = &rows[repo_at..];
-        assert!(
-            !inside_repo.iter().any(|row| row.contains('#')),
-            "no channel is left inside the repo bracket: {inside_repo:?}"
-        );
-        assert!(
-            repo_at > 0 && !rows[..repo_at].is_empty(),
-            "the repo block still renders after the channel block: {rows:?}"
-        );
-
-        // The channel group holds both channels, and its rail closes on the last.
-        let channel_rows = &rows[group_at + 1..group_at + 3];
-        assert!(
-            channel_rows[0].starts_with('│') && channel_rows[0].contains("#canal-ary"),
-            "first channel rides the spine: {channel_rows:?}"
-        );
-        assert!(
-            channel_rows[1].starts_with("╰── ") && channel_rows[1].contains("#part3-model-status"),
-            "last channel closes the rail at the bottom of the group: {channel_rows:?}"
-        );
-    }
-
-    #[test]
-    fn channel_group_name_is_configurable_without_changing_membership() {
-        // The word is user-facing, so it is config. What counts as a channel keys
-        // off the `#` label, so renaming the group must move nobody in or out.
-        let mut app = AppState::test_new();
-        app.channel_group_name = "canais".to_string();
-        let mut chan = Workspace::test_new("canal");
-        chan.set_custom_name("#canal-ary".into());
-        chan.cached_git_branch = None;
-        let mut plain = Workspace::test_new("orchestrator");
-        plain.cached_git_branch = None;
-        app.workspaces = vec![chan, plain];
-
-        let entries = workspace_list_entries(&app);
-
-        assert_eq!(
-            entries.first(),
-            Some(&WorkspaceListEntry::GroupHeader {
-                name: "canais".into(),
-                collapse_key: "vg:canais".into(),
-            }),
-            "the configured name is what the group header carries: {entries:?}"
-        );
-        let grouped = entries
-            .iter()
-            .filter(|entry| matches!(entry, WorkspaceListEntry::Workspace { indented: true, .. }))
-            .count();
-        assert_eq!(
-            grouped, 1,
-            "renaming the group moves nobody in or out: {entries:?}"
-        );
-    }
-
-    #[test]
     fn collapsed_visual_group_shows_only_header() {
         let mut app = AppState::test_new();
         let mut ws0 = Workspace::test_new("alpha");
@@ -4464,7 +2587,6 @@ mod tests {
                     name: "herdr".into(),
                     collapse_key: "repo-key".into(),
                     indented: true,
-                    branch: None,
                 },
                 WorkspaceListEntry::Workspace {
                     ws_idx: 0,
@@ -4475,88 +2597,6 @@ mod tests {
                     ws_idx: 1,
                     indented: true,
                     rail: BranchRail::None,
-                },
-            ]
-        );
-    }
-
-    #[test]
-    fn branchless_members_stay_inside_bracket() {
-        // Regression (juno_brain): one checkout with a detected branch plus
-        // members whose branch is unknown. Branchless members must render
-        // inside the bracket (spine rails) and the LAST row closes it —
-        // never rail-less rows dangling after the bracket closed.
-        let mut app = AppState::test_new();
-        let mut ws0 = workspace_with_worktree_space("main", Some("repo-key"), "/repo/juno");
-        ws0.cached_git_branch = Some("init".into());
-        let ws1 =
-            workspace_with_worktree_space("dashboard-v0", Some("repo-key"), "/repo/juno-dash");
-        let ws2 = workspace_with_worktree_space("juno-2", Some("repo-key"), "/repo/juno-2");
-        app.workspaces = vec![ws0, ws1, ws2];
-
-        let entries = workspace_list_entries(&app);
-
-        assert_eq!(
-            entries,
-            vec![
-                WorkspaceListEntry::ProjectHeader {
-                    name: "herdr".into(),
-                    collapse_key: "repo-key".into(),
-                    indented: false,
-                    branch: Some(ProjectHeaderBranch {
-                        label: "init".into(),
-                        ahead: 0,
-                        behind: 0,
-                    }),
-                },
-                WorkspaceListEntry::Workspace {
-                    ws_idx: 0,
-                    indented: true,
-                    rail: BranchRail::Spine,
-                },
-                WorkspaceListEntry::Workspace {
-                    ws_idx: 1,
-                    indented: true,
-                    rail: BranchRail::Spine,
-                },
-                WorkspaceListEntry::Workspace {
-                    ws_idx: 2,
-                    indented: true,
-                    rail: BranchRail::Close,
-                },
-            ]
-        );
-    }
-
-    #[test]
-    fn all_branchless_bracket_group_still_closes() {
-        // No branch detected anywhere: header has no [branch] label, members
-        // still get spine rails and the last one closes the bracket.
-        let mut app = AppState::test_new();
-        let ws0 = workspace_with_worktree_space("main", Some("repo-key"), "/repo/juno");
-        let ws1 = workspace_with_worktree_space("child", Some("repo-key"), "/repo/juno-child");
-        app.workspaces = vec![ws0, ws1];
-
-        let entries = workspace_list_entries(&app);
-
-        assert_eq!(
-            entries,
-            vec![
-                WorkspaceListEntry::ProjectHeader {
-                    name: "herdr".into(),
-                    collapse_key: "repo-key".into(),
-                    indented: false,
-                    branch: None,
-                },
-                WorkspaceListEntry::Workspace {
-                    ws_idx: 0,
-                    indented: true,
-                    rail: BranchRail::Spine,
-                },
-                WorkspaceListEntry::Workspace {
-                    ws_idx: 1,
-                    indented: true,
-                    rail: BranchRail::Close,
                 },
             ]
         );
@@ -4588,121 +2628,6 @@ mod tests {
                     rail: BranchRail::None,
                 },
             ]
-        );
-    }
-
-    #[test]
-    fn toggle_false_emits_flat_entries_no_headers() {
-        let mut app = AppState::test_new();
-        app.group_workspaces_by_repo = false;
-        let ws0 = git_space_member("main", "repo-key", false);
-        let ws1 = git_space_member("child", "repo-key", true);
-        app.workspaces = vec![ws0, ws1];
-
-        let entries = workspace_list_entries(&app);
-
-        // Flat mode: exactly one Workspace entry per workspace, in vec
-        // order, no ProjectHeader/BranchHeader/GroupHeader synthesis at all
-        // — even though these two share a repo and would bracket-group.
-        assert_eq!(
-            entries,
-            vec![
-                WorkspaceListEntry::Workspace {
-                    ws_idx: 0,
-                    indented: false,
-                    rail: BranchRail::None,
-                },
-                WorkspaceListEntry::Workspace {
-                    ws_idx: 1,
-                    indented: false,
-                    rail: BranchRail::None,
-                },
-            ]
-        );
-    }
-
-    #[test]
-    fn toggle_true_groups_same_repo() {
-        // Control: with the toggle at its default (true), the same pair
-        // still brackets into a repo header the way it always has.
-        let mut app = AppState::test_new();
-        assert!(app.group_workspaces_by_repo);
-        let ws0 = git_space_member("main", "repo-key", false);
-        let ws1 = git_space_member("child", "repo-key", true);
-        app.workspaces = vec![ws0, ws1];
-
-        let entries = workspace_list_entries(&app);
-
-        assert_eq!(
-            entries,
-            vec![
-                WorkspaceListEntry::ProjectHeader {
-                    name: "herdr".into(),
-                    collapse_key: "repo-key".into(),
-                    indented: false,
-                    branch: None,
-                },
-                WorkspaceListEntry::Workspace {
-                    ws_idx: 0,
-                    indented: true,
-                    rail: BranchRail::Spine,
-                },
-                WorkspaceListEntry::Workspace {
-                    ws_idx: 1,
-                    indented: true,
-                    rail: BranchRail::Close,
-                },
-            ]
-        );
-    }
-
-    #[test]
-    fn retoggle_restores_grouping() {
-        // Grouping is recomputed from workspace data on every call, never
-        // cached: flip off, mutate the vec order the way a flat-mode drag
-        // would, flip back on, and the bracket must reflect the new order.
-        let mut app = AppState::test_new();
-        let ws0 = git_space_member("main", "repo-key", false);
-        let ws1 = git_space_member("child", "repo-key", true);
-        app.workspaces = vec![ws0, ws1];
-
-        app.group_workspaces_by_repo = false;
-        let flat = workspace_list_entries(&app);
-        assert!(flat
-            .iter()
-            .all(|e| matches!(e, WorkspaceListEntry::Workspace { .. })));
-
-        // Simulate the drag reorder a user performs while flat.
-        app.workspaces.swap(0, 1);
-
-        app.group_workspaces_by_repo = true;
-        let grouped = workspace_list_entries(&app);
-        assert!(matches!(
-            grouped[0],
-            WorkspaceListEntry::ProjectHeader { .. }
-        ));
-        assert_eq!(grouped.len(), 3);
-        let WorkspaceListEntry::Workspace {
-            ws_idx: first_idx, ..
-        } = grouped[1]
-        else {
-            panic!("expected a Workspace entry");
-        };
-        let WorkspaceListEntry::Workspace {
-            ws_idx: second_idx, ..
-        } = grouped[2]
-        else {
-            panic!("expected a Workspace entry");
-        };
-        // Post-swap, "child" sits at vec index 0 and "main" at index 1;
-        // emission order follows the vec, so "child" now comes first.
-        assert_eq!(
-            app.workspaces[first_idx].custom_name.as_deref(),
-            Some("child")
-        );
-        assert_eq!(
-            app.workspaces[second_idx].custom_name.as_deref(),
-            Some("main")
         );
     }
 
@@ -4757,8 +2682,8 @@ mod tests {
 
         let entries = workspace_list_entries(&app);
 
-        // Both checkouts are on branch "main"; the branch folds into the
-        // project header and its last member closes the bracket.
+        // Both checkouts are on branch "main" under a synthesized project header,
+        // so they form one branch sub-tree: BranchHeader + two Spine members + footer.
         assert_eq!(
             entries,
             vec![
@@ -4766,11 +2691,12 @@ mod tests {
                     name: "herdr".into(),
                     collapse_key: "github.com/owner/resume-builder".into(),
                     indented: false,
-                    branch: Some(ProjectHeaderBranch {
-                        label: "main".into(),
-                        ahead: 0,
-                        behind: 0,
-                    }),
+                },
+                WorkspaceListEntry::BranchHeader {
+                    label: "main".into(),
+                    ahead: 0,
+                    behind: 0,
+                    indented: true,
                 },
                 WorkspaceListEntry::Workspace {
                     ws_idx: 0,
@@ -4780,17 +2706,18 @@ mod tests {
                 WorkspaceListEntry::Workspace {
                     ws_idx: 1,
                     indented: true,
-                    rail: BranchRail::Close,
+                    rail: BranchRail::Spine,
                 },
+                WorkspaceListEntry::ProjectFooter { indented: true },
             ]
         );
     }
 
     #[test]
     fn single_ws_branch_emits_bracket() {
-        // A single git workspace with a branch folds that branch into the
-        // project header; the no-branch parent stays inside the bracket and
-        // its last row closes it (Close).
+        // A single git workspace with a branch always emits a full bracket
+        // (ProjectHeader + BranchHeader + Workspace{Last}). The old "trivial"
+        // short-circuit was removed.
         let mut app = AppState::test_new();
         let identity = "github.com/owner/site";
         let mut parent = git_space_member("site", "key-parent", false);
@@ -4803,8 +2730,8 @@ mod tests {
 
         let entries = workspace_list_entries(&app);
 
-        // ProjectHeader{branch: main} + Workspace{Spine} for the branched child
-        // + Workspace{Close} for the no-branch parent inside the bracket.
+        // ProjectHeader + BranchHeader for the branched child + Workspace{Last}
+        // for the branched child + Workspace{None} for the no-branch parent.
         assert_eq!(
             entries,
             vec![
@@ -4812,11 +2739,12 @@ mod tests {
                     name: "herdr".into(),
                     collapse_key: identity.into(),
                     indented: false,
-                    branch: Some(ProjectHeaderBranch {
-                        label: "main".into(),
-                        ahead: 0,
-                        behind: 0,
-                    }),
+                },
+                WorkspaceListEntry::BranchHeader {
+                    label: "main".into(),
+                    ahead: 0,
+                    behind: 0,
+                    indented: true,
                 },
                 WorkspaceListEntry::Workspace {
                     ws_idx: 1,
@@ -4826,14 +2754,15 @@ mod tests {
                 WorkspaceListEntry::Workspace {
                     ws_idx: 0,
                     indented: true,
-                    rail: BranchRail::Close,
+                    rail: BranchRail::None,
                 },
+                WorkspaceListEntry::ProjectFooter { indented: true },
             ]
         );
     }
 
     #[test]
-    fn workspace_card_area_rect_is_single_row() {
+    fn workspace_card_area_rect_spans_both_lines() {
         let mut app = AppState::test_new();
         app.workspaces = vec![Workspace::test_new("alpha")];
 
@@ -4841,21 +2770,14 @@ mod tests {
 
         assert_eq!(cards.len(), 1);
         assert_eq!(
-            cards[0].rect.height, 1,
-            "card rect is a single row (name + inline dots)"
+            cards[0].rect.height, 2,
+            "card rect must span both name + dots lines"
         );
     }
 
     #[test]
     fn multiple_branches_in_one_project_emit_multiple_brackets() {
-        // Three branches + a no-branch parent: the first branch folds into the
-        // project header, the no-branch parent stays inside the bracket right
-        // after the folded members. `feat/b` and `feat/c` each hold a single
-        // auto-named workspace (no `custom_name`), so per the collapse rule
-        // their headers fold that lone workspace INTO themselves instead of
-        // printing the branch name twice — no separate `Workspace` row for
-        // either. `feat/c` is also the group's last row, so its collapsed
-        // header draws the closing elbow itself.
+        // Each distinct branch in a project gets its own bracket.
         let mut app = AppState::test_new();
         let identity = "github.com/owner/proj";
         let mut parent = git_space_member("proj", "key-p", false);
@@ -4865,311 +2787,43 @@ mod tests {
         ws_a.cached_git_space.as_mut().unwrap().repo_identity = identity.into();
         let mut ws_b = git_space_member_on_branch("feature-b", "key-b", false, "feat/b");
         ws_b.cached_git_space.as_mut().unwrap().repo_identity = identity.into();
-        ws_b.custom_name = None;
-        let mut ws_c = git_space_member_on_branch("feature-c", "key-c", false, "feat/c");
-        ws_c.cached_git_space.as_mut().unwrap().repo_identity = identity.into();
-        ws_c.custom_name = None;
-        app.workspaces = vec![parent, ws_a, ws_b, ws_c];
+        app.workspaces = vec![parent, ws_a, ws_b];
 
         let entries = workspace_list_entries(&app);
 
-        assert_eq!(
-            entries,
-            vec![
-                WorkspaceListEntry::ProjectHeader {
-                    name: "herdr".into(),
-                    collapse_key: identity.into(),
-                    indented: false,
-                    branch: Some(ProjectHeaderBranch {
-                        label: "feat/a".into(),
-                        ahead: 0,
-                        behind: 0,
-                    }),
-                },
-                WorkspaceListEntry::Workspace {
-                    ws_idx: 1,
-                    indented: true,
-                    rail: BranchRail::Spine,
-                },
-                WorkspaceListEntry::Workspace {
-                    ws_idx: 0,
-                    indented: true,
-                    rail: BranchRail::Spine,
-                },
-                WorkspaceListEntry::BranchHeader {
-                    label: "feat/b".into(),
-                    ahead: 0,
-                    behind: 0,
-                    indented: false,
-                    last: false,
-                    ws_idx: Some(2),
-                },
-                WorkspaceListEntry::BranchHeader {
-                    label: "feat/c".into(),
-                    ahead: 0,
-                    behind: 0,
-                    indented: false,
-                    last: true,
-                    ws_idx: Some(3),
-                },
-            ]
-        );
-
-        // Render pass: the bracket prefixes land at column 0.
-        let runtimes = crate::terminal::TerminalRuntimeRegistry::new();
-        let area = Rect::new(0, 0, 40, 12);
-        let mut terminal = Terminal::new(TestBackend::new(40, 12)).expect("test terminal");
-        terminal
-            .draw(|frame| render_workspace_list(&app, &runtimes, frame, area, false))
-            .expect("workspace list should render");
-        let row_text = |row: u16| -> String {
-            (0..40)
-                .map(|col| terminal.backend().buffer()[(col, row)].symbol().to_string())
-                .collect()
-        };
-        let body_y = WORKSPACE_SECTION_HEADER_ROWS;
-        assert!(
-            row_text(body_y).starts_with("╭─") && row_text(body_y).contains("feat/a"),
-            "header opens bracket with folded branch: {:?}",
-            row_text(body_y)
-        );
-        assert!(
-            row_text(body_y + 1).starts_with('│'),
-            "folded member on spine: {:?}",
-            row_text(body_y + 1)
-        );
-        assert!(
-            row_text(body_y + 2).starts_with('│'),
-            "loose no-branch member stays on the spine: {:?}",
-            row_text(body_y + 2)
-        );
-        assert!(
-            row_text(body_y + 3).starts_with("├── ") && row_text(body_y + 3).contains("feat/b"),
-            "collapsed feat/b header is a tee, another branch still follows: {:?}",
-            row_text(body_y + 3)
-        );
-        assert!(
-            row_text(body_y + 4).starts_with("╰── ") && row_text(body_y + 4).contains("feat/c"),
-            "collapsed feat/c header IS the group's last row, so it closes the bracket itself: {:?}",
-            row_text(body_y + 4)
-        );
-    }
-
-    #[test]
-    fn single_auto_named_worktree_on_a_branch_collapses_to_one_row() {
-        // feat/b's only member has no custom_name (still named after its
-        // checkout): the header and the would-be child row would show the
-        // identical string, so the header folds that workspace into itself.
-        let mut app = AppState::test_new();
-        let identity = "github.com/owner/proj";
-        let mut ws_a = git_space_member_on_branch("feature-a", "key-a", false, "feat/a");
-        ws_a.cached_git_space.as_mut().unwrap().repo_identity = identity.into();
-        let mut ws_b = git_space_member_on_branch("feature-b", "key-b", false, "feat/b");
-        ws_b.cached_git_space.as_mut().unwrap().repo_identity = identity.into();
-        ws_b.custom_name = None;
-        app.workspaces = vec![ws_a, ws_b];
-
-        let entries = workspace_list_entries(&app);
-
-        assert_eq!(
-            entries,
-            vec![
-                WorkspaceListEntry::ProjectHeader {
-                    name: "herdr".into(),
-                    collapse_key: identity.into(),
-                    indented: false,
-                    branch: Some(ProjectHeaderBranch {
-                        label: "feat/a".into(),
-                        ahead: 0,
-                        behind: 0,
-                    }),
-                },
-                WorkspaceListEntry::Workspace {
-                    ws_idx: 0,
-                    indented: true,
-                    rail: BranchRail::Spine,
-                },
-                WorkspaceListEntry::BranchHeader {
-                    label: "feat/b".into(),
-                    ahead: 0,
-                    behind: 0,
-                    indented: false,
-                    last: true,
-                    ws_idx: Some(1),
-                },
-            ],
-            "no separate child row is emitted for the collapsed branch"
-        );
-    }
-
-    #[test]
-    fn two_workspaces_on_the_same_branch_keep_header_and_both_rows() {
-        // A worktree can host two workspaces: even with no custom_name, 2+
-        // members must never collapse — the owner's explicit guard.
-        let mut app = AppState::test_new();
-        let identity = "github.com/owner/proj";
-        let mut ws_a = git_space_member_on_branch("feature-a", "key-a", false, "feat/a");
-        ws_a.cached_git_space.as_mut().unwrap().repo_identity = identity.into();
-        let mut ws_b1 = git_space_member_on_branch("feature-b", "key-b1", true, "feat/b");
-        ws_b1.cached_git_space.as_mut().unwrap().repo_identity = identity.into();
-        ws_b1.custom_name = None;
-        let mut ws_b2 = git_space_member_on_branch("feature-b-2", "key-b2", true, "feat/b");
-        ws_b2.cached_git_space.as_mut().unwrap().repo_identity = identity.into();
-        ws_b2.custom_name = None;
-        app.workspaces = vec![ws_a, ws_b1, ws_b2];
-
-        let entries = workspace_list_entries(&app);
-
-        assert_eq!(
-            entries,
-            vec![
-                WorkspaceListEntry::ProjectHeader {
-                    name: "herdr".into(),
-                    collapse_key: identity.into(),
-                    indented: false,
-                    branch: Some(ProjectHeaderBranch {
-                        label: "feat/a".into(),
-                        ahead: 0,
-                        behind: 0,
-                    }),
-                },
-                WorkspaceListEntry::Workspace {
-                    ws_idx: 0,
-                    indented: true,
-                    rail: BranchRail::Spine,
-                },
-                WorkspaceListEntry::BranchHeader {
-                    label: "feat/b".into(),
-                    ahead: 0,
-                    behind: 0,
-                    indented: false,
-                    last: false,
-                    ws_idx: None,
-                },
-                WorkspaceListEntry::Workspace {
-                    ws_idx: 1,
-                    indented: true,
-                    rail: BranchRail::Spine,
-                },
-                WorkspaceListEntry::Workspace {
-                    ws_idx: 2,
-                    indented: true,
-                    rail: BranchRail::Close,
-                },
-            ]
-        );
-    }
-
-    #[test]
-    fn single_worktree_with_custom_name_does_not_collapse() {
-        // A workspace the user renamed by hand keeps its own visible row
-        // even though it is still the branch's only member.
-        let mut app = AppState::test_new();
-        let identity = "github.com/owner/proj";
-        let mut ws_a = git_space_member_on_branch("feature-a", "key-a", false, "feat/a");
-        ws_a.cached_git_space.as_mut().unwrap().repo_identity = identity.into();
-        let mut ws_b = git_space_member_on_branch("feature-b", "key-b", false, "feat/b");
-        ws_b.cached_git_space.as_mut().unwrap().repo_identity = identity.into();
-        ws_b.custom_name = Some("my-renamed-space".into());
-        app.workspaces = vec![ws_a, ws_b];
-
-        let entries = workspace_list_entries(&app);
-
-        assert_eq!(
-            entries,
-            vec![
-                WorkspaceListEntry::ProjectHeader {
-                    name: "herdr".into(),
-                    collapse_key: identity.into(),
-                    indented: false,
-                    branch: Some(ProjectHeaderBranch {
-                        label: "feat/a".into(),
-                        ahead: 0,
-                        behind: 0,
-                    }),
-                },
-                WorkspaceListEntry::Workspace {
-                    ws_idx: 0,
-                    indented: true,
-                    rail: BranchRail::Spine,
-                },
-                WorkspaceListEntry::BranchHeader {
-                    label: "feat/b".into(),
-                    ahead: 0,
-                    behind: 0,
-                    indented: false,
-                    last: false,
-                    ws_idx: None,
-                },
-                WorkspaceListEntry::Workspace {
-                    ws_idx: 1,
-                    indented: true,
-                    rail: BranchRail::Close,
-                },
-            ]
-        );
-    }
-
-    #[test]
-    fn single_worktree_renamed_to_its_own_branch_still_collapses() {
-        // Measured live: a worktree workspace can carry a custom name identical
-        // to its branch. The repetition is what the reader sees, so the test is
-        // the repeated string, not whether a human typed it.
-        let mut app = AppState::test_new();
-        let identity = "github.com/owner/proj";
-        let mut ws_a = git_space_member_on_branch("feature-a", "key-a", false, "feat/a");
-        ws_a.cached_git_space.as_mut().unwrap().repo_identity = identity.into();
-        let mut named = git_space_member_on_branch("token", "key-b", false, "orc-channel-token");
-        named.cached_git_space.as_mut().unwrap().repo_identity = identity.into();
-        named.custom_name = Some("orc-channel-token".into());
-        let mut short = git_space_member_on_branch("badge", "key-c", false, "ary/orc-canal-badge");
-        short.cached_git_space.as_mut().unwrap().repo_identity = identity.into();
-        short.custom_name = Some("orc-canal-badge".into());
-        app.workspaces = vec![ws_a, named, short];
-
-        let entries = workspace_list_entries(&app);
-
-        let collapsed: Vec<Option<usize>> = entries
+        // Exactly one BranchHeader, labeled by the first non-linked branched member.
+        let branch_headers: Vec<_> = entries
             .iter()
-            .filter_map(|entry| match entry {
-                WorkspaceListEntry::BranchHeader { ws_idx, .. } => Some(*ws_idx),
+            .filter_map(|e| match e {
+                WorkspaceListEntry::BranchHeader { label, .. } => Some(label.clone()),
                 _ => None,
             })
             .collect();
         assert_eq!(
-            collapsed,
-            vec![Some(1), Some(2)],
-            "a name identical to the branch collapses, and so does one matching \
-             the branch's last segment: {entries:?}"
+            branch_headers,
+            vec!["feat/a", "feat/b"],
+            "one bracket per branch"
         );
-        assert!(
-            !entries
-                .iter()
-                .any(|entry| matches!(entry, WorkspaceListEntry::Workspace { ws_idx: 1 | 2, .. })),
-            "neither collapsed workspace keeps a duplicate child row: {entries:?}"
-        );
-    }
 
-    #[test]
-    fn collapsed_branch_header_row_is_a_clickable_workspace_card() {
-        // The old child row was clickable; a collapsed row that cannot be
-        // clicked is a regression. This is the load-bearing assertion for
-        // `ws_idx`.
-        let mut app = AppState::test_new();
-        let identity = "github.com/owner/proj";
-        let mut ws_a = git_space_member_on_branch("feature-a", "key-a", false, "feat/a");
-        ws_a.cached_git_space.as_mut().unwrap().repo_identity = identity.into();
-        let mut ws_b = git_space_member_on_branch("feature-b", "key-b", false, "feat/b");
-        ws_b.cached_git_space.as_mut().unwrap().repo_identity = identity.into();
-        ws_b.custom_name = None;
-        app.workspaces = vec![ws_a, ws_b];
-
-        let (cards, _headers) = compute_workspace_list_areas(&app, Rect::new(0, 0, 30, 20));
-
-        assert!(
-            cards.iter().any(|c| c.ws_idx == 1),
-            "collapsed branch header must register a clickable card for its workspace: {cards:?}"
-        );
+        // All branch members ride the project spine down to the closer line.
+        let spine_count = entries
+            .iter()
+            .filter(|e| {
+                matches!(
+                    e,
+                    WorkspaceListEntry::Workspace {
+                        rail: BranchRail::Spine,
+                        ..
+                    }
+                )
+            })
+            .count();
+        let footer_count = entries
+            .iter()
+            .filter(|e| matches!(e, WorkspaceListEntry::ProjectFooter { .. }))
+            .count();
+        assert_eq!(spine_count, 2, "each branch member is on the spine");
+        assert_eq!(footer_count, 1, "one closer line per project");
     }
 
     #[test]
@@ -5208,14 +2862,12 @@ mod tests {
             ahead: 0,
             behind: 0,
             indented: false,
-            last: false,
-            ws_idx: None,
         }];
         assert_eq!(entry_row_height(&entries[0], &entries, 0), 1);
     }
 
     #[test]
-    fn entry_row_height_workspace_is_one_row() {
+    fn entry_row_height_workspace_is_two_rows() {
         let entries = vec![
             WorkspaceListEntry::Workspace {
                 ws_idx: 0,
@@ -5228,267 +2880,8 @@ mod tests {
                 rail: BranchRail::None,
             },
         ];
-        // Every workspace is a single row: name + inline dots.
-        assert_eq!(entry_row_height(&entries[0], &entries, 0), 1);
-        assert_eq!(entry_row_height(&entries[1], &entries, 1), 1);
-    }
-
-    // Characterization: pins the lockstep entries system for a git repo group
-    // (synthesized project header + branch bracket + members + footer)
-    // followed by a flat workspace. All three lockstep passes (visible-count,
-    // geometry, render) must agree with `entry_row_height` applied to the
-    // same `workspace_list_entries` sequence.
-    #[test]
-    fn workspace_list_lockstep_passes_agree_for_git_repo_group() {
-        let mut app = AppState::test_new();
-        let identity = "github.com/owner/herdr";
-        let mut main = git_space_member("main", "key-main", false);
-        let mut issue = git_space_member("issue", "key-issue", true);
-        for ws in [&mut main, &mut issue] {
-            ws.cached_git_space.as_mut().unwrap().repo_identity = identity.into();
-            ws.cached_git_branch = Some("main".into());
-        }
-        let mut notes = Workspace::test_new("notes");
-        notes.cached_git_branch = None;
-        app.workspaces = vec![main, issue, notes];
-        app.active = Some(0);
-        app.selected = 0;
-        app.mode = Mode::Terminal;
-        app.ensure_test_terminals();
-
-        // Pin the entry variant sequence.
-        let entries = workspace_list_entries(&app);
-        let variants: Vec<&str> = entries
-            .iter()
-            .map(|entry| match entry {
-                WorkspaceListEntry::GroupHeader { .. } => "GroupHeader",
-                WorkspaceListEntry::ProjectHeader { .. } => "ProjectHeader",
-                WorkspaceListEntry::BranchHeader { .. } => "BranchHeader",
-                WorkspaceListEntry::Workspace { .. } => "Workspace",
-                WorkspaceListEntry::HiddenHeader { .. } => "HiddenHeader",
-            })
-            .collect();
-        assert_eq!(
-            variants,
-            ["ProjectHeader", "Workspace", "Workspace", "Workspace",]
-        );
-
-        // Height pass: total rows from the shared per-entry height helper.
-        let total_height: u16 = entries
-            .iter()
-            .enumerate()
-            .map(|(idx, entry)| entry_row_height(entry, &entries, idx))
-            .sum();
-        assert_eq!(total_height, 4, "1+1+1+1 rows for the pinned sequence");
-
-        // Visible-count pass agrees: a body exactly `total_height` rows tall
-        // shows every entry; one row less drops exactly the last (1-row)
-        // entry. Section area height = body + header rows + footer row +
-        // the always-on "+ run command…" programs row.
-        let exact = Rect::new(0, 0, 30, total_height + WORKSPACE_SECTION_HEADER_ROWS + 2);
-        assert_eq!(workspace_list_visible_count(&app, exact, 0), entries.len());
-        let short = Rect::new(0, 0, 30, total_height + WORKSPACE_SECTION_HEADER_ROWS + 1);
-        assert_eq!(
-            workspace_list_visible_count(&app, short, 0),
-            entries.len() - 1
-        );
-
-        // Geometry pass agrees: card/header rects sit at the prefix sums of
-        // `entry_row_height` when the body is tall enough for everything.
-        let sidebar = Rect::new(0, 0, 30, 40);
-        let (cards, headers) = compute_workspace_list_areas(&app, sidebar);
-        let ws_area = workspace_list_rect(sidebar, app.sidebar_section_split);
-        let body = workspace_list_body_rect(&app, ws_area, false);
-        let mut expected_card_ys = Vec::new();
-        let mut expected_header_ys = Vec::new();
-        let mut y = body.y;
-        for (idx, entry) in entries.iter().enumerate() {
-            match entry {
-                WorkspaceListEntry::Workspace { .. } => expected_card_ys.push(y),
-                WorkspaceListEntry::GroupHeader { .. }
-                | WorkspaceListEntry::ProjectHeader { .. } => expected_header_ys.push(y),
-                WorkspaceListEntry::BranchHeader { .. } => {}
-                WorkspaceListEntry::HiddenHeader { .. } => {}
-            }
-            y += entry_row_height(entry, &entries, idx);
-        }
-        assert_eq!(y - body.y, total_height);
-        assert_eq!(
-            cards.iter().map(|card| card.rect.y).collect::<Vec<_>>(),
-            expected_card_ys
-        );
-        assert_eq!(
-            cards.iter().map(|card| card.ws_idx).collect::<Vec<_>>(),
-            [0, 1, 2]
-        );
-        assert_eq!(
-            headers
-                .iter()
-                .map(|header| header.rect.y)
-                .collect::<Vec<_>>(),
-            expected_header_ys
-        );
-
-        // Render pass agrees: labels land on the same prefix-sum rows in an
-        // exact-fit section area.
-        let mut terminal =
-            Terminal::new(TestBackend::new(exact.width, exact.height)).expect("test terminal");
-        let runtimes = TerminalRuntimeRegistry::new();
-        terminal
-            .draw(|frame| render_workspace_list(&app, &runtimes, frame, exact, false))
-            .expect("workspace list should render");
-        let row_text = |row: u16| -> String {
-            (0..exact.width)
-                .map(|col| terminal.backend().buffer()[(col, row)].symbol().to_string())
-                .collect()
-        };
-        let body_y = WORKSPACE_SECTION_HEADER_ROWS; // exact rect starts at y = 0
-        assert!(
-            row_text(body_y).contains("herdr"),
-            "project header row: {:?}",
-            row_text(body_y)
-        );
-        assert!(
-            row_text(body_y + 3).contains("notes"),
-            "flat workspace card row: {:?}",
-            row_text(body_y + 3)
-        );
-
-        // Bracket-rail prefixes: header opens with ╭─, the folded main member
-        // rides the spine (│), and the last member closes it (╰──).
-        assert!(
-            row_text(body_y).contains("╭─"),
-            "project header opens bracket: {:?}",
-            row_text(body_y)
-        );
-        assert!(
-            row_text(body_y + 1).contains('│'),
-            "folded member on spine: {:?}",
-            row_text(body_y + 1)
-        );
-        assert!(
-            row_text(body_y + 2).contains("╰──"),
-            "last member closes bracket: {:?}",
-            row_text(body_y + 2)
-        );
-
-        // Invariants gate for the state used above, so later field additions
-        // keep passing through this check.
-        app.assert_invariants_for_test();
-        for ws in &app.workspaces {
-            ws.assert_invariants_for_test();
-        }
-    }
-
-    #[test]
-    fn hiding_workspace_moves_it_to_hidden_section() {
-        let mut app = AppState::test_new();
-        let mut a = Workspace::test_new("alpha");
-        a.cached_git_branch = None;
-        let mut b = Workspace::test_new("beta");
-        b.cached_git_branch = None;
-        app.workspaces = vec![a, b];
-        let key = AppState::workspace_hide_key(&app.workspaces[0]);
-        app.hidden_space_keys.insert(
-            key,
-            std::time::Instant::now() + std::time::Duration::from_secs(300),
-        );
-
-        assert_eq!(
-            workspace_list_entries(&app),
-            vec![
-                WorkspaceListEntry::Workspace {
-                    ws_idx: 1,
-                    indented: false,
-                    rail: BranchRail::None,
-                },
-                WorkspaceListEntry::HiddenHeader { count: 1 },
-            ]
-        );
-    }
-
-    #[test]
-    fn expanded_hidden_section_emits_hidden_rows() {
-        let mut app = AppState::test_new();
-        let mut a = Workspace::test_new("alpha");
-        a.cached_git_branch = None;
-        let mut b = Workspace::test_new("beta");
-        b.cached_git_branch = None;
-        app.workspaces = vec![a, b];
-        let key = AppState::workspace_hide_key(&app.workspaces[0]);
-        app.hidden_space_keys.insert(
-            key,
-            std::time::Instant::now() + std::time::Duration::from_secs(300),
-        );
-        app.hidden_section_expanded = true;
-
-        assert_eq!(
-            workspace_list_entries(&app),
-            vec![
-                WorkspaceListEntry::Workspace {
-                    ws_idx: 1,
-                    indented: false,
-                    rail: BranchRail::None,
-                },
-                WorkspaceListEntry::HiddenHeader { count: 1 },
-                WorkspaceListEntry::Workspace {
-                    ws_idx: 0,
-                    indented: true,
-                    rail: BranchRail::None,
-                },
-            ]
-        );
-    }
-
-    #[test]
-    fn expired_hide_is_not_applied() {
-        let mut app = AppState::test_new();
-        let mut a = Workspace::test_new("alpha");
-        a.cached_git_branch = None;
-        let mut b = Workspace::test_new("beta");
-        b.cached_git_branch = None;
-        app.workspaces = vec![a, b];
-        let key = AppState::workspace_hide_key(&app.workspaces[0]);
-        app.hidden_space_keys.insert(
-            key,
-            std::time::Instant::now() - std::time::Duration::from_secs(1),
-        );
-
-        assert_eq!(
-            workspace_list_entries(&app),
-            vec![
-                WorkspaceListEntry::Workspace {
-                    ws_idx: 0,
-                    indented: false,
-                    rail: BranchRail::None,
-                },
-                WorkspaceListEntry::Workspace {
-                    ws_idx: 1,
-                    indented: false,
-                    rail: BranchRail::None,
-                },
-            ]
-        );
-    }
-
-    #[test]
-    fn hiding_visual_group_hides_members_and_header() {
-        let mut app = AppState::test_new();
-        let mut ws0 = Workspace::test_new("alpha");
-        ws0.visual_group = Some("g1".into());
-        ws0.cached_git_branch = None;
-        let mut ws1 = Workspace::test_new("beta");
-        ws1.visual_group = Some("g1".into());
-        ws1.cached_git_branch = None;
-        app.workspaces = vec![ws0, ws1];
-        app.hidden_space_keys.insert(
-            "vg:g1".to_string(),
-            std::time::Instant::now() + std::time::Duration::from_secs(300),
-        );
-
-        assert_eq!(
-            workspace_list_entries(&app),
-            vec![WorkspaceListEntry::HiddenHeader { count: 2 }]
-        );
+        // Every workspace is name + dots = 2 rows; no closer line.
+        assert_eq!(entry_row_height(&entries[0], &entries, 0), 2);
+        assert_eq!(entry_row_height(&entries[1], &entries, 1), 2);
     }
 }

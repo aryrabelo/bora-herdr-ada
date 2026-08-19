@@ -212,7 +212,7 @@ impl App {
                 source_checkout_path: space.repo_root.clone(),
                 source_repo_root: space.repo_root,
                 repo_key: space.key,
-                repo_name: space.repo_name,
+                repo_name: space.label,
             };
             return Ok(source);
         }
@@ -324,7 +324,7 @@ impl App {
             source_checkout_path: space.repo_root.clone(),
             source_repo_root: space.repo_root,
             repo_key: space.key,
-            repo_name: space.repo_name,
+            repo_name: space.label,
         })
     }
 
@@ -611,7 +611,6 @@ impl App {
         });
     }
 
-    #[cfg(test)]
     pub(crate) fn emit_worktree_opened_for_workspace(&mut self, ws_idx: usize, already_open: bool) {
         let Some(worktree) = self.worktree_info_for_workspace(ws_idx) else {
             return;
@@ -678,7 +677,7 @@ fn worktree_source_from_space(
         source_checkout_path: source_checkout_path.clone(),
         source_repo_root: source_checkout_path,
         repo_key: space.key,
-        repo_name: space.repo_name,
+        repo_name: space.label,
     }
 }
 
@@ -828,7 +827,6 @@ mod tests {
                 enabled: true,
                 platforms: None,
                 build: Vec::new(),
-                startup: Vec::new(),
                 actions: Vec::new(),
                 events: vec![crate::api::schema::PluginManifestEventHook {
                     on: event.into(),
@@ -865,42 +863,6 @@ mod tests {
             .expect("deferred API request should respond after completion event")
     }
 
-    #[test]
-    fn deferred_api_worktree_create_rejects_pr_combined_with_branch_or_base() {
-        let mut app = test_app();
-        for params in [
-            WorktreeCreateParams {
-                pr: Some(42),
-                branch: Some("feature/x".into()),
-                ..WorktreeCreateParams::default()
-            },
-            WorktreeCreateParams {
-                pr: Some(42),
-                base: Some("HEAD".into()),
-                ..WorktreeCreateParams::default()
-            },
-        ] {
-            let (respond_to, response_rx) = response_channel();
-            assert!(app.handle_deferred_worktree_api_request(
-                Request {
-                    id: "req".into(),
-                    method: crate::api::schema::Method::WorktreeCreate(params),
-                },
-                respond_to,
-            ));
-            let response = response_rx
-                .try_recv()
-                .expect("invalid pr combination should respond immediately");
-            let error: ErrorResponse = serde_json::from_str(&response).unwrap();
-            assert_eq!(error.error.code, "invalid_request");
-            assert_eq!(
-                error.error.message,
-                "pr is mutually exclusive with branch and base"
-            );
-        }
-        assert!(app.pending_api_worktree_creates.is_empty());
-    }
-
     #[tokio::test]
     async fn api_worktree_create_opens_workspace_and_marks_membership() {
         let repo = create_committed_repo("api-worktree-create-repo");
@@ -934,7 +896,6 @@ mod tests {
             tab,
             root_pane,
             worktree,
-            ..
         } = success.result
         else {
             panic!("expected worktree_created response");
@@ -981,12 +942,11 @@ mod tests {
             1
         );
         assert_eq!(
-            &kinds[kinds.len() - 5..],
+            &kinds[kinds.len() - 4..],
             &[
                 EventKind::WorkspaceCreated,
                 EventKind::TabCreated,
                 EventKind::PaneCreated,
-                EventKind::LayoutUpdated,
                 EventKind::WorktreeCreated,
             ]
         );
@@ -1050,12 +1010,11 @@ mod tests {
             .map(|(_, event)| event.event)
             .collect::<Vec<_>>();
         assert_eq!(
-            &event_kinds[event_kinds.len() - 5..],
+            &event_kinds[event_kinds.len() - 4..],
             &[
                 EventKind::WorkspaceCreated,
                 EventKind::TabCreated,
                 EventKind::PaneCreated,
-                EventKind::LayoutUpdated,
                 EventKind::WorktreeCreated,
             ]
         );
@@ -1233,7 +1192,6 @@ mod tests {
                 respond_to,
             }),
             result: Ok(()),
-            setup: crate::bora_settings::SetupStatus::Skipped,
         });
 
         let response = response_rx
@@ -2145,11 +2103,9 @@ mod tests {
                     cwd: Some(repo.display().to_string()),
                     branch: Some("worktree/create-remove-in-flight".into()),
                     base: None,
-                    pr: None,
                     path: Some(checkout.display().to_string()),
                     label: None,
                     focus: false,
-                    no_setup: false,
                 }),
             },
             respond_to,

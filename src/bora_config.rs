@@ -7,15 +7,6 @@ pub(crate) struct BoraConfig {
     pub ports: Option<BoraPortsConfig>,
     #[serde(default)]
     pub commands: Vec<BoraCommand>,
-    pub flow: Option<BoraFlowConfig>,
-}
-
-#[derive(Debug, Clone, Deserialize, Default)]
-#[serde(default)]
-pub(crate) struct BoraFlowConfig {
-    /// Per-repo override for the global `[flow]` command template used to run
-    /// a flow for a GitHub issue. Same placeholders as the global template.
-    pub command: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -48,24 +39,6 @@ pub(crate) enum BoraCommandMode {
     #[default]
     Shell,
     Pane,
-}
-
-/// `.bora.toml [[commands]]` scoped to `ws`'s branch. Single source shared
-/// by the workspace context menu and the sidebar Programs launcher so
-/// branch filtering never drifts between the two surfaces.
-pub(crate) fn workspace_commands(ws: &crate::workspace::Workspace) -> Vec<BoraCommand> {
-    let Some(root) = ws.bora_config_root() else {
-        return Vec::new();
-    };
-    let Some(config) = load_bora_config(root) else {
-        return Vec::new();
-    };
-    let branch = ws.cached_git_branch.as_deref();
-    config
-        .commands
-        .into_iter()
-        .filter(|c| c.branch.as_deref().is_none_or(|b| branch == Some(b)))
-        .collect()
 }
 
 pub(crate) fn load_bora_config(repo_root: &Path) -> Option<BoraConfig> {
@@ -269,26 +242,6 @@ branch refs/heads/feature-a
         let config: BoraConfig = toml::from_str("").unwrap();
         assert!(config.ports.is_none());
         assert!(config.commands.is_empty());
-        assert!(config.flow.is_none());
-    }
-
-    #[test]
-    fn parse_flow_section() {
-        let toml_str = r#"
-[flow]
-command = "uv run flow.py --issue {issue}"
-"#;
-        let config: BoraConfig = toml::from_str(toml_str).unwrap();
-        assert_eq!(
-            config.flow.unwrap().command.as_deref(),
-            Some("uv run flow.py --issue {issue}")
-        );
-    }
-
-    #[test]
-    fn parse_empty_flow_section() {
-        let config: BoraConfig = toml::from_str("[flow]\n").unwrap();
-        assert!(config.flow.unwrap().command.is_none());
     }
 
     #[test]

@@ -2,33 +2,26 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use super::agents::QueuedAgentPromptDropReason;
 use super::common::{AgentStatus, ReadSource};
-use super::panes::{PaneInfo, PaneReadResult, PaneScrollInfo};
+use super::panes::{PaneInfo, PaneReadResult};
 use super::tabs::TabInfo;
 use super::workspaces::WorkspaceInfo;
 use super::worktrees::WorktreeInfo;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EventsSubscribeParams {
     pub subscriptions: Vec<Subscription>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum Subscription {
     #[serde(rename = "workspace.created")]
     WorkspaceCreated {},
     #[serde(rename = "workspace.updated")]
     WorkspaceUpdated {},
-    #[serde(rename = "workspace.metadata_updated")]
-    WorkspaceMetadataUpdated {},
     #[serde(rename = "workspace.renamed")]
     WorkspaceRenamed {},
-    #[serde(rename = "workspace.moved")]
-    WorkspaceMoved {},
-    #[serde(rename = "workspace.reordered")]
-    WorkspaceReordered {},
     #[serde(rename = "workspace.closed")]
     WorkspaceClosed {},
     #[serde(rename = "workspace.focused")]
@@ -47,14 +40,10 @@ pub enum Subscription {
     TabFocused {},
     #[serde(rename = "tab.renamed")]
     TabRenamed {},
-    #[serde(rename = "tab.moved")]
-    TabMoved {},
     #[serde(rename = "pane.created")]
     PaneCreated {},
     #[serde(rename = "pane.closed")]
     PaneClosed {},
-    #[serde(rename = "pane.updated")]
-    PaneUpdated {},
     #[serde(rename = "pane.focused")]
     PaneFocused {},
     #[serde(rename = "pane.moved")]
@@ -81,25 +70,16 @@ pub enum Subscription {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         agent_status: Option<AgentStatus>,
     },
-    #[serde(rename = "pane.scroll_changed")]
-    PaneScrollChanged { pane_id: String },
-    #[serde(rename = "layout.updated")]
-    LayoutUpdated {},
-    #[serde(rename = "github.prs_refreshed")]
-    GithubPrsRefreshed {},
-    #[serde(rename = "github.pr_opened")]
-    GithubPrOpened {},
-    #[serde(rename = "github.issues_refreshed")]
-    GithubIssuesRefreshed {},
 }
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EventsWaitParams {
     pub match_event: EventMatch,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_ms: Option<u64>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaneWaitForOutputParams {
     pub pane_id: String,
     pub source: ReadSource,
@@ -112,14 +92,14 @@ pub struct PaneWaitForOutputParams {
     pub strip_ansi: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum OutputMatch {
     Substring { value: String },
     Regex { value: String },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum EventMatch {
     WorkspaceCreated {
@@ -137,9 +117,6 @@ pub enum EventMatch {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         label: Option<String>,
     },
-    WorkspaceMoved {
-        workspace_id: String,
-    },
     WorkspaceFocused {
         workspace_id: String,
     },
@@ -156,9 +133,6 @@ pub enum EventMatch {
         tab_id: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         label: Option<String>,
-    },
-    TabMoved {
-        tab_id: String,
     },
     TabFocused {
         tab_id: String,
@@ -198,21 +172,15 @@ pub enum EventMatch {
     PaneResultReported {
         pane_id: String,
     },
-    ChannelMessage {
-        channel: String,
-    },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EventKind {
     WorkspaceCreated,
     WorkspaceUpdated,
-    WorkspaceMetadataUpdated,
     WorkspaceClosed,
     WorkspaceRenamed,
-    WorkspaceMoved,
-    WorkspaceReordered,
     WorkspaceFocused,
     WorktreeCreated,
     WorktreeOpened,
@@ -220,26 +188,16 @@ pub enum EventKind {
     TabCreated,
     TabClosed,
     TabRenamed,
-    TabMoved,
     TabFocused,
     PaneCreated,
     PaneClosed,
-    PaneUpdated,
     PaneFocused,
     PaneMoved,
     PaneOutputChanged,
     PaneExited,
     PaneAgentDetected,
     PaneAgentStatusChanged,
-    LayoutUpdated,
     PaneResultReported,
-    AgentPrompted,
-    GithubPrsRefreshed,
-    GithubPrOpened,
-    GithubIssuesRefreshed,
-    QueuedPromptDelivered,
-    QueuedPromptDropped,
-    ChannelMessage,
 }
 
 impl EventKind {
@@ -247,11 +205,8 @@ impl EventKind {
         match self {
             EventKind::WorkspaceCreated => "workspace.created",
             EventKind::WorkspaceUpdated => "workspace.updated",
-            EventKind::WorkspaceMetadataUpdated => "workspace.metadata_updated",
             EventKind::WorkspaceClosed => "workspace.closed",
             EventKind::WorkspaceRenamed => "workspace.renamed",
-            EventKind::WorkspaceMoved => "workspace.moved",
-            EventKind::WorkspaceReordered => "workspace.reordered",
             EventKind::WorkspaceFocused => "workspace.focused",
             EventKind::WorktreeCreated => "worktree.created",
             EventKind::WorktreeOpened => "worktree.opened",
@@ -259,26 +214,16 @@ impl EventKind {
             EventKind::TabCreated => "tab.created",
             EventKind::TabClosed => "tab.closed",
             EventKind::TabRenamed => "tab.renamed",
-            EventKind::TabMoved => "tab.moved",
             EventKind::TabFocused => "tab.focused",
             EventKind::PaneCreated => "pane.created",
             EventKind::PaneClosed => "pane.closed",
-            EventKind::PaneUpdated => "pane.updated",
             EventKind::PaneFocused => "pane.focused",
             EventKind::PaneMoved => "pane.moved",
             EventKind::PaneOutputChanged => "pane.output_changed",
             EventKind::PaneExited => "pane.exited",
             EventKind::PaneAgentDetected => "pane.agent_detected",
             EventKind::PaneAgentStatusChanged => "pane.agent_status_changed",
-            EventKind::LayoutUpdated => "layout.updated",
             EventKind::PaneResultReported => "pane.result_reported",
-            EventKind::AgentPrompted => "agent.prompted",
-            EventKind::GithubPrsRefreshed => "github.prs_refreshed",
-            EventKind::GithubPrOpened => "github.pr_opened",
-            EventKind::GithubIssuesRefreshed => "github.issues_refreshed",
-            EventKind::QueuedPromptDelivered => "agent_prompt.delivered",
-            EventKind::QueuedPromptDropped => "agent_prompt.dropped",
-            EventKind::ChannelMessage => "channel.message",
         }
     }
 }
@@ -287,11 +232,8 @@ impl EventKind {
 pub const KNOWN_EVENT_KINDS: &[EventKind] = &[
     EventKind::WorkspaceCreated,
     EventKind::WorkspaceUpdated,
-    EventKind::WorkspaceMetadataUpdated,
     EventKind::WorkspaceClosed,
     EventKind::WorkspaceRenamed,
-    EventKind::WorkspaceMoved,
-    EventKind::WorkspaceReordered,
     EventKind::WorkspaceFocused,
     EventKind::WorktreeCreated,
     EventKind::WorktreeOpened,
@@ -299,26 +241,16 @@ pub const KNOWN_EVENT_KINDS: &[EventKind] = &[
     EventKind::TabCreated,
     EventKind::TabClosed,
     EventKind::TabRenamed,
-    EventKind::TabMoved,
     EventKind::TabFocused,
     EventKind::PaneCreated,
     EventKind::PaneClosed,
-    EventKind::PaneUpdated,
     EventKind::PaneFocused,
     EventKind::PaneMoved,
     EventKind::PaneOutputChanged,
     EventKind::PaneExited,
     EventKind::PaneAgentDetected,
     EventKind::PaneAgentStatusChanged,
-    EventKind::LayoutUpdated,
     EventKind::PaneResultReported,
-    EventKind::AgentPrompted,
-    EventKind::GithubPrsRefreshed,
-    EventKind::GithubPrOpened,
-    EventKind::GithubIssuesRefreshed,
-    EventKind::QueuedPromptDelivered,
-    EventKind::QueuedPromptDropped,
-    EventKind::ChannelMessage,
 ];
 
 pub const PLUGIN_HOOK_EVENT_KINDS: &[EventKind] = &[
@@ -326,8 +258,6 @@ pub const PLUGIN_HOOK_EVENT_KINDS: &[EventKind] = &[
     EventKind::WorkspaceUpdated,
     EventKind::WorkspaceClosed,
     EventKind::WorkspaceRenamed,
-    EventKind::WorkspaceMoved,
-    EventKind::WorkspaceReordered,
     EventKind::WorkspaceFocused,
     EventKind::WorktreeCreated,
     EventKind::WorktreeOpened,
@@ -335,7 +265,6 @@ pub const PLUGIN_HOOK_EVENT_KINDS: &[EventKind] = &[
     EventKind::TabCreated,
     EventKind::TabClosed,
     EventKind::TabRenamed,
-    EventKind::TabMoved,
     EventKind::TabFocused,
     EventKind::PaneCreated,
     EventKind::PaneClosed,
@@ -345,11 +274,6 @@ pub const PLUGIN_HOOK_EVENT_KINDS: &[EventKind] = &[
     EventKind::PaneAgentDetected,
     EventKind::PaneAgentStatusChanged,
     EventKind::PaneResultReported,
-    EventKind::QueuedPromptDelivered,
-    EventKind::QueuedPromptDropped,
-    EventKind::ChannelMessage,
-    EventKind::GithubPrOpened,
-    EventKind::AgentPrompted,
 ];
 
 #[cfg(test)]
@@ -392,66 +316,56 @@ mod known_event_name_tests {
     }
 
     #[test]
-    fn plugin_hook_event_names_exclude_high_volume_events() {
+    fn plugin_hook_event_names_exclude_unemitted_output_change() {
         let names = plugin_hook_event_names();
         assert!(!names.contains(&"pane.output_changed"));
-        assert!(!names.contains(&"layout.updated"));
-        assert!(!names.contains(&"workspace.metadata_updated"));
-        assert!(!names.contains(&"pane.updated"));
         assert!(names.contains(&"pane.moved"));
-    }
-
-    #[test]
-    fn github_pr_opened_is_a_plugin_hook_event() {
-        assert!(PLUGIN_HOOK_EVENT_KINDS.contains(&EventKind::GithubPrOpened));
-        assert_eq!(EventKind::GithubPrOpened.dot_name(), "github.pr_opened");
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EventEnvelope {
     pub event: EventKind,
     pub data: EventData,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SubscriptionEventKind {
     #[serde(rename = "pane.output_matched")]
     PaneOutputMatched,
     #[serde(rename = "pane.agent_status_changed")]
     PaneAgentStatusChanged,
-    #[serde(rename = "pane.scroll_changed")]
-    ScrollChanged,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SubscriptionEventEnvelope {
     pub event: SubscriptionEventKind,
     pub data: SubscriptionEventData,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum SubscriptionEventData {
     PaneOutputMatched(PaneOutputMatchedEvent),
     PaneAgentStatusChanged(PaneAgentStatusChangedEvent),
-    ScrollChanged(PaneScrollChangedEvent),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaneOutputMatchedEvent {
     pub pane_id: String,
     pub matched_line: String,
     pub read: PaneReadResult,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaneAgentStatusChangedEvent {
     pub pane_id: String,
     pub workspace_id: String,
     pub agent_status: AgentStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_status: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -460,28 +374,13 @@ pub struct PaneAgentStatusChangedEvent {
     pub state_labels: HashMap<String, String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-pub struct PaneScrollChangedEvent {
-    pub pane_id: String,
-    pub workspace_id: String,
-    pub scroll: PaneScrollInfo,
-}
-/// Max bytes of `EventData::AgentPrompted::text` kept in the event; longer
-/// prompts are truncated at a UTF-8 boundary. Bounds the 512-slot event ring
-/// against a single large paste, not a confidentiality control (see the
-/// `AgentPrompted` doc comment).
-pub const AGENT_PROMPTED_TEXT_LIMIT: usize = 4096;
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum EventData {
     WorkspaceCreated {
         workspace: WorkspaceInfo,
     },
     WorkspaceUpdated {
-        workspace: WorkspaceInfo,
-    },
-    WorkspaceMetadataUpdated {
         workspace: WorkspaceInfo,
     },
     WorkspaceClosed {
@@ -492,17 +391,6 @@ pub enum EventData {
     WorkspaceRenamed {
         workspace_id: String,
         label: String,
-    },
-    WorkspaceMoved {
-        workspace_id: String,
-        insert_index: usize,
-        workspaces: Vec<WorkspaceInfo>,
-    },
-    WorkspaceReordered {
-        workspace_ids: Vec<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        before_workspace_id: Option<String>,
-        workspaces: Vec<WorkspaceInfo>,
     },
     WorkspaceFocused {
         workspace_id: String,
@@ -535,12 +423,6 @@ pub enum EventData {
         workspace_id: String,
         label: String,
     },
-    TabMoved {
-        tab_id: String,
-        workspace_id: String,
-        insert_index: usize,
-        tabs: Vec<TabInfo>,
-    },
     TabFocused {
         tab_id: String,
         workspace_id: String,
@@ -551,9 +433,6 @@ pub enum EventData {
     PaneClosed {
         pane_id: String,
         workspace_id: String,
-    },
-    PaneUpdated {
-        pane: PaneInfo,
     },
     PaneFocused {
         pane_id: String,
@@ -587,10 +466,6 @@ pub enum EventData {
         workspace_id: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         agent: Option<String>,
-        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-        released: bool,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        final_status: Option<AgentStatus>,
     },
     PaneAgentStatusChanged {
         pane_id: String,
@@ -602,89 +477,15 @@ pub enum EventData {
         title: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         display_agent: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        custom_status: Option<String>,
         #[serde(default, skip_serializing_if = "HashMap::is_empty")]
         state_labels: HashMap<String, String>,
-    },
-    LayoutUpdated {
-        layout: super::panes::PaneLayoutSnapshot,
     },
     PaneResultReported {
         pane_id: String,
         workspace_id: String,
         result: serde_json::Value,
-    },
-    /// Emitted when `agent.prompt` writes text into another pane's terminal
-    /// (agent-to-agent coordination). `text` is truncated to
-    /// `AGENT_PROMPTED_TEXT_LIMIT` bytes at a UTF-8 boundary; truncation is
-    /// by size only, never to hide contents — a client that can already read
-    /// `to_pane_id`'s own output sees the same raw bytes on screen.
-    AgentPrompted {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        from_pane_id: Option<String>,
-        to_pane_id: String,
-        to_workspace_id: String,
-        text: String,
-        text_truncated: bool,
-        text_len: usize,
-    },
-    GithubPrsRefreshed {
-        repo_identity: String,
-    },
-    /// Fires once when bora's own `gh pr create` succeeds for a worktree.
-    /// Does not cover PRs opened outside bora, e.g. a `gh` run inside an
-    /// agent pane.
-    GithubPrOpened {
-        branch: String,
-        url: String,
-        /// Repository the PR belongs to (`GitSpaceMetadata::repo_identity` of the
-        /// initiating workspace). `workspace_ids` is scoped to this repository.
-        repo_identity: Option<String>,
-        workspace_ids: Vec<String>,
-    },
-    GithubIssuesRefreshed {
-        repo_identity: String,
-    },
-    /// A `when_idle`-deferred agent prompt was drained and successfully
-    /// injected into its target. Terminal, matching `queue_id` from the
-    /// original `agent.prompt` deferred receipt.
-    QueuedPromptDelivered {
-        queue_id: u64,
-        target_pane: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        workspace_id: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        from_pane: Option<String>,
-    },
-    /// A `when_idle`-deferred agent prompt was dropped without ever reaching
-    /// its target — the durable record the deferred receipt promised, since
-    /// the queue itself only logs internally. Terminal, matching `queue_id`
-    /// from the original `agent.prompt` deferred receipt.
-    QueuedPromptDropped {
-        queue_id: u64,
-        target_pane: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        workspace_id: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        from_pane: Option<String>,
-        reason: QueuedAgentPromptDropReason,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        detail: Option<String>,
-    },
-    /// A message was appended to a `#`-channel transcript (emitted right
-    /// after the durable append, before fan-out). `channel` is the
-    /// normalized name without the leading `#`; `seq` is the message's
-    /// monotonic per-channel id; `from_pane` is `None` for unattributed
-    /// senders; `to_pane` is the resolved targeted pane id or `None` for
-    /// broadcast.
-    ChannelMessage {
-        channel: String,
-        seq: u64,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        from_pane: Option<String>,
-        from_name: String,
-        text: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        to_pane: Option<String>,
     },
 }
 
@@ -824,12 +625,6 @@ pub fn event_matches(filter: &EventMatch, envelope: &EventEnvelope) -> bool {
                 pane_id: actual, ..
             },
         ) => pane_id == actual,
-        (
-            EventMatch::ChannelMessage { channel },
-            EventData::ChannelMessage {
-                channel: actual, ..
-            },
-        ) => channel == actual,
         _ => false,
     }
 }
@@ -855,35 +650,6 @@ mod event_matches_tests {
             pane_id: "pane_1".into(),
         };
         assert!(event_matches(&filter, &result_envelope("pane_1")));
-    }
-
-    #[test]
-    fn channel_message_matches_same_channel_only() {
-        let envelope = EventEnvelope {
-            event: EventKind::ChannelMessage,
-            data: EventData::ChannelMessage {
-                channel: "eng".into(),
-                seq: 7,
-                from_pane: Some("w1A:p2".into()),
-                from_name: "brandos".into(),
-                text: "hello".into(),
-                to_pane: None,
-            },
-        };
-        let filter = EventMatch::ChannelMessage {
-            channel: "eng".into(),
-        };
-        assert!(event_matches(&filter, &envelope));
-
-        let other_channel = EventMatch::ChannelMessage {
-            channel: "ops".into(),
-        };
-        assert!(!event_matches(&other_channel, &envelope));
-
-        let other_kind = EventMatch::PaneResultReported {
-            pane_id: "eng".into(),
-        };
-        assert!(!event_matches(&other_kind, &envelope));
     }
 
     #[test]

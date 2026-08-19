@@ -15,7 +15,7 @@ DEFAULT_LIVE_MANIFEST_URL = "https://herdr.dev/latest.json"
 
 SECTION_RE = re.compile(r"^##\s+(?:\[(?P<bracketed>[^\]]+)\]|(?P<plain>.+?))\s*$", re.MULTILINE)
 VERSION_WITH_DATE_RE = re.compile(r"^(?P<version>.+?)\s+-\s+\d{4}-\d{2}-\d{2}$")
-DEFAULT_RELEASE_REPO = "herdrdev/herdr"
+DEFAULT_RELEASE_REPO = "ogulcancelik/herdr"
 DEFAULT_LATEST_JSON_PATH = Path("website/latest.json")
 DEFAULT_PRODUCT_ANNOUNCEMENT_PATH = Path("docs/next/product-announcement.json")
 PROTOCOL_SOURCE_PATH = Path("src/protocol/wire.rs")
@@ -25,7 +25,7 @@ ASSET_TARGETS = (
     "macos-x86_64",
     "macos-aarch64",
 )
-EXPECTED_ASSET_NAMES = {target: f"bora-{target}" for target in ASSET_TARGETS}
+EXPECTED_ASSET_NAMES = {target: f"herdr-{target}" for target in ASSET_TARGETS}
 
 
 @dataclass(frozen=True)
@@ -126,56 +126,6 @@ def prepare_release(text: str, version: str, release_date: str) -> str:
     return rebuilt + "\n"
 
 
-def read_section_body_raw(text: str, wanted_title: str) -> str:
-    """Like extract_section_body, but returns "" for an empty section instead of raising."""
-    section = find_section(text, wanted_title)
-    return text[section.body_start : section.end].strip("\n")
-
-
-def strip_section(text: str, wanted_title: str) -> str:
-    """Return the changelog text with the named section's heading and body removed."""
-    section = find_section(text, wanted_title)
-    before = text[: section.start].rstrip("\n")
-    after = text[section.end :].strip("\n")
-    if before and after:
-        return f"{before}\n\n{after}\n"
-    if before:
-        return f"{before}\n"
-    if after:
-        return f"{after}\n"
-    return ""
-
-
-def check_history_sync(
-    root_text: str,
-    next_text: str,
-    root_label: str = "CHANGELOG.md",
-    next_label: str = "docs/next/CHANGELOG.md",
-) -> None:
-    """Fail loudly instead of letting the release flow silently overwrite either file.
-
-    docs/next/CHANGELOG.md is the staging file for unreleased entries (see AGENTS.md's
-    Docs section); root CHANGELOG.md is generated from it at release time and must stay
-    empty under Unreleased between releases. Released history in both files must match
-    exactly, since nothing should hand-edit one without the other.
-    """
-    root_unreleased = read_section_body_raw(root_text, "Unreleased")
-    if root_unreleased.strip():
-        raise ChangelogError(
-            f"{root_label} has content under Unreleased. {next_label} is the staging file "
-            f"for unreleased entries (see AGENTS.md Docs section) — move this content there "
-            f"and clear it from {root_label} before releasing."
-        )
-    root_history = strip_section(root_text, "Unreleased")
-    next_history = strip_section(next_text, "Unreleased")
-    if root_history != next_history:
-        raise ChangelogError(
-            f"{root_label} and {next_label} have diverged outside the Unreleased section "
-            f"(a released entry was hand-edited independently in one file). Reconcile them "
-            f"manually before releasing; do not let the release flow overwrite either blindly."
-        )
-
-
 def read_protocol_version(source_path: Path = PROTOCOL_SOURCE_PATH) -> int:
     content = source_path.read_text(encoding="utf-8")
     match = re.search(r"pub const PROTOCOL_VERSION: u32 = (\d+);", content)
@@ -236,26 +186,11 @@ def normalize_assets(value: Any, label: str) -> dict[str, str]:
     return normalized_assets
 
 
-def normalize_sha256(value: Any, label: str) -> dict[str, str]:
-    if not isinstance(value, dict):
-        raise ChangelogError(f"{label} must be an object")
-
-    checksums: dict[str, str] = {}
-    for target in ASSET_TARGETS:
-        checksum = value.get(target)
-        if not isinstance(checksum, str) or re.fullmatch(
-            r"[0-9a-fA-F]{64}", checksum.strip()
-        ) is None:
-            raise ChangelogError(f"{label} has invalid SHA-256 for {target}")
-        checksums[target] = checksum.strip().lower()
-    return checksums
-
-
 def normalize_release_metadata(value: Any, label: str, version: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ChangelogError(f"{label} must be an object")
 
-    allowed_keys = {"notes", "announcement", "assets", "sha256", "protocol"}
+    allowed_keys = {"notes", "announcement", "assets", "protocol"}
     extra_keys = sorted(set(value) - allowed_keys)
     if extra_keys:
         raise ChangelogError(f"{label} has unsupported field(s): {', '.join(extra_keys)}")
@@ -278,8 +213,6 @@ def normalize_release_metadata(value: Any, label: str, version: str) -> dict[str
         metadata["assets"] = normalize_assets(value.get("assets"), f"{label}.assets")
     else:
         metadata["assets"] = default_release_assets(version)
-    if "sha256" in value:
-        metadata["sha256"] = normalize_sha256(value.get("sha256"), f"{label}.sha256")
     announcement = normalize_announcement(value.get("announcement"), label)
     if announcement is not None:
         metadata["announcement"] = announcement
@@ -310,7 +243,6 @@ def build_latest_json(
     version: str,
     notes: str,
     assets: dict[str, str],
-    sha256: dict[str, str],
     protocol: int | None = None,
     announcement: dict[str, str] | None = None,
     releases: dict[str, Any] | None = None,
@@ -324,7 +256,6 @@ def build_latest_json(
         protocol = read_protocol_version()
 
     ordered_assets = normalize_assets(assets, "assets")
-    ordered_sha256 = normalize_sha256(sha256, "sha256")
     normalized_announcement = normalize_announcement(announcement, "root")
     archived_releases = normalize_releases(releases)
     current_metadata: dict[str, Any] = {
@@ -332,7 +263,6 @@ def build_latest_json(
         "protocol": protocol,
         "assets": ordered_assets,
     }
-    current_metadata["sha256"] = ordered_sha256
     if normalized_announcement is not None:
         current_metadata["announcement"] = normalized_announcement
     archived_releases[normalized_version] = current_metadata
@@ -347,7 +277,6 @@ def build_latest_json(
         "notes": normalized_notes,
         "assets": ordered_assets,
     }
-    manifest["sha256"] = ordered_sha256
     if normalized_announcement is not None:
         manifest["announcement"] = normalized_announcement
     manifest["releases"] = archived_releases
@@ -393,14 +322,7 @@ def manifest_from_release_payload(
             if isinstance(name, str) and name not in release_assets:
                 release_assets[name] = asset
 
-    missing_assets = [name for name in EXPECTED_ASSET_NAMES.values() if name not in release_assets]
-    if missing_assets:
-        raise ChangelogError(
-            f"GitHub release v{normalized_version} is missing asset {missing_assets[0]}"
-        )
-
     manifest_assets: dict[str, str] = {}
-    manifest_sha256: dict[str, str] = {}
     for target, asset_name in EXPECTED_ASSET_NAMES.items():
         asset = release_assets.get(asset_name)
         if not isinstance(asset, dict):
@@ -408,19 +330,13 @@ def manifest_from_release_payload(
         url = str(asset.get("url") or "").strip()
         if not url:
             raise ChangelogError(f"GitHub release asset {asset_name} is missing a download URL")
-        digest = str(asset.get("digest") or "").strip()
-        digest_match = re.fullmatch(r"sha256:([0-9a-fA-F]{64})", digest)
-        if digest_match is None:
-            raise ChangelogError(f"GitHub release asset {asset_name} is missing a SHA-256 digest")
         manifest_assets[target] = url
-        manifest_sha256[target] = digest_match.group(1).lower()
 
     return {
         "version": normalized_version,
         "protocol": protocol if protocol is not None else read_protocol_version(),
         "notes": notes,
         "assets": manifest_assets,
-        "sha256": manifest_sha256,
     }
 
 
@@ -442,14 +358,12 @@ def canonicalize_manifest(manifest: dict[str, Any], label: str) -> dict[str, Any
         raise ChangelogError(f"{label} is missing an assets object")
 
     normalized_assets = normalize_assets(assets, f"{label} assets")
-    normalized_sha256 = normalize_sha256(manifest.get("sha256"), f"{label} sha256")
 
     return {
         "version": normalize_version(version),
         "protocol": protocol,
         "notes": notes.strip(),
         "assets": normalized_assets,
-        "sha256": normalized_sha256,
     }
 
 
@@ -476,10 +390,6 @@ def ensure_current_release_assets_are_mirrored(manifest: dict[str, Any], label: 
     if metadata.get("assets") != canonical["assets"]:
         raise ChangelogError(
             f"{label} releases.{canonical['version']}.assets must match top-level assets"
-        )
-    if metadata.get("sha256") != canonical["sha256"]:
-        raise ChangelogError(
-            f"{label} releases.{canonical['version']}.sha256 must match top-level sha256"
         )
 
 
@@ -521,9 +431,6 @@ def archived_releases_from_current_manifest(manifest: dict[str, Any]) -> dict[st
             metadata["assets"] = normalize_assets(assets, "current root assets")
         else:
             metadata["assets"] = default_release_assets(normalized_version)
-        sha256 = manifest.get("sha256")
-        if isinstance(sha256, dict):
-            metadata["sha256"] = normalize_sha256(sha256, "current root sha256")
         announcement = normalize_announcement(manifest.get("announcement"), "current root")
         if announcement is not None:
             metadata["announcement"] = announcement
@@ -670,19 +577,6 @@ def cmd_extract(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_check_history_sync(args: argparse.Namespace) -> int:
-    root_path = Path(args.root)
-    next_path = Path(args.next)
-    root_text = load_text(root_path)
-    next_text = load_text(next_path)
-    try:
-        check_history_sync(root_text, next_text, root_label=str(root_path), next_label=str(next_path))
-    except ChangelogError as exc:
-        sys.stderr.write(f"error: {exc}\n")
-        return 1
-    return 0
-
-
 def cmd_sync_latest_json(args: argparse.Namespace) -> int:
     manifest_path = Path(args.output)
     version = normalize_version(args.version)
@@ -698,7 +592,6 @@ def cmd_sync_latest_json(args: argparse.Namespace) -> int:
         version,
         str(new_manifest["notes"]),
         dict(new_manifest["assets"]),
-        sha256=dict(new_manifest["sha256"]),
         protocol=int(new_manifest["protocol"]),
         announcement=announcement,
         releases=archived_releases_from_current_manifest(current_manifest),
@@ -786,14 +679,6 @@ def build_parser() -> argparse.ArgumentParser:
     extract.add_argument("--version", required=True)
     extract.add_argument("--output")
     extract.set_defaults(func=cmd_extract)
-
-    check_history_sync_parser = subparsers.add_parser(
-        "check-history-sync",
-        help="Fail loudly if CHANGELOG.md and docs/next/CHANGELOG.md have diverged outside Unreleased",
-    )
-    check_history_sync_parser.add_argument("--root", default="CHANGELOG.md")
-    check_history_sync_parser.add_argument("--next", default="docs/next/CHANGELOG.md")
-    check_history_sync_parser.set_defaults(func=cmd_check_history_sync)
 
     sync_latest_json = subparsers.add_parser(
         "sync-latest-json",
