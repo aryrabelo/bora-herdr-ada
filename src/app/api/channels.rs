@@ -1,11 +1,12 @@
 use crate::api::schema::{
     AgentPromptParams, AgentStatus, ChannelCreateParams, ChannelDelivery, ChannelDeliveryStatus,
     ChannelHistoryParams, ChannelJoinParams, ChannelLeaveParams, ChannelMember,
-    ChannelMemberSource, ChannelMembersParams, ChannelMessage, ChannelSendParams,
-    ChannelSenderKind, ChannelSummary, ResponseResult,
+    ChannelMemberSource, ChannelMembersParams, ChannelMessage, ChannelNoteParams,
+    ChannelSendParams, ChannelSenderKind, ChannelSummary, ResponseResult,
 };
 use crate::app::App;
 use crate::persist::channels;
+use std::time::{Duration, Instant};
 
 use super::responses::{encode_error, encode_success};
 
@@ -15,8 +16,11 @@ const MAX_CHANNEL_HISTORY_LINES: u32 = 1000;
 /// Bumped whenever [`CHANNEL_PROTOCOL`]'s content changes in a way an
 /// already-briefed pane needs to see again. `App::send_channel_protocol`
 /// re-sends only when a pane's recorded version (see
-/// `channels::read_protocol_sent`) is behind this.
-const CHANNEL_PROTOCOL_VERSION: u32 = 1;
+/// `channels::read_protocol_sent`) is behind this. v2: a pane with a
+/// recorded scope entry (`channels::ChannelScopeEntry`) now gets a
+/// formatted suffix naming its write/read directories, built by
+/// `channel_scope_briefing` — CANAL-ESCOPO.md Shape 3's T1 layer.
+const CHANNEL_PROTOCOL_VERSION: u32 = 2;
 
 /// Injected once per pane into every channel it joins or is already a
 /// member of — see `App::send_channel_protocol`. Teaches an LLM agent, in
@@ -37,6 +41,11 @@ const CHANNEL_PROTOCOL: &str = concat!(
     "Prefer explicit addressing when you know exactly who should act:\n",
     "  bora channel send <name> \"<text>\" --to <nick>\n",
     "This fails loudly on an unknown or ambiguous nick instead of degrading.\n",
+    "\n",
+    "Answering a channel.ask question: reply with\n",
+    "  bora channel send <name> \"<text>\" --reply-to <seq>\n",
+    "using the seq of the question you were sent — that is how the asker's\n",
+    "wait resolves.\n",
     "\n",
     "Catch up on history you missed:\n",
     "  bora channel tail <name> --after <seq>\n",
@@ -102,7 +111,22 @@ impl App {
         encode_success(id, ResponseResult::ChannelList { channels })
     }
 
+    /// Thin wrapper over [`Self::handle_channel_send_inner`] with
+    /// `force_bell: false` — `channel.send`'s own path. `channel.ask`
+    /// (`handle_channel_ask_question`) is the other caller of
+    /// `handle_channel_send_inner`, with `force_bell: true` so its question
+    /// always pierces an active burst; `force_bell` is never part of
+    /// `ChannelSendParams` itself.
     pub(super) fn handle_channel_send(&mut self, id: String, params: ChannelSendParams) -> String {
+        self.handle_channel_send_inner(id, params, false)
+    }
+
+    fn handle_channel_send_inner(
+        &mut self,
+        id: String,
+        params: ChannelSendParams,
+        force_bell: bool,
+    ) -> String {
         if params.text.is_empty() {
             return encode_error(
                 id,
@@ -118,6 +142,25 @@ impl App {
                 format!("channel #{name} not found"),
             );
         };
+
+        // A reply must point at a seq the channel could plausibly have
+        // produced: past seqs lost to rotation are accepted (history is
+        // allowed to be gone), a seq past the channel's current max is not
+        // (the future is not) — that can only be a typo or a stale/foreign
+        // seq. Checked before addressing so a doomed reply never burns the
+        // sender's rate-limit window either.
+        if let Some(in_reply_to) = params.in_reply_to {
+            let max_seq = channels::next_seq(&name).saturating_sub(1);
+            if in_reply_to > max_seq {
+                return encode_error(
+                    id,
+                    "channel_reply_unknown_seq",
+                    format!(
+                        "#{name} has no message with seq {in_reply_to} yet (current max is {max_seq})"
+                    ),
+                );
+            }
+        }
 
         // Structured addressing is the primary path: an explicit `to` that
         // does not resolve fails the send loudly, before anything is
@@ -254,6 +297,27 @@ impl App {
             },
         });
 
+        // Burst damper: a per-channel sliding window over `channel.send`
+        // timestamps (`ui.channel_burst_messages` within
+        // `ui.channel_burst_window_secs`), mirroring orc's
+        // `ORC_BURST_N`/`ORC_BURST_MIN`. The message is always recorded and
+        // eventable above, regardless — this only decides whether the
+        // fan-out below bells member panes. `force_bell` pierces it; today
+        // only ever `false` from `channel.send` itself (see
+        // `handle_channel_send`'s doc comment).
+        let burst = self.record_channel_burst_send(&name, Instant::now());
+        let suppressed = burst && !force_bell;
+        if burst {
+            if self.channels_in_burst.insert(name.clone()) {
+                // Edge-triggered: only the transition into burst gets a
+                // system line, so a storm doesn't double the transcript
+                // with one line per suppressed message.
+                self.append_channel_burst_notice(&name);
+            }
+        } else {
+            self.channels_in_burst.remove(&name);
+        }
+
         // The prefix is built here (not delegated to `handle_agent_prompt`'s
         // own from_pane attribution) so the delivered text carries the
         // channel name too; from_pane is passed as None below to avoid a
@@ -264,37 +328,217 @@ impl App {
         // sender's own. A message addressed to the human seat reaches no
         // pane at all: the human reads it in the chat view transcript, and
         // injecting it into agents would put words in the human's mouth.
-        // Broadcast reaches every agent member pane as before.
-        let targets: Vec<String> = if to_human {
+        // Broadcast reaches every agent member pane as before. A suppressed
+        // (burst-active, not pierced) send skips this loop entirely —
+        // including the protocol briefing — so nothing about a storm ever
+        // touches a pane, only its transcript.
+        let deliveries = if suppressed {
             Vec::new()
         } else {
-            match &to_pane {
-                Some(target) if target != &sender_pane => vec![target.clone()],
-                Some(_) => Vec::new(),
-                None => self.channel_agent_member_pane_ids(ws_idx),
-            }
+            let targets: Vec<String> = if to_human {
+                Vec::new()
+            } else {
+                match &to_pane {
+                    Some(target) if target != &sender_pane => vec![target.clone()],
+                    Some(_) => Vec::new(),
+                    None => self.channel_agent_member_pane_ids(ws_idx),
+                }
+            };
+            targets
+                .into_iter()
+                .map(|target| {
+                    self.send_channel_protocol(&name, ws_idx, &target);
+                    let response = self.handle_agent_prompt(
+                        format!("{id}:channel:{target}"),
+                        AgentPromptParams {
+                            target: target.clone(),
+                            text: prefixed.clone(),
+                            wait: None,
+                            from_pane: None,
+                            when_idle: Some(true),
+                            when_idle_timeout_ms: None,
+                            peer_pid: None,
+                            origin_channel: Some(name.clone()),
+                        },
+                    );
+                    classify_delivery(target, &response)
+                })
+                .collect()
         };
-        let deliveries = targets
-            .into_iter()
-            .map(|target| {
-                self.send_channel_protocol(&name, ws_idx, &target);
-                let response = self.handle_agent_prompt(
-                    format!("{id}:channel:{target}"),
-                    AgentPromptParams {
-                        target: target.clone(),
-                        text: prefixed.clone(),
-                        wait: None,
-                        from_pane: None,
-                        when_idle: Some(true),
-                        when_idle_timeout_ms: None,
-                        peer_pid: None,
-                        origin_channel: Some(name.clone()),
-                    },
+        encode_success(
+            id,
+            ResponseResult::ChannelSent {
+                deliveries,
+                suppressed,
+                seq: message.seq,
+            },
+        )
+    }
+
+    /// `channel.note`: append-only record, ZERO injection — the cheapest
+    /// verb, for facts nobody needs to be woken for. Shares attribution and
+    /// the per-(sender,channel) rate limit with `channel.send`, but skips
+    /// addressing entirely (no `to`, no leading-mention parsing) and never
+    /// touches the burst damper: there is no bell for it to suppress, so a
+    /// note during an active burst appends exactly like one outside it.
+    pub(super) fn handle_channel_note(&mut self, id: String, params: ChannelNoteParams) -> String {
+        if params.text.is_empty() {
+            return encode_error(
+                id,
+                "empty_channel_message",
+                "channel message must not be empty",
+            );
+        }
+        let name = channels::normalize_channel_name(&params.name);
+        if self.find_channel_workspace(&name).is_none() {
+            return encode_error(
+                id,
+                "channel_not_found",
+                format!("channel #{name} not found"),
+            );
+        }
+        let text = unescape_channel_text(&params.text);
+        let sender_pane = params.from_pane.unwrap_or_default();
+        let sender_name = self
+            .pane_display_name(&sender_pane)
+            .unwrap_or_else(|| "unknown".to_string());
+        if !sender_pane.is_empty() {
+            if let Err(remaining) = self.check_agent_prompt_rate_limit(
+                &sender_pane,
+                &format!("#{name}"),
+                Instant::now(),
+            ) {
+                return encode_error(
+                    id,
+                    "channel_send_rate_limited",
+                    format!(
+                        "channel send from {sender_pane} to #{name} is rate-limited; retry in {}ms",
+                        remaining.as_millis()
+                    ),
                 );
-                classify_delivery(target, &response)
-            })
-            .collect();
-        encode_success(id, ResponseResult::ChannelSent { deliveries })
+            }
+        }
+        let message = ChannelMessage {
+            ts: now_rfc3339(),
+            seq: channels::next_seq(&name),
+            from_pane: sender_pane.clone(),
+            from_name: sender_name.clone(),
+            from_kind: ChannelSenderKind::Agent,
+            text,
+            in_reply_to: None,
+            to_pane: None,
+            to_human: false,
+        };
+        if let Err(err) = channels::append_message(&name, &message) {
+            return encode_error(id, "channel_send_failed", err.to_string());
+        }
+        self.state.push_chat_message(&name, message.clone());
+        self.notify_chat_to_human(&name, &message);
+        self.emit_event(crate::api::schema::EventEnvelope {
+            event: crate::api::schema::EventKind::ChannelMessage,
+            data: crate::api::schema::EventData::ChannelMessage {
+                channel: name.clone(),
+                seq: message.seq,
+                from_pane: (!sender_pane.is_empty()).then_some(sender_pane),
+                from_name: sender_name,
+                text: message.text.clone(),
+                to_pane: None,
+            },
+        });
+        encode_success(
+            id,
+            ResponseResult::ChannelSent {
+                deliveries: Vec::new(),
+                suppressed: false,
+                seq: message.seq,
+            },
+        )
+    }
+
+    /// `channel.ask`'s append+inject half, run inline in `App`'s normal
+    /// request dispatch — `wait::ask_channel` is the connection-thread poll
+    /// that then blocks for the reply without holding up this (or any
+    /// other) App request. Delegates straight to
+    /// [`Self::handle_channel_send_inner`] with a mandatory `to` and
+    /// `force_bell: true`: identical addressing errors, attribution, and
+    /// single-target injection path as a targeted `channel.send`, just
+    /// always piercing the burst damper. The caller reads the assigned
+    /// `seq` off the `ChannelSent` response to correlate the reply.
+    pub(super) fn handle_channel_ask_question(
+        &mut self,
+        id: String,
+        params: crate::api::schema::ChannelAskParams,
+    ) -> String {
+        self.handle_channel_send_inner(
+            id,
+            ChannelSendParams {
+                name: params.name,
+                text: params.text,
+                from_pane: params.from_pane,
+                to: Some(params.to),
+                in_reply_to: None,
+                from_human: false,
+            },
+            true,
+        )
+    }
+
+    /// Records `now` in `channel`'s burst-detection sliding window and
+    /// reports whether the channel is (now, including this send) inside an
+    /// active burst. Reads `ui.channel_burst_messages` /
+    /// `ui.channel_burst_window_secs` from state (0 on either disables the
+    /// damper — see `burst_active`). Prunes entries older than the window on
+    /// every call, so the per-channel history never holds more than one
+    /// window's worth of traffic.
+    fn record_channel_burst_send(&mut self, channel: &str, now: Instant) -> bool {
+        let n = self.state.channel_burst_messages;
+        let window = self.state.channel_burst_window;
+        if n == 0 || window.is_zero() {
+            return false;
+        }
+        let times = self
+            .channel_burst_history
+            .entry(channel.to_string())
+            .or_default();
+        times.push_back(now);
+        while times
+            .front()
+            .is_some_and(|t| now.duration_since(*t) >= window)
+        {
+            times.pop_front();
+        }
+        burst_active(times.make_contiguous(), now, n, window)
+    }
+
+    /// Appends the honest `[bora]` system line marking a channel's
+    /// transition into burst — "recording without ringing" — using the same
+    /// `from_name: "bora"` / `from_pane: "system"` shape as the dropped-
+    /// delivery and protocol-sent notices.
+    fn append_channel_burst_notice(&mut self, channel: &str) {
+        let line = ChannelMessage {
+            ts: now_rfc3339(),
+            seq: channels::next_seq(channel),
+            from_pane: "system".to_string(),
+            from_name: "bora".to_string(),
+            from_kind: ChannelSenderKind::Agent,
+            text: format!(
+                "canal em surto ({} msgs em {}s): gravando sem sino",
+                self.state.channel_burst_messages,
+                self.state.channel_burst_window.as_secs()
+            ),
+            in_reply_to: None,
+            to_pane: None,
+            to_human: false,
+        };
+        if let Err(err) = channels::append_message(channel, &line) {
+            tracing::warn!(
+                channel = %channel,
+                error = %err,
+                "failed to append channel burst notice"
+            );
+        } else {
+            self.state.push_chat_message(channel, line);
+        }
     }
 
     pub(super) fn handle_channel_history(
@@ -334,7 +578,10 @@ impl App {
     /// outside the channel's workspace still receives fan-out and can be
     /// addressed by nick. Idempotent — joining twice, or joining a pane that
     /// is already an implicit workspace member, succeeds and reports which
-    /// kind of membership the caller actually ended up with.
+    /// kind of membership the caller actually ended up with. A `scope_write`
+    /// and/or `scope_read` on the request records/replaces the pane's scope
+    /// entry (CANAL-ESCOPO.md Shape 2) before the protocol briefing goes
+    /// out, so a first-time briefing already names the directories.
     pub(super) fn handle_channel_join(&mut self, id: String, params: ChannelJoinParams) -> String {
         let name = channels::normalize_channel_name(&params.name);
         let Some(ws_idx) = self.find_channel_workspace(&name) else {
@@ -351,6 +598,27 @@ impl App {
                 format!("pane {} not found", params.pane),
             );
         };
+        if params.scope_write.is_some() || params.scope_read.is_some() {
+            let write = params.scope_write.clone().unwrap_or_default();
+            let read = params.scope_read.unwrap_or_default();
+            if write.is_empty() && read.is_empty() {
+                return encode_error(
+                    id,
+                    "channel_join_invalid_scope",
+                    "scope_write/scope_read must name at least one directory",
+                );
+            }
+            let entry = channels::ChannelScopeEntry {
+                pane: public_id.clone(),
+                nick: self.pane_display_name(&public_id),
+                write,
+                read,
+            };
+            if let Err(err) = channels::upsert_channel_scope(&name, entry) {
+                return encode_error(id, "channel_join_failed", err.to_string());
+            }
+            tracing::info!(channel = %name, pane = %public_id, "pane scope recorded");
+        }
         if owner_ws_idx == ws_idx {
             // A pane in the channel's own workspace is a member by
             // construction. Succeed, but say so: recording it would imply a
@@ -382,10 +650,13 @@ impl App {
         )
     }
 
-    /// `channel.leave`: drop an explicit membership. Idempotent —
-    /// `removed: false` means there was nothing to drop, either because the
-    /// pane never joined or because it lives in the channel's workspace and
-    /// is a member by construction.
+    /// `channel.leave`: drop an explicit membership, and always drop the
+    /// pane's scope entry too — a departed pane's declared directories must
+    /// not outlive its membership. Idempotent — `removed: false` means
+    /// there was nothing to drop from the roster, either because the pane
+    /// never joined or because it lives in the channel's workspace and is a
+    /// member by construction; scope removal is independent and silent
+    /// either way.
     pub(super) fn handle_channel_leave(
         &mut self,
         id: String,
@@ -416,6 +687,14 @@ impl App {
             }
             tracing::info!(channel = %name, pane = %public_id, "pane left channel");
         }
+        if let Err(err) = channels::remove_channel_scope_entry(&name, &public_id) {
+            tracing::warn!(
+                channel = %name,
+                pane = %public_id,
+                error = %err,
+                "failed to remove channel scope entry"
+            );
+        }
         encode_success(
             id,
             ResponseResult::ChannelLeft {
@@ -429,14 +708,18 @@ impl App {
     /// deduped and made durable across restarts by
     /// `channels::read_protocol_sent` / `channels::mark_protocol_sent`
     /// (keyed on `CHANNEL_PROTOCOL_VERSION`, so a version bump re-sends).
-    /// Delivery goes through `handle_agent_prompt` with `from_pane: None` —
-    /// exempt from the agent-prompt rate limit and carries no `[from ...]`
-    /// prefix — and `when_idle: Some(true)`, so a `Working` pane gets it
-    /// queued rather than dropped. Always appends one system line to the
-    /// channel's transcript recording the delivery, mirroring
-    /// `App::report_queued_prompt_dropped`'s drop-notice line. `ws_idx` is
-    /// the channel's own workspace, kept only for tracing context — the
-    /// pane is always addressed by its already-resolved public id.
+    /// When the pane has a recorded scope entry, the briefing text gets a
+    /// suffix naming its write/read directories (`channel_scope_briefing`);
+    /// a pane with no scope entry gets no suffix — never an invented empty
+    /// section. Delivery goes through `handle_agent_prompt` with
+    /// `from_pane: None` — exempt from the agent-prompt rate limit and
+    /// carries no `[from ...]` prefix — and `when_idle: Some(true)`, so a
+    /// `Working` pane gets it queued rather than dropped. Always appends
+    /// one system line to the channel's transcript recording the delivery,
+    /// mirroring `App::report_queued_prompt_dropped`'s drop-notice line.
+    /// `ws_idx` is the channel's own workspace, kept only for tracing
+    /// context — the pane is always addressed by its already-resolved
+    /// public id.
     fn send_channel_protocol(&mut self, channel: &str, ws_idx: usize, public_pane_id: &str) {
         let already_sent = channels::read_protocol_sent(channel)
             .into_iter()
@@ -451,12 +734,17 @@ impl App {
             version = CHANNEL_PROTOCOL_VERSION,
             "sending channel protocol block"
         );
+        let scope_suffix = channels::read_channel_scope(channel)
+            .into_iter()
+            .find(|entry| entry.pane == public_pane_id)
+            .map(|entry| channel_scope_briefing(&entry))
+            .unwrap_or_default();
         self.handle_agent_prompt(
             format!("channel-protocol:{channel}:{public_pane_id}"),
             AgentPromptParams {
                 target: public_pane_id.to_string(),
                 text: format!(
-                    "[bora] channel protocol for #{channel} (v{CHANNEL_PROTOCOL_VERSION}):\n\n{CHANNEL_PROTOCOL}"
+                    "[bora] channel protocol for #{channel} (v{CHANNEL_PROTOCOL_VERSION}):\n\n{CHANNEL_PROTOCOL}{scope_suffix}"
                 ),
                 wait: None,
                 from_pane: None,
@@ -749,6 +1037,35 @@ fn unescape_channel_text(text: &str) -> String {
     text.replace("\\@", "@").replace("\\#", "#")
 }
 
+/// Formats the per-pane scope suffix appended to [`CHANNEL_PROTOCOL`] when
+/// `entry` names `entry`'s declared write/read directories — CANAL-ESCOPO.md
+/// Shape 3's T1 layer: name the directories, then say where to ask for
+/// anything outside them. Only called for a pane that has a scope entry;
+/// a pane with none never gets this suffix, never an invented empty
+/// section.
+fn channel_scope_briefing(entry: &channels::ChannelScopeEntry) -> String {
+    let mut lines = vec![
+        String::new(),
+        String::new(),
+        "Your scope in this channel:".to_string(),
+    ];
+    if !entry.write.is_empty() {
+        lines.push(format!("  write: {}", entry.write.join(", ")));
+    }
+    if !entry.read.is_empty() {
+        lines.push(format!(
+            "  read:  {} (write dirs are readable too)",
+            entry.read.join(", ")
+        ));
+    }
+    lines.push(
+        "Anything outside these directories: ask, do not touch — address the owner \
+         with @nick in this channel."
+            .to_string(),
+    );
+    lines.join("\n")
+}
+
 fn agent_status_key(status: AgentStatus) -> &'static str {
     match status {
         AgentStatus::Idle => "idle",
@@ -812,6 +1129,27 @@ fn classify_delivery(pane_id: String, response: &str) -> ChannelDelivery {
         status: ChannelDeliveryStatus::Delivered,
         detail: None,
     }
+}
+
+/// Pure burst decision for the per-channel damper: `true` when at least `n`
+/// of `times` fall within `window` of `now` — i.e. the last `n` channel
+/// sends (however spread) all landed inside `window`. Equivalent to counting
+/// how many landed in `[now - window, now]`: if that count is >= `n`, its
+/// `n` most recent members are trivially among them; if the `n` most recent
+/// are within `window`, everything else in the window is at least as
+/// recent. Mirrors orc's `ORC_BURST_N`/`ORC_BURST_MIN`. `n == 0` or a zero
+/// `window` disables the damper unconditionally. No clock reads: `now` is
+/// supplied by the caller so this stays deterministic and unit-testable.
+fn burst_active(times: &[Instant], now: Instant, n: u32, window: Duration) -> bool {
+    if n == 0 || window.is_zero() {
+        return false;
+    }
+    let n = n as usize;
+    times
+        .iter()
+        .filter(|t| now.duration_since(**t) < window)
+        .count()
+        >= n
 }
 
 fn now_rfc3339() -> String {
@@ -1915,6 +2253,29 @@ mod tests {
             ChannelJoinParams {
                 name: name.into(),
                 pane: pane.into(),
+                scope_write: None,
+                scope_read: None,
+            },
+        );
+        serde_json::from_str(&response).unwrap()
+    }
+
+    fn join_with_scope(
+        app: &mut App,
+        name: &str,
+        pane: &str,
+        scope_write: Vec<&str>,
+        scope_read: Vec<&str>,
+    ) -> serde_json::Value {
+        let response = app.handle_channel_join(
+            "req".into(),
+            ChannelJoinParams {
+                name: name.into(),
+                pane: pane.into(),
+                scope_write: (!scope_write.is_empty())
+                    .then(|| scope_write.into_iter().map(str::to_string).collect()),
+                scope_read: (!scope_read.is_empty())
+                    .then(|| scope_read.into_iter().map(str::to_string).collect()),
             },
         );
         serde_json::from_str(&response).unwrap()
@@ -2223,6 +2584,135 @@ mod tests {
         super::super::test_support::shutdown_test_runtimes(&mut app);
     }
 
+    #[tokio::test]
+    async fn join_with_scope_persists_sidecar_and_leave_removes_it() {
+        let _isolated = IsolatedStateDir::new("join-scope-roundtrip");
+        let mut app = test_app();
+        create_channel(&mut app, "eng");
+        let (outsider, _outsider_rx) = outside_agent_pane(&mut app, "brandos");
+
+        let joined = join_with_scope(
+            &mut app,
+            "#eng",
+            &outsider,
+            vec!["/repo/work"],
+            vec!["/repo/read"],
+        );
+        assert_eq!(joined["result"]["source"], serde_json::json!("joined"));
+
+        let scope = channels::read_channel_scope("eng");
+        assert_eq!(scope.len(), 1);
+        assert_eq!(scope[0].pane, outsider);
+        assert_eq!(scope[0].nick.as_deref(), Some("brandos"));
+        assert_eq!(scope[0].write, vec!["/repo/work".to_string()]);
+        assert_eq!(scope[0].read, vec!["/repo/read".to_string()]);
+
+        let left = leave(&mut app, "eng", &outsider);
+        assert_eq!(left["result"]["removed"], serde_json::json!(true));
+        assert!(
+            channels::read_channel_scope("eng").is_empty(),
+            "leave must drop the pane's scope entry along with membership"
+        );
+        super::super::test_support::shutdown_test_runtimes(&mut app);
+    }
+
+    #[tokio::test]
+    async fn rejoin_with_new_scope_replaces_and_canonicalizes_pane_id() {
+        let _isolated = IsolatedStateDir::new("join-scope-replace");
+        let mut app = test_app();
+        create_channel(&mut app, "eng");
+        let (outsider, _outsider_rx) = outside_agent_pane(&mut app, "brandos");
+
+        join_with_scope(&mut app, "#eng", &outsider, vec!["/repo/a"], vec![]);
+        // Re-join through the colon-free spelling of the same pane id: must
+        // land on the same entry, never a duplicate (CANAL-ESCOPO.md Shape 2:
+        // "w2Ap1 and w2A:p1 land as one entry").
+        let colonless = outsider.replace(':', "");
+        join_with_scope(
+            &mut app,
+            "#eng",
+            &colonless,
+            vec!["/repo/b"],
+            vec!["/repo/c"],
+        );
+
+        let scope = channels::read_channel_scope("eng");
+        assert_eq!(scope.len(), 1, "re-join must replace, never duplicate");
+        assert_eq!(scope[0].pane, outsider, "stored under the canonical id");
+        assert_eq!(scope[0].write, vec!["/repo/b".to_string()]);
+        assert_eq!(scope[0].read, vec!["/repo/c".to_string()]);
+        super::super::test_support::shutdown_test_runtimes(&mut app);
+    }
+
+    #[tokio::test]
+    async fn join_scope_rejects_empty_write_and_read() {
+        let _isolated = IsolatedStateDir::new("join-scope-empty");
+        let mut app = test_app();
+        create_channel(&mut app, "eng");
+        let (outsider, _outsider_rx) = outside_agent_pane(&mut app, "brandos");
+
+        let response = app.handle_channel_join(
+            "req".into(),
+            ChannelJoinParams {
+                name: "#eng".into(),
+                pane: outsider,
+                scope_write: Some(Vec::new()),
+                scope_read: Some(Vec::new()),
+            },
+        );
+        let response: serde_json::Value = serde_json::from_str(&response).unwrap();
+        assert_eq!(
+            response["error"]["code"],
+            serde_json::json!("channel_join_invalid_scope")
+        );
+        assert!(channels::read_channel_scope("eng").is_empty());
+        super::super::test_support::shutdown_test_runtimes(&mut app);
+    }
+
+    #[tokio::test]
+    async fn channel_protocol_names_scope_when_present_and_stays_silent_otherwise() {
+        let _isolated = IsolatedStateDir::new("protocol-scope");
+        let mut app = test_app();
+        create_channel(&mut app, "eng");
+        let (scoped, mut scoped_rx) = outside_agent_pane(&mut app, "brandos");
+        let (unscoped, mut unscoped_rx) = outside_agent_pane(&mut app, "outro");
+
+        join_with_scope(
+            &mut app,
+            "#eng",
+            &scoped,
+            vec!["/repo/work"],
+            vec!["/repo/read"],
+        );
+        let scoped_injected = scoped_rx
+            .try_recv()
+            .expect("join must inject the channel protocol block");
+        let scoped_injected = String::from_utf8_lossy(&scoped_injected);
+        assert!(
+            scoped_injected.contains("/repo/work"),
+            "got: {scoped_injected}"
+        );
+        assert!(
+            scoped_injected.contains("/repo/read"),
+            "got: {scoped_injected}"
+        );
+        assert!(
+            scoped_injected.contains('@') && scoped_injected.contains("this channel"),
+            "must instruct asking via @nick in the channel: {scoped_injected}"
+        );
+
+        join(&mut app, "#eng", &unscoped);
+        let unscoped_injected = unscoped_rx
+            .try_recv()
+            .expect("join must inject the channel protocol block");
+        let unscoped_injected = String::from_utf8_lossy(&unscoped_injected);
+        assert!(
+            !unscoped_injected.contains("Your scope in this channel"),
+            "a pane with no scope entry must not get an invented section: {unscoped_injected}"
+        );
+        super::super::test_support::shutdown_test_runtimes(&mut app);
+    }
+
     fn json_str(value: &str) -> serde_json::Value {
         serde_json::Value::String(value.to_string())
     }
@@ -2319,6 +2809,27 @@ mod tests {
             1,
             "restart must not re-inject or re-append the protocol notice"
         );
+
+        // A pane that received an older protocol version (as if briefed
+        // before a `CHANNEL_PROTOCOL_VERSION` bump) must get a resend: the
+        // `entry.version >= CHANNEL_PROTOCOL_VERSION` gate is strict, not
+        // pane-presence, so v1-briefed panes see the v2 scope-aware text.
+        channels::mark_protocol_sent("eng", "w1A:p3", CHANNEL_PROTOCOL_VERSION - 1).unwrap();
+        restarted.send_channel_protocol("eng", 0, "w1A:p3");
+        let history_bump = channels::read_tail("eng", 10).unwrap();
+        assert_eq!(
+            history_bump
+                .iter()
+                .filter(|m| m.from_pane == "system")
+                .count(),
+            2,
+            "a pane on an older protocol version must get a resend"
+        );
+        let recorded = channels::read_protocol_sent("eng")
+            .into_iter()
+            .find(|entry| entry.pane == "w1A:p3")
+            .expect("resend must record the new version");
+        assert_eq!(recorded.version, CHANNEL_PROTOCOL_VERSION);
         super::super::test_support::shutdown_test_runtimes(&mut restarted);
     }
 
@@ -2358,6 +2869,359 @@ mod tests {
                 .any(|(_, target)| target == &outsider),
             "protocol delivery must use from_pane: None and never record a rate-limit entry"
         );
+        super::super::test_support::shutdown_test_runtimes(&mut app);
+    }
+
+    #[test]
+    fn burst_active_counts_within_window_and_disables_at_zero_threshold() {
+        let base = Instant::now();
+        let window = Duration::from_secs(600);
+        let times: Vec<Instant> = std::iter::repeat_n(base, 8).collect();
+
+        // All 8 sends land at `base`, evaluated immediately: active.
+        assert!(burst_active(&times, base, 8, window));
+        // One fewer than the threshold: not active.
+        assert!(!burst_active(&times[..7], base, 8, window));
+        // The window has fully elapsed since every recorded send: inactive
+        // again, even though the count itself never changed.
+        let after_window = base + window + Duration::from_secs(1);
+        assert!(!burst_active(&times, after_window, 8, window));
+        // n == 0 or a zero window disables the damper unconditionally.
+        assert!(!burst_active(&times, base, 0, window));
+        assert!(!burst_active(&times, base, 8, Duration::ZERO));
+    }
+
+    #[tokio::test]
+    async fn channel_burst_suppresses_injection_at_default_threshold_and_appends_one_notice() {
+        let _isolated = IsolatedStateDir::new("burst-default");
+        let mut app = test_app();
+        let (reviewer, worker, _rx) = channel_with_two_agents(&mut app, "reviewer", "worker");
+        skip_protocol("eng", &reviewer);
+        skip_protocol("eng", &worker);
+        app.state.chat_name = "human".into();
+
+        // Human sends stay exempt from the per-pane cooldown, so this
+        // exercises the burst damper alone, the way a real storm of
+        // several distinct sender panes would.
+        let mut responses = Vec::new();
+        for i in 0..9 {
+            let sent = app.handle_channel_send(
+                format!("req{i}"),
+                ChannelSendParams {
+                    name: "#eng".into(),
+                    text: format!("msg {i}"),
+                    from_pane: None,
+                    to: None,
+                    in_reply_to: None,
+                    from_human: true,
+                },
+            );
+            responses.push(serde_json::from_str::<serde_json::Value>(&sent).unwrap());
+        }
+
+        // Below the default threshold (8): the bell still rings.
+        // `suppressed` is `skip_serializing_if` when false, so an absent
+        // key (not a literal `false`) is the on-the-wire shape for "not
+        // suppressed" — `as_bool().unwrap_or(false)` reads both the same.
+        for (i, response) in responses.iter().take(7).enumerate() {
+            assert!(
+                !response["result"]["suppressed"].as_bool().unwrap_or(false),
+                "send {i} must not be suppressed below the threshold: {response}"
+            );
+            assert!(
+                !response["result"]["deliveries"]
+                    .as_array()
+                    .unwrap()
+                    .is_empty(),
+                "send {i} must still fan out below the threshold"
+            );
+        }
+        // At and past the threshold: burst active, bell cut, message still
+        // recorded (asserted below via the transcript length).
+        for (i, response) in responses.iter().enumerate().skip(7) {
+            assert_eq!(
+                response["result"]["suppressed"],
+                serde_json::json!(true),
+                "send {i} must be suppressed at/after the burst threshold: {response}"
+            );
+            assert!(response["result"]["deliveries"]
+                .as_array()
+                .unwrap()
+                .is_empty());
+        }
+
+        let history = channels::read_tail("eng", 50).unwrap();
+        assert_eq!(history.len(), 10, "9 messages + exactly one burst notice");
+        let notices = history
+            .iter()
+            .filter(|m| m.from_pane == "system" && m.text.contains("surto"))
+            .count();
+        assert_eq!(
+            notices, 1,
+            "edge-triggered: one notice, not one per suppressed send: {history:?}"
+        );
+
+        super::super::test_support::shutdown_test_runtimes(&mut app);
+    }
+
+    #[tokio::test]
+    async fn channel_burst_force_bell_pierces_suppression() {
+        let _isolated = IsolatedStateDir::new("burst-force-bell");
+        let mut app = test_app();
+        let (reviewer, worker, _rx) = channel_with_two_agents(&mut app, "reviewer", "worker");
+        skip_protocol("eng", &reviewer);
+        skip_protocol("eng", &worker);
+
+        // Drive the channel into burst first. `channels::normalize_channel_name`
+        // strips the leading `#`, so the internal burst-tracking keys (and
+        // this assertion) use the bare "eng" form, matching how
+        // `channels::append_message`/`read_tail` are keyed elsewhere.
+        for i in 0..8 {
+            app.handle_channel_send(
+                format!("req{i}"),
+                ChannelSendParams {
+                    name: "#eng".into(),
+                    text: format!("msg {i}"),
+                    from_pane: None,
+                    to: None,
+                    in_reply_to: None,
+                    from_human: true,
+                },
+            );
+        }
+        assert!(app.channels_in_burst.contains("eng"));
+
+        let pierced = app.handle_channel_send_inner(
+            "req-pierce".into(),
+            ChannelSendParams {
+                name: "#eng".into(),
+                text: "urgent".into(),
+                from_pane: None,
+                to: None,
+                in_reply_to: None,
+                from_human: true,
+            },
+            true,
+        );
+        let pierced: serde_json::Value = serde_json::from_str(&pierced).unwrap();
+        // Omitted (skip_serializing_if) when false, same as the unsuppressed
+        // sends above.
+        assert!(!pierced["result"]["suppressed"].as_bool().unwrap_or(false));
+        assert!(!pierced["result"]["deliveries"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+
+        super::super::test_support::shutdown_test_runtimes(&mut app);
+    }
+
+    #[tokio::test]
+    async fn note_appends_with_zero_injections_outside_burst() {
+        let _isolated = IsolatedStateDir::new("note-no-burst");
+        let mut app = test_app();
+        let (reviewer, worker, _rx) = channel_with_two_agents(&mut app, "reviewer", "worker");
+        skip_protocol("eng", &reviewer);
+        skip_protocol("eng", &worker);
+
+        let noted = app.handle_channel_note(
+            "req".into(),
+            ChannelNoteParams {
+                name: "#eng".into(),
+                text: "fact recorded".into(),
+                from_pane: None,
+            },
+        );
+        let noted: serde_json::Value = serde_json::from_str(&noted).unwrap();
+        assert!(noted["result"]["deliveries"].as_array().unwrap().is_empty());
+        assert!(!noted["result"]["suppressed"].as_bool().unwrap_or(false));
+        assert_eq!(noted["result"]["seq"], serde_json::json!(1));
+
+        let history = channels::read_tail("eng", 10).unwrap();
+        assert_eq!(history.len(), 1, "{history:?}");
+        assert_eq!(history[0].text, "fact recorded");
+        assert_eq!(history[0].to_pane, None);
+
+        super::super::test_support::shutdown_test_runtimes(&mut app);
+    }
+
+    #[tokio::test]
+    async fn note_during_burst_still_appends_with_no_bell() {
+        let _isolated = IsolatedStateDir::new("note-burst");
+        let mut app = test_app();
+        let (reviewer, worker, _rx) = channel_with_two_agents(&mut app, "reviewer", "worker");
+        skip_protocol("eng", &reviewer);
+        skip_protocol("eng", &worker);
+
+        for i in 0..8 {
+            app.handle_channel_send(
+                format!("req{i}"),
+                ChannelSendParams {
+                    name: "#eng".into(),
+                    text: format!("msg {i}"),
+                    from_pane: None,
+                    to: None,
+                    in_reply_to: None,
+                    from_human: true,
+                },
+            );
+        }
+        assert!(app.channels_in_burst.contains("eng"));
+        let burst_history_len_before = app
+            .channel_burst_history
+            .get("eng")
+            .map_or(0, std::collections::VecDeque::len);
+
+        let noted = app.handle_channel_note(
+            "req-note".into(),
+            ChannelNoteParams {
+                name: "#eng".into(),
+                text: "note during burst".into(),
+                from_pane: None,
+            },
+        );
+        let noted: serde_json::Value = serde_json::from_str(&noted).unwrap();
+        assert!(noted["result"]["deliveries"].as_array().unwrap().is_empty());
+        assert!(!noted["result"]["suppressed"].as_bool().unwrap_or(false));
+
+        // channel.note never touches the burst-detection window: its
+        // per-channel history length is unchanged by the note.
+        assert_eq!(
+            app.channel_burst_history
+                .get("eng")
+                .map_or(0, std::collections::VecDeque::len),
+            burst_history_len_before,
+            "channel.note must not record into the burst damper's sliding window"
+        );
+
+        let history = channels::read_tail("eng", 20).unwrap();
+        // 8 sends + 1 burst-transition notice + 1 note = 10.
+        assert_eq!(history.len(), 10, "{history:?}");
+        assert_eq!(history.last().unwrap().text, "note during burst");
+
+        super::super::test_support::shutdown_test_runtimes(&mut app);
+    }
+
+    #[tokio::test]
+    async fn ask_to_unknown_nick_fails_before_anything_is_appended() {
+        let _isolated = IsolatedStateDir::new("ask-unknown-nick");
+        let mut app = test_app();
+        create_channel(&mut app, "eng");
+
+        let asked = app.handle_channel_ask_question(
+            "req".into(),
+            crate::api::schema::ChannelAskParams {
+                name: "#eng".into(),
+                to: "ghost".into(),
+                text: "are you there?".into(),
+                from_pane: None,
+                timeout_ms: None,
+            },
+        );
+        let asked: serde_json::Value = serde_json::from_str(&asked).unwrap();
+        assert_eq!(
+            asked["error"]["code"],
+            serde_json::json!("channel_nick_unknown")
+        );
+
+        let history = channels::read_tail("eng", 10).unwrap();
+        assert!(
+            history.is_empty(),
+            "an ask to an unknown nick must not append: {history:?}"
+        );
+
+        super::super::test_support::shutdown_test_runtimes(&mut app);
+    }
+
+    #[tokio::test]
+    async fn ask_reuses_send_inner_single_target_path_and_reports_question_seq() {
+        let _isolated = IsolatedStateDir::new("ask-single-target");
+        let mut app = test_app();
+        let (reviewer, worker, _rx) = channel_with_two_agents(&mut app, "reviewer", "worker");
+        skip_protocol("eng", &reviewer);
+        skip_protocol("eng", &worker);
+
+        let asked = app.handle_channel_ask_question(
+            "req".into(),
+            crate::api::schema::ChannelAskParams {
+                name: "#eng".into(),
+                to: "reviewer".into(),
+                text: "ready to merge?".into(),
+                from_pane: Some("w1A:p9".into()),
+                timeout_ms: None,
+            },
+        );
+        let asked: serde_json::Value = serde_json::from_str(&asked).unwrap();
+        assert_eq!(asked["result"]["seq"], serde_json::json!(1));
+        let deliveries = asked["result"]["deliveries"].as_array().unwrap();
+        assert_eq!(deliveries.len(), 1, "{asked}");
+        assert_eq!(deliveries[0]["pane_id"], serde_json::json!(reviewer));
+
+        let history = channels::read_tail("eng", 10).unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].to_pane.as_deref(), Some(reviewer.as_str()));
+
+        super::super::test_support::shutdown_test_runtimes(&mut app);
+    }
+
+    #[tokio::test]
+    async fn reply_to_seq_past_current_max_is_rejected_but_past_seqs_are_fine() {
+        let _isolated = IsolatedStateDir::new("reply-to-future-seq");
+        let mut app = test_app();
+        create_channel(&mut app, "eng");
+
+        app.handle_channel_send(
+            "req1".into(),
+            ChannelSendParams {
+                name: "#eng".into(),
+                text: "hello".into(),
+                from_pane: None,
+                to: None,
+                in_reply_to: None,
+                from_human: true,
+            },
+        );
+
+        let rejected = app.handle_channel_send(
+            "req2".into(),
+            ChannelSendParams {
+                name: "#eng".into(),
+                text: "reply to the future".into(),
+                from_pane: None,
+                to: None,
+                in_reply_to: Some(5),
+                from_human: true,
+            },
+        );
+        let rejected: serde_json::Value = serde_json::from_str(&rejected).unwrap();
+        assert_eq!(
+            rejected["error"]["code"],
+            serde_json::json!("channel_reply_unknown_seq")
+        );
+
+        let history = channels::read_tail("eng", 10).unwrap();
+        assert_eq!(
+            history.len(),
+            1,
+            "the rejected reply must not append: {history:?}"
+        );
+
+        // A reply threaded onto an in-range seq (even one rotation could
+        // later drop) is accepted: history being gone is fine, the future
+        // is not.
+        let accepted = app.handle_channel_send(
+            "req3".into(),
+            ChannelSendParams {
+                name: "#eng".into(),
+                text: "reply to the past".into(),
+                from_pane: None,
+                to: None,
+                in_reply_to: Some(1),
+                from_human: true,
+            },
+        );
+        let accepted: serde_json::Value = serde_json::from_str(&accepted).unwrap();
+        assert!(accepted["result"].is_object(), "{accepted}");
+
         super::super::test_support::shutdown_test_runtimes(&mut app);
     }
 }

@@ -2016,6 +2016,40 @@
           ],
           "type": "object"
         },
+        "ChannelAskParams": {
+          "description": "`channel.ask`: exactly one bell, and blocks the asker until the\naddressee replies. `to` is mandatory and resolved exactly like a\nstructured `channel.send` — loud `channel_nick_unknown` /\n`channel_nick_ambiguous` errors before anything is appended. The\nquestion always pierces the burst damper. The reply is correlated by\n`seq`: the server blocks for the first channel message whose\n`in_reply_to` equals the question's assigned seq (answered via\n`bora channel send <name> <text> --reply-to SEQ`), bounded by\n`timeout_ms` (default 300_000, capped at 600_000). A timeout is a clean\n`answered: false` result, never an error.",
+          "properties": {
+            "from_pane": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "name": {
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            },
+            "timeout_ms": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "to": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "name",
+            "to",
+            "text"
+          ],
+          "type": "object"
+        },
         "ChannelCreateParams": {
           "properties": {
             "name": {
@@ -2055,6 +2089,26 @@
             "pane": {
               "description": "Public pane id to add. The CLI defaults it to `$HERDR_PANE_ID`.",
               "type": "string"
+            },
+            "scope_read": {
+              "description": "Directories `pane` may read only, beyond its write dirs.",
+              "items": {
+                "type": "string"
+              },
+              "type": [
+                "array",
+                "null"
+              ]
+            },
+            "scope_write": {
+              "description": "Directories `pane` may write in this channel. Write implies read —\ndo not also list a write dir under `scope_read`. `Some` (even\n`Some(vec![])` combined with an empty `scope_read`) replaces any\nprior scope entry for `pane` wholesale; `None` on both leaves an\nexisting entry untouched. See CANAL-ESCOPO.md Shape 2.",
+              "items": {
+                "type": "string"
+              },
+              "type": [
+                "array",
+                "null"
+              ]
             }
           },
           "required": [
@@ -2087,6 +2141,28 @@
           },
           "required": [
             "name"
+          ],
+          "type": "object"
+        },
+        "ChannelNoteParams": {
+          "description": "`channel.note`: append-only record with ZERO injection — the cheapest\nverb, for facts nobody needs to be woken for. Same attribution and\nper-(sender,channel) rate limit as `channel.send`, but no addressing (no\n`to`, no leading-mention parsing) and never subject to the burst damper\n— there is no bell to suppress.",
+          "properties": {
+            "from_pane": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "name": {
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "name",
+            "text"
           ],
           "type": "object"
         },
@@ -6683,6 +6759,38 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/ChannelWaitParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "channel.note",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/ChannelNoteParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "channel.ask",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/ChannelAskParams"
             }
           },
           "required": [
@@ -11302,6 +11410,16 @@
                   },
                   "type": "array"
                 },
+                "seq": {
+                  "description": "Monotonic per-channel seq assigned to the appended message —\nthe correlation key a reply threads back through `in_reply_to`.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "suppressed": {
+                  "description": "`true` when the channel was inside an active burst and the bell\n(agent injection fan-out) was cut for this send; the message was\nstill appended to the transcript and eventable as normal. See\n`ui.channel_burst_messages` / `ui.channel_burst_window_secs`.",
+                  "type": "boolean"
+                },
                 "type": {
                   "const": "channel_sent",
                   "type": "string"
@@ -11309,7 +11427,8 @@
               },
               "required": [
                 "type",
-                "deliveries"
+                "deliveries",
+                "seq"
               ],
               "type": "object"
             },
@@ -11426,6 +11545,39 @@
               "required": [
                 "type",
                 "messages"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "`channel.ask` result. `question_seq` is the seq of the appended\nquestion — the correlation key a reply threads back through\n`in_reply_to`. `answered: false` means `timeout_ms` elapsed with no\nmatching reply (`reply: None`); `answered: true` carries the\nmatching reply message.",
+              "properties": {
+                "answered": {
+                  "type": "boolean"
+                },
+                "question_seq": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "reply": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/schemas/success_response/$defs/ChannelMessage"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "type": {
+                  "const": "channel_asked",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "answered",
+                "question_seq"
               ],
               "type": "object"
             }

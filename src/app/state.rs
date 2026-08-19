@@ -2004,6 +2004,12 @@ pub struct AppState {
     /// Whether a message addressing the human seat auto-opens the chat view
     /// (`ui.chat_open_on_mention`). Only meaningful with `chat_view` on.
     pub chat_open_on_mention: bool,
+    /// `ui.channel_burst_messages` — see `channel_burst_window`.
+    pub channel_burst_messages: u32,
+    /// `ui.channel_burst_window_secs`, as a `Duration`. Together with
+    /// `channel_burst_messages`, defines the `channel.send` burst damper
+    /// (`App::record_channel_burst_send` in `app::api::channels`).
+    pub channel_burst_window: std::time::Duration,
     pub hide_tab_bar_when_single_tab: bool,
     pub tab_bar_position: TabBarPositionConfig,
     pub tab_bar_right: Vec<TabBarStatusSegment>,
@@ -2494,6 +2500,8 @@ impl AppState {
             chat_view: false,
             chat_name: "you".to_string(),
             chat_open_on_mention: true,
+            channel_burst_messages: 8,
+            channel_burst_window: std::time::Duration::from_secs(600),
             hide_tab_bar_when_single_tab: false,
             tab_bar_position: TabBarPositionConfig::Top,
             tab_bar_right: Vec::new(),

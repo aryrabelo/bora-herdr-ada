@@ -34,6 +34,40 @@ pub struct ChannelSendParams {
     pub from_human: bool,
 }
 
+/// `channel.note`: append-only record with ZERO injection — the cheapest
+/// verb, for facts nobody needs to be woken for. Same attribution and
+/// per-(sender,channel) rate limit as `channel.send`, but no addressing (no
+/// `to`, no leading-mention parsing) and never subject to the burst damper
+/// — there is no bell to suppress.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct ChannelNoteParams {
+    pub name: String,
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_pane: Option<String>,
+}
+
+/// `channel.ask`: exactly one bell, and blocks the asker until the
+/// addressee replies. `to` is mandatory and resolved exactly like a
+/// structured `channel.send` — loud `channel_nick_unknown` /
+/// `channel_nick_ambiguous` errors before anything is appended. The
+/// question always pierces the burst damper. The reply is correlated by
+/// `seq`: the server blocks for the first channel message whose
+/// `in_reply_to` equals the question's assigned seq (answered via
+/// `bora channel send <name> <text> --reply-to SEQ`), bounded by
+/// `timeout_ms` (default 300_000, capped at 600_000). A timeout is a clean
+/// `answered: false` result, never an error.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct ChannelAskParams {
+    pub name: String,
+    pub to: String,
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_pane: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
+}
+
 /// Who authored a channel message: a member agent pane, or the human at the
 /// TUI. Lines written before this field existed parse as `Agent`.
 #[derive(
@@ -69,6 +103,16 @@ pub struct ChannelJoinParams {
     pub name: String,
     /// Public pane id to add. The CLI defaults it to `$HERDR_PANE_ID`.
     pub pane: String,
+    /// Directories `pane` may write in this channel. Write implies read —
+    /// do not also list a write dir under `scope_read`. `Some` (even
+    /// `Some(vec![])` combined with an empty `scope_read`) replaces any
+    /// prior scope entry for `pane` wholesale; `None` on both leaves an
+    /// existing entry untouched. See CANAL-ESCOPO.md Shape 2.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope_write: Option<Vec<String>>,
+    /// Directories `pane` may read only, beyond its write dirs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope_read: Option<Vec<String>>,
 }
 
 /// `channel.leave`: drop an explicitly joined pane from a channel. Panes that

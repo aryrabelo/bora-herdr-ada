@@ -892,6 +892,18 @@
           "type": "boolean",
           "default": "true",
           "description": "Open the chat view automatically when an agent message addresses the human seat (`@<ui.chat_name>`) while the view is closed. Suppressed while the human is typing or mid-modal, falling back to the toast. Only meaningful when `chat_view` is on."
+        },
+        {
+          "key": "ui.channel_burst_messages",
+          "type": "number",
+          "default": "8",
+          "description": "channel.send burst damper: this many sends within `ui.channel_burst_window_secs` still record and event as normal, but stop bell-ing member panes (no agent.prompt fan-out, no protocol briefing). Mirrors orc's ORC_BURST_N. 0 disables the damper."
+        },
+        {
+          "key": "ui.channel_burst_window_secs",
+          "type": "number",
+          "default": "600",
+          "description": "Sliding window (seconds) for `ui.channel_burst_messages`. Mirrors orc's ORC_BURST_MIN. 0 disables the damper."
         }
       ]
     },

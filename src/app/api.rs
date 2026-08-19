@@ -1333,6 +1333,12 @@ impl App {
             Method::ChannelLeave(params) => {
                 return self.handle_channel_leave(request.id, params);
             }
+            Method::ChannelNote(params) => {
+                return self.handle_channel_note(request.id, params);
+            }
+            Method::ChannelAsk(params) => {
+                return self.handle_channel_ask_question(request.id, params);
+            }
             _ => {
                 return responses::encode_error(
                     request.id,
