@@ -19,6 +19,11 @@ use crate::ipc::LocalStream;
 
 const AGENT_PROMPT_EFFECT_TIMEOUT_MS: u64 = 5_000;
 const DEFAULT_WHEN_IDLE_TIMEOUT_MS: u64 = 60_000;
+/// `channel.ask` default/cap for `timeout_ms`: 5 minutes default, 10
+/// minutes hard cap — long enough for a human to notice and reply, bounded
+/// so a forgotten ask can't hold a connection thread open indefinitely.
+const DEFAULT_ASK_TIMEOUT_MS: u64 = 300_000;
+const MAX_ASK_TIMEOUT_MS: u64 = 600_000;
 
 pub(super) fn wait_for_output(
     request_id: String,
@@ -1202,6 +1207,185 @@ pub(super) fn wait_for_channel_message(
     ))
 }
 
+/// Poll ticks between belt-and-braces history re-reads for `channel.ask`,
+/// mirroring `CHANNEL_WAIT_SNAPSHOT_EVERY_TICKS`'s reasoning: the event hub
+/// ring is bounded, so a busy server can evict the reply's event before
+/// this loop scans it.
+const CHANNEL_ASK_SNAPSHOT_EVERY_TICKS: u32 = 10;
+
+/// `channel.ask`'s reply-wait core loop: polls the durable transcript for
+/// the first retained message whose `in_reply_to` equals `question_seq`,
+/// mirroring `poll_channel_wait`'s backlog-first / event-hub-gated /
+/// periodic-snapshot pattern. `Ok(None)` means the caller cancelled
+/// (client disconnected); `Ok(Some(None))` is a clean timeout;
+/// `Ok(Some(Some(_)))` is the matching reply.
+fn poll_channel_ask_reply(
+    name: &str,
+    question_seq: u64,
+    timeout_ms: u64,
+    event_hub: &EventHub,
+    mut cancelled: impl FnMut() -> bool,
+) -> std::io::Result<Option<Option<crate::api::schema::ChannelMessage>>> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
+    let mut hub_sequence = event_hub.current_sequence();
+    let mut ticks: u32 = 0;
+    loop {
+        if cancelled() {
+            return Ok(None);
+        }
+        ticks += 1;
+
+        let mut new_message = false;
+        for (sequence, envelope) in event_hub.events_after(hub_sequence) {
+            hub_sequence = hub_sequence.max(sequence);
+            if matches!(
+                &envelope.data,
+                EventData::ChannelMessage { channel, .. } if *channel == name
+            ) {
+                new_message = true;
+            }
+        }
+
+        if ticks == 1 || new_message || ticks.is_multiple_of(CHANNEL_ASK_SNAPSHOT_EVERY_TICKS) {
+            if let Some(reply) = find_channel_reply(name, question_seq)? {
+                return Ok(Some(Some(reply)));
+            }
+        }
+
+        if std::time::Instant::now() >= deadline {
+            // Last-chance read before declaring a timeout: the reply may be
+            // on disk even if its event already rotated out of the hub.
+            return Ok(Some(find_channel_reply(name, question_seq)?));
+        }
+
+        std::thread::sleep(crate::api::server::CONNECTION_POLL_INTERVAL);
+    }
+}
+
+/// The first retained message on `name` whose `in_reply_to` equals
+/// `question_seq`, if any has landed yet.
+fn find_channel_reply(
+    name: &str,
+    question_seq: u64,
+) -> std::io::Result<Option<crate::api::schema::ChannelMessage>> {
+    let since = crate::persist::channels::read_since(name, question_seq)?;
+    Ok(since
+        .messages
+        .into_iter()
+        .find(|message| message.in_reply_to == Some(question_seq)))
+}
+
+/// Parses `channel.ask`'s injection-step response (a `channel.send`-shaped
+/// `ChannelSent`) for the assigned question `seq`, mirroring
+/// `agent_from_response`'s error/result split: an `error` response passes
+/// through as `Err` unchanged, a malformed success is an `internal_error`.
+fn channel_ask_question_seq(request_id: &str, response: &str) -> Result<u64, ErrorResponse> {
+    let value: serde_json::Value = serde_json::from_str(response).map_err(|_| ErrorResponse {
+        id: request_id.into(),
+        error: ErrorBody {
+            code: "internal_error".into(),
+            message: "failed to decode channel.ask response".into(),
+        },
+    })?;
+    if value.get("error").is_some() {
+        let error = serde_json::from_value(value["error"].clone()).map_err(|_| ErrorResponse {
+            id: request_id.into(),
+            error: ErrorBody {
+                code: "internal_error".into(),
+                message: "failed to decode channel.ask error".into(),
+            },
+        })?;
+        return Err(ErrorResponse {
+            id: request_id.into(),
+            error,
+        });
+    }
+    value["result"]["seq"]
+        .as_u64()
+        .ok_or_else(|| ErrorResponse {
+            id: request_id.into(),
+            error: ErrorBody {
+                code: "internal_error".into(),
+                message: "failed to decode channel.ask result seq".into(),
+            },
+        })
+}
+
+/// `channel.ask` entry point: appends and injects the question via one
+/// normal (fast) App dispatch — `App::handle_channel_ask_question`, a thin
+/// wrapper over `handle_channel_send_inner` — then blocks this connection
+/// thread, never the App's own request loop, polling the durable
+/// transcript for a reply. See [`crate::api::schema::ChannelAskParams`] for
+/// the wire contract.
+pub(super) fn ask_channel(
+    request_id: String,
+    params: crate::api::schema::ChannelAskParams,
+    stream: &mut LocalStream,
+    api_tx: &ApiRequestSender,
+    event_hub: &EventHub,
+    running: &Arc<AtomicBool>,
+) -> std::io::Result<Option<String>> {
+    let timeout_ms = params
+        .timeout_ms
+        .unwrap_or(DEFAULT_ASK_TIMEOUT_MS)
+        .min(MAX_ASK_TIMEOUT_MS);
+    let name = crate::persist::channels::normalize_channel_name(&params.name);
+
+    let question_response = dispatch_to_app_with_timeout(
+        Request {
+            id: request_id.clone(),
+            method: Method::ChannelAsk(params),
+        },
+        api_tx,
+        None,
+    );
+    let question_seq = match channel_ask_question_seq(&request_id, &question_response) {
+        Ok(seq) => seq,
+        // Addressing/validation failed before anything was appended —
+        // surface the original error as-is.
+        Err(error) => {
+            return serde_json::to_string(&error)
+                .map(Some)
+                .map_err(std::io::Error::other)
+        }
+    };
+
+    let reply = match poll_channel_ask_reply(
+        &name,
+        question_seq,
+        timeout_ms,
+        event_hub,
+        || should_stop_connection(stream, running).unwrap_or(true),
+    ) {
+        Ok(Some(reply)) => reply,
+        // The client went away mid-wait; there is nobody to answer.
+        Ok(None) => return Ok(None),
+        Err(err) => {
+            return Ok(Some(
+                serde_json::to_string(&ErrorResponse {
+                    id: request_id,
+                    error: ErrorBody {
+                        code: "channel_ask_failed".into(),
+                        message: err.to_string(),
+                    },
+                })
+                .unwrap(),
+            ));
+        }
+    };
+    Ok(Some(
+        serde_json::to_string(&SuccessResponse {
+            id: request_id,
+            result: ResponseResult::ChannelAsked {
+                answered: reply.is_some(),
+                question_seq,
+                reply,
+            },
+        })
+        .unwrap(),
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1382,6 +1566,134 @@ mod tests {
                 .collect();
             let keep_from = lines.len() - max_lines / 2;
             std::fs::write(path, lines[keep_from..].join("\n") + "\n").expect("rewrite");
+        }
+    }
+
+    mod channel_ask {
+        use super::super::*;
+        use crate::api::schema::{ChannelMessage, ChannelSenderKind, EventData, EventKind};
+        use crate::api::EventHub;
+
+        fn with_isolated_state_dir<T>(name: &str, f: impl FnOnce() -> T) -> T {
+            let _guard = crate::config::test_config_env_lock().lock().unwrap();
+            let old_state = std::env::var_os("XDG_STATE_HOME");
+            let dir = std::env::temp_dir().join(format!(
+                "bora-channel-ask-test-{name}-{}",
+                std::process::id()
+            ));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::env::set_var("XDG_STATE_HOME", &dir);
+            let result = f();
+            match old_state {
+                Some(value) => std::env::set_var("XDG_STATE_HOME", value),
+                None => std::env::remove_var("XDG_STATE_HOME"),
+            }
+            let _ = std::fs::remove_dir_all(&dir);
+            result
+        }
+
+        fn message(text: &str, seq: u64, in_reply_to: Option<u64>) -> ChannelMessage {
+            ChannelMessage {
+                ts: "2026-08-19T00:00:00Z".into(),
+                seq,
+                from_pane: "w1A:p2".into(),
+                from_name: "brandos".into(),
+                from_kind: ChannelSenderKind::Agent,
+                text: text.into(),
+                in_reply_to,
+                to_pane: None,
+                to_human: false,
+            }
+        }
+
+        fn append(name: &str, text: &str, in_reply_to: Option<u64>) -> ChannelMessage {
+            let seq = crate::persist::channels::next_seq(name);
+            let appended = message(text, seq, in_reply_to);
+            crate::persist::channels::append_message(name, &appended).unwrap();
+            appended
+        }
+
+        fn push_message_event(hub: &EventHub, name: &str, appended: &ChannelMessage) {
+            hub.push(crate::api::schema::EventEnvelope {
+                event: EventKind::ChannelMessage,
+                data: EventData::ChannelMessage {
+                    channel: name.into(),
+                    seq: appended.seq,
+                    from_pane: Some(appended.from_pane.clone()),
+                    from_name: appended.from_name.clone(),
+                    text: appended.text.clone(),
+                    to_pane: None,
+                },
+            });
+        }
+
+        #[test]
+        fn matching_in_reply_to_resolves_the_wait() {
+            with_isolated_state_dir("match", || {
+                let question = append("eng", "are you there?", None);
+                let question_seq = question.seq;
+                let event_hub = EventHub::default();
+                let hub = event_hub.clone();
+                let replier = std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                    let reply = append("eng", "yes", Some(question_seq));
+                    push_message_event(&hub, "eng", &reply);
+                });
+                let outcome = poll_channel_ask_reply("eng", question_seq, 5_000, &event_hub, || {
+                    false
+                })
+                .expect("poll")
+                .expect("not cancelled");
+                replier.join().expect("replier");
+                let reply = outcome.expect("matching reply must resolve the wait");
+                assert_eq!(reply.text, "yes");
+                assert_eq!(reply.in_reply_to, Some(question_seq));
+            });
+        }
+
+        /// Mutation coverage for the `in_reply_to == question_seq` check in
+        /// `find_channel_reply`: a reply threaded onto a DIFFERENT seq must
+        /// never satisfy this ask's wait — otherwise two concurrent asks on
+        /// the same channel would cross-wire their replies. Dropping the
+        /// comparison (or replacing it with "any new message") makes this
+        /// fail.
+        #[test]
+        fn mismatched_in_reply_to_does_not_resolve() {
+            with_isolated_state_dir("mismatch", || {
+                let question = append("eng", "are you there?", None);
+                let other = append("eng", "unrelated message", None);
+                append("eng", "reply to the wrong question", Some(other.seq));
+                let outcome = poll_channel_ask_reply(
+                    "eng",
+                    question.seq,
+                    200,
+                    &EventHub::default(),
+                    || false,
+                )
+                .expect("poll")
+                .expect("not cancelled");
+                assert!(
+                    outcome.is_none(),
+                    "a reply addressed to a different seq must not resolve this ask: {outcome:?}"
+                );
+            });
+        }
+
+        #[test]
+        fn no_reply_times_out_cleanly() {
+            with_isolated_state_dir("timeout", || {
+                let question = append("eng", "hello?", None);
+                let outcome = poll_channel_ask_reply(
+                    "eng",
+                    question.seq,
+                    150,
+                    &EventHub::default(),
+                    || false,
+                )
+                .expect("poll")
+                .expect("not cancelled");
+                assert!(outcome.is_none());
+            });
         }
     }
 }
