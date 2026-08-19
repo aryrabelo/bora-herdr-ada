@@ -2627,7 +2627,7 @@ mod tests {
     fn burst_active_counts_within_window_and_disables_at_zero_threshold() {
         let base = Instant::now();
         let window = Duration::from_secs(600);
-        let times: Vec<Instant> = std::iter::repeat(base).take(8).collect();
+        let times: Vec<Instant> = std::iter::repeat_n(base, 8).collect();
 
         // All 8 sends land at `base`, evaluated immediately: active.
         assert!(burst_active(&times, base, 8, window));
