@@ -1,6 +1,4 @@
-use crate::config::{
-    Keybinds, NewTerminalCwdConfig, SoundConfig, TabBarPositionConfig, ToastConfig, ToastDelivery,
-};
+use crate::config::{Keybinds, NewTerminalCwdConfig, SoundConfig, ToastConfig, ToastDelivery};
 use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::layout::{Direction, Rect};
 use ratatui::style::Color;
@@ -11,18 +9,11 @@ use crate::selection::Selection;
 
 pub(crate) type InstalledPluginRegistry =
     std::collections::HashMap<String, crate::api::schema::InstalledPluginInfo>;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PluginPaneRecord {
     pub plugin_id: String,
     pub entrypoint: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct PopupPaneState {
-    pub pane_id: PaneId,
-    pub terminal_id: crate::terminal::TerminalId,
-    pub width: Option<crate::popup_size::PopupSize>,
-    pub height: Option<crate::popup_size::PopupSize>,
 }
 
 // ---------------------------------------------------------------------------
@@ -69,10 +60,8 @@ use crate::workspace::Workspace;
 pub struct Palette {
     /// Primary accent (highlight, active borders).
     pub accent: Color,
-    /// Background for the tab bar, floating panels, overlays, and modals.
+    /// Background for floating panels, overlays, and modals.
     pub panel_bg: Color,
-    /// Optional desktop sidebar background. Reset preserves the terminal background.
-    pub sidebar_bg: Color,
     /// Subtle surface background for selected/focused items.
     pub surface0: Color,
     /// Slightly lighter surface for hover/active states.
@@ -109,7 +98,6 @@ impl Palette {
         Self {
             accent: Color::Rgb(137, 180, 250), // blue
             panel_bg: Color::Rgb(24, 24, 37),
-            sidebar_bg: Color::Reset,
             surface0: Color::Rgb(49, 50, 68),
             surface1: Color::Rgb(69, 71, 90),
             surface_dim: Color::Rgb(30, 30, 46),
@@ -132,7 +120,6 @@ impl Palette {
         Self {
             accent: Color::Rgb(30, 102, 245),
             panel_bg: Color::Rgb(239, 241, 245),
-            sidebar_bg: Color::Reset,
             surface0: Color::Rgb(204, 208, 218),
             surface1: Color::Rgb(188, 192, 204),
             surface_dim: Color::Rgb(230, 233, 239),
@@ -155,7 +142,6 @@ impl Palette {
         Self {
             accent: Color::Blue,
             panel_bg: Color::Reset,
-            sidebar_bg: Color::Reset,
             surface0: Color::Reset,
             surface1: Color::DarkGray,
             surface_dim: Color::DarkGray,
@@ -178,7 +164,6 @@ impl Palette {
         Self {
             accent: Color::Rgb(122, 162, 247), // blue
             panel_bg: Color::Rgb(26, 27, 38),
-            sidebar_bg: Color::Reset,
             surface0: Color::Rgb(36, 40, 59),
             surface1: Color::Rgb(65, 72, 104),
             surface_dim: Color::Rgb(26, 27, 38),
@@ -201,7 +186,6 @@ impl Palette {
         Self {
             accent: Color::Rgb(46, 125, 233),
             panel_bg: Color::Rgb(225, 226, 231),
-            sidebar_bg: Color::Reset,
             surface0: Color::Rgb(196, 200, 218),
             surface1: Color::Rgb(168, 174, 203),
             surface_dim: Color::Rgb(210, 211, 218),
@@ -224,7 +208,6 @@ impl Palette {
         Self {
             accent: Color::Rgb(189, 147, 249), // purple
             panel_bg: Color::Rgb(40, 42, 54),
-            sidebar_bg: Color::Reset,
             surface0: Color::Rgb(68, 71, 90),
             surface1: Color::Rgb(98, 114, 164),
             surface_dim: Color::Rgb(40, 42, 54),
@@ -247,7 +230,6 @@ impl Palette {
         Self {
             accent: Color::Rgb(136, 192, 208), // frost
             panel_bg: Color::Rgb(46, 52, 64),
-            sidebar_bg: Color::Reset,
             surface0: Color::Rgb(59, 66, 82),
             surface1: Color::Rgb(67, 76, 94),
             surface_dim: Color::Rgb(46, 52, 64),
@@ -270,7 +252,6 @@ impl Palette {
         Self {
             accent: Color::Rgb(215, 153, 33), // yellow
             panel_bg: Color::Rgb(40, 40, 40),
-            sidebar_bg: Color::Reset,
             surface0: Color::Rgb(60, 56, 54),
             surface1: Color::Rgb(80, 73, 69),
             surface_dim: Color::Rgb(40, 40, 40),
@@ -293,7 +274,6 @@ impl Palette {
         Self {
             accent: Color::Rgb(7, 102, 120),
             panel_bg: Color::Rgb(251, 241, 199),
-            sidebar_bg: Color::Reset,
             surface0: Color::Rgb(235, 219, 178),
             surface1: Color::Rgb(213, 196, 161),
             surface_dim: Color::Rgb(242, 229, 188),
@@ -316,7 +296,6 @@ impl Palette {
         Self {
             accent: Color::Rgb(97, 175, 239), // blue
             panel_bg: Color::Rgb(40, 44, 52),
-            sidebar_bg: Color::Reset,
             surface0: Color::Rgb(44, 49, 58),
             surface1: Color::Rgb(62, 68, 81),
             surface_dim: Color::Rgb(40, 44, 52),
@@ -339,7 +318,6 @@ impl Palette {
         Self {
             accent: Color::Rgb(64, 120, 242),
             panel_bg: Color::Rgb(250, 250, 250),
-            sidebar_bg: Color::Reset,
             surface0: Color::Rgb(240, 240, 241),
             surface1: Color::Rgb(229, 229, 230),
             surface_dim: Color::Rgb(245, 245, 246),
@@ -362,7 +340,6 @@ impl Palette {
         Self {
             accent: Color::Rgb(38, 139, 210), // blue
             panel_bg: Color::Rgb(0, 43, 54),
-            sidebar_bg: Color::Reset,
             surface0: Color::Rgb(7, 54, 66),
             surface1: Color::Rgb(88, 110, 117),
             surface_dim: Color::Rgb(0, 43, 54),
@@ -385,7 +362,6 @@ impl Palette {
         Self {
             accent: Color::Rgb(38, 139, 210),
             panel_bg: Color::Rgb(253, 246, 227),
-            sidebar_bg: Color::Reset,
             surface0: Color::Rgb(238, 232, 213),
             surface1: Color::Rgb(147, 161, 161),
             surface_dim: Color::Rgb(238, 232, 213),
@@ -408,7 +384,6 @@ impl Palette {
         Self {
             accent: Color::Rgb(126, 156, 216), // blue
             panel_bg: Color::Rgb(31, 31, 40),
-            sidebar_bg: Color::Reset,
             surface0: Color::Rgb(42, 42, 55),
             surface1: Color::Rgb(54, 54, 70),
             surface_dim: Color::Rgb(31, 31, 40),
@@ -431,7 +406,6 @@ impl Palette {
         Self {
             accent: Color::Rgb(77, 105, 155),
             panel_bg: Color::Rgb(242, 236, 188),
-            sidebar_bg: Color::Reset,
             surface0: Color::Rgb(220, 213, 172),
             surface1: Color::Rgb(201, 203, 209),
             surface_dim: Color::Rgb(213, 206, 163),
@@ -454,10 +428,9 @@ impl Palette {
         Self {
             accent: Color::Rgb(196, 167, 231), // iris
             panel_bg: Color::Rgb(25, 23, 36),
-            sidebar_bg: Color::Reset,
             surface0: Color::Rgb(31, 29, 46),
             surface1: Color::Rgb(38, 35, 58),
-            surface_dim: Color::Rgb(38, 35, 58),
+            surface_dim: Color::Rgb(25, 23, 36),
             overlay0: Color::Rgb(110, 106, 134),
             overlay1: Color::Rgb(144, 140, 170),
             text: Color::Rgb(224, 222, 244),
@@ -477,7 +450,6 @@ impl Palette {
         Self {
             accent: Color::Rgb(144, 122, 169),
             panel_bg: Color::Rgb(250, 244, 237),
-            sidebar_bg: Color::Reset,
             surface0: Color::Rgb(242, 233, 225),
             surface1: Color::Rgb(255, 250, 243),
             surface_dim: Color::Rgb(242, 233, 225),
@@ -500,7 +472,6 @@ impl Palette {
         Self {
             accent: Color::Rgb(255, 199, 153),
             panel_bg: Color::Rgb(26, 26, 26),
-            sidebar_bg: Color::Reset,
             surface0: Color::Rgb(35, 35, 35),
             surface1: Color::Rgb(40, 40, 40),
             surface_dim: Color::Rgb(16, 16, 16),
@@ -520,24 +491,24 @@ impl Palette {
 
     /// Resolve a theme by name. Returns None for unknown names.
     pub fn from_name(name: &str) -> Option<Self> {
-        match crate::config::canonical_theme_name(name)? {
-            "catppuccin" => Some(Self::catppuccin()),
-            "catppuccin-latte" => Some(Self::catppuccin_latte()),
+        match name.to_lowercase().replace([' ', '_'], "-").as_str() {
+            "catppuccin" | "catppuccin-mocha" => Some(Self::catppuccin()),
+            "catppuccin-latte" | "latte" | "light" => Some(Self::catppuccin_latte()),
             "terminal" => Some(Self::terminal()),
-            "tokyo-night" => Some(Self::tokyo_night()),
-            "tokyo-night-day" => Some(Self::tokyo_night_day()),
+            "tokyo-night" | "tokyonight" => Some(Self::tokyo_night()),
+            "tokyo-night-day" | "tokyo-day" | "tokyonight-day" => Some(Self::tokyo_night_day()),
             "dracula" => Some(Self::dracula()),
             "nord" => Some(Self::nord()),
-            "gruvbox" => Some(Self::gruvbox()),
+            "gruvbox" | "gruvbox-dark" => Some(Self::gruvbox()),
             "gruvbox-light" => Some(Self::gruvbox_light()),
-            "one-dark" => Some(Self::one_dark()),
-            "one-light" => Some(Self::one_light()),
-            "solarized" => Some(Self::solarized()),
+            "one-dark" | "onedark" => Some(Self::one_dark()),
+            "one-light" | "onelight" => Some(Self::one_light()),
+            "solarized" | "solarized-dark" => Some(Self::solarized()),
             "solarized-light" => Some(Self::solarized_light()),
             "kanagawa" => Some(Self::kanagawa()),
-            "kanagawa-lotus" => Some(Self::kanagawa_lotus()),
-            "rose-pine" => Some(Self::rose_pine()),
-            "rose-pine-dawn" => Some(Self::rose_pine_dawn()),
+            "kanagawa-lotus" | "lotus" => Some(Self::kanagawa_lotus()),
+            "rose-pine" | "rosepine" => Some(Self::rose_pine()),
+            "rose-pine-dawn" | "rosepine-dawn" | "dawn" => Some(Self::rose_pine_dawn()),
             "vesper" => Some(Self::vesper()),
             _ => None,
         }
@@ -551,9 +522,6 @@ impl Palette {
         }
         if let Some(c) = &custom.panel_bg {
             self.panel_bg = parse_color(c);
-        }
-        if let Some(c) = &custom.sidebar_bg {
-            self.sidebar_bg = parse_color(c);
         }
         if let Some(c) = &custom.surface0 {
             self.surface0 = parse_color(c);
@@ -608,40 +576,11 @@ pub struct WorkspaceCardArea {
     pub indented: bool,
 }
 
-/// Layout area for a collapsible group header row in the sidebar workspace list
-/// (a visual group, or a synthesized repo header).
+/// Layout area for a visual group header row in the sidebar workspace list.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GroupHeaderCardArea {
     pub name: String,
-    pub collapse_key: String,
     pub rect: Rect,
-}
-
-/// Layout area for the "+" (create worktree) affordance on a repo header row
-/// in the sidebar workspace list.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WorktreeNewHitArea {
-    pub repo_identity: String,
-    pub rect: Rect,
-}
-
-/// Which tab the Create worktree modal is showing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum WorktreeCreateTab {
-    #[default]
-    Github,
-    Branch,
-    Name,
-}
-
-/// Filter query + selection index for one of the modal's derived lists
-/// (GitHub picks, local branches). The entries themselves are derived at
-/// render/input time from the repo caches, so only the query and cursor live
-/// here.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct WorktreeListPick {
-    pub query: String,
-    pub selected: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -656,37 +595,6 @@ pub struct WorktreeCreateState {
     pub checkout_path: std::path::PathBuf,
     pub error: Option<String>,
     pub creating: bool,
-    /// Which tab is active in the Create worktree modal.
-    pub active_tab: WorktreeCreateTab,
-    /// Repo identity (`GitSpaceMetadata.repo_identity`) used to key the
-    /// `repo_open_prs` / `repo_issues` / `repo_branches` caches for this modal.
-    pub repo_identity: String,
-    /// Query + selection for the GitHub tab's merged PR/issue list.
-    pub github_pick: WorktreeListPick,
-    /// Query + selection for the Branch tab's local-branch list.
-    pub branch_pick: WorktreeListPick,
-}
-
-/// Whether a GitHub pick row is a pull request or an issue.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum GithubPickKind {
-    Pr,
-    Issue,
-}
-
-/// A row in the Create worktree modal's GitHub tab — derived by merging the
-/// repo's cached open PRs (first) and issues (second).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GithubPickEntry {
-    pub kind: GithubPickKind,
-    pub number: u64,
-    pub title: String,
-    pub url: String,
-    /// PR head branch, when known (PRs only).
-    pub head_ref: Option<String>,
-    /// Whether selecting the row does anything. Issue rows are disabled when
-    /// no `[flow]` command is configured.
-    pub enabled: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -833,7 +741,6 @@ pub struct ViewState {
     pub sidebar_rect: Rect,
     pub workspace_card_areas: Vec<WorkspaceCardArea>,
     pub workspace_group_header_areas: Vec<GroupHeaderCardArea>,
-    pub worktree_new_hit_areas: Vec<WorktreeNewHitArea>,
     pub tab_bar_rect: Rect,
     pub tab_hit_areas: Vec<Rect>,
     pub tab_scroll_left_hit_area: Rect,
@@ -842,21 +749,9 @@ pub struct ViewState {
     pub terminal_area: Rect,
     pub mobile_header_rect: Rect,
     pub mobile_menu_hit_area: Rect,
-    pub mobile_prev_tab_hit_area: Rect,
-    pub mobile_next_tab_hit_area: Rect,
     pub toast_hit_area: Rect,
     pub pane_infos: Vec<PaneInfo>,
     pub split_borders: Vec<SplitBorder>,
-    pub right_panel_rect: Rect,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum RightPanelTab {
-    #[default]
-    Changes,
-    Checks,
-    Issues,
-    PullRequests,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -873,9 +768,6 @@ pub enum Mode {
     RenamePane,
     /// User is typing a visual group name for a workspace.
     SetWorkspaceGroup,
-    /// User is typing an arbitrary shell command from the sidebar Programs
-    /// launcher's "+ run command…" row.
-    LaunchProgramPrompt,
     NewLinkedWorktree,
     OpenExistingWorktree,
     ConfirmRemoveWorktree,
@@ -886,39 +778,6 @@ pub enum Mode {
     GlobalMenu,
     KeybindHelp,
     Navigator,
-    Chat,
-}
-
-impl Mode {
-    pub(crate) fn mouse_motion_changes_view(self) -> bool {
-        matches!(self, Self::GlobalMenu | Self::ContextMenu | Self::Navigator)
-    }
-
-    /// Whether keys in this mode are commands/navigation (an ASCII input source is wanted) rather
-    /// than free text. This is an explicit **allowlist** of the prefix command/navigation realm:
-    /// any mode NOT listed defaults to leaving the user's IME alone (the safe default), so adding a
-    /// new text-entry or overlay mode can never silently force ASCII. Used by
-    /// `sync_prefix_input_source` (gated by `switch_ascii_input_source_in_prefix`) so multi-level
-    /// prefix commands keep ASCII until they return to the terminal.
-    ///
-    /// Known limitation: the search boxes in `Navigator` and `KeybindHelp` are also held on ASCII,
-    /// since this `Mode`-level predicate can't see `search_focused` (non-ASCII filtering there
-    /// would need a runtime check).
-    pub(crate) fn wants_ascii_input(self) -> bool {
-        matches!(
-            self,
-            Mode::Prefix
-                | Mode::Navigate
-                | Mode::Navigator
-                | Mode::Copy
-                | Mode::Resize
-                | Mode::ConfirmClose
-                | Mode::ConfirmRemoveWorktree
-                | Mode::ContextMenu
-                | Mode::GlobalMenu
-                | Mode::KeybindHelp
-        )
-    }
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum NavigatorTarget {
@@ -949,48 +808,6 @@ pub(crate) struct NavigatorRow {
     pub is_tab: bool,
     pub expanded: bool,
     pub search_text: String,
-    /// Whether this row itself matched the active query/state filter, as
-    /// opposed to being included as ancestor context or cascaded subtree of a
-    /// matching workspace or tab. Always true when no filter is active.
-    pub matched: bool,
-}
-
-/// One rendered line in the navigator body. Spacer lines separate workspace
-/// groups visually and are not selectable.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum NavigatorDisplayLine {
-    Spacer,
-    Row(usize),
-}
-
-pub(crate) fn navigator_display_lines(rows: &[NavigatorRow]) -> Vec<NavigatorDisplayLine> {
-    let mut lines = Vec::with_capacity(rows.len().saturating_mul(2));
-    for (idx, row) in rows.iter().enumerate() {
-        if row.is_workspace && !lines.is_empty() {
-            lines.push(NavigatorDisplayLine::Spacer);
-        }
-        lines.push(NavigatorDisplayLine::Row(idx));
-    }
-    lines
-}
-
-pub(crate) fn navigator_display_index_of_row(
-    lines: &[NavigatorDisplayLine],
-    row_idx: usize,
-) -> Option<usize> {
-    lines
-        .iter()
-        .position(|line| *line == NavigatorDisplayLine::Row(row_idx))
-}
-
-pub(crate) fn navigator_first_row_at_or_after(
-    lines: &[NavigatorDisplayLine],
-    line_idx: usize,
-) -> Option<usize> {
-    lines.get(line_idx..)?.iter().find_map(|line| match line {
-        NavigatorDisplayLine::Row(idx) => Some(*idx),
-        NavigatorDisplayLine::Spacer => None,
-    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1011,42 +828,19 @@ pub(crate) struct NavigatorState {
     pub expanded_workspaces: std::collections::HashSet<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct CopyModeState {
     pub pane_id: PaneId,
     pub cursor_row: u16,
     pub cursor_col: u16,
     pub entry_offset_from_bottom: usize,
     pub selection: Option<CopyModeSelection>,
-    pub search: CopyModeSearchState,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CopyModeSelection {
     Character,
     Linewise { anchor_row: u32 },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum CopyModeSearchDirection {
-    Forward,
-    Backward,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct CopyModeSearchPrompt {
-    pub direction: CopyModeSearchDirection,
-    pub query: String,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct CopyModeSearchState {
-    pub prompt: Option<CopyModeSearchPrompt>,
-    pub query: String,
-    pub direction: Option<CopyModeSearchDirection>,
-    pub matches: Vec<crate::pane::TerminalTextMatch>,
-    pub current: Option<usize>,
-    pub geometry: Option<(u16, u16)>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -1064,40 +858,84 @@ pub enum AgentPanelSort {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingsSection {
     Theme,
-    Indicators,
     Sound,
     Toast,
     PaneLabels,
-    Sidebar,
+    Experiments,
     Integrations,
 }
 
 impl SettingsSection {
     pub const ALL: &[Self] = &[
         Self::Theme,
-        Self::Indicators,
         Self::Sound,
         Self::Toast,
         Self::PaneLabels,
-        Self::Sidebar,
         Self::Integrations,
+        Self::Experiments,
     ];
 
     pub fn label(self) -> &'static str {
         match self {
             Self::Theme => "theme",
-            Self::Indicators => "indicators",
             Self::Sound => "sound",
             Self::Toast => "toasts",
             Self::PaneLabels => "pane labels",
-            Self::Sidebar => "sidebar",
+            Self::Experiments => "experiments",
             Self::Integrations => "integrations",
         }
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ExperimentSetting {
+    PaneHistory,
+    SwitchAsciiInputSourceInPrefix,
+}
+
+impl ExperimentSetting {
+    pub(crate) const ALL: [Self; 2] = [Self::PaneHistory, Self::SwitchAsciiInputSourceInPrefix];
+
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::PaneHistory => "pane screen history",
+            Self::SwitchAsciiInputSourceInPrefix => {
+                "switch to ascii input source in prefix (macOS)"
+            }
+        }
+    }
+
+    pub(crate) fn enabled(self, state: &AppState) -> bool {
+        match self {
+            Self::PaneHistory => state.pane_history_persistence_enabled(),
+            Self::SwitchAsciiInputSourceInPrefix => {
+                state.switch_ascii_input_source_in_prefix_enabled()
+            }
+        }
+    }
+}
+
 /// All built-in theme names in display order.
-pub const THEME_NAMES: &[&str] = crate::config::THEME_NAMES;
+pub const THEME_NAMES: &[&str] = &[
+    "catppuccin",
+    "catppuccin-latte",
+    "terminal",
+    "tokyo-night",
+    "tokyo-night-day",
+    "dracula",
+    "nord",
+    "gruvbox",
+    "gruvbox-light",
+    "one-dark",
+    "one-light",
+    "solarized",
+    "solarized-light",
+    "kanagawa",
+    "kanagawa-lotus",
+    "rose-pine",
+    "rose-pine-dawn",
+    "vesper",
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MenuListState {
@@ -1233,22 +1071,12 @@ pub(crate) struct TabPressState {
 pub enum ContextMenuKind {
     Workspace {
         ws_idx: usize,
-        hidden: bool,
     },
     GitWorkspace {
         ws_idx: usize,
         is_linked_worktree: bool,
         has_worktree_children: bool,
         collapsed: bool,
-        hidden: bool,
-    },
-    /// A sidebar group/project header row (visual group or repo group).
-    /// `collapse_key` is the same key used for collapse state; `hidden` is
-    /// whether that key is currently hidden.
-    GroupHeader {
-        name: String,
-        collapse_key: String,
-        hidden: bool,
     },
     Tab {
         ws_idx: usize,
@@ -1260,23 +1088,6 @@ pub enum ContextMenuKind {
         pane_id: PaneId,
         source_pane_id: Option<PaneId>,
         has_manual_label: bool,
-        right_click_passthrough: bool,
-    },
-    /// An open PR row in the sidebar. `ws_idx` is a representative workspace
-    /// of the repo group, resolved at click time.
-    RepoPr {
-        ws_idx: usize,
-        number: u64,
-        url: String,
-        head_ref: String,
-    },
-    /// An issue row in the right-panel Issues tab. `flow_available` is
-    /// resolved at menu-open time from the per-repo `.bora.toml` `[flow]`
-    /// override and the global `[flow]` config template.
-    RepoIssue {
-        number: u64,
-        url: String,
-        flow_available: bool,
     },
 }
 
@@ -1286,345 +1097,129 @@ pub struct ContextMenuState {
     pub x: u16,
     pub y: u16,
     pub list: MenuListState,
-    pub items: Vec<String>,
-    pub bora_commands: Vec<crate::bora_config::BoraCommand>,
-    pub bora_port: Option<u16>,
-}
-
-/// Menu separator: rendered as a dim line, not selectable.
-pub const CONTEXT_MENU_SEPARATOR: &str = "─";
-
-pub fn build_context_menu_items(
-    kind: &ContextMenuKind,
-    workspaces: &[crate::workspace::Workspace],
-    custom_commands: &[String],
-) -> Vec<String> {
-    let groups: Vec<String> = {
-        let mut set = std::collections::BTreeSet::new();
-        for ws in workspaces {
-            if let Some(g) = &ws.visual_group {
-                set.insert(g.clone());
-            }
-        }
-        set.into_iter().collect()
-    };
-    let sep = || CONTEXT_MENU_SEPARATOR.to_string();
-    let push_groups = |v: &mut Vec<String>| {
-        v.push("New group\u{2026}".to_string());
-        for g in &groups {
-            v.push(format!("\u{2192} {g}"));
-        }
-        v.push("Remove from group".to_string());
-    };
-    let push_hide = |v: &mut Vec<String>, hidden: bool| {
-        v.push(sep());
-        if hidden {
-            v.push("Unhide".to_string());
-        } else {
-            v.push("Hide 5m".to_string());
-            v.push("Hide 10m".to_string());
-            v.push("Hide 15m".to_string());
-            v.push("Hide 30m".to_string());
-        }
-    };
-    match kind {
-        ContextMenuKind::Workspace { hidden, .. } => {
-            let mut v = vec![
-                "Rename".to_string(),
-                "Copy path".to_string(),
-                "Refresh status".to_string(),
-                sep(),
-            ];
-            push_groups(&mut v);
-            if !custom_commands.is_empty() {
-                v.push(sep());
-                v.extend(custom_commands.iter().cloned());
-            }
-            v.push(sep());
-            v.push("Close".to_string());
-            push_hide(&mut v, *hidden);
-            v
-        }
-        ContextMenuKind::GitWorkspace {
-            is_linked_worktree: false,
-            has_worktree_children: false,
-            hidden,
-            ..
-        } => {
-            let mut v = vec![
-                "Rename".to_string(),
-                "Copy path".to_string(),
-                sep(),
-                "New worktree".to_string(),
-                "Open worktree\u{2026}".to_string(),
-                "Sync".to_string(),
-                "Refresh status".to_string(),
-                sep(),
-            ];
-            push_groups(&mut v);
-            if !custom_commands.is_empty() {
-                v.push(sep());
-                v.extend(custom_commands.iter().cloned());
-            }
-            v.push(sep());
-            v.push("Close".to_string());
-            push_hide(&mut v, *hidden);
-            v
-        }
-        ContextMenuKind::GitWorkspace {
-            is_linked_worktree: true,
-            hidden,
-            ..
-        } => {
-            let mut v = vec![
-                "Rename".to_string(),
-                "Copy path".to_string(),
-                sep(),
-                "Merge to main".to_string(),
-                "Open PR".to_string(),
-                "Sync".to_string(),
-                "Refresh status".to_string(),
-                sep(),
-            ];
-            push_groups(&mut v);
-            if !custom_commands.is_empty() {
-                v.push(sep());
-                v.extend(custom_commands.iter().cloned());
-            }
-            v.push(sep());
-            v.push("Close".to_string());
-            v.push("Delete worktree\u{2026}".to_string());
-            push_hide(&mut v, *hidden);
-            v
-        }
-        ContextMenuKind::GitWorkspace {
-            has_worktree_children: true,
-            collapsed: true,
-            hidden,
-            ..
-        } => {
-            let mut v = vec![
-                "Rename".to_string(),
-                "Copy path".to_string(),
-                sep(),
-                "New worktree".to_string(),
-                "Open worktree\u{2026}".to_string(),
-                "Sync".to_string(),
-                "Refresh status".to_string(),
-                "Expand".to_string(),
-                sep(),
-            ];
-            push_groups(&mut v);
-            if !custom_commands.is_empty() {
-                v.push(sep());
-                v.extend(custom_commands.iter().cloned());
-            }
-            v.push(sep());
-            v.push("Close workspace".to_string());
-            push_hide(&mut v, *hidden);
-            v
-        }
-        ContextMenuKind::GitWorkspace {
-            has_worktree_children: true,
-            collapsed: false,
-            hidden,
-            ..
-        } => {
-            let mut v = vec![
-                "Rename".to_string(),
-                "Copy path".to_string(),
-                sep(),
-                "New worktree".to_string(),
-                "Open worktree\u{2026}".to_string(),
-                "Sync".to_string(),
-                "Refresh status".to_string(),
-                "Collapse".to_string(),
-                sep(),
-            ];
-            push_groups(&mut v);
-            if !custom_commands.is_empty() {
-                v.push(sep());
-                v.extend(custom_commands.iter().cloned());
-            }
-            v.push(sep());
-            v.push("Close workspace".to_string());
-            push_hide(&mut v, *hidden);
-            v
-        }
-        ContextMenuKind::GroupHeader { hidden, .. } => {
-            if *hidden {
-                vec!["Unhide".to_string()]
-            } else {
-                vec![
-                    "Hide 5m".to_string(),
-                    "Hide 10m".to_string(),
-                    "Hide 15m".to_string(),
-                    "Hide 30m".to_string(),
-                ]
-            }
-        }
-        ContextMenuKind::Tab { .. } => {
-            vec![
-                "New tab".to_string(),
-                "Rename".to_string(),
-                "Close".to_string(),
-            ]
-        }
-        ContextMenuKind::Pane {
-            has_manual_label,
-            source_pane_id,
-            right_click_passthrough,
-            ..
-        } => {
-            let mut v = vec!["Rename pane".to_string()];
-            if *has_manual_label {
-                v.push("Clear pane name".to_string());
-            }
-            if source_pane_id.is_some() {
-                v.push("Swap with focused pane".to_string());
-            }
-            v.extend([
-                "Split right".to_string(),
-                "Split down".to_string(),
-                "Zoom".to_string(),
-            ]);
-            v.push(if *right_click_passthrough {
-                "Use Herdr right-click menu".to_string()
-            } else {
-                "Send right-clicks to pane".to_string()
-            });
-            v.push("Close pane".to_string());
-            v
-        }
-        ContextMenuKind::RepoPr { .. } => vec![
-            "Open in worktree".to_string(),
-            sep(),
-            "Open in browser".to_string(),
-            "Copy URL".to_string(),
-        ],
-        ContextMenuKind::RepoIssue { flow_available, .. } => {
-            let mut v = Vec::new();
-            if *flow_available {
-                v.push("Run with bora-flow".to_string());
-                v.push(sep());
-            }
-            v.push("Open in browser".to_string());
-            v.push("Copy URL".to_string());
-            v
-        }
-    }
 }
 
 impl ContextMenuState {
-    pub fn items(&self) -> &[String] {
-        &self.items
-    }
-}
-
-impl AppState {
-    /// Resolve the effective flow command template for the active workspace's
-    /// repo: the `.bora.toml` `[flow]` override wins over the global `[flow]`
-    /// config template. `None` means the "Run with bora-flow" action is
-    /// unavailable. Reads `.bora.toml` per call, matching the workspace
-    /// context menu's per-click `.bora.toml` read.
-    pub(crate) fn repo_issue_flow_template(&self) -> Option<String> {
-        let per_repo = self
-            .active
-            .and_then(|idx| self.workspaces.get(idx))
-            .and_then(|ws| {
-                crate::bora_config::load_bora_config(ws.bora_config_root()?)?
-                    .flow?
-                    .command
-            });
-        crate::app::flow::resolve_flow_template(
-            per_repo.as_deref(),
-            self.flow_command_template.as_deref(),
-        )
-    }
-
-    /// Merged GitHub picks for the Create worktree modal: open PRs first, then
-    /// issues, filtered by the GitHub tab query (case-insensitive over
-    /// `#<number>` and title). Empty when no modal is open. Issue rows are only
-    /// enabled when a `[flow]` command is configured.
-    pub(crate) fn create_worktree_github_entries(&self) -> Vec<GithubPickEntry> {
-        let Some(create) = self.worktree_create.as_ref() else {
-            return Vec::new();
-        };
-        let query = create.github_pick.query.trim().to_lowercase();
-        let matches = |number: u64, title: &str| {
-            query.is_empty()
-                || format!("#{number}").contains(&query)
-                || title.to_lowercase().contains(&query)
-        };
-        let issues_enabled = self.repo_issue_flow_template().is_some();
-        let mut entries = Vec::new();
-        if let Some(prs) = self.repo_open_prs.get(&create.repo_identity) {
-            for pr in &prs.prs {
-                if matches(pr.number, &pr.title) {
-                    entries.push(GithubPickEntry {
-                        kind: GithubPickKind::Pr,
-                        number: pr.number,
-                        title: pr.title.clone(),
-                        url: pr.url.clone(),
-                        head_ref: Some(pr.head_ref_name.clone()),
-                        enabled: true,
-                    });
-                }
-            }
+    pub fn items(&self) -> &'static [&'static str] {
+        match self.kind {
+            ContextMenuKind::Workspace { .. } => &[
+                "Rename",
+                "Close",
+                "New group\u{2026}",
+                "Move to group\u{2026}",
+                "Remove from group",
+            ],
+            ContextMenuKind::GitWorkspace {
+                is_linked_worktree: false,
+                has_worktree_children: false,
+                ..
+            } => &[
+                "Rename",
+                "Close",
+                "New git worktree",
+                "Open git worktree...",
+                "Sync",
+                "New group\u{2026}",
+                "Move to group\u{2026}",
+                "Remove from group",
+            ],
+            ContextMenuKind::GitWorkspace {
+                is_linked_worktree: true,
+                ..
+            } => &[
+                "Rename",
+                "Close",
+                "Merge to main",
+                "Open PR",
+                "Sync",
+                "Delete git worktree...",
+                "New group\u{2026}",
+                "Move to group\u{2026}",
+                "Remove from group",
+            ],
+            ContextMenuKind::GitWorkspace {
+                is_linked_worktree: false,
+                has_worktree_children: true,
+                collapsed: true,
+                ..
+            } => &[
+                "Rename",
+                "Close group",
+                "New git worktree",
+                "Open git worktree...",
+                "Sync",
+                "Expand",
+                "New group\u{2026}",
+                "Move to group\u{2026}",
+                "Remove from group",
+            ],
+            ContextMenuKind::GitWorkspace {
+                is_linked_worktree: false,
+                has_worktree_children: true,
+                collapsed: false,
+                ..
+            } => &[
+                "Rename",
+                "Close group",
+                "New git worktree",
+                "Open git worktree...",
+                "Sync",
+                "Collapse",
+                "New group\u{2026}",
+                "Move to group\u{2026}",
+                "Remove from group",
+            ],
+            ContextMenuKind::Tab { .. } => &["New tab", "Rename", "Close"],
+            ContextMenuKind::Pane {
+                has_manual_label: true,
+                source_pane_id: Some(_),
+                ..
+            } => &[
+                "Rename pane",
+                "Clear pane name",
+                "Swap with focused pane",
+                "Split right",
+                "Split down",
+                "Zoom",
+                "Close pane",
+            ],
+            ContextMenuKind::Pane {
+                has_manual_label: false,
+                source_pane_id: Some(_),
+                ..
+            } => &[
+                "Rename pane",
+                "Swap with focused pane",
+                "Split right",
+                "Split down",
+                "Zoom",
+                "Close pane",
+            ],
+            ContextMenuKind::Pane {
+                has_manual_label: true,
+                source_pane_id: None,
+                ..
+            } => &[
+                "Rename pane",
+                "Clear pane name",
+                "Split right",
+                "Split down",
+                "Zoom",
+                "Close pane",
+            ],
+            ContextMenuKind::Pane {
+                has_manual_label: false,
+                source_pane_id: None,
+                ..
+            } => &[
+                "Rename pane",
+                "Split right",
+                "Split down",
+                "Zoom",
+                "Close pane",
+            ],
         }
-        if let Some(issues) = self.repo_issues.get(&create.repo_identity) {
-            for issue in &issues.issues {
-                if matches(issue.number, &issue.title) {
-                    entries.push(GithubPickEntry {
-                        kind: GithubPickKind::Issue,
-                        number: issue.number,
-                        title: issue.title.clone(),
-                        url: issue.url.clone(),
-                        head_ref: None,
-                        enabled: issues_enabled,
-                    });
-                }
-            }
-        }
-        entries
     }
-
-    /// Local branches for the Create worktree modal's Branch tab, filtered by
-    /// the Branch tab query (case-insensitive substring over the name). Empty
-    /// when no modal is open or the branch cache is unpopulated.
-    pub(crate) fn create_worktree_branch_entries(&self) -> Vec<crate::workspace::RepoBranch> {
-        let Some(create) = self.worktree_create.as_ref() else {
-            return Vec::new();
-        };
-        let query = create.branch_pick.query.trim().to_lowercase();
-        self.repo_branches
-            .get(&create.repo_identity)
-            .map(|branches| {
-                branches
-                    .branches
-                    .iter()
-                    .filter(|b| query.is_empty() || b.name.to_lowercase().contains(&query))
-                    .cloned()
-                    .collect()
-            })
-            .unwrap_or_default()
-    }
-}
-
-/// A request to run the configured flow command for a GitHub issue, set by
-/// the Issues tab context menu and drained by the App event loop.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FlowRunRequest {
-    pub number: u64,
-    pub url: String,
-}
-
-#[derive(Debug, Clone)]
-pub struct PendingBoraCommand {
-    pub ws_idx: usize,
-    pub command: String,
-    pub mode: crate::bora_config::BoraCommandMode,
-    pub port: Option<u16>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1693,71 +1288,8 @@ pub struct ProductAnnouncementState {
     pub preview: bool,
 }
 
-#[derive(Default)]
 pub struct KeybindHelpState {
     pub scroll: u16,
-    pub query: String,
-    pub search_focused: bool,
-}
-
-/// One candidate row of the `AddMember` prompt: a running agent pane that is
-/// not yet a member of the selected channel. Built from `agent.list`, the
-/// same agent inventory external clients read.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ChatMemberCandidate {
-    /// Public pane id, passed straight to `channel.join`.
-    pub pane_id: String,
-    pub name: String,
-    /// Shortened working directory, for telling same-named agents apart.
-    pub cwd: Option<String>,
-    /// Live agent status label ("idle", "working", ...).
-    pub status: String,
-}
-
-/// Modal sub-mode of the chat view, drawn as one small centered box over the
-/// overlay. While a prompt is open it owns the keyboard instead of the
-/// composer, and `Esc` cancels the prompt without closing the chat view.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ChatPrompt {
-    /// Create a channel by name (`channel.create`).
-    NewChannel { input: String },
-    /// Join a running agent to the selected channel (`channel.join`).
-    /// `candidates` is the unfiltered list; `query` narrows it and
-    /// `selected` indexes the narrowed view.
-    AddMember {
-        query: String,
-        selected: usize,
-        candidates: Vec<ChatMemberCandidate>,
-    },
-}
-
-/// TUI chat view presentation state (client layer). Channel data is fetched
-/// through the channel JSON API (`channel.list` / `channel.history` /
-/// `channel.members`) and cached here for render; live appends are pushed in
-/// by the send path while the view is open. Nothing here is server-authoritative.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct ChatViewState {
-    /// Selected row in the channel list.
-    pub selected: usize,
-    /// Message-area scroll offset, in wrapped display lines from the top.
-    pub scroll: usize,
-    /// Compose buffer for the input line.
-    pub input: String,
-    /// Transient status line (send errors, hints); cleared on next success.
-    pub status: Option<String>,
-    /// Cached `channel.list` result.
-    pub channels: Vec<crate::api::schema::ChannelSummary>,
-    /// Cached `channel.history` for the selected channel.
-    pub messages: Vec<crate::api::schema::ChannelMessage>,
-    /// Cached `channel.members` for the selected channel.
-    pub members: Vec<crate::api::schema::ChannelMember>,
-    /// Open modal sub-mode (new channel / add member), when any.
-    pub prompt: Option<ChatPrompt>,
-    /// Mode to return to when the view closes, recorded when the view
-    /// auto-opened over that mode (a mention while the human was away).
-    /// Manual opens leave it `None` and close through the standard
-    /// leave-modal path.
-    pub return_mode: Option<Mode>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1775,12 +1307,6 @@ pub(crate) struct PaneFocusTarget {
 
 /// All application state — pure data, no channels or async runtime.
 /// Testable without PTYs or a tokio runtime.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TabBarStatusSegment {
-    Zoom,
-    Text(Option<String>),
-}
-
 pub struct AppState {
     pub terminals:
         std::collections::HashMap<crate::terminal::TerminalId, crate::terminal::TerminalState>,
@@ -1819,43 +1345,14 @@ pub struct AppState {
     /// Set when UI interaction requested a clipboard write that must be
     /// handled by the outer App/event loop instead of directly from AppState.
     pub request_clipboard_write: Option<Vec<u8>>,
-    /// Set when UI interaction asked to open a URL in the system browser.
-    pub request_open_url: Option<String>,
-    /// Set when UI interaction asked to open a PR in a new worktree:
-    /// (representative workspace index of the repo group, PR number).
-    pub request_open_pr_worktree: Option<(usize, u64)>,
-    /// Set when UI interaction asked to run the configured flow command for
-    /// a GitHub issue; drained by App to spawn the flow pane.
-    pub request_flow_run: Option<FlowRunRequest>,
-    /// Set when UI interaction asked to open the chat view; drained by App,
-    /// which fetches channel data through the JSON API (mouse handlers stay
-    /// side-effect-light).
-    pub request_open_chat: bool,
-    /// Set when the sidebar "+" affordance asked to open the Create worktree
-    /// modal for a repo (by `repo_identity`); drained by App to trigger fetches
-    /// and open the modal so the mouse handler stays side-effect-light.
-    pub request_open_create_worktree: Option<String>,
-    pub pending_bora_command: Option<PendingBoraCommand>,
-    /// Transient port override consumed by custom_command_env for pane commands.
-    pub bora_port_override: Option<u16>,
     pub creating_new_tab: bool,
     pub requested_new_tab_name: Option<String>,
-    pub pending_workspace_create_cwd: Option<std::path::PathBuf>,
     pub rename_pane_target: Option<PaneId>,
     pub worktree_create: Option<WorktreeCreateState>,
     pub worktree_open: Option<WorktreeOpenState>,
-    pub chat: ChatViewState,
     pub worktree_remove: Option<WorktreeRemoveState>,
     pub worktree_directory: std::path::PathBuf,
-    /// Global `[flow]` command template from config.toml. Repos can override
-    /// it via `[flow]` in their `.bora.toml`; see `repo_issue_flow_template`.
-    pub flow_command_template: Option<String>,
     pub collapsed_space_keys: std::collections::HashSet<String>,
-    /// Sidebar-only, non-persisted: workspace/group keys temporarily hidden
-    /// from the main list, mapped to the instant each hide expires.
-    pub hidden_space_keys: std::collections::HashMap<String, std::time::Instant>,
-    /// Whether the collapsible bottom "Hidden" section is expanded.
-    pub hidden_section_expanded: bool,
     pub request_complete_onboarding: bool,
     pub name_input: String,
     pub name_input_replace_on_type: bool,
@@ -1900,63 +1397,22 @@ pub struct AppState {
     pub sidebar_width_source: SidebarWidthSource,
     pub sidebar_width_auto: bool,
     pub sidebar_collapsed: bool,
-    pub sidebar_collapsed_mode: crate::config::SidebarCollapsedModeConfig,
     /// Ratio of sidebar height allocated to the workspaces section.
     pub sidebar_section_split: f32,
-    pub right_panel_collapsed: bool,
-    pub right_panel_width: u16,
-    pub right_panel_min_width: u16,
-    pub right_panel_max_width: u16,
-    pub right_panel_active_tab: RightPanelTab,
-    pub right_panel_scroll: u16,
-    pub right_panel_selected_file: Option<(crate::workspace::ChangeSectionKind, String)>,
-    /// Set by mouse click on a file row; drained by App to spawn gitui/diff pane.
-    pub right_panel_diff_requested: bool,
-    /// Set when Checks tab is activated; drained by App to call start_checks_fetch.
-    pub right_panel_checks_requested: bool,
-    /// Set when Issues tab is activated; drained by App to call start_issues_fetch.
-    pub right_panel_issues_requested: bool,
-    /// Set when the PRs tab is activated; drained by App to call start_open_prs_fetch.
-    pub right_panel_prs_requested: bool,
     pub agent_panel_sort: AgentPanelSort,
-    pub status_indicators: crate::config::StatusIndicatorStyle,
-    /// Transient session-wide projection override for the built-in Agents view.
-    pub agent_view_override: Option<crate::api::schema::AgentViewSetParams>,
-    pub sidebar_agents: crate::config::AgentsSidebarConfig,
-    pub sidebar_spaces: crate::config::SpacesSidebarConfig,
     pub next_agent_state_change_seq: u64,
     /// Capture mouse input for Herdr's own mouse UI. When false, Herdr only
     /// captures mouse while the focused pane app requests mouse reporting.
     pub mouse_capture: bool,
-    pub copy_on_select: bool,
     pub right_click_passthrough_modifiers: Option<KeyModifiers>,
     pub right_click_passthrough: Option<RightClickPassthroughGesture>,
     pub redraw_on_focus_gained: bool,
     pub mouse_scroll_lines: usize,
     pub confirm_close: bool,
     pub prompt_new_tab_name: bool,
-    pub prompt_new_workspace_name: bool,
     pub pane_borders: bool,
-    pub pane_outer_borders: bool,
-    pub pane_scrollbars: bool,
     pub pane_gaps: bool,
     pub show_agent_labels_on_pane_borders: bool,
-    /// Group workspaces by repository in the sidebar (`ui.group_workspaces_by_repo`).
-    pub(crate) group_workspaces_by_repo: bool,
-    pub show_pane_ids_on_pane_borders: bool,
-    pub channel_group_name: String,
-    /// Whether the fork-only chat view surface is enabled (`ui.chat_view`).
-    pub chat_view: bool,
-    /// Resolved human chat identity (`ui.chat_name`, else OS username, else
-    /// "you"). One source of truth for the chat send path and the renderer.
-    pub chat_name: String,
-    /// Whether a message addressing the human seat auto-opens the chat view
-    /// (`ui.chat_open_on_mention`). Only meaningful with `chat_view` on.
-    pub chat_open_on_mention: bool,
-    pub hide_tab_bar_when_single_tab: bool,
-    pub tab_bar_position: TabBarPositionConfig,
-    pub tab_bar_right: Vec<TabBarStatusSegment>,
-    pub tab_bar_right_separator: String,
     pub pane_history_persistence: bool,
     /// Expose the focused pane's cursor anchor to the outer terminal even when
     /// the pane requested `?25l`. See `[experimental] reveal_hidden_cursor_for_cjk_ime`.
@@ -2009,8 +1465,6 @@ pub struct AppState {
     pub(crate) installed_plugins: InstalledPluginRegistry,
     /// Pane ids opened through the plugin pane API.
     pub(crate) plugin_panes: std::collections::HashMap<PaneId, PluginPaneRecord>,
-    /// Session-modal terminal popup. This is intentionally outside workspace layouts.
-    pub(crate) popup_pane: Option<PopupPaneState>,
     /// Recent plugin action/event command executions.
     pub(crate) plugin_command_logs: Vec<crate::api::schema::PluginCommandLogInfo>,
     pub(crate) next_plugin_command_log_id: u64,
@@ -2019,76 +1473,16 @@ pub struct AppState {
     pub global_menu: MenuListState,
     /// Resolved host terminal default colors for theming embedded panes.
     pub host_terminal_theme: TerminalTheme,
-    /// Last known foreground host terminal cell size in pixels.
-    pub(crate) host_cell_size: crate::kitty_graphics::HostCellSize,
-    /// Exact pixel provenance only while one confirmed SGR report is dispatched.
-    pub(crate) host_mouse_pixels: Option<crate::input::mouse::HostPixels>,
     /// Set when a persisted session snapshot would change.
     pub session_dirty: bool,
-    /// Cached open PRs authored by the current user, keyed by repo identity
-    /// (`GitSpaceMetadata.repo_identity`). Written by the periodic background
-    /// refresh; read by UI/API surfaces in later phases.
-    pub repo_open_prs: std::collections::HashMap<String, crate::workspace::RepoOpenPrs>,
-    /// Cached open issues relevant to the current user, keyed by repo identity
-    /// (`GitSpaceMetadata.repo_identity`). Written by on-demand background
-    /// fetches; read by UI/API surfaces in later phases.
-    pub repo_issues: std::collections::HashMap<String, crate::workspace::RepoIssues>,
-    /// Repo identities with an issues fetch currently in flight. Guards
-    /// against overlapping fetches from rapid tab toggling and lets the
-    /// Issues tab render a loading state; cleared on `RepoIssuesRefreshed`.
-    pub issues_fetch_in_flight: std::collections::HashSet<String>,
-    /// Repo identities with an on-demand open-PR fetch currently in flight.
-    /// Guards against overlapping fetches and lets the Create worktree modal's
-    /// GitHub tab render a loading state; cleared on `RepoPrsRefreshed`.
-    pub prs_fetch_in_flight: std::collections::HashSet<String>,
-    /// Cached local branches per repo identity
-    /// (`GitSpaceMetadata.repo_identity`). Written by on-demand background
-    /// fetches; read by the Create worktree modal's Branch tab.
-    pub repo_branches: std::collections::HashMap<String, crate::workspace::RepoBranches>,
-    /// Repo identities with a branch fetch currently in flight. Guards against
-    /// overlapping fetches; cleared on `RepoBranchesRefreshed`.
-    pub branches_fetch_in_flight: std::collections::HashSet<String>,
     /// Terminal runtimes that should be shut down by the app/runtime layer
     /// after state has detached their terminal metadata.
     pub(crate) terminal_runtime_shutdowns: Vec<crate::terminal::TerminalId>,
-    /// Set when a layout change (e.g. sidebar/right-panel toggle) reflows
-    /// pane content without changing the outer terminal's cols/rows. Bridged
-    /// into a per-client repaint request by the headless render loop, since
-    /// dimension-keyed full-repaint heuristics would otherwise miss it.
-    pub(crate) force_full_repaint: bool,
 }
 
 impl AppState {
     pub(crate) fn mark_session_dirty(&mut self) {
         self.session_dirty = true;
-    }
-
-    pub(crate) fn request_full_repaint(&mut self) {
-        self.force_full_repaint = true;
-    }
-
-    /// Sidebar hide key for a single workspace (non-persisted presentation state).
-    pub(crate) fn workspace_hide_key(ws: &crate::workspace::Workspace) -> String {
-        format!("ws:{}", ws.id)
-    }
-
-    /// Whether `key` is currently hidden: present and not yet expired.
-    pub(crate) fn is_hidden(&self, key: &str) -> bool {
-        self.hidden_space_keys
-            .get(key)
-            .is_some_and(|expiry| *expiry > std::time::Instant::now())
-    }
-
-    /// Earliest hide expiry, if any, for scheduling a render wakeup.
-    pub(crate) fn next_hide_expiry(&self) -> Option<std::time::Instant> {
-        self.hidden_space_keys.values().copied().min()
-    }
-
-    /// Drop hides whose expiry has passed. Returns whether anything changed.
-    pub(crate) fn sweep_expired_hides(&mut self, now: std::time::Instant) -> bool {
-        let before = self.hidden_space_keys.len();
-        self.hidden_space_keys.retain(|_, expiry| *expiry > now);
-        self.hidden_space_keys.len() != before
     }
 
     pub(crate) fn remove_alias_shadowed_by_new_pane(&mut self, pane_id: PaneId) {
@@ -2107,8 +1501,12 @@ impl AppState {
         self.show_agent_labels_on_pane_borders
     }
 
-    pub fn group_workspaces_by_repo(&self) -> bool {
-        self.group_workspaces_by_repo
+    pub fn pane_history_persistence_enabled(&self) -> bool {
+        self.pane_history_persistence
+    }
+
+    pub fn switch_ascii_input_source_in_prefix_enabled(&self) -> bool {
+        self.switch_ascii_input_source_in_prefix
     }
 
     pub(crate) fn pane_exposes_host_cursor(
@@ -2158,12 +1556,10 @@ impl AppState {
         &self,
         terminal_runtimes: &crate::terminal::TerminalRuntimeRegistry,
     ) -> bool {
-        self.mouse_capture
-            || self.popup_pane.is_some()
-            || self.focused_pane_requests_mouse_capture_from(terminal_runtimes)
+        self.mouse_capture || self.focused_pane_requests_mouse_capture_from(terminal_runtimes)
     }
 
-    pub fn is_prefix_key(&self, key: &crate::input::TerminalKey) -> bool {
+    pub fn is_prefix_key(&self, key: crate::input::TerminalKey) -> bool {
         crate::config::terminal_key_matches_combo(key, (self.prefix_code, self.prefix_mods))
     }
 
@@ -2260,7 +1656,7 @@ pub fn key_matches(
     expected_mods: KeyModifiers,
 ) -> bool {
     crate::config::terminal_key_matches_combo(
-        &crate::input::TerminalKey::from(*key),
+        crate::input::TerminalKey::from(*key),
         (expected_code, expected_mods),
     )
 }
@@ -2302,30 +1698,20 @@ impl AppState {
             request_reload_config: false,
             request_client_config_reload: false,
             request_clipboard_write: None,
-            request_open_url: None,
-            request_open_pr_worktree: None,
-            request_flow_run: None,
-            request_open_create_worktree: None,
-            pending_bora_command: None,
-            bora_port_override: None,
             creating_new_tab: false,
             requested_new_tab_name: None,
-            pending_workspace_create_cwd: None,
             rename_pane_target: None,
             worktree_create: None,
             worktree_open: None,
             worktree_remove: None,
             worktree_directory: std::path::PathBuf::from("/tmp/herdr-worktrees"),
-            flow_command_template: None,
             collapsed_space_keys: std::collections::HashSet::new(),
-            hidden_space_keys: std::collections::HashMap::new(),
-            hidden_section_expanded: false,
             request_complete_onboarding: false,
             name_input: String::new(),
             name_input_replace_on_type: false,
             release_notes: None,
             product_announcement: None,
-            keybind_help: KeybindHelpState::default(),
+            keybind_help: KeybindHelpState { scroll: 0 },
             navigator: NavigatorState::default(),
             copy_mode: None,
             workspace_scroll: 0,
@@ -2338,7 +1724,6 @@ impl AppState {
                 sidebar_rect: Rect::default(),
                 workspace_card_areas: Vec::new(),
                 workspace_group_header_areas: Vec::new(),
-                worktree_new_hit_areas: Vec::new(),
                 tab_bar_rect: Rect::default(),
                 tab_hit_areas: Vec::new(),
                 tab_scroll_left_hit_area: Rect::default(),
@@ -2347,15 +1732,10 @@ impl AppState {
                 terminal_area: Rect::default(),
                 mobile_header_rect: Rect::default(),
                 mobile_menu_hit_area: Rect::default(),
-                mobile_prev_tab_hit_area: Rect::default(),
-                mobile_next_tab_hit_area: Rect::default(),
                 toast_hit_area: Rect::default(),
                 pane_infos: Vec::new(),
                 split_borders: Vec::new(),
-                right_panel_rect: Rect::default(),
             },
-            chat: ChatViewState::default(),
-            request_open_chat: false,
             drag: None,
             workspace_press: None,
             tab_press: None,
@@ -2381,49 +1761,19 @@ impl AppState {
             sidebar_width_source: SidebarWidthSource::ConfigDefault,
             sidebar_width_auto: false,
             sidebar_collapsed: false,
-            sidebar_collapsed_mode: crate::config::SidebarCollapsedModeConfig::Compact,
             sidebar_section_split: 0.5,
-            right_panel_collapsed: true,
-            right_panel_width: 30,
-            right_panel_min_width: 20,
-            right_panel_max_width: 50,
-            right_panel_active_tab: RightPanelTab::default(),
-            right_panel_scroll: 0,
-            right_panel_selected_file: None,
-            right_panel_diff_requested: false,
-            right_panel_checks_requested: false,
-            right_panel_issues_requested: false,
-            right_panel_prs_requested: false,
             agent_panel_sort: AgentPanelSort::Spaces,
-            status_indicators: crate::config::StatusIndicatorStyle::Dots,
-            agent_view_override: None,
-            sidebar_agents: crate::config::AgentsSidebarConfig::default(),
-            sidebar_spaces: crate::config::SpacesSidebarConfig::default(),
             next_agent_state_change_seq: 0,
             mouse_capture: true,
-            copy_on_select: true,
             right_click_passthrough_modifiers: None,
             right_click_passthrough: None,
             redraw_on_focus_gained: true,
             mouse_scroll_lines: crate::config::DEFAULT_MOUSE_SCROLL_LINES,
             confirm_close: true,
             prompt_new_tab_name: true,
-            prompt_new_workspace_name: false,
             pane_borders: true,
-            pane_outer_borders: true,
-            pane_scrollbars: true,
             pane_gaps: false,
             show_agent_labels_on_pane_borders: false,
-            group_workspaces_by_repo: true,
-            show_pane_ids_on_pane_borders: false,
-            channel_group_name: "channels".to_string(),
-            chat_view: false,
-            chat_name: "you".to_string(),
-            chat_open_on_mention: true,
-            hide_tab_bar_when_single_tab: false,
-            tab_bar_position: TabBarPositionConfig::Top,
-            tab_bar_right: Vec::new(),
-            tab_bar_right_separator: " ".into(),
             pane_history_persistence: false,
             reveal_hidden_cursor_for_cjk_ime: false,
             cjk_ime_agent_filter_configured: false,
@@ -2469,23 +1819,13 @@ impl AppState {
             integration_install_messages: Vec::new(),
             installed_plugins: std::collections::HashMap::new(),
             plugin_panes: std::collections::HashMap::new(),
-            popup_pane: None,
             plugin_command_logs: Vec::new(),
             next_plugin_command_log_id: 1,
             plugin_commands_in_flight: 0,
             global_menu: MenuListState::new(0),
             host_terminal_theme: TerminalTheme::default(),
-            host_cell_size: crate::kitty_graphics::HostCellSize::default(),
-            host_mouse_pixels: None,
             session_dirty: false,
-            repo_open_prs: std::collections::HashMap::new(),
-            repo_issues: std::collections::HashMap::new(),
-            issues_fetch_in_flight: std::collections::HashSet::new(),
-            prs_fetch_in_flight: std::collections::HashSet::new(),
-            repo_branches: std::collections::HashMap::new(),
-            branches_fetch_in_flight: std::collections::HashSet::new(),
             terminal_runtime_shutdowns: Vec::new(),
-            force_full_repaint: false,
         }
     }
 
@@ -2589,10 +1929,6 @@ impl AppState {
             assert!(
                 self.context_menu.is_none(),
                 "empty app state must not keep context menu"
-            );
-            assert!(
-                self.host_mouse_pixels.is_none(),
-                "empty app state must not keep host mouse pixel provenance"
             );
             return;
         }
@@ -2712,19 +2048,6 @@ impl AppState {
                 "pending agent notification",
             );
         }
-        if let Some(popup) = &self.popup_pane {
-            assert!(
-                self.terminals.contains_key(&popup.terminal_id),
-                "popup {:?} references missing terminal {}",
-                popup.pane_id,
-                popup.terminal_id
-            );
-            assert!(
-                !attached_terminal_ids.contains(&popup.terminal_id),
-                "popup terminal {} must not be attached to a tiled pane",
-                popup.terminal_id
-            );
-        }
         for &pane_id in self.plugin_panes.keys() {
             assert_live_pane(pane_id, "plugin pane record");
         }
@@ -2791,7 +2114,7 @@ impl AppState {
         }
         if let Some(menu) = &self.context_menu {
             match menu.kind {
-                ContextMenuKind::Workspace { ws_idx, .. }
+                ContextMenuKind::Workspace { ws_idx }
                 | ContextMenuKind::GitWorkspace { ws_idx, .. } => {
                     assert_workspace_index(ws_idx, "context menu workspace")
                 }
@@ -2819,13 +2142,6 @@ impl AppState {
                         assert_live_pane(source_pane_id, "context menu source pane");
                     }
                 }
-                ContextMenuKind::RepoPr { ws_idx, .. } => {
-                    assert_workspace_index(ws_idx, "context menu repo pr")
-                }
-                // No index to check — the menu carries only the issue number/URL.
-                ContextMenuKind::RepoIssue { .. } => {}
-                // No workspace index to check — a group header carries only keys.
-                ContextMenuKind::GroupHeader { .. } => {}
             }
         }
     }
@@ -2887,81 +2203,6 @@ mod tests {
         state.assert_invariants_for_test();
     }
 
-    fn navigator_row_for_display(is_workspace: bool) -> NavigatorRow {
-        NavigatorRow {
-            target: NavigatorTarget::Workspace { ws_idx: 0 },
-            depth: if is_workspace { 0 } else { 1 },
-            label: String::new(),
-            meta: String::new(),
-            status: crate::detect::AgentState::Idle,
-            seen: true,
-            is_current: false,
-            is_workspace,
-            is_tab: false,
-            expanded: true,
-            search_text: String::new(),
-            matched: true,
-        }
-    }
-
-    #[test]
-    fn navigator_display_lines_separate_workspace_groups() {
-        let rows = vec![
-            navigator_row_for_display(true),
-            navigator_row_for_display(false),
-            navigator_row_for_display(true),
-            navigator_row_for_display(false),
-        ];
-        assert_eq!(
-            navigator_display_lines(&rows),
-            vec![
-                NavigatorDisplayLine::Row(0),
-                NavigatorDisplayLine::Row(1),
-                NavigatorDisplayLine::Spacer,
-                NavigatorDisplayLine::Row(2),
-                NavigatorDisplayLine::Row(3),
-            ]
-        );
-    }
-
-    #[test]
-    fn navigator_display_lines_have_no_leading_spacer() {
-        let rows = vec![
-            navigator_row_for_display(true),
-            navigator_row_for_display(false),
-        ];
-        assert_eq!(
-            navigator_display_lines(&rows),
-            vec![NavigatorDisplayLine::Row(0), NavigatorDisplayLine::Row(1)]
-        );
-        assert!(navigator_display_lines(&[]).is_empty());
-    }
-
-    #[test]
-    fn navigator_display_index_maps_row_to_line() {
-        let rows = vec![
-            navigator_row_for_display(true),
-            navigator_row_for_display(false),
-            navigator_row_for_display(true),
-        ];
-        let lines = navigator_display_lines(&rows);
-        assert_eq!(navigator_display_index_of_row(&lines, 2), Some(3));
-        assert_eq!(navigator_display_index_of_row(&lines, 9), None);
-    }
-
-    #[test]
-    fn navigator_first_row_skips_spacer_lines() {
-        let rows = vec![
-            navigator_row_for_display(true),
-            navigator_row_for_display(false),
-            navigator_row_for_display(true),
-        ];
-        let lines = navigator_display_lines(&rows);
-        // Line 2 is the spacer before the second workspace.
-        assert_eq!(navigator_first_row_at_or_after(&lines, 2), Some(2));
-        assert_eq!(navigator_first_row_at_or_after(&lines, 4), None);
-    }
-
     #[test]
     fn built_in_theme_names_resolve() {
         for name in THEME_NAMES {
@@ -2970,31 +2211,6 @@ mod tests {
                 "theme should resolve: {name}"
             );
         }
-    }
-
-    #[test]
-    fn built_in_themes_leave_sidebar_background_unset() {
-        for name in THEME_NAMES {
-            let palette = Palette::from_name(name).unwrap();
-            assert_eq!(
-                palette.sidebar_bg,
-                Color::Reset,
-                "built-in theme changed the sidebar background: {name}"
-            );
-        }
-    }
-
-    #[test]
-    fn custom_sidebar_background_overrides_the_default() {
-        let custom = crate::config::CustomThemeColors {
-            sidebar_bg: Some("#181825".to_string()),
-            ..Default::default()
-        };
-
-        assert_eq!(
-            Palette::catppuccin().with_overrides(&custom).sidebar_bg,
-            Color::Rgb(24, 24, 37)
-        );
     }
 
     #[test]
@@ -3036,130 +2252,88 @@ mod tests {
 
     #[test]
     fn linked_worktree_context_menu_keeps_safe_close_and_explicit_remove() {
-        let kind = ContextMenuKind::GitWorkspace {
-            ws_idx: 0,
-            is_linked_worktree: true,
-            has_worktree_children: false,
-            collapsed: false,
-            hidden: false,
-        };
         let menu = ContextMenuState {
-            items: build_context_menu_items(&kind, &[], &[]),
-            kind,
+            kind: ContextMenuKind::GitWorkspace {
+                ws_idx: 0,
+                is_linked_worktree: true,
+                has_worktree_children: false,
+                collapsed: false,
+            },
             x: 0,
             y: 0,
             list: MenuListState::new(0),
-            bora_commands: vec![],
-            bora_port: None,
         };
 
         assert_eq!(
-            menu.items().iter().map(String::as_str).collect::<Vec<_>>(),
-            [
+            menu.items(),
+            &[
                 "Rename",
-                "Copy path",
-                CONTEXT_MENU_SEPARATOR,
+                "Close",
                 "Merge to main",
                 "Open PR",
                 "Sync",
-                "Refresh status",
-                CONTEXT_MENU_SEPARATOR,
+                "Delete git worktree...",
                 "New group\u{2026}",
+                "Move to group\u{2026}",
                 "Remove from group",
-                CONTEXT_MENU_SEPARATOR,
-                "Close",
-                "Delete worktree\u{2026}",
-                CONTEXT_MENU_SEPARATOR,
-                "Hide 5m",
-                "Hide 10m",
-                "Hide 15m",
-                "Hide 30m",
             ]
         );
     }
 
     #[test]
     fn git_workspace_context_menu_keeps_remove_for_managed_worktrees_only() {
-        let kind = ContextMenuKind::GitWorkspace {
-            ws_idx: 0,
-            is_linked_worktree: false,
-            has_worktree_children: false,
-            collapsed: false,
-            hidden: false,
-        };
         let menu = ContextMenuState {
-            items: build_context_menu_items(&kind, &[], &[]),
-            kind,
+            kind: ContextMenuKind::GitWorkspace {
+                ws_idx: 0,
+                is_linked_worktree: false,
+                has_worktree_children: false,
+                collapsed: false,
+            },
             x: 0,
             y: 0,
             list: MenuListState::new(0),
-            bora_commands: vec![],
-            bora_port: None,
         };
 
         assert_eq!(
-            menu.items().iter().map(String::as_str).collect::<Vec<_>>(),
-            [
+            menu.items(),
+            &[
                 "Rename",
-                "Copy path",
-                CONTEXT_MENU_SEPARATOR,
-                "New worktree",
-                "Open worktree\u{2026}",
-                "Sync",
-                "Refresh status",
-                CONTEXT_MENU_SEPARATOR,
-                "New group\u{2026}",
-                "Remove from group",
-                CONTEXT_MENU_SEPARATOR,
                 "Close",
-                CONTEXT_MENU_SEPARATOR,
-                "Hide 5m",
-                "Hide 10m",
-                "Hide 15m",
-                "Hide 30m",
+                "New git worktree",
+                "Open git worktree...",
+                "Sync",
+                "New group\u{2026}",
+                "Move to group\u{2026}",
+                "Remove from group",
             ]
         );
     }
 
     #[test]
     fn parent_worktree_context_menu_uses_repo_actions() {
-        let kind = ContextMenuKind::GitWorkspace {
-            ws_idx: 0,
-            is_linked_worktree: false,
-            has_worktree_children: true,
-            collapsed: false,
-            hidden: false,
-        };
         let menu = ContextMenuState {
-            items: build_context_menu_items(&kind, &[], &[]),
-            kind,
+            kind: ContextMenuKind::GitWorkspace {
+                ws_idx: 0,
+                is_linked_worktree: false,
+                has_worktree_children: true,
+                collapsed: false,
+            },
             x: 0,
             y: 0,
             list: MenuListState::new(0),
-            bora_commands: vec![],
-            bora_port: None,
         };
         assert_eq!(
-            menu.items().iter().map(String::as_str).collect::<Vec<_>>(),
-            [
+            menu.items(),
+            &[
                 "Rename",
-                "Copy path",
-                CONTEXT_MENU_SEPARATOR,
-                "New worktree",
-                "Open worktree\u{2026}",
+                "Close group",
+                "New git worktree",
+                "Open git worktree...",
                 "Sync",
-                "Refresh status",
                 "Collapse",
-                CONTEXT_MENU_SEPARATOR,
                 "New group\u{2026}",
+                "Move to group\u{2026}",
                 "Remove from group",
-                CONTEXT_MENU_SEPARATOR,
-                "Close workspace",
-                CONTEXT_MENU_SEPARATOR,
-                "Hide 5m",
-                "Hide 10m",
-                "Hide 15m",
-                "Hide 30m",
             ]
         );
     }

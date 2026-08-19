@@ -1,5 +1,5 @@
 ---
-import SiteLayout from '../components/SiteLayout.astro';
+import MarketingLayout from '../components/MarketingLayout.astro';
 import fixture from '../data/plugins-fixture.json';
 
 const snapshotUrl = 'https://assets.herdr.dev/plugins/index.json';
@@ -17,47 +17,29 @@ try {
 }
 const initialData = liveData ?? (import.meta.env.DEV ? fixture : null);
 const initialIsFixture = !liveData && import.meta.env.DEV;
-// A card is a repository; a plugin is a validated manifest inside it. A monorepo
-// with three manifests is one card and three plugins, so the two counts differ
-// and both are stated. `source.totalCount` is the raw GitHub topic search and
-// still includes blacklisted and manifest-less repositories, so it is not used.
-const repos = initialData?.plugins ?? [];
-const repositoryCount = initialData?.repositoryCount ?? repos.length;
-const pluginCount =
-  initialData?.pluginCount ??
-  repos.reduce((n, repo) => n + (repo.manifests?.length || 1), 0);
 const apiUrl = import.meta.env.DEV ? null : snapshotUrl;
 ---
 
-<SiteLayout
+<MarketingLayout
   title="Herdr plugins: community plugin marketplace"
   description="Discover community Herdr plugins published on GitHub. An automatic index of public repositories tagged with the herdr-plugin topic."
   canonicalPath="/plugins/"
 >
   <main class="plugins-page">
-    <header class="ph ph-split">
-      <div>
-      <div class="hd-eyebrow"><s></s>the marketplace</div>
-      <h1>Built by the herd.</h1>
-      <p>
-        Community plugins published on GitHub, discovered automatically from the
-        <code>herdr-plugin</code> topic. Install any of them with
+    <section class="section plugins-hero">
+      <p class="section-kicker"># marketplace</p>
+      <h2>Plugins built on Herdr.</h2>
+      <p class="plugins-lede">
+        Community plugins published on GitHub. Install any of them with
         <code>herdr plugin install</code>, or publish your own and get listed.
       </p>
       <p class="plugins-trust">
         <span class="status-dot dot-idle"></span>
-        Listings aren't reviewed by Herdr, so install at your own discretion.
-        <a href="/docs/plugins/#trust-and-security">Trust guidance →</a>
+        Listings are discovered automatically from the GitHub topic
+        <code>herdr-plugin</code>. They are not reviewed by Herdr, so install at
+        your own discretion. <a href="/docs/plugins/#trust-and-security">Trust guidance</a>.
       </p>
-      </div>
-      <aside class="ph-side">
-        <b id="plugins-hero-count">{pluginCount.toLocaleString('en-US')}</b>
-        <span id="plugins-hero-summary">
-          plugins across {repositoryCount.toLocaleString('en-US')} repositories
-        </span>
-        <a href="/docs/plugins/">Publish yours →</a>
-      </aside>
-    </header>
+    </section>
 
     <section class="section plugins-controls">
       <div class="plugins-search-wrap">
@@ -66,7 +48,7 @@ const apiUrl = import.meta.env.DEV ? null : snapshotUrl;
           id="plugins-search"
           type="search"
           class="plugins-search"
-          placeholder="search plugins, repositories, owners, languages…"
+          placeholder="search plugins, owners, languages…"
           autocomplete="off"
           spellcheck="false"
           aria-label="Search plugins"
@@ -81,16 +63,12 @@ const apiUrl = import.meta.env.DEV ? null : snapshotUrl;
           <option value="name">Name</option>
         </select>
       </label>
-    </section>
-
-    <section class="section plugins-metabar">
       <p id="plugins-meta" class="plugins-meta" aria-live="polite"></p>
     </section>
 
     <section class="section plugins-results">
       <div id="plugins-grid" class="plugins-grid" role="list"></div>
       <div id="plugins-status" class="plugins-status">Loading plugins…</div>
-      <button id="plugins-more" class="button button-secondary plugins-more" hidden></button>
     </section>
 
     <section class="section plugins-publish">
@@ -116,13 +94,6 @@ const apiUrl = import.meta.env.DEV ? null : snapshotUrl;
     const searchInput = document.getElementById("plugins-search");
     const sortSelect = document.getElementById("plugins-sort");
     const metaEl = document.getElementById("plugins-meta");
-    const moreButton = document.getElementById("plugins-more");
-    const heroCountEl = document.getElementById("plugins-hero-count");
-    const heroSummaryEl = document.getElementById("plugins-hero-summary");
-
-    // 24 fills complete rows in both the 3-column and 2-column grid layouts.
-    const PAGE_SIZE = 24;
-    let visibleLimit = PAGE_SIZE;
 
     const LANG_COLORS = {
       TypeScript: "#3178c6",
@@ -136,8 +107,7 @@ const apiUrl = import.meta.env.DEV ? null : snapshotUrl;
       Ruby: "#701516",
     };
 
-    // One entry per repository. Its `manifests` are the plugins it ships.
-    let repos = [];
+    let plugins = [];
     let usingFallback = false;
 
     function timeAgo(iso) {
@@ -212,58 +182,23 @@ const apiUrl = import.meta.env.DEV ? null : snapshotUrl;
         meta.appendChild(lang);
       }
 
-      // Nearly every repository ships exactly one plugin whose name restates the
-      // repository name, so only its version earns a place in the meta row.
-      const manifests = manifestsOf(p);
-      if (manifests.length === 1 && manifests[0].version) {
-        meta.appendChild(el("span", "plugin-stat plugin-version", "v" + manifests[0].version));
-      }
-
       const updated = timeAgo(p.pushedAt);
       if (updated) meta.appendChild(el("span", "plugin-stat plugin-updated", "updated " + updated));
 
       card.appendChild(meta);
-
-      // A monorepo is the case the card title can't answer on its own, so it
-      // gets the extra row: how many plugins, and which.
-      if (manifests.length > 1) {
-        const ships = el("div", "plugin-ships");
-        ships.appendChild(el("span", "plugin-ship-count", manifests.length + " plugins"));
-        ships.appendChild(
-          el("span", "plugin-ship-list", manifests.map(manifestLabel).join(" · ")),
-        );
-        card.appendChild(ships);
-      }
-
       return card;
-    }
-
-    function manifestsOf(p) {
-      return Array.isArray(p.manifests) ? p.manifests : [];
-    }
-
-    function manifestLabel(m) {
-      return m.name || m.id || m.path || "plugin";
     }
 
     function matches(p, q) {
       if (!q) return true;
-      const hay = [
-        p.fullName,
-        p.owner,
-        p.name,
-        p.description,
-        p.language,
-        ...(p.topics || []),
-        ...manifestsOf(p).flatMap((m) => [m.name, m.id, m.description]),
-      ]
+      const hay = [p.fullName, p.owner, p.name, p.description, p.language, ...(p.topics || [])]
         .filter(Boolean)
         .join(" ")
         .toLowerCase();
       return q.split(/\s+/).every((term) => hay.includes(term));
     }
 
-    function sortRepos(list, mode) {
+    function sortPlugins(list, mode) {
       const by = [...list];
       const t = (v) => new Date(v || 0).getTime() || 0;
       if (mode === "recent") by.sort((a, b) => t(b.pushedAt) - t(a.pushedAt));
@@ -278,19 +213,10 @@ const apiUrl = import.meta.env.DEV ? null : snapshotUrl;
 
     function render() {
       const q = searchInput.value.trim().toLowerCase();
-      const visible = sortRepos(repos.filter((p) => matches(p, q)), sortSelect.value);
-      const shown = visible.slice(0, visibleLimit);
+      const visible = sortPlugins(plugins.filter((p) => matches(p, q)), sortSelect.value);
 
       grid.replaceChildren();
-      for (const p of shown) grid.appendChild(buildCard(p));
-
-      // Grow a page at a time, and name the real remainder on the last step so
-      // the button never promises 24 and delivers 5.
-      const remaining = visible.length - shown.length;
-      moreButton.hidden = remaining === 0;
-      if (remaining > 0) {
-        moreButton.textContent = "show " + Math.min(PAGE_SIZE, remaining) + " more";
-      }
+      for (const p of visible) grid.appendChild(buildCard(p));
 
       if (visible.length === 0) {
         statusEl.textContent = q
@@ -302,37 +228,25 @@ const apiUrl = import.meta.env.DEV ? null : snapshotUrl;
       }
     }
 
-    function setMeta(data) {
+    function setMeta(generatedAt) {
       const parts = [];
-      const repoCount = (data && data.repositoryCount) ?? repos.length;
-      const total =
-        (data && data.pluginCount) ??
-        repos.reduce((n, repo) => n + (manifestsOf(repo).length || 1), 0);
-      parts.push(total + (total === 1 ? " plugin" : " plugins"));
-      parts.push(repoCount + (repoCount === 1 ? " repository" : " repositories"));
-      heroCountEl.textContent = total.toLocaleString("en-US");
-      heroSummaryEl.textContent =
-        (total === 1 ? "plugin" : "plugins") +
-        " across " +
-        repoCount.toLocaleString("en-US") +
-        (repoCount === 1 ? " repository" : " repositories");
-      const ago = timeAgo(data && data.generatedAt);
+      parts.push(plugins.length + (plugins.length === 1 ? " plugin" : " plugins"));
+      const ago = timeAgo(generatedAt);
       if (ago) parts.push("updated " + ago);
       if (usingFallback) parts.push("preview data");
       metaEl.textContent = parts.join(" · ");
     }
 
     function apply(data) {
-      repos = Array.isArray(data && data.plugins) ? data.plugins : [];
-      setMeta(data);
+      plugins = Array.isArray(data && data.plugins) ? data.plugins : [];
+      setMeta(data && data.generatedAt);
       render();
     }
 
     function showError() {
-      repos = [];
+      plugins = [];
       metaEl.textContent = "";
       grid.replaceChildren();
-      moreButton.hidden = true;
       statusEl.textContent =
         "The plugin marketplace is warming up. Check back in a few minutes.";
       statusEl.hidden = false;
@@ -360,25 +274,14 @@ const apiUrl = import.meta.env.DEV ? null : snapshotUrl;
       }
     }
 
-    // A new query or order is a new list, so paging starts over.
-    function resetAndRender() {
-      visibleLimit = PAGE_SIZE;
-      render();
-    }
-
-    searchInput.addEventListener("input", resetAndRender);
-    sortSelect.addEventListener("change", resetAndRender);
-    moreButton.addEventListener("click", () => {
-      visibleLimit += PAGE_SIZE;
-      render();
-    });
+    searchInput.addEventListener("input", render);
+    sortSelect.addEventListener("change", render);
     load();
   </script>
 
   <style is:global>
     .plugins-page {
       padding-bottom: 5rem;
-      --plugins-clear-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M1.5 1.5l9 9M10.5 1.5l-9 9' stroke='black' stroke-width='1.6' stroke-linecap='round'/%3E%3C/svg%3E");
     }
 
     /* Reuse .section only for max-width centering, not its 5rem padding + top divider. */
@@ -493,23 +396,6 @@ const apiUrl = import.meta.env.DEV ? null : snapshotUrl;
     .plugins-search:focus {
       outline: none;
       border-color: var(--accent);
-    }
-
-    /* Chromium paints the native clear button in the OS accent colour, which
-       belongs to no ground the site defines. Redraw it from our own tokens. */
-    .plugins-search::-webkit-search-cancel-button {
-      -webkit-appearance: none;
-      appearance: none;
-      width: 0.7rem;
-      height: 0.7rem;
-      cursor: pointer;
-      background: var(--muted-2);
-      -webkit-mask: var(--plugins-clear-icon) center / contain no-repeat;
-      mask: var(--plugins-clear-icon) center / contain no-repeat;
-    }
-
-    .plugins-search::-webkit-search-cancel-button:hover {
-      background: var(--ink);
     }
 
     .plugins-sort-wrap {
@@ -662,59 +548,12 @@ const apiUrl = import.meta.env.DEV ? null : snapshotUrl;
       color: var(--muted-2);
     }
 
-    /* What the repository ships. Sits below the repo stats, separated by a rule,
-       so the repository stays the primary identity of the card. */
-    .plugin-ships {
-      display: flex;
-      flex-direction: column;
-      align-items: flex-start;
-      gap: 0.45rem;
-      padding-top: 0.7rem;
-      border-top: 1px solid var(--line);
-      font-family: var(--mono);
-      font-size: 0.78rem;
-      line-height: 1.5;
-      min-width: 0;
-    }
-
-    .plugin-version {
-      color: var(--muted-2);
-    }
-
-    .plugin-ship-count {
-      flex: 0 0 auto;
-      padding: 0.05rem 0.4rem;
-      border: 1px solid var(--line);
-      border-radius: var(--radius-sm);
-      color: var(--muted-2);
-    }
-
-    .plugin-ship-list {
-      align-self: stretch;
-      min-width: 0;
-      color: var(--muted);
-      display: -webkit-box;
-      -webkit-line-clamp: 2;
-      -webkit-box-orient: vertical;
-      overflow: hidden;
-    }
-
     .plugins-status {
       padding: 3rem 1rem;
       text-align: center;
       color: var(--muted);
       font-family: var(--mono);
       font-size: 0.85rem;
-    }
-
-    .plugins-more {
-      display: flex;
-      margin: 2rem auto 0;
-      cursor: pointer;
-    }
-
-    .plugins-more[hidden] {
-      display: none;
     }
 
     /* Publish */
@@ -759,4 +598,4 @@ const apiUrl = import.meta.env.DEV ? null : snapshotUrl;
       }
     }
   </style>
-</SiteLayout>
+</MarketingLayout>

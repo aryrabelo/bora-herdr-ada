@@ -1,5 +1,7 @@
 use super::{api_helpers::pane_agent_status, App};
 
+// Staged for #00f: the agent CLI will use this resolver once #00e provides terminal ids.
+#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TerminalTarget {
     pub ws_idx: usize,
@@ -8,6 +10,8 @@ pub(crate) struct TerminalTarget {
     pub terminal_id: String,
 }
 
+// Staged for #00f: ambiguity details are produced before the agent facade consumes them.
+#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TerminalTargetCandidate {
     pub terminal_id: String,
@@ -18,6 +22,8 @@ pub(crate) struct TerminalTargetCandidate {
     pub agent_status: crate::api::schema::AgentStatus,
 }
 
+// Staged for #00f: target errors are specified now and surfaced by agent commands next.
+#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum TerminalTargetError {
     NotFound {
@@ -30,6 +36,8 @@ pub(crate) enum TerminalTargetError {
 }
 
 impl App {
+    // Staged for #00f: current pane APIs stay pane-targeted while agent APIs will call this.
+    #[allow(dead_code)]
     pub(crate) fn resolve_terminal_target(
         &self,
         target: &str,
@@ -43,13 +51,13 @@ impl App {
             return Ok(resolved);
         }
 
-        if let Some((ws_idx, pane_id)) = self.parse_current_public_pane_id(target) {
+        if let Some((ws_idx, pane_id)) = self.parse_pane_id(target) {
             if let Some(resolved) = self.terminal_target_for_pane(ws_idx, pane_id) {
                 return Ok(resolved);
             }
         }
 
-        let agent_matches: Vec<_> = self
+        let name_matches: Vec<_> = self
             .terminal_targets()
             .into_iter()
             .filter(|candidate| {
@@ -63,51 +71,6 @@ impl App {
                     })
             })
             .collect();
-        if let Some(resolved) = self.single_terminal_match(target, agent_matches)? {
-            return Ok(resolved);
-        }
-
-        Err(TerminalTargetError::NotFound {
-            target: target.to_string(),
-        })
-    }
-
-    pub(crate) fn resolve_agent_target(
-        &self,
-        target: &str,
-    ) -> Result<TerminalTarget, TerminalTargetError> {
-        if let Some((ws_idx, pane_id)) = self.parse_current_public_pane_id(target) {
-            if let Some(resolved) = self
-                .terminal_target_for_pane(ws_idx, pane_id)
-                .filter(|resolved| self.target_is_agent(resolved))
-            {
-                return Ok(resolved);
-            }
-        }
-
-        let terminal_matches: Vec<_> = self
-            .terminal_targets()
-            .into_iter()
-            .filter(|candidate| candidate.terminal_id == target)
-            .collect();
-        if let Some(resolved) = self
-            .single_terminal_match(target, terminal_matches)?
-            .filter(|resolved| self.target_is_agent(resolved))
-        {
-            return Ok(resolved);
-        }
-
-        let name_matches: Vec<_> = self
-            .terminal_targets()
-            .into_iter()
-            .filter(|candidate| {
-                self.state
-                    .terminals
-                    .values()
-                    .find(|terminal| terminal.id.to_string() == candidate.terminal_id)
-                    .is_some_and(|terminal| terminal.agent_name.as_deref() == Some(target))
-            })
-            .collect();
         if let Some(resolved) = self.single_terminal_match(target, name_matches)? {
             return Ok(resolved);
         }
@@ -117,14 +80,8 @@ impl App {
         })
     }
 
-    fn target_is_agent(&self, target: &TerminalTarget) -> bool {
-        self.state
-            .terminals
-            .values()
-            .find(|terminal| terminal.id.to_string() == target.terminal_id)
-            .is_some_and(super::super::terminal::state::TerminalState::is_agent_terminal)
-    }
-
+    // Staged for #00f with resolve_terminal_target.
+    #[allow(dead_code)]
     fn single_terminal_match(
         &self,
         target: &str,
@@ -145,6 +102,8 @@ impl App {
         }
     }
 
+    // Staged for #00f with resolve_terminal_target.
+    #[allow(dead_code)]
     fn terminal_targets(&self) -> Vec<TerminalTarget> {
         self.state
             .workspaces
@@ -168,6 +127,8 @@ impl App {
             .collect()
     }
 
+    // Staged for #00f with resolve_terminal_target.
+    #[allow(dead_code)]
     fn terminal_target_for_pane(
         &self,
         ws_idx: usize,
@@ -184,6 +145,8 @@ impl App {
         })
     }
 
+    // Staged for #00f with resolve_terminal_target.
+    #[allow(dead_code)]
     fn terminal_target_candidate(
         &self,
         ws_idx: usize,

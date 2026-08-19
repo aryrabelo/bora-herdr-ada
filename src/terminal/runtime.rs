@@ -1,6 +1,4 @@
-use std::sync::Arc;
-
-use crate::render_signal::RenderSignal;
+use std::sync::{atomic::AtomicBool, Arc};
 
 use bytes::Bytes;
 use ratatui::{layout::Rect, Frame};
@@ -64,16 +62,14 @@ impl TerminalRuntime {
         import: crate::handoff_runtime::ImportedHandoffRuntime,
         scrollback_limit_bytes: usize,
         host_terminal_theme: crate::terminal_theme::TerminalTheme,
-        host_terminal_appearance: Option<crate::terminal_theme::HostAppearance>,
         events: mpsc::Sender<AppEvent>,
         render_notify: Arc<Notify>,
-        render_dirty: Arc<RenderSignal>,
+        render_dirty: Arc<AtomicBool>,
     ) -> std::io::Result<Self> {
         crate::pane::PaneRuntime::from_handoff_fd(
             import,
             scrollback_limit_bytes,
             host_terminal_theme,
-            host_terminal_appearance,
             events,
             render_notify,
             render_dirty,
@@ -81,8 +77,6 @@ impl TerminalRuntime {
         .map(Self)
     }
 
-    // Wrapper mirrors pane runtime construction arguments.
-    #[allow(clippy::too_many_arguments)]
     pub fn spawn(
         pane_id: PaneId,
         rows: u16,
@@ -90,12 +84,11 @@ impl TerminalRuntime {
         cwd: std::path::PathBuf,
         scrollback_limit_bytes: usize,
         host_terminal_theme: crate::terminal_theme::TerminalTheme,
-        host_terminal_appearance: Option<crate::terminal_theme::HostAppearance>,
         shell_config: crate::pane::PaneShellConfig<'_>,
         launch_env: &crate::pane::PaneLaunchEnv,
         events: mpsc::Sender<AppEvent>,
         render_notify: Arc<Notify>,
-        render_dirty: Arc<RenderSignal>,
+        render_dirty: Arc<AtomicBool>,
     ) -> std::io::Result<Self> {
         crate::pane::PaneRuntime::spawn(
             pane_id,
@@ -104,7 +97,6 @@ impl TerminalRuntime {
             cwd,
             scrollback_limit_bytes,
             host_terminal_theme,
-            host_terminal_appearance,
             shell_config,
             launch_env,
             events,
@@ -123,13 +115,12 @@ impl TerminalRuntime {
         cwd: std::path::PathBuf,
         scrollback_limit_bytes: usize,
         host_terminal_theme: crate::terminal_theme::TerminalTheme,
-        host_terminal_appearance: Option<crate::terminal_theme::HostAppearance>,
         shell_config: crate::pane::PaneShellConfig<'_>,
         launch_env: &crate::pane::PaneLaunchEnv,
         initial_history_ansi: Option<&str>,
         events: mpsc::Sender<AppEvent>,
         render_notify: Arc<Notify>,
-        render_dirty: Arc<RenderSignal>,
+        render_dirty: Arc<AtomicBool>,
     ) -> std::io::Result<Self> {
         crate::pane::PaneRuntime::spawn_with_initial_history(
             pane_id,
@@ -138,7 +129,6 @@ impl TerminalRuntime {
             cwd,
             scrollback_limit_bytes,
             host_terminal_theme,
-            host_terminal_appearance,
             shell_config,
             launch_env,
             initial_history_ansi,
@@ -158,13 +148,11 @@ impl TerminalRuntime {
         cwd: std::path::PathBuf,
         command: &str,
         launch_env: &crate::pane::PaneLaunchEnv,
-        agent_detection: crate::pane::AgentDetection,
         scrollback_limit_bytes: usize,
         host_terminal_theme: crate::terminal_theme::TerminalTheme,
-        host_terminal_appearance: Option<crate::terminal_theme::HostAppearance>,
         events: mpsc::Sender<AppEvent>,
         render_notify: Arc<Notify>,
-        render_dirty: Arc<RenderSignal>,
+        render_dirty: Arc<AtomicBool>,
     ) -> std::io::Result<Self> {
         crate::pane::PaneRuntime::spawn_shell_command(
             pane_id,
@@ -173,10 +161,8 @@ impl TerminalRuntime {
             cwd,
             command,
             launch_env,
-            agent_detection,
             scrollback_limit_bytes,
             host_terminal_theme,
-            host_terminal_appearance,
             events,
             render_notify,
             render_dirty,
@@ -184,8 +170,6 @@ impl TerminalRuntime {
         .map(Self)
     }
 
-    // Wrapper mirrors pane runtime construction arguments, including detection policy.
-    #[allow(clippy::too_many_arguments)]
     pub fn spawn_argv_command(
         pane_id: PaneId,
         rows: u16,
@@ -193,13 +177,11 @@ impl TerminalRuntime {
         cwd: std::path::PathBuf,
         argv: &[String],
         launch_env: &crate::pane::PaneLaunchEnv,
-        agent_detection: crate::pane::AgentDetection,
         scrollback_limit_bytes: usize,
         host_terminal_theme: crate::terminal_theme::TerminalTheme,
-        host_terminal_appearance: Option<crate::terminal_theme::HostAppearance>,
         events: mpsc::Sender<AppEvent>,
         render_notify: Arc<Notify>,
-        render_dirty: Arc<RenderSignal>,
+        render_dirty: Arc<AtomicBool>,
     ) -> std::io::Result<Self> {
         crate::pane::PaneRuntime::spawn_argv_command(
             pane_id,
@@ -208,10 +190,8 @@ impl TerminalRuntime {
             cwd,
             argv,
             launch_env,
-            agent_detection,
             scrollback_limit_bytes,
             host_terminal_theme,
-            host_terminal_appearance,
             events,
             render_notify,
             render_dirty,
@@ -221,13 +201,6 @@ impl TerminalRuntime {
 
     pub fn apply_host_terminal_theme(&self, theme: crate::terminal_theme::TerminalTheme) {
         self.0.apply_host_terminal_theme(theme);
-    }
-
-    pub fn apply_host_terminal_appearance(
-        &self,
-        appearance: Option<crate::terminal_theme::HostAppearance>,
-    ) {
-        self.0.apply_host_terminal_appearance(appearance);
     }
 
     pub fn begin_graceful_release(&self, agent: crate::detect::Agent) {
@@ -243,11 +216,6 @@ impl TerminalRuntime {
         &self,
     ) -> std::sync::Arc<tokio::sync::Notify> {
         self.0.agent_detection_reset_notify_for_test()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn agent_detection_enabled_for_test(&self) -> bool {
-        self.0.agent_detection_enabled_for_test()
     }
 
     pub fn set_full_lifecycle_authority_active(&self, active: bool) {
@@ -283,46 +251,8 @@ impl TerminalRuntime {
         self.0.scroll_metrics()
     }
 
-    pub(crate) fn search_text_matches(
-        &self,
-        query: &str,
-        case_sensitive: bool,
-    ) -> Vec<crate::pane::TerminalTextMatch> {
-        self.0.search_text_matches(query, case_sensitive)
-    }
-
-    pub(crate) fn text_match_is_current(&self, text_match: crate::pane::TerminalTextMatch) -> bool {
-        self.0.text_match_is_current(text_match)
-    }
-
-    pub(crate) fn text_matches_are_current(
-        &self,
-        text_matches: &[crate::pane::TerminalTextMatch],
-    ) -> Vec<bool> {
-        self.0.text_matches_are_current(text_matches)
-    }
-
-    pub(crate) fn word_motion_target(
-        &self,
-        row: u32,
-        col: u16,
-        motion: crate::pane::TerminalWordMotion,
-    ) -> Option<crate::pane::TerminalTextPoint> {
-        self.0.word_motion_target(row, col, motion)
-    }
-
-    /// Collects the complete terminal input-mode snapshot.
-    ///
-    /// This performs multiple terminal queries and may format keyboard state.
-    /// Keep it out of render/layout and pane-scaled loops; add a narrow accessor
-    /// when only one terminal fact is needed.
     pub fn input_state(&self) -> Option<crate::pane::InputState> {
         self.0.input_state()
-    }
-
-    /// Reads only whether the alternate screen is active.
-    pub fn alternate_screen_active(&self) -> bool {
-        self.0.alternate_screen_active()
     }
 
     pub fn cursor_state(
@@ -349,10 +279,6 @@ impl TerminalRuntime {
         self.0.detection_text()
     }
 
-    pub fn terminal_title(&self) -> Option<String> {
-        self.0.terminal_title()
-    }
-
     pub fn agent_osc_title(&self) -> String {
         self.0.agent_osc_title()
     }
@@ -361,31 +287,20 @@ impl TerminalRuntime {
         self.0.agent_osc_progress()
     }
 
-    pub(crate) fn recent_text_snapshot(&self, lines: usize) -> crate::pane::TerminalReadSnapshot {
-        self.0.recent_text_snapshot(lines)
+    pub fn recent_text(&self, lines: usize) -> String {
+        self.0.recent_text(lines)
     }
 
-    pub(crate) fn recent_ansi_snapshot(&self, lines: usize) -> crate::pane::TerminalReadSnapshot {
-        self.0.recent_ansi_snapshot(lines)
+    pub fn recent_ansi(&self, lines: usize) -> String {
+        self.0.recent_ansi(lines)
     }
 
-    #[cfg(test)]
     pub fn recent_unwrapped_text(&self, lines: usize) -> String {
-        self.0.recent_unwrapped_text_snapshot(lines).text
+        self.0.recent_unwrapped_text(lines)
     }
 
-    pub(crate) fn recent_unwrapped_text_snapshot(
-        &self,
-        lines: usize,
-    ) -> crate::pane::TerminalReadSnapshot {
-        self.0.recent_unwrapped_text_snapshot(lines)
-    }
-
-    pub(crate) fn recent_unwrapped_ansi_snapshot(
-        &self,
-        lines: usize,
-    ) -> crate::pane::TerminalReadSnapshot {
-        self.0.recent_unwrapped_ansi_snapshot(lines)
+    pub fn recent_unwrapped_ansi(&self, lines: usize) -> String {
+        self.0.recent_unwrapped_ansi(lines)
     }
 
     pub fn snapshot_history(&self) -> Option<String> {
@@ -438,22 +353,8 @@ impl TerminalRuntime {
         self.0.try_send_bytes(bytes)
     }
 
-    /// Forwards user keystroke bytes without dropping them on transient
-    /// backpressure; see `PaneRuntime::send_bytes_preserving_order`.
-    pub fn send_bytes_preserving_order(&self, bytes: Bytes) -> bool {
-        self.0.send_bytes_preserving_order(bytes)
-    }
-
-    pub fn send_bytes_after(&self, bytes: Bytes, delay: std::time::Duration) {
-        self.0.send_bytes_after(bytes, delay);
-    }
-
     pub async fn send_paste(&self, text: String) -> Result<(), mpsc::error::SendError<Bytes>> {
         self.0.send_paste(text).await
-    }
-
-    pub fn try_send_paste(&self, text: String) -> Result<(), mpsc::error::TrySendError<Bytes>> {
-        self.0.try_send_paste(text)
     }
 
     pub fn try_send_focus_event(&self, event: crate::ghostty::FocusEvent) -> bool {
@@ -464,45 +365,34 @@ impl TerminalRuntime {
         self.0.wheel_routing()
     }
 
-    pub(crate) fn screen_text_snapshot(
-        &self,
-    ) -> Option<(
-        crate::ghostty::ActiveScreen,
-        crate::terminal::ScreenSnapshot,
-    )> {
-        let (screen, cols, rows) = self.0.screen_text_snapshot()?;
-        Some((screen, crate::terminal::ScreenSnapshot { cols, rows }))
-    }
-
     pub fn encode_mouse_button(
         &self,
         kind: crossterm::event::MouseEventKind,
-        position: crate::input::mouse::Position,
+        column: u16,
+        row: u16,
         modifiers: crossterm::event::KeyModifiers,
     ) -> Option<Vec<u8>> {
-        self.0.encode_mouse_button(kind, position, modifiers)
+        self.0.encode_mouse_button(kind, column, row, modifiers)
     }
 
-    pub(crate) fn encode_mouse_motion(
+    pub fn encode_mouse_motion(
         &self,
         kind: crossterm::event::MouseEventKind,
-        position: crate::input::mouse::Position,
+        column: u16,
+        row: u16,
         modifiers: crossterm::event::KeyModifiers,
     ) -> Option<Vec<u8>> {
-        self.0.encode_mouse_motion(kind, position, modifiers)
+        self.0.encode_mouse_motion(kind, column, row, modifiers)
     }
 
-    pub(crate) fn encode_mouse_wheel(
+    pub fn encode_mouse_wheel(
         &self,
         kind: crossterm::event::MouseEventKind,
-        position: crate::input::mouse::Position,
+        column: u16,
+        row: u16,
         modifiers: crossterm::event::KeyModifiers,
     ) -> Option<Vec<u8>> {
-        self.0.encode_mouse_wheel(kind, position, modifiers)
-    }
-
-    pub(crate) fn pixel_size(&self) -> Option<(u32, u32)> {
-        self.0.pixel_size()
+        self.0.encode_mouse_wheel(kind, column, row, modifiers)
     }
 
     pub fn encode_alternate_scroll(
@@ -514,10 +404,6 @@ impl TerminalRuntime {
 
     pub fn cwd(&self) -> Option<std::path::PathBuf> {
         self.0.cwd()
-    }
-
-    pub fn follow_cwd(&self) -> Option<std::path::PathBuf> {
-        self.0.follow_cwd()
     }
 
     pub fn foreground_cwd(&self) -> Option<std::path::PathBuf> {
@@ -558,10 +444,6 @@ impl TerminalRuntime {
 
     pub(crate) fn test_process_pty_bytes(&self, bytes: &[u8]) {
         self.0.test_process_pty_bytes(bytes);
-    }
-
-    pub(crate) fn test_set_child_pid(&self, pid: u32) {
-        self.0.test_set_child_pid(pid);
     }
 
     pub(crate) fn test_with_scrollback_bytes(

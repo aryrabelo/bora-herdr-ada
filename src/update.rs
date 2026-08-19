@@ -171,8 +171,6 @@ struct UpdateManifest {
     protocol: Option<u32>,
     notes: String,
     assets: BTreeMap<String, AssetRef>,
-    #[serde(default)]
-    sha256: BTreeMap<String, String>,
     announcement: Option<serde_json::Value>,
     #[serde(default, deserialize_with = "deserialize_manifest_releases")]
     releases: BTreeMap<String, serde_json::Value>,
@@ -298,7 +296,7 @@ fn fetch_json_manifest<T>(url: &str) -> Result<T, String>
 where
     T: serde::de::DeserializeOwned,
 {
-    let output = crate::noninteractive_process::curl_command()
+    let output = Command::new("curl")
         .args([
             "-sfL",
             "--retry",
@@ -366,13 +364,6 @@ fn release_info_from_manifest(manifest: &UpdateManifest) -> Result<Option<Releas
         .get(&asset_key)
         .ok_or_else(|| format!("no binary for {asset_key} in update manifest"))?;
     let download_url = asset.url.clone();
-    let sha256 = asset
-        .sha256
-        .clone()
-        .or_else(|| manifest.sha256.get(&asset_key).cloned())
-        .ok_or_else(|| {
-            format!("update manifest asset {asset_key} is missing a SHA-256 checksum")
-        })?;
 
     Ok(Some(ReleaseInfo {
         identity: latest.to_string(),
@@ -383,7 +374,7 @@ fn release_info_from_manifest(manifest: &UpdateManifest) -> Result<Option<Releas
         #[cfg(not(windows))]
         target_protocol: manifest.protocol,
         download_url,
-        sha256: Some(sha256),
+        sha256: asset.sha256.clone(),
         notes_body,
     }))
 }
@@ -519,7 +510,7 @@ fn homebrew_update_from_formula_json(
 fn check_homebrew_latest() -> Result<Option<Version>, String> {
     let current = Version::current();
 
-    let output = crate::noninteractive_process::curl_command()
+    let output = Command::new("curl")
         .args([
             "-sfL",
             "--retry",
@@ -582,7 +573,7 @@ fn download_update(release: &ReleaseInfo) -> Result<DownloadedUpdate, String> {
     let tmp_path = parent.join(format!(".herdr-update-{}.tmp", std::process::id()));
 
     // Download the exact asset URL (pinned to the release we checked)
-    let status = crate::noninteractive_process::curl_command()
+    let status = Command::new("curl")
         .args(["-sfL", "--max-time", "120", "-o"])
         .arg(&tmp_path)
         .arg(&release.download_url)
@@ -614,38 +605,10 @@ fn download_update(release: &ReleaseInfo) -> Result<DownloadedUpdate, String> {
         }
     }
 
-    // macOS: cargo/CI produce a linker-signed adhoc signature (flags 0x20002)
-    // AMFI rejects, and downloads may carry a quarantine xattr. Either makes the
-    // installed binary die with SIGKILL on next launch. Clear xattrs and re-sign
-    // ad-hoc (flags 0x2) on the temp file before it becomes the live binary.
-    #[cfg(target_os = "macos")]
-    if let Err(e) = resign_adhoc(&tmp_path) {
-        let _ = fs::remove_file(&tmp_path);
-        return Err(e);
-    }
-
     Ok(DownloadedUpdate {
         current_exe,
         tmp_path: Some(tmp_path),
     })
-}
-
-#[cfg(target_os = "macos")]
-fn resign_adhoc(path: &Path) -> Result<(), String> {
-    // Best-effort: strip extended attributes (e.g. quarantine).
-    let _ = Command::new("xattr").args(["-cr"]).arg(path).status();
-
-    let status = Command::new("codesign")
-        .args(["--force", "--sign", "-"])
-        .arg(path)
-        .status()
-        .map_err(|e| format!("failed to ad-hoc sign downloaded update: {e}"))?;
-    if !status.success() {
-        return Err(format!(
-            "failed to ad-hoc sign downloaded update: codesign exited with {status}"
-        ));
-    }
-    Ok(())
 }
 
 #[cfg(not(windows))]
@@ -663,56 +626,12 @@ fn install_downloaded_update(mut update: DownloadedUpdate) -> Result<(), String>
         return Err(format!("failed to replace binary: {e}"));
     }
 
-    // No rollback possible: the old inode is already replaced by the rename
-    // above. All we can do is fail loudly if the new binary is dead on arrival.
-    verify_installed_binary(&update.current_exe)?;
-
     Ok(())
 }
 
-#[cfg(not(windows))]
-fn verify_installed_binary(exe: &Path) -> Result<(), String> {
-    use std::os::unix::process::ExitStatusExt;
-    use std::process::Stdio;
-
-    let status = Command::new(exe)
-        .arg("--version")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map_err(|e| format!("installed update failed to launch: {e}"))?;
-
-    if let Some(code) = status.code() {
-        if code != 0 {
-            return Err(format!("installed update exited with {code} on --version"));
-        }
-        return Ok(());
-    }
-
-    // No exit code => killed by a signal. On macOS a rejected code signature
-    // makes the kernel SIGKILL (9) the binary at exec.
-    let signal = status.signal().unwrap_or(0);
-    if signal == 9 {
-        return Err(
-            "installed update was SIGKILLed at exec: macOS rejected its code signature \
-             (AppleSystemPolicy; kernel logs 'load code signature error 2'). \
-             Inspect with: log show --last 2m --predicate 'eventMessage CONTAINS \"bora\"' \
-             and re-sign a fresh copy with: codesign --force --sign -"
-                .into(),
-        );
-    }
-    Err(format!(
-        "installed update was killed by signal {signal} on --version"
-    ))
-}
-
 #[cfg(windows)]
-fn install_windows_update_with_installer(
-    channel: UpdateChannel,
-    expected_build_id: Option<&str>,
-) -> Result<(), String> {
-    let mut command = Command::new("powershell");
-    command
+fn install_windows_update_with_installer(channel: UpdateChannel) -> Result<(), String> {
+    let status = Command::new("powershell")
         .args([
             "-NoProfile",
             "-ExecutionPolicy",
@@ -726,11 +645,7 @@ fn install_windows_update_with_installer(
         // PowerShell 5.1 (this `powershell`) fails to autoload cmdlets like
         // Get-FileHash. Removing it lets 5.1 compute its own default path.
         // See PowerShell/PowerShell#8635.
-        .env_remove("PSModulePath");
-    if let Some(build_id) = expected_build_id {
-        command.env("HERDR_EXPECTED_BUILD_ID", build_id);
-    }
-    let status = command
+        .env_remove("PSModulePath")
         .status()
         .map_err(|err| format!("failed to run Windows installer: {err}"))?;
 
@@ -1909,11 +1824,6 @@ pub(crate) fn is_package_manager_managed_exe_path(path: &Path) -> bool {
         || is_nix_store_exe_path_following_links(path)
 }
 
-#[cfg(not(unix))]
-pub(crate) fn is_package_manager_managed_exe_path(_path: &Path) -> bool {
-    false
-}
-
 fn is_homebrew_managed_exe_path_following_links(path: &Path) -> bool {
     if is_homebrew_managed_exe_path(path) {
         return true;
@@ -2111,7 +2021,7 @@ pub fn self_update(options: SelfUpdateOptions) -> Result<Version, String> {
         if let Some(sha256) = &release.sha256 {
             tracing::debug!(sha256 = %sha256, "selected Windows update asset has checksum");
         }
-        install_windows_update_with_installer(channel, release.build_id.as_deref())?;
+        install_windows_update_with_installer(channel)?;
         let updated_exe = windows_installed_herdr_exe_path()?;
         eprintln!("installed {}", release.label());
         print_outdated_integration_notice_with_updated_binary(&updated_exe);
@@ -2350,38 +2260,6 @@ mod tests {
             "/tmp/hu-{name}-{}-{nanos}.sock",
             std::process::id()
         ))
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn resign_adhoc_signs_a_macho_binary() {
-        let dst = unique_test_socket_path("resign").with_extension("bin");
-        fs::copy("/bin/ls", &dst).unwrap();
-        assert!(resign_adhoc(&dst).is_ok());
-        let _ = fs::remove_file(&dst);
-    }
-
-    #[test]
-    fn verify_installed_binary_flags_signal_kill_and_accepts_clean_exit() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let make = |name: &str, body: &str| -> std::path::PathBuf {
-            let p = unique_test_socket_path(name).with_extension("sh");
-            fs::write(&p, format!("#!/bin/sh\n{body}\n")).unwrap();
-            fs::set_permissions(&p, fs::Permissions::from_mode(0o755)).unwrap();
-            p
-        };
-
-        // (a) self-SIGKILL => signal death => code-signature diagnosis.
-        let killed = make("verify-killed", "kill -9 $$");
-        let err = verify_installed_binary(&killed).unwrap_err();
-        assert!(err.contains("code signature"), "got: {err}");
-        let _ = fs::remove_file(&killed);
-
-        // (b) clean exit => Ok.
-        let ok = make("verify-ok", "exit 0");
-        assert!(verify_installed_binary(&ok).is_ok());
-        let _ = fs::remove_file(&ok);
     }
 
     fn spawn_accept_loop(path: &Path) -> (Arc<AtomicBool>, thread::JoinHandle<()>) {
@@ -2856,10 +2734,7 @@ mod tests {
             server: crate::api::RuntimeStatus {
                 version: Some("0.6.2".to_string()),
                 protocol: Some(76),
-                capabilities: Some(crate::api::schema::ServerCapabilities {
-                    live_handoff: true,
-                    detached_server_daemon: true,
-                }),
+                capabilities: Some(crate::api::schema::ServerCapabilities { live_handoff: true }),
             },
         };
 
@@ -3445,26 +3320,6 @@ mod tests {
     }
 
     #[test]
-    fn stable_update_requires_asset_checksum() {
-        let (os, arch) = platform_target();
-        let asset_key = format!("{os}-{arch}");
-        let json = format!(
-            r####"{{
-                "version": "99.99.99",
-                "notes": "### Changed\n- One",
-                "assets": {{
-                    "{asset_key}": "https://example.com/herdr"
-                }}
-            }}"####
-        );
-        let manifest: UpdateManifest = serde_json::from_str(&json).unwrap();
-
-        assert!(release_info_from_manifest(&manifest)
-            .unwrap_err()
-            .contains("missing a SHA-256 checksum"));
-    }
-
-    #[test]
     fn invalid_manifest_announcement_does_not_block_release_info() {
         let (os, arch) = platform_target();
         let asset_key = format!("{os}-{arch}");
@@ -3479,10 +3334,7 @@ mod tests {
                     "body": "### Heads up\n- Defaults changed"
                 }},
                 "assets": {{
-                    "{asset_key}": {{
-                        "url": "https://example.com/herdr",
-                        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-                    }}
+                    "{asset_key}": "https://example.com/herdr"
                 }}
             }}"####
         );
@@ -3562,18 +3414,8 @@ mod tests {
 
     #[test]
     fn checked_in_website_manifest_matches_update_schema() {
-        #[derive(Deserialize)]
-        struct LegacyUpdateManifest {
-            assets: BTreeMap<String, String>,
-        }
-
-        let json = include_str!("../website/latest.json");
-        let legacy: LegacyUpdateManifest = serde_json::from_str(json)
-            .expect("website/latest.json should keep legacy string asset URLs");
-        assert_eq!(legacy.assets.len(), 4);
-
-        let manifest: UpdateManifest =
-            serde_json::from_str(json).expect("website/latest.json should match updater schema");
+        let manifest: UpdateManifest = serde_json::from_str(include_str!("../website/latest.json"))
+            .expect("website/latest.json should match updater schema");
 
         assert!(!manifest
             .metadata_for_version(&Version::parse(&manifest.version).unwrap())
@@ -3593,22 +3435,17 @@ mod tests {
             "macos-x86_64",
             "macos-aarch64",
         ] {
-            let asset = manifest
+            let url = &manifest
                 .assets
                 .get(target)
-                .unwrap_or_else(|| panic!("missing asset URL for {target}"));
-            let url = &asset.url;
-            assert_eq!(
-                manifest.sha256.get(target).map(String::len),
-                Some(64),
-                "missing SHA-256 checksum for {target}"
-            );
+                .unwrap_or_else(|| panic!("missing asset URL for {target}"))
+                .url;
             assert!(
                 url.contains(&format!("/releases/download/v{}/", manifest.version)),
                 "unexpected release URL for {target}: {url}"
             );
             assert!(
-                url.ends_with(&format!("bora-{target}")),
+                url.ends_with(&format!("herdr-{target}")),
                 "unexpected asset name for {target}: {url}"
             );
         }
@@ -3624,24 +3461,16 @@ mod tests {
                 "macos-x86_64",
                 "macos-aarch64",
             ] {
-                let asset = assets
+                let url = assets
                     .get(target)
-                    .cloned()
+                    .and_then(serde_json::Value::as_str)
                     .unwrap_or_else(|| panic!("missing asset URL for {version} {target}"));
-                let asset: AssetRef = serde_json::from_value(asset)
-                    .unwrap_or_else(|_| panic!("invalid asset for {version} {target}"));
-                let url = &asset.url;
                 assert!(
                     url.contains(&format!("/releases/download/v{version}/")),
                     "unexpected release URL for {version} {target}: {url}"
                 );
-                // Archived entries include releases inherited from upstream
-                // herdr (<= 0.8.0, `herdr-<target>`) alongside the fork's own
-                // (`bora-<target>`). Only the current release, asserted above,
-                // must be bora-named.
                 assert!(
-                    url.ends_with(&format!("bora-{target}"))
-                        || url.ends_with(&format!("herdr-{target}")),
+                    url.ends_with(&format!("herdr-{target}")),
                     "unexpected asset name for {version} {target}: {url}"
                 );
             }

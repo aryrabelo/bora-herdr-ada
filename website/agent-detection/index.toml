@@ -57,10 +57,6 @@ id = "kiro"
 path = "kiro.toml"
 
 [[agents]]
-id = "maki"
-path = "maki.toml"
-
-[[agents]]
 id = "opencode"
 path = "opencode.toml"
 
@@ -75,10 +71,6 @@ path = "pi.toml"
 [[agents]]
 id = "qodercli"
 path = "qodercli.toml"
-
-[[agents]]
-id = "qwen"
-path = "qwen.toml"
 
 [[agents]]
 id = "copilot"

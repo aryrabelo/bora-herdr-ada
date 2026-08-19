@@ -1,4 +1,3 @@
-mod alt_screen_read;
 pub mod autodetect;
 #[cfg(unix)]
 pub(crate) mod client_accept;

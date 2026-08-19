@@ -197,21 +197,15 @@ pub(crate) fn worktree_dirty_remove_message(path: &Path) -> String {
 }
 
 pub(crate) fn checkout_has_dirty_files(path: &Path) -> Result<bool, String> {
-    checkout_status_is_nonempty(path, "--untracked-files=all")
-}
-
-/// Tracked-only dirtiness: staged or unstaged changes to files git already
-/// knows, ignoring untracked ones. `git merge` completes with untracked files
-/// present, so a merge gate must not refuse on them; removing a checkout would
-/// destroy them, so `checkout_has_dirty_files` still counts them.
-pub(crate) fn checkout_has_tracked_changes(path: &Path) -> Result<bool, String> {
-    checkout_status_is_nonempty(path, "--untracked-files=no")
-}
-
-fn checkout_status_is_nonempty(path: &Path, untracked: &str) -> Result<bool, String> {
     let path_arg = path.display().to_string();
-    let output = crate::noninteractive_process::command("git")
-        .args(["-C", &path_arg, "status", "--porcelain", untracked])
+    let output = std::process::Command::new("git")
+        .args([
+            "-C",
+            &path_arg,
+            "status",
+            "--porcelain",
+            "--untracked-files=all",
+        ])
         .output()
         .map_err(|err| err.to_string())?;
 
@@ -270,7 +264,7 @@ pub(crate) fn build_worktree_add_existing_branch_command(
 }
 
 pub(crate) fn local_branch_exists(repo_root: &Path, branch: &str) -> Result<bool, String> {
-    let output = crate::noninteractive_process::command("git")
+    let output = std::process::Command::new("git")
         .arg("-C")
         .arg(repo_root)
         .args(["show-ref", "--verify", "--quiet"])
@@ -308,215 +302,6 @@ pub(crate) fn run_worktree_add_command(
         build_worktree_add_new_branch_command(repo_root, path, branch, base)
     };
     run_worktree_command(&command)
-}
-
-/// Head metadata for a pull request, resolved authoritatively via `gh pr view`
-/// in the source checkout (never from the UI cache).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct PullRequestHead {
-    pub head_ref_name: String,
-    pub is_cross_repository: bool,
-    pub state: String,
-}
-
-pub(crate) fn parse_gh_pr_view_json(json_str: &str) -> Result<PullRequestHead, String> {
-    let value: serde_json::Value =
-        serde_json::from_str(json_str).map_err(|e| format!("invalid JSON from gh: {e}"))?;
-    let head_ref_name = value
-        .get("headRefName")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-    if head_ref_name.is_empty() {
-        return Err("gh pr view returned no head branch".into());
-    }
-    let is_cross_repository = value
-        .get("isCrossRepository")
-        .and_then(serde_json::Value::as_bool)
-        .unwrap_or(false);
-    let state = value
-        .get("state")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-    Ok(PullRequestHead {
-        head_ref_name,
-        is_cross_repository,
-        state,
-    })
-}
-
-fn resolve_pull_request_head(
-    source_checkout: &Path,
-    pr_number: u64,
-) -> Result<PullRequestHead, String> {
-    let output = std::process::Command::new("gh")
-        .current_dir(source_checkout)
-        .args([
-            "pr",
-            "view",
-            &pr_number.to_string(),
-            "--json",
-            "number,headRefName,isCrossRepository,state",
-        ])
-        .output()
-        .map_err(|err| {
-            if err.kind() == std::io::ErrorKind::NotFound {
-                "gh CLI not found".to_string()
-            } else {
-                format!("failed to run gh: {err}")
-            }
-        })?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        return Err(
-            if stderr.contains("authentication") || stderr.contains("auth") {
-                "gh not authenticated".to_string()
-            } else if stderr.is_empty() {
-                format!("gh pr view {pr_number} failed")
-            } else {
-                stderr
-            },
-        );
-    }
-    let head = parse_gh_pr_view_json(&String::from_utf8_lossy(&output.stdout))?;
-    if !head.state.eq_ignore_ascii_case("open") {
-        return Err(format!(
-            "PR #{pr_number} is {}; only open PRs can be checked out",
-            head.state.to_ascii_lowercase()
-        ));
-    }
-    Ok(head)
-}
-
-/// `git fetch origin <branch>` so the tracking worktree add below sees an
-/// up-to-date `origin/<branch>`.
-pub(crate) fn build_pr_branch_fetch_command(
-    source_checkout: &Path,
-    head_ref_name: &str,
-) -> WorktreeCommand {
-    WorktreeCommand {
-        program: "git".to_string(),
-        args: vec![
-            "-C".to_string(),
-            source_checkout.display().to_string(),
-            "fetch".to_string(),
-            "origin".to_string(),
-            head_ref_name.to_string(),
-        ],
-    }
-}
-
-/// Worktree add creating local `branch` from `origin/<branch>` with upstream
-/// tracking so a later push from the checkout works without extra setup.
-pub(crate) fn build_worktree_add_tracking_branch_command(
-    repo_root: &Path,
-    path: &Path,
-    branch: &str,
-) -> WorktreeCommand {
-    WorktreeCommand {
-        program: "git".to_string(),
-        args: vec![
-            "-C".to_string(),
-            repo_root.display().to_string(),
-            "worktree".to_string(),
-            "add".to_string(),
-            "--track".to_string(),
-            "-b".to_string(),
-            branch.to_string(),
-            path.display().to_string(),
-            format!("origin/{branch}"),
-        ],
-    }
-}
-
-/// Local branch name used for a fork (cross-repository) PR checkout.
-pub(crate) fn pr_fork_branch_name(pr_number: u64) -> String {
-    format!("pr/{pr_number}")
-}
-
-/// `git fetch origin +refs/pull/<N>/head:pr/<N>`. The `+` force prefix lets a
-/// re-run update an existing `pr/<N>` branch left by an earlier checkout even
-/// when the fork force-pushed (non-fast-forward) in between.
-pub(crate) fn build_pr_fork_fetch_command(
-    source_checkout: &Path,
-    pr_number: u64,
-) -> WorktreeCommand {
-    WorktreeCommand {
-        program: "git".to_string(),
-        args: vec![
-            "-C".to_string(),
-            source_checkout.display().to_string(),
-            "fetch".to_string(),
-            "origin".to_string(),
-            format!(
-                "+refs/pull/{pr_number}/head:{}",
-                pr_fork_branch_name(pr_number)
-            ),
-        ],
-    }
-}
-
-/// Create a linked worktree at `path` checked out to the head of PR
-/// `pr_number`, resolving the PR via `gh` in `source_checkout`. Same-repo PRs
-/// check out the head branch (with upstream tracking so push works); fork PRs
-/// check out a read-only local `pr/<N>` branch fetched from the PR ref.
-pub(crate) fn run_worktree_add_for_pull_request(
-    source_checkout: &Path,
-    path: &Path,
-    pr_number: u64,
-) -> Result<(), String> {
-    let head = resolve_pull_request_head(source_checkout, pr_number)?;
-    let local_branch = if head.is_cross_repository {
-        pr_fork_branch_name(pr_number)
-    } else {
-        head.head_ref_name.clone()
-    };
-    // Opening a PR whose branch is already checked out in a worktree must reuse
-    // that worktree instead of failing to add a second one for the same branch.
-    // When it is the requested path, treat as done so the caller attaches and
-    // focuses the existing checkout; otherwise report where it lives.
-    if let Some(existing) = existing_worktree_path_on_branch(source_checkout, &local_branch)? {
-        return if canonical_or_original(&existing) == canonical_or_original(path) {
-            Ok(())
-        } else {
-            Err(format!(
-                "PR #{pr_number} branch '{local_branch}' is already checked out at {}",
-                existing.display()
-            ))
-        };
-    }
-    if head.is_cross_repository {
-        run_worktree_command(&build_pr_fork_fetch_command(source_checkout, pr_number))?;
-        return run_worktree_command(&build_worktree_add_existing_branch_command(
-            source_checkout,
-            path,
-            &local_branch,
-        ));
-    }
-    run_worktree_command(&build_pr_branch_fetch_command(
-        source_checkout,
-        &head.head_ref_name,
-    ))?;
-    let command = if local_branch_exists(source_checkout, &head.head_ref_name)? {
-        build_worktree_add_existing_branch_command(source_checkout, path, &head.head_ref_name)
-    } else {
-        build_worktree_add_tracking_branch_command(source_checkout, path, &head.head_ref_name)
-    };
-    run_worktree_command(&command)
-}
-
-/// Path of an existing worktree currently checked out on `branch` in this
-/// repo, if any. Makes opening a PR idempotent when its branch already has a
-/// worktree.
-fn existing_worktree_path_on_branch(
-    source_checkout: &Path,
-    branch: &str,
-) -> Result<Option<PathBuf>, String> {
-    Ok(list_existing_worktrees(source_checkout)?
-        .into_iter()
-        .find(|entry| entry.branch.as_deref() == Some(branch))
-        .map(|entry| entry.path))
 }
 
 pub(crate) fn build_worktree_merge_command(repo_root: &Path, branch: &str) -> WorktreeCommand {
@@ -557,14 +342,8 @@ pub(crate) fn merge_branch_to_parent(
     if checkout_has_dirty_files(checkout_path)? {
         return Err("worktree has uncommitted changes; commit them before merging".into());
     }
-    // Untracked files in the base do not affect the merge: it runs in repo_root
-    // and git completes with them present. Only tracked modifications can be
-    // overwritten, so gating on untracked ones refuses merges git would perform.
-    if checkout_has_tracked_changes(repo_root)? {
-        return Err(
-            "base checkout has uncommitted changes to tracked files; commit or stash them first"
-                .into(),
-        );
+    if checkout_has_dirty_files(repo_root)? {
+        return Err("base checkout has uncommitted changes; commit or stash them first".into());
     }
     let merge = build_worktree_merge_command(repo_root, branch);
     if let Err(err) = run_worktree_command(&merge) {
@@ -636,7 +415,7 @@ pub(crate) fn sync_branch_with_upstream(checkout_path: &Path) -> Result<(), Stri
 }
 
 pub(crate) fn run_worktree_command(command: &WorktreeCommand) -> Result<(), String> {
-    let output = crate::noninteractive_process::command(&command.program)
+    let output = std::process::Command::new(&command.program)
         .args(&command.args)
         .output()
         .map_err(|err| err.to_string())?;
@@ -705,7 +484,7 @@ fn leftover_worktree_checkout_matches_repo(repo_root: &Path, path: &Path) -> boo
 }
 
 fn git_common_worktrees_dir(repo_root: &Path) -> Option<PathBuf> {
-    let output = crate::noninteractive_process::command("git")
+    let output = std::process::Command::new("git")
         .arg("-C")
         .arg(repo_root)
         .args(["rev-parse", "--git-common-dir"])
@@ -801,7 +580,7 @@ pub(crate) fn parse_worktree_list_porcelain(output: &str) -> Vec<ExistingWorktre
 }
 
 pub(crate) fn list_existing_worktrees(repo_root: &Path) -> Result<Vec<ExistingWorktree>, String> {
-    let output = crate::noninteractive_process::command("git")
+    let output = std::process::Command::new("git")
         .arg("-C")
         .arg(repo_root)
         .args(["worktree", "list", "--porcelain"])
@@ -828,39 +607,6 @@ pub(crate) fn worktree_list_contains_path(repo_root: &Path, path: &Path) -> Resu
         .any(|entry| canonical_or_original(&entry.path) == expected))
 }
 
-/// Copy files listed in `.worktreeinclude` from the source repo root to a new
-/// worktree checkout. Each line is a relative path; missing source files are
-/// silently skipped. Parent directories are created as needed.
-pub(crate) fn copy_worktree_includes(repo_root: &Path, checkout_path: &Path) {
-    let include_path = repo_root.join(".worktreeinclude");
-    let content = match std::fs::read_to_string(&include_path) {
-        Ok(c) => c,
-        Err(_) => return,
-    };
-    for line in content.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        let src = repo_root.join(line);
-        let dst = checkout_path.join(line);
-        if !src.is_file() {
-            tracing::debug!(path = %src.display(), "worktreeinclude: source file not found, skipping");
-            continue;
-        }
-        if let Some(parent) = dst.parent() {
-            if let Err(err) = std::fs::create_dir_all(parent) {
-                tracing::warn!(path = %parent.display(), "worktreeinclude: failed to create parent dir: {err}");
-                continue;
-            }
-        }
-        if let Err(err) = std::fs::copy(&src, &dst) {
-            tracing::warn!(src = %src.display(), dst = %dst.display(), "worktreeinclude: copy failed: {err}");
-        } else {
-            tracing::info!(file = line, "worktreeinclude: copied to new worktree");
-        }
-    }
-}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -904,44 +650,6 @@ mod tests {
     fn generated_branch_slug_is_worktree_namespaced_and_stable() {
         assert_eq!(generated_branch_slug(0), "worktree/brave-river-0000");
         assert_eq!(generated_branch_slug(9), "worktree/calm-cloud-0009");
-    }
-
-    #[test]
-    fn merge_to_parent_ignores_untracked_files_in_the_base_checkout() {
-        let repo = create_committed_repo("merge-untracked-base");
-        run_git(&repo, &["branch", "feature"]);
-        let checkout = unique_temp_path("merge-untracked-checkout");
-        run_git(
-            &repo,
-            &[
-                "worktree",
-                "add",
-                &checkout.display().to_string(),
-                "feature",
-            ],
-        );
-        std::fs::write(checkout.join("feature.txt"), "work\n").unwrap();
-        run_git(&checkout, &["add", "feature.txt"]);
-        run_git(&checkout, &["commit", "--quiet", "-m", "feature work"]);
-
-        // git merge completes with untracked files present, so the gate must not
-        // refuse on them: this is the reported failure, a clean worktree that
-        // could not be merged because the base held unrelated untracked files.
-        std::fs::write(repo.join("untracked-note.md"), "scratch\n").unwrap();
-        merge_branch_to_parent(&repo, &checkout, "feature").expect("untracked base must merge");
-        assert!(repo.join("feature.txt").exists());
-
-        // A tracked modification in the base is a real conflict risk and still blocks.
-        std::fs::write(checkout.join("more.txt"), "more\n").unwrap();
-        run_git(&checkout, &["add", "more.txt"]);
-        run_git(&checkout, &["commit", "--quiet", "-m", "more work"]);
-        std::fs::write(repo.join("README.md"), "modified\n").unwrap();
-        let err = merge_branch_to_parent(&repo, &checkout, "feature")
-            .expect_err("tracked base changes must still block");
-        assert!(err.contains("tracked"), "unexpected error: {err}");
-
-        let _ = std::fs::remove_dir_all(&checkout);
-        let _ = std::fs::remove_dir_all(&repo);
     }
 
     #[test]
@@ -1237,89 +945,6 @@ prunable stale
     }
 
     #[test]
-    fn pr_branch_fetch_command_fetches_head_from_origin() {
-        let command = build_pr_branch_fetch_command(Path::new("/repo/herdr"), "feature/pr-head");
-        assert_eq!(command.program, "git");
-        assert_eq!(
-            command.args,
-            vec!["-C", "/repo/herdr", "fetch", "origin", "feature/pr-head"]
-        );
-    }
-
-    #[test]
-    fn worktree_add_tracking_branch_command_tracks_origin_branch() {
-        let command = build_worktree_add_tracking_branch_command(
-            Path::new("/repo/herdr"),
-            Path::new("/w/herdr/pr-42"),
-            "feature/pr-head",
-        );
-        assert_eq!(command.program, "git");
-        assert_eq!(
-            command.args,
-            vec![
-                "-C",
-                "/repo/herdr",
-                "worktree",
-                "add",
-                "--track",
-                "-b",
-                "feature/pr-head",
-                "/w/herdr/pr-42",
-                "origin/feature/pr-head"
-            ]
-        );
-    }
-
-    #[test]
-    fn pr_fork_fetch_command_force_fetches_pull_ref_into_local_branch() {
-        let command = build_pr_fork_fetch_command(Path::new("/repo/herdr"), 42);
-        assert_eq!(command.program, "git");
-        assert_eq!(
-            command.args,
-            vec![
-                "-C",
-                "/repo/herdr",
-                "fetch",
-                "origin",
-                "+refs/pull/42/head:pr/42"
-            ]
-        );
-        assert_eq!(pr_fork_branch_name(42), "pr/42");
-    }
-
-    #[test]
-    fn parse_gh_pr_view_json_reads_head_metadata() {
-        let head = parse_gh_pr_view_json(
-            r#"{"number":42,"headRefName":"feature/pr-head","isCrossRepository":false,"state":"OPEN"}"#,
-        )
-        .unwrap();
-        assert_eq!(
-            head,
-            PullRequestHead {
-                head_ref_name: "feature/pr-head".into(),
-                is_cross_repository: false,
-                state: "OPEN".into(),
-            }
-        );
-
-        let fork = parse_gh_pr_view_json(
-            r#"{"number":7,"headRefName":"fork-branch","isCrossRepository":true,"state":"MERGED"}"#,
-        )
-        .unwrap();
-        assert!(fork.is_cross_repository);
-        assert_eq!(fork.state, "MERGED");
-    }
-
-    #[test]
-    fn parse_gh_pr_view_json_rejects_missing_head_and_invalid_json() {
-        let missing = parse_gh_pr_view_json(r#"{"number":42,"state":"OPEN"}"#);
-        assert!(missing.unwrap_err().contains("no head branch"));
-
-        let invalid = parse_gh_pr_view_json("not json");
-        assert!(invalid.unwrap_err().contains("invalid JSON"));
-    }
-
-    #[test]
     fn run_worktree_add_and_remove_create_and_delete_checkout() {
         let repo = create_committed_repo("worktree-run-repo");
         let checkout = unique_temp_path("worktree-run-checkout");
@@ -1345,31 +970,6 @@ prunable stale
         run_worktree_command(&remove).unwrap();
         assert!(!checkout.exists());
 
-        let _ = std::fs::remove_dir_all(repo);
-    }
-
-    #[test]
-    fn existing_worktree_path_on_branch_finds_checked_out_branch() {
-        let repo = create_committed_repo("worktree-branch-lookup-repo");
-        let checkout = unique_temp_path("worktree-branch-lookup-checkout");
-        let branch = "flow/lookup-branch";
-
-        let add = build_worktree_add_new_branch_command(&repo, &checkout, branch, "HEAD");
-        run_worktree_command(&add).unwrap();
-
-        let found = existing_worktree_path_on_branch(&repo, branch)
-            .unwrap()
-            .expect("worktree on branch should be found");
-        assert_eq!(
-            canonical_or_original(&found),
-            canonical_or_original(&checkout)
-        );
-        assert!(existing_worktree_path_on_branch(&repo, "no/such-branch")
-            .unwrap()
-            .is_none());
-
-        let remove = build_worktree_remove_command(&repo, &checkout, false);
-        run_worktree_command(&remove).unwrap();
         let _ = std::fs::remove_dir_all(repo);
     }
 
@@ -1418,39 +1018,5 @@ prunable stale
         assert!(checkout.join("unrelated").exists());
         let _ = std::fs::remove_dir_all(checkout);
         let _ = std::fs::remove_dir_all(repo);
-    }
-
-    #[test]
-    fn copy_worktree_includes_copies_listed_files() {
-        let src = unique_temp_path("worktree-include-src");
-        let dst = unique_temp_path("worktree-include-dst");
-        std::fs::create_dir_all(&src).unwrap();
-        std::fs::create_dir_all(&dst).unwrap();
-
-        // Create .worktreeinclude and source files.
-        std::fs::write(
-            src.join(".worktreeinclude"),
-            ".env\nsub/config.toml\nmissing\n",
-        )
-        .unwrap();
-        std::fs::write(src.join(".env"), "SECRET=42\n").unwrap();
-        std::fs::create_dir_all(src.join("sub")).unwrap();
-        std::fs::write(src.join("sub/config.toml"), "[app]\nport = 3000\n").unwrap();
-
-        copy_worktree_includes(&src, &dst);
-
-        assert_eq!(
-            std::fs::read_to_string(dst.join(".env")).unwrap(),
-            "SECRET=42\n"
-        );
-        assert_eq!(
-            std::fs::read_to_string(dst.join("sub/config.toml")).unwrap(),
-            "[app]\nport = 3000\n"
-        );
-        // Missing source file is silently skipped.
-        assert!(!dst.join("missing").exists());
-
-        let _ = std::fs::remove_dir_all(src);
-        let _ = std::fs::remove_dir_all(dst);
     }
 }

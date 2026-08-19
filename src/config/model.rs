@@ -4,9 +4,9 @@ use crossterm::event::KeyModifiers;
 use serde::{de, Deserialize, Deserializer, Serialize};
 
 use super::{
-    ActionKeybinds, BindingConfig, CommandKeybindConfig, IndexedKeybind, Keybinds, SidebarConfig,
-    SoundConfig, TabBarRightEntryConfig, ThemeConfig, DEFAULT_MOBILE_WIDTH_THRESHOLD,
-    DEFAULT_MOUSE_SCROLL_LINES, DEFAULT_SCROLLBACK_LIMIT_BYTES,
+    ActionKeybinds, BindingConfig, CommandKeybindConfig, IndexedKeybind, Keybinds, SoundConfig,
+    ThemeConfig, DEFAULT_MOBILE_WIDTH_THRESHOLD, DEFAULT_MOUSE_SCROLL_LINES,
+    DEFAULT_SCROLLBACK_LIMIT_BYTES,
 };
 
 pub const MAX_TOAST_DELAY_SECONDS: u64 = 3600;
@@ -54,37 +54,6 @@ fn default_update_channel() -> UpdateChannelConfig {
     }
 }
 
-#[derive(Debug, Clone, Copy, Deserialize)]
-#[serde(default)]
-pub struct GithubConfig {
-    /// Enable background GitHub data fetches (open PRs, issues) via the gh
-    /// CLI. Default: true.
-    pub enabled: bool,
-    /// Seconds between periodic background open-PR refreshes. Default: 120.
-    /// `0` falls back to the default interval.
-    pub refresh_interval_secs: u64,
-}
-
-impl Default for GithubConfig {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            refresh_interval_secs: 120,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
-#[serde(default)]
-pub struct FlowConfig {
-    /// Shell command template used to run a flow for a GitHub issue from the
-    /// Issues tab. Placeholders: `{issue}` = `owner/repo#N`, `{number}` = N,
-    /// `{url}` = issue URL, `{repo}` = absolute repo checkout path. `None`
-    /// disables the action. A repo can override this via `[flow]` in its
-    /// `.bora.toml`.
-    pub command: Option<String>,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum ToastDelivery {
@@ -95,9 +64,7 @@ pub enum ToastDelivery {
     System,
 }
 
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, schemars::JsonSchema, Default,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum ToastHerdrPosition {
     TopLeft,
@@ -135,47 +102,6 @@ impl AgentPanelSortConfig {
             Self::Priority => "priority",
         }
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "lowercase")]
-enum LegacyAgentPanelScopeConfig {
-    Current,
-    All,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum StatusIndicatorStyle {
-    #[default]
-    Dots,
-    Symbols,
-}
-
-impl StatusIndicatorStyle {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Dots => "dots",
-            Self::Symbols => "symbols",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum HostCursorModeConfig {
-    #[default]
-    Auto,
-    Native,
-    Drawn,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum SidebarCollapsedModeConfig {
-    #[default]
-    Compact,
-    Hidden,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -312,7 +238,7 @@ impl Default for SessionConfig {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ConfigReloadStatus {
     Applied,
@@ -347,8 +273,6 @@ pub struct Config {
     pub terminal: TerminalConfig,
     pub session: SessionConfig,
     pub update: UpdateConfig,
-    pub github: GithubConfig,
-    pub flow: FlowConfig,
     pub keys: KeysConfig,
     pub ui: UiConfig,
     pub worktrees: WorktreesConfig,
@@ -388,8 +312,6 @@ pub struct KeysConfig {
     pub workspace_picker: BindingConfig,
     /// Open the session navigator. Default: "prefix+g"
     pub goto: BindingConfig,
-    /// Open the chat view. Default: "prefix+i"
-    pub chat: BindingConfig,
     /// Move workspace selection up in navigate mode. Default: "up".
     pub navigate_workspace_up: BindingConfig,
     /// Move workspace selection down in navigate mode. Default: "down".
@@ -428,10 +350,6 @@ pub struct KeysConfig {
     pub previous_tab: BindingConfig,
     /// Select the next tab. Default: "prefix+n".
     pub next_tab: BindingConfig,
-    /// Move the active tab one position toward the front. Unset by default.
-    pub move_tab_previous: BindingConfig,
-    /// Move the active tab one position toward the back. Unset by default.
-    pub move_tab_next: BindingConfig,
     /// Switch to tab 1-9. Default: "prefix+1..9".
     pub switch_tab: BindingConfig,
     /// Switch to workspace 1-9 from prefix mode. Unset by default.
@@ -477,18 +395,8 @@ pub struct KeysConfig {
     pub zoom: BindingConfig,
     /// Enter resize mode. Default: "prefix+r"
     pub resize_mode: BindingConfig,
-    /// Resize the focused pane toward the left. Unset by default.
-    pub resize_pane_left: BindingConfig,
-    /// Resize the focused pane downward. Unset by default.
-    pub resize_pane_down: BindingConfig,
-    /// Resize the focused pane upward. Unset by default.
-    pub resize_pane_up: BindingConfig,
-    /// Resize the focused pane toward the right. Unset by default.
-    pub resize_pane_right: BindingConfig,
     /// Toggle sidebar collapse. Default: "prefix+b"
     pub toggle_sidebar: BindingConfig,
-    /// Toggle right panel collapse. Default: "prefix+g"
-    pub toggle_right_panel: BindingConfig,
     /// Optional indexed shortcuts expanded over number keys 1-9.
     pub indexed: IndexedKeysConfig,
     /// Prefix-mode custom command bindings.
@@ -523,8 +431,6 @@ pub(crate) struct KeysConfigOverlay {
     workspace_picker: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     goto: Option<BindingConfig>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    chat: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     navigate_workspace_up: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -563,10 +469,6 @@ pub(crate) struct KeysConfigOverlay {
     previous_tab: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     next_tab: Option<BindingConfig>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    move_tab_previous: Option<BindingConfig>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    move_tab_next: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     switch_tab: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -612,17 +514,7 @@ pub(crate) struct KeysConfigOverlay {
     #[serde(skip_serializing_if = "Option::is_none")]
     resize_mode: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    resize_pane_left: Option<BindingConfig>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    resize_pane_down: Option<BindingConfig>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    resize_pane_up: Option<BindingConfig>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    resize_pane_right: Option<BindingConfig>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     toggle_sidebar: Option<BindingConfig>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    toggle_right_panel: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     indexed: Option<IndexedKeysConfig>,
     #[serde(skip_serializing)]
@@ -657,7 +549,6 @@ impl<'de> Deserialize<'de> for KeysConfig {
         apply_field!(close_workspace);
         apply_field!(workspace_picker);
         apply_field!(goto);
-        apply_field!(chat);
         apply_field!(navigate_workspace_up);
         apply_field!(navigate_workspace_down);
         apply_field!(navigate_pane_left);
@@ -677,8 +568,6 @@ impl<'de> Deserialize<'de> for KeysConfig {
         apply_field!(rename_tab);
         apply_field!(previous_tab);
         apply_field!(next_tab);
-        apply_field!(move_tab_previous);
-        apply_field!(move_tab_next);
         apply_field!(switch_tab);
         apply_field!(switch_workspace);
         apply_field!(close_tab);
@@ -701,12 +590,7 @@ impl<'de> Deserialize<'de> for KeysConfig {
         apply_field!(close_pane);
         apply_field!(zoom);
         apply_field!(resize_mode);
-        apply_field!(resize_pane_left);
-        apply_field!(resize_pane_down);
-        apply_field!(resize_pane_up);
-        apply_field!(resize_pane_right);
         apply_field!(toggle_sidebar);
-        apply_field!(toggle_right_panel);
         apply_field!(indexed);
         apply_field!(command);
 
@@ -761,7 +645,6 @@ impl KeysConfig {
         copy_effective_action_field!(remove_worktree, keybinds.remove_worktree);
         copy_effective_action_field!(rename_workspace, keybinds.rename_workspace);
         copy_effective_action_field!(close_workspace, keybinds.close_workspace);
-        copy_effective_action_field!(chat, keybinds.chat);
         copy_effective_action_field!(workspace_picker, keybinds.workspace_picker);
         copy_effective_action_field!(goto, keybinds.goto);
         copy_effective_action_field!(navigate_workspace_up, keybinds.navigate.workspace_up);
@@ -783,8 +666,6 @@ impl KeysConfig {
         copy_effective_action_field!(rename_tab, keybinds.rename_tab);
         copy_effective_action_field!(previous_tab, keybinds.previous_tab);
         copy_effective_action_field!(next_tab, keybinds.next_tab);
-        copy_effective_action_field!(move_tab_previous, keybinds.move_tab_previous);
-        copy_effective_action_field!(move_tab_next, keybinds.move_tab_next);
         copy_effective_indexed_field!(switch_tab, keybinds.switch_tab);
         copy_effective_indexed_field!(switch_workspace, keybinds.switch_workspace);
         copy_effective_action_field!(close_tab, keybinds.close_tab);
@@ -807,12 +688,7 @@ impl KeysConfig {
         copy_effective_action_field!(close_pane, keybinds.close_pane);
         copy_effective_action_field!(zoom, keybinds.zoom);
         copy_effective_action_field!(resize_mode, keybinds.resize_mode);
-        copy_effective_action_field!(resize_pane_left, keybinds.resize_pane_left);
-        copy_effective_action_field!(resize_pane_down, keybinds.resize_pane_down);
-        copy_effective_action_field!(resize_pane_up, keybinds.resize_pane_up);
-        copy_effective_action_field!(resize_pane_right, keybinds.resize_pane_right);
         copy_effective_action_field!(toggle_sidebar, keybinds.toggle_sidebar);
-        copy_effective_action_field!(toggle_right_panel, keybinds.toggle_right_panel);
         copy_user_field!(indexed);
 
         profile
@@ -877,14 +753,6 @@ pub struct WorktreesConfig {
     pub directory: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum TabBarPositionConfig {
-    #[default]
-    Top,
-    Bottom,
-}
-
 #[derive(Debug, Deserialize)]
 #[serde(default)]
 pub struct UiConfig {
@@ -893,18 +761,10 @@ pub struct UiConfig {
     pub sidebar_min_width: u16,
     /// Maximum sidebar width (columns) when expanded. Default: 36.
     pub sidebar_max_width: u16,
-    /// Start with the sidebar collapsed. Default: false.
-    pub sidebar_start_collapsed: bool,
-    /// Collapsed sidebar presentation. Default: compact.
-    pub sidebar_collapsed_mode: SidebarCollapsedModeConfig,
     /// Terminal width at or below which Herdr uses the mobile single-column layout. Default: 64.
     pub mobile_width_threshold: u16,
     /// Capture mouse input for Herdr's mouse UI. Default: true.
     pub mouse_capture: bool,
-    /// Copy text selected with the mouse. Default: true.
-    pub copy_on_select: bool,
-    /// Host cursor policy. Default: auto.
-    pub host_cursor: HostCursorModeConfig,
     /// Modifier that lets right-click gestures pass through to pane apps. Empty disables it.
     pub right_click_passthrough_modifier: RightClickPassthroughModifierConfig,
     /// Force a full host-terminal redraw when the outer terminal regains focus. Default: true.
@@ -915,64 +775,14 @@ pub struct UiConfig {
     pub confirm_close: bool,
     /// Ask for a tab name before creating a new tab. Default: true.
     pub prompt_new_tab_name: bool,
-    /// Ask for a workspace name before interactive creation. Default: false.
-    pub prompt_new_workspace_name: bool,
     /// Draw borders around split panes. Default: true.
     pub pane_borders: bool,
-    /// Draw borders along the outside edge of the pane area. Default: true.
-    pub pane_outer_borders: bool,
-    /// Draw interactive scrollbars beside terminal panes. Default: true.
-    pub pane_scrollbars: bool,
     /// Keep split panes visually separated instead of sharing divider borders. Default: true.
     pub pane_gaps: bool,
     /// Show agent labels in split pane borders when no manual pane label is set. Default: false.
     pub show_agent_labels_on_pane_borders: bool,
-    /// Group workspaces by repository in the sidebar. When off, the sidebar
-    /// shows a flat list that can be freely drag-reordered — repo, channel,
-    /// and visual groups all dissolve; turning it back on regroups
-    /// automatically. Default: true.
-    pub group_workspaces_by_repo: bool,
-    /// Lead each split pane border with its public pane id (`w26:p1`) so two panes
-    /// running the same agent stay distinguishable. Default: false.
-    pub show_pane_ids_on_pane_borders: bool,
-    /// Sidebar group that collects `#`-labelled channel workspaces. Renaming it
-    /// is the whole point of it being config: the word is user-facing, and the
-    /// grouping rule keys off the `#` label, never off this string.
-    /// Default: "channels".
-    pub channel_group_name: String,
-    /// Enable the fork-only channel chat view (prefix+i). Default: false.
-    /// Bora fork addition; upstream has no such surface, so it stays off
-    /// unless explicitly enabled.
-    pub chat_view: bool,
-    /// Human display name in the channel chat view. `None` (default)
-    /// resolves to the OS username, then "you".
-    pub chat_name: Option<String>,
-    /// Open the chat view automatically when an agent message addresses the
-    /// human seat (`@<ui.chat_name>`) while the view is closed. Suppressed
-    /// while the human is typing or mid-modal, falling back to the toast.
-    /// Default: true; only meaningful when `chat_view` is on (itself
-    /// default false, so nobody is surprised into it).
-    pub chat_open_on_mention: bool,
-    /// Hide the tab row when the workspace has one tab. Default: false.
-    pub hide_tab_bar_when_single_tab: bool,
-    /// Desktop tab row placement. Default: top.
-    pub tab_bar_position: TabBarPositionConfig,
-    /// Ordered entries shown at the right edge of the desktop tab row. Empty by default.
-    pub tab_bar_right: Vec<TabBarRightEntryConfig>,
-    /// Text inserted between visible right-side tab bar entries. Default: one space.
-    pub tab_bar_right_separator: String,
-    /// Format for the outer terminal window title. Empty leaves the title alone.
-    /// Default: "{hostname}: {workspace}".
-    pub window_title: String,
     /// Agent sidebar ordering. Saved values are "spaces" or "priority". Default: "spaces".
     pub agent_panel_sort: AgentPanelSortConfig,
-    /// Retired setting that Herdr wrote before the workspace filter was removed.
-    #[serde(rename = "agent_panel_scope")]
-    _legacy_agent_panel_scope: Option<LegacyAgentPanelScopeConfig>,
-    /// Agent status indicator style. Saved values are "dots" or "symbols". Default: "dots".
-    pub status_indicators: StatusIndicatorStyle,
-    /// Expanded sidebar row composition.
-    pub sidebar: SidebarConfig,
     /// Accent color for highlights, borders, and navigation UI.
     /// Accepts hex (#89b4fa), named colors (cyan, blue), or RGB (rgb(137,180,250)).
     pub accent: String,
@@ -1020,8 +830,8 @@ pub struct AdvancedConfig {
 #[derive(Debug, Deserialize)]
 #[serde(default)]
 pub struct RemoteConfig {
-    /// Add keepalive fallbacks and private connection reuse for `herdr --remote`.
-    /// Set false to run plain ssh unchanged. Default: true.
+    /// Add a keepalive fallback under the user's ssh config for the `--remote`
+    /// bridge. Set false to run plain ssh unchanged. Default: true.
     pub manage_ssh_config: bool,
 }
 
@@ -1060,21 +870,17 @@ pub struct ExperimentalConfig {
     /// if the list contains no valid names, the reveal does not apply.
     /// Accepted names: pi, claude, codex, gemini, cursor, devin, cline,
     /// opencode, copilot, kimi, kiro, droid, amp, grok, hermes, kilo,
-    /// qodercli, qoder, qwen, qwen-code, maki.
+    /// qodercli, qoder.
     /// Default: empty.
     pub cjk_ime_agents: Vec<String>,
     /// Cursor shape rendered for the IME anchor when
     /// `reveal_hidden_cursor_for_cjk_ime` is enabled. Default: "steady_block".
     pub cjk_ime_cursor_shape: ImeCursorShape,
-    /// While prefix mode is active, temporarily switch the host input source
-    /// to an ASCII-capable mode so prefix commands are read as ASCII even when
-    /// an IME is active, then restore the previous input source when prefix
-    /// mode exits. On macOS this selects the ASCII-capable keyboard layout; on
-    /// Windows it switches the IME to English (ASCII) input. Windows support is
-    /// currently limited to the Korean IME; with an IME for any other language,
-    /// the input source is left unchanged. macOS and Windows only; a no-op
-    /// elsewhere and a best-effort no-op if the switch fails.
-    /// Default: false.
+    /// While prefix mode is active, temporarily switch the macOS host input
+    /// source to an ASCII-capable keyboard layout so prefix commands are read
+    /// as ASCII even when a CJK IME is active, then restore the previous input
+    /// source when prefix mode exits. macOS only; a no-op elsewhere and a
+    /// best-effort no-op if the switch fails. Default: false.
     pub switch_ascii_input_source_in_prefix: bool,
 }
 
@@ -1090,7 +896,6 @@ impl Default for KeysConfig {
             remove_worktree: BindingConfig::empty(),
             rename_workspace: BindingConfig::one("prefix+shift+w"),
             close_workspace: BindingConfig::one("prefix+shift+d"),
-            chat: BindingConfig::one("prefix+i"),
             workspace_picker: BindingConfig::one("prefix+w"),
             goto: BindingConfig::one("prefix+g"),
             navigate_workspace_up: BindingConfig::one("up"),
@@ -1112,8 +917,6 @@ impl Default for KeysConfig {
             rename_tab: BindingConfig::one("prefix+shift+t"),
             previous_tab: BindingConfig::one("prefix+p"),
             next_tab: BindingConfig::one("prefix+n"),
-            move_tab_previous: BindingConfig::empty(),
-            move_tab_next: BindingConfig::empty(),
             switch_tab: BindingConfig::one("prefix+1..9"),
             switch_workspace: BindingConfig::empty(),
             close_tab: BindingConfig::one("prefix+shift+x"),
@@ -1136,12 +939,7 @@ impl Default for KeysConfig {
             close_pane: BindingConfig::one("prefix+x"),
             zoom: BindingConfig::one("prefix+z"),
             resize_mode: BindingConfig::one("prefix+r"),
-            resize_pane_left: BindingConfig::empty(),
-            resize_pane_down: BindingConfig::empty(),
-            resize_pane_up: BindingConfig::empty(),
-            resize_pane_right: BindingConfig::empty(),
             toggle_sidebar: BindingConfig::one("prefix+b"),
-            toggle_right_panel: BindingConfig::one("prefix+shift+b"),
             indexed: IndexedKeysConfig::default(),
             command: Vec::new(),
             user_fields: BTreeSet::new(),
@@ -1163,38 +961,17 @@ impl Default for UiConfig {
             sidebar_width: 26,
             sidebar_min_width: 18,
             sidebar_max_width: 36,
-            sidebar_start_collapsed: false,
-            sidebar_collapsed_mode: SidebarCollapsedModeConfig::Compact,
             mobile_width_threshold: DEFAULT_MOBILE_WIDTH_THRESHOLD,
             mouse_capture: true,
-            copy_on_select: true,
-            host_cursor: HostCursorModeConfig::Auto,
             right_click_passthrough_modifier: RightClickPassthroughModifierConfig::default(),
             redraw_on_focus_gained: true,
             mouse_scroll_lines: None,
             confirm_close: true,
             prompt_new_tab_name: true,
-            prompt_new_workspace_name: false,
             pane_borders: true,
-            pane_outer_borders: true,
-            pane_scrollbars: true,
             pane_gaps: true,
             show_agent_labels_on_pane_borders: false,
-            group_workspaces_by_repo: true,
-            show_pane_ids_on_pane_borders: false,
-            channel_group_name: "channels".to_string(),
-            chat_view: false,
-            chat_name: None,
-            chat_open_on_mention: true,
-            hide_tab_bar_when_single_tab: false,
-            tab_bar_position: TabBarPositionConfig::Top,
-            tab_bar_right: Vec::new(),
-            tab_bar_right_separator: " ".into(),
-            window_title: super::window_title::default_window_title(),
             agent_panel_sort: AgentPanelSortConfig::Spaces,
-            _legacy_agent_panel_scope: None,
-            status_indicators: StatusIndicatorStyle::Dots,
-            sidebar: SidebarConfig::default(),
             accent: "cyan".into(),
             toast: ToastConfig::default(),
             sound: SoundConfig::default(),
@@ -1211,24 +988,6 @@ impl UiConfig {
 
     pub fn right_click_passthrough_modifiers(&self) -> Option<KeyModifiers> {
         self.right_click_passthrough_modifier.modifiers()
-    }
-
-    /// Human chat identity: `ui.chat_name` when set (trimmed, non-empty),
-    /// else the OS username (`USER`, then `LOGNAME`), else "you". Resolved
-    /// at config load and reload; `AppState.chat_name` carries the result.
-    pub fn effective_chat_name(&self) -> String {
-        if let Some(name) = self
-            .chat_name
-            .as_deref()
-            .map(str::trim)
-            .filter(|name| !name.is_empty())
-        {
-            return name.to_string();
-        }
-        ["USER", "LOGNAME"]
-            .iter()
-            .find_map(|key| std::env::var(key).ok().filter(|name| !name.is_empty()))
-            .unwrap_or_else(|| "you".to_string())
     }
 }
 
@@ -1330,124 +1089,6 @@ manifest_check = false
     }
 
     #[test]
-    fn chat_name_parses_and_effective_resolution_falls_back() {
-        let _guard = crate::config::test_config_env_lock().lock().unwrap();
-        let old_user = std::env::var_os("USER");
-        let old_logname = std::env::var_os("LOGNAME");
-
-        let configured: Config = toml::from_str("[ui]\nchat_name = \"arya\"\n").unwrap();
-        assert_eq!(configured.ui.chat_name.as_deref(), Some("arya"));
-
-        std::env::set_var("USER", "envuser");
-        std::env::remove_var("LOGNAME");
-
-        // Configured name wins over the environment.
-        assert_eq!(configured.ui.effective_chat_name(), "arya");
-        // Blank/whitespace-only config falls through to the OS username.
-        let blank: Config = toml::from_str("[ui]\nchat_name = \"  \"\n").unwrap();
-        assert_eq!(blank.ui.effective_chat_name(), "envuser");
-        // Unset config resolves via USER...
-        let unset: Config = toml::from_str("").unwrap();
-        assert_eq!(unset.ui.chat_name, None);
-        assert_eq!(unset.ui.effective_chat_name(), "envuser");
-        // ...then LOGNAME...
-        std::env::remove_var("USER");
-        std::env::set_var("LOGNAME", "loginuser");
-        assert_eq!(unset.ui.effective_chat_name(), "loginuser");
-        // ...then the hard floor.
-        std::env::remove_var("LOGNAME");
-        assert_eq!(unset.ui.effective_chat_name(), "you");
-
-        match old_user {
-            Some(value) => std::env::set_var("USER", value),
-            None => std::env::remove_var("USER"),
-        }
-        match old_logname {
-            Some(value) => std::env::set_var("LOGNAME", value),
-            None => std::env::remove_var("LOGNAME"),
-        }
-    }
-
-    #[test]
-    fn chat_open_on_mention_defaults_true_and_parses() {
-        let default: Config = toml::from_str("").unwrap();
-        assert!(default.ui.chat_open_on_mention);
-
-        let off: Config = toml::from_str("[ui]\nchat_open_on_mention = false\n").unwrap();
-        assert!(!off.ui.chat_open_on_mention);
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn windows_update_config_defaults_to_preview() {
-        let empty: Config = toml::from_str("").unwrap();
-        let without_update_channel: Config =
-            toml::from_str("[update]\nversion_check = false").unwrap();
-
-        assert_eq!(
-            Config::default().update.channel,
-            UpdateChannelConfig::Preview
-        );
-        assert_eq!(empty.update.channel, UpdateChannelConfig::Preview);
-        assert_eq!(
-            without_update_channel.update.channel,
-            UpdateChannelConfig::Preview
-        );
-    }
-
-    #[test]
-    fn github_config_defaults_and_parses() {
-        let default_config = Config::default();
-        assert!(default_config.github.enabled);
-        assert_eq!(default_config.github.refresh_interval_secs, 120);
-
-        let toml = r#"
-[github]
-enabled = false
-refresh_interval_secs = 300
-"#;
-        let config: Config = toml::from_str(toml).unwrap();
-        assert!(!config.github.enabled);
-        assert_eq!(config.github.refresh_interval_secs, 300);
-    }
-
-    #[test]
-    fn github_config_partial_section_keeps_other_defaults() {
-        let toml = r#"
-[github]
-refresh_interval_secs = 60
-"#;
-        let config: Config = toml::from_str(toml).unwrap();
-        assert!(config.github.enabled);
-        assert_eq!(config.github.refresh_interval_secs, 60);
-    }
-
-    #[test]
-    fn flow_config_defaults_and_parses() {
-        let default_config = Config::default();
-        assert!(default_config.flow.command.is_none());
-
-        let toml = r#"
-[flow]
-command = "bora-flow run {issue} --repo {repo}"
-"#;
-        let config: Config = toml::from_str(toml).unwrap();
-        assert_eq!(
-            config.flow.command.as_deref(),
-            Some("bora-flow run {issue} --repo {repo}")
-        );
-    }
-
-    #[test]
-    fn flow_config_empty_section_keeps_defaults() {
-        let toml = r#"
-[flow]
-"#;
-        let config: Config = toml::from_str(toml).unwrap();
-        assert!(config.flow.command.is_none());
-    }
-
-    #[test]
     fn terminal_default_shell_defaults_empty_and_parses() {
         let default_config = Config::default();
         assert!(default_config.terminal.default_shell.is_empty());
@@ -1536,73 +1177,22 @@ agent_panel_scope = "current"
     }
 
     #[test]
-    fn status_indicator_style_defaults_to_dots_and_parses_symbols() {
-        assert_eq!(
-            Config::default().ui.status_indicators,
-            StatusIndicatorStyle::Dots
-        );
-
-        let config: Config = toml::from_str(
-            r#"
-[ui]
-status_indicators = "symbols"
-"#,
-        )
-        .unwrap();
-        assert_eq!(config.ui.status_indicators, StatusIndicatorStyle::Symbols);
-    }
-
-    #[test]
     fn pane_appearance_defaults_and_parse() {
         let default_config = Config::default();
         assert!(default_config.ui.pane_borders);
-        assert!(default_config.ui.pane_outer_borders);
-        assert!(default_config.ui.pane_scrollbars);
         assert!(default_config.ui.pane_gaps);
         assert!(!default_config.ui.show_agent_labels_on_pane_borders);
-        assert!(default_config.ui.group_workspaces_by_repo);
-        assert!(!default_config.ui.hide_tab_bar_when_single_tab);
-        assert_eq!(
-            default_config.ui.tab_bar_position,
-            TabBarPositionConfig::Top
-        );
-        assert!(default_config.ui.tab_bar_right.is_empty());
-        assert_eq!(default_config.ui.tab_bar_right_separator, " ");
 
         let toml = r#"
 [ui]
 pane_borders = false
-pane_outer_borders = false
-pane_scrollbars = false
 pane_gaps = true
 show_agent_labels_on_pane_borders = true
-group_workspaces_by_repo = false
-hide_tab_bar_when_single_tab = true
-tab_bar_position = "bottom"
-tab_bar_right = [
-  { type = "zoom" },
-  { type = "hostname" },
-  { type = "datetime", format = "%H:%M" },
-  { type = "text", text = "prod" },
-  { type = "command", command = "status.sh", interval_seconds = 10, timeout_seconds = 3 },
-]
-tab_bar_right_separator = " · "
 "#;
         let config: Config = toml::from_str(toml).unwrap();
         assert!(!config.ui.pane_borders);
-        assert!(!config.ui.pane_outer_borders);
-        assert!(!config.ui.pane_scrollbars);
         assert!(config.ui.pane_gaps);
         assert!(config.ui.show_agent_labels_on_pane_borders);
-        assert!(!config.ui.group_workspaces_by_repo);
-        assert!(config.ui.hide_tab_bar_when_single_tab);
-        assert_eq!(config.ui.tab_bar_position, TabBarPositionConfig::Bottom);
-        assert_eq!(config.ui.tab_bar_right.len(), 5);
-        assert!(matches!(
-            config.ui.tab_bar_right[1],
-            TabBarRightEntryConfig::Hostname
-        ));
-        assert_eq!(config.ui.tab_bar_right_separator, " · ");
     }
 
     #[test]
@@ -1629,19 +1219,6 @@ prompt_new_tab_name = false
 "#;
         let config: Config = toml::from_str(toml).unwrap();
         assert!(!config.ui.prompt_new_tab_name);
-    }
-
-    #[test]
-    fn prompt_new_workspace_name_defaults_off_and_parses() {
-        let default_config = Config::default();
-        assert!(!default_config.ui.prompt_new_workspace_name);
-
-        let toml = r#"
-[ui]
-prompt_new_workspace_name = true
-"#;
-        let config: Config = toml::from_str(toml).unwrap();
-        assert!(config.ui.prompt_new_workspace_name);
     }
 
     #[test]
@@ -1732,38 +1309,6 @@ mobile_width_threshold = 96
     }
 
     #[test]
-    fn sidebar_start_collapsed_defaults_off_and_parses_on() {
-        let default_config = Config::default();
-        assert!(!default_config.ui.sidebar_start_collapsed);
-
-        let toml = r#"
-[ui]
-sidebar_start_collapsed = true
-"#;
-        let config: Config = toml::from_str(toml).unwrap();
-        assert!(config.ui.sidebar_start_collapsed);
-    }
-
-    #[test]
-    fn sidebar_collapsed_mode_defaults_compact_and_parses_hidden() {
-        let default_config = Config::default();
-        assert_eq!(
-            default_config.ui.sidebar_collapsed_mode,
-            SidebarCollapsedModeConfig::Compact
-        );
-
-        let toml = r#"
-[ui]
-sidebar_collapsed_mode = "hidden"
-"#;
-        let config: Config = toml::from_str(toml).unwrap();
-        assert_eq!(
-            config.ui.sidebar_collapsed_mode,
-            SidebarCollapsedModeConfig::Hidden
-        );
-    }
-
-    #[test]
     fn validated_sidebar_bounds_rejects_inverted() {
         assert_eq!(validated_sidebar_bounds(18, 36), Some((18, 36)));
         assert_eq!(validated_sidebar_bounds(20, 20), Some((20, 20)));
@@ -1783,19 +1328,6 @@ mouse_capture = false
 "#;
         let config: Config = toml::from_str(toml).unwrap();
         assert!(!config.ui.mouse_capture);
-    }
-
-    #[test]
-    fn copy_on_select_default_on_and_parse() {
-        let default_config = Config::default();
-        assert!(default_config.ui.copy_on_select);
-
-        let toml = r#"
-[ui]
-copy_on_select = false
-"#;
-        let config: Config = toml::from_str(toml).unwrap();
-        assert!(!config.ui.copy_on_select);
     }
 
     #[test]

@@ -1,22 +1,11 @@
 const std = @import("std");
 const cimgui = @import("dcimgui");
 const terminal = @import("../../terminal/main.zig");
-const pagepkg = @import("../../terminal/page.zig");
 const stylepkg = @import("../../terminal/style.zig");
 const widgets = @import("../widgets.zig");
+const units = @import("../units.zig");
 
 const PageList = terminal.PageList;
-
-/// Cell pointers resolved against a Node.PreservedPage rather than the
-/// PageList node.
-/// Omitting the node makes it impossible for inspector helpers to
-/// accidentally restore the original compressed page.
-const InspectedCell = struct {
-    row: *pagepkg.Row,
-    cell: *pagepkg.Cell,
-    row_idx: terminal.size.CellCountInt,
-    col_idx: terminal.size.CellCountInt,
-};
 
 /// PageList inspector widget.
 pub const Inspector = struct {
@@ -34,13 +23,6 @@ pub const Inspector = struct {
             cimgui.c.ImGuiTreeNodeFlags_DefaultOpen,
         )) {
             summaryTable(pages);
-        }
-
-        if (cimgui.c.ImGui_CollapsingHeader(
-            "Page Compression",
-            cimgui.c.ImGuiTreeNodeFlags_DefaultOpen,
-        )) {
-            compressionTable(pages);
         }
 
         if (cimgui.c.ImGui_CollapsingHeader(
@@ -76,10 +58,8 @@ pub const Inspector = struct {
             var index: usize = pages.totalPages();
             var node = pages.pages.last;
             while (node) |page_node| : (node = page_node.prev) {
-                const rows = page_node.rows();
-                const resident = page_node.pageIfResident();
-                const compressed = page_node.storage() == .compressed;
-                row_offset -= rows;
+                const page = &page_node.data;
+                row_offset -= page.size.rows;
                 index -= 1;
 
                 // We use our location as the ID so that even if reallocations
@@ -89,29 +69,14 @@ pub const Inspector = struct {
 
                 // Open up the tree node.
                 if (!widgets.page.treeNode(.{
-                    .cols = page_node.cols(),
-                    .rows = rows,
+                    .page = page,
                     .index = index,
-                    .row_range = .{ row_offset, row_offset + rows - 1 },
+                    .row_range = .{ row_offset, row_offset + page.size.rows - 1 },
                     .active = node == active_pin.node,
                     .viewport = node == viewport_pin.node,
-                    .compressed = compressed,
-                    .dirty = if (resident) |page| page.isDirty() else null,
                 })) continue;
                 defer cimgui.c.ImGui_TreePop();
-
-                // Decode compressed contents into a temporary page. The
-                // original node stays compressed while its entry is open.
-                var preserved = page_node.pagePreservingState(
-                    std.heap.page_allocator,
-                ) catch {
-                    cimgui.c.ImGui_TextDisabled(
-                        "(unable to copy compressed page)",
-                    );
-                    continue;
-                };
-                defer preserved.deinit();
-                widgets.page.inspector(preserved.page());
+                widgets.page.inspector(page);
             }
         }
     }
@@ -141,7 +106,7 @@ fn summaryTable(pages: *const PageList) void {
     _ = cimgui.c.ImGui_TableSetColumnIndex(1);
     widgets.helpMarker("Total number of pages in the linked list.");
     _ = cimgui.c.ImGui_TableSetColumnIndex(2);
-    cimgui.c.ImGui_Text("%zu", pages.totalPages());
+    cimgui.c.ImGui_Text("%d", pages.totalPages());
 
     cimgui.c.ImGui_TableNextRow();
     _ = cimgui.c.ImGui_TableSetColumnIndex(0);
@@ -149,21 +114,34 @@ fn summaryTable(pages: *const PageList) void {
     _ = cimgui.c.ImGui_TableSetColumnIndex(1);
     widgets.helpMarker("Total rows represented by scrollback + active area.");
     _ = cimgui.c.ImGui_TableSetColumnIndex(2);
-    cimgui.c.ImGui_Text("%zu", pages.total_rows);
+    cimgui.c.ImGui_Text("%d", pages.total_rows);
 
     cimgui.c.ImGui_TableNextRow();
     _ = cimgui.c.ImGui_TableSetColumnIndex(0);
-    cimgui.c.ImGui_Text("Scrollback Limit");
+    cimgui.c.ImGui_Text("Page Bytes");
+    _ = cimgui.c.ImGui_TableSetColumnIndex(1);
+    widgets.helpMarker("Total bytes allocated for active pages.");
+    _ = cimgui.c.ImGui_TableSetColumnIndex(2);
+    cimgui.c.ImGui_Text(
+        "%d KiB",
+        units.toKibiBytes(pages.page_size),
+    );
+
+    cimgui.c.ImGui_TableNextRow();
+    _ = cimgui.c.ImGui_TableSetColumnIndex(0);
+    cimgui.c.ImGui_Text("Max Size");
     _ = cimgui.c.ImGui_TableSetColumnIndex(1);
     widgets.helpMarker(
-        \\Maximum uncompressed logical page memory before the oldest
-        \\history is evicted. Minimum page allocation sizes can make
-        \\current usage temporarily exceed this value.
+        \\Maximum bytes before pages must be evicated. The total
+        \\used bytes may be higher due to minimum individual page
+        \\sizes but the next allocation that would exceed this limit
+        \\will evict pages from the front of the list to free up space.
     );
     _ = cimgui.c.ImGui_TableSetColumnIndex(2);
-    var limit_buf: [64]u8 = undefined;
-    const limit = formatBytes(&limit_buf, pages.maxSize());
-    cimgui.c.ImGui_TextUnformatted(limit.ptr);
+    cimgui.c.ImGui_Text(
+        "%d KiB",
+        units.toKibiBytes(pages.maxSize()),
+    );
 
     cimgui.c.ImGui_TableNextRow();
     _ = cimgui.c.ImGui_TableSetColumnIndex(0);
@@ -172,142 +150,14 @@ fn summaryTable(pages: *const PageList) void {
     widgets.helpMarker("Current viewport anchoring mode.");
     _ = cimgui.c.ImGui_TableSetColumnIndex(2);
     cimgui.c.ImGui_Text("%s", @tagName(pages.viewport).ptr);
-}
 
-fn compressionTable(pages: *const PageList) void {
-    const memory = pages.memoryStats();
-
-    if (!cimgui.c.ImGui_BeginTable(
-        "pagelist_compression",
-        3,
-        cimgui.c.ImGuiTableFlags_BordersInnerV |
-            cimgui.c.ImGuiTableFlags_RowBg |
-            cimgui.c.ImGuiTableFlags_SizingFixedFit,
-    )) return;
-    defer cimgui.c.ImGui_EndTable();
-
-    compressionTextRow(
-        "Platform Support",
-        "Whether this target can discard physical page memory while retaining " ++
-            "its virtual address range. The scrollback-compression setting may " ++
-            "still disable automatic compression on a supported platform.",
-        if (terminal.compression_enabled) "supported" else "unsupported",
-    );
-
-    var state_buf: [96]u8 = undefined;
-    const state = std.fmt.bufPrintZ(
-        &state_buf,
-        "{d} compressed, {d} resident",
-        .{ memory.compressed_pages, memory.resident_pages },
-    ) catch unreachable;
-    compressionTextRow(
-        "Page States",
-        "Compressed pages retain an encoded allocation while their raw mapping " ++
-            "is decommitted. Resident pages still have physical raw backing. " ++
-            "Active, visible, and recently changed pages are expected to be resident.",
-        state,
-    );
-
-    var raw_buf: [64]u8 = undefined;
-    compressionTextRow(
-        "Uncompressed Size",
-        "Total size of all raw page mappings. This is the approximate page " ++
-            "backing memory required if no pages were compressed and is also " ++
-            "the virtual address space retained across compression.",
-        formatBytes(&raw_buf, memory.raw_bytes),
-    );
-
-    var encoded_buf: [64]u8 = undefined;
-    var compressed_raw_buf: [64]u8 = undefined;
-    var storage_buf: [160]u8 = undefined;
-    const storage = if (memory.decommitted_raw_bytes > 0) storage: {
-        const ratio = percentage(
-            memory.encoded_bytes,
-            memory.decommitted_raw_bytes,
-        );
-        break :storage std.fmt.bufPrintZ(
-            &storage_buf,
-            "{s} encoded / {s} raw ({d:.1}%)",
-            .{
-                formatBytes(&encoded_buf, memory.encoded_bytes),
-                formatBytes(
-                    &compressed_raw_buf,
-                    memory.decommitted_raw_bytes,
-                ),
-                ratio,
-            },
-        ) catch unreachable;
-    } else "none";
-    compressionTextRow(
-        "Compressed Storage",
-        "Encoded allocation size compared with the original raw size of only " ++
-            "the compressed pages. The percentage is the compression ratio, " ++
-            "so smaller is better. Raw physical pages have been discarded.",
-        storage,
-    );
-
-    var resident_buf: [64]u8 = undefined;
-    compressionTextRow(
-        "Estimated Resident",
-        "Physical page backing estimated to remain after compression: resident " ++
-            "raw allocations, including unused pool tails, plus encoded storage. " ++
-            "Node and allocator metadata and unrelated terminal memory are excluded.",
-        formatBytes(&resident_buf, memory.estimatedResidentBytes()),
-    );
-
-    var savings_bytes_buf: [64]u8 = undefined;
-    var savings_buf: [128]u8 = undefined;
-    const savings = memory.estimatedSavings();
-    const savings_text = std.fmt.bufPrintZ(
-        &savings_buf,
-        "{s} ({d:.1}% of raw page memory)",
-        .{
-            formatBytes(&savings_bytes_buf, savings),
-            percentage(savings, memory.raw_bytes),
-        },
-    ) catch unreachable;
-    compressionTextRow(
-        "Estimated Savings",
-        "Physical page backing avoided across the complete PageList. This is " ++
-            "decommitted raw memory minus replacement encoded storage and is " ++
-            "not a measurement of total process RSS.",
-        savings_text,
-    );
-}
-
-fn compressionTextRow(
-    label: [:0]const u8,
-    help: [:0]const u8,
-    value: [:0]const u8,
-) void {
     cimgui.c.ImGui_TableNextRow();
     _ = cimgui.c.ImGui_TableSetColumnIndex(0);
-    cimgui.c.ImGui_Text("%s", label.ptr);
+    cimgui.c.ImGui_Text("Tracked Pins");
     _ = cimgui.c.ImGui_TableSetColumnIndex(1);
-    widgets.helpMarker(help);
+    widgets.helpMarker("Number of pins tracked for automatic updates.");
     _ = cimgui.c.ImGui_TableSetColumnIndex(2);
-    cimgui.c.ImGui_TextUnformatted(value.ptr);
-}
-
-fn formatBytes(buf: []u8, bytes: usize) [:0]const u8 {
-    if (bytes >= 1024 * 1024) {
-        const value: f64 = @as(f64, @floatFromInt(bytes)) / (1024 * 1024);
-        return std.fmt.bufPrintZ(buf, "{d:.2} MiB", .{value}) catch unreachable;
-    }
-
-    if (bytes >= 1024) {
-        const value: f64 = @as(f64, @floatFromInt(bytes)) / 1024;
-        return std.fmt.bufPrintZ(buf, "{d:.1} KiB", .{value}) catch unreachable;
-    }
-
-    return std.fmt.bufPrintZ(buf, "{d} B", .{bytes}) catch unreachable;
-}
-
-fn percentage(numerator: usize, denominator: usize) f64 {
-    if (denominator == 0) return 0;
-    return 100 *
-        @as(f64, @floatFromInt(numerator)) /
-        @as(f64, @floatFromInt(denominator));
+    cimgui.c.ImGui_Text("%d", pages.countTrackedPins());
 }
 
 fn scrollbarInfo(pages: *PageList) void {
@@ -471,18 +321,11 @@ fn trackedPinsTable(pages: *const PageList) void {
         }
 
         _ = cimgui.c.ImGui_TableSetColumnIndex(3);
-        if (pin.node.pageIfResident()) |page| {
-            const dirty = page.dirty or
-                page.getRowAndCell(pin.x, pin.y).row.dirty;
-            if (dirty) {
-                cimgui.c.ImGui_TextColored(.{ .x = 1.0, .y = 0.4, .z = 0.4, .w = 1.0 }, "dirty");
-            } else {
-                cimgui.c.ImGui_TextDisabled("clean");
-            }
+        const dirty = pin.isDirty();
+        if (dirty) {
+            cimgui.c.ImGui_TextColored(.{ .x = 1.0, .y = 0.4, .z = 0.4, .w = 1.0 }, "dirty");
         } else {
-            // Dirty state lives in the discarded mapping. Keep inspector
-            // traversal metadata-only rather than restoring this page.
-            cimgui.c.ImGui_TextDisabled("compressed");
+            cimgui.c.ImGui_TextDisabled("clean");
         }
 
         _ = cimgui.c.ImGui_TableSetColumnIndex(4);
@@ -697,37 +540,17 @@ pub const CellChooser = struct {
             .history => terminal.Point{ .history = self.lookup_coord },
         };
 
-        const pin = pages.pin(pt) orelse {
+        const cell = pages.getCell(pt) orelse {
             cimgui.c.ImGui_TextDisabled("(cell out of range)");
             return;
         };
 
-        // Cell pointers must come from the same page whose auxiliary tables
-        // we inspect. For compressed nodes this is an independent preserved
-        // page, leaving the PageList node compressed across inspector frames.
-        var preserved = pin.node.pagePreservingState(
-            std.heap.page_allocator,
-        ) catch {
-            cimgui.c.ImGui_TextDisabled("(unable to copy compressed page)");
-            return;
-        };
-        defer preserved.deinit();
-
-        const page = preserved.page();
-        const rac = page.getRowAndCell(pin.x, pin.y);
-        const cell: InspectedCell = .{
-            .row = rac.row,
-            .cell = rac.cell,
-            .row_idx = pin.y,
-            .col_idx = pin.x,
-        };
-
-        self.cell_info.draw(cell, pt, page);
+        self.cell_info.draw(cell, pt);
 
         if (cell.cell.style_id != stylepkg.default_id) {
             cimgui.c.ImGui_SeparatorText("Style");
-            const style = page.styles.get(
-                page.memory,
+            const style = cell.node.data.styles.get(
+                cell.node.data.memory,
                 cell.cell.style_id,
             ).*;
             widgets.style.table(style, null);
@@ -735,12 +558,12 @@ pub const CellChooser = struct {
 
         if (cell.cell.hyperlink) {
             cimgui.c.ImGui_SeparatorText("Hyperlink");
-            hyperlinkTable(cell, page);
+            hyperlinkTable(cell);
         }
 
         if (cell.cell.hasGrapheme()) {
             cimgui.c.ImGui_SeparatorText("Grapheme");
-            graphemeTable(cell, page);
+            graphemeTable(cell);
         }
     }
 };
@@ -754,7 +577,7 @@ fn maxCoord(
     return br_point.coord();
 }
 
-fn hyperlinkTable(cell: InspectedCell, page: *const terminal.Page) void {
+fn hyperlinkTable(cell: PageList.Cell) void {
     if (!cimgui.c.ImGui_BeginTable(
         "cell_hyperlink",
         2,
@@ -762,6 +585,7 @@ fn hyperlinkTable(cell: InspectedCell, page: *const terminal.Page) void {
     )) return;
     defer cimgui.c.ImGui_EndTable();
 
+    const page = &cell.node.data;
     const link_id = page.lookupHyperlink(cell.cell) orelse {
         cimgui.c.ImGui_TableNextRow();
         _ = cimgui.c.ImGui_TableSetColumnIndex(0);
@@ -808,7 +632,7 @@ fn hyperlinkTable(cell: InspectedCell, page: *const terminal.Page) void {
     cimgui.c.ImGui_Text("%d", refs);
 }
 
-fn graphemeTable(cell: InspectedCell, page: *const terminal.Page) void {
+fn graphemeTable(cell: PageList.Cell) void {
     if (!cimgui.c.ImGui_BeginTable(
         "cell_grapheme",
         2,
@@ -816,6 +640,7 @@ fn graphemeTable(cell: InspectedCell, page: *const terminal.Page) void {
     )) return;
     defer cimgui.c.ImGui_EndTable();
 
+    const page = &cell.node.data;
     const cps = page.lookupGrapheme(cell.cell) orelse {
         cimgui.c.ImGui_TableNextRow();
         _ = cimgui.c.ImGui_TableSetColumnIndex(0);
@@ -855,9 +680,8 @@ pub const CellInfo = struct {
 
     pub fn draw(
         _: *const CellInfo,
-        cell: InspectedCell,
+        cell: PageList.Cell,
         point: terminal.Point,
-        page: *const terminal.Page,
     ) void {
         if (!cimgui.c.ImGui_BeginTable(
             "cell_info",
@@ -923,7 +747,7 @@ pub const CellInfo = struct {
             _ = cimgui.c.ImGui_TableSetColumnIndex(2);
             if (cimgui.c.ImGui_BeginListBox("##cell_grapheme", .{ .x = 0, .y = 0 })) {
                 defer cimgui.c.ImGui_EndListBox();
-                if (page.lookupGrapheme(cell.cell)) |cps| {
+                if (cell.node.data.lookupGrapheme(cell.cell)) |cps| {
                     var buf: [96]u8 = undefined;
                     for (cps) |cp| {
                         const label = std.fmt.bufPrintZ(&buf, "U+{X}", .{cp}) catch "U+?";
@@ -1021,7 +845,7 @@ pub const CellInfo = struct {
             widgets.helpMarker("OSC8 hyperlink ID associated with this cell.");
             _ = cimgui.c.ImGui_TableSetColumnIndex(2);
 
-            const link_id = page.lookupHyperlink(cell.cell) orelse 0;
+            const link_id = cell.node.data.lookupHyperlink(cell.cell) orelse 0;
             cimgui.c.ImGui_Text("id=%d", link_id);
         }
     }
