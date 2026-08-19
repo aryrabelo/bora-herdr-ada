@@ -717,8 +717,7 @@ mod tests {
         with_isolated_state_dir("scope-replace", || {
             upsert_channel_scope("eng", scope_entry("w1A:p2", &["/repo/a"], &[])).unwrap();
             upsert_channel_scope("eng", scope_entry("w3B:p1", &[], &["/repo/c"])).unwrap();
-            upsert_channel_scope("eng", scope_entry("w1A:p2", &["/repo/z"], &["/repo/y"]))
-                .unwrap();
+            upsert_channel_scope("eng", scope_entry("w1A:p2", &["/repo/z"], &["/repo/y"])).unwrap();
 
             let entries = read_channel_scope("eng");
             assert_eq!(entries.len(), 2, "re-join replaces, never duplicates");

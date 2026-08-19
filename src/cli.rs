@@ -725,9 +725,7 @@ fn print_channel_help() {
     eprintln!(
         "                                                [--scope-write DIR]... [--scope-read"
     );
-    eprintln!(
-        "                                                DIR[,DIR]]... declare the pane's"
-    );
+    eprintln!("                                                DIR[,DIR]]... declare the pane's");
     eprintln!(
         "                                                write/read scope (write implies read)"
     );

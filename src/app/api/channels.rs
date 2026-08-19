@@ -803,7 +803,11 @@ fn unescape_channel_text(text: &str) -> String {
 /// a pane with none never gets this suffix, never an invented empty
 /// section.
 fn channel_scope_briefing(entry: &channels::ChannelScopeEntry) -> String {
-    let mut lines = vec![String::new(), String::new(), "Your scope in this channel:".to_string()];
+    let mut lines = vec![
+        String::new(),
+        String::new(),
+        "Your scope in this channel:".to_string(),
+    ];
     if !entry.write.is_empty() {
         lines.push(format!("  write: {}", entry.write.join(", ")));
     }
