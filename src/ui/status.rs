@@ -6,13 +6,10 @@ use ratatui::{
     Frame,
 };
 
-use std::time::Duration;
-
-use super::text::display_width_u16;
 use super::widgets::panel_contrast_fg;
 use crate::{
     app::state::{CopyFeedback, Palette, ToastKind, ToastNotification},
-    config::{StatusIndicatorStyle, ToastClipboardPosition, ToastHerdrPosition},
+    config::{ToastClipboardPosition, ToastHerdrPosition},
     detect::AgentState,
 };
 
@@ -57,9 +54,7 @@ pub(crate) fn toast_notification_rect(
     offset_for_warning: bool,
     position: ToastHerdrPosition,
 ) -> Rect {
-    let content_width = display_width_u16(&toast.title)
-        .max(display_width_u16(&toast.context))
-        .saturating_add(4);
+    let content_width = (toast.title.len().max(toast.context.len()) as u16) + 4;
     let width = content_width.saturating_add(2).min(area.width);
     let content_height = if toast.context.is_empty() { 1 } else { 2 };
     let height = (content_height + 2).min(area.height);
@@ -181,7 +176,7 @@ pub(super) fn render_config_diagnostic(frame: &mut Frame, area: Rect, message: &
         .take(area.height as usize)
         .enumerate()
     {
-        let text = format!(" {line} ");
+        let text = format!(" config warning: {line} ");
         let width = (text.len() as u16).min(area.width);
         let notif_area = Rect::new(
             area.x + area.width.saturating_sub(width),
@@ -195,50 +190,18 @@ pub(super) fn render_config_diagnostic(frame: &mut Frame, area: Rect, message: &
     }
 }
 
-/// Idle age -> color ramp. `None` (no age data) reads as freshest and shows
-/// yellow, marking a just-finished (done, unseen-idle) agent. The hottest
-/// (red) color marks the oldest unseen idle.
-pub(super) fn idle_age_color(age: Option<Duration>, p: &Palette) -> Color {
-    match age {
-        Some(d) if d >= Duration::from_secs(3600) => p.red, // > 60 min
-        Some(d) if d >= Duration::from_secs(1800) => p.yellow, // 30–60 min
-        Some(d) if d >= Duration::from_secs(600) => p.teal, // 10–30 min
-        Some(d) if d >= Duration::from_secs(120) => p.text, // 2–10 min
-        _ => p.yellow,                                      // 0–2 min / none
-    }
-}
-
-/// Compact numeric idle age: `42s`, `12m`, `3h`, `2d`.
-pub(super) fn format_idle_age(age: Duration) -> String {
-    let secs = age.as_secs();
-    if secs < 60 {
-        format!("{secs}s")
-    } else if secs < 3600 {
-        format!("{}m", secs / 60)
-    } else if secs < 86_400 {
-        format!("{}h", secs / 3600)
-    } else {
-        format!("{}d", secs / 86_400)
-    }
-}
-
 pub(super) fn state_dot(
     state: AgentState,
     seen: bool,
     tick: u32,
-    indicator_style: StatusIndicatorStyle,
     p: &Palette,
-    idle_age: Option<Duration>,
 ) -> (&'static str, Style) {
     match (state, seen) {
-        (AgentState::Working, _) => (super::spinner_frame(tick), Style::default().fg(p.overlay0)),
-        (AgentState::Idle, false) => (
-            super::sand_frame(tick),
-            Style::default().fg(idle_age_color(idle_age, p)),
-        ),
-        (AgentState::Idle, true) => ("○", Style::default().fg(p.overlay0)),
-        (AgentState::Blocked, _) => (blocked_glyph(indicator_style), Style::default().fg(p.red)),
-        (AgentState::Unknown, _) => ("◰", Style::default().fg(p.overlay0)),
+        (AgentState::Blocked, _) => ("?", Style::default().fg(p.red)),
+        (AgentState::Working, _) => (super::spinner_frame(tick), Style::default().fg(p.yellow)),
+        (AgentState::Idle, false) => ("●", Style::default().fg(p.teal)),
+        (AgentState::Idle, true) => ("○", Style::default().fg(p.green)),
+        (AgentState::Unknown, _) => ("·", Style::default().fg(p.overlay0)),
     }
 }
 
@@ -246,51 +209,17 @@ pub(super) fn agent_icon(
     state: AgentState,
     seen: bool,
     tick: u32,
-    indicator_style: StatusIndicatorStyle,
     p: &Palette,
-    idle_age: Option<Duration>,
 ) -> (&'static str, Style) {
     match (state, seen) {
-        (AgentState::Working, _) => (super::spinner_frame(tick), Style::default().fg(p.overlay0)),
-        (AgentState::Idle, false) => (
-            super::sand_frame(tick),
-            Style::default().fg(idle_age_color(idle_age, p)),
-        ),
-        (AgentState::Idle, true) => ("○", Style::default().fg(p.overlay0)),
-        (AgentState::Blocked, _) => (blocked_glyph(indicator_style), Style::default().fg(p.red)),
+        (AgentState::Blocked, _) => ("◉", Style::default().fg(p.red)),
+        (AgentState::Working, _) => (super::spinner_frame(tick), Style::default().fg(p.yellow)),
+        (AgentState::Idle, false) => ("●", Style::default().fg(p.teal)),
+        (AgentState::Idle, true) => ("✓", Style::default().fg(p.green)),
         (AgentState::Unknown, _) => ("○", Style::default().fg(p.overlay0)),
     }
 }
 
-fn blocked_glyph(indicator_style: StatusIndicatorStyle) -> &'static str {
-    match indicator_style {
-        StatusIndicatorStyle::Dots => "◆",
-        StatusIndicatorStyle::Symbols => "×",
-    }
-}
-
-/// Static (non-animated) glyph for a state, honoring the user's dots/symbols
-/// preference. Used for text labels (e.g. the mobile summary line) that have
-/// no room for the animated spinner/sand-timer frames `state_dot`/`agent_icon`
-/// render into a live pane icon.
-pub(super) fn state_icon_symbol(
-    state: AgentState,
-    seen: bool,
-    indicator_style: StatusIndicatorStyle,
-) -> &'static str {
-    match (indicator_style, state, seen) {
-        (StatusIndicatorStyle::Dots, AgentState::Blocked, _) => "●",
-        (StatusIndicatorStyle::Dots, AgentState::Working, _) => "●",
-        (StatusIndicatorStyle::Dots, AgentState::Idle, false) => "●",
-        (StatusIndicatorStyle::Dots, AgentState::Idle, true) => "○",
-        (StatusIndicatorStyle::Dots, AgentState::Unknown, _) => "·",
-        (StatusIndicatorStyle::Symbols, AgentState::Blocked, _) => "×",
-        (StatusIndicatorStyle::Symbols, AgentState::Working, _) => "◐",
-        (StatusIndicatorStyle::Symbols, AgentState::Idle, false) => "✓",
-        (StatusIndicatorStyle::Symbols, AgentState::Idle, true) => "○",
-        (StatusIndicatorStyle::Symbols, AgentState::Unknown, _) => "·",
-    }
-}
 pub(super) fn state_label(state: AgentState, seen: bool) -> &'static str {
     match (state, seen) {
         (AgentState::Blocked, _) => "blocked",
@@ -304,9 +233,9 @@ pub(super) fn state_label(state: AgentState, seen: bool) -> &'static str {
 pub(super) fn state_label_color(state: AgentState, seen: bool, p: &Palette) -> Color {
     match (state, seen) {
         (AgentState::Blocked, _) => p.red,
-        (AgentState::Working, _) => p.overlay0,
+        (AgentState::Working, _) => p.yellow,
         (AgentState::Idle, false) => p.teal,
-        (AgentState::Idle, true) => p.overlay0,
+        (AgentState::Idle, true) => p.green,
         (AgentState::Unknown, _) => p.overlay0,
     }
 }
@@ -333,7 +262,6 @@ mod tests {
     }
 
     #[test]
-
     fn toast_rect_uses_configured_corner() {
         let area = Rect::new(10, 20, 100, 40);
         let toast = toast();
@@ -358,25 +286,6 @@ mod tests {
     }
 
     #[test]
-    fn toast_rect_uses_display_width_for_cjk_labels() {
-        let area = Rect::new(0, 0, 100, 20);
-        let toast = ToastNotification {
-            kind: ToastKind::NeedsAttention,
-            title: "重构用户认证模块".to_string(),
-            context: "提交 herdr 的反馈".to_string(),
-            position: None,
-            target: None,
-        };
-
-        let rect = toast_notification_rect(area, &toast, false, ToastHerdrPosition::TopRight);
-
-        let expected_content_width =
-            display_width_u16(&toast.title).max(display_width_u16(&toast.context)) + 6;
-        assert_eq!(rect.width, expected_content_width);
-        assert_eq!(rect.x + rect.width, area.x + area.width);
-    }
-
-    #[test]
     fn copy_feedback_rect_uses_configured_position() {
         let area = Rect::new(10, 20, 100, 40);
         let feedback = feedback();
@@ -394,132 +303,6 @@ mod tests {
         assert_eq!(
             bottom_center.x,
             area.x + area.width.saturating_sub(bottom_center.width) / 2
-        );
-    }
-
-    #[test]
-    fn format_idle_age_units() {
-        assert_eq!(format_idle_age(Duration::from_secs(0)), "0s");
-        assert_eq!(format_idle_age(Duration::from_secs(42)), "42s");
-        assert_eq!(format_idle_age(Duration::from_secs(60)), "1m");
-        assert_eq!(format_idle_age(Duration::from_secs(3599)), "59m");
-        assert_eq!(format_idle_age(Duration::from_secs(3600)), "1h");
-        assert_eq!(format_idle_age(Duration::from_secs(7200)), "2h");
-        assert_eq!(format_idle_age(Duration::from_secs(90_000)), "1d");
-    }
-
-    #[test]
-    fn idle_age_color_buckets() {
-        let p = Palette::catppuccin();
-        assert_eq!(idle_age_color(Some(Duration::from_secs(0)), &p), p.yellow);
-        assert_eq!(idle_age_color(None, &p), p.yellow);
-        assert_eq!(idle_age_color(Some(Duration::from_secs(180)), &p), p.text); // 3 min
-        assert_eq!(idle_age_color(Some(Duration::from_secs(900)), &p), p.teal); // 15 min
-        assert_eq!(
-            idle_age_color(Some(Duration::from_secs(2700)), &p),
-            p.yellow
-        ); // 45 min
-        assert_eq!(idle_age_color(Some(Duration::from_secs(7200)), &p), p.red); // 2 h
-    }
-
-    #[test]
-    fn state_dot_idle_unseen_uses_sand_and_age_color() {
-        let p = Palette::catppuccin();
-        let (glyph, style) = state_dot(
-            AgentState::Idle,
-            false,
-            0,
-            StatusIndicatorStyle::Dots,
-            &p,
-            Some(Duration::from_secs(7200)),
-        );
-        assert_eq!(glyph, super::super::sand_frame(0));
-        assert_eq!(style.fg, Some(p.red));
-    }
-
-    #[test]
-    fn state_dot_blocked_and_unknown_glyphs() {
-        let p = Palette::catppuccin();
-        assert_eq!(
-            state_dot(
-                AgentState::Blocked,
-                false,
-                0,
-                StatusIndicatorStyle::Dots,
-                &p,
-                None
-            )
-            .0,
-            "◆"
-        );
-        assert_eq!(
-            state_dot(
-                AgentState::Unknown,
-                true,
-                0,
-                StatusIndicatorStyle::Dots,
-                &p,
-                None
-            )
-            .0,
-            "◰"
-        );
-    }
-
-    #[test]
-    fn state_dot_blocked_glyph_honors_symbols_indicator_style() {
-        let p = Palette::catppuccin();
-        assert_eq!(
-            state_dot(
-                AgentState::Blocked,
-                false,
-                0,
-                StatusIndicatorStyle::Symbols,
-                &p,
-                None
-            )
-            .0,
-            "×"
-        );
-        assert_eq!(
-            agent_icon(
-                AgentState::Blocked,
-                false,
-                0,
-                StatusIndicatorStyle::Symbols,
-                &p,
-                None
-            )
-            .0,
-            "×"
-        );
-    }
-
-    #[test]
-    fn state_icon_symbol_uses_configured_style_for_static_states() {
-        assert_eq!(
-            state_icon_symbol(AgentState::Blocked, true, StatusIndicatorStyle::Dots),
-            "●"
-        );
-        assert_eq!(
-            state_icon_symbol(AgentState::Blocked, true, StatusIndicatorStyle::Symbols),
-            "×"
-        );
-        assert_eq!(
-            state_icon_symbol(AgentState::Working, true, StatusIndicatorStyle::Symbols),
-            "◐"
-        );
-        assert_eq!(
-            state_icon_symbol(AgentState::Idle, false, StatusIndicatorStyle::Symbols),
-            "✓"
-        );
-        assert_eq!(
-            state_icon_symbol(AgentState::Idle, true, StatusIndicatorStyle::Symbols),
-            "○"
-        );
-        assert_eq!(
-            state_icon_symbol(AgentState::Unknown, true, StatusIndicatorStyle::Symbols),
-            "·"
         );
     }
 }

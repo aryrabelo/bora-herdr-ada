@@ -49,37 +49,10 @@ main() {
             exit
         }
     ')"
-    SHA256="$(printf '%s\n' "$MANIFEST" | awk -v target="\"${TARGET}\"" '
-        /^[[:space:]]*"sha256"[[:space:]]*:/ { in_sha256 = 1; next }
-        in_sha256 && /^[[:space:]]*}/ { exit }
-        in_sha256 && index($0, target) {
-            sub(/^.*:[[:space:]]*"/, "")
-            sub(/".*$/, "")
-            print
-            exit
-        }
-    ')"
     VERSION="$(printf '%s\n' "$MANIFEST" | awk -F '"' '/^[[:space:]]*"version"[[:space:]]*:/ { print $4; exit }')"
 
     if [ -z "$URL" ]; then
         err "release manifest does not include a binary for ${TARGET}"
-    fi
-    if [ "${#SHA256}" -ne 64 ]; then
-        err "release manifest does not include a valid SHA-256 checksum for ${TARGET}"
-    fi
-    if ! printf '%s\n' "$SHA256" | awk '/[^0-9A-Fa-f]/ { exit 1 }'; then
-        err "release manifest does not include a valid SHA-256 checksum for ${TARGET}"
-    fi
-    SHA256="$(printf '%s\n' "$SHA256" | awk '{ print tolower($0) }')"
-
-    if command -v sha256sum >/dev/null 2>&1; then
-        SHA256_TOOL="sha256sum"
-    elif command -v shasum >/dev/null 2>&1; then
-        SHA256_TOOL="shasum"
-    elif command -v openssl >/dev/null 2>&1; then
-        SHA256_TOOL="openssl"
-    else
-        err "SHA-256 verification requires sha256sum, shasum, or openssl"
     fi
 
     if [ -n "$VERSION" ]; then
@@ -94,47 +67,10 @@ main() {
         err "download failed from ${URL}"
     fi
 
-    case "$SHA256_TOOL" in
-        sha256sum) ACTUAL_SHA256="$(sha256sum < "${TMP}/${BIN}" | awk '{ print $1 }')" ;;
-        shasum)    ACTUAL_SHA256="$(shasum -a 256 < "${TMP}/${BIN}" | awk '{ print $1 }')" ;;
-        openssl)   ACTUAL_SHA256="$(openssl dgst -sha256 < "${TMP}/${BIN}" | awk '{ print $NF }')" ;;
-    esac
-    if [ "$ACTUAL_SHA256" != "$SHA256" ]; then
-        err "downloaded Herdr checksum did not match"
-    fi
-
-    # install: stage inside $INSTALL_DIR (same fs), fix perms/signature on the
-    # temp file, then atomic mv — never mutate the installed path in place
-    # (stale kernel-cached signature -> SIGKILL on macOS).
+    # install
     mkdir -p "$INSTALL_DIR"
-    STAGED="${INSTALL_DIR}/.${BIN}-install.$$"
-    mv "${TMP}/${BIN}" "$STAGED"
-    chmod +x "$STAGED"
-    if [ "$os" = "macos" ]; then
-        # AMFI rejects linker-signed adhoc signatures (flags 0x20002) and
-        # quarantined downloads; clear xattrs and re-sign ad-hoc (flags 0x2).
-        xattr -cr "$STAGED" 2>/dev/null || true
-        command -v codesign >/dev/null 2>&1 && codesign --force --sign - "$STAGED" 2>/dev/null || true
-    fi
-    mv -f "$STAGED" "${INSTALL_DIR}/${BIN}"
-
-    # smoke-run: an invalid code signature is not a run error on macOS — the
-    # kernel SIGKILLs the binary at exec (exit 137), so a silent dead install
-    # would otherwise pass. Fail loudly.
-    # `$?` inside `if ! cmd` is the status of the negation, always 0, which made
-    # the exit-137 branch below unreachable and reported "exit 0" on any failure.
-    rc=0
-    "${INSTALL_DIR}/${BIN}" --version >/dev/null 2>&1 || rc=$?
-    if [ "$rc" -ne 0 ]; then
-        if [ "$rc" -eq 137 ]; then
-            warn "macOS killed the binary at exec (SIGKILL, exit 137) — invalid code signature."
-            warn "AppleSystemPolicy rejected it; kernel log shows 'load code signature error 2'."
-            warn "inspect: log show --last 2m --predicate 'eventMessage CONTAINS \"bora\"'"
-            err "re-sign a fresh copy with: codesign --force --sign -"
-        else
-            err "installed binary failed to run (exit $rc)"
-        fi
-    fi
+    mv "${TMP}/${BIN}" "${INSTALL_DIR}/${BIN}"
+    chmod +x "${INSTALL_DIR}/${BIN}"
 
     log "installed ${BIN} to ${INSTALL_DIR}/${BIN}"
 

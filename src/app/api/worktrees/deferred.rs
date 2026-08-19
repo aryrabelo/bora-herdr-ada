@@ -97,35 +97,17 @@ impl App {
         params: WorktreeCreateParams,
         respond_to: std::sync::mpsc::Sender<String>,
     ) {
-        if params.pr.is_some() && (params.branch.is_some() || params.base.is_some()) {
-            Self::send_api_response(
-                respond_to,
-                encode_error(
-                    id,
-                    "invalid_request",
-                    "pr is mutually exclusive with branch and base",
-                ),
-            );
-            return;
-        }
-        let pr = params.pr;
-        let no_setup = params.no_setup;
-        // For PR creates the real branch is only known after `gh` resolution in
-        // the worker; `pr-<N>` names the checkout path (and the dedupe key).
-        let branch = match pr {
-            Some(number) => format!("pr-{number}"),
-            None => params
-                .branch
-                .unwrap_or_else(|| {
-                    let seed = SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .map(|duration| duration.as_micros().min(u128::from(u64::MAX)) as u64)
-                        .unwrap_or(0);
-                    crate::worktree::generated_branch_slug(seed)
-                })
-                .trim()
-                .to_string(),
-        };
+        let branch = params
+            .branch
+            .unwrap_or_else(|| {
+                let seed = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map(|duration| duration.as_micros().min(u128::from(u64::MAX)) as u64)
+                    .unwrap_or(0);
+                crate::worktree::generated_branch_slug(seed)
+            })
+            .trim()
+            .to_string();
         if branch.is_empty() {
             Self::send_api_response(
                 respond_to,
@@ -204,7 +186,6 @@ impl App {
         };
         let path = checkout_path;
         let source_checkout_path = api_request.source_checkout_path.clone();
-        let source_repo_root = api_request.source_repo_root.clone();
         let event_tx = self.event_tx.clone();
         std::thread::spawn(move || {
             let result = if let Some(parent_dir) = parent_dir {
@@ -212,35 +193,19 @@ impl App {
             } else {
                 Ok(())
             }
-            .and_then(|()| match pr {
-                Some(number) => crate::worktree::run_worktree_add_for_pull_request(
-                    &source_checkout_path,
-                    &path,
-                    number,
-                ),
-                None => crate::worktree::run_worktree_add_command(
+            .and_then(|()| {
+                crate::worktree::run_worktree_add_command(
                     &source_checkout_path,
                     &path,
                     &branch,
                     &base,
-                ),
-            });
-            let setup = if result.is_ok() {
-                crate::bora_settings::provision_worktree(
-                    &source_repo_root,
-                    &path,
-                    Some(&branch),
-                    no_setup,
                 )
-            } else {
-                crate::bora_settings::SetupStatus::Skipped
-            };
+            });
             let _ = event_tx.blocking_send(AppEvent::WorktreeAddFinished(Box::new(
                 crate::events::WorktreeAddResult {
                     path,
                     api_request: Some(api_request),
                     result,
-                    setup,
                 },
             )));
         });
@@ -401,33 +366,12 @@ impl App {
         self.pending_api_worktree_creates.remove(&checkout_key);
 
         if let Err(err) = result.result {
-            if let Some(create) = &mut self.state.worktree_create {
-                if create.checkout_path == result.path {
-                    create.creating = false;
-                    create.error = Some(err.clone());
-                }
-            }
-            // The sidebar PR action has no modal and drops its responder after
-            // dispatch, so surface the failure as a toast.
-            if api.id == crate::app::worktrees::TUI_WORKTREE_CREATE_FROM_PR_REQUEST_ID {
-                self.show_worktree_op_toast(
-                    crate::app::state::ToastKind::NeedsAttention,
-                    "open PR in worktree failed",
-                    err.clone(),
-                );
-            }
             Self::send_api_response(
                 api.respond_to,
                 encode_error(api.id, "worktree_create_failed", err),
             );
             return;
         }
-        let setup_status = result.setup;
-        let setup = setup_status.as_str().to_string();
-        let setup_error = match &setup_status {
-            crate::bora_settings::SetupStatus::Failed(message) => Some(message.clone()),
-            _ => None,
-        };
 
         let source_workspace_idx = self.api_create_source_workspace_idx(&api);
         let mut source = WorktreeSource {
@@ -477,17 +421,6 @@ impl App {
                 ws.set_custom_name(label);
             }
         }
-        if self
-            .state
-            .worktree_create
-            .as_ref()
-            .is_some_and(|create| create.checkout_path == result.path)
-        {
-            self.state.worktree_create = None;
-            self.state.name_input.clear();
-            self.state.name_input_replace_on_type = false;
-            self.state.mode = crate::app::Mode::Terminal;
-        }
         self.state.mark_session_dirty();
         if created_workspace {
             self.emit_workspace_open_events(ws_idx);
@@ -516,8 +449,6 @@ impl App {
                     .root_pane_info(ws_idx, tab_idx)
                     .expect("created worktree workspace should have an active root pane"),
                 worktree,
-                setup,
-                setup_error,
             },
         );
         Self::send_api_response(api.respond_to, response);
@@ -561,17 +492,6 @@ impl App {
                 } else {
                     "worktree_remove_failed"
                 };
-            if let Some(remove) = &mut self.state.worktree_remove {
-                if remove.workspace_id == result.workspace_id && remove.path == result.path {
-                    remove.removing = false;
-                    if code == "dirty_worktree_requires_force" && !remove.force_confirmation {
-                        remove.force_confirmation = true;
-                        remove.error = None;
-                    } else {
-                        remove.error = Some(message.clone());
-                    }
-                }
-            }
             Self::send_api_response(api.respond_to, encode_error(api.id, code, message));
             return;
         }
@@ -600,7 +520,8 @@ impl App {
                         .cloned()
                         .map(|space| self.worktree_info_for_membership(&space, None));
                 }
-                self.close_removed_linked_worktree_workspace(ws_idx);
+                self.state.selected = ws_idx;
+                self.state.close_selected_workspace();
                 self.shutdown_detached_terminal_runtimes();
                 self.emit_event(EventEnvelope {
                     event: EventKind::WorkspaceClosed,
@@ -633,16 +554,6 @@ impl App {
             worktree,
             result.forced,
         );
-        if self.state.worktree_remove.as_ref().is_some_and(|remove| {
-            remove.workspace_id == result.workspace_id && remove.path == result.path
-        }) {
-            self.state.worktree_remove = None;
-            self.state.mode = if self.state.active.is_some() {
-                crate::app::Mode::Terminal
-            } else {
-                crate::app::Mode::Navigate
-            };
-        }
         let response = encode_success(
             api.id,
             ResponseResult::WorktreeRemoved {

@@ -12,12 +12,11 @@ use crate::api::schema::{
     PluginPlatform, PluginSetEnabledParams, PluginSourceInfo, PluginSourceKind, PluginUnlinkParams,
     Request, ResponseResult, SplitDirection, SuccessResponse,
 };
-use crate::popup_size::PopupSize;
 
 const PLUGIN_BUILD_OUTPUT_MAX_BYTES: usize = 64 * 1024;
 
 pub(super) fn run_plugin_command(args: &[String]) -> std::io::Result<i32> {
-    let Some(subcommand) = args.first().map(std::string::String::as_str) else {
+    let Some(subcommand) = args.first().map(|arg| arg.as_str()) else {
         print_plugin_help();
         return Ok(2);
     };
@@ -47,7 +46,7 @@ pub(super) fn run_plugin_command(args: &[String]) -> std::io::Result<i32> {
 
 fn plugin_link(args: &[String]) -> std::io::Result<i32> {
     let Some(path) = args.first() else {
-        eprintln!("usage: bora plugin link <path> [--disabled]");
+        eprintln!("usage: herdr plugin link <path> [--disabled]");
         return Ok(2);
     };
     let path = normalize_plugin_path_arg(path)?;
@@ -69,29 +68,20 @@ fn plugin_link(args: &[String]) -> std::io::Result<i32> {
             }
         }
     }
-    let params = PluginLinkParams {
+    print_plugin_response(Method::PluginLink(PluginLinkParams {
         path,
         enabled,
         source: None,
-    };
-    let response = match super::send_request(&Request {
-        id: "cli:plugin".into(),
-        method: Method::PluginLink(params.clone()),
-    }) {
-        Ok(response) => response,
-        Err(err) if is_connection_error(&err) => offline_plugin_link_response(&params)?,
-        Err(err) => return Err(err),
-    };
-    super::print_response(&response)
+    }))
 }
 
 fn plugin_config_dir_command(args: &[String]) -> std::io::Result<i32> {
     let Some(plugin_id) = args.first() else {
-        eprintln!("usage: bora plugin config-dir <plugin_id>");
+        eprintln!("usage: herdr plugin config-dir <plugin_id>");
         return Ok(2);
     };
     if args.len() != 1 {
-        eprintln!("usage: bora plugin config-dir <plugin_id>");
+        eprintln!("usage: herdr plugin config-dir <plugin_id>");
         return Ok(2);
     }
     let path = crate::plugin_paths::plugin_config_dir(plugin_id);
@@ -139,11 +129,11 @@ fn plugin_list(args: &[String]) -> std::io::Result<i32> {
 
 fn plugin_unlink(args: &[String]) -> std::io::Result<i32> {
     let Some(plugin_id) = args.first() else {
-        eprintln!("usage: bora plugin unlink <plugin_id>");
+        eprintln!("usage: herdr plugin unlink <plugin_id>");
         return Ok(2);
     };
     if args.len() != 1 {
-        eprintln!("usage: bora plugin unlink <plugin_id>");
+        eprintln!("usage: herdr plugin unlink <plugin_id>");
         return Ok(2);
     }
     print_plugin_response(Method::PluginUnlink(PluginUnlinkParams {
@@ -153,7 +143,7 @@ fn plugin_unlink(args: &[String]) -> std::io::Result<i32> {
 
 fn plugin_install(args: &[String]) -> std::io::Result<i32> {
     let Some(source_arg) = args.first() else {
-        eprintln!("usage: bora plugin install <owner>/<repo>[/subdir...] [--ref REF] [--yes]");
+        eprintln!("usage: herdr plugin install <owner>/<repo>[/subdir...] [--ref REF] [--yes]");
         return Ok(2);
     };
     let source = match GithubPluginSource::parse(source_arg) {
@@ -214,7 +204,7 @@ fn plugin_install(args: &[String]) -> std::io::Result<i32> {
         let post_build_plugin = load_cli_plugin_manifest(&manifest_root, true)?;
         ensure_manifest_unchanged_after_build(&preview_plugin, &post_build_plugin)?;
 
-        let final_checkout = crate::plugin_paths::managed_checkout_path(&preview_plugin.plugin_id);
+        let final_checkout = managed_checkout_path(&preview_plugin.plugin_id);
         let backup_checkout = temp_root.join("previous-checkout");
         let mut backup_moved = false;
         if final_checkout.exists() {
@@ -262,11 +252,11 @@ fn plugin_install(args: &[String]) -> std::io::Result<i32> {
 
 fn plugin_uninstall(args: &[String]) -> std::io::Result<i32> {
     let Some(target) = args.first() else {
-        eprintln!("usage: bora plugin uninstall <plugin_id|owner/repo[/subdir...]>");
+        eprintln!("usage: herdr plugin uninstall <plugin_id|owner/repo[/subdir...]>");
         return Ok(2);
     };
     if args.len() != 1 {
-        eprintln!("usage: bora plugin uninstall <plugin_id|owner/repo[/subdir...]>");
+        eprintln!("usage: herdr plugin uninstall <plugin_id|owner/repo[/subdir...]>");
         return Ok(2);
     }
 
@@ -305,15 +295,14 @@ fn plugin_uninstall(args: &[String]) -> std::io::Result<i32> {
             }
         }
         Err(err) if is_connection_error(&err) => {
-            let (removed, _) = crate::persist::plugin_registry::update(|plugins| {
-                let before = plugins.len();
-                plugins.retain(|plugin| plugin.plugin_id != plugin_id);
-                before != plugins.len()
-            })?;
-            if !removed {
+            let mut plugins = crate::persist::plugin_registry::load();
+            let before = plugins.len();
+            plugins.retain(|plugin| plugin.plugin_id != plugin_id);
+            if before == plugins.len() {
                 eprintln!("plugin not installed: {target}");
                 return Ok(1);
             }
+            crate::persist::plugin_registry::save(&plugins)?;
         }
         Err(err) => return Err(err),
     }
@@ -328,14 +317,14 @@ fn plugin_uninstall(args: &[String]) -> std::io::Result<i32> {
 fn plugin_set_enabled(args: &[String], enabled: bool) -> std::io::Result<i32> {
     let Some(plugin_id) = args.first() else {
         eprintln!(
-            "usage: bora plugin {} <plugin_id>",
+            "usage: herdr plugin {} <plugin_id>",
             if enabled { "enable" } else { "disable" }
         );
         return Ok(2);
     };
     if args.len() != 1 {
         eprintln!(
-            "usage: bora plugin {} <plugin_id>",
+            "usage: herdr plugin {} <plugin_id>",
             if enabled { "enable" } else { "disable" }
         );
         return Ok(2);
@@ -386,7 +375,7 @@ fn plugin_log_list(args: &[String]) -> std::io::Result<i32> {
 }
 
 fn run_plugin_action_command(args: &[String]) -> std::io::Result<i32> {
-    let Some(subcommand) = args.first().map(std::string::String::as_str) else {
+    let Some(subcommand) = args.first().map(|arg| arg.as_str()) else {
         print_plugin_action_help();
         return Ok(2);
     };
@@ -430,7 +419,7 @@ fn plugin_action_list(args: &[String]) -> std::io::Result<i32> {
 
 fn plugin_action_invoke(args: &[String]) -> std::io::Result<i32> {
     let Some(action_id) = args.first() else {
-        eprintln!("usage: bora plugin action invoke <action_id> [--plugin ID]");
+        eprintln!("usage: herdr plugin action invoke <action_id> [--plugin ID]");
         return Ok(2);
     };
     let mut plugin_id = None;
@@ -474,7 +463,7 @@ fn plugin_action_invoke(args: &[String]) -> std::io::Result<i32> {
 }
 
 fn run_plugin_pane_command(args: &[String]) -> std::io::Result<i32> {
-    let Some(subcommand) = args.first().map(std::string::String::as_str) else {
+    let Some(subcommand) = args.first().map(|arg| arg.as_str()) else {
         print_plugin_pane_help();
         return Ok(2);
     };
@@ -498,8 +487,6 @@ fn plugin_pane_open(args: &[String]) -> std::io::Result<i32> {
     let mut plugin_id = None;
     let mut entrypoint = None;
     let mut placement = None;
-    let mut width = None;
-    let mut height = None;
     let mut workspace_id = None;
     let mut target_pane_id = None;
     let mut direction = None;
@@ -530,24 +517,6 @@ fn plugin_pane_open(args: &[String]) -> std::io::Result<i32> {
                     return Ok(2);
                 };
                 placement = Some(parsed);
-            }
-            "--width" => {
-                let Some(value) = required_value(args, &mut index, "--width") else {
-                    return Ok(2);
-                };
-                let Some(parsed) = parse_popup_dimension(&value, "--width") else {
-                    return Ok(2);
-                };
-                width = Some(parsed);
-            }
-            "--height" => {
-                let Some(value) = required_value(args, &mut index, "--height") else {
-                    return Ok(2);
-                };
-                let Some(parsed) = parse_popup_dimension(&value, "--height") else {
-                    return Ok(2);
-                };
-                height = Some(parsed);
             }
             "--workspace" => {
                 let Some(value) = required_value(args, &mut index, "--workspace") else {
@@ -617,8 +586,6 @@ fn plugin_pane_open(args: &[String]) -> std::io::Result<i32> {
         plugin_id,
         entrypoint,
         placement,
-        width,
-        height,
         workspace_id,
         target_pane_id,
         direction,
@@ -628,23 +595,13 @@ fn plugin_pane_open(args: &[String]) -> std::io::Result<i32> {
     }))
 }
 
-fn parse_popup_dimension(value: &str, flag: &str) -> Option<PopupSize> {
-    match PopupSize::parse_cli(value) {
-        Ok(value) => Some(value),
-        Err(message) => {
-            eprintln!("{flag} {message}");
-            None
-        }
-    }
-}
-
 fn plugin_pane_focus(args: &[String]) -> std::io::Result<i32> {
     let Some(pane_id) = args.first() else {
-        eprintln!("usage: bora plugin pane focus <pane_id>");
+        eprintln!("usage: herdr plugin pane focus <pane_id>");
         return Ok(2);
     };
     if args.len() != 1 {
-        eprintln!("usage: bora plugin pane focus <pane_id>");
+        eprintln!("usage: herdr plugin pane focus <pane_id>");
         return Ok(2);
     }
     print_plugin_response(Method::PluginPaneFocus(PluginPaneFocusParams {
@@ -654,11 +611,11 @@ fn plugin_pane_focus(args: &[String]) -> std::io::Result<i32> {
 
 fn plugin_pane_close(args: &[String]) -> std::io::Result<i32> {
     let Some(pane_id) = args.first() else {
-        eprintln!("usage: bora plugin pane close <pane_id>");
+        eprintln!("usage: herdr plugin pane close <pane_id>");
         return Ok(2);
     };
     if args.len() != 1 {
-        eprintln!("usage: bora plugin pane close <pane_id>");
+        eprintln!("usage: herdr plugin pane close <pane_id>");
         return Ok(2);
     }
     print_plugin_response(Method::PluginPaneClose(PluginPaneCloseParams {
@@ -678,7 +635,6 @@ fn required_value(args: &[String], index: &mut usize, flag: &str) -> Option<Stri
 fn parse_pane_placement(value: &str) -> Option<PluginPanePlacement> {
     match value {
         "overlay" => Some(PluginPanePlacement::Overlay),
-        "popup" => Some(PluginPanePlacement::Popup),
         "split" => Some(PluginPanePlacement::Split),
         "tab" => Some(PluginPanePlacement::Tab),
         "zoomed" | "fullscreen" => Some(PluginPanePlacement::Zoomed),
@@ -728,7 +684,7 @@ impl GithubPluginSource {
         }
         let parts = value.split('/').collect::<Vec<_>>();
         if parts.len() < 2 {
-            return Err("usage: bora plugin install <owner>/<repo>[/subdir...]".into());
+            return Err("usage: herdr plugin install <owner>/<repo>[/subdir...]".into());
         }
         let owner = parts[0];
         let repo = parts[1];
@@ -859,7 +815,7 @@ fn git_checkout(
 }
 
 fn run_git<const N: usize>(cwd: Option<&Path>, args: [&str; N]) -> std::io::Result<()> {
-    let mut command = crate::noninteractive_process::command("git");
+    let mut command = Command::new("git");
     command.args(args);
     if let Some(cwd) = cwd {
         command.current_dir(cwd);
@@ -875,7 +831,7 @@ fn run_git<const N: usize>(cwd: Option<&Path>, args: [&str; N]) -> std::io::Resu
 }
 
 fn git_output<const N: usize>(cwd: &Path, args: [&str; N]) -> std::io::Result<String> {
-    let output = crate::noninteractive_process::command("git")
+    let output = Command::new("git")
         .args(args)
         .current_dir(cwd)
         .stdin(Stdio::null())
@@ -900,15 +856,6 @@ fn command_failure_message(program: &str, output: &std::process::Output) -> Stri
 fn load_cli_plugin_manifest(path: &Path, enabled: bool) -> std::io::Result<InstalledPluginInfo> {
     crate::app::load_plugin_manifest(&path.display().to_string(), enabled)
         .map_err(|(_, message)| std::io::Error::other(message))
-}
-
-fn persist_plugin_offline(plugin: &InstalledPluginInfo) -> std::io::Result<()> {
-    crate::plugin_paths::ensure_plugin_user_dirs(&plugin.plugin_id)?;
-    crate::persist::plugin_registry::update(|plugins| {
-        plugins.retain(|entry| entry.plugin_id != plugin.plugin_id);
-        plugins.push(plugin.clone());
-    })?;
-    Ok(())
 }
 
 fn register_installed_plugin(
@@ -951,9 +898,6 @@ fn register_installed_plugin(
                             ),
                         )));
                     }
-                    Err(unlink_err) if super::protocol_mismatch_was_reported(&unlink_err) => {
-                        return Err(InstallFailure::KeepCheckout(unlink_err));
-                    }
                     Err(unlink_err) => {
                         return Err(InstallFailure::KeepCheckout(std::io::Error::other(
                             format!(
@@ -966,7 +910,12 @@ fn register_installed_plugin(
             Ok(())
         }
         Err(err) if is_connection_error(&err) => {
-            persist_plugin_offline(&plugin).map_err(InstallFailure::Rollback)
+            let mut plugins = crate::persist::plugin_registry::load();
+            plugins.retain(|entry| entry.plugin_id != plugin.plugin_id);
+            crate::plugin_paths::ensure_plugin_user_dirs(&plugin.plugin_id)
+                .map_err(InstallFailure::Rollback)?;
+            plugins.push(plugin);
+            crate::persist::plugin_registry::save(&plugins).map_err(InstallFailure::Rollback)
         }
         Err(err) => Err(InstallFailure::Rollback(err)),
     }
@@ -998,7 +947,7 @@ fn verify_plugin_link_source_response(
         || plugin.source.managed_path != expected.managed_path
     {
         return Err(std::io::Error::other(
-            "running Bora server did not persist GitHub plugin source metadata",
+            "running Herdr server did not persist GitHub plugin source metadata",
         ));
     }
     Ok(())
@@ -1094,16 +1043,6 @@ fn plugin_matches_github_source(plugin: &InstalledPluginInfo, source: &GithubPlu
         && plugin.source.owner.as_deref() == Some(source.owner.as_str())
         && plugin.source.repo.as_deref() == Some(source.repo.as_str())
         && plugin.source.subdir.as_deref() == source.subdir.as_deref()
-}
-
-fn offline_plugin_link_response(params: &PluginLinkParams) -> std::io::Result<serde_json::Value> {
-    let plugin = load_cli_plugin_manifest(Path::new(&params.path), params.enabled)?;
-    persist_plugin_offline(&plugin)?;
-    serde_json::to_value(SuccessResponse {
-        id: "cli:plugin".into(),
-        result: ResponseResult::PluginLinked { plugin },
-    })
-    .map_err(std::io::Error::other)
 }
 
 fn offline_plugin_list_response(params: &PluginListParams) -> std::io::Result<serde_json::Value> {
@@ -1223,7 +1162,6 @@ fn print_install_preview(
         eprintln!("  commit: {commit}");
     }
     eprintln!("  actions: {}", plugin.actions.len());
-    eprintln!("  startup commands: {}", plugin.startup.len());
     eprintln!("  events: {}", plugin.events.len());
     eprintln!("  panes: {}", plugin.panes.len());
     eprintln!("  link handlers: {}", plugin.link_handlers.len());
@@ -1238,9 +1176,6 @@ fn print_install_preview(
             )
         };
         eprintln!("    build{}: {}", support, build.command.join(" "));
-    }
-    for startup in &plugin.startup {
-        eprintln!("    startup: {}", startup.command.join(" "));
     }
     for action in &plugin.actions {
         eprintln!("    action {}: {}", action.id, action.command.join(" "));
@@ -1315,8 +1250,9 @@ fn run_plugin_build_command(
         }));
     };
     let args = command.iter().skip(1).cloned().collect::<Vec<_>>();
-    let mut child = crate::plugin_command::command_for_argv_in_dir(program, &args, cwd);
+    let mut child = crate::plugin_command::command_for_argv(program, &args);
     child
+        .current_dir(cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -1556,13 +1492,23 @@ fn confirm(prompt: &str) -> std::io::Result<bool> {
 }
 
 fn create_plugin_temp_dir(label: &str) -> std::io::Result<PathBuf> {
-    let path = crate::plugin_paths::managed_plugins_dir().join(format!(
+    let path = managed_plugins_dir().join(format!(
         ".tmp-{label}-{}-{}",
         std::process::id(),
         current_unix_ms()
     ));
     std::fs::create_dir_all(&path)?;
     Ok(path)
+}
+
+fn managed_plugins_dir() -> PathBuf {
+    crate::session::data_dir().join("plugins")
+}
+
+fn managed_checkout_path(plugin_id: &str) -> PathBuf {
+    managed_plugins_dir()
+        .join("github")
+        .join(crate::api::schema::plugin_managed_path_component(plugin_id))
 }
 
 fn remove_managed_plugin_files(plugin: &InstalledPluginInfo) -> std::io::Result<()> {
@@ -1591,7 +1537,7 @@ fn plugin_checkout_lifecycle_error(operation: &str, path: &Path, err: io::Error)
         return io::Error::new(
             err.kind(),
             format!(
-                "failed to {operation} managed plugin checkout at {}; close any Bora plugin panes or plugin commands using that checkout, then retry: {err}",
+                "failed to {operation} managed plugin checkout at {}; close any Herdr plugin panes or plugin commands using that checkout, then retry: {err}",
                 path.display()
             ),
         );
@@ -1603,7 +1549,7 @@ fn is_expected_managed_path(plugin: &InstalledPluginInfo, path: &Path) -> bool {
     let Ok(path) = path.canonicalize() else {
         return false;
     };
-    let expected = crate::plugin_paths::managed_checkout_path(&plugin.plugin_id);
+    let expected = managed_checkout_path(&plugin.plugin_id);
     let Ok(expected) = expected.canonicalize() else {
         return false;
     };
@@ -1618,19 +1564,14 @@ fn current_unix_ms() -> u64 {
 }
 
 fn is_connection_error(err: &std::io::Error) -> bool {
-    // A `server_not_running` marker is a connect failure for recovery purposes:
-    // treating it as a connection error lets plugin commands fall back to the
-    // offline registry. The marker carries (but does not print) a friendly
-    // response, so recovering here prints nothing.
-    super::server_not_running_was_reported(err)
-        || matches!(
-            err.kind(),
-            std::io::ErrorKind::NotFound
-                | std::io::ErrorKind::ConnectionRefused
-                | std::io::ErrorKind::ConnectionAborted
-                | std::io::ErrorKind::ConnectionReset
-                | std::io::ErrorKind::BrokenPipe
-        )
+    matches!(
+        err.kind(),
+        std::io::ErrorKind::NotFound
+            | std::io::ErrorKind::ConnectionRefused
+            | std::io::ErrorKind::ConnectionAborted
+            | std::io::ErrorKind::ConnectionReset
+            | std::io::ErrorKind::BrokenPipe
+    )
 }
 
 fn print_plugin_response(method: Method) -> std::io::Result<i32> {
@@ -1641,31 +1582,31 @@ fn print_plugin_response(method: Method) -> std::io::Result<i32> {
 }
 
 fn print_plugin_help() {
-    eprintln!("bora plugin commands:");
-    eprintln!("  bora plugin install <owner>/<repo>[/subdir...] [--ref REF] [--yes]");
-    eprintln!("  bora plugin uninstall <plugin_id|owner/repo[/subdir...]>");
-    eprintln!("  bora plugin link <path> [--disabled]");
-    eprintln!("  bora plugin list [--plugin ID] [--json]");
-    eprintln!("  bora plugin config-dir <plugin_id>");
-    eprintln!("  bora plugin unlink <plugin_id>");
-    eprintln!("  bora plugin enable <plugin_id>");
-    eprintln!("  bora plugin disable <plugin_id>");
-    eprintln!("  bora plugin action <list|invoke>");
-    eprintln!("  bora plugin log list [--plugin ID] [--limit N]");
-    eprintln!("  bora plugin pane <open|focus|close>");
+    eprintln!("herdr plugin commands:");
+    eprintln!("  herdr plugin install <owner>/<repo>[/subdir...] [--ref REF] [--yes]");
+    eprintln!("  herdr plugin uninstall <plugin_id|owner/repo[/subdir...]>");
+    eprintln!("  herdr plugin link <path> [--disabled]");
+    eprintln!("  herdr plugin list [--plugin ID] [--json]");
+    eprintln!("  herdr plugin config-dir <plugin_id>");
+    eprintln!("  herdr plugin unlink <plugin_id>");
+    eprintln!("  herdr plugin enable <plugin_id>");
+    eprintln!("  herdr plugin disable <plugin_id>");
+    eprintln!("  herdr plugin action <list|invoke>");
+    eprintln!("  herdr plugin log list [--plugin ID] [--limit N]");
+    eprintln!("  herdr plugin pane <open|focus|close>");
 }
 
 fn print_plugin_action_help() {
-    eprintln!("bora plugin action commands:");
-    eprintln!("  bora plugin action list [--plugin ID]");
-    eprintln!("  bora plugin action invoke <action_id> [--plugin ID]");
+    eprintln!("herdr plugin action commands:");
+    eprintln!("  herdr plugin action list [--plugin ID]");
+    eprintln!("  herdr plugin action invoke <action_id> [--plugin ID]");
 }
 
 fn print_plugin_pane_help() {
-    eprintln!("bora plugin pane commands:");
-    eprintln!("  bora plugin pane open --plugin ID --entrypoint ID [--placement overlay|popup|split|tab|zoomed] [--width SIZE] [--height SIZE] [--workspace ID] [--target-pane PANE] [--direction right|down] [--cwd PATH] [--env KEY=VALUE] [--focus|--no-focus]");
-    eprintln!("  bora plugin pane focus <pane_id>");
-    eprintln!("  bora plugin pane close <pane_id>");
+    eprintln!("herdr plugin pane commands:");
+    eprintln!("  herdr plugin pane open --plugin ID --entrypoint ID [--placement overlay|split|tab|zoomed] [--workspace ID] [--target-pane PANE] [--direction right|down] [--cwd PATH] [--env KEY=VALUE] [--focus|--no-focus]");
+    eprintln!("  herdr plugin pane focus <pane_id>");
+    eprintln!("  herdr plugin pane close <pane_id>");
 }
 
 #[cfg(test)]
@@ -1697,7 +1638,6 @@ mod tests {
             enabled: true,
             platforms: None,
             build: vec![],
-            startup: vec![],
             actions: vec![],
             events: vec![],
             panes: vec![],

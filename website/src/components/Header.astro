@@ -6,12 +6,19 @@ import Search from 'virtual:starlight/components/Search';
 import SiteTitle from 'virtual:starlight/components/SiteTitle';
 import SocialIcons from 'virtual:starlight/components/SocialIcons';
 import ThemeSelect from 'virtual:starlight/components/ThemeSelect';
-import DocsVersionSelect from './DocsVersionSelect.astro';
-import { docsRoute } from '../docs-path';
 
 const shouldRenderSearch =
   config.pagefind || config.components.Search !== '@astrojs/starlight/components/Search.astro';
-const isDocs = docsRoute(Astro.url.pathname).isDocs;
+
+const pathname = Astro.url.pathname;
+const isDocs = pathname === '/docs/' || pathname.startsWith('/docs/');
+const isPreview = pathname === '/docs/preview/' || pathname.startsWith('/docs/preview/');
+const stableHref = isPreview ? pathname.replace(/^\/docs\/preview\/?/, '/docs/') : pathname;
+const previewHref = isPreview
+  ? pathname
+  : pathname === '/docs/'
+    ? '/docs/preview/'
+    : pathname.replace(/^\/docs\/?/, '/docs/preview/');
 ---
 
 <div class="header">
@@ -19,7 +26,12 @@ const isDocs = docsRoute(Astro.url.pathname).isDocs;
     <SiteTitle />
   </div>
   <div class="sl-flex print:hidden search-wrapper">
-    {isDocs && <DocsVersionSelect />}
+    {isDocs && (
+      <nav class="docs-channel-switcher" aria-label="Documentation channel">
+        <a href={stableHref} aria-current={!isPreview ? 'page' : undefined}>Stable</a>
+        <a href={previewHref} aria-current={isPreview ? 'page' : undefined}>Preview</a>
+      </nav>
+    )}
     {shouldRenderSearch && <Search />}
   </div>
   <div class="sl-hidden md:sl-flex print:hidden right-group">
@@ -54,6 +66,38 @@ const isDocs = docsRoute(Astro.url.pathname).isDocs;
       min-width: 0;
     }
 
+    .docs-channel-switcher {
+      display: flex;
+      align-items: center;
+      border: 1px solid var(--sl-color-hairline);
+      border-radius: 4px;
+      overflow: hidden;
+      background: var(--sl-color-bg-nav);
+      font-size: var(--sl-text-xs);
+      font-weight: 700;
+      line-height: 1;
+      white-space: nowrap;
+    }
+
+    .docs-channel-switcher a {
+      color: var(--sl-color-gray-2);
+      text-decoration: none;
+      padding: 0.45rem 0.6rem;
+    }
+
+    .docs-channel-switcher a + a {
+      border-inline-start: 1px solid var(--sl-color-hairline);
+    }
+
+    .docs-channel-switcher a[aria-current="page"] {
+      color: var(--sl-color-accent-high);
+      background: color-mix(in srgb, var(--sl-color-accent) 14%, transparent);
+    }
+
+    .docs-channel-switcher a:hover {
+      color: var(--sl-color-accent-high);
+    }
+
     .right-group,
     .social-icons {
       gap: 1rem;
@@ -64,6 +108,12 @@ const isDocs = docsRoute(Astro.url.pathname).isDocs;
       content: "";
       height: 2rem;
       border-inline-end: 1px solid var(--sl-color-gray-5);
+    }
+
+    @media (max-width: 38rem) {
+      .docs-channel-switcher {
+        display: none;
+      }
     }
 
     @media (min-width: 50rem) {

@@ -29,7 +29,6 @@ pub const LoadingImage = image.LoadingImage;
 pub const ImageStorage = storage.ImageStorage;
 pub const RenderPlacement = render.Placement;
 pub const Response = command.Response;
-pub const nextGeneration = storage.nextGeneration;
 
 pub const execute = exec.execute;
 

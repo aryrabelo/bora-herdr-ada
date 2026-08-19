@@ -2,7 +2,6 @@
 use std::{
     os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd},
     sync::Arc,
-    time::{Duration, Instant},
 };
 
 #[cfg(unix)]
@@ -126,7 +125,6 @@ pub(crate) fn drain_wake_fd(fd: RawFd) -> std::io::Result<()> {
 }
 
 #[cfg(unix)]
-#[derive(Default)]
 pub(crate) struct PtyWakeReadiness {
     pub(crate) pty_read_ready: bool,
     pub(crate) pty_write_ready: bool,
@@ -163,31 +161,11 @@ pub(crate) fn poll_pty_and_wake(
         },
     ];
 
-    let deadline =
-        (timeout_ms >= 0).then(|| Instant::now() + Duration::from_millis(timeout_ms as u64));
-    let mut remaining_timeout_ms = timeout_ms;
     loop {
-        for poll_fd in &mut poll_fds {
-            poll_fd.revents = 0;
-        }
-        let result = unsafe {
-            libc::poll(
-                poll_fds.as_mut_ptr(),
-                poll_fds.len() as _,
-                remaining_timeout_ms,
-            )
-        };
+        let result = unsafe { libc::poll(poll_fds.as_mut_ptr(), poll_fds.len() as _, timeout_ms) };
         if result < 0 {
             let err = std::io::Error::last_os_error();
             if err.kind() == std::io::ErrorKind::Interrupted {
-                let Some(deadline) = deadline else {
-                    continue;
-                };
-                let remaining = deadline.saturating_duration_since(Instant::now());
-                if remaining.is_zero() {
-                    return Ok(PtyWakeReadiness::default());
-                }
-                remaining_timeout_ms = remaining.as_millis().clamp(1, i32::MAX as u128) as i32;
                 continue;
             }
             return Err(err);
@@ -217,6 +195,26 @@ pub(crate) fn poll_pty_and_wake(
 }
 
 #[cfg(unix)]
+pub(crate) fn poll_write_ready(fd: RawFd, timeout_ms: i32) -> std::io::Result<bool> {
+    let mut poll_fd = libc::pollfd {
+        fd,
+        events: libc::POLLOUT,
+        revents: 0,
+    };
+    loop {
+        let result = unsafe { libc::poll(&mut poll_fd, 1, timeout_ms) };
+        if result < 0 {
+            let err = std::io::Error::last_os_error();
+            if err.kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(err);
+        }
+        return Ok(result > 0 && (poll_fd.revents & (libc::POLLOUT | libc::POLLHUP)) != 0);
+    }
+}
+
+#[cfg(unix)]
 pub(crate) fn resize_pty_fd(
     fd: RawFd,
     rows: u16,
@@ -227,12 +225,12 @@ pub(crate) fn resize_pty_fd(
     let size = libc::winsize {
         ws_row: rows,
         ws_col: cols,
-        ws_xpixel: u32::from(cols)
+        ws_xpixel: (cols as u32)
             .saturating_mul(cell_width_px)
-            .min(u32::from(u16::MAX)) as u16,
-        ws_ypixel: u32::from(rows)
+            .min(u16::MAX as u32) as u16,
+        ws_ypixel: (rows as u32)
             .saturating_mul(cell_height_px)
-            .min(u32::from(u16::MAX)) as u16,
+            .min(u16::MAX as u32) as u16,
     };
     if unsafe { libc::ioctl(fd, libc::TIOCSWINSZ, &size) } < 0 {
         return Err(std::io::Error::last_os_error());

@@ -10,19 +10,16 @@ use crate::app::{
 };
 
 use super::{
-    modal::{keybind_help_back, leave_modal, modal_action_from_buttons, ModalAction},
+    modal::{leave_modal, modal_action_from_buttons, ModalAction},
     ScrollbarClickTarget,
 };
 
-pub(super) fn rect_contains(rect: Rect, col: u16, row: u16) -> bool {
+fn rect_contains(rect: Rect, col: u16, row: u16) -> bool {
     col >= rect.x && col < rect.x + rect.width && row >= rect.y && row < rect.y + rect.height
 }
 
 impl App {
     pub(super) fn handle_overlay_mouse(&mut self, mouse: MouseEvent) -> bool {
-        if self.state.mode == Mode::Chat {
-            return self.handle_chat_mouse(mouse);
-        }
         if self.state.mode == Mode::ReleaseNotes {
             match mouse.kind {
                 MouseEventKind::Down(MouseButton::Left)
@@ -175,8 +172,9 @@ impl App {
                 }
                 MouseEventKind::ScrollUp => {
                     self.state.navigator.scroll = self.state.navigator.scroll.saturating_sub(3);
+                    self.state.navigator.selected = self.state.navigator.scroll;
                     self.state
-                        .align_navigator_selection_to_scroll_from(&self.terminal_runtimes);
+                        .clamp_navigator_selection_from(&self.terminal_runtimes);
                 }
                 MouseEventKind::ScrollDown => {
                     let viewport = self.state.navigator_body_rect().height as usize;
@@ -185,8 +183,9 @@ impl App {
                         .navigator_max_scroll_from(&self.terminal_runtimes, viewport);
                     self.state.navigator.scroll =
                         self.state.navigator.scroll.saturating_add(3).min(max);
+                    self.state.navigator.selected = self.state.navigator.scroll;
                     self.state
-                        .align_navigator_selection_to_scroll_from(&self.terminal_runtimes);
+                        .clamp_navigator_selection_from(&self.terminal_runtimes);
                 }
                 _ => {}
             }
@@ -200,7 +199,7 @@ impl App {
                         .state
                         .keybind_help_close_button_at(mouse.column, mouse.row) =>
                 {
-                    keybind_help_back(&mut self.state);
+                    leave_modal(&mut self.state);
                 }
                 MouseEventKind::Down(MouseButton::Left) => {
                     if let Some(target) = self
@@ -254,20 +253,6 @@ impl App {
         }
 
         false
-    }
-}
-
-impl App {
-    fn handle_chat_mouse(&mut self, mouse: MouseEvent) -> bool {
-        match mouse.kind {
-            MouseEventKind::Down(MouseButton::Left) => {
-                self.handle_chat_click(mouse.column, mouse.row)
-            }
-            MouseEventKind::ScrollUp => self.state.scroll_chat(-3),
-            MouseEventKind::ScrollDown => self.state.scroll_chat(3),
-            _ => {}
-        }
-        true
     }
 }
 
@@ -352,17 +337,11 @@ impl AppState {
         if !rect_contains(body, col, row) {
             return None;
         }
-        let line_idx = self
+        let idx = self
             .navigator
             .scroll
             .saturating_add(row.saturating_sub(body.y) as usize);
-        let lines = crate::app::state::navigator_display_lines(
-            &self.navigator_rows_from(terminal_runtimes),
-        );
-        match lines.get(line_idx) {
-            Some(crate::app::state::NavigatorDisplayLine::Row(idx)) => Some(*idx),
-            _ => None,
-        }
+        (idx < self.navigator_rows_from(terminal_runtimes).len()).then_some(idx)
     }
 
     pub(crate) fn navigator_row_caret_at(&self, col: u16) -> bool {
@@ -722,127 +701,6 @@ impl AppState {
         let current = self.keybind_help.scroll as i16;
         self.keybind_help.scroll = current.saturating_add(delta).clamp(0, max_scroll as i16) as u16;
     }
-
-    // Chat view geometry — near-fullscreen overlay (senpai-style app frame).
-    pub(crate) fn chat_popup_rect(&self) -> Rect {
-        let area = self.onboarding_full_area();
-        let margin_x = (area.width / 32).max(2);
-        let margin_y = (area.height / 16).max(1);
-        Rect::new(
-            area.x + margin_x,
-            area.y + margin_y,
-            area.width.saturating_sub(margin_x.saturating_mul(2)).max(8),
-            area.height
-                .saturating_sub(margin_y.saturating_mul(2))
-                .max(4),
-        )
-    }
-
-    pub(crate) fn chat_inner_rect(&self) -> Rect {
-        Block::default()
-            .borders(Borders::ALL)
-            .inner(self.chat_popup_rect())
-    }
-
-    /// Left column width: channel list. Hidden below 40 inner columns.
-    fn chat_channel_list_width(&self) -> u16 {
-        let inner = self.chat_inner_rect();
-        if inner.width < 40 {
-            return 0;
-        }
-        (inner.width / 5).clamp(12, 22)
-    }
-
-    /// Right column width: member list. Hidden below 64 inner columns.
-    fn chat_members_width(&self) -> u16 {
-        let inner = self.chat_inner_rect();
-        if inner.width < 64 {
-            return 0;
-        }
-        (inner.width / 5).clamp(14, 22)
-    }
-
-    pub(crate) fn chat_channel_list_rect(&self) -> Rect {
-        let inner = self.chat_inner_rect();
-        let width = self.chat_channel_list_width();
-        Rect::new(inner.x, inner.y, width, inner.height.saturating_sub(2))
-    }
-
-    pub(crate) fn chat_members_rect(&self) -> Rect {
-        let inner = self.chat_inner_rect();
-        let width = self.chat_members_width();
-        Rect::new(
-            inner.x + inner.width.saturating_sub(width),
-            inner.y,
-            width,
-            inner.height.saturating_sub(2),
-        )
-    }
-
-    /// Middle column: header row, divider, scrollable message body.
-    pub(crate) fn chat_messages_rect(&self) -> Rect {
-        let inner = self.chat_inner_rect();
-        let left = self.chat_channel_list_width();
-        let right = self.chat_members_width();
-        let x = inner.x + left + if left > 0 { 1 } else { 0 };
-        let width = inner.width.saturating_sub(
-            left + right + if left > 0 { 1 } else { 0 } + if right > 0 { 1 } else { 0 },
-        );
-        let body_top = inner.y + 2;
-        let body_height = inner.height.saturating_sub(4);
-        Rect::new(x, body_top, width, body_height)
-    }
-
-    pub(crate) fn chat_header_rect(&self) -> Rect {
-        let messages = self.chat_messages_rect();
-        Rect::new(messages.x, messages.y.saturating_sub(2), messages.width, 2)
-    }
-
-    pub(crate) fn chat_messages_width(&self) -> u16 {
-        self.chat_messages_rect().width
-    }
-
-    pub(crate) fn chat_input_rect(&self) -> Rect {
-        let inner = self.chat_inner_rect();
-        Rect::new(
-            inner.x,
-            inner.y + inner.height.saturating_sub(1),
-            inner.width,
-            inner.height.min(1),
-        )
-    }
-
-    pub(crate) fn chat_popup_contains(&self, col: u16, row: u16) -> bool {
-        rect_contains(self.chat_popup_rect(), col, row)
-    }
-
-    /// Bottom row of the channel column: the `+ new channel` affordance.
-    /// Zero height when the column is hidden or too short to spare a row —
-    /// the channel rows win, the affordance is the one that yields.
-    pub(crate) fn chat_new_channel_rect(&self) -> Rect {
-        let area = self.chat_channel_list_rect();
-        if area.width == 0 || area.height < 2 {
-            return Rect::new(area.x, area.y, area.width, 0);
-        }
-        Rect::new(area.x, area.y + area.height - 1, area.width, 1)
-    }
-
-    pub(crate) fn chat_new_channel_hit(&self, col: u16, row: u16) -> bool {
-        rect_contains(self.chat_new_channel_rect(), col, row)
-    }
-
-    pub(crate) fn chat_channel_index_at(&self, col: u16, row: u16) -> Option<usize> {
-        let area = self.chat_channel_list_rect();
-        if !rect_contains(area, col, row) {
-            return None;
-        }
-        // The `+` row sits inside the column rect but is not a channel.
-        let rows = area
-            .height
-            .saturating_sub(self.chat_new_channel_rect().height) as usize;
-        let idx = row.saturating_sub(area.y) as usize;
-        (idx < rows.min(self.chat.channels.len())).then_some(idx)
-    }
 }
 
 #[cfg(test)]
@@ -874,33 +732,6 @@ mod tests {
         ));
 
         assert_eq!(app.state.mode, Mode::Navigate);
-    }
-
-    #[test]
-    fn clicking_keybind_help_back_button_leaves_help_open() {
-        let mut app = app_for_mouse_test();
-        app.state.mode = Mode::KeybindHelp;
-        app.state.keybind_help.search_focused = true;
-        app.state.keybind_help.query = "work".into();
-
-        let rect = app.state.keybind_help_popup_rect();
-        let inner = Rect::new(
-            rect.x + 1,
-            rect.y + 1,
-            rect.width.saturating_sub(2),
-            rect.height.saturating_sub(2),
-        );
-        let back =
-            crate::ui::release_notes_close_button_rect(Rect::new(inner.x, inner.y, inner.width, 1));
-        app.handle_mouse(mouse(
-            MouseEventKind::Down(MouseButton::Left),
-            back.x,
-            back.y,
-        ));
-
-        assert_eq!(app.state.mode, Mode::KeybindHelp);
-        assert!(!app.state.keybind_help.search_focused);
-        assert!(app.state.keybind_help.query.is_empty());
     }
 
     #[test]

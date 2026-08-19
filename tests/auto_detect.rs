@@ -78,7 +78,7 @@ fn test_lock() -> MutexGuard<'static, ()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
         .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 fn spawn_server(
@@ -740,7 +740,7 @@ fn auto_detect_respects_nested_guard_before_auto_attach() {
     });
     let baseline_count = baseline["result"]["workspaces"]
         .as_array()
-        .map(Vec::len)
+        .map(|workspaces| workspaces.len())
         .unwrap_or(0);
 
     let output = Command::new(env!("CARGO_BIN_EXE_bora"))
@@ -758,7 +758,7 @@ fn auto_detect_respects_nested_guard_before_auto_attach() {
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("nested bora is disabled by default"),
+        stderr.contains("nested herdr is disabled by default"),
         "stderr should mention nested-launch guard: {stderr}"
     );
 
@@ -773,7 +773,7 @@ fn auto_detect_respects_nested_guard_before_auto_attach() {
     });
     let after_count = after["result"]["workspaces"]
         .as_array()
-        .map(Vec::len)
+        .map(|workspaces| workspaces.len())
         .unwrap_or(0);
     assert_eq!(
         after_count, baseline_count,

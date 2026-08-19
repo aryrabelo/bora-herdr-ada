@@ -8,39 +8,6 @@ use crate::api::schema::{
 use crate::app::App;
 
 impl App {
-    pub(super) fn open_plugin_popup_pane(
-        &mut self,
-        id: String,
-        params: PluginPaneOpenParams,
-        plugin: &InstalledPluginInfo,
-        pane: PluginManifestPane,
-    ) -> String {
-        let context = self.current_plugin_context("plugin-pane");
-        let extra_env =
-            match self.plugin_pane_launch_env(plugin, &pane.id, params.env.clone(), &context) {
-                Ok(env) => env,
-                Err((code, message)) => return encode_error(id, &code, message),
-            };
-        let cwd = Some(self.plugin_pane_cwd(plugin, params.cwd));
-        let width = params.width.or(pane.width);
-        let height = params.height.or(pane.height);
-        if let Err(err) = self.spawn_popup_argv_command(
-            &pane.command,
-            cwd,
-            extra_env,
-            crate::app::popup::PopupGeometry { width, height },
-        ) {
-            return encode_error(id, "plugin_pane_open_failed", err.to_string());
-        }
-        let Some(popup) = self.state.popup_pane.as_ref() else {
-            return encode_error(id, "plugin_pane_open_failed", "plugin popup disappeared");
-        };
-        if let Some(terminal) = self.state.terminals.get_mut(&popup.terminal_id) {
-            terminal.set_manual_label(pane.title);
-        }
-        encode_success(id, ResponseResult::Ok {})
-    }
-
     pub(super) fn open_plugin_overlay_pane(
         &mut self,
         id: String,
@@ -60,19 +27,7 @@ impl App {
                 Ok(result) => result,
                 Err(err) => return encode_error(id, "plugin_pane_open_failed", err.to_string()),
             };
-        let layout_tab_idx = self
-            .overlay_panes
-            .get(&new_pane.pane_id)
-            .map(|overlay| overlay.tab_idx);
-        self.finish_plugin_pane_open(
-            id,
-            ws_idx,
-            None,
-            layout_tab_idx,
-            new_pane,
-            plugin.plugin_id.clone(),
-            pane,
-        )
+        self.finish_plugin_pane_open(id, ws_idx, None, new_pane, plugin.plugin_id.clone(), pane)
     }
 
     pub(super) fn open_plugin_split_pane(
@@ -126,7 +81,6 @@ impl App {
             extra_env,
             self.state.pane_scrollback_limit_bytes,
             self.state.host_terminal_theme,
-            self.state.host_terminal_appearance,
             params.focus || placement == PluginPanePlacement::Zoomed,
         );
         let (tab_idx, new_pane) = match result {
@@ -156,15 +110,7 @@ impl App {
                 tab.zoomed = true;
             }
         }
-        self.finish_plugin_pane_open(
-            id,
-            ws_idx,
-            None,
-            Some(tab_idx),
-            new_pane,
-            plugin.plugin_id.clone(),
-            pane,
-        )
+        self.finish_plugin_pane_open(id, ws_idx, None, new_pane, plugin.plugin_id.clone(), pane)
     }
 
     pub(super) fn open_plugin_tab(
@@ -203,7 +149,6 @@ impl App {
             extra_env,
             self.state.pane_scrollback_limit_bytes,
             self.state.host_terminal_theme,
-            self.state.host_terminal_appearance,
         ) {
             Ok(result) => result,
             Err(err) => return encode_error(id, "plugin_pane_open_failed", err.to_string()),
@@ -221,7 +166,6 @@ impl App {
         self.finish_plugin_pane_open(
             id,
             ws_idx,
-            Some(tab_idx),
             Some(tab_idx),
             new_pane,
             plugin.plugin_id.clone(),
@@ -268,14 +212,13 @@ impl App {
         id: String,
         ws_idx: usize,
         created_tab_idx: Option<usize>,
-        layout_tab_idx: Option<usize>,
         new_pane: crate::workspace::NewPane,
         plugin_id: String,
         pane_manifest: PluginManifestPane,
     ) -> String {
         let entrypoint = pane_manifest.id.clone();
         let mut terminal = new_pane.terminal;
-        terminal.set_manual_label(pane_manifest.title);
+        terminal.set_manual_label(pane_manifest.title.clone());
         let terminal_id = terminal.id.clone();
         self.terminal_runtimes
             .insert(terminal_id.clone(), new_pane.runtime);
@@ -305,9 +248,6 @@ impl App {
             event: crate::api::schema::EventKind::PaneCreated,
             data: crate::api::schema::EventData::PaneCreated { pane: pane.clone() },
         });
-        if let Some(tab_idx) = layout_tab_idx {
-            self.emit_layout_updated_event(ws_idx, tab_idx);
-        }
         encode_success(
             id,
             ResponseResult::PluginPaneOpened {

@@ -103,7 +103,7 @@ impl App {
         None
     }
 
-    pub(crate) fn parse_pane_id(&self, id: &str) -> Option<(usize, crate::layout::PaneId)> {
+    pub(super) fn parse_pane_id(&self, id: &str) -> Option<(usize, crate::layout::PaneId)> {
         if let Some(alias) = self.state.public_pane_id_aliases.get(id).copied() {
             return self.find_pane(alias).map(|(ws_idx, _)| (ws_idx, alias));
         }
@@ -131,10 +131,6 @@ impl App {
             return Some((ws_idx, pane_id));
         }
 
-        if let Some(resolved) = self.parse_colon_free_public_pane_id(id) {
-            return Some(resolved);
-        }
-
         let (ws_raw, pane_number_raw) = id.rsplit_once('-')?;
         let ws_idx = self.parse_workspace_id(ws_raw)?;
         let pane_number = pane_number_raw.parse::<usize>().ok()?;
@@ -144,36 +140,5 @@ impl App {
             .iter()
             .find_map(|(pane_id, number)| (*number == pane_number).then_some(*pane_id))?;
         Some((ws_idx, pane_id))
-    }
-
-    /// Public pane ids are `<workspace>:p<number>`, but a colon cannot survive
-    /// every consumer: the orchestrator channel nick strips non-alphanumerics
-    /// (`w2A:p1` -> `w2Ap1`) because `@mention` parsing would otherwise swallow
-    /// `:` from ordinary prose. Accept the stripped form so a nick can be
-    /// pasted straight into `bora agent prompt` instead of resolving to
-    /// `agent_not_found`.
-    fn parse_colon_free_public_pane_id(&self, id: &str) -> Option<(usize, crate::layout::PaneId)> {
-        if id.contains(':') {
-            return None;
-        }
-        self.state
-            .workspaces
-            .iter()
-            .enumerate()
-            .find_map(|(ws_idx, ws)| {
-                ws.public_pane_numbers.iter().find_map(|(pane_id, _)| {
-                    let canonical = self.public_pane_id(ws_idx, *pane_id)?;
-                    (canonical.replace(':', "") == id).then_some((ws_idx, *pane_id))
-                })
-            })
-    }
-
-    pub(crate) fn parse_current_public_pane_id(
-        &self,
-        id: &str,
-    ) -> Option<(usize, crate::layout::PaneId)> {
-        let (ws_idx, pane_id) = self.parse_pane_id(id)?;
-        let canonical = self.public_pane_id(ws_idx, pane_id)?;
-        (canonical == id || canonical.replace(':', "") == id).then_some((ws_idx, pane_id))
     }
 }
