@@ -271,7 +271,9 @@ mod tests {
                     is_linked_worktree: false,
                 }),
                 change_set: None,
+                collectible: None,
             },
+            collectible_ancestor: None,
         };
         let items = ["alpha", "beta"]
             .into_iter()
@@ -355,7 +357,9 @@ mod tests {
                 ahead_behind: None,
                 space: None,
                 change_set: None,
+                collectible: None,
             },
+            collectible_ancestor: None,
         };
         let jobs = deduplicate_git_refresh_items(items, &HashMap::from([(cache_key, cached)]));
         assert_eq!(jobs.len(), 1);

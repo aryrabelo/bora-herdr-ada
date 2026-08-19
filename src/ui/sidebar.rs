@@ -543,6 +543,25 @@ fn tab_dot_idle_ages(
         .collect()
 }
 
+/// First pane's resolved agent label for a workspace's tree row, e.g. the
+/// ` @nome` badge. `Workspace::pane_details` already filters to panes with
+/// SOME agent identity and prefers a registered `agent rename` name over a
+/// detected agent's label (`effective_display_agent`), so the first result
+/// is already correctly prioritized — nothing to redo here. Pure in-memory
+/// terminal-state lookup, safe to call every render.
+fn workspace_agent_label(
+    ws: &crate::workspace::Workspace,
+    terminals: &std::collections::HashMap<
+        crate::terminal::TerminalId,
+        crate::terminal::TerminalState,
+    >,
+) -> Option<String> {
+    ws.pane_details(terminals)
+        .into_iter()
+        .next()
+        .map(|detail| detail.agent_label)
+}
+
 fn workspace_attention_priority(state: AgentState, seen: bool) -> u8 {
     match (state, seen) {
         (AgentState::Blocked, _) => 4,
@@ -2471,13 +2490,47 @@ fn render_workspace_list(
                         .map(|s| display_width(s.content.as_ref()))
                         .sum::<usize>()
                 };
+                // Identity badges: registered/detected agent name, joined
+                // `#`-channels, and the "safe to close" collectible mark.
+                // Purely in-memory or already-cached lookups — nothing here
+                // touches disk.
+                let agent_suffix =
+                    workspace_agent_label(ws, &app.terminals).map(|name| format!(" @{name}"));
+                let agent_width = agent_suffix.as_deref().map(display_width).unwrap_or(0);
+                let channel_suffix = match ws.cached_channels.split_first() {
+                    Some((first, [])) => Some(format!(" #{first}")),
+                    Some((first, rest)) => Some(format!(" #{first} +{}", rest.len())),
+                    None => None,
+                };
+                let channel_width = channel_suffix.as_deref().map(display_width).unwrap_or(0);
+                let collectible_suffix = (ws.cached_collectible == Some(true)).then_some(" ✓");
+                let collectible_width = collectible_suffix.map(display_width).unwrap_or(0);
                 let avail = (body.width as usize).saturating_sub(
-                    prefix_width + dots_width + display_width(sep) + idle_width + token_width,
+                    prefix_width
+                        + dots_width
+                        + display_width(sep)
+                        + idle_width
+                        + token_width
+                        + agent_width
+                        + channel_width
+                        + collectible_width,
                 );
                 let label = truncate_end(&full_label, avail);
                 line1.extend(dot_spans);
                 line1.push(Span::styled(sep, Style::default()));
                 line1.push(Span::styled(label, name_style));
+                if let Some(agent) = agent_suffix {
+                    line1.push(Span::styled(agent, Style::default().fg(p.mauve)));
+                }
+                if let Some(channel) = channel_suffix {
+                    line1.push(Span::styled(channel, Style::default().fg(p.teal)));
+                }
+                if let Some(marker) = collectible_suffix {
+                    line1.push(Span::styled(
+                        marker,
+                        Style::default().fg(p.overlay0).add_modifier(Modifier::DIM),
+                    ));
+                }
                 if !token_spans.is_empty() {
                     line1.push(Span::raw(" "));
                     line1.extend(token_spans);
@@ -2809,6 +2862,75 @@ mod tests {
             .content
             .iter()
             .all(|cell| cell.bg == app.palette.sidebar_bg));
+    }
+
+    #[test]
+    fn workspace_agent_label_prefers_registered_name_over_detected_label() {
+        let mut app = crate::app::state::AppState::test_new();
+        let workspace = Workspace::test_new("bridge");
+        let first_pane = workspace.tabs[0].root_pane;
+        app.workspaces = vec![workspace];
+        app.ensure_test_terminals();
+        let terminal_id = app.workspaces[0].tabs[0].panes[&first_pane]
+            .attached_terminal_id
+            .clone();
+        app.terminals.get_mut(&terminal_id).unwrap().detected_agent = Some(Agent::Pi);
+
+        // Detected only: falls back to the detected agent's label.
+        let detected_only = workspace_agent_label(&app.workspaces[0], &app.terminals);
+        assert_eq!(detected_only.as_deref(), Some("pi"));
+
+        // A registered `agent rename` name wins over the detected label.
+        app.terminals
+            .get_mut(&terminal_id)
+            .unwrap()
+            .set_agent_name("planner".into());
+        let registered = workspace_agent_label(&app.workspaces[0], &app.terminals);
+        assert_eq!(registered.as_deref(), Some("planner"));
+    }
+
+    #[test]
+    fn workspace_row_renders_agent_channel_and_collectible_badges() {
+        let mut app = crate::app::state::AppState::test_new();
+        let workspace = Workspace::test_new("worktree-branch");
+        let root_pane = workspace.tabs[0].root_pane;
+        app.workspaces = vec![workspace];
+        app.group_workspaces_by_repo = false;
+        app.ensure_test_terminals();
+        let terminal_id = app.workspaces[0].tabs[0].panes[&root_pane]
+            .attached_terminal_id
+            .clone();
+        app.terminals
+            .get_mut(&terminal_id)
+            .unwrap()
+            .set_agent_name("planner".into());
+        app.workspaces[0].cached_channels = vec!["eng".into()];
+        app.workspaces[0].cached_collectible = Some(true);
+        app.active = Some(0);
+
+        let area = Rect::new(0, 0, 60, 10);
+        let mut terminal = Terminal::new(TestBackend::new(area.width, area.height)).unwrap();
+        terminal
+            .draw(|frame| render_sidebar(&app, &TerminalRuntimeRegistry::new(), frame, area))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let full_text: String = (0..area.height)
+            .map(|row| row_text(buffer, row, area.width))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(
+            full_text.contains("@planner"),
+            "row should show registered agent name: {full_text:?}"
+        );
+        assert!(
+            full_text.contains("#eng"),
+            "row should show joined channel: {full_text:?}"
+        );
+        assert!(
+            full_text.contains('✓'),
+            "row should show collectible marker: {full_text:?}"
+        );
     }
 
     #[test]
