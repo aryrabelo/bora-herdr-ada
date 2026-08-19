@@ -1,7 +1,133 @@
 use std::env;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+
+const FNV_OFFSET: u64 = 0xcbf29ce484222325;
+const FNV_PRIME: u64 = 0x100000001b3;
+
+fn fnv1a(mut hash: u64, bytes: &[u8]) -> u64 {
+    for &b in bytes {
+        hash ^= b as u64;
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    hash
+}
+
+/// Deterministic (not cryptographic — integrity only) content hash over
+/// (relative_path, bytes) pairs, NUL-framed so path/content boundaries can't
+/// shift into a collision. Entries are sorted by path first, so the result
+/// does not depend on filesystem iteration order.
+fn hash_entries(entries: &mut [(String, Vec<u8>)]) -> u64 {
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut hash = FNV_OFFSET;
+    for (rel_path, bytes) in entries.iter() {
+        hash = fnv1a(hash, rel_path.as_bytes());
+        hash = fnv1a(hash, &[0]);
+        hash = fnv1a(hash, bytes);
+        hash = fnv1a(hash, &[0]);
+    }
+    hash
+}
+
+fn collect_files(path: &Path, out: &mut Vec<PathBuf>) {
+    if path.is_file() {
+        out.push(path.to_path_buf());
+    } else if path.is_dir() {
+        let Ok(read_dir) = fs::read_dir(path) else {
+            return;
+        };
+        for entry in read_dir.flatten() {
+            collect_files(&entry.path(), out);
+        }
+    }
+}
+
+// Paths that determine the compiled libghostty-vt static lib. Mirrors the
+// cargo:rerun-if-changed list below — if a from-source build would react to
+// a change here, the prebuilt staleness hash must react to it too.
+const VENDOR_SOURCE_ROOTS: &[&str] = &[
+    "vendor/libghostty-vt.vendor.json",
+    "vendor/libghostty-vt/build.zig",
+    "vendor/libghostty-vt/build.zig.zon",
+    "vendor/libghostty-vt/VERSION",
+    "vendor/libghostty-vt/include",
+    "vendor/libghostty-vt/pkg",
+    "vendor/libghostty-vt/src",
+];
+
+fn hash_vendor_source(manifest_dir: &Path) -> u64 {
+    let mut files = Vec::new();
+    for root in VENDOR_SOURCE_ROOTS {
+        collect_files(&manifest_dir.join(root), &mut files);
+    }
+    let mut entries: Vec<(String, Vec<u8>)> = files
+        .into_iter()
+        .map(|path| {
+            let rel = path.strip_prefix(manifest_dir).unwrap_or(&path);
+            let rel_str = rel.to_string_lossy().replace('\\', "/");
+            let bytes = fs::read(&path).unwrap_or_default();
+            (rel_str, bytes)
+        })
+        .collect();
+    hash_entries(&mut entries)
+}
+
+fn prebuilt_stamp_path(candidate: &Path) -> PathBuf {
+    candidate.with_extension("vendor-hash")
+}
+
+/// Checks the `.vendor-hash` stamp next to an auto-detected prebuilt .a
+/// against the current vendor/libghostty-vt sources. Missing/malformed/stale
+/// stamp => reject with a cargo:warning so the caller falls back to
+/// from-source instead of silently linking a stale prebuilt.
+fn prebuilt_stamp_matches(candidate: &Path, manifest_dir: &Path) -> bool {
+    let stamp_path = prebuilt_stamp_path(candidate);
+    let stamp = match fs::read_to_string(&stamp_path) {
+        Ok(s) => s,
+        Err(_) => {
+            println!(
+                "cargo:warning=stale prebuilt: {} has no {} stamp; rebuilding libghostty-vt from source",
+                candidate.display(),
+                stamp_path.display()
+            );
+            return false;
+        }
+    };
+    let Ok(stamped_hash) = u64::from_str_radix(stamp.trim(), 16) else {
+        println!(
+            "cargo:warning=stale prebuilt: {} has a malformed vendor-hash stamp; rebuilding libghostty-vt from source",
+            stamp_path.display()
+        );
+        return false;
+    };
+    let current_hash = hash_vendor_source(manifest_dir);
+    if stamped_hash != current_hash {
+        println!(
+            "cargo:warning=stale prebuilt: {} vendor hash {stamped_hash:016x} does not match current vendor/libghostty-vt ({current_hash:016x}); rebuilding libghostty-vt from source",
+            candidate.display()
+        );
+        return false;
+    }
+    true
+}
+
+/// `build.rs --write-stamp <zig-target>` — regenerates the `.vendor-hash`
+/// stamp for `prebuilt/libghostty-vt-<target>.a` from the current vendor
+/// sources. build.rs has no external deps, so it can be compiled and run
+/// standalone (`rustc --edition 2021 build.rs -o tool && ./tool --write-stamp
+/// <target>`) — this is the single source of truth the guard above checks
+/// against, so writer and reader can never drift apart.
+fn write_prebuilt_stamp(target: &str) {
+    let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
+    let candidate = manifest_dir.join(format!("prebuilt/libghostty-vt-{target}.a"));
+    let hash = hash_vendor_source(&manifest_dir);
+    let stamp_path = prebuilt_stamp_path(&candidate);
+    fs::create_dir_all(stamp_path.parent().expect("stamp path has no parent"))
+        .expect("failed to create prebuilt dir");
+    fs::write(&stamp_path, format!("{hash:016x}\n")).expect("failed to write vendor-hash stamp");
+    println!("wrote {} ({hash:016x})", stamp_path.display());
+}
 
 fn zig_target(target: &str) -> &str {
     match target {
