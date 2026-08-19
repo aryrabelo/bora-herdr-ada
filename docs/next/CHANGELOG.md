@@ -25,6 +25,9 @@ Bora is a fork of [herdr](https://github.com/ogulcancelik/herdr). This changelog
 ### Changed
 - The version identity moved out of the sidebar header (`spaces v0.21.0`) and into the Settings modal, right-aligned in the title bar. It also grew a fork-aware form, `v0.8.1[a5c69bea].bora-24`: the upstream herdr release and the short commit of the upstream tip merged into this fork, followed by this fork's own build number (`bora-<minor>`, or `bora-<minor>.<patch>` when the patch is non-zero) — so a report against a running build names both which herdr it's built on and which bora shipped it, instead of only the bora semver, which upstream syncs don't move. `bora --version` now prints both forms together (`bora 0.24.0 (v0.8.1[a5c69bea].bora-24)`): the plain Cargo.toml semver stays first because release CI's packaging step greps the output for it verbatim.
 
+### Fixed
+- A stale `prebuilt/libghostty-vt-<target>.a` (built against an older `vendor/libghostty-vt` tree, e.g. before the modify-other-keys patch) could link silently and SIGBUS at runtime — the auto-detected prebuilt bypass in `build.rs` never checked whether the `.a` still matched the vendored source. It now requires a matching `.vendor-hash` stamp (a deterministic FNV-1a content hash over `vendor/libghostty-vt`'s tracked source paths) sitting next to the `.a`; a missing or mismatched stamp falls back to a from-source build with a `cargo:warning` instead of linking blind. `just prebuilt-ghostty` (`build-libghostty-vt-prebuilt`/`fetch-libghostty-vt`) now regenerates both the `.a` and its stamp together. `LIBGHOSTTY_VT_PREBUILT` (the manual override) is unaffected — whoever sets it owns the consequences.
+
 ## [0.23.0] - 2026-08-19
 
 ### Added
