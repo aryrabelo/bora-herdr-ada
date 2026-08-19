@@ -4,6 +4,8 @@ Bora is a fork of [herdr](https://github.com/ogulcancelik/herdr). This changelog
 
 ## Unreleased
 
+## [0.23.0] - 2026-08-19
+
 ### Added
 - `bora agent prompt` carries verified sender attribution. The CLI fills `from_pane` from `$HERDR_PANE_ID` (override with `--from <pane>`, suppress with `--no-from`), and the server prefixes the injected text with `[from <pane> <name>]`. The claimed pane is verified against real OS socket peer credentials: the server captures the caller's PID at accept time (`LOCAL_PEEREPID` on macOS, `SO_PEERCRED` via peer_creds on Linux) and walks the OS process tree to prove the caller descends from that pane's shell; an unverifiable claim degrades to `[from? claimed <pane>]` and a client-smuggled `peer_pid` on the wire is discarded (`#[serde(skip)]`).
 - `agent.prompted` event: `bora agent prompt` now emits an `EventKind::AgentPrompted` event (subscribable via the existing `events`/`events.wait` API) whenever it writes text into another pane's terminal, carrying the sender pane (`from_pane_id`, auto-filled by the CLI from `HERDR_PANE_ID` when available), target pane/workspace, and the prompt text (truncated at 4KB). Lets a client render a log of agent-to-agent coordination instead of it being invisible PTY input.
