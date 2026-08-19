@@ -6,8 +6,8 @@ use crate::api::client::{ApiClient, ApiClientError};
 use crate::api::schema::{
     AgentStatus, ChannelAskParams, ChannelCreateParams, ChannelHistoryParams, ChannelJoinParams,
     ChannelLeaveParams, ChannelMembersParams, ChannelNoteParams, ChannelSendParams,
-    ChannelWaitParams, ClientWindowTitleSetParams, EmptyParams, Method, PaneAgentState,
-    ReadFormat, ReadSource, Request, SplitDirection,
+    ChannelWaitParams, ClientWindowTitleSetParams, EmptyParams, Method, PaneAgentState, ReadFormat,
+    ReadSource, Request, SplitDirection,
 };
 
 mod agent;
@@ -794,7 +794,9 @@ fn print_channel_help() {
     eprintln!("  bora channel set <stable|preview>            choose the update channel");
     eprintln!("  bora channel create <name>                   create a #channel workspace");
     eprintln!("  bora channel list                            list #channel workspaces");
-    eprintln!("  bora channel send <name> <text> [--pane ID|--current] [--to NICK] [--reply-to SEQ]");
+    eprintln!(
+        "  bora channel send <name> <text> [--pane ID|--current] [--to NICK] [--reply-to SEQ]"
+    );
     eprintln!(
         "                                                post to a #channel and prompt its agents"
     );

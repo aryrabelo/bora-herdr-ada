@@ -1350,13 +1350,9 @@ pub(super) fn ask_channel(
         }
     };
 
-    let reply = match poll_channel_ask_reply(
-        &name,
-        question_seq,
-        timeout_ms,
-        event_hub,
-        || should_stop_connection(stream, running).unwrap_or(true),
-    ) {
+    let reply = match poll_channel_ask_reply(&name, question_seq, timeout_ms, event_hub, || {
+        should_stop_connection(stream, running).unwrap_or(true)
+    }) {
         Ok(Some(reply)) => reply,
         // The client went away mid-wait; there is nobody to answer.
         Ok(None) => return Ok(None),
@@ -1639,11 +1635,10 @@ mod tests {
                     let reply = append("eng", "yes", Some(question_seq));
                     push_message_event(&hub, "eng", &reply);
                 });
-                let outcome = poll_channel_ask_reply("eng", question_seq, 5_000, &event_hub, || {
-                    false
-                })
-                .expect("poll")
-                .expect("not cancelled");
+                let outcome =
+                    poll_channel_ask_reply("eng", question_seq, 5_000, &event_hub, || false)
+                        .expect("poll")
+                        .expect("not cancelled");
                 replier.join().expect("replier");
                 let reply = outcome.expect("matching reply must resolve the wait");
                 assert_eq!(reply.text, "yes");
@@ -1663,15 +1658,12 @@ mod tests {
                 let question = append("eng", "are you there?", None);
                 let other = append("eng", "unrelated message", None);
                 append("eng", "reply to the wrong question", Some(other.seq));
-                let outcome = poll_channel_ask_reply(
-                    "eng",
-                    question.seq,
-                    200,
-                    &EventHub::default(),
-                    || false,
-                )
-                .expect("poll")
-                .expect("not cancelled");
+                let outcome =
+                    poll_channel_ask_reply("eng", question.seq, 200, &EventHub::default(), || {
+                        false
+                    })
+                    .expect("poll")
+                    .expect("not cancelled");
                 assert!(
                     outcome.is_none(),
                     "a reply addressed to a different seq must not resolve this ask: {outcome:?}"
@@ -1683,15 +1675,12 @@ mod tests {
         fn no_reply_times_out_cleanly() {
             with_isolated_state_dir("timeout", || {
                 let question = append("eng", "hello?", None);
-                let outcome = poll_channel_ask_reply(
-                    "eng",
-                    question.seq,
-                    150,
-                    &EventHub::default(),
-                    || false,
-                )
-                .expect("poll")
-                .expect("not cancelled");
+                let outcome =
+                    poll_channel_ask_reply("eng", question.seq, 150, &EventHub::default(), || {
+                        false
+                    })
+                    .expect("poll")
+                    .expect("not cancelled");
                 assert!(outcome.is_none());
             });
         }
