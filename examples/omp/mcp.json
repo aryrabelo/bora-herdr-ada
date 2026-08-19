@@ -1,0 +1,29 @@
+{
+  "$schema": "https://raw.githubusercontent.com/can1357/oh-my-pi/main/packages/coding-agent/src/config/mcp-schema.json",
+  "mcpServers": {
+    "example-http-server": {
+      "type": "http",
+      "url": "https://mcp.example.com/",
+      "headers": {
+        "// pattern": "shell out for the token at request time instead of embedding it in this file — nothing here is a static secret",
+        "Authorization": "!printf 'Bearer %s' \"$(my-token-helper my-user)\"",
+        "X-Example-User": "my-user"
+      },
+      "enabled": true,
+      "timeout": 30000
+    },
+    "example-db-backed-auth": {
+      "type": "http",
+      "url": "https://api.example.com/mcp",
+      "headers": {
+        "// pattern": "read a locally-stored credential and format it as a header, still without ever writing the plaintext into this file",
+        "Authorization": "!my-cli-tool print-auth-header --provider example"
+      },
+      "enabled": true,
+      "timeout": 30000
+    }
+  },
+  "disabledServers": [
+    "cmux"
+  ]
+}

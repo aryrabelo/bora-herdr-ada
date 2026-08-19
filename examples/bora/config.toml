@@ -1,0 +1,163 @@
+# Example bora config — a real, in-use setup, published near-verbatim because
+# the keybind scheme below (and the measured comments justifying each chord)
+# is the actual value of this file. Destination: ~/.config/bora/config.toml
+#
+# The `[[keys.command]]` entries call plugins and an external script
+# (bora-helix-tab, see helix-tab.sh in this directory) that you may not have
+# installed. What happens if the target is missing depends on the binding's
+# `type`:
+#   "shell"         — fails SILENTLY, no toast, no error (cmd+shift+e, prefix+a).
+#   "plugin_action" — surfaces a "custom command failed" toast naming the
+#                     missing plugin (prefix+f, cmd+shift+r, prefix+shift+b);
+#                     see src/app/input/navigate.rs's launch_custom_command.
+# The task-board binding near the bottom needs a GitHub token configured for
+# that plugin before it does anything — see the plugin's own docs for how it
+# reads that token.
+
+onboarding = false
+
+# Where `bora worktree` puts new worktrees. `~` is expanded; the shipped
+# default is ~/.herdr/worktrees.
+[worktrees]
+directory = "~/Sites/worktrees"
+
+# Nao ressuscitar automaticamente TODAS as sessoes de agente no restart do
+# servidor (previne o incidente de ~130 processos omp/5.6GB no restore).
+# Resuma manualmente so os panes que interessam.
+[session]
+resume_agents_on_restore = false
+
+[ui.toast]
+delivery = "herdr"
+
+[ui]
+chat_view = true
+# Your handle in bora's chat panel — mentions of it are what trigger
+# `chat_open_on_mention`. Change it to your own name.
+chat_name = "ary"
+show_agent_labels_on_pane_borders = true
+show_pane_ids_on_pane_borders = true
+agent_panel_scope = "all"
+agent_panel_sort = "priority"
+
+# gh-pr plugin: token $pr mostra "#123 ✓/✗/●" (PR + CI) na row do agente,
+# auto-refresh 30s por pane.
+status_indicators = "symbols"
+[ui.sidebar.agents]
+rows = [["state_icon", "workspace", "$pr"], ["agent"]]
+[experimental]
+pane_history = true
+
+switch_ascii_input_source_in_prefix = true
+[theme]
+name = "catppuccin"
+
+[keys]
+prefix = "ctrl+space"
+
+# Multi-tier chords for the former NUL-forward targets. Ghostty `unbind`s the
+# Cmd chords so the real key event reaches bora over the kitty keyboard
+# protocol (the old `text:\x00…` forwarding is dead — bora drops the bare NUL).
+# Each action gets three independent ways to fire:
+#   1. prefix+…       — bora's default prefix chord (ctrl+space then key)
+#   2. cmd+…          — native Cmd chord, transmitted once Ghostty unbinds it
+#   3. ctrl+alt+…     — fallback that transmits even without a modern
+#                       keyboard protocol (safe-chord family bora inherits
+#                       from upstream herdr)
+new_tab = ["prefix+c", "cmd+t", "ctrl+alt+c"]
+close_pane = ["prefix+x", "cmd+w", "ctrl+alt+x"]
+new_workspace = ["prefix+shift+n", "cmd+n", "ctrl+alt+n"]
+split_vertical = ["prefix+v", "cmd+d", "ctrl+alt+d"]
+split_horizontal = ["prefix+minus", "cmd+shift+d", "ctrl+alt+shift+d"]
+new_worktree = ["prefix+shift+g", "cmd+shift+g", "ctrl+alt+g"]
+
+# Swap-pane moved off prefix+shift+hjkl: prefix+shift+k is taken by the
+# oh-my-herdr kanban command below, and split bindings would be confusing.
+swap_pane_left = "prefix+alt+h"
+swap_pane_down = "prefix+alt+j"
+swap_pane_up = "prefix+alt+k"
+swap_pane_right = "prefix+alt+l"
+
+# Direct workspace/tab cycling (no prefix needed — Ghostty unbinds estes, então
+# passam direto pro bora).
+#
+# ABA (dentro do workspace) = cmd+] / cmd+[  -- PROVADO que chegam ao bora
+# (keystroke sintético + evento neste log, 2026-08-14: os dois deram
+# tab.focus). Sem shift é o par que o macOS NAO reserva.
+#
+# WORKSPACE = cmd+shift+[ / cmd+shift+]  -- semantica de colchete (par com
+# next_tab/previous_tab em cmd+]/cmd+[, so que com shift pro nivel workspace).
+# Nomes de tecla vem de src/config/keybinds.rs do bora, nao inventados.
+#
+# cmd+period/cmd+comma FORAM tentados antes e NAO funcionam sem shift (medido
+# 2026-08-14: chord de controle na mesma acao deu workspace.focus, cmd+.
+# nao deu nada). cmd+shift+,/cmd+shift+. funcionavam mas saem daqui agora.
+#
+# ATENCAO cmd+shift+]/cmd+shift+[: ja tinham SAIDO daqui uma vez (medido
+# 2026-08-14, HISTORICO abaixo) e agora VOLTAM pra reteste em 2026-08-17,
+# a pedido explicito, sabendo do risco. Se reproduzir o bug, reverter pra
+# cmd+shift+,/cmd+shift+. e manter so ctrl+tab/ctrl+shift+tab funcionando.
+#
+# HISTORICO (2026-08-14): com aba nativa do Ghostty ligada
+# (macos-titlebar-style != hidden), o tab group do macOS reserva ⌘⇧] e ⌘⇧[
+# pelo menu Window ("Show Next/Previous Tab") -- isso NAO esta na tabela de
+# keybinds do Ghostty, entao `unbind` (ja presente no ghostty config) nao
+# alcanca e o atalho trocava de ABA em vez de chegar ao bora. Foi por isso
+# que os botoes laterais do Mouser (xbutton1/xbutton2) foram repontados de
+# ⌘⇧]/⌘⇧[ para ctrl+tab / ctrl+shift+tab -- esses continuam intactos abaixo
+# como fallback garantido caso o reteste falhe de novo.
+#
+# ctrl+tab / ctrl+shift+tab: o item de menu "Show Next Tab" do Ghostty ocupava
+# esse par; remapear esse item de menu via NSUserKeyEquivalents (mecanismo
+# completo: ver passo 4 de examples/README.md) move o menu p/ cmd+ctrl+]/[ e libera.
+next_workspace = ["ctrl+tab", "cmd+shift+]"]
+previous_workspace = ["ctrl+shift+tab", "cmd+shift+["]
+
+# Navegação de agentes no painel (requer macos-option-as-alt=true no Ghostty,
+# senão alt+a vira "å")
+next_agent = "alt+a"
+previous_agent = "alt+shift+a"
+focus_agent = "alt+1..9"
+
+
+# herdr-file-viewer: open the git-aware file viewer in a split (prefix then f).
+[[keys.command]]
+key = "prefix+f"
+type = "plugin_action"
+command = "herdr-file-viewer.open-file-viewer"
+description = "file viewer"
+
+# herdr-reviewr: toggle the code-review pane beside the agent.
+# cmd+shift+r: namespace do Bora no esquema de tres niveis (cmd / cmd+shift =
+# Bora, cmd+ctrl / +shift = Ghostty, ctrl+alt / +shift = Sistema). O Ghostty
+# nao binda cmd+shift+r (verificado 2026-08-14), entao a tecla passa direto.
+[[keys.command]]
+key = "cmd+shift+r"
+type = "plugin_action"
+command = "persiyanov.reviewr.toggle"
+description = "reviewr"
+
+# cmd+shift+e ("editor"): abre a tab "helix" (cria com `hx .` + picker de
+# changed files se ainda não existir; foca a tab existente caso já exista).
+# Estava em cmd+shift+h, que virou previous_workspace (direcional vim).
+# cmd+shift+e esta livre no Ghostty (verificado 2026-08-14).
+[[keys.command]]
+key = "cmd+shift+e"
+type = "shell"
+command = "bora-helix-tab"
+description = "helix"
+
+# herdr-automations: board de crons de agentes (overlay).
+[[keys.command]]
+key = "prefix+a"
+type = "shell"
+command = "bora plugin pane open --plugin dnzzl.automations --entrypoint board --placement overlay"
+description = "automations board"
+
+# herdr-board: task board global (issues GitHub/Linear → agentes) num split.
+# Precisa de routing.toml + GITHUB_TOKEN para sair do inerte — ver abaixo.
+[[keys.command]]
+key = "prefix+shift+b"
+type = "plugin_action"
+command = "board.toggle"
+description = "task board"

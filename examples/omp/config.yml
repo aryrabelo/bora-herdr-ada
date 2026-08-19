@@ -1,0 +1,97 @@
+# Example OMP agent config, trimmed from a real, in-use ~/.omp/agent/config.yml.
+# Destination: ~/.omp/agent/config.yml
+#
+# This is NOT the full file: it keeps only the settings worth copying as-is.
+# The biggest thing cut is the personal `modelRoles` / `cycleOrder` /
+# `retry.fallbackChains` model ladder (~250 lines tied to one person's
+# specific subscriptions and quota pools) — replaced below with a minimal
+# example. See OMP's own docs for the full model-role system before building
+# your own ladder.
+
+modelRoles:
+  default: anthropic/claude-sonnet-5:medium
+  smol: anthropic/claude-sonnet-5:low
+  # Full role system (task/vision/tiny, cycleOrder, retry.fallbackChains,
+  # per-provider quota tiers) — see OMP's docs, not reproduced here.
+
+compaction:
+  handoffSaveToDisk: true
+  strategy: shake
+  thresholdTokens: 300000
+  idleEnabled: true
+  thresholdPercent: 60
+  idleTimeoutSeconds: 600
+  midTurnEnabled: false
+  idleThresholdTokens: 300000
+
+memory:
+  backend: mnemopi
+
+todo:
+  eager: always
+  remindersMax: 5
+
+task:
+  eager: always
+  enableLsp: false
+  isolation:
+    mode: rcopy
+    commits: ai
+    merge: branch
+  enableEffort: true
+  maxConcurrency: 16
+  maxEffort: high
+  prewalk: false
+
+edit:
+  mode: hashline
+  enforceSeenLines: true
+
+bash:
+  autoBackground:
+    enabled: true
+  patterns:
+    - match: "rm -rf *"
+      approval: deny
+    - match: "rm -fr *"
+      approval: deny
+    - match: "rm -r -f *"
+      approval: deny
+
+browser:
+  relay: true
+
+grep:
+  contextBefore: 2
+
+providers:
+  webSearchOrder:
+    - perplexity
+    - kimi
+    - gemini
+    - anthropic
+    - codex
+    - xai
+    - zai
+    - exa
+    - tinyfish
+    - jina
+    - kagi
+    - tavily
+    - firecrawl
+    - brave
+    - parallel
+    - synthetic
+    - searxng
+    - startpage
+    - duckduckgo
+    - ecosia
+    - google
+    - mojeek
+    - public
+
+retry:
+  # No automatic model swap: swapping invalidates the prompt-cache prefix
+  # (=> a "cache miss" on the next turn). Stepping down a model tier is a
+  # manual choice (cycleOrder), not something retry should do for you.
+  modelFallback: false

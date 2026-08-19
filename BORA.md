@@ -1,7 +1,7 @@
-# herdr-bora
+# bora
 
 Our fork of [herdr](https://github.com/ogulcancelik/herdr) with local
-improvements, shipped as a separate `herdr-bora` binary that coexists with a
+improvements, shipped as a `bora` binary that coexists with a
 stock `herdr` install (brew/mise) instead of overwriting it.
 
 ## What's different from upstream
@@ -52,11 +52,11 @@ git worktree remove ~/Sites/worktrees/bora/<slug>
 
 ## Build / install
 
-`herdr-bora` is the fork's normal `herdr` binary installed under a different
+`bora` is the fork's normal `herdr` binary installed under a different
 name and run on its own session, so the two never collide.
 
 ```sh
-scripts/bora build        # cargo build --release, install as ~/.local/bin/herdr-bora
+scripts/bora build        # cargo build --release, install as ~/.local/bin/bora
 scripts/bora run          # run it on the dedicated "bora" session (own socket)
 ```
 
@@ -81,7 +81,7 @@ scripts/bora run          # run it on the dedicated "bora" session (own socket)
 > ```sh
 > scripts/bora ci-build     # dispatch the GitHub Actions macOS build on the fork
 > gh run watch              # wait for it
-> scripts/bora ci-install   # download the artifact, install as herdr-bora
+> scripts/bora ci-install   # download the artifact, install as bora
 > ```
 
 ### Refreshing / producing prebuilts
@@ -141,7 +141,7 @@ tag; `.github/workflows/release.yml` builds the four `bora-*` binaries
 
 ## Coexistence model
 
-- Distinct binary name (`herdr-bora`) — never overwrites stock `herdr`.
+- Distinct binary name (`bora`) — never overwrites stock `herdr`.
 - Dedicated named session (`--session bora`) — its own socket/server, so it runs
   our binary independently of any stock-`herdr` server on the default session.
 - Own config namespace: config/state/sessions/sockets live under `bora` /
