@@ -42,7 +42,8 @@ pub(super) fn command() -> Command {
         .subcommand(terminal_command())
         .subcommand(session_command())
         .subcommand(integration_command())
-        .subcommand(plugin_command());
+        .subcommand(plugin_command())
+        .subcommand(mcp_command());
     configure_help(command, true)
 }
 
@@ -832,6 +833,23 @@ fn integration_command() -> Command {
             Command::new("status")
                 .about("Show integration status")
                 .arg(flag("outdated-only")),
+        )
+}
+
+fn mcp_command() -> Command {
+    Command::new("mcp")
+        .about("Run a scoped MCP stdio server over the socket API")
+        .subcommand(
+            Command::new("serve")
+                .about("Speak MCP (stdio, JSON-RPC 2.0) exposing channel + agent tools")
+                .arg(option("channels", "LIST").help(
+                    "Comma-separated channel names this server may see or touch; omit for none",
+                ))
+                .arg(option("nick", "NAME").help("Informational nick reported in serverInfo"))
+                .arg(
+                    flag("allow-prompt")
+                        .help("Expose the agent_prompt tool (absent by default)"),
+                ),
         )
 }
 
