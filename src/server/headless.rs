@@ -11588,6 +11588,7 @@ next_tab = ""
         let mut server = test_headless_server();
         let background = crate::workspace::Workspace::test_new("background");
         let pane_id = background.tabs[0].root_pane;
+        let public_pane_id = format!("{}:p1", background.id);
         let foreground = crate::workspace::Workspace::test_new("foreground");
         server.app.state.workspaces = vec![background, foreground];
         server.app.state.ensure_test_terminals();
@@ -11665,7 +11666,10 @@ next_tab = ""
             } => {
                 assert_eq!(kind, protocol::NotifyKind::SystemToast);
                 assert_eq!(message, "pi needs attention");
-                assert_eq!(body.as_deref(), Some("background · 1"));
+                assert_eq!(
+                    body.as_deref(),
+                    Some(format!("background · 1 · {public_pane_id}").as_str())
+                );
             }
             other => panic!("expected delayed system toast, got {other:?}"),
         }
@@ -11677,6 +11681,7 @@ next_tab = ""
         let mut server = test_headless_server();
         let workspace = crate::workspace::Workspace::test_new("active");
         let pane_id = workspace.tabs[0].root_pane;
+        let public_pane_id = format!("{}:p1", workspace.id);
         server.app.state.workspaces = vec![workspace];
         server.app.state.ensure_test_terminals();
         server.app.state.active = Some(0);
@@ -11753,7 +11758,10 @@ next_tab = ""
             } => {
                 assert_eq!(kind, protocol::NotifyKind::SystemToast);
                 assert_eq!(message, "pi needs attention");
-                assert_eq!(body.as_deref(), Some("active · 1"));
+                assert_eq!(
+                    body.as_deref(),
+                    Some(format!("active · 1 · {public_pane_id}").as_str())
+                );
             }
             other => panic!("expected delayed system toast, got {other:?}"),
         }
