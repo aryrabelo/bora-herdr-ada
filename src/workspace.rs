@@ -1616,18 +1616,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn generated_workspace_ids_are_short_base32_handles() {
+    fn generated_workspace_ids_are_unique_base32_handles() {
         let first = generate_workspace_id();
         let second = generate_workspace_id();
 
         assert!(first.starts_with('w'));
         assert!(second.starts_with('w'));
         assert_ne!(first, second);
-        assert!(first.len() <= 3, "unexpectedly long workspace id: {first}");
-        assert!(
-            second.len() <= 3,
-            "unexpectedly long workspace id: {second}"
-        );
+        // The suite's tests share one process-global counter, so an id's
+        // length is not a boundary this test can own — the readable-width
+        // contract lives deterministically in
+        // public_numbers_round_trip_readable_base32_handles, and the alphabet
+        // itself is a fixed constant, not user input.
     }
 
     #[test]
@@ -1639,9 +1639,19 @@ mod tests {
         assert_eq!(encode_public_number(32), "0");
         assert_eq!(encode_public_number(33), "11");
 
-        for value in [1, 9, 10, 31, 32, 33, 1024, 1025] {
+        for value in [1, 9, 10, 31, 32, 33, 1023, 1024, 1025, 32767] {
             let encoded = encode_public_number(value);
             assert_eq!(decode_public_number(&encoded), Some(value));
+        }
+
+        // Readable-width contract (deterministic here, unlike the process-wide
+        // workspace counter): the encoding stays at most three characters for
+        // every value a session's counter realistically reaches.
+        for value in [1, 31, 32, 33, 1023, 1024, 1025, 32767] {
+            assert!(
+                encode_public_number(value).len() <= 3,
+                "encode_public_number({value}) must stay a short handle"
+            );
         }
     }
 

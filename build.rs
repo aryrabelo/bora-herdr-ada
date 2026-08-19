@@ -1,3 +1,8 @@
+//! Build-time helpers. The FNV/vendored-source hash machinery below is
+//! exercised by a subset of platforms and CI feature toggles; clippy's
+//! host-target pass sees it unused, so treat it as conditionally dead.
+#![allow(dead_code)]
+
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};

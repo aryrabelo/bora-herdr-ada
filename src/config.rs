@@ -64,9 +64,9 @@ pub(crate) fn app_dir_name() -> &'static str {
 }
 
 #[cfg(test)]
-pub(crate) fn test_config_env_lock() -> &'static std::sync::Mutex<()> {
-    static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
-    LOCK.get_or_init(|| std::sync::Mutex::new(()))
+pub(crate) fn test_config_env_lock() -> &'static parking_lot::Mutex<()> {
+    static LOCK: parking_lot::Mutex<()> = parking_lot::const_mutex(());
+    &LOCK
 }
 
 impl Config {

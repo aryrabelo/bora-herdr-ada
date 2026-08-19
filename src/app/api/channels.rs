@@ -1194,14 +1194,14 @@ mod tests {
     }
 
     struct IsolatedStateDir {
-        _guard: std::sync::MutexGuard<'static, ()>,
+        _guard: parking_lot::MutexGuard<'static, ()>,
         old_state: Option<std::ffi::OsString>,
         dir: std::path::PathBuf,
     }
 
     impl IsolatedStateDir {
         fn new(name: &str) -> Self {
-            let guard = crate::config::test_config_env_lock().lock().unwrap();
+            let guard = crate::config::test_config_env_lock().lock();
             let old_state = std::env::var_os("XDG_STATE_HOME");
             let dir = std::env::temp_dir().join(format!(
                 "bora-channel-handler-test-{name}-{}",

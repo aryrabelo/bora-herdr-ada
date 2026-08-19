@@ -1365,7 +1365,7 @@ manifest_check = false
 
     #[test]
     fn chat_name_parses_and_effective_resolution_falls_back() {
-        let _guard = crate::config::test_config_env_lock().lock().unwrap();
+        let _guard = crate::config::test_config_env_lock().lock();
         let old_user = std::env::var_os("USER");
         let old_logname = std::env::var_os("LOGNAME");
 

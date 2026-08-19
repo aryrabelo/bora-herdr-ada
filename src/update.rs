@@ -2433,12 +2433,10 @@ mod tests {
         atomic::{AtomicBool, Ordering},
         Arc,
     };
-    use std::sync::{Mutex, OnceLock};
     use std::thread;
 
-    fn env_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
+    fn env_lock() -> &'static parking_lot::Mutex<()> {
+        crate::config::test_config_env_lock()
     }
 
     fn unique_test_socket_path(name: &str) -> std::path::PathBuf {
@@ -2646,7 +2644,7 @@ mod tests {
 
     #[test]
     fn mise_configured_installs_dir_path_is_detected() {
-        let _guard = env_lock().lock().unwrap();
+        let _guard = env_lock().lock();
         let previous = std::env::var_os(MISE_INSTALLS_DIR_ENV);
         std::env::set_var(MISE_INSTALLS_DIR_ENV, "/opt/mise-tools");
         let path = Path::new("/opt/mise-tools/herdr/0.6.6/bin/herdr");
@@ -2827,7 +2825,7 @@ mod tests {
 
     #[test]
     fn fake_release_notes_default_to_real_large_changelog_section() {
-        let _guard = env_lock().lock().unwrap();
+        let _guard = env_lock().lock();
         std::env::remove_var(FAKE_UPDATE_NOTES_VERSION_ENV);
 
         let body = fake_release_notes_body("9.4.9");
@@ -2837,7 +2835,7 @@ mod tests {
 
     #[test]
     fn fake_release_notes_fallback_include_version_and_context() {
-        let _guard = env_lock().lock().unwrap();
+        let _guard = env_lock().lock();
         std::env::set_var(FAKE_UPDATE_NOTES_VERSION_ENV, "does-not-exist");
 
         let body = fake_release_notes_body("9.4.9");
@@ -2979,7 +2977,7 @@ mod tests {
 
     #[test]
     fn plain_update_targets_all_running_sessions() {
-        let _guard = env_lock().lock().unwrap();
+        let _guard = env_lock().lock();
         let config_home = set_test_config_home("all-sessions");
         std::env::remove_var(crate::api::SOCKET_PATH_ENV_VAR);
         std::env::remove_var(crate::session::SESSION_ENV_VAR);
@@ -3009,7 +3007,7 @@ mod tests {
 
     #[test]
     fn explicit_session_update_targets_only_that_session() {
-        let _guard = env_lock().lock().unwrap();
+        let _guard = env_lock().lock();
         let config_home = set_test_config_home("explicit-session");
         std::env::set_var(crate::api::SOCKET_PATH_ENV_VAR, "/tmp/ignored-herdr.sock");
         std::env::remove_var(crate::session::SESSION_ENV_VAR);
@@ -3039,7 +3037,7 @@ mod tests {
 
     #[test]
     fn socket_override_update_targets_socket_not_env_session() {
-        let _guard = env_lock().lock().unwrap();
+        let _guard = env_lock().lock();
         std::env::set_var(crate::api::SOCKET_PATH_ENV_VAR, "/tmp/custom-herdr.sock");
         std::env::set_var(crate::session::SESSION_ENV_VAR, "work");
         crate::session::clear_explicit_session_for_test();
@@ -3063,7 +3061,7 @@ mod tests {
 
     #[test]
     fn plain_update_errors_when_named_session_has_client_socket_without_status_api() {
-        let _guard = env_lock().lock().unwrap();
+        let _guard = env_lock().lock();
         let config_home = set_test_config_home("client-only-session");
         std::env::remove_var(crate::api::SOCKET_PATH_ENV_VAR);
         std::env::remove_var(crate::session::SESSION_ENV_VAR);
@@ -3134,7 +3132,7 @@ mod tests {
 
     #[test]
     fn noninteractive_plain_update_does_not_complete_with_running_server() {
-        let _guard = env_lock().lock().unwrap();
+        let _guard = env_lock().lock();
         assert!(
             !io::stdin().is_terminal(),
             "this test relies on noninteractive test stdin"

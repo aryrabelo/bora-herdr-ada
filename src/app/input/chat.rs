@@ -1598,14 +1598,14 @@ mod tests {
     /// Isolates the channel roster/transcript files this test writes, so a
     /// join never touches the developer's real state directory.
     struct IsolatedStateDir {
-        _guard: std::sync::MutexGuard<'static, ()>,
+        _guard: parking_lot::MutexGuard<'static, ()>,
         previous: Option<std::ffi::OsString>,
         dir: std::path::PathBuf,
     }
 
     impl IsolatedStateDir {
         fn new(name: &str) -> Self {
-            let guard = crate::config::test_config_env_lock().lock().unwrap();
+            let guard = crate::config::test_config_env_lock().lock();
             let previous = std::env::var_os("XDG_STATE_HOME");
             let dir = std::env::temp_dir()
                 .join(format!("bora-chat-members-{name}-{}", std::process::id()));

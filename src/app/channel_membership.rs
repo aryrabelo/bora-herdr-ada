@@ -86,7 +86,7 @@ mod tests {
     /// scratch `XDG_STATE_HOME` so it never touches the real one, mirroring
     /// `persist::channels::tests::with_isolated_state_dir`.
     fn with_isolated_state_dir<T>(name: &str, f: impl FnOnce() -> T) -> T {
-        let _guard = crate::config::test_config_env_lock().lock().unwrap();
+        let _guard = crate::config::test_config_env_lock().lock();
         let old_state = std::env::var_os("XDG_STATE_HOME");
         let dir = std::env::temp_dir().join(format!(
             "bora-channel-membership-test-{name}-{}",

@@ -4,6 +4,9 @@ Bora is a fork of [herdr](https://github.com/ogulcancelik/herdr). This changelog
 
 ## Unreleased
 
+### Changed
+- Agent notification toasts and system notifications now name the pane they came from: the context line appends the pane's public id (`<workspace>:p<number>`, e.g. `w7:p1`) after the workspace label, so a toast shown for a background workspace tells you which split produced it.
+
 ## [0.24.0] - 2026-08-19
 
 ### Added
