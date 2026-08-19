@@ -2820,7 +2820,7 @@ mod tests {
         let burst_history_len_before = app
             .channel_burst_history
             .get("eng")
-            .map_or(0, |times| times.len());
+            .map_or(0, std::collections::VecDeque::len);
 
         let noted = app.handle_channel_note(
             "req-note".into(),
@@ -2839,7 +2839,7 @@ mod tests {
         assert_eq!(
             app.channel_burst_history
                 .get("eng")
-                .map_or(0, |times| times.len()),
+                .map_or(0, std::collections::VecDeque::len),
             burst_history_len_before,
             "channel.note must not record into the burst damper's sliding window"
         );
