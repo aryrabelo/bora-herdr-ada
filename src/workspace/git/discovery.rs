@@ -3,12 +3,8 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GitSpaceMetadata {
     pub key: String,
-    /// Stable grouping identity (normalized `origin` remote, `host/owner/repo`),
-    /// shared by clones and worktrees of the same repository. Falls back to
-    /// `key` when there is no `origin` remote.
-    pub repo_identity: String,
     pub checkout_key: String,
-    pub repo_name: String,
+    pub label: String,
     pub repo_root: PathBuf,
     pub is_linked_worktree: bool,
 }
@@ -23,12 +19,12 @@ pub struct GitWorktreeInfo {
 }
 
 pub fn derive_label_from_cwd(cwd: &Path) -> String {
-    git_repo_root(cwd)
-        .map(|repo_root| automatic_workspace_label(cwd, &repo_root))
-        .unwrap_or_else(|| fallback_label_from_cwd(cwd))
-}
+    if let Some(repo_root) = git_repo_root(cwd) {
+        if let Some(name) = repo_root.file_name().and_then(|n| n.to_str()) {
+            return name.to_string();
+        }
+    }
 
-pub fn fallback_label_from_cwd(cwd: &Path) -> String {
     if let Ok(home) = std::env::var("HOME") {
         let home = Path::new(&home);
         if cwd == home {
@@ -39,7 +35,7 @@ pub fn fallback_label_from_cwd(cwd: &Path) -> String {
     cwd.file_name()
         .and_then(|n| n.to_str())
         .filter(|s| !s.is_empty())
-        .map(std::string::ToString::to_string)
+        .map(|s| s.to_string())
         .unwrap_or_else(|| cwd.display().to_string())
 }
 
@@ -60,57 +56,37 @@ pub fn git_worktree_info(cwd: &Path) -> Option<GitWorktreeInfo> {
 }
 
 pub fn git_space_metadata(cwd: &Path) -> Option<GitSpaceMetadata> {
+    git_repo_root(cwd)?;
+
     let info = git_worktree_info(cwd)?;
-    Some(git_space_metadata_from_info(&info))
-}
-
-pub(crate) fn automatic_workspace_label(cwd: &Path, repo_root: &Path) -> String {
-    repo_root
-        .file_name()
-        .and_then(|name| name.to_str())
-        .map(str::to_string)
-        .unwrap_or_else(|| fallback_label_from_cwd(cwd))
-}
-
-pub(super) fn git_space_metadata_from_info(info: &GitWorktreeInfo) -> GitSpaceMetadata {
     let key = canonicalize_best_effort_path(&info.git_common_dir)
         .display()
         .to_string();
-    let repo_identity = read_origin_url(&info.git_common_dir.join("config"))
-        .as_deref()
-        .and_then(normalize_repo_identity)
-        .unwrap_or_else(|| key.clone());
     let checkout_key = canonicalize_best_effort_path(&info.repo_root)
         .display()
         .to_string();
-    let common_dir_name = info
+    let label_path = if info
         .git_common_dir
         .file_name()
-        .and_then(|name| name.to_str());
-    let label_path = match common_dir_name {
-        Some(".git") => info.git_common_dir.parent().unwrap_or(&info.repo_root),
-        Some(".bare") => embedded_bare_repo_container(info).unwrap_or(&info.git_common_dir),
-        _ => &info.git_common_dir,
+        .and_then(|name| name.to_str())
+        == Some(".git")
+    {
+        info.git_common_dir.parent().unwrap_or(&info.repo_root)
+    } else {
+        &info.repo_root
     };
-    let repo_name = label_path
+    let label = label_path
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("repo")
         .to_string();
-    GitSpaceMetadata {
+    Some(GitSpaceMetadata {
         key,
-        repo_identity,
         checkout_key,
-        repo_name,
-        repo_root: info.repo_root.clone(),
+        label,
+        repo_root: info.repo_root,
         is_linked_worktree: info.is_linked_worktree,
-    }
-}
-
-fn embedded_bare_repo_container(info: &GitWorktreeInfo) -> Option<&Path> {
-    let parent = info.git_common_dir.parent()?;
-    let parent_git_dir = git_dir_for_repo_root(parent)?;
-    (canonicalize_best_effort_path(&parent_git_dir) == info.git_common_dir).then_some(parent)
+    })
 }
 
 pub(super) fn canonicalize_best_effort_path(path: &Path) -> PathBuf {
@@ -239,82 +215,8 @@ fn strip_git_config_comment(value: &str) -> &str {
     value
 }
 
-/// Read the `origin` remote URL from a git config file. Handles the
-/// `[remote "origin"]` subsection that `read_git_config_value` skips.
-fn read_origin_url(config_path: &Path) -> Option<String> {
-    let contents = std::fs::read_to_string(config_path).ok()?;
-    let mut in_origin = false;
-    for raw_line in contents.lines() {
-        let line = raw_line.trim();
-        if line.is_empty() || line.starts_with('#') || line.starts_with(';') {
-            continue;
-        }
-        if line.starts_with('[') {
-            in_origin = config_subsection(line).is_some_and(|(section, name)| {
-                section.eq_ignore_ascii_case("remote") && name == "origin"
-            });
-            continue;
-        }
-        if !in_origin {
-            continue;
-        }
-        if let Some((name, value)) = line.split_once('=') {
-            if name.trim().eq_ignore_ascii_case("url") {
-                let url = strip_git_config_comment(value).trim().to_string();
-                if !url.is_empty() {
-                    return Some(url);
-                }
-            }
-        }
-    }
-    None
-}
-
-/// Parse a `[section "name"]` config header into `(section, name)`.
-fn config_subsection(line: &str) -> Option<(&str, &str)> {
-    let inner = line.strip_prefix('[')?.split_once(']')?.0.trim();
-    let (section, rest) = inner.split_once('"')?;
-    let name = rest.strip_suffix('"')?;
-    Some((section.trim(), name))
-}
-
-/// Normalize a git remote URL into a stable `host/owner/repo` identity so that
-/// clones and worktrees of the same repository share one grouping key.
-fn normalize_repo_identity(url: &str) -> Option<String> {
-    let url = url.trim();
-    if url.is_empty() {
-        return None;
-    }
-    let (host, path) = if let Some(rest) = url
-        .strip_prefix("ssh://")
-        .or_else(|| url.strip_prefix("https://"))
-        .or_else(|| url.strip_prefix("http://"))
-        .or_else(|| url.strip_prefix("git://"))
-    {
-        let (authority, path) = rest.split_once('/')?;
-        let host = authority.rsplit('@').next().unwrap_or(authority);
-        let host = host.split(':').next().unwrap_or(host);
-        (host, path)
-    } else {
-        let (authority, path) = url.split_once(':')?;
-        // Reject non-host:path forms such as Windows drive paths (`C:\...`).
-        if !authority.contains('@') && !authority.contains('.') {
-            return None;
-        }
-        let host = authority.rsplit('@').next().unwrap_or(authority);
-        (host, path)
-    };
-    let host = host.trim().trim_matches('/');
-    let path = path.trim().trim_matches('/');
-    let path = path.strip_suffix(".git").unwrap_or(path).trim_matches('/');
-    if host.is_empty() || path.is_empty() {
-        return None;
-    }
-    Some(format!("{host}/{path}").to_lowercase())
-}
-
-pub(super) fn git_trimmed_stdout(repo_root: &Path, args: &[&str]) -> Option<String> {
-    let output = crate::noninteractive_process::command("git")
+fn git_trimmed_stdout(repo_root: &Path, args: &[&str]) -> Option<String> {
+    let output = std::process::Command::new("git")
         .arg("-C")
         .arg(repo_root)
         .args(args)
@@ -497,79 +399,6 @@ mod tests {
     }
 
     #[test]
-    fn bare_source_and_linked_checkout_share_repo_name_but_not_auto_label() {
-        let (base, bare, checkout) =
-            crate::workspace::git::test_support::create_bare_repo_with_linked_worktree(
-                "bare-linked-labels",
-            );
-
-        let bare_space = git_space_metadata(&bare).unwrap();
-        let checkout_space = git_space_metadata(&checkout).unwrap();
-        let bare_auto_label = automatic_workspace_label(&bare, &bare_space.repo_root);
-        let checkout_auto_label = automatic_workspace_label(&checkout, &checkout_space.repo_root);
-
-        assert_eq!(bare_space.key, checkout_space.key);
-        assert_eq!(bare_space.repo_name, ".bare");
-        assert_eq!(checkout_space.repo_name, bare_space.repo_name);
-        assert_eq!(bare_auto_label, bare.file_name().unwrap().to_str().unwrap());
-        assert_eq!(
-            checkout_auto_label,
-            checkout.file_name().unwrap().to_str().unwrap()
-        );
-
-        std::fs::remove_dir_all(base).unwrap();
-    }
-
-    #[test]
-    fn embedded_dot_bare_source_and_checkout_use_container_repo_name() {
-        let base = temp_test_dir("embedded-dot-bare");
-        let seed = base.join("seed");
-        let repo = base.join("reported-repo");
-        let bare = repo.join(".bare");
-        let checkout = repo.join("develop");
-        std::fs::create_dir_all(&seed).unwrap();
-        std::fs::create_dir_all(&repo).unwrap();
-        run_git(&seed, &["init", "--quiet"]);
-        run_git(&seed, &["config", "user.email", "herdr@example.invalid"]);
-        run_git(&seed, &["config", "user.name", "Herdr Test"]);
-        run_git(
-            &seed,
-            &["commit", "--quiet", "--allow-empty", "-m", "initial"],
-        );
-        run_git(
-            &base,
-            &[
-                "clone",
-                "--quiet",
-                "--bare",
-                seed.to_str().unwrap(),
-                bare.to_str().unwrap(),
-            ],
-        );
-        std::fs::write(repo.join(".git"), "gitdir: ./.bare\n").unwrap();
-        run_git(
-            &bare,
-            &[
-                "worktree",
-                "add",
-                "--quiet",
-                "-b",
-                "develop",
-                checkout.to_str().unwrap(),
-                "HEAD",
-            ],
-        );
-
-        let source = git_space_metadata(&repo).unwrap();
-        let linked = git_space_metadata(&checkout).unwrap();
-
-        assert_eq!(source.repo_name, "reported-repo");
-        assert_eq!(linked.repo_name, source.repo_name);
-
-        std::fs::remove_dir_all(base).unwrap();
-    }
-
-    #[test]
     fn git_space_metadata_marks_bare_dot_git_repo() {
         let root = temp_test_dir("bare-dot-git");
         run_git(&root, &["init", "--bare", ".git"]);
@@ -641,123 +470,6 @@ mod tests {
             Some(head_oid.as_str())
         );
 
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn normalize_repo_identity_unifies_clone_url_forms() {
-        let canonical = Some("github.com/owner/repo".to_string());
-        assert_eq!(
-            normalize_repo_identity("git@github.com:owner/repo.git"),
-            canonical
-        );
-        assert_eq!(
-            normalize_repo_identity("https://github.com/owner/repo.git"),
-            canonical
-        );
-        assert_eq!(
-            normalize_repo_identity("https://github.com/owner/repo"),
-            canonical
-        );
-        assert_eq!(
-            normalize_repo_identity("ssh://git@github.com/owner/repo.git"),
-            canonical
-        );
-        assert_eq!(
-            normalize_repo_identity("git://github.com/owner/repo.git"),
-            canonical
-        );
-        // Host and owner are case-insensitive on GitHub; normalize so casing never splits a group.
-        assert_eq!(
-            normalize_repo_identity("https://GitHub.com/Owner/Repo"),
-            canonical
-        );
-        // user@ and port are stripped from the authority.
-        assert_eq!(
-            normalize_repo_identity("ssh://git@github.com:22/owner/repo.git"),
-            canonical
-        );
-    }
-
-    #[test]
-    fn normalize_repo_identity_rejects_non_remote_strings() {
-        assert_eq!(normalize_repo_identity(""), None);
-        assert_eq!(normalize_repo_identity("   "), None);
-        // Windows drive path, not a host:path remote.
-        assert_eq!(normalize_repo_identity(r"C:\repos\thing"), None);
-        // Bare local path with no host.
-        assert_eq!(normalize_repo_identity("/srv/git/repo.git"), None);
-    }
-
-    #[test]
-    fn read_origin_url_extracts_origin_section_only() {
-        let root = temp_test_dir("origin-url");
-        let config = root.join("config");
-        std::fs::write(
-            &config,
-            "[core]\n\tbare = false\n[remote \"upstream\"]\n\turl = https://example.com/up/stream.git\n[remote \"origin\"]\n\turl = git@github.com:owner/repo.git\n\tfetch = +refs/heads/*:refs/remotes/origin/*\n",
-        )
-        .unwrap();
-
-        assert_eq!(
-            read_origin_url(&config).as_deref(),
-            Some("git@github.com:owner/repo.git")
-        );
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn read_origin_url_returns_none_without_origin() {
-        let root = temp_test_dir("origin-url-missing");
-        let config = root.join("config");
-        std::fs::write(
-            &config,
-            "[remote \"fork\"]\n\turl = git@github.com:owner/repo.git\n",
-        )
-        .unwrap();
-        assert_eq!(read_origin_url(&config), None);
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn git_space_metadata_groups_clones_by_origin_identity() {
-        // Two independent clones (distinct git dirs) of the same remote must share repo_identity.
-        let origin = "git@github.com:owner/resume-builder.git";
-        let make = |name: &str| {
-            let root = temp_test_dir(name);
-            run_git(&root, &["init", "-b", "main", "."]);
-            run_git(&root, &["remote", "add", "origin", origin]);
-            root
-        };
-        let clone_a = make("clone-a");
-        let clone_b = make("clone-b");
-
-        let meta_a = git_space_metadata(&clone_a).expect("metadata a");
-        let meta_b = git_space_metadata(&clone_b).expect("metadata b");
-
-        assert_eq!(meta_a.repo_identity, "github.com/owner/resume-builder");
-        assert_eq!(
-            meta_a.repo_identity, meta_b.repo_identity,
-            "clones of one remote must share repo_identity"
-        );
-        assert_ne!(
-            meta_a.key, meta_b.key,
-            "distinct clones still have distinct worktree keys"
-        );
-
-        std::fs::remove_dir_all(clone_a).unwrap();
-        std::fs::remove_dir_all(clone_b).unwrap();
-    }
-
-    #[test]
-    fn git_space_metadata_falls_back_to_key_without_origin() {
-        let root = temp_test_dir("no-origin");
-        run_git(&root, &["init", "-b", "main", "."]);
-        let meta = git_space_metadata(&root).expect("metadata");
-        assert_eq!(
-            meta.repo_identity, meta.key,
-            "no origin remote -> identity falls back to key"
-        );
         std::fs::remove_dir_all(root).unwrap();
     }
 }

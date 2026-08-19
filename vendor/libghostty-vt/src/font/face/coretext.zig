@@ -291,7 +291,7 @@ pub const Face = struct {
         alloc: Allocator,
         atlas: *font.Atlas,
         glyph_index: u32,
-        opts: font.Glyph.RenderOptions,
+        opts: font.face.RenderOptions,
     ) !font.Glyph {
         var glyphs = [_]macos.graphics.Glyph{@intCast(glyph_index)};
 

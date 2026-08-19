@@ -11,6 +11,7 @@
     "**/.classpath",
     "**/.settings",
     "**/target",
+    "**/vendor",
     "**/node_modules",
     "**/.zig-cache",
     "**/zig-out",
@@ -18,7 +19,7 @@
 
   "languages": {
     "Rust": {
-      "enable_language_server": true,
+      "enable_language_server": false,
       "formatter": "auto",
       "format_on_save": "off"
     }
@@ -30,7 +31,6 @@
       "initialization_options": {
         "checkOnSave": false,
         "cargo": {
-          "noDeps": true,
           "allTargets": false,
           "buildScripts": {
             "enable": false

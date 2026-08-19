@@ -1,45 +1,23 @@
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 
 use crate::api::client::{ApiClient, ApiClientError};
 use crate::api::schema::{
-    AgentStatus, ChannelCreateParams, ChannelHistoryParams, ChannelJoinParams, ChannelLeaveParams,
-    ChannelMembersParams, ChannelSendParams, ChannelWaitParams, ClientWindowTitleSetParams,
-    EmptyParams, Method, PaneAgentState, ReadFormat, ReadSource, Request, SplitDirection,
+    AgentStatus, ClientWindowTitleSetParams, EmptyParams, Method, OutputMatch, PaneAgentState,
+    PaneWaitForOutputParams, ReadFormat, ReadSource, Request, SplitDirection, Subscription,
 };
 
 mod agent;
-mod api;
-mod completion;
 mod integration;
 mod notification;
 mod pane;
 mod plugin;
-mod protocol_guard;
-mod runtime;
 mod server;
-mod server_not_running;
-mod spec;
 mod status;
 mod tab;
 mod workspace;
 mod worktree;
-
-const TERMINAL_SESSION_OBSERVE_USAGE: &str =
-    "usage: herdr terminal session observe <target> [--cols N] [--rows N]";
-const TERMINAL_SESSION_CONTROL_USAGE: &str =
-    "usage: herdr terminal session control <target> [--takeover] [--cols N] [--rows N]";
-
-pub(crate) fn parse_token_assignment(raw: &str) -> Result<(String, Option<String>), String> {
-    let Some((key, value)) = raw.split_once('=') else {
-        return Err("token must use NAME=VALUE".into());
-    };
-    if key.is_empty() {
-        return Err("token name must not be empty".into());
-    }
-    Ok((key.to_string(), Some(value.to_string())))
-}
 
 pub(crate) fn parse_env_assignment(raw: &str) -> Result<(String, String), String> {
     let Some((key, value)) = raw.split_once('=') else {
@@ -59,25 +37,10 @@ pub enum CommandOutcome {
     NotCli,
 }
 
-pub(super) fn print_read_response(response: &serde_json::Value) -> std::io::Result<i32> {
-    if response.get("error").is_some() {
-        eprintln!("{response}");
-        return Ok(1);
-    }
-    if let Some(text) = response["result"]["read"]["text"].as_str() {
-        print!("{text}");
-    }
-    Ok(0)
-}
-
 pub fn maybe_run(args: &[String]) -> std::io::Result<CommandOutcome> {
-    let Some(command) = args.get(1).map(std::string::String::as_str) else {
+    let Some(command) = args.get(1).map(|arg| arg.as_str()) else {
         return Ok(CommandOutcome::NotCli);
     };
-
-    if spec::print_requested_help(args)? {
-        return Ok(CommandOutcome::Handled(0));
-    }
 
     let exit_code = match command {
         "server" => {
@@ -86,9 +49,7 @@ pub fn maybe_run(args: &[String]) -> std::io::Result<CommandOutcome> {
             };
             exit_code
         }
-        "api" => api::run_api_command(&args[2..])?,
         "status" => status::run_status_command(&args[2..])?,
-        "completion" | "completions" => completion::run_completion_command(&args[2..])?,
         "config" => run_config_command(&args[2..])?,
         "channel" => run_channel_command(&args[2..])?,
         "workspace" => workspace::run_workspace_command(&args[2..])?,
@@ -99,6 +60,7 @@ pub fn maybe_run(args: &[String]) -> std::io::Result<CommandOutcome> {
         "terminal" => run_terminal_command(&args[2..])?,
         "pane" => pane::run_pane_command(&args[2..])?,
         "plugin" => plugin::run_plugin_command(&args[2..])?,
+        "wait" => run_wait_command(&args[2..])?,
         "integration" => integration::run_integration_command(&args[2..])?,
         "session" => run_session_command(&args[2..])?,
         _ => return Ok(CommandOutcome::NotCli),
@@ -108,21 +70,13 @@ pub fn maybe_run(args: &[String]) -> std::io::Result<CommandOutcome> {
 }
 
 fn run_channel_command(args: &[String]) -> std::io::Result<i32> {
-    match args.first().map(std::string::String::as_str) {
+    match args.first().map(|arg| arg.as_str()) {
         Some("set") => channel_set(&args[1..]),
         Some("show") if args.len() == 1 => {
             let config = crate::config::Config::load().config;
             println!("{}", config.update.channel.as_str());
             Ok(0)
         }
-        Some("create") => channel_create(&args[1..]),
-        Some("list") if args.len() == 1 => channel_list(),
-        Some("send") => channel_send(&args[1..]),
-        Some("history") => channel_history(&args[1..]),
-        Some("tail") => channel_tail(&args[1..]),
-        Some("members") => channel_members(&args[1..]),
-        Some("join") => channel_join(&args[1..]),
-        Some("leave") => channel_leave(&args[1..]),
         Some("help" | "--help" | "-h") => {
             print_channel_help();
             Ok(0)
@@ -132,379 +86,6 @@ fn run_channel_command(args: &[String]) -> std::io::Result<i32> {
             Ok(2)
         }
     }
-}
-
-fn channel_create(args: &[String]) -> std::io::Result<i32> {
-    let Some(name) = args.first() else {
-        eprintln!("usage: bora channel create <name>");
-        return Ok(2);
-    };
-    if args.len() != 1 {
-        eprintln!("usage: bora channel create <name>");
-        return Ok(2);
-    }
-    print_response(&send_request(&Request {
-        id: "cli:channel:create".into(),
-        method: Method::ChannelCreate(ChannelCreateParams { name: name.clone() }),
-    })?)
-}
-
-fn channel_list() -> std::io::Result<i32> {
-    print_response(&send_request(&Request {
-        id: "cli:channel:list".into(),
-        method: Method::ChannelList(EmptyParams::default()),
-    })?)
-}
-
-fn channel_send(args: &[String]) -> std::io::Result<i32> {
-    let Some(name) = args.first() else {
-        eprintln!("usage: bora channel send <name> <text> [--pane ID|--current] [--to NICK]");
-        return Ok(2);
-    };
-    let Some(text) = args.get(1) else {
-        eprintln!("usage: bora channel send <name> <text> [--pane ID|--current] [--to NICK]");
-        return Ok(2);
-    };
-    let env_pane_id = std::env::var("HERDR_PANE_ID")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .map(|value| normalize_pane_id(&value));
-    let (from_pane, to) = match parse_channel_send_flags(&args[2..], env_pane_id) {
-        Ok(parsed) => parsed,
-        Err(message) => {
-            eprintln!("{message}");
-            return Ok(2);
-        }
-    };
-    print_response(&send_request(&Request {
-        id: "cli:channel:send".into(),
-        method: Method::ChannelSend(ChannelSendParams {
-            name: name.clone(),
-            text: text.clone(),
-            from_pane,
-            to,
-            in_reply_to: None,
-            from_human: false,
-        }),
-    })?)
-}
-
-/// Parses the flags accepted by `bora channel send` after `<name> <text>`.
-/// Returns `(from_pane, to)`; `from_pane` starts from `env_pane_id` and can
-/// be overridden by `--pane`. `--current` is accepted as a no-op flag for
-/// explicitness since `env_pane_id` already reflects the current pane.
-fn parse_channel_send_flags(
-    args: &[String],
-    mut from_pane: Option<String>,
-) -> Result<(Option<String>, Option<String>), String> {
-    let mut to = None;
-    let mut index = 0;
-    while index < args.len() {
-        match args[index].as_str() {
-            "--pane" => {
-                let Some(value) = args.get(index + 1) else {
-                    return Err("missing value for --pane".into());
-                };
-                from_pane = Some(normalize_pane_id(value));
-                index += 2;
-            }
-            "--current" => {
-                index += 1;
-            }
-            "--to" => {
-                let Some(value) = args.get(index + 1) else {
-                    return Err("missing value for --to".into());
-                };
-                to = Some(value.clone());
-                index += 2;
-            }
-            option => {
-                return Err(format!("unknown option: {option}"));
-            }
-        }
-    }
-    Ok((from_pane, to))
-}
-
-fn channel_history(args: &[String]) -> std::io::Result<i32> {
-    let Some(name) = args.first() else {
-        eprintln!("usage: bora channel history <name> [--lines N] [--json]");
-        return Ok(2);
-    };
-    let mut lines = None;
-    let mut json = false;
-    let mut index = 1;
-    while index < args.len() {
-        match args[index].as_str() {
-            "--lines" => {
-                let Some(value) = args.get(index + 1) else {
-                    eprintln!("missing value for --lines");
-                    return Ok(2);
-                };
-                lines = match value.parse::<u32>() {
-                    Ok(lines) => Some(lines),
-                    Err(_) => {
-                        eprintln!("--lines must be a non-negative integer");
-                        return Ok(2);
-                    }
-                };
-                index += 2;
-            }
-            "--json" => {
-                json = true;
-                index += 1;
-            }
-            option => {
-                eprintln!("unknown option: {option}");
-                return Ok(2);
-            }
-        }
-    }
-    let response = send_request(&Request {
-        id: "cli:channel:history".into(),
-        method: Method::ChannelHistory(ChannelHistoryParams {
-            name: name.clone(),
-            lines,
-        }),
-    })?;
-    if json {
-        return print_response(&response);
-    }
-    if response.get("error").is_some() {
-        eprintln!("{}", serde_json::to_string(&response).unwrap());
-        return Ok(1);
-    }
-    let messages = response["result"]["messages"]
-        .as_array()
-        .cloned()
-        .unwrap_or_default();
-    for message in messages {
-        let ts = message["ts"].as_str().unwrap_or("");
-        let hhmm = ts.get(11..16).unwrap_or(ts);
-        let from_name = message["from_name"].as_str().unwrap_or("?");
-        let text = message["text"].as_str().unwrap_or("");
-        println!("{hhmm} {from_name}: {text}");
-    }
-    Ok(0)
-}
-
-/// Server-side poll window per `--follow` iteration; each round-trip is a
-/// fresh `channel.wait` connection, so Ctrl-C simply drops the socket and
-/// the server's disconnect check ends that wait.
-const CHANNEL_TAIL_FOLLOW_POLL_MS: u64 = 2_000;
-
-fn channel_tail(args: &[String]) -> std::io::Result<i32> {
-    let Some(name) = args.first() else {
-        eprintln!("usage: bora channel tail <name> [--after SEQ] [--follow] [--json]");
-        return Ok(2);
-    };
-    let mut after_seq: u64 = 0;
-    let mut follow = false;
-    let mut json = false;
-    let mut index = 1;
-    while index < args.len() {
-        match args[index].as_str() {
-            "--after" => {
-                let Some(value) = args.get(index + 1) else {
-                    eprintln!("missing value for --after");
-                    return Ok(2);
-                };
-                after_seq = match value.parse::<u64>() {
-                    Ok(seq) => seq,
-                    Err(_) => {
-                        eprintln!("--after must be a non-negative integer");
-                        return Ok(2);
-                    }
-                };
-                index += 2;
-            }
-            "--follow" | "-f" => {
-                follow = true;
-                index += 1;
-            }
-            "--json" => {
-                json = true;
-                index += 1;
-            }
-            option => {
-                eprintln!("unknown option: {option}");
-                return Ok(2);
-            }
-        }
-    }
-
-    loop {
-        // One-shot (`--follow` absent) uses timeout 0: backlog snapshot,
-        // never blocks. Follow mode blocks server-side per poll window.
-        let response = send_request(&Request {
-            id: "cli:channel:tail".into(),
-            method: Method::ChannelWait(ChannelWaitParams {
-                name: name.clone(),
-                after_seq,
-                timeout_ms: Some(if follow {
-                    CHANNEL_TAIL_FOLLOW_POLL_MS
-                } else {
-                    0
-                }),
-            }),
-        })?;
-        if response.get("error").is_some() {
-            eprintln!("{}", serde_json::to_string(&response).unwrap());
-            return Ok(1);
-        }
-
-        let result = &response["result"];
-        if json {
-            println!("{}", serde_json::to_string(&response).unwrap());
-        } else {
-            if result["gap"].as_bool() == Some(true) {
-                match result["oldest_seq"].as_u64() {
-                    Some(oldest) => eprintln!(
-                        "#gap: messages between your cursor and seq {oldest} were rotated away; resuming from the oldest retained"
-                    ),
-                    None => eprintln!(
-                        "#gap: no history retained; cursor {after_seq} predates it"
-                    ),
-                }
-            }
-            for message in result["messages"].as_array().cloned().unwrap_or_default() {
-                let seq = message["seq"].as_u64().unwrap_or(0);
-                let ts = message["ts"].as_str().unwrap_or("");
-                let hhmm = ts.get(11..16).unwrap_or(ts);
-                let from_name = message["from_name"].as_str().unwrap_or("?");
-                let text = message["text"].as_str().unwrap_or("");
-                println!("{seq} {hhmm} {from_name}: {text}");
-            }
-        }
-
-        after_seq = result["messages"]
-            .as_array()
-            .and_then(|messages| messages.last())
-            .and_then(|message| message["seq"].as_u64())
-            .unwrap_or(after_seq);
-        if !follow {
-            return Ok(0);
-        }
-    }
-}
-
-fn channel_members(args: &[String]) -> std::io::Result<i32> {
-    let Some(name) = args.first() else {
-        eprintln!("usage: bora channel members <name> [--json]");
-        return Ok(2);
-    };
-    let mut json = false;
-    let mut index = 1;
-    while index < args.len() {
-        match args[index].as_str() {
-            "--json" => {
-                json = true;
-                index += 1;
-            }
-            option => {
-                eprintln!("unknown option: {option}");
-                return Ok(2);
-            }
-        }
-    }
-    let response = send_request(&Request {
-        id: "cli:channel:members".into(),
-        method: Method::ChannelMembers(ChannelMembersParams { name: name.clone() }),
-    })?;
-    if json {
-        return print_response(&response);
-    }
-    if response.get("error").is_some() {
-        eprintln!("{}", serde_json::to_string(&response).unwrap());
-        return Ok(1);
-    }
-    let members = response["result"]["members"]
-        .as_array()
-        .cloned()
-        .unwrap_or_default();
-    for member in members {
-        let pane_id = member["pane_id"].as_str().unwrap_or("?");
-        let status = member["agent_status"].as_str().unwrap_or("-");
-        let name = member["name"].as_str().unwrap_or("-");
-        let source = member["source"].as_str().unwrap_or("-");
-        println!("{pane_id}  {status}  {name}  {source}");
-    }
-    Ok(0)
-}
-
-fn channel_join(args: &[String]) -> std::io::Result<i32> {
-    channel_membership(args, "join")
-}
-
-fn channel_leave(args: &[String]) -> std::io::Result<i32> {
-    channel_membership(args, "leave")
-}
-
-/// `bora channel join|leave <name> [--pane ID]`. The pane defaults to
-/// `$HERDR_PANE_ID`, so an agent can join the channel it was told about
-/// without knowing its own pane id.
-fn channel_membership(args: &[String], verb: &str) -> std::io::Result<i32> {
-    let usage = format!("usage: bora channel {verb} <name> [--pane ID]");
-    let Some(name) = args.first() else {
-        eprintln!("{usage}");
-        return Ok(2);
-    };
-    let pane = match parse_membership_pane(&args[1..]) {
-        Ok(Some(pane)) => pane,
-        Ok(None) => {
-            eprintln!(
-                "no pane to {verb}: pass --pane ID or run inside a bora pane (HERDR_PANE_ID)"
-            );
-            return Ok(2);
-        }
-        Err(err) => {
-            eprintln!("{err}");
-            eprintln!("{usage}");
-            return Ok(2);
-        }
-    };
-    let method = if verb == "join" {
-        Method::ChannelJoin(ChannelJoinParams {
-            name: name.clone(),
-            pane,
-        })
-    } else {
-        Method::ChannelLeave(ChannelLeaveParams {
-            name: name.clone(),
-            pane,
-        })
-    };
-    print_response(&send_request(&Request {
-        id: format!("cli:channel:{verb}"),
-        method,
-    })?)
-}
-
-/// Pane a membership verb acts on: `--pane ID` when given, else
-/// `$HERDR_PANE_ID`. `None` means neither was available — the caller reports
-/// that rather than guessing a pane.
-fn parse_membership_pane(args: &[String]) -> Result<Option<String>, String> {
-    let mut pane = std::env::var("HERDR_PANE_ID")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .map(|value| normalize_pane_id(&value));
-    let mut index = 0;
-    while index < args.len() {
-        match args[index].as_str() {
-            "--pane" => {
-                let Some(value) = args.get(index + 1) else {
-                    return Err("missing value for --pane".into());
-                };
-                if value.trim().is_empty() {
-                    return Err("--pane must not be empty".into());
-                }
-                pane = Some(normalize_pane_id(value));
-                index += 2;
-            }
-            option => return Err(format!("unknown option: {option}")),
-        }
-    }
-    Ok(pane)
 }
 
 fn channel_set(args: &[String]) -> std::io::Result<i32> {
@@ -577,7 +158,7 @@ fn channel_set(args: &[String]) -> std::io::Result<i32> {
 }
 
 fn parse_channel_set_arg(args: &[String]) -> Option<&str> {
-    let channel = args.first().map(std::string::String::as_str)?;
+    let channel = args.first().map(|arg| arg.as_str())?;
     if args.len() == 1 && matches!(channel, "stable" | "preview") {
         Some(channel)
     } else {
@@ -619,41 +200,17 @@ fn channel_set_install_action(
 
 fn print_channel_help() {
     eprintln!("bora channel commands:");
-    eprintln!("  bora channel show                            print the configured update channel");
-    eprintln!("  bora channel set <stable|preview>            choose the update channel");
-    eprintln!("  bora channel create <name>                   create a #channel workspace");
-    eprintln!("  bora channel list                            list #channel workspaces");
-    eprintln!("  bora channel send <name> <text> [--pane ID|--current] [--to NICK]");
-    eprintln!(
-        "                                                post to a #channel and prompt its agents"
-    );
-    eprintln!(
-        "                                                --to NICK addresses one member; fails"
-    );
-    eprintln!(
-        "                                                loudly on an unknown or ambiguous nick"
-    );
-    eprintln!("  bora channel history <name> [--lines N] [--json]");
-    eprintln!("                                                print a #channel's message history");
-    eprintln!("  bora channel tail <name> [--after SEQ] [--follow] [--json]");
-    eprintln!(
-        "                                                print messages after a seq cursor and"
-    );
-    eprintln!("                                                optionally follow new ones");
-    eprintln!("  bora channel members <name> [--json]         list a #channel's member panes");
-    eprintln!("  bora channel join <name> [--pane ID]         add a pane living outside the");
-    eprintln!("                                                channel to its member set");
-    eprintln!("  bora channel leave <name> [--pane ID]        drop a joined pane from a #channel");
+    eprintln!("  bora channel show                  print the configured update channel");
+    eprintln!("  bora channel set <stable|preview>  choose the update channel");
 }
 
 fn run_config_command(args: &[String]) -> std::io::Result<i32> {
-    let Some(subcommand) = args.first().map(std::string::String::as_str) else {
+    let Some(subcommand) = args.first().map(|arg| arg.as_str()) else {
         print_config_help();
         return Ok(2);
     };
 
     match subcommand {
-        "check" => config_check(&args[1..]),
         "reset-keys" => config_reset_keys(&args[1..]),
         "help" | "--help" | "-h" => {
             print_config_help();
@@ -664,32 +221,6 @@ fn run_config_command(args: &[String]) -> std::io::Result<i32> {
             Ok(2)
         }
     }
-}
-
-fn config_check(args: &[String]) -> std::io::Result<i32> {
-    match args {
-        [] => {}
-        [flag] if matches!(flag.as_str(), "help" | "--help" | "-h") => {
-            eprintln!("usage: herdr config check");
-            return Ok(0);
-        }
-        _ => {
-            eprintln!("usage: herdr config check");
-            return Ok(2);
-        }
-    }
-
-    let diagnostics = crate::config::Config::load().diagnostics;
-    if diagnostics.is_empty() {
-        println!("config: ok");
-    } else {
-        println!("config: issues found");
-        for diagnostic in &diagnostics {
-            println!("{diagnostic}");
-        }
-    }
-
-    Ok(i32::from(!diagnostics.is_empty()))
 }
 
 fn config_reset_keys(args: &[String]) -> std::io::Result<i32> {
@@ -782,14 +313,13 @@ fn key_config_backup_path(path: &std::path::Path) -> std::path::PathBuf {
 }
 
 fn run_terminal_command(args: &[String]) -> std::io::Result<i32> {
-    let Some(subcommand) = args.first().map(std::string::String::as_str) else {
+    let Some(subcommand) = args.first().map(|arg| arg.as_str()) else {
         print_terminal_help();
         return Ok(2);
     };
 
     match subcommand {
         "attach" => terminal_attach(&args[1..]),
-        "session" => terminal_session(&args[1..]),
         "title" => terminal_title(&args[1..]),
         "help" | "--help" | "-h" => {
             print_terminal_help();
@@ -802,8 +332,28 @@ fn run_terminal_command(args: &[String]) -> std::io::Result<i32> {
     }
 }
 
+fn run_wait_command(args: &[String]) -> std::io::Result<i32> {
+    let Some(subcommand) = args.first().map(|arg| arg.as_str()) else {
+        print_wait_help();
+        return Ok(2);
+    };
+
+    match subcommand {
+        "output" => wait_output(&args[1..]),
+        "agent-status" => wait_agent_status(&args[1..]),
+        "help" | "--help" | "-h" => {
+            print_wait_help();
+            Ok(0)
+        }
+        _ => {
+            print_wait_help();
+            Ok(2)
+        }
+    }
+}
+
 fn run_session_command(args: &[String]) -> std::io::Result<i32> {
-    let Some(subcommand) = args.first().map(std::string::String::as_str) else {
+    let Some(subcommand) = args.first().map(|arg| arg.as_str()) else {
         print_session_help();
         return Ok(2);
     };
@@ -924,147 +474,8 @@ fn terminal_attach(args: &[String]) -> std::io::Result<i32> {
     Ok(0)
 }
 
-fn terminal_session(args: &[String]) -> std::io::Result<i32> {
-    match args.first().map(String::as_str) {
-        Some("control") => terminal_session_control(&args[1..]),
-        Some("observe") => terminal_session_observe(&args[1..]),
-        Some("help" | "--help" | "-h") => {
-            eprintln!("{TERMINAL_SESSION_CONTROL_USAGE}");
-            eprintln!("{TERMINAL_SESSION_OBSERVE_USAGE}");
-            Ok(0)
-        }
-        _ => {
-            eprintln!("{TERMINAL_SESSION_CONTROL_USAGE}");
-            eprintln!("{TERMINAL_SESSION_OBSERVE_USAGE}");
-            Ok(2)
-        }
-    }
-}
-
-fn terminal_session_control(args: &[String]) -> std::io::Result<i32> {
-    let options = match parse_terminal_session_options(
-        args,
-        TERMINAL_SESSION_CONTROL_USAGE,
-        "control",
-        true,
-    )? {
-        Ok(options) => options,
-        Err(code) => return Ok(code),
-    };
-
-    crate::client::run_terminal_session_control(
-        options.target,
-        options.takeover,
-        options.cols,
-        options.rows,
-    )?;
-    Ok(0)
-}
-
-fn terminal_session_observe(args: &[String]) -> std::io::Result<i32> {
-    let options = match parse_terminal_session_options(
-        args,
-        TERMINAL_SESSION_OBSERVE_USAGE,
-        "observe",
-        false,
-    )? {
-        Ok(options) => options,
-        Err(code) => return Ok(code),
-    };
-
-    crate::client::run_terminal_session_observe(options.target, options.cols, options.rows)?;
-    Ok(0)
-}
-
-struct TerminalSessionOptions {
-    target: String,
-    cols: u16,
-    rows: u16,
-    takeover: bool,
-}
-
-fn parse_terminal_session_options(
-    args: &[String],
-    usage: &str,
-    command: &str,
-    allow_takeover: bool,
-) -> std::io::Result<Result<TerminalSessionOptions, i32>> {
-    if matches!(
-        args.first().map(String::as_str),
-        Some("help" | "--help" | "-h")
-    ) {
-        eprintln!("{usage}");
-        return Ok(Err(0));
-    }
-    let Some(target) = args.first() else {
-        eprintln!("{usage}");
-        return Ok(Err(2));
-    };
-
-    let mut cols = 120;
-    let mut rows = 40;
-    let mut takeover = false;
-    let mut i = 1;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--takeover" if allow_takeover => {
-                takeover = true;
-                i += 1;
-            }
-            "--cols" => {
-                let Some(value) = args.get(i + 1) else {
-                    eprintln!("{usage}");
-                    return Ok(Err(2));
-                };
-                cols = parse_terminal_dimension(value, "--cols")?;
-                i += 2;
-            }
-            "--rows" => {
-                let Some(value) = args.get(i + 1) else {
-                    eprintln!("{usage}");
-                    return Ok(Err(2));
-                };
-                rows = parse_terminal_dimension(value, "--rows")?;
-                i += 2;
-            }
-            "help" | "--help" | "-h" => {
-                eprintln!("{usage}");
-                return Ok(Err(0));
-            }
-            other => {
-                eprintln!("unknown terminal session {command} option: {other}");
-                eprintln!("{usage}");
-                return Ok(Err(2));
-            }
-        }
-    }
-
-    Ok(Ok(TerminalSessionOptions {
-        target: target.clone(),
-        cols,
-        rows,
-        takeover,
-    }))
-}
-
-fn parse_terminal_dimension(raw: &str, flag: &str) -> std::io::Result<u16> {
-    let parsed = raw.parse::<u16>().map_err(|_| {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            format!("{flag} must be an integer between 1 and {}", u16::MAX),
-        )
-    })?;
-    if parsed == 0 {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            format!("{flag} must be greater than 0"),
-        ));
-    }
-    Ok(parsed)
-}
-
 fn terminal_title(args: &[String]) -> std::io::Result<i32> {
-    match args.first().map(std::string::String::as_str) {
+    match args.first().map(|arg| arg.as_str()) {
         Some("set") => {
             if args.len() != 2 {
                 eprintln!("usage: bora terminal title set <title>");
@@ -1122,37 +533,190 @@ pub(super) fn parse_attach_target(args: &[String], usage: &str) -> Result<(Strin
     Ok((target.clone(), takeover))
 }
 
-/// Wait until the pane hosting an agent exits (process gone). Unlike agent
-/// status waits, this is the reliable "done" signal for one-shot agents whose
-/// screen looks idle while they wait on a model. `events.wait` observes
-/// current state atomically, so unlike the old subscription-stream client
-/// there is no separate resolve/subscribe race window to guard here.
-pub(super) fn wait_for_pane_exited(pane_id: &str, timeout_ms: Option<u64>) -> std::io::Result<i32> {
+fn wait_output(args: &[String]) -> std::io::Result<i32> {
+    let Some(raw_pane_id) = args.first() else {
+        eprintln!("usage: bora wait output <pane_id> --match <text> [--source visible|recent|recent-unwrapped] [--lines N] [--timeout MS] [--regex]");
+        return Ok(2);
+    };
+
+    let pane_id = normalize_pane_id(raw_pane_id);
+    let mut source = ReadSource::Recent;
+    let mut lines = None;
+    let mut timeout_ms = None;
+    let mut strip_ansi = true;
+    let mut regex = false;
+    let mut match_value = None;
+
+    let mut index = 1;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--match" => {
+                let Some(value) = args.get(index + 1) else {
+                    eprintln!("missing value for --match");
+                    return Ok(2);
+                };
+                match_value = Some(value.clone());
+                index += 2;
+            }
+            "--source" => {
+                let Some(value) = args.get(index + 1) else {
+                    eprintln!("missing value for --source");
+                    return Ok(2);
+                };
+                source = parse_read_source(value)?;
+                index += 2;
+            }
+            "--lines" => {
+                let Some(value) = args.get(index + 1) else {
+                    eprintln!("missing value for --lines");
+                    return Ok(2);
+                };
+                lines = Some(parse_u32_flag("--lines", value)?);
+                index += 2;
+            }
+            "--timeout" => {
+                let Some(value) = args.get(index + 1) else {
+                    eprintln!("missing value for --timeout");
+                    return Ok(2);
+                };
+                timeout_ms = Some(parse_u64_flag("--timeout", value)?);
+                index += 2;
+            }
+            "--regex" => {
+                regex = true;
+                index += 1;
+            }
+            "--raw" => {
+                strip_ansi = false;
+                index += 1;
+            }
+            other => {
+                eprintln!("unknown option: {other}");
+                return Ok(2);
+            }
+        }
+    }
+
+    let Some(match_value) = match_value else {
+        eprintln!("missing required --match");
+        return Ok(2);
+    };
+
+    let matcher = if regex {
+        OutputMatch::Regex { value: match_value }
+    } else {
+        OutputMatch::Substring { value: match_value }
+    };
+
     let response = send_request(&Request {
-        id: "cli:agent:wait".into(),
-        method: Method::EventsWait(crate::api::schema::EventsWaitParams {
-            match_event: crate::api::schema::EventMatch::PaneExited {
-                pane_id: pane_id.to_owned(),
-            },
+        id: "cli:wait:output".into(),
+        method: Method::PaneWaitForOutput(PaneWaitForOutputParams {
+            pane_id,
+            source,
+            lines,
+            r#match: matcher,
             timeout_ms,
+            strip_ansi,
         }),
     })?;
+
     if response.get("error").is_some() {
-        if response["error"]["code"].as_str() == Some("timeout") {
-            eprintln!("timed out waiting for pane exit");
-        } else {
-            eprintln!("{}", serde_json::to_string(&response).unwrap());
-        }
+        eprintln!("{}", serde_json::to_string(&response).unwrap());
         return Ok(1);
     }
-    println!(
-        "{}",
-        serde_json::json!({
-            "id": "cli:agent:wait",
-            "result": { "type": "agent_wait", "pane_id": pane_id, "status": "exited" }
-        })
-    );
+
+    println!("{}", serde_json::to_string(&response).unwrap());
     Ok(0)
+}
+
+fn wait_agent_status(args: &[String]) -> std::io::Result<i32> {
+    let Some(raw_pane_id) = args.first() else {
+        eprintln!("usage: bora wait agent-status <pane_id> --status <idle|working|blocked|done|unknown> [--timeout MS]");
+        return Ok(2);
+    };
+
+    let pane_id = normalize_pane_id(raw_pane_id);
+    let mut timeout_ms = None;
+    let mut desired_status = None;
+
+    let mut index = 1;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--status" => {
+                let Some(value) = args.get(index + 1) else {
+                    eprintln!("missing value for --status");
+                    return Ok(2);
+                };
+                desired_status = Some(parse_agent_status(value)?);
+                index += 2;
+            }
+            "--timeout" => {
+                let Some(value) = args.get(index + 1) else {
+                    eprintln!("missing value for --timeout");
+                    return Ok(2);
+                };
+                timeout_ms = Some(parse_u64_flag("--timeout", value)?);
+                index += 2;
+            }
+            other => {
+                eprintln!("unknown option: {other}");
+                return Ok(2);
+            }
+        }
+    }
+
+    let Some(agent_status) = desired_status else {
+        eprintln!("missing required --status");
+        return Ok(2);
+    };
+
+    wait_for_agent_change(
+        Request {
+            id: "cli:wait:agent-status".into(),
+            method: Method::EventsSubscribe(crate::api::schema::EventsSubscribeParams {
+                subscriptions: vec![Subscription::PaneAgentStatusChanged {
+                    pane_id,
+                    agent_status: Some(agent_status),
+                }],
+            }),
+        },
+        timeout_ms,
+        "timed out waiting for agent status change",
+    )
+}
+
+pub(super) fn wait_for_agent_change(
+    request: Request,
+    timeout_ms: Option<u64>,
+    timeout_message: &str,
+) -> std::io::Result<i32> {
+    let read_timeout = timeout_ms.map(Duration::from_millis);
+    let (ack, mut stream) = ApiClient::local()
+        .subscribe_value(&request, read_timeout)
+        .map_err(api_client_error_to_io)?;
+    if let Err(err) = crate::api::client::parse_response_value(ack) {
+        if let ApiClientError::ErrorResponse(response) = err {
+            eprintln!("{}", serde_json::to_string(&response).unwrap());
+            return Ok(1);
+        }
+        return Err(api_client_error_to_io(err));
+    }
+
+    match stream.next_event() {
+        Ok(None) => {
+            eprintln!("subscription closed before event arrived");
+            Ok(1)
+        }
+        Ok(Some(event_value)) => {
+            println!("{}", serde_json::to_string(&event_value).unwrap());
+            Ok(0)
+        }
+        Err(ApiClientError::Io(err)) if api_timeout_error(&err) => {
+            eprintln!("{timeout_message}");
+            Ok(1)
+        }
+        Err(err) => Err(api_client_error_to_io(err)),
+    }
 }
 
 pub(super) fn print_response(response: &serde_json::Value) -> std::io::Result<i32> {
@@ -1180,87 +744,16 @@ pub(super) fn send_ok_request(method: Method) -> std::io::Result<i32> {
 }
 
 pub(super) fn send_request(request: &Request) -> std::io::Result<serde_json::Value> {
-    let client = ApiClient::local();
-    ensure_server_protocol_compatible(&client, &request.id)?;
-    client
+    ApiClient::local()
         .request_value(request)
-        .map_err(|err| map_server_not_running_or_io(err, &request.id, &client))
+        .map_err(api_client_error_to_io)
 }
 
-pub(super) fn send_request_unchecked(request: &Request) -> std::io::Result<serde_json::Value> {
-    let client = ApiClient::local();
-    client
-        .request_value(request)
-        .map_err(|err| map_server_not_running_or_io(err, &request.id, &client))
-}
-
-fn ensure_server_protocol_compatible(client: &ApiClient, request_id: &str) -> std::io::Result<()> {
-    let status = client
-        .status()
-        .map_err(|err| map_server_not_running_or_io(err, request_id, client))?;
-    let server_protocol = status
-        .protocol
-        .ok_or_else(|| std::io::Error::other("server ping did not include a protocol version"))?;
-    let Some(response) = protocol_guard::mismatch_response(
-        request_id,
-        server_protocol,
-        &crate::session::active_restart_after_update_guidance(),
-    ) else {
-        return Ok(());
-    };
-
-    eprintln!(
-        "{}",
-        serde_json::to_string(&response).map_err(std::io::Error::other)?
-    );
-    Err(protocol_guard::reported_error())
-}
-
-pub(crate) fn protocol_mismatch_was_reported(err: &std::io::Error) -> bool {
-    protocol_guard::was_reported(err)
-}
-
-pub(crate) fn server_not_running_was_reported(err: &std::io::Error) -> bool {
-    server_not_running::was_reported(err)
-}
-
-/// Returns the `ErrorResponse` carried by a `server_not_running` marker, if any,
-/// so the edge that surfaces the error can print it exactly once (deferred
-/// printing: recovering callers like plugin offline fallback print nothing).
-pub(crate) fn server_not_running_reported_response(
-    err: &std::io::Error,
-) -> Option<&crate::api::schema::ErrorResponse> {
-    server_not_running::reported_response(err)
-}
-
-/// True when an io::Error indicates nothing is listening on the API socket.
-/// Classify by `ErrorKind` only: Windows named pipes surface different raw
-/// errno values than Unix domain sockets but the same error kinds.
-pub(super) fn server_not_running_error(err: &std::io::Error) -> bool {
+fn api_timeout_error(err: &std::io::Error) -> bool {
     matches!(
         err.kind(),
-        std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+        std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
     )
-}
-
-/// Maps an `ApiClientError` from a socket command into the io::Error that
-/// bubbles up to `main`. A dead-server connect failure is reported as a
-/// friendly `server_not_running` JSON error plus a recognizable marker; all
-/// other errors fall through unchanged so existing handling is preserved.
-fn map_server_not_running_or_io(
-    err: ApiClientError,
-    request_id: &str,
-    client: &ApiClient,
-) -> std::io::Error {
-    match err {
-        ApiClientError::Io(io_err) if server_not_running_error(&io_err) => {
-            server_not_running::reported_error(server_not_running::response(
-                request_id,
-                &client.socket_path(),
-            ))
-        }
-        err => api_client_error_to_io(err),
-    }
 }
 
 fn api_client_error_to_io(err: ApiClientError) -> std::io::Error {
@@ -1351,25 +844,6 @@ pub(super) fn parse_u64_flag(flag: &str, value: &str) -> std::io::Result<u64> {
         .map_err(|_| std::io::Error::other(format!("invalid value for {flag}: {value}")))
 }
 
-/// Expand `--flag=value` tokens into separate `--flag` and `value` tokens so
-/// the hand-rolled subcommand parsers accept the same `--flag=value` form the
-/// clap-generated help and completions imply. Only `value_options` are split:
-/// boolean and unknown options keep their attached value so they still reach
-/// the parser's unknown-option branch.
-pub(super) fn expand_equals_args(args: &[String], value_options: &[&str]) -> Vec<String> {
-    let mut expanded = Vec::with_capacity(args.len());
-    for arg in args {
-        match arg.split_once('=') {
-            Some((flag, value)) if value_options.contains(&flag) => {
-                expanded.push(flag.to_string());
-                expanded.push(value.to_string());
-            }
-            _ => expanded.push(arg.clone()),
-        }
-    }
-    expanded
-}
-
 fn parse_session_json_only(args: &[String], usage: &str) -> Result<bool, i32> {
     match args {
         [] => Ok(false),
@@ -1434,18 +908,23 @@ fn print_session_error(code: &str, message: &str) {
 
 fn print_config_help() {
     eprintln!("bora config commands:");
-    eprintln!("  bora config check  validate config.toml and print diagnostics");
     eprintln!("  bora config reset-keys  back up config.toml and remove custom keybindings");
 }
 
 fn print_terminal_help() {
     eprintln!("bora terminal commands:");
     eprintln!("  bora terminal attach <terminal_id> [--takeover]");
-    eprintln!("  bora terminal session control <target> [--takeover] [--cols N] [--rows N]");
-    eprintln!("  bora terminal session observe <target> [--cols N] [--rows N]");
     eprintln!("  bora terminal title set <title>");
     eprintln!("  bora terminal title clear");
     eprintln!("  detach from direct attach with ctrl+b q; send literal ctrl+b with ctrl+b ctrl+b");
+}
+
+fn print_wait_help() {
+    eprintln!("bora wait commands:");
+    eprintln!("  bora wait output <pane_id> --match <text> [--source visible|recent|recent-unwrapped] [--lines N] [--timeout MS] [--regex] [--raw]");
+    eprintln!(
+        "  bora wait agent-status <pane_id> --status <idle|working|blocked|done|unknown> [--timeout MS]"
+    );
 }
 
 fn print_session_help() {
@@ -1463,45 +942,6 @@ fn _print_json<T: Serialize>(value: &T) {
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn parses_channel_send_to_flag() {
-        let args = vec!["--to".to_string(), "worker".to_string()];
-        let (from_pane, to) = super::parse_channel_send_flags(&args, None).unwrap();
-        assert_eq!(from_pane, None);
-        assert_eq!(to, Some("worker".to_string()));
-    }
-
-    #[test]
-    fn channel_send_flags_default_to_none_without_to() {
-        let args = vec!["--current".to_string()];
-        let (from_pane, to) =
-            super::parse_channel_send_flags(&args, Some("w1A:p2".to_string())).unwrap();
-        assert_eq!(from_pane, Some("w1A:p2".to_string()));
-        assert_eq!(to, None);
-    }
-
-    #[test]
-    fn channel_send_to_flag_requires_value() {
-        let args = vec!["--to".to_string()];
-        assert_eq!(
-            super::parse_channel_send_flags(&args, None).unwrap_err(),
-            "missing value for --to"
-        );
-    }
-
-    #[test]
-    fn channel_send_flags_combine_pane_and_to() {
-        let args = vec![
-            "--pane".to_string(),
-            "w1A:p2".to_string(),
-            "--to".to_string(),
-            "reviewer".to_string(),
-        ];
-        let (from_pane, to) = super::parse_channel_send_flags(&args, None).unwrap();
-        assert_eq!(from_pane, Some("w1A:p2".to_string()));
-        assert_eq!(to, Some("reviewer".to_string()));
-    }
-
     #[test]
     fn parses_channel_set_argument() {
         assert_eq!(
@@ -1577,69 +1017,6 @@ mod tests {
         assert_eq!(
             super::parse_env_assignment("HERDR_ROLE").unwrap_err(),
             "env must use KEY=VALUE"
-        );
-    }
-
-    #[test]
-    fn maps_dead_server_connect_failure_to_friendly_error() {
-        use crate::api::client::{ApiClient, ApiClientError};
-
-        let client = ApiClient::local();
-        let socket = client.socket_path().display().to_string();
-
-        // The helper does NOT print; it returns a recognizable marker carrying
-        // the ErrorResponse so the surfacing edge can print it exactly once.
-        let mapped = super::map_server_not_running_or_io(
-            ApiClientError::Io(std::io::Error::from(std::io::ErrorKind::NotFound)),
-            "cli:workspace:create",
-            &client,
-        );
-
-        let response = super::server_not_running::reported_response(&mapped)
-            .expect("dead-server connect failure should carry a server_not_running response");
-        assert_eq!(response.id, "cli:workspace:create");
-        assert_eq!(response.error.code, "server_not_running");
-        assert!(response.error.message.contains(&socket));
-
-        // The mapping is recognizable without string matching.
-        assert!(super::server_not_running::was_reported(&mapped));
-    }
-
-    #[test]
-    fn classifier_ignores_unrelated_io_kinds() {
-        use crate::api::client::{ApiClient, ApiClientError};
-
-        let client = ApiClient::local();
-        let mapped = super::map_server_not_running_or_io(
-            ApiClientError::Io(std::io::Error::from(std::io::ErrorKind::TimedOut)),
-            "cli:workspace:create",
-            &client,
-        );
-        assert!(!super::server_not_running::was_reported(&mapped));
-    }
-
-    #[test]
-    fn expand_equals_args_splits_value_options_only() {
-        // Known value options split; values may contain `=`. Boolean and
-        // unknown options keep the attached form so parsers still reject them.
-        let args = vec![
-            "--match=a=b".to_string(),
-            "name=value".to_string(),
-            "--raw=value".to_string(),
-            "--bogus=value".to_string(),
-            "--timeout=5000".to_string(),
-        ];
-        assert_eq!(
-            super::expand_equals_args(&args, &["--match", "--timeout"]),
-            vec![
-                "--match",
-                "a=b",
-                "name=value",
-                "--raw=value",
-                "--bogus=value",
-                "--timeout",
-                "5000",
-            ]
         );
     }
 }

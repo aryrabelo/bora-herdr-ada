@@ -192,9 +192,9 @@ pub const State = struct {
             return;
         };
 
-        // Overlays are always considered new content, so we take a
-        // fresh generation stamp to force replacing any existing one.
-        const generation = terminal.kitty.graphics.nextGeneration();
+        // For transmit time we always just use the current time
+        // and overwrite the overlay.
+        const transmit_time = try std.time.Instant.now();
 
         // Ensure we have space for our overlay placement. Do this before
         // we upload our image so we don't have to deal with cleaning
@@ -207,7 +207,7 @@ pub const State = struct {
         try self.prepImage(
             alloc,
             .overlay,
-            generation,
+            transmit_time,
             pending,
         );
         errdefer comptime unreachable;
@@ -525,14 +525,14 @@ pub const State = struct {
         self: *State,
         alloc: Allocator,
         id: Id,
-        generation: u64,
+        transmit_time: std.time.Instant,
         pending: Image.Pending,
     ) PrepImageError!void {
-        // If this image exists and its generation is the same it is the
-        // identical image so we don't need to send it to the GPU.
+        // If this image exists and its transmit time is the same we assume
+        // it is the identical image so we don't need to send it to the GPU.
         const gop = try self.images.getOrPut(alloc, id);
         if (gop.found_existing and
-            gop.value_ptr.generation == generation)
+            gop.value_ptr.transmit_time.order(transmit_time) == .eq)
         {
             return;
         }
@@ -570,7 +570,7 @@ pub const State = struct {
         if (!gop.found_existing) {
             gop.value_ptr.* = .{
                 .image = new_image,
-                .generation = 0,
+                .transmit_time = undefined,
             };
         } else {
             gop.value_ptr.image.markForReplace(
@@ -586,7 +586,7 @@ pub const State = struct {
             log.warn("error preparing image for upload err={}", .{err});
             return error.ImageConversionError;
         };
-        gop.value_ptr.generation = generation;
+        gop.value_ptr.transmit_time = transmit_time;
     }
 
     /// Prepare the provided Kitty image for upload to the GPU by copying its
@@ -599,7 +599,7 @@ pub const State = struct {
         try self.prepImage(
             alloc,
             .{ .kitty = image.id },
-            image.generation,
+            image.transmit_time,
             .{
                 .width = image.width,
                 .height = image.height,
@@ -688,13 +688,7 @@ pub const Id = union(enum) {
 /// The map used for storing images.
 pub const ImageMap = std.AutoHashMapUnmanaged(Id, struct {
     image: Image,
-
-    /// The generation of the terminal image this was created from
-    /// (see terminal.kitty.graphics.Image.generation). Used to detect
-    /// staleness: a differing generation for the same ID means the
-    /// contents changed and the texture must be replaced. Zero is
-    /// never a valid stored generation so it marks "not yet uploaded".
-    generation: u64,
+    transmit_time: std.time.Instant,
 });
 
 /// The state for a single image that is to be rendered.

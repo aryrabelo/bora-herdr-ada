@@ -8,8 +8,6 @@ pub struct PaneState {
     /// Whether the user has seen this pane since its last state change to Idle.
     /// False = "Done" (agent finished while user was in another workspace).
     pub seen: bool,
-    /// Whether unmodified right-click gestures should be forwarded to the pane application.
-    pub right_click_passthrough: bool,
 }
 
 impl PaneState {
@@ -17,7 +15,6 @@ impl PaneState {
         Self {
             attached_terminal_id,
             seen: true,
-            right_click_passthrough: false,
         }
     }
 }

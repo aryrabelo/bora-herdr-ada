@@ -1,4 +1,3 @@
-use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 
 use tracing::warn;
@@ -6,29 +5,9 @@ use tracing::warn;
 use crate::api::schema::InstalledPluginInfo;
 
 pub const MANIFEST_UNAVAILABLE_WARNING_PREFIX: &str = "manifest unavailable: ";
-const REGISTRY_LOCK_FILE: &str = ".plugins.lock";
 
 fn registry_path() -> PathBuf {
-    crate::config::config_dir().join("plugins.json")
-}
-
-fn registry_lock_path() -> PathBuf {
-    crate::config::config_dir().join(REGISTRY_LOCK_FILE)
-}
-
-fn with_registry_lock<T>(operation: impl FnOnce() -> std::io::Result<T>) -> std::io::Result<T> {
-    let lock_path = registry_lock_path();
-    if let Some(parent) = lock_path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let lock = OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(lock_path)?;
-    lock.lock()?;
-    operation()
+    crate::session::data_dir().join("plugins.json")
 }
 
 fn save_json_to_path<T: serde::Serialize + ?Sized>(path: &Path, value: &T) -> std::io::Result<()> {
@@ -37,7 +16,7 @@ fn save_json_to_path<T: serde::Serialize + ?Sized>(path: &Path, value: &T) -> st
     }
     let json = serde_json::to_string_pretty(value)?;
     let tmp_path = path.with_extension("json.tmp");
-    std::fs::write(&tmp_path, json)?;
+    std::fs::write(&tmp_path, &json)?;
     #[cfg(windows)]
     if path.exists() {
         if let Err(err) = std::fs::remove_file(path) {
@@ -52,56 +31,40 @@ fn save_json_to_path<T: serde::Serialize + ?Sized>(path: &Path, value: &T) -> st
     Ok(())
 }
 
+/// Atomically write `plugins.json` next to `session.json`.
+pub fn save(plugins: &[InstalledPluginInfo]) -> std::io::Result<()> {
+    let path = registry_path();
+    save_to_path(&path, plugins)
+}
+
 pub fn save_to_path(path: &Path, plugins: &[InstalledPluginInfo]) -> std::io::Result<()> {
     save_json_to_path(path, plugins)
 }
 
-pub fn update<T>(
-    mutation: impl FnOnce(&mut Vec<InstalledPluginInfo>) -> T,
-) -> std::io::Result<(T, Vec<InstalledPluginInfo>)> {
-    with_registry_lock(|| {
-        let mut plugins = load_from_path_strict(&registry_path())?;
-        let result = mutation(&mut plugins);
-        plugins.sort_by(|left, right| left.plugin_id.cmp(&right.plugin_id));
-        save_to_path(&registry_path(), &plugins)?;
-        Ok((result, plugins))
-    })
-}
-
-pub fn try_load() -> std::io::Result<Vec<InstalledPluginInfo>> {
-    with_registry_lock(|| load_from_path_strict(&registry_path()))
-}
-
-/// Load the global registry. Returns an empty vec on failure so a corrupt or
-/// missing file never blocks server startup; mutations still use strict reads.
+/// Load `plugins.json`.  Returns an empty vec on any failure so a corrupt or
+/// missing file never blocks server startup.
 pub fn load() -> Vec<InstalledPluginInfo> {
-    match try_load() {
-        Ok(plugins) => plugins,
-        Err(err) => {
-            warn!(path = %registry_path().display(), err = %err, "failed to load plugin registry");
-            Vec::new()
-        }
-    }
+    load_from_path(&registry_path())
 }
 
-#[cfg(test)]
 pub fn load_from_path(path: &Path) -> Vec<InstalledPluginInfo> {
-    match load_from_path_strict(path) {
-        Ok(entries) => entries,
+    if !path.exists() {
+        return Vec::new();
+    }
+    let content = match std::fs::read_to_string(path) {
+        Ok(c) => c,
         Err(err) => {
             warn!(path = %path.display(), err = %err, "failed to read plugin registry");
+            return Vec::new();
+        }
+    };
+    match serde_json::from_str::<Vec<InstalledPluginInfo>>(&content) {
+        Ok(entries) => entries,
+        Err(err) => {
+            warn!(path = %path.display(), err = %err, "failed to parse plugin registry, starting with empty registry");
             Vec::new()
         }
     }
-}
-
-fn load_from_path_strict(path: &Path) -> std::io::Result<Vec<InstalledPluginInfo>> {
-    if !path.exists() {
-        return Ok(Vec::new());
-    }
-    let content = std::fs::read_to_string(path)?;
-    serde_json::from_str::<Vec<InstalledPluginInfo>>(&content)
-        .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))
 }
 
 /// Re-read each entry's manifest from disk using the provided reload function.
@@ -160,7 +123,6 @@ mod tests {
             enabled: true,
             platforms: None,
             build: vec![],
-            startup: vec![],
             actions: vec![],
             events: vec![],
             panes: vec![],
@@ -197,12 +159,10 @@ mod tests {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).unwrap();
         }
-        let corrupt = b"this is not valid json {{{{";
-        std::fs::write(&path, corrupt).unwrap();
+        std::fs::write(&path, b"this is not valid json {{{{").unwrap();
 
-        assert!(load_from_path_strict(&path).is_err());
-        assert!(load_from_path(&path).is_empty());
-        assert_eq!(std::fs::read(path).unwrap(), corrupt);
+        let loaded = load_from_path(&path);
+        assert!(loaded.is_empty());
     }
 
     #[test]
@@ -247,7 +207,6 @@ mod tests {
                 enabled: true, // caller would pass stored enabled; fresh parse returns true
                 platforms: None,
                 build: vec![],
-                startup: vec![],
                 actions: vec![],
                 events: vec![],
                 panes: vec![],
@@ -267,6 +226,22 @@ mod tests {
         );
         assert_eq!(result[0].source.owner.as_deref(), Some("ogulcancelik"));
         assert!(result[0].warnings.is_empty());
+    }
+
+    #[test]
+    fn atomic_write_temp_file_is_cleaned_up_on_rename_failure() {
+        // Write to a path whose parent does not yet exist, then verify the
+        // tmp file is removed when the write fails mid-way.  Here we just
+        // confirm a successful write leaves no .tmp file behind.
+        let path = temp_registry_path("cleanup");
+        save_to_path(&path, &[sample_plugin("example.cleanup")]).unwrap();
+
+        let tmp = path.with_extension("json.tmp");
+        assert!(
+            !tmp.exists(),
+            "tmp file should be cleaned up after successful rename"
+        );
+        assert!(path.exists());
     }
 
     #[test]

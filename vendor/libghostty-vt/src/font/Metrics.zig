@@ -560,8 +560,6 @@ pub const Modifier = union(enum) {
     }
 
     test "formatConfig percent" {
-        if (comptime @import("terminal_options").artifact == .lib) return;
-
         const configpkg = @import("../config.zig");
         const testing = std.testing;
         var buf: std.Io.Writer.Allocating = .init(testing.allocator);
@@ -573,8 +571,6 @@ pub const Modifier = union(enum) {
     }
 
     test "formatConfig absolute" {
-        if (comptime @import("terminal_options").artifact == .lib) return;
-
         const configpkg = @import("../config.zig");
         const testing = std.testing;
         var buf: std.Io.Writer.Allocating = .init(testing.allocator);

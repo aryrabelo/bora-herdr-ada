@@ -2,23 +2,34 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Clear, Paragraph},
+    widgets::{Clear, Paragraph, Wrap},
     Frame,
 };
 
-use super::text::{display_width_u16, truncate_end};
 use super::widgets::{
     action_button_row_rects, centered_popup_rect, panel_contrast_fg, render_action_button,
     render_modal_header, render_modal_shell, render_panel_shell, ActionButtonSpec,
 };
-use crate::app::{
-    state::{GithubPickKind, WorktreeCreateState, WorktreeCreateTab, WorktreeOpenState},
-    AppState, Mode,
-};
-use crate::terminal::TerminalRuntimeRegistry;
+use crate::app::{state::WorktreeOpenState, AppState, Mode};
 
-const NEW_LINKED_WORKTREE_POPUP_WIDTH: u16 = 72;
-const NEW_LINKED_WORKTREE_POPUP_HEIGHT: u16 = 18;
+const NEW_LINKED_WORKTREE_POPUP_WIDTH: u16 = 68;
+const NEW_LINKED_WORKTREE_POPUP_HEIGHT: u16 = 12;
+
+fn truncate_text(text: &str, max_width: usize) -> String {
+    let len = text.chars().count();
+    if len <= max_width {
+        return text.to_string();
+    }
+    if max_width <= 1 {
+        return "…".into();
+    }
+    format!(
+        "{}…",
+        text.chars()
+            .take(max_width.saturating_sub(1))
+            .collect::<String>()
+    )
+}
 
 pub(crate) fn rename_button_rects(inner: Rect) -> (Rect, Rect, Rect) {
     let rects = action_button_row_rects(
@@ -43,52 +54,14 @@ pub(crate) fn rename_button_rects(inner: Rect) -> (Rect, Rect, Rect) {
     (rects[0], rects[1], rects[2])
 }
 
-/// Draws the shared `name_input` field and puts the host cursor on its caret.
-///
-/// IMEs draw their composition preview at the host terminal cursor. Without an
-/// explicit cursor the frame carries none, the client keeps the position last
-/// reported by the focused pane, and composition lands behind the dialog.
-fn render_name_input_field(app: &AppState, frame: &mut Frame, input_rect: Rect) {
-    frame.render_widget(Clear, input_rect);
-
-    // The text stops one column short of the field so the clamped caret always
-    // lands on a blank cell: a host terminal inverts the cell under its cursor,
-    // and an IME composes there.
-    let text_rect = Rect {
-        width: input_rect.width.saturating_sub(1),
-        ..input_rect
-    };
-    frame.render_widget(
-        Paragraph::new(format!(" {}", app.name_input)).style(
-            Style::default()
-                .fg(app.palette.text)
-                .bg(app.palette.surface0),
-        ),
-        text_rect,
-    );
-
-    if input_rect.width == 0 {
-        return;
-    }
-    let caret_x = input_rect
-        .x
-        .saturating_add(1)
-        .saturating_add(display_width_u16(&app.name_input))
-        .min(input_rect.right().saturating_sub(1));
-    frame.set_cursor_position((caret_x, input_rect.y));
-}
-
 pub(super) fn render_rename_overlay(app: &AppState, frame: &mut Frame, area: Rect) {
     super::dim_background(frame, area);
 
     let title = match app.mode {
-        Mode::RenameWorkspace if app.pending_workspace_create_cwd.is_some() => "new workspace",
         Mode::RenameWorkspace => "rename workspace",
-        Mode::SetWorkspaceGroup => "set workspace group",
         Mode::RenameTab if app.creating_new_tab => "new tab",
         Mode::RenameTab => "rename tab",
         Mode::RenamePane => "rename pane",
-        Mode::LaunchProgramPrompt => "run command",
         _ => return,
     };
 
@@ -111,7 +84,15 @@ pub(super) fn render_rename_overlay(app: &AppState, frame: &mut Frame, area: Rec
     render_modal_header(frame, rows[0], title, &app.palette);
 
     let input_rect = Rect::new(rows[2].x, rows[2].y, rows[2].width, 1);
-    render_name_input_field(app, frame, input_rect);
+    frame.render_widget(Clear, input_rect);
+    frame.render_widget(
+        Paragraph::new(format!(" {}█", app.name_input)).style(
+            Style::default()
+                .fg(app.palette.text)
+                .bg(app.palette.surface0),
+        ),
+        input_rect,
+    );
 
     let (save_rect, clear_rect, cancel_rect) = rename_button_rects(inner);
 
@@ -180,45 +161,6 @@ pub(crate) fn new_linked_worktree_button_rects(inner: Rect) -> (Rect, Rect) {
         inner.height.saturating_sub(1),
     );
     (rects[0], rects[1])
-}
-
-/// The three tab label rects (GitHub / Branch / Name) in the modal tab strip
-/// (inner row index 2). Shared by render and mouse hit-testing.
-pub(crate) fn create_worktree_tab_rects(inner: Rect) -> [Rect; 3] {
-    let y = inner.y + 2;
-    let third = inner.width / 3;
-    [
-        Rect::new(inner.x, y, third, 1),
-        Rect::new(inner.x + third, y, third, 1),
-        Rect::new(
-            inner.x + third * 2,
-            y,
-            inner.width.saturating_sub(third * 2),
-            1,
-        ),
-    ]
-}
-
-/// Number of list rows visible in the modal body on the GitHub/Branch tabs.
-pub(crate) fn create_worktree_list_visible_rows(inner: Rect) -> usize {
-    usize::from(inner.height.saturating_sub(7))
-}
-
-/// First entry index shown, scrolled so `selected` stays visible.
-pub(crate) fn create_worktree_list_start(selected: usize, len: usize, max_rows: usize) -> usize {
-    if len <= max_rows || max_rows == 0 {
-        0
-    } else {
-        selected
-            .min(len.saturating_sub(1))
-            .saturating_sub(max_rows.saturating_sub(1))
-    }
-}
-
-/// Rect for the `visible_idx`-th visible list row in the modal body (rows start
-/// at inner row index 5, below the header/project/tabs/separator/filter).
-pub(crate) fn create_worktree_list_row_rect(inner: Rect, visible_idx: usize) -> Rect {
-    Rect::new(inner.x, inner.y + 5 + visible_idx as u16, inner.width, 1)
 }
 
 pub(crate) fn remove_worktree_popup_rect(area: Rect) -> Option<Rect> {
@@ -331,7 +273,6 @@ pub(super) fn render_new_linked_worktree_overlay(app: &AppState, frame: &mut Fra
     let Some(create) = app.worktree_create.as_ref() else {
         return;
     };
-    let p = &app.palette;
 
     super::dim_background(frame, area);
     let Some(inner) = render_modal_shell(
@@ -339,7 +280,7 @@ pub(super) fn render_new_linked_worktree_overlay(app: &AppState, frame: &mut Fra
         area,
         NEW_LINKED_WORKTREE_POPUP_WIDTH,
         NEW_LINKED_WORKTREE_POPUP_HEIGHT,
-        p,
+        &app.palette,
     ) else {
         return;
     };
@@ -347,73 +288,56 @@ pub(super) fn render_new_linked_worktree_overlay(app: &AppState, frame: &mut Fra
         return;
     }
 
-    render_modal_header(
-        frame,
-        Rect::new(inner.x, inner.y, inner.width, 1),
-        "create worktree",
-        p,
-    );
+    let rows = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(3),
+        Constraint::Length(1),
+        Constraint::Min(0),
+    ])
+    .areas::<8>(inner);
+
+    render_modal_header(frame, rows[0], "new worktree", &app.palette);
 
     frame.render_widget(
-        Paragraph::new(truncate_end(
-            &format!(" project: {}", create.repo_name),
-            inner.width as usize,
-        ))
-        .style(Style::default().fg(p.overlay0)),
-        Rect::new(inner.x, inner.y + 1, inner.width, 1),
+        Paragraph::new(" branch").style(Style::default().fg(app.palette.overlay0)),
+        rows[1],
     );
-
-    // Tab strip: three equal segments, active one highlighted.
-    let tab_rects = create_worktree_tab_rects(inner);
-    for (rect, (label, tab)) in tab_rects.iter().zip([
-        ("GitHub", WorktreeCreateTab::Github),
-        ("Branch", WorktreeCreateTab::Branch),
-        ("Name", WorktreeCreateTab::Name),
-    ]) {
-        let active = create.active_tab == tab;
-        let style = if active {
+    let input_rect = Rect::new(rows[2].x, rows[2].y, rows[2].width, 1);
+    frame.render_widget(Clear, input_rect);
+    frame.render_widget(
+        Paragraph::new(format!(" {}█", app.name_input)).style(
             Style::default()
-                .fg(panel_contrast_fg(p))
-                .bg(p.accent)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(p.overlay0).bg(p.surface0)
-        };
-        frame.render_widget(Clear, *rect);
-        frame.render_widget(Paragraph::new(format!(" {label}")).style(style), *rect);
-    }
+                .fg(app.palette.text)
+                .bg(app.palette.surface0),
+        ),
+        input_rect,
+    );
 
-    // Separator under the tab strip.
+    let checkout = create.checkout_path.display().to_string();
     frame.render_widget(
-        Paragraph::new("─".repeat(inner.width as usize)).style(Style::default().fg(p.surface1)),
-        Rect::new(inner.x, inner.y + 3, inner.width, 1),
+        Paragraph::new(" checkout").style(Style::default().fg(app.palette.overlay0)),
+        rows[3],
+    );
+    frame.render_widget(
+        Paragraph::new(format!(" {checkout}")).style(Style::default().fg(app.palette.subtext0)),
+        rows[4],
     );
 
-    match create.active_tab {
-        WorktreeCreateTab::Name => render_create_worktree_name_body(app, create, frame, inner),
-        WorktreeCreateTab::Github => render_create_worktree_github_body(app, create, frame, inner),
-        WorktreeCreateTab::Branch => render_create_worktree_branch_body(app, create, frame, inner),
-    }
-
-    // Status line above the buttons.
-    let status_rect = Rect::new(
-        inner.x,
-        inner.y + inner.height.saturating_sub(2),
-        inner.width,
-        1,
-    );
     if create.creating {
         frame.render_widget(
-            Paragraph::new(" creating…").style(Style::default().fg(p.overlay0)),
-            status_rect,
+            Paragraph::new(" creating…").style(Style::default().fg(app.palette.overlay0)),
+            rows[5],
         );
     } else if let Some(error) = &create.error {
-        // Show the last, most actionable line (git errors put `fatal:` last).
-        let line = error.lines().last().unwrap_or(error);
         frame.render_widget(
-            Paragraph::new(truncate_end(&format!(" {line}"), inner.width as usize))
-                .style(Style::default().fg(p.red)),
-            status_rect,
+            Paragraph::new(format!(" {error}"))
+                .style(Style::default().fg(app.palette.red))
+                .wrap(Wrap { trim: false }),
+            rows[5],
         );
     }
 
@@ -424,8 +348,8 @@ pub(super) fn render_new_linked_worktree_overlay(app: &AppState, frame: &mut Fra
         Some("↵"),
         "create and open",
         Style::default()
-            .fg(panel_contrast_fg(p))
-            .bg(p.accent)
+            .fg(panel_contrast_fg(&app.palette))
+            .bg(app.palette.accent)
             .add_modifier(Modifier::BOLD),
     );
     render_action_button(
@@ -434,183 +358,10 @@ pub(super) fn render_new_linked_worktree_overlay(app: &AppState, frame: &mut Fra
         Some("esc"),
         "cancel",
         Style::default()
-            .fg(p.text)
-            .bg(p.surface0)
+            .fg(app.palette.text)
+            .bg(app.palette.surface0)
             .add_modifier(Modifier::BOLD),
     );
-}
-
-fn render_create_worktree_name_body(
-    app: &AppState,
-    create: &WorktreeCreateState,
-    frame: &mut Frame,
-    inner: Rect,
-) {
-    let p = &app.palette;
-    frame.render_widget(
-        Paragraph::new(" branch").style(Style::default().fg(p.overlay0)),
-        Rect::new(inner.x, inner.y + 4, inner.width, 1),
-    );
-    let input_rect = Rect::new(inner.x, inner.y + 5, inner.width, 1);
-    render_name_input_field(app, frame, input_rect);
-    frame.render_widget(
-        Paragraph::new(" checkout").style(Style::default().fg(p.overlay0)),
-        Rect::new(inner.x, inner.y + 6, inner.width, 1),
-    );
-    frame.render_widget(
-        Paragraph::new(truncate_end(
-            &format!(" {}", create.checkout_path.display()),
-            inner.width as usize,
-        ))
-        .style(Style::default().fg(p.subtext0)),
-        Rect::new(inner.x, inner.y + 7, inner.width, 1),
-    );
-}
-
-fn render_create_worktree_filter(
-    app: &AppState,
-    frame: &mut Frame,
-    rect: Rect,
-    query: &str,
-    placeholder: &str,
-) {
-    let p = &app.palette;
-    frame.render_widget(Clear, rect);
-    let (text, fg) = if query.is_empty() {
-        (format!(" {placeholder}█"), p.overlay0)
-    } else {
-        (format!(" {query}█"), p.text)
-    };
-    frame.render_widget(
-        Paragraph::new(truncate_end(&text, rect.width as usize))
-            .style(Style::default().fg(fg).bg(p.surface0)),
-        rect,
-    );
-}
-
-fn render_create_worktree_github_body(
-    app: &AppState,
-    create: &WorktreeCreateState,
-    frame: &mut Frame,
-    inner: Rect,
-) {
-    let p = &app.palette;
-    render_create_worktree_filter(
-        app,
-        frame,
-        Rect::new(inner.x, inner.y + 4, inner.width, 1),
-        &create.github_pick.query,
-        "filter prs & issues",
-    );
-    let entries = app.create_worktree_github_entries();
-    if entries.is_empty() {
-        let loading = app.prs_fetch_in_flight.contains(&create.repo_identity)
-            || (!app.repo_open_prs.contains_key(&create.repo_identity)
-                && !app.repo_issues.contains_key(&create.repo_identity));
-        let msg = if !create.github_pick.query.is_empty() {
-            " no matches"
-        } else if loading {
-            " loading…"
-        } else {
-            " no open prs or issues"
-        };
-        frame.render_widget(
-            Paragraph::new(msg).style(Style::default().fg(p.overlay0)),
-            create_worktree_list_row_rect(inner, 0),
-        );
-        return;
-    }
-    let max_rows = create_worktree_list_visible_rows(inner);
-    let selected = create.github_pick.selected.min(entries.len() - 1);
-    let start = create_worktree_list_start(selected, entries.len(), max_rows);
-    for (visible_idx, entry) in entries.iter().skip(start).take(max_rows).enumerate() {
-        let is_selected = start + visible_idx == selected;
-        let kind = match entry.kind {
-            GithubPickKind::Pr => "PR",
-            GithubPickKind::Issue => "issue",
-        };
-        let mut label = format!(" #{}  {} · {}", entry.number, entry.title, kind);
-        if !entry.enabled {
-            label.push_str("  (set [flow] to enable)");
-        }
-        let marker = if is_selected { "›" } else { " " };
-        let style = if is_selected {
-            Style::default()
-                .fg(if entry.enabled { p.text } else { p.overlay0 })
-                .bg(p.surface0)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(if entry.enabled {
-                p.subtext0
-            } else {
-                p.overlay0
-            })
-        };
-        frame.render_widget(
-            Paragraph::new(truncate_end(
-                &format!("{marker}{label}"),
-                inner.width as usize,
-            ))
-            .style(style),
-            create_worktree_list_row_rect(inner, visible_idx),
-        );
-    }
-}
-
-fn render_create_worktree_branch_body(
-    app: &AppState,
-    create: &WorktreeCreateState,
-    frame: &mut Frame,
-    inner: Rect,
-) {
-    let p = &app.palette;
-    render_create_worktree_filter(
-        app,
-        frame,
-        Rect::new(inner.x, inner.y + 4, inner.width, 1),
-        &create.branch_pick.query,
-        "filter branches",
-    );
-    let entries = app.create_worktree_branch_entries();
-    if entries.is_empty() {
-        let loading = !app.repo_branches.contains_key(&create.repo_identity);
-        let msg = if !create.branch_pick.query.is_empty() {
-            " no matches"
-        } else if loading {
-            " loading…"
-        } else {
-            " no local branches"
-        };
-        frame.render_widget(
-            Paragraph::new(msg).style(Style::default().fg(p.overlay0)),
-            create_worktree_list_row_rect(inner, 0),
-        );
-        return;
-    }
-    let max_rows = create_worktree_list_visible_rows(inner);
-    let selected = create.branch_pick.selected.min(entries.len() - 1);
-    let start = create_worktree_list_start(selected, entries.len(), max_rows);
-    for (visible_idx, branch) in entries.iter().skip(start).take(max_rows).enumerate() {
-        let is_selected = start + visible_idx == selected;
-        let marker = if is_selected { "›" } else { " " };
-        let current = if branch.is_current { "  (current)" } else { "" };
-        let style = if is_selected {
-            Style::default()
-                .fg(p.text)
-                .bg(p.surface0)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(p.subtext0)
-        };
-        frame.render_widget(
-            Paragraph::new(truncate_end(
-                &format!("{marker} {}{current}", branch.name),
-                inner.width as usize,
-            ))
-            .style(style),
-            create_worktree_list_row_rect(inner, visible_idx),
-        );
-    }
 }
 
 pub(super) fn render_remove_worktree_overlay(app: &AppState, frame: &mut Frame, area: Rect) {
@@ -786,27 +537,27 @@ pub(super) fn render_open_existing_worktree_overlay(app: &AppState, frame: &mut 
         let status = entry.status_label();
         let title_width = inner
             .width
-            .saturating_sub(display_width_u16(status))
+            .saturating_sub(status.len() as u16)
             .saturating_sub(4) as usize;
         let mut title = format!(
             "{marker} {}",
-            truncate_end(&entry.display_name(), title_width)
+            truncate_text(&entry.display_name(), title_width)
         );
         if !status.is_empty() {
             let pad = inner
                 .width
-                .saturating_sub(display_width_u16(&title))
-                .saturating_sub(display_width_u16(status))
+                .saturating_sub(title.chars().count() as u16)
+                .saturating_sub(status.len() as u16)
                 .max(1);
             title.push_str(&" ".repeat(pad as usize));
             title.push_str(status);
         }
         frame.render_widget(
-            Paragraph::new(truncate_end(&title, inner.width as usize)).style(row_style),
+            Paragraph::new(truncate_text(&title, inner.width as usize)).style(row_style),
             Rect::new(inner.x, y, inner.width, 1),
         );
         frame.render_widget(
-            Paragraph::new(truncate_end(
+            Paragraph::new(truncate_text(
                 &format!("  {}", entry.path.display()),
                 inner.width as usize,
             ))
@@ -899,39 +650,71 @@ fn render_open_worktree_search(
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
-fn confirm_close_overlay_text(
-    app: &AppState,
-    terminal_runtimes: &TerminalRuntimeRegistry,
-) -> (String, String) {
+fn confirm_close_overlay_text(app: &AppState) -> (String, String) {
     let ws_name = app
         .workspaces
         .get(app.selected)
-        .map(|ws| ws.display_name_from(&app.terminals, terminal_runtimes))
+        .map(|ws| ws.display_name())
         .unwrap_or_else(|| "?".to_string());
-    let pane_count = app
+    let selected_space = app
         .workspaces
         .get(app.selected)
-        .map(|ws| ws.layout.pane_count())
-        .unwrap_or(0);
+        .and_then(|ws| ws.worktree_space());
+    let group_member_indices = selected_space
+        .filter(|space| !space.is_linked_worktree)
+        .map(|space| {
+            app.workspaces
+                .iter()
+                .enumerate()
+                .filter_map(|(idx, ws)| {
+                    ws.worktree_space()
+                        .is_some_and(|member| member.key == space.key)
+                        .then_some(idx)
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let closes_group = group_member_indices.len() > 1;
+    let pane_count = if closes_group {
+        group_member_indices
+            .iter()
+            .filter_map(|idx| app.workspaces.get(*idx))
+            .map(|ws| ws.layout.pane_count())
+            .sum()
+    } else {
+        app.workspaces
+            .get(app.selected)
+            .map(|ws| ws.layout.pane_count())
+            .unwrap_or(0)
+    };
 
     let pane_text = if pane_count == 1 {
         "1 pane".to_string()
     } else {
         format!("{pane_count} panes")
     };
+    let workspace_text = if closes_group {
+        let count = group_member_indices.len();
+        if count == 1 {
+            "1 workspace, ".to_string()
+        } else {
+            format!("{count} workspaces, ")
+        }
+    } else {
+        String::new()
+    };
 
-    let title = "Close workspace?";
-    let detail = format!("{ws_name} — {pane_text}");
+    let title = if closes_group {
+        "Close worktree group?"
+    } else {
+        "Close workspace?"
+    };
+    let detail = format!("{ws_name} — {workspace_text}{pane_text}");
     (title.to_string(), detail)
 }
 
-pub(super) fn render_confirm_close_overlay(
-    app: &AppState,
-    terminal_runtimes: &TerminalRuntimeRegistry,
-    frame: &mut Frame,
-    area: Rect,
-) {
-    let (title, detail) = confirm_close_overlay_text(app, terminal_runtimes);
+pub(super) fn render_confirm_close_overlay(app: &AppState, frame: &mut Frame, area: Rect) {
+    let (title, detail) = confirm_close_overlay_text(app);
 
     super::dim_background(frame, area);
 
@@ -1029,115 +812,15 @@ pub(crate) fn confirm_close_button_rects(inner: Rect) -> (Rect, Rect) {
 #[cfg(test)]
 mod tests {
     use crate::{
-        app::{state::WorktreeCreateState, AppState, Mode},
+        app::{state::WorktreeCreateState, AppState},
         workspace::Workspace,
     };
-    use ratatui::{
-        backend::TestBackend,
-        buffer::Buffer,
-        layout::{Position, Rect},
-        Terminal,
-    };
+    use ratatui::{backend::TestBackend, layout::Rect, Terminal};
 
-    use super::{
-        confirm_close_overlay_text, render_new_linked_worktree_overlay, render_rename_overlay,
-    };
+    use super::{confirm_close_overlay_text, render_new_linked_worktree_overlay};
 
     #[test]
-    fn confirm_close_text_uses_live_workspace_cwd_label() {
-        let mut app = AppState::test_new();
-        let mut workspace = Workspace::test_new("initial");
-        workspace.custom_name = None;
-        workspace.identity_cwd = "/projects/original".into();
-        let root_pane = workspace.tabs[0].root_pane;
-        let terminal_id = workspace.tabs[0].panes[&root_pane]
-            .attached_terminal_id
-            .clone();
-        app.workspaces = vec![workspace];
-        app.ensure_test_terminals();
-        app.terminals.get_mut(&terminal_id).unwrap().cwd = "/projects/current".into();
-        app.selected = 0;
-
-        let terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
-        let (title, detail) = confirm_close_overlay_text(&app, &terminal_runtimes);
-
-        assert_eq!(title, "Close workspace?");
-        assert_eq!(detail, "current — 1 pane");
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn confirm_close_text_prefers_live_runtime_cwd_over_stale_terminal_cwd() {
-        let root = std::env::temp_dir().join(format!(
-            "herdr-confirm-close-runtime-cwd-{}",
-            std::process::id()
-        ));
-        let stale_cwd = root.join("original");
-        let live_cwd = root.join("current");
-        std::fs::create_dir_all(&live_cwd).unwrap();
-
-        let mut app = AppState::test_new();
-        let mut workspace = Workspace::test_new("initial");
-        workspace.custom_name = None;
-        workspace.identity_cwd = stale_cwd;
-        let root_pane = workspace.tabs[0].root_pane;
-        let terminal_id = workspace.tabs[0].panes[&root_pane]
-            .attached_terminal_id
-            .clone();
-        app.workspaces = vec![workspace];
-        app.ensure_test_terminals();
-        app.selected = 0;
-
-        let (events, _) = tokio::sync::mpsc::channel(4);
-        let runtime = crate::terminal::TerminalRuntime::spawn(
-            root_pane,
-            24,
-            80,
-            live_cwd,
-            0,
-            crate::terminal_theme::TerminalTheme::default(),
-            None,
-            crate::pane::PaneShellConfig::new("/bin/sh", crate::config::ShellModeConfig::NonLogin),
-            &crate::pane::PaneLaunchEnv::default(),
-            events,
-            std::sync::Arc::new(tokio::sync::Notify::new()),
-            std::sync::Arc::new(crate::render_signal::RenderSignal::new()),
-        )
-        .unwrap();
-        let mut terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
-        terminal_runtimes.insert(terminal_id, runtime);
-
-        let (_, detail) = confirm_close_overlay_text(&app, &terminal_runtimes);
-
-        assert_eq!(detail, "current — 1 pane");
-
-        drop(terminal_runtimes);
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn confirm_close_text_uses_selected_custom_name_instead_of_active_workspace_cwd() {
-        let mut app = AppState::test_new();
-        let active = Workspace::test_new("active");
-        let selected = Workspace::test_new("selected");
-        let selected_root = selected.tabs[0].root_pane;
-        let selected_terminal_id = selected.tabs[0].panes[&selected_root]
-            .attached_terminal_id
-            .clone();
-        app.workspaces = vec![active, selected];
-        app.ensure_test_terminals();
-        app.terminals.get_mut(&selected_terminal_id).unwrap().cwd = "/projects/current".into();
-        app.active = Some(0);
-        app.selected = 1;
-
-        let terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
-        let (_, detail) = confirm_close_overlay_text(&app, &terminal_runtimes);
-
-        assert_eq!(detail, "selected — 1 pane");
-    }
-
-    #[test]
-    fn confirm_close_text_reports_single_workspace_scope() {
+    fn confirm_close_text_reports_parent_group_scope() {
         let mut app = AppState::test_new();
         let mut parent = Workspace::test_new("main");
         parent.worktree_space = Some(crate::workspace::WorktreeSpaceMembership {
@@ -1158,11 +841,10 @@ mod tests {
         app.workspaces = vec![parent, child];
         app.selected = 0;
 
-        let terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
-        let (title, detail) = confirm_close_overlay_text(&app, &terminal_runtimes);
+        let (title, detail) = confirm_close_overlay_text(&app);
 
-        assert_eq!(title, "Close workspace?");
-        assert_eq!(detail, "main — 1 pane");
+        assert_eq!(title, "Close worktree group?");
+        assert_eq!(detail, "main — 2 workspaces, 2 panes");
     }
 
     #[test]
@@ -1183,10 +865,6 @@ mod tests {
                     .into(),
             ),
             creating: false,
-            active_tab: crate::app::state::WorktreeCreateTab::Name,
-            repo_identity: String::new(),
-            github_pick: crate::app::state::WorktreeListPick::default(),
-            branch_pick: crate::app::state::WorktreeListPick::default(),
         });
 
         let mut terminal =
@@ -1199,7 +877,7 @@ mod tests {
             .buffer()
             .content()
             .iter()
-            .map(ratatui::buffer::Cell::symbol)
+            .map(|cell| cell.symbol())
             .collect::<String>();
 
         assert!(rendered.contains("fatal: a branch named 'foo' already exists"));
@@ -1215,197 +893,5 @@ mod tests {
         assert_eq!(inner.height, super::NEW_LINKED_WORKTREE_POPUP_HEIGHT - 2);
         assert_eq!(create.y, inner.y + inner.height - 1);
         assert_eq!(cancel.y, inner.y + inner.height - 1);
-    }
-
-    const RENAME_AREA: Rect = Rect {
-        x: 0,
-        y: 0,
-        width: 80,
-        height: 20,
-    };
-    const WORKTREE_AREA: Rect = Rect {
-        x: 0,
-        y: 0,
-        width: 100,
-        height: 30,
-    };
-
-    /// Reproduces the input row that `render_rename_overlay` lays out: the
-    /// centred popup, the border inset, then the third row of the vertical
-    /// split.
-    fn rename_input_rect(area: Rect) -> Rect {
-        let popup = super::centered_popup_rect(area, 56, 7).expect("popup fits");
-        let inner = Rect::new(popup.x + 1, popup.y + 1, popup.width - 2, popup.height - 2);
-        Rect::new(inner.x, inner.y + 2, inner.width, 1)
-    }
-
-    fn rename_overlay_caret_in(mode: Mode, name: &str) -> (Position, Buffer) {
-        let mut app = AppState::test_new();
-        app.mode = mode;
-        app.name_input = name.into();
-
-        let mut terminal = Terminal::new(TestBackend::new(RENAME_AREA.width, RENAME_AREA.height))
-            .expect("test terminal");
-        terminal
-            .draw(|frame| render_rename_overlay(&app, frame, RENAME_AREA))
-            .expect("rename overlay should render");
-        let caret = terminal.get_cursor_position().expect("cursor position");
-        (caret, terminal.backend().buffer().clone())
-    }
-
-    fn rename_overlay_caret(name: &str) -> Position {
-        rename_overlay_caret_in(Mode::RenameWorkspace, name).0
-    }
-
-    fn worktree_overlay_caret(branch: &str) -> Position {
-        let mut app = AppState::test_new();
-        app.name_input = branch.into();
-        app.worktree_create = Some(WorktreeCreateState {
-            source_workspace_id: "source".into(),
-            source_checkout_path: "/repo/herdr".into(),
-            source_existing_membership: None,
-            source_repo_root: "/repo/herdr".into(),
-            repo_key: "repo-key".into(),
-            repo_name: "herdr".into(),
-            branch: branch.into(),
-            checkout_path: "/repo/.worktrees/herdr/foo".into(),
-            error: None,
-            creating: false,
-            active_tab: crate::app::state::WorktreeCreateTab::Name,
-            repo_identity: String::new(),
-            github_pick: crate::app::state::WorktreeListPick::default(),
-            branch_pick: crate::app::state::WorktreeListPick::default(),
-        });
-
-        let mut terminal =
-            Terminal::new(TestBackend::new(WORKTREE_AREA.width, WORKTREE_AREA.height))
-                .expect("test terminal");
-        terminal
-            .draw(|frame| render_new_linked_worktree_overlay(&app, frame, WORKTREE_AREA))
-            .expect("new worktree overlay should render");
-        terminal.get_cursor_position().expect("cursor position")
-    }
-
-    #[test]
-    fn rename_overlay_anchors_the_host_cursor_to_the_input_caret() {
-        let input = rename_input_rect(RENAME_AREA);
-
-        // Without an explicit cursor the frame carries none, the client parks the
-        // host cursor where the focused pane last reported it, and the IME
-        // composes there instead of in the dialog.
-        assert_eq!(
-            rename_overlay_caret(""),
-            Position::new(input.x + 1, input.y),
-            "empty input should put the caret past the one-column left padding"
-        );
-        assert_eq!(
-            rename_overlay_caret("abcd"),
-            Position::new(input.x + 5, input.y)
-        );
-
-        // The cell under the caret has to be blank: a host terminal draws its
-        // cursor by inverting that cell, so a glyph there would swallow it.
-        let (caret, buffer) = rename_overlay_caret_in(Mode::RenameWorkspace, "ab");
-        assert_eq!(caret, Position::new(input.x + 3, input.y));
-        assert_eq!(buffer[(caret.x, caret.y)].symbol(), " ");
-        assert_eq!(buffer[(caret.x - 1, caret.y)].symbol(), "b");
-    }
-
-    #[test]
-    fn rename_overlay_anchors_the_cursor_in_every_rename_mode() {
-        let input = rename_input_rect(RENAME_AREA);
-        let expected = Position::new(input.x + 3, input.y);
-
-        for mode in [Mode::RenameWorkspace, Mode::RenameTab, Mode::RenamePane] {
-            assert_eq!(
-                rename_overlay_caret_in(mode, "ab").0,
-                expected,
-                "{mode:?} should anchor the caret like the other rename modes"
-            );
-        }
-    }
-
-    #[test]
-    fn rename_overlay_caret_counts_wide_characters_as_two_columns() {
-        let input = rename_input_rect(RENAME_AREA);
-
-        // "あい" is two columns per character, so the caret sits two cells further
-        // right than the two-column "ab".
-        assert_eq!(
-            rename_overlay_caret("あい"),
-            Position::new(input.x + 5, input.y)
-        );
-        assert_eq!(
-            rename_overlay_caret("aあ"),
-            Position::new(input.x + 4, input.y)
-        );
-    }
-
-    #[test]
-    fn rename_overlay_caret_stays_inside_the_input_when_the_name_overflows() {
-        let input = rename_input_rect(RENAME_AREA);
-        let last_column = input.right() - 1;
-
-        // The field is 54 columns wide. 51 characters is the last name whose
-        // caret still lands strictly inside it; from 52 on the unclamped column
-        // would leave the field and gets pinned to the final cell.
-        assert_eq!(
-            rename_overlay_caret(&"a".repeat(51)),
-            Position::new(input.x + 52, input.y)
-        );
-        assert_eq!(
-            rename_overlay_caret(&"a".repeat(53)),
-            Position::new(last_column, input.y)
-        );
-        assert_eq!(
-            rename_overlay_caret(&"a".repeat(200)),
-            Position::new(last_column, input.y)
-        );
-
-        // The clamped cell has to stay blank as well, or the host cursor would
-        // sit on a glyph and the IME would compose over it.
-        let (caret, buffer) = rename_overlay_caret_in(Mode::RenameWorkspace, &"a".repeat(200));
-        assert_eq!(caret, Position::new(last_column, input.y));
-        assert_eq!(buffer[(caret.x, caret.y)].symbol(), " ");
-        assert_eq!(buffer[(caret.x - 1, caret.y)].symbol(), "a");
-    }
-
-    #[test]
-    fn rename_overlay_caret_reaches_the_frame_the_server_sends() {
-        let input = rename_input_rect(RENAME_AREA);
-        let mut app = AppState::test_new();
-        app.mode = Mode::RenameWorkspace;
-        app.name_input = "ab".into();
-
-        // The widget tests above stop at the ratatui frame. This one goes through
-        // the server's cursor resolution, which is where the bug lived: the frame
-        // used to leave here with `cursor: None`.
-        let (_, cursor) =
-            crate::server::render_stream::render_virtual(&mut app, RENAME_AREA, false);
-        let cursor = cursor.expect("the modal caret should survive cursor resolution");
-
-        assert_eq!((cursor.x, cursor.y), (input.x + 3, input.y));
-        assert!(cursor.visible);
-    }
-
-    #[test]
-    fn new_worktree_overlay_anchors_the_host_cursor_to_the_input_caret() {
-        let popup = super::new_linked_worktree_inner_rect(WORKTREE_AREA).expect("popup fits");
-        // Fork layout: header 0, project 1, tab strip 2, separator 3,
-        // "branch" label 4, branch input 5 (upstream's flat dialog put it at +2).
-        let input = Rect::new(popup.x, popup.y + 5, popup.width, 1);
-
-        assert_eq!(
-            worktree_overlay_caret(""),
-            Position::new(input.x + 1, input.y)
-        );
-        assert_eq!(
-            worktree_overlay_caret("ab"),
-            Position::new(input.x + 3, input.y)
-        );
-        assert_eq!(
-            worktree_overlay_caret("あい"),
-            Position::new(input.x + 5, input.y)
-        );
     }
 }

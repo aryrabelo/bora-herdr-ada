@@ -1,77 +1,95 @@
-"""Hermes plugin installed by Herdr to report resumable session identity."""
+"""Hermes plugin installed by Herdr to report agent lifecycle state."""
 
 # HERDR_INTEGRATION_ID=hermes
-# HERDR_INTEGRATION_VERSION=5
+# HERDR_INTEGRATION_VERSION=3
 
 from __future__ import annotations
 
+import json
 import os
-import subprocess
+import random
+import socket
 import time
 
 _SOURCE = "herdr:hermes"
 _AGENT = "hermes"
-_INTERACTIVE_PLATFORMS = {"cli", "tui", "desktop", "acp"}
 
 
-def _pane_id() -> str | None:
+def _base_params() -> tuple[str, str] | None:
     if os.environ.get("HERDR_ENV") != "1":
         return None
-    return os.environ.get("HERDR_PANE_ID", "").strip() or None
+    pane_id = os.environ.get("HERDR_PANE_ID", "").strip()
+    socket_path = os.environ.get("HERDR_SOCKET_PATH", "").strip()
+    if not pane_id or not socket_path:
+        return None
+    return pane_id, socket_path
 
 
-def _send_session(session_id: str, start_source: str) -> None:
-    pane_id = _pane_id()
-    if pane_id is None:
+def _send(method: str, params: dict) -> None:
+    base = _base_params()
+    if base is None:
         return
-    command = [
-        os.environ.get("HERDR_BIN_PATH") or "herdr",
-        "pane",
-        "report-agent-session",
-        pane_id,
-        "--source",
-        _SOURCE,
-        "--agent",
-        _AGENT,
-        "--seq",
-        str(time.time_ns()),
-        "--agent-session-id",
-        session_id,
-        "--session-start-source",
-        start_source,
-    ]
+    pane_id, socket_path = base
+    params = {
+        "pane_id": pane_id,
+        "source": _SOURCE,
+        "agent": _AGENT,
+        "seq": time.time_ns(),
+        **params,
+    }
+    request = {
+        "id": f"{_SOURCE}:{int(time.time() * 1000)}:{random.randrange(1_000_000):06d}",
+        "method": method,
+        "params": params,
+    }
     try:
-        kwargs = {"timeout": 1, "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
-        if os.name == "nt":
-            kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
-        subprocess.run(command, check=False, **kwargs)
+        client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        client.settimeout(0.5)
+        client.connect(socket_path)
+        client.sendall((json.dumps(request) + "\n").encode("utf-8"))
+        try:
+            client.recv(4096)
+        except Exception:
+            pass
+        client.close()
     except Exception:
         pass
 
 
-def _report_session(start_source: str, **kwargs) -> None:
-    if kwargs.get("platform") not in _INTERACTIVE_PLATFORMS:
-        return
-    session_id = kwargs.get("session_id")
-    if not isinstance(session_id, str) or not session_id:
-        return
-    _send_session(session_id, start_source)
+def _session_id(kwargs: dict) -> str | None:
+    value = kwargs.get("session_id")
+    if isinstance(value, str) and value:
+        return value
+    return None
 
 
-def _session_started(**kwargs) -> None:
-    _report_session("startup", **kwargs)
+def _report(state: str, **kwargs) -> None:
+    params = {"state": state}
+    session_id = _session_id(kwargs)
+    if session_id:
+        params["agent_session_id"] = session_id
+    _send("pane.report_agent", params)
 
 
-def _session_reset(**kwargs) -> None:
-    _report_session("new", **kwargs)
+def _working(**kwargs) -> None:
+    _report("working", **kwargs)
 
 
-def _session_observed(**kwargs) -> None:
-    if kwargs.get("platform") == "cli":
-        _report_session("resume", **kwargs)
+def _blocked(**kwargs) -> None:
+    _report("blocked", **kwargs)
+
+
+def _idle(**kwargs) -> None:
+    _report("idle", **kwargs)
 
 
 def register(ctx):
-    ctx.register_hook("on_session_start", _session_started)
-    ctx.register_hook("on_session_reset", _session_reset)
-    ctx.register_hook("pre_llm_call", _session_observed)
+    ctx.register_hook("on_session_start", _idle)
+    ctx.register_hook("pre_llm_call", _working)
+    ctx.register_hook("pre_api_request", _working)
+    ctx.register_hook("pre_tool_call", _working)
+    ctx.register_hook("post_tool_call", _working)
+    ctx.register_hook("pre_approval_request", _blocked)
+    ctx.register_hook("post_approval_response", _working)
+    ctx.register_hook("post_llm_call", _idle)
+    ctx.register_hook("on_session_end", _idle)

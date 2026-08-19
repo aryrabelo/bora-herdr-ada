@@ -712,15 +712,11 @@ pub fn colorSchemeReportLocked(self: *Termio, td: *ThreadData, force: bool) !voi
     if (!force and !self.renderer_state.terminal.modes.get(.report_color_scheme)) {
         return;
     }
-    const scheme: terminalpkg.device_status.ColorScheme = switch (self.config.conditional_state.theme) {
-        .light => .light,
-        .dark => .dark,
+    const output = switch (self.config.conditional_state.theme) {
+        .light => "\x1B[?997;2n",
+        .dark => "\x1B[?997;1n",
     };
-
-    var buf: [terminalpkg.device_status.max_color_scheme_report_encode_size]u8 = undefined;
-    var writer: std.Io.Writer = .fixed(&buf);
-    try terminalpkg.device_status.encodeColorSchemeReport(&writer, scheme);
-    try self.queueWrite(td, writer.buffered(), false);
+    try self.queueWrite(td, output, false);
 }
 
 /// ThreadData is the data created and stored in the termio thread

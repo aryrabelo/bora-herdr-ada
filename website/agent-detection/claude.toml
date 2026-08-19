@@ -1,7 +1,7 @@
 id = "claude"
-version = "2026.08.12.1"
+version = "2026.06.10.3"
 min_engine_version = 2
-updated_at = "2026-08-12T00:00:00Z"
+updated_at = "2026-06-10T00:00:00Z"
 aliases = ["claude-code"]
 
 [[rules]]
@@ -10,19 +10,7 @@ state = "working"
 priority = 1100
 region = "osc_title"
 visible_working = true
-# Braille covers <= 2.1.227; half-circles are the 2.1.228 busy spinner.
-regex = ['^[\x{2800}-\x{28FF}\x{25D0}-\x{25D1}] ']
-
-[[rules]]
-id = "btw_overlay_working"
-state = "working"
-priority = 975
-region = "bottom_non_empty_lines(5)"
-visible_working = true
-line_regex = [
-  '^\s*/btw(?:\s|$)',
-  '(?i)esc to close\s*$',
-]
+regex = ['^[\x{2800}-\x{28FF}] ']
 
 [[rules]]
 id = "transcript_viewer"
@@ -45,16 +33,13 @@ state = "blocked"
 priority = 980
 region = "after_last_horizontal_rule"
 visible_blocker = true
-contains = ["esc to cancel"]
+contains = ["enter to select", "esc to cancel"]
 any = [
-  { contains = ["enter to confirm"] },
-  { contains = ["enter to select"], any = [
-    { contains = ["tab/arrow keys to navigate"] },
-    { contains = ["arrow keys to navigate"] },
-    { contains = ["arrows to navigate"] },
-    { contains = ["↑/↓ to navigate"] },
-    { contains = ["↑↓ to navigate"] },
-  ] },
+  { contains = ["tab/arrow keys to navigate"] },
+  { contains = ["arrow keys to navigate"] },
+  { contains = ["arrows to navigate"] },
+  { contains = ["↑/↓ to navigate"] },
+  { contains = ["↑↓ to navigate"] },
 ]
 
 [[rules]]

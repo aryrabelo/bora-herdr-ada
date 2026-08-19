@@ -1,14 +1,9 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-#[cfg(test)]
-use ratatui::layout::Direction;
-use ratatui::layout::Rect;
+use ratatui::layout::{Direction, Rect};
 
 use crate::{
-    app::{
-        state::{
-            AppState, ContextMenuKind, ContextMenuState, MenuListState, Mode, NavigatorStateFilter,
-        },
-        App,
+    app::state::{
+        AppState, ContextMenuKind, ContextMenuState, MenuListState, Mode, NavigatorStateFilter,
     },
     input::TerminalKey,
     layout::NavDirection,
@@ -79,16 +74,14 @@ pub(crate) enum GlobalMenuAction {
     Keybinds,
     ReloadConfig,
     Settings,
-    Chat,
 }
 
 pub(super) fn global_menu_actions(state: &AppState) -> Vec<GlobalMenuAction> {
-    let mut actions = vec![GlobalMenuAction::Settings];
-    if state.chat_view {
-        actions.push(GlobalMenuAction::Chat);
-    }
-    actions.push(GlobalMenuAction::Keybinds);
-    actions.push(GlobalMenuAction::ReloadConfig);
+    let mut actions = vec![
+        GlobalMenuAction::Settings,
+        GlobalMenuAction::Keybinds,
+        GlobalMenuAction::ReloadConfig,
+    ];
     if state.update_available.is_some() || state.latest_release_notes_available {
         actions.push(GlobalMenuAction::WhatsNew);
     }
@@ -103,8 +96,6 @@ pub(super) fn open_global_menu(state: &mut AppState) {
 
 pub(super) fn open_keybind_help(state: &mut AppState) {
     state.keybind_help.scroll = 0;
-    state.keybind_help.query.clear();
-    state.keybind_help.search_focused = false;
     state.mode = Mode::KeybindHelp;
 }
 
@@ -143,10 +134,6 @@ pub(super) fn apply_global_menu_action(state: &mut AppState, action: GlobalMenuA
             leave_modal(state);
         }
         GlobalMenuAction::Settings => super::settings::open_settings(state),
-        GlobalMenuAction::Chat => {
-            state.request_open_chat = true;
-            leave_modal(state);
-        }
     }
 }
 
@@ -173,7 +160,15 @@ pub(crate) fn handle_navigator_key(
     if state.navigator.search_focused {
         match key.code {
             KeyCode::Esc => {
-                state.navigator.search_focused = false;
+                if state.navigator.query.is_empty() {
+                    state.navigator.search_focused = false;
+                    leave_modal(state);
+                } else {
+                    state.navigator.query.clear();
+                    state.navigator.state_filter = None;
+                    state.navigator.search_focused = false;
+                    state.clamp_navigator_selection_from(terminal_runtimes);
+                }
             }
             KeyCode::Enter => {
                 state.accept_navigator_selection_from(terminal_runtimes);
@@ -181,7 +176,7 @@ pub(crate) fn handle_navigator_key(
             KeyCode::Backspace => {
                 state.navigator.state_filter = None;
                 state.navigator.query.pop();
-                state.select_first_navigator_match_from(terminal_runtimes);
+                state.clamp_navigator_selection_from(terminal_runtimes);
             }
             KeyCode::Up => state.move_navigator_selection_from(terminal_runtimes, -1),
             KeyCode::Down => state.move_navigator_selection_from(terminal_runtimes, 1),
@@ -208,12 +203,19 @@ pub(crate) fn handle_navigator_key(
 
     match key.code {
         KeyCode::Esc => {
-            leave_modal(state);
+            if state.navigator.query.is_empty() && state.navigator.state_filter.is_none() {
+                leave_modal(state);
+            } else {
+                state.navigator.query.clear();
+                state.navigator.state_filter = None;
+                state.clamp_navigator_selection_from(terminal_runtimes);
+            }
         }
         KeyCode::Enter => {
             state.accept_navigator_selection_from(terminal_runtimes);
         }
         KeyCode::Char('/') => {
+            state.navigator.query.clear();
             state.navigator.state_filter = None;
             state.navigator.search_focused = true;
             state.clamp_navigator_selection_from(terminal_runtimes);
@@ -230,36 +232,36 @@ pub(crate) fn handle_navigator_key(
         KeyCode::Char('b') if key.modifiers.is_empty() => {
             state.navigator.query.clear();
             state.navigator.state_filter = Some(NavigatorStateFilter::Blocked);
-            state.select_first_navigator_match_from(terminal_runtimes);
+            state.clamp_navigator_selection_from(terminal_runtimes);
         }
         KeyCode::Char('w') if key.modifiers.is_empty() => {
             state.navigator.query.clear();
             state.navigator.state_filter = Some(NavigatorStateFilter::Working);
-            state.select_first_navigator_match_from(terminal_runtimes);
+            state.clamp_navigator_selection_from(terminal_runtimes);
         }
         KeyCode::Char('i') if key.modifiers.is_empty() => {
             state.navigator.query.clear();
             state.navigator.state_filter = Some(NavigatorStateFilter::Idle);
-            state.select_first_navigator_match_from(terminal_runtimes);
+            state.clamp_navigator_selection_from(terminal_runtimes);
         }
         KeyCode::Char('d') if key.modifiers.is_empty() => {
             state.navigator.query.clear();
             state.navigator.state_filter = Some(NavigatorStateFilter::Done);
-            state.select_first_navigator_match_from(terminal_runtimes);
+            state.clamp_navigator_selection_from(terminal_runtimes);
         }
-        KeyCode::Char('j') | KeyCode::Down if key.modifiers.is_empty() => {
+        KeyCode::Char('j') | KeyCode::Down => {
             state.move_navigator_selection_from(terminal_runtimes, 1)
         }
-        KeyCode::Char('k') | KeyCode::Up if key.modifiers.is_empty() => {
+        KeyCode::Char('k') | KeyCode::Up => {
             state.move_navigator_selection_from(terminal_runtimes, -1)
         }
         KeyCode::Char('d') if key.modifiers == KeyModifiers::CONTROL => state
-            .move_navigator_selection_by_lines_from(
+            .move_navigator_selection_from(
                 terminal_runtimes,
                 (state.navigator_body_rect().height / 2).max(1) as isize,
             ),
         KeyCode::Char('u') if key.modifiers == KeyModifiers::CONTROL => state
-            .move_navigator_selection_by_lines_from(
+            .move_navigator_selection_from(
                 terminal_runtimes,
                 -((state.navigator_body_rect().height / 2).max(1) as isize),
             ),
@@ -289,59 +291,10 @@ pub(crate) fn insert_navigator_search_text(
     }
     state.navigator.state_filter = None;
     state.navigator.query.push_str(text);
-    state.select_first_navigator_match_from(terminal_runtimes);
+    state.clamp_navigator_selection_from(terminal_runtimes);
 }
 
-pub(crate) fn insert_keybind_help_query_text(state: &mut AppState, text: &str) {
-    if !state.keybind_help.search_focused {
-        return;
-    }
-    state
-        .keybind_help
-        .query
-        .extend(text.chars().filter(|ch| !ch.is_control()));
-    state.keybind_help.scroll = 0;
-}
-
-pub(super) fn keybind_help_back(state: &mut AppState) {
-    if state.keybind_help.search_focused {
-        state.keybind_help.query.clear();
-        state.keybind_help.search_focused = false;
-        state.keybind_help.scroll = 0;
-    } else {
-        leave_modal(state);
-    }
-}
-
-pub(crate) fn handle_keybind_help_key(state: &mut AppState, key: TerminalKey) {
-    if state.keybind_help.search_focused {
-        let text_char = keybind_help_text_char(key.clone());
-        match key.code {
-            KeyCode::Up => state.scroll_keybind_help(-1),
-            KeyCode::Down => state.scroll_keybind_help(1),
-            KeyCode::PageUp => state.scroll_keybind_help(-8),
-            KeyCode::PageDown => state.scroll_keybind_help(8),
-            KeyCode::Home => state.keybind_help.scroll = 0,
-            KeyCode::End => state.keybind_help.scroll = state.keybind_help_max_scroll(),
-            KeyCode::Backspace => {
-                state.keybind_help.query.pop();
-                state.keybind_help.scroll = 0;
-            }
-            KeyCode::Char('u') if key.modifiers == KeyModifiers::CONTROL => {
-                state.keybind_help.query.clear();
-                state.keybind_help.scroll = 0;
-            }
-            KeyCode::Esc => keybind_help_back(state),
-            KeyCode::Enter => leave_modal(state),
-            _ => {
-                if let Some(character) = text_char {
-                    insert_keybind_help_query_text(state, &character.to_string());
-                }
-            }
-        }
-        return;
-    }
-
+pub(crate) fn handle_keybind_help_key(state: &mut AppState, key: KeyEvent) {
     match key.code {
         KeyCode::Up | KeyCode::Char('k') => state.scroll_keybind_help(-1),
         KeyCode::Down | KeyCode::Char('j') => state.scroll_keybind_help(1),
@@ -349,28 +302,9 @@ pub(crate) fn handle_keybind_help_key(state: &mut AppState, key: TerminalKey) {
         KeyCode::PageDown => state.scroll_keybind_help(8),
         KeyCode::Home => state.keybind_help.scroll = 0,
         KeyCode::End => state.keybind_help.scroll = state.keybind_help_max_scroll(),
-        _ if keybind_help_text_char(key.clone()) == Some('/') => {
-            state.keybind_help.search_focused = true;
-            state.keybind_help.scroll = 0;
-        }
-        KeyCode::Esc => keybind_help_back(state),
-        KeyCode::Enter => leave_modal(state),
-        _ if keybind_help_text_char(key) == Some('?') => leave_modal(state),
+        KeyCode::Esc | KeyCode::Enter | KeyCode::Char('?') => leave_modal(state),
         _ => {}
     }
-}
-
-fn keybind_help_text_char(key: TerminalKey) -> Option<char> {
-    if !key.modifiers.difference(KeyModifiers::SHIFT).is_empty() {
-        return None;
-    }
-    if let Some(character) = key.shifted_codepoint.and_then(char::from_u32) {
-        return Some(character);
-    }
-    let KeyCode::Char(character) = key.code else {
-        return None;
-    };
-    Some(character)
 }
 
 pub(super) fn open_rename_workspace(
@@ -378,7 +312,6 @@ pub(super) fn open_rename_workspace(
     terminal_runtimes: &crate::terminal::TerminalRuntimeRegistry,
     ws_idx: usize,
 ) {
-    state.pending_workspace_create_cwd = None;
     state.selected = ws_idx;
     state.rename_pane_target = None;
     state.name_input =
@@ -387,42 +320,9 @@ pub(super) fn open_rename_workspace(
     state.mode = Mode::RenameWorkspace;
 }
 
-pub(super) fn open_launch_program_prompt(state: &mut AppState) {
-    state.pending_workspace_create_cwd = None;
-    state.rename_pane_target = None;
-    state.name_input = String::new();
-    state.name_input_replace_on_type = false;
-    state.mode = Mode::LaunchProgramPrompt;
-}
-
-pub(super) fn open_set_workspace_group(state: &mut AppState, ws_idx: usize) {
-    state.selected = ws_idx;
-    state.rename_pane_target = None;
-    // Pre-populate with the current group name, if any.
-    state.name_input = state
-        .workspaces
-        .get(ws_idx)
-        .and_then(|ws| ws.visual_group.clone())
-        .unwrap_or_default();
-    state.name_input_replace_on_type = false;
-    state.mode = Mode::SetWorkspaceGroup;
-}
-
-pub(crate) fn open_new_workspace_dialog(state: &mut AppState, cwd: std::path::PathBuf) {
-    let suggested_name = crate::workspace::derive_label_from_cwd(&cwd);
-    state.creating_new_tab = false;
-    state.requested_new_tab_name = None;
-    state.pending_workspace_create_cwd = Some(cwd);
-    state.rename_pane_target = None;
-    state.name_input = suggested_name;
-    state.name_input_replace_on_type = true;
-    state.mode = Mode::RenameWorkspace;
-}
-
 pub(super) fn open_rename_active_tab(state: &mut AppState, replace_on_type: bool) {
     state.creating_new_tab = false;
     state.requested_new_tab_name = None;
-    state.pending_workspace_create_cwd = None;
     state.rename_pane_target = None;
     if let Some(ws) = state.active.and_then(|i| state.workspaces.get(i)) {
         if let Some(name) = ws.active_tab_display_name() {
@@ -443,18 +343,12 @@ pub(super) fn open_rename_pane(state: &mut AppState, pane_id: crate::layout::Pan
     let terminal = state.terminals.get(&pane.attached_terminal_id);
     state.creating_new_tab = false;
     state.requested_new_tab_name = None;
-    state.pending_workspace_create_cwd = None;
     state.rename_pane_target = Some(pane_id);
     state.name_input = terminal
         .and_then(|t| t.manual_label.clone())
         .unwrap_or_default();
     state.name_input_replace_on_type = terminal.and_then(|t| t.manual_label.as_ref()).is_none();
     state.mode = Mode::RenamePane;
-}
-
-fn workspace_create_label(input: &str, suggested_name: &str) -> Option<String> {
-    let name = input.trim();
-    (!name.is_empty() && name != suggested_name).then(|| name.to_string())
 }
 
 fn next_new_tab_default_name(state: &AppState) -> String {
@@ -468,7 +362,6 @@ fn next_new_tab_default_name(state: &AppState) -> String {
 pub(super) fn open_new_tab_dialog(state: &mut AppState) {
     state.creating_new_tab = true;
     state.requested_new_tab_name = None;
-    state.pending_workspace_create_cwd = None;
     state.rename_pane_target = None;
     state.name_input = next_new_tab_default_name(state);
     state.name_input_replace_on_type = true;
@@ -480,16 +373,6 @@ pub(super) fn leave_modal(state: &mut AppState) {
         state.mode = Mode::Terminal;
     } else {
         state.mode = Mode::Navigate;
-    }
-}
-
-/// Minutes for a "Hide Nm" context-menu label.
-fn hide_minutes(label: &str) -> u64 {
-    match label {
-        "Hide 5m" => 5,
-        "Hide 10m" => 10,
-        "Hide 15m" => 15,
-        _ => 30,
     }
 }
 
@@ -540,7 +423,6 @@ pub(super) const SETTINGS_ACTIONS: &[ModalActionSpec<ModalAction>] = &[
     },
 ];
 
-#[cfg(test)]
 pub(super) fn apply_rename_action(state: &mut AppState, action: ModalAction) {
     match action {
         ModalAction::Save => {
@@ -550,11 +432,7 @@ pub(super) fn apply_rename_action(state: &mut AppState, action: ModalAction) {
                 state.name_input.trim().to_string()
             };
             match state.mode {
-                Mode::RenameWorkspace
-                    if state.pending_workspace_create_cwd.is_none()
-                        && !state.workspaces.is_empty()
-                        && !new_name.is_empty() =>
-                {
+                Mode::RenameWorkspace if !state.workspaces.is_empty() && !new_name.is_empty() => {
                     let workspace_id = state.workspaces[state.selected].id.clone();
                     state.workspaces[state.selected].set_custom_name(new_name);
                     crate::logging::workspace_renamed(&workspace_id);
@@ -578,7 +456,7 @@ pub(super) fn apply_rename_action(state: &mut AppState, action: ModalAction) {
                             let keep_auto_name = ws
                                 .tabs
                                 .get(active_tab)
-                                .is_some_and(crate::workspace::Tab::is_auto_named)
+                                .is_some_and(|tab| tab.is_auto_named())
                                 && ws
                                     .tab_display_name(active_tab)
                                     .is_some_and(|name| new_name == name);
@@ -615,19 +493,9 @@ pub(super) fn apply_rename_action(state: &mut AppState, action: ModalAction) {
                         }
                     }
                 }
-                Mode::SetWorkspaceGroup if !state.workspaces.is_empty() => {
-                    // Empty input clears the group (same as "Remove from group").
-                    if new_name.is_empty() {
-                        state.workspaces[state.selected].visual_group = None;
-                    } else {
-                        state.workspaces[state.selected].visual_group = Some(new_name);
-                    }
-                    state.mark_session_dirty();
-                }
                 _ => {}
             }
             state.creating_new_tab = false;
-            state.pending_workspace_create_cwd = None;
             state.rename_pane_target = None;
             state.name_input.clear();
             state.name_input_replace_on_type = false;
@@ -640,7 +508,6 @@ pub(super) fn apply_rename_action(state: &mut AppState, action: ModalAction) {
         ModalAction::Cancel => {
             state.creating_new_tab = false;
             state.requested_new_tab_name = None;
-            state.pending_workspace_create_cwd = None;
             state.rename_pane_target = None;
             state.name_input.clear();
             state.name_input_replace_on_type = false;
@@ -718,7 +585,12 @@ fn delete_rename_input_word(state: &mut AppState) {
     }
 }
 
-fn handle_rename_edit_key(state: &mut AppState, key: KeyEvent) {
+pub(crate) fn handle_rename_key(state: &mut AppState, key: KeyEvent) {
+    if let Some(action) = modal_action_from_key(&key, RENAME_ACTIONS) {
+        apply_rename_action(state, action);
+        return;
+    }
+
     match key.code {
         KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             clear_rename_input(state);
@@ -743,23 +615,12 @@ fn handle_rename_edit_key(state: &mut AppState, key: KeyEvent) {
     }
 }
 
-#[cfg(test)]
-pub(crate) fn handle_rename_key(state: &mut AppState, key: KeyEvent) {
-    if let Some(action) = modal_action_from_key(&key, RENAME_ACTIONS) {
-        apply_rename_action(state, action);
-        return;
-    }
-
-    handle_rename_edit_key(state, key);
-}
-
-#[cfg(test)]
 pub(crate) fn handle_resize_key(state: &mut AppState, raw_key: TerminalKey) {
     let key = raw_key.as_key_event();
     if key.code == KeyCode::Esc
         || key.code == KeyCode::Enter
-        || state.keybinds.resize_mode.matches_prefix_key(&raw_key)
-        || state.keybinds.resize_mode.matches_direct_key(&raw_key)
+        || state.keybinds.resize_mode.matches_prefix_key(raw_key)
+        || state.keybinds.resize_mode.matches_direct_key(raw_key)
     {
         if state.active.is_some() {
             state.mode = Mode::Terminal;
@@ -782,7 +643,6 @@ pub(super) fn open_confirm_close(state: &mut AppState) {
     state.mode = Mode::ConfirmClose;
 }
 
-#[cfg(test)]
 pub(super) fn confirm_close_accept(state: &mut AppState) {
     state.close_selected_workspace();
     if state.workspaces.is_empty() {
@@ -796,7 +656,6 @@ pub(super) fn confirm_close_cancel(state: &mut AppState) {
     state.mode = Mode::Navigate;
 }
 
-#[cfg(test)]
 pub(crate) fn handle_confirm_close_key(state: &mut AppState, key: KeyEvent) {
     match modal_action_from_key(&key, CONFIRM_CLOSE_ACTIONS) {
         Some(ModalAction::Confirm) => confirm_close_accept(state),
@@ -805,27 +664,23 @@ pub(crate) fn handle_confirm_close_key(state: &mut AppState, key: KeyEvent) {
     }
 }
 
-#[cfg(test)]
 pub(super) fn apply_context_menu_action(
     state: &mut AppState,
     terminal_runtimes: &mut crate::terminal::TerminalRuntimeRegistry,
     menu: ContextMenuState,
     idx: usize,
 ) {
-    let item_owned = menu.items.get(idx).cloned();
-    let item = item_owned.as_deref();
-    let bora_commands = menu.bora_commands;
-    let bora_port = menu.bora_port;
+    let item = menu.items().get(idx).copied();
     match (menu.kind, item) {
         (ContextMenuKind::GitWorkspace { ws_idx, .. }, Some("New worktree")) => {
             state.request_new_linked_worktree = Some(ws_idx);
             leave_modal(state);
         }
-        (ContextMenuKind::GitWorkspace { ws_idx, .. }, Some("Delete worktree\u{2026}")) => {
+        (ContextMenuKind::GitWorkspace { ws_idx, .. }, Some("Delete worktree checkout...")) => {
             state.request_remove_linked_worktree = Some(ws_idx);
             leave_modal(state);
         }
-        (ContextMenuKind::GitWorkspace { ws_idx, .. }, Some("Open worktree\u{2026}")) => {
+        (ContextMenuKind::GitWorkspace { ws_idx, .. }, Some("Open worktree...")) => {
             state.request_open_existing_worktree = Some(ws_idx);
             leave_modal(state);
         }
@@ -863,57 +718,14 @@ pub(super) fn apply_context_menu_action(
             leave_modal(state);
         }
         (
-            ContextMenuKind::Workspace { ws_idx, .. }
-            | ContextMenuKind::GitWorkspace { ws_idx, .. },
-            Some("Copy path"),
-        ) => {
-            if let Some(ws) = state.workspaces.get(ws_idx) {
-                let path = ws.identity_cwd.display().to_string();
-                state.request_clipboard_write = Some(path.into_bytes());
-            }
-            leave_modal(state);
-        }
-        (
-            ContextMenuKind::Workspace { ws_idx, .. }
-            | ContextMenuKind::GitWorkspace { ws_idx, .. },
+            ContextMenuKind::Workspace { ws_idx } | ContextMenuKind::GitWorkspace { ws_idx, .. },
             Some("Rename"),
         ) => {
             open_rename_workspace(state, terminal_runtimes, ws_idx);
         }
         (
-            ContextMenuKind::Workspace { ws_idx, .. }
-            | ContextMenuKind::GitWorkspace { ws_idx, .. },
-            Some("New group\u{2026}"),
-        ) => {
-            open_set_workspace_group(state, ws_idx);
-        }
-        (
-            ContextMenuKind::Workspace { ws_idx, .. }
-            | ContextMenuKind::GitWorkspace { ws_idx, .. },
-            Some(item_str),
-        ) if item_str.starts_with("\u{2192} ") => {
-            let group_name = item_str["\u{2192} ".len()..].to_string();
-            if let Some(ws) = state.workspaces.get_mut(ws_idx) {
-                ws.visual_group = Some(group_name);
-                state.mark_session_dirty();
-            }
-            leave_modal(state);
-        }
-        (
-            ContextMenuKind::Workspace { ws_idx, .. }
-            | ContextMenuKind::GitWorkspace { ws_idx, .. },
-            Some("Remove from group"),
-        ) => {
-            if let Some(ws) = state.workspaces.get_mut(ws_idx) {
-                ws.visual_group = None;
-                state.mark_session_dirty();
-            }
-            leave_modal(state);
-        }
-        (
-            ContextMenuKind::Workspace { ws_idx, .. }
-            | ContextMenuKind::GitWorkspace { ws_idx, .. },
-            Some("Close" | "Close workspace"),
+            ContextMenuKind::Workspace { ws_idx } | ContextMenuKind::GitWorkspace { ws_idx, .. },
+            Some("Close" | "Close group"),
         ) => {
             state.selected = ws_idx;
             if state.confirm_close {
@@ -1063,104 +875,10 @@ pub(super) fn apply_context_menu_action(
                 };
             }
         }
-        (ContextMenuKind::RepoPr { ws_idx, number, .. }, Some("Open in worktree")) => {
-            state.request_open_pr_worktree = Some((ws_idx, number));
-            leave_modal(state);
-        }
-        (ContextMenuKind::RepoPr { url, .. }, Some("Open in browser")) => {
-            state.request_open_url = Some(url);
-            leave_modal(state);
-        }
-        (ContextMenuKind::RepoPr { url, .. }, Some("Copy URL")) => {
-            state.request_clipboard_write = Some(url.into_bytes());
-            leave_modal(state);
-        }
-        (ContextMenuKind::RepoIssue { number, url, .. }, Some("Run with bora-flow")) => {
-            state.request_flow_run = Some(crate::app::state::FlowRunRequest { number, url });
-            leave_modal(state);
-        }
-        (ContextMenuKind::RepoIssue { url, .. }, Some("Open in browser")) => {
-            state.request_open_url = Some(url);
-            leave_modal(state);
-        }
-        (ContextMenuKind::RepoIssue { url, .. }, Some("Copy URL")) => {
-            state.request_clipboard_write = Some(url.into_bytes());
-            leave_modal(state);
-        }
-        (
-            ContextMenuKind::Workspace { ws_idx, .. }
-            | ContextMenuKind::GitWorkspace { ws_idx, .. },
-            Some(label @ ("Hide 5m" | "Hide 10m" | "Hide 15m" | "Hide 30m")),
-        ) => {
-            if let Some(ws) = state.workspaces.get(ws_idx) {
-                let minutes = hide_minutes(label);
-                let key = format!("ws:{}", ws.id);
-                state.hidden_space_keys.insert(
-                    key,
-                    std::time::Instant::now() + std::time::Duration::from_secs(minutes * 60),
-                );
-            }
-            leave_modal(state);
-        }
-        (
-            ContextMenuKind::Workspace { ws_idx, .. }
-            | ContextMenuKind::GitWorkspace { ws_idx, .. },
-            Some("Unhide"),
-        ) => {
-            let keys: Vec<String> = if let Some(ws) = state.workspaces.get(ws_idx) {
-                let mut k = vec![format!("ws:{}", ws.id)];
-                if let Some(group) = &ws.visual_group {
-                    k.push(format!("vg:{group}"));
-                }
-                if let Some(space) = ws.git_space() {
-                    k.push(space.repo_identity.clone());
-                }
-                k
-            } else {
-                Vec::new()
-            };
-            for key in keys {
-                state.hidden_space_keys.remove(&key);
-            }
-            leave_modal(state);
-        }
-        (
-            ContextMenuKind::GroupHeader { collapse_key, .. },
-            Some(label @ ("Hide 5m" | "Hide 10m" | "Hide 15m" | "Hide 30m")),
-        ) => {
-            let minutes = hide_minutes(label);
-            state.hidden_space_keys.insert(
-                collapse_key,
-                std::time::Instant::now() + std::time::Duration::from_secs(minutes * 60),
-            );
-            leave_modal(state);
-        }
-        (ContextMenuKind::GroupHeader { collapse_key, .. }, Some("Unhide")) => {
-            state.hidden_space_keys.remove(&collapse_key);
-            leave_modal(state);
-        }
-        (
-            ContextMenuKind::Workspace { ws_idx, .. }
-            | ContextMenuKind::GitWorkspace { ws_idx, .. },
-            Some(label),
-        ) if bora_commands.iter().any(|c| c.label == label) => {
-            let cmd = bora_commands
-                .iter()
-                .find(|c| c.label == label)
-                .expect("guard guarantees match");
-            state.pending_bora_command = Some(crate::app::state::PendingBoraCommand {
-                ws_idx,
-                command: cmd.command.clone(),
-                mode: cmd.mode.clone(),
-                port: bora_port,
-            });
-            leave_modal(state);
-        }
         _ => leave_modal(state),
     }
 }
 
-#[cfg(test)]
 pub(crate) fn handle_context_menu_key(
     state: &mut AppState,
     terminal_runtimes: &mut crate::terminal::TerminalRuntimeRegistry,
@@ -1173,33 +891,12 @@ pub(crate) fn handle_context_menu_key(
         }
         KeyCode::Up => {
             if let Some(menu) = &mut state.context_menu {
-                loop {
-                    menu.list.move_prev();
-                    if menu.items.get(menu.list.highlighted).map(String::as_str)
-                        != Some(crate::app::state::CONTEXT_MENU_SEPARATOR)
-                    {
-                        break;
-                    }
-                    if menu.list.highlighted == 0 {
-                        break;
-                    }
-                }
+                menu.list.move_prev();
             }
         }
         KeyCode::Down => {
             if let Some(menu) = &mut state.context_menu {
-                let len = menu.items.len();
-                loop {
-                    menu.list.move_next(len);
-                    if menu.items.get(menu.list.highlighted).map(String::as_str)
-                        != Some(crate::app::state::CONTEXT_MENU_SEPARATOR)
-                    {
-                        break;
-                    }
-                    if menu.list.highlighted >= len.saturating_sub(1) {
-                        break;
-                    }
-                }
+                menu.list.move_next(menu.items().len());
             }
         }
         KeyCode::Enter => {
@@ -1210,608 +907,6 @@ pub(crate) fn handle_context_menu_key(
         }
         _ => {}
     }
-}
-
-impl App {
-    pub(crate) fn handle_rename_key_via_api(&mut self, key: KeyEvent) {
-        if let Some(action) = modal_action_from_key(&key, RENAME_ACTIONS) {
-            self.apply_rename_mouse_action_via_api(action);
-            return;
-        }
-
-        handle_rename_edit_key(&mut self.state, key);
-    }
-
-    fn save_rename_modal_via_api(&mut self) {
-        let new_name = if self.state.name_input.trim().is_empty() {
-            self.state.name_input.clone()
-        } else {
-            self.state.name_input.trim().to_string()
-        };
-
-        match self.state.mode {
-            Mode::RenameWorkspace => {
-                if let Some(cwd) = self.state.pending_workspace_create_cwd.take() {
-                    let suggested_name = crate::workspace::derive_label_from_cwd(&cwd);
-                    let label = workspace_create_label(&new_name, &suggested_name);
-                    self.runtime_workspace_create(
-                        "tui.workspace.create_named",
-                        crate::api::schema::WorkspaceCreateParams {
-                            cwd: Some(cwd.display().to_string()),
-                            focus: true,
-                            label,
-                            group: None,
-                            env: Default::default(),
-                        },
-                    );
-                } else if !self.state.workspaces.is_empty() && !new_name.is_empty() {
-                    let workspace_id = self.public_workspace_id(self.state.selected);
-                    self.runtime_workspace_rename(
-                        "tui.workspace.rename",
-                        crate::api::schema::WorkspaceRenameParams {
-                            workspace_id,
-                            label: new_name,
-                        },
-                    );
-                }
-            }
-            Mode::RenameTab if self.state.creating_new_tab => {
-                let default_name = next_new_tab_default_name(&self.state);
-                let label = if new_name.is_empty() || new_name == default_name {
-                    None
-                } else {
-                    Some(new_name)
-                };
-                self.runtime_tab_create(
-                    "tui.tab.create_named",
-                    crate::api::schema::TabCreateParams {
-                        workspace_id: None,
-                        cwd: None,
-                        focus: true,
-                        label,
-                        env: Default::default(),
-                    },
-                );
-            }
-            Mode::RenameTab if !new_name.is_empty() => {
-                let Some(ws_idx) = self.state.active else {
-                    cancel_rename_modal(&mut self.state);
-                    return;
-                };
-                let tab_idx = self.state.workspaces[ws_idx].active_tab;
-                let keep_auto_name = self.state.workspaces[ws_idx]
-                    .tabs
-                    .get(tab_idx)
-                    .is_some_and(crate::workspace::Tab::is_auto_named)
-                    && self.state.workspaces[ws_idx]
-                        .tab_display_name(tab_idx)
-                        .is_some_and(|name| new_name == name);
-                if !keep_auto_name {
-                    if let Some(tab_id) = self.public_tab_id(ws_idx, tab_idx) {
-                        self.runtime_tab_rename(
-                            "tui.tab.rename",
-                            crate::api::schema::TabRenameParams {
-                                tab_id,
-                                label: new_name,
-                            },
-                        );
-                    }
-                }
-            }
-            Mode::RenamePane => {
-                if let (Some(ws_idx), Some(pane_id)) =
-                    (self.state.active, self.state.rename_pane_target)
-                {
-                    if let Some(pane_id) = self.public_pane_id(ws_idx, pane_id) {
-                        self.runtime_pane_rename(
-                            "tui.pane.rename",
-                            crate::api::schema::PaneRenameParams {
-                                pane_id,
-                                label: Some(new_name),
-                            },
-                        );
-                    }
-                }
-            }
-            Mode::SetWorkspaceGroup if !self.state.workspaces.is_empty() => {
-                // visual_group is TUI presentation state, not a runtime
-                // mutation. Empty input clears the group (same as "Remove
-                // from group").
-                let selected = self.state.selected;
-                if new_name.trim().is_empty() {
-                    self.state.workspaces[selected].visual_group = None;
-                } else {
-                    self.state.workspaces[selected].visual_group = Some(new_name);
-                }
-                self.state.mark_session_dirty();
-            }
-            Mode::LaunchProgramPrompt if !new_name.is_empty() => {
-                if let Err(err) = self.spawn_pane_command(&new_name, vec![]) {
-                    self.state.toast = Some(crate::app::state::ToastNotification {
-                        kind: crate::app::state::ToastKind::NeedsAttention,
-                        title: "bora command failed".to_string(),
-                        context: err.to_string(),
-                        position: None,
-                        target: None,
-                    });
-                }
-            }
-            _ => {}
-        }
-
-        cancel_rename_modal(&mut self.state);
-    }
-
-    pub(super) fn apply_rename_mouse_action_via_api(&mut self, action: ModalAction) {
-        match action {
-            ModalAction::Save => self.save_rename_modal_via_api(),
-            ModalAction::Clear => {
-                self.state.name_input.clear();
-                self.state.name_input_replace_on_type = false;
-            }
-            ModalAction::Cancel => cancel_rename_modal(&mut self.state),
-            _ => {}
-        }
-    }
-
-    pub(super) fn confirm_close_accept_via_api(&mut self) {
-        let ws_idx = self.state.selected;
-        if ws_idx < self.state.workspaces.len() {
-            self.close_workspace_idx_via_api(ws_idx);
-        }
-        self.state.mode = if self.state.active.is_some() {
-            Mode::Terminal
-        } else {
-            Mode::Navigate
-        };
-    }
-
-    pub(crate) fn handle_resize_key_via_api(&mut self, raw_key: TerminalKey) {
-        let key = raw_key.as_key_event();
-        if key.code == KeyCode::Esc
-            || key.code == KeyCode::Enter
-            || self.state.keybinds.resize_mode.matches_prefix_key(&raw_key)
-            || self.state.keybinds.resize_mode.matches_direct_key(&raw_key)
-        {
-            self.state.mode = if self.state.active.is_some() {
-                Mode::Terminal
-            } else {
-                Mode::Navigate
-            };
-            return;
-        }
-
-        let direction = match key.code {
-            KeyCode::Char('h') | KeyCode::Left => Some(NavDirection::Left),
-            KeyCode::Char('l') | KeyCode::Right => Some(NavDirection::Right),
-            KeyCode::Char('j') | KeyCode::Down => Some(NavDirection::Down),
-            KeyCode::Char('k') | KeyCode::Up => Some(NavDirection::Up),
-            _ => None,
-        };
-        if let Some(direction) = direction {
-            self.runtime_pane_resize(
-                "tui.pane.resize",
-                crate::api::schema::PaneResizeParams {
-                    pane_id: None,
-                    direction: super::navigate::api_pane_direction(direction),
-                    amount: None,
-                },
-            );
-        }
-    }
-
-    pub(crate) fn handle_confirm_close_key_via_api(&mut self, key: KeyEvent) {
-        match modal_action_from_key(&key, CONFIRM_CLOSE_ACTIONS) {
-            Some(ModalAction::Confirm) => {
-                self.confirm_close_accept_via_api();
-            }
-            Some(ModalAction::Cancel) => confirm_close_cancel(&mut self.state),
-            _ => {}
-        }
-    }
-
-    pub(crate) fn handle_context_menu_key_via_api(&mut self, key: KeyEvent) {
-        match key.code {
-            KeyCode::Esc => {
-                self.state.context_menu = None;
-                leave_modal(&mut self.state);
-            }
-            KeyCode::Up => {
-                if let Some(menu) = &mut self.state.context_menu {
-                    menu.list.move_prev();
-                }
-            }
-            KeyCode::Down => {
-                if let Some(menu) = &mut self.state.context_menu {
-                    menu.list.move_next(menu.items().len());
-                }
-            }
-            KeyCode::Enter => {
-                if let Some(menu) = self.state.context_menu.take() {
-                    let idx = menu.list.highlighted;
-                    self.apply_context_menu_action_via_api(menu, idx);
-                }
-            }
-            _ => {}
-        }
-    }
-
-    pub(crate) fn apply_context_menu_action_via_api(&mut self, menu: ContextMenuState, idx: usize) {
-        let item_owned = menu.items.get(idx).cloned();
-        let item = item_owned.as_deref();
-        let bora_commands = menu.bora_commands;
-        let bora_port = menu.bora_port;
-        match (menu.kind, item) {
-            (ContextMenuKind::GitWorkspace { ws_idx, .. }, Some("New worktree")) => {
-                self.state.request_new_linked_worktree = Some(ws_idx);
-                leave_modal(&mut self.state);
-            }
-            (ContextMenuKind::GitWorkspace { ws_idx, .. }, Some("Delete worktree\u{2026}")) => {
-                self.state.request_remove_linked_worktree = Some(ws_idx);
-                leave_modal(&mut self.state);
-            }
-            (ContextMenuKind::GitWorkspace { ws_idx, .. }, Some("Open worktree\u{2026}")) => {
-                self.state.request_open_existing_worktree = Some(ws_idx);
-                leave_modal(&mut self.state);
-            }
-            (ContextMenuKind::GitWorkspace { ws_idx, .. }, Some("Merge to main")) => {
-                self.state.request_merge_worktree_to_main = Some(ws_idx);
-                leave_modal(&mut self.state);
-            }
-            (ContextMenuKind::GitWorkspace { ws_idx, .. }, Some("Open PR")) => {
-                self.state.request_open_worktree_pr = Some(ws_idx);
-                leave_modal(&mut self.state);
-            }
-            (ContextMenuKind::GitWorkspace { ws_idx, .. }, Some("Sync")) => {
-                self.state.request_sync_workspace_git = Some(ws_idx);
-                leave_modal(&mut self.state);
-            }
-            (
-                ContextMenuKind::Workspace { ws_idx, .. }
-                | ContextMenuKind::GitWorkspace { ws_idx, .. },
-                Some("Refresh status"),
-            ) => {
-                // Force a fresh agent detection probe on every pane and make
-                // sure idle terminals have an idle timestamp (lost across
-                // restore/handoff). Also kick the git/PR/check refetch for the
-                // workspace under the cursor.
-                self.reset_all_agent_detection_runtimes();
-                let now = std::time::Instant::now();
-                for terminal in self.state.terminals.values_mut() {
-                    if terminal.state == crate::detect::AgentState::Idle
-                        && terminal.idle_since.is_none()
-                    {
-                        terminal.idle_since = Some(now);
-                    }
-                }
-                self.mark_git_status_refresh_due(now);
-                self.start_git_status_refresh_if_due(now);
-                if let Some(workspace_id) =
-                    self.state.workspaces.get(ws_idx).map(|ws| ws.id.clone())
-                {
-                    self.start_checks_fetch(&workspace_id);
-                }
-                leave_modal(&mut self.state);
-            }
-            (
-                ContextMenuKind::GitWorkspace {
-                    ws_idx, collapsed, ..
-                },
-                Some("Collapse" | "Expand"),
-            ) => {
-                if let Some(key) = self
-                    .state
-                    .workspaces
-                    .get(ws_idx)
-                    .and_then(|ws| ws.worktree_space())
-                    .map(|space| space.key.clone())
-                {
-                    if collapsed {
-                        self.state.collapsed_space_keys.remove(&key);
-                    } else {
-                        self.state.collapsed_space_keys.insert(key);
-                    }
-                    self.state.mark_session_dirty();
-                }
-                leave_modal(&mut self.state);
-            }
-            (
-                ContextMenuKind::Workspace { ws_idx, .. }
-                | ContextMenuKind::GitWorkspace { ws_idx, .. },
-                Some("Rename"),
-            ) => open_rename_workspace(&mut self.state, &self.terminal_runtimes, ws_idx),
-            (
-                ContextMenuKind::Workspace { ws_idx, .. }
-                | ContextMenuKind::GitWorkspace { ws_idx, .. },
-                Some("Copy path"),
-            ) => {
-                if let Some(ws) = self.state.workspaces.get(ws_idx) {
-                    let path = ws.identity_cwd.display().to_string();
-                    self.state.request_clipboard_write = Some(path.into_bytes());
-                }
-                leave_modal(&mut self.state);
-            }
-            (
-                ContextMenuKind::Workspace { ws_idx, .. }
-                | ContextMenuKind::GitWorkspace { ws_idx, .. },
-                Some("New group\u{2026}"),
-            ) => {
-                open_set_workspace_group(&mut self.state, ws_idx);
-            }
-            (
-                ContextMenuKind::Workspace { ws_idx, .. }
-                | ContextMenuKind::GitWorkspace { ws_idx, .. },
-                Some(item_str),
-            ) if item_str.starts_with("\u{2192} ") => {
-                // visual_group is TUI presentation state, not a runtime mutation.
-                let group_name = item_str["\u{2192} ".len()..].to_string();
-                if let Some(ws) = self.state.workspaces.get_mut(ws_idx) {
-                    ws.visual_group = Some(group_name);
-                    self.state.mark_session_dirty();
-                }
-                leave_modal(&mut self.state);
-            }
-            (
-                ContextMenuKind::Workspace { ws_idx, .. }
-                | ContextMenuKind::GitWorkspace { ws_idx, .. },
-                Some("Remove from group"),
-            ) => {
-                if let Some(ws) = self.state.workspaces.get_mut(ws_idx) {
-                    ws.visual_group = None;
-                    self.state.mark_session_dirty();
-                }
-                leave_modal(&mut self.state);
-            }
-            (
-                ContextMenuKind::Workspace { ws_idx, .. }
-                | ContextMenuKind::GitWorkspace { ws_idx, .. },
-                Some("Close" | "Close workspace"),
-            ) => {
-                self.state.selected = ws_idx;
-                if self.state.confirm_close {
-                    open_confirm_close(&mut self.state);
-                } else {
-                    self.close_workspace_idx_via_api(ws_idx);
-                    self.state.mode = Mode::Navigate;
-                }
-            }
-            (ContextMenuKind::Tab { ws_idx, tab_idx }, Some("New tab")) => {
-                self.focus_workspace_idx_via_api(ws_idx);
-                self.focus_tab_idx_via_api(tab_idx);
-                open_new_tab_dialog(&mut self.state);
-            }
-            (ContextMenuKind::Tab { ws_idx, tab_idx }, Some("Rename")) => {
-                self.focus_workspace_idx_via_api(ws_idx);
-                self.focus_tab_idx_via_api(tab_idx);
-                open_rename_active_tab(&mut self.state, false);
-            }
-            (ContextMenuKind::Tab { ws_idx, tab_idx }, Some("Close")) => {
-                self.focus_workspace_idx_via_api(ws_idx);
-                self.focus_tab_idx_via_api(tab_idx);
-                if !self.close_active_tab_via_api_requires_confirmation() {
-                    leave_modal(&mut self.state);
-                }
-            }
-            (ContextMenuKind::Pane { pane_id, .. }, Some("Rename pane")) => {
-                open_rename_pane(&mut self.state, pane_id);
-            }
-            (
-                ContextMenuKind::Pane {
-                    ws_idx, pane_id, ..
-                },
-                Some("Clear pane name"),
-            ) => {
-                if let Some(pane_id) = self.public_pane_id(ws_idx, pane_id) {
-                    self.runtime_pane_rename(
-                        "tui.pane.clear_name",
-                        crate::api::schema::PaneRenameParams {
-                            pane_id,
-                            label: None,
-                        },
-                    );
-                }
-                self.state.mode = Mode::Terminal;
-            }
-            (
-                ContextMenuKind::Pane {
-                    ws_idx, pane_id, ..
-                },
-                Some(action @ ("Send right-clicks to pane" | "Use Herdr right-click menu")),
-            ) => {
-                if let Some(pane_id) = self.public_pane_id(ws_idx, pane_id) {
-                    self.runtime_pane_input_set(
-                        "tui.pane.input.set",
-                        crate::api::schema::PaneInputSetParams {
-                            pane_id,
-                            right_click: if action == "Send right-clicks to pane" {
-                                crate::api::schema::PaneRightClickTarget::Pane
-                            } else {
-                                crate::api::schema::PaneRightClickTarget::Herdr
-                            },
-                        },
-                    );
-                }
-                self.state.mode = Mode::Terminal;
-            }
-            (
-                ContextMenuKind::Pane {
-                    ws_idx,
-                    pane_id,
-                    source_pane_id: Some(source_pane_id),
-                    ..
-                },
-                Some("Swap with focused pane"),
-            ) => {
-                let source_public_id = self.public_pane_id(ws_idx, source_pane_id);
-                let target_public_id = self.public_pane_id(ws_idx, pane_id);
-                if let (Some(source_public_id), Some(target_public_id)) =
-                    (source_public_id, target_public_id)
-                {
-                    self.runtime_pane_swap(
-                        "tui.pane.swap_exact",
-                        crate::api::schema::PaneSwapParams {
-                            pane_id: None,
-                            direction: None,
-                            source_pane_id: Some(source_public_id),
-                            target_pane_id: Some(target_public_id),
-                        },
-                    );
-                    self.focus_pane_internal_via_api(ws_idx, source_pane_id);
-                }
-                self.state.mode = Mode::Terminal;
-            }
-            (
-                ContextMenuKind::Pane {
-                    ws_idx, pane_id, ..
-                },
-                Some("Split right"),
-            ) => {
-                self.focus_pane_internal_via_api(ws_idx, pane_id);
-                self.split_focused_pane_via_api(crate::api::schema::SplitDirection::Right);
-                self.state.mode = Mode::Terminal;
-            }
-            (
-                ContextMenuKind::Pane {
-                    ws_idx, pane_id, ..
-                },
-                Some("Split down"),
-            ) => {
-                self.focus_pane_internal_via_api(ws_idx, pane_id);
-                self.split_focused_pane_via_api(crate::api::schema::SplitDirection::Down);
-                self.state.mode = Mode::Terminal;
-            }
-            (
-                ContextMenuKind::Pane {
-                    ws_idx, pane_id, ..
-                },
-                Some("Zoom"),
-            ) => {
-                self.focus_pane_internal_via_api(ws_idx, pane_id);
-                self.zoom_focused_pane_via_api();
-                self.state.mode = Mode::Terminal;
-            }
-            (
-                ContextMenuKind::Pane {
-                    ws_idx, pane_id, ..
-                },
-                Some("Close pane"),
-            ) => {
-                self.focus_pane_internal_via_api(ws_idx, pane_id);
-                if !self.close_focused_pane_via_api_requires_confirmation() {
-                    self.state.mode = if self.state.active.is_some() {
-                        Mode::Terminal
-                    } else {
-                        Mode::Navigate
-                    };
-                }
-            }
-            (ContextMenuKind::RepoPr { ws_idx, number, .. }, Some("Open in worktree")) => {
-                self.state.request_open_pr_worktree = Some((ws_idx, number));
-                leave_modal(&mut self.state);
-            }
-            (ContextMenuKind::RepoPr { url, .. }, Some("Open in browser")) => {
-                self.state.request_open_url = Some(url);
-                leave_modal(&mut self.state);
-            }
-            (ContextMenuKind::RepoPr { url, .. }, Some("Copy URL")) => {
-                self.state.request_clipboard_write = Some(url.into_bytes());
-                leave_modal(&mut self.state);
-            }
-            (ContextMenuKind::RepoIssue { number, url, .. }, Some("Run with bora-flow")) => {
-                self.state.request_flow_run =
-                    Some(crate::app::state::FlowRunRequest { number, url });
-                leave_modal(&mut self.state);
-            }
-            (ContextMenuKind::RepoIssue { url, .. }, Some("Open in browser")) => {
-                self.state.request_open_url = Some(url);
-                leave_modal(&mut self.state);
-            }
-            (ContextMenuKind::RepoIssue { url, .. }, Some("Copy URL")) => {
-                self.state.request_clipboard_write = Some(url.into_bytes());
-                leave_modal(&mut self.state);
-            }
-            (
-                ContextMenuKind::Workspace { ws_idx, .. }
-                | ContextMenuKind::GitWorkspace { ws_idx, .. },
-                Some(label @ ("Hide 5m" | "Hide 10m" | "Hide 15m" | "Hide 30m")),
-            ) => {
-                if let Some(ws) = self.state.workspaces.get(ws_idx) {
-                    let minutes = hide_minutes(label);
-                    let key = format!("ws:{}", ws.id);
-                    self.state.hidden_space_keys.insert(
-                        key,
-                        std::time::Instant::now() + std::time::Duration::from_secs(minutes * 60),
-                    );
-                }
-                leave_modal(&mut self.state);
-            }
-            (
-                ContextMenuKind::Workspace { ws_idx, .. }
-                | ContextMenuKind::GitWorkspace { ws_idx, .. },
-                Some("Unhide"),
-            ) => {
-                let keys: Vec<String> = if let Some(ws) = self.state.workspaces.get(ws_idx) {
-                    let mut k = vec![format!("ws:{}", ws.id)];
-                    if let Some(group) = &ws.visual_group {
-                        k.push(format!("vg:{group}"));
-                    }
-                    if let Some(space) = ws.git_space() {
-                        k.push(space.repo_identity.clone());
-                    }
-                    k
-                } else {
-                    Vec::new()
-                };
-                for key in keys {
-                    self.state.hidden_space_keys.remove(&key);
-                }
-                leave_modal(&mut self.state);
-            }
-            (
-                ContextMenuKind::GroupHeader { collapse_key, .. },
-                Some(label @ ("Hide 5m" | "Hide 10m" | "Hide 15m" | "Hide 30m")),
-            ) => {
-                let minutes = hide_minutes(label);
-                self.state.hidden_space_keys.insert(
-                    collapse_key,
-                    std::time::Instant::now() + std::time::Duration::from_secs(minutes * 60),
-                );
-                leave_modal(&mut self.state);
-            }
-            (ContextMenuKind::GroupHeader { collapse_key, .. }, Some("Unhide")) => {
-                self.state.hidden_space_keys.remove(&collapse_key);
-                leave_modal(&mut self.state);
-            }
-            (
-                ContextMenuKind::Workspace { ws_idx, .. }
-                | ContextMenuKind::GitWorkspace { ws_idx, .. },
-                Some(label),
-            ) if bora_commands.iter().any(|c| c.label == label) => {
-                let cmd = bora_commands
-                    .iter()
-                    .find(|c| c.label == label)
-                    .expect("guard guarantees match");
-                self.state.pending_bora_command = Some(crate::app::state::PendingBoraCommand {
-                    ws_idx,
-                    command: cmd.command.clone(),
-                    mode: cmd.mode.clone(),
-                    port: bora_port,
-                });
-                leave_modal(&mut self.state);
-            }
-            _ => leave_modal(&mut self.state),
-        }
-    }
-}
-
-fn cancel_rename_modal(state: &mut AppState) {
-    state.creating_new_tab = false;
-    state.requested_new_tab_name = None;
-    state.pending_workspace_create_cwd = None;
-    state.rename_pane_target = None;
-    state.name_input.clear();
-    state.name_input_replace_on_type = false;
-    leave_modal(state);
 }
 
 impl AppState {
@@ -1836,8 +931,6 @@ mod tests {
 
     use super::super::{capture_snapshot, state_with_workspaces};
     use super::*;
-    use crate::app::state::build_context_menu_items;
-    use crate::workspace::Workspace;
 
     fn config_env_lock() -> &'static std::sync::Mutex<()> {
         crate::config::test_config_env_lock()
@@ -1853,43 +946,6 @@ mod tests {
                 .as_nanos()
         );
         std::env::temp_dir().join(unique).join("config.toml")
-    }
-
-    fn app_with_test_workspaces(names: &[&str]) -> App {
-        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut app = App::new(
-            &crate::config::Config::default(),
-            true,
-            None,
-            api_rx,
-            crate::api::EventHub::default(),
-        );
-        app.state.workspaces = names.iter().map(|name| Workspace::test_new(name)).collect();
-        app.state.ensure_test_terminals();
-        app.state.active = (!app.state.workspaces.is_empty()).then_some(0);
-        app.state.selected = 0;
-        app
-    }
-
-    #[test]
-    fn workspace_create_label_preserves_auto_name_for_suggestion_or_blank() {
-        assert_eq!(workspace_create_label("project", "project"), None);
-        assert_eq!(workspace_create_label("", "project"), None);
-        assert_eq!(workspace_create_label("   ", "project"), None);
-        assert_eq!(
-            workspace_create_label("  logs  ", "project").as_deref(),
-            Some("logs")
-        );
-    }
-
-    fn mark_worktree_space_member(state: &mut AppState, ws_idx: usize, key: &str) {
-        state.workspaces[ws_idx].worktree_space = Some(crate::workspace::WorktreeSpaceMembership {
-            key: key.into(),
-            label: "herdr".into(),
-            repo_root: "/repo/herdr".into(),
-            checkout_path: format!("/repo/worktree-{ws_idx}").into(),
-            is_linked_worktree: ws_idx != 0,
-        });
     }
 
     #[test]
@@ -2167,136 +1223,6 @@ mod tests {
     }
 
     #[test]
-    fn keybind_help_slash_focuses_filter_and_preserves_vim_scroll() {
-        let mut state = state_with_workspaces(&["test"]);
-        state.keybind_help.query = "stale".into();
-        state.keybind_help.search_focused = true;
-        state.view.terminal_area = Rect::new(0, 0, 100, 30);
-
-        open_keybind_help(&mut state);
-        handle_keybind_help_key(
-            &mut state,
-            TerminalKey::new(KeyCode::Char('j'), KeyModifiers::empty()),
-        );
-        assert_eq!(state.keybind_help.scroll, 1);
-        handle_keybind_help_key(
-            &mut state,
-            TerminalKey::new(KeyCode::Char('k'), KeyModifiers::empty()),
-        );
-        assert_eq!(state.keybind_help.scroll, 0);
-
-        handle_keybind_help_key(
-            &mut state,
-            TerminalKey::new(KeyCode::Char('w'), KeyModifiers::empty()),
-        );
-        assert!(state.keybind_help.query.is_empty());
-
-        handle_keybind_help_key(
-            &mut state,
-            TerminalKey::new(KeyCode::Char('/'), KeyModifiers::empty()),
-        );
-        for character in "work".chars() {
-            state.keybind_help.scroll = 2;
-            handle_keybind_help_key(
-                &mut state,
-                TerminalKey::new(KeyCode::Char(character), KeyModifiers::empty()),
-            );
-        }
-
-        assert!(state.keybind_help.search_focused);
-        assert_eq!(state.keybind_help.query, "work");
-        assert_eq!(state.keybind_help.scroll, 0);
-    }
-
-    #[test]
-    fn keybind_help_query_supports_backspace_clear_and_sanitized_paste() {
-        let mut state = state_with_workspaces(&["test"]);
-        open_keybind_help(&mut state);
-        handle_keybind_help_key(
-            &mut state,
-            TerminalKey::new(KeyCode::Char('/'), KeyModifiers::empty()),
-        );
-
-        insert_keybind_help_query_text(&mut state, "work\nspace");
-        assert_eq!(state.keybind_help.query, "workspace");
-
-        handle_keybind_help_key(
-            &mut state,
-            TerminalKey::new(KeyCode::Backspace, KeyModifiers::empty()),
-        );
-        assert_eq!(state.keybind_help.query, "workspac");
-
-        handle_keybind_help_key(
-            &mut state,
-            TerminalKey::new(KeyCode::Char('u'), KeyModifiers::CONTROL),
-        );
-        assert!(state.keybind_help.query.is_empty());
-    }
-
-    #[test]
-    fn keybind_help_escape_leaves_search_before_closing() {
-        let mut state = state_with_workspaces(&["test"]);
-        open_keybind_help(&mut state);
-        state.keybind_help.search_focused = true;
-        state.keybind_help.query = "work".into();
-
-        handle_keybind_help_key(
-            &mut state,
-            TerminalKey::new(KeyCode::Esc, KeyModifiers::empty()),
-        );
-        assert_eq!(state.mode, Mode::KeybindHelp);
-        assert!(!state.keybind_help.search_focused);
-        assert!(state.keybind_help.query.is_empty());
-
-        handle_keybind_help_key(
-            &mut state,
-            TerminalKey::new(KeyCode::Esc, KeyModifiers::empty()),
-        );
-        assert_eq!(state.mode, Mode::Terminal);
-    }
-
-    #[test]
-    fn enhanced_shifted_slash_focuses_keybind_help_filter() {
-        let mut state = state_with_workspaces(&["test"]);
-        open_keybind_help(&mut state);
-
-        handle_keybind_help_key(
-            &mut state,
-            TerminalKey::new(KeyCode::Char('7'), KeyModifiers::SHIFT)
-                .with_shifted_codepoint('/' as u32),
-        );
-
-        assert!(state.keybind_help.search_focused);
-    }
-
-    #[test]
-    fn enhanced_shifted_question_mark_closes_keybind_help_when_not_searching() {
-        let mut state = state_with_workspaces(&["test"]);
-        open_keybind_help(&mut state);
-
-        handle_keybind_help_key(
-            &mut state,
-            TerminalKey::new(KeyCode::Char('/'), KeyModifiers::SHIFT)
-                .with_shifted_codepoint('?' as u32),
-        );
-
-        assert_eq!(state.mode, Mode::Terminal);
-
-        open_keybind_help(&mut state);
-        handle_keybind_help_key(
-            &mut state,
-            TerminalKey::new(KeyCode::Char('/'), KeyModifiers::empty()),
-        );
-        handle_keybind_help_key(
-            &mut state,
-            TerminalKey::new(KeyCode::Char('/'), KeyModifiers::SHIFT)
-                .with_shifted_codepoint('?' as u32),
-        );
-
-        assert_eq!(state.keybind_help.query, "?");
-    }
-
-    #[test]
     fn navigator_search_accepts_pasted_text_when_focused() {
         let mut state = state_with_workspaces(&["alpha", "beta"]);
         let terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
@@ -2320,131 +1246,6 @@ mod tests {
         insert_navigator_search_text(&mut state, &terminal_runtimes, "beta");
 
         assert!(state.navigator.query.is_empty());
-    }
-
-    #[test]
-    fn navigator_empty_search_escape_returns_to_commands() {
-        let mut state = state_with_workspaces(&["alpha", "beta"]);
-        let terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
-        state.mode = Mode::Navigator;
-        state.navigator.search_focused = true;
-
-        handle_navigator_key(
-            &mut state,
-            &terminal_runtimes,
-            KeyEvent::new(KeyCode::Esc, KeyModifiers::empty()),
-        );
-
-        assert_eq!(state.mode, Mode::Navigator);
-        assert!(!state.navigator.search_focused);
-        assert!(state.navigator.query.is_empty());
-
-        handle_navigator_key(
-            &mut state,
-            &terminal_runtimes,
-            KeyEvent::new(KeyCode::Char('w'), KeyModifiers::empty()),
-        );
-
-        assert_eq!(
-            state.navigator.state_filter,
-            Some(NavigatorStateFilter::Working)
-        );
-        assert!(state.navigator.query.is_empty());
-
-        handle_navigator_key(
-            &mut state,
-            &terminal_runtimes,
-            KeyEvent::new(KeyCode::Esc, KeyModifiers::empty()),
-        );
-
-        assert_eq!(state.mode, Mode::Terminal);
-    }
-
-    #[test]
-    fn navigator_search_escape_blurs_then_next_escape_closes() {
-        let mut state = state_with_workspaces(&["alpha", "beta"]);
-        let terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
-        state.mode = Mode::Navigator;
-        state.navigator.search_focused = true;
-        state.navigator.query = "a".into();
-
-        handle_navigator_key(
-            &mut state,
-            &terminal_runtimes,
-            KeyEvent::new(KeyCode::Esc, KeyModifiers::empty()),
-        );
-
-        assert_eq!(state.mode, Mode::Navigator);
-        assert!(!state.navigator.search_focused);
-        assert_eq!(state.navigator.query, "a");
-
-        handle_navigator_key(
-            &mut state,
-            &terminal_runtimes,
-            KeyEvent::new(KeyCode::Char('j'), KeyModifiers::empty()),
-        );
-
-        assert_eq!(state.navigator.selected, 1);
-        assert_eq!(state.navigator.query, "a");
-
-        handle_navigator_key(
-            &mut state,
-            &terminal_runtimes,
-            KeyEvent::new(KeyCode::Char('/'), KeyModifiers::empty()),
-        );
-
-        assert_eq!(state.mode, Mode::Navigator);
-        assert!(state.navigator.search_focused);
-        assert_eq!(state.navigator.query, "a");
-
-        handle_navigator_key(
-            &mut state,
-            &terminal_runtimes,
-            KeyEvent::new(KeyCode::Char('l'), KeyModifiers::empty()),
-        );
-
-        assert_eq!(state.navigator.query, "al");
-
-        handle_navigator_key(
-            &mut state,
-            &terminal_runtimes,
-            KeyEvent::new(KeyCode::Esc, KeyModifiers::empty()),
-        );
-
-        assert_eq!(state.mode, Mode::Navigator);
-        assert!(!state.navigator.search_focused);
-
-        handle_navigator_key(
-            &mut state,
-            &terminal_runtimes,
-            KeyEvent::new(KeyCode::Esc, KeyModifiers::empty()),
-        );
-
-        assert_eq!(state.mode, Mode::Terminal);
-    }
-
-    #[test]
-    fn navigator_ignores_modified_j_and_k() {
-        let mut state = state_with_workspaces(&["alpha", "beta"]);
-        let terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
-        state.mode = Mode::Navigator;
-        state.navigator.selected = 1;
-
-        handle_navigator_key(
-            &mut state,
-            &terminal_runtimes,
-            KeyEvent::new(KeyCode::Char('k'), KeyModifiers::CONTROL),
-        );
-
-        assert_eq!(state.navigator.selected, 1);
-
-        handle_navigator_key(
-            &mut state,
-            &terminal_runtimes,
-            KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL),
-        );
-
-        assert_eq!(state.navigator.selected, 1);
     }
 
     #[test]
@@ -2603,7 +1404,7 @@ mod tests {
     }
 
     #[test]
-    fn context_menu_close_parent_workspace_confirms_then_closes_only_it() {
+    fn context_menu_close_group_opens_group_close_confirmation() {
         let mut state = state_with_workspaces(&["main", "issue"]);
         state.active = Some(0);
         state.selected = 1;
@@ -2621,128 +1422,28 @@ mod tests {
             checkout_path: "/repo/herdr-issue".into(),
             is_linked_worktree: true,
         });
-        let kind = ContextMenuKind::GitWorkspace {
-            ws_idx: 0,
-            is_linked_worktree: false,
-            has_worktree_children: true,
-            collapsed: false,
-            hidden: false,
-        };
-        let items = build_context_menu_items(&kind, &[], &[]);
-        let close_idx = items
-            .iter()
-            .position(|i| i == "Close workspace")
-            .expect("close item");
         let menu = ContextMenuState {
-            items,
-            kind,
+            kind: ContextMenuKind::GitWorkspace {
+                ws_idx: 0,
+                is_linked_worktree: false,
+                has_worktree_children: true,
+                collapsed: false,
+            },
             x: 0,
             y: 0,
             list: MenuListState::new(0),
-            bora_commands: vec![],
-            bora_port: None,
         };
         let mut terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
 
-        apply_context_menu_action(&mut state, &mut terminal_runtimes, menu, close_idx);
+        apply_context_menu_action(&mut state, &mut terminal_runtimes, menu, 1);
 
         assert_eq!(state.selected, 0);
         assert_eq!(state.mode, Mode::ConfirmClose);
 
         confirm_close_accept(&mut state);
 
-        assert_eq!(state.workspaces.len(), 1);
-        assert_eq!(state.workspaces[0].display_name(), "issue");
-        assert_eq!(state.mode, Mode::Terminal);
-    }
-
-    #[test]
-    fn context_menu_close_last_pane_of_parent_closes_only_it() {
-        let mut state = state_with_workspaces(&["main", "issue"]);
-        state.active = Some(0);
-        state.selected = 1;
-        state.workspaces[0].worktree_space = Some(crate::workspace::WorktreeSpaceMembership {
-            key: "repo-key".into(),
-            label: "herdr".into(),
-            repo_root: "/repo/herdr".into(),
-            checkout_path: "/repo/herdr".into(),
-            is_linked_worktree: false,
-        });
-        state.workspaces[1].worktree_space = Some(crate::workspace::WorktreeSpaceMembership {
-            key: "repo-key".into(),
-            label: "herdr".into(),
-            repo_root: "/repo/herdr".into(),
-            checkout_path: "/repo/herdr-issue".into(),
-            is_linked_worktree: true,
-        });
-        let pane_id = state.workspaces[0].tabs[0].root_pane;
-        let kind = ContextMenuKind::Pane {
-            ws_idx: 0,
-            tab_idx: 0,
-            pane_id,
-            source_pane_id: None,
-            has_manual_label: false,
-            right_click_passthrough: false,
-        };
-        let menu = ContextMenuState {
-            items: build_context_menu_items(&kind, &[], &[]),
-            kind,
-            x: 0,
-            y: 0,
-            list: MenuListState::new(0),
-            bora_commands: vec![],
-            bora_port: None,
-        };
-        let idx = menu
-            .items()
-            .iter()
-            .position(|item| item.as_str() == "Close pane")
-            .expect("close pane item");
-        let mut terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
-
-        apply_context_menu_action(&mut state, &mut terminal_runtimes, menu, idx);
-
-        assert_eq!(state.selected, 0);
-        assert_ne!(state.mode, Mode::ConfirmClose);
-        assert_eq!(state.workspaces.len(), 1);
-        assert_eq!(state.workspaces[0].display_name(), "issue");
-    }
-
-    #[test]
-    fn context_menu_toggles_pane_right_click_passthrough() {
-        let mut app = app_with_test_workspaces(&["main"]);
-        app.state.active = Some(0);
-        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
-        let kind = ContextMenuKind::Pane {
-            ws_idx: 0,
-            tab_idx: 0,
-            pane_id,
-            source_pane_id: None,
-            has_manual_label: false,
-            right_click_passthrough: false,
-        };
-        let menu = ContextMenuState {
-            items: build_context_menu_items(&kind, &[], &[]),
-            kind,
-            x: 0,
-            y: 0,
-            list: MenuListState::new(0),
-            bora_commands: vec![],
-            bora_port: None,
-        };
-        let idx = menu
-            .items()
-            .iter()
-            .position(|item| *item == "Send right-clicks to pane")
-            .unwrap();
-        app.apply_context_menu_action_via_api(menu, idx);
-
-        assert!(
-            app.state.workspaces[0]
-                .pane_state(pane_id)
-                .unwrap()
-                .right_click_passthrough
-        );
+        assert!(state.workspaces.is_empty());
+        assert_eq!(state.mode, Mode::Navigate);
     }
 
     #[test]
@@ -2765,112 +1466,30 @@ mod tests {
             is_linked_worktree: true,
         });
         let pane_id = state.workspaces[0].tabs[0].root_pane;
-        let kind = ContextMenuKind::Pane {
-            ws_idx: 0,
-            tab_idx: 0,
-            pane_id,
-            source_pane_id: None,
-            has_manual_label: false,
-            right_click_passthrough: false,
-        };
         let menu = ContextMenuState {
-            items: build_context_menu_items(&kind, &[], &[]),
-            kind,
+            kind: ContextMenuKind::Pane {
+                ws_idx: 0,
+                tab_idx: 0,
+                pane_id,
+                source_pane_id: None,
+                has_manual_label: false,
+            },
             x: 0,
             y: 0,
             list: MenuListState::new(0),
-            bora_commands: vec![],
-            bora_port: None,
         };
         let idx = menu
             .items()
             .iter()
-            .position(|item| item.as_str() == "Close pane")
+            .position(|item| *item == "Close pane")
             .expect("close pane item");
         let mut terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
 
         apply_context_menu_action(&mut state, &mut terminal_runtimes, menu, idx);
 
         assert_eq!(state.selected, 0);
-        assert_ne!(state.mode, Mode::ConfirmClose);
-        assert_eq!(state.workspaces.len(), 1);
-        assert_eq!(state.workspaces[0].display_name(), "issue");
-    }
-    #[test]
-    fn api_context_menu_close_last_tab_of_parent_closes_only_it() {
-        let mut app = app_with_test_workspaces(&["main", "issue"]);
-        mark_worktree_space_member(&mut app.state, 0, "repo-key");
-        mark_worktree_space_member(&mut app.state, 1, "repo-key");
-        app.state.active = Some(0);
-        app.state.selected = 1;
-        app.state.mode = Mode::ContextMenu;
-        let kind = ContextMenuKind::Tab {
-            ws_idx: 0,
-            tab_idx: 0,
-        };
-        let menu = ContextMenuState {
-            items: build_context_menu_items(&kind, &[], &[]),
-            kind,
-            x: 0,
-            y: 0,
-            list: MenuListState::new(0),
-            bora_commands: vec![],
-            bora_port: None,
-        };
-        let idx = menu
-            .items()
-            .iter()
-            .position(|item| *item == "Close")
-            .expect("close tab item");
-
-        app.apply_context_menu_action_via_api(menu, idx);
-        assert_eq!(app.state.selected, 0);
-        assert_ne!(app.state.mode, Mode::ConfirmClose);
-        assert_eq!(app.state.workspaces.len(), 1);
-        assert_eq!(app.state.workspaces[0].display_name(), "issue");
-    }
-
-    #[test]
-    fn api_context_menu_enter_close_last_pane_of_parent_closes_only_it() {
-        let mut app = app_with_test_workspaces(&["main", "issue"]);
-        mark_worktree_space_member(&mut app.state, 0, "repo-key");
-        mark_worktree_space_member(&mut app.state, 1, "repo-key");
-        app.state.active = Some(0);
-        app.state.selected = 1;
-        app.state.mode = Mode::ContextMenu;
-        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
-        let kind = ContextMenuKind::Pane {
-            ws_idx: 0,
-            tab_idx: 0,
-            pane_id,
-            source_pane_id: None,
-            has_manual_label: false,
-            right_click_passthrough: false,
-        };
-        let mut menu = ContextMenuState {
-            items: build_context_menu_items(&kind, &[], &[]),
-            kind,
-            x: 0,
-            y: 0,
-            list: MenuListState::new(0),
-            bora_commands: vec![],
-            bora_port: None,
-        };
-        let close_idx = menu
-            .items()
-            .iter()
-            .position(|item| *item == "Close pane")
-            .expect("close pane item");
-        menu.list.highlighted = close_idx;
-        app.state.context_menu = Some(menu);
-
-        app.handle_context_menu_key_via_api(KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()));
-
-        assert_eq!(app.state.selected, 0);
-        assert_ne!(app.state.mode, Mode::ConfirmClose);
-        assert_eq!(app.state.workspaces.len(), 1);
-        assert_eq!(app.state.workspaces[0].display_name(), "issue");
-        assert!(app.state.context_menu.is_none());
+        assert_eq!(state.mode, Mode::ConfirmClose);
+        assert_eq!(state.workspaces.len(), 2);
     }
 
     #[test]
@@ -2885,27 +1504,22 @@ mod tests {
             checkout_path: "/repo/herdr-issue".into(),
             is_linked_worktree: true,
         });
-        let kind = ContextMenuKind::GitWorkspace {
-            ws_idx: 1,
-            is_linked_worktree: true,
-            has_worktree_children: false,
-            collapsed: false,
-            hidden: false,
-        };
         let menu = ContextMenuState {
-            items: build_context_menu_items(&kind, &[], &[]),
-            kind,
+            kind: ContextMenuKind::GitWorkspace {
+                ws_idx: 1,
+                is_linked_worktree: true,
+                has_worktree_children: false,
+                collapsed: false,
+            },
             x: 0,
             y: 0,
             list: MenuListState::new(0),
-            bora_commands: vec![],
-            bora_port: None,
         };
-        assert!(menu.items().iter().any(|i| i.as_str() == "Merge to main"));
+        assert!(menu.items().contains(&"Merge to main"));
         let merge_idx = menu
             .items()
             .iter()
-            .position(|item| item.as_str() == "Merge to main")
+            .position(|item| *item == "Merge to main")
             .expect("merge to main item");
         let mut terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
         apply_context_menu_action(&mut state, &mut terminal_runtimes, menu, merge_idx);
@@ -2925,27 +1539,22 @@ mod tests {
             checkout_path: "/repo/herdr-issue".into(),
             is_linked_worktree: true,
         });
-        let kind = ContextMenuKind::GitWorkspace {
-            ws_idx: 1,
-            is_linked_worktree: true,
-            has_worktree_children: false,
-            collapsed: false,
-            hidden: false,
-        };
         let menu = ContextMenuState {
-            items: build_context_menu_items(&kind, &[], &[]),
-            kind,
+            kind: ContextMenuKind::GitWorkspace {
+                ws_idx: 1,
+                is_linked_worktree: true,
+                has_worktree_children: false,
+                collapsed: false,
+            },
             x: 0,
             y: 0,
             list: MenuListState::new(0),
-            bora_commands: vec![],
-            bora_port: None,
         };
-        assert!(menu.items().iter().any(|i| i.as_str() == "Open PR"));
+        assert!(menu.items().contains(&"Open PR"));
         let pr_idx = menu
             .items()
             .iter()
-            .position(|item| item.as_str() == "Open PR")
+            .position(|item| *item == "Open PR")
             .expect("open pr item");
         let mut terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
         apply_context_menu_action(&mut state, &mut terminal_runtimes, menu, pr_idx);
@@ -2964,27 +1573,22 @@ mod tests {
             checkout_path: "/repo/herdr-issue".into(),
             is_linked_worktree: true,
         });
-        let kind = ContextMenuKind::GitWorkspace {
-            ws_idx: 1,
-            is_linked_worktree: true,
-            has_worktree_children: false,
-            collapsed: false,
-            hidden: false,
-        };
         let menu = ContextMenuState {
-            items: build_context_menu_items(&kind, &[], &[]),
-            kind,
+            kind: ContextMenuKind::GitWorkspace {
+                ws_idx: 1,
+                is_linked_worktree: true,
+                has_worktree_children: false,
+                collapsed: false,
+            },
             x: 0,
             y: 0,
             list: MenuListState::new(0),
-            bora_commands: vec![],
-            bora_port: None,
         };
-        assert!(menu.items().iter().any(|i| i.as_str() == "Sync"));
+        assert!(menu.items().contains(&"Sync"));
         let sync_idx = menu
             .items()
             .iter()
-            .position(|item| item.as_str() == "Sync")
+            .position(|item| *item == "Sync")
             .expect("sync item");
         let mut terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
         apply_context_menu_action(&mut state, &mut terminal_runtimes, menu, sync_idx);
@@ -3003,203 +1607,25 @@ mod tests {
             checkout_path: "/repo/herdr".into(),
             is_linked_worktree: false,
         });
-        let kind = ContextMenuKind::GitWorkspace {
-            ws_idx: 0,
-            is_linked_worktree: false,
-            has_worktree_children: false,
-            collapsed: false,
-            hidden: false,
-        };
         let menu = ContextMenuState {
-            items: build_context_menu_items(&kind, &[], &[]),
-            kind,
+            kind: ContextMenuKind::GitWorkspace {
+                ws_idx: 0,
+                is_linked_worktree: false,
+                has_worktree_children: false,
+                collapsed: false,
+            },
             x: 0,
             y: 0,
             list: MenuListState::new(0),
-            bora_commands: vec![],
-            bora_port: None,
         };
-        assert!(menu.items().iter().any(|i| i.as_str() == "Sync"));
+        assert!(menu.items().contains(&"Sync"));
         let sync_idx = menu
             .items()
             .iter()
-            .position(|item| item.as_str() == "Sync")
+            .position(|item| *item == "Sync")
             .expect("sync item");
         let mut terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
         apply_context_menu_action(&mut state, &mut terminal_runtimes, menu, sync_idx);
         assert_eq!(state.request_sync_workspace_git, Some(0));
-    }
-
-    fn repo_pr_menu() -> ContextMenuState {
-        let kind = ContextMenuKind::RepoPr {
-            ws_idx: 0,
-            number: 42,
-            url: "https://github.com/owner/proj/pull/42".into(),
-            head_ref: "fix/focus".into(),
-        };
-        ContextMenuState {
-            items: build_context_menu_items(&kind, &[], &[]),
-            kind,
-            x: 0,
-            y: 0,
-            list: MenuListState::new(0),
-            bora_commands: vec![],
-            bora_port: None,
-        }
-    }
-
-    #[test]
-    fn repo_pr_context_menu_actions_set_request_fields() {
-        let menu = repo_pr_menu();
-        assert_eq!(
-            menu.items,
-            [
-                "Open in worktree",
-                crate::app::state::CONTEXT_MENU_SEPARATOR,
-                "Open in browser",
-                "Copy URL",
-            ]
-        );
-
-        let mut terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
-
-        let mut state = state_with_workspaces(&["proj"]);
-        let idx = |label: &str| {
-            repo_pr_menu()
-                .items
-                .iter()
-                .position(|item| item == label)
-                .expect("menu item")
-        };
-
-        apply_context_menu_action(
-            &mut state,
-            &mut terminal_runtimes,
-            repo_pr_menu(),
-            idx("Open in worktree"),
-        );
-        assert_eq!(state.request_open_pr_worktree, Some((0, 42)));
-        assert_ne!(state.mode, Mode::ContextMenu, "menu closed after action");
-
-        let mut state = state_with_workspaces(&["proj"]);
-        apply_context_menu_action(
-            &mut state,
-            &mut terminal_runtimes,
-            repo_pr_menu(),
-            idx("Open in browser"),
-        );
-        assert_eq!(
-            state.request_open_url.as_deref(),
-            Some("https://github.com/owner/proj/pull/42")
-        );
-
-        let mut state = state_with_workspaces(&["proj"]);
-        apply_context_menu_action(
-            &mut state,
-            &mut terminal_runtimes,
-            repo_pr_menu(),
-            idx("Copy URL"),
-        );
-        assert_eq!(
-            state.request_clipboard_write.as_deref(),
-            Some("https://github.com/owner/proj/pull/42".as_bytes())
-        );
-    }
-
-    fn repo_issue_menu_with_flow(flow_available: bool) -> ContextMenuState {
-        let kind = ContextMenuKind::RepoIssue {
-            number: 12,
-            url: "https://github.com/owner/proj/issues/12".into(),
-            flow_available,
-        };
-        ContextMenuState {
-            items: build_context_menu_items(&kind, &[], &[]),
-            kind,
-            x: 0,
-            y: 0,
-            list: MenuListState::new(0),
-            bora_commands: vec![],
-            bora_port: None,
-        }
-    }
-
-    fn repo_issue_menu() -> ContextMenuState {
-        repo_issue_menu_with_flow(false)
-    }
-
-    #[test]
-    fn repo_issue_context_menu_actions_set_request_fields() {
-        let menu = repo_issue_menu();
-        assert_eq!(menu.items, ["Open in browser", "Copy URL"]);
-
-        let mut terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
-        let idx = |label: &str| {
-            repo_issue_menu()
-                .items
-                .iter()
-                .position(|item| item == label)
-                .expect("menu item")
-        };
-
-        let mut state = state_with_workspaces(&["proj"]);
-        apply_context_menu_action(
-            &mut state,
-            &mut terminal_runtimes,
-            repo_issue_menu(),
-            idx("Open in browser"),
-        );
-        assert_eq!(
-            state.request_open_url.as_deref(),
-            Some("https://github.com/owner/proj/issues/12")
-        );
-        assert_ne!(state.mode, Mode::ContextMenu, "menu closed after action");
-
-        let mut state = state_with_workspaces(&["proj"]);
-        apply_context_menu_action(
-            &mut state,
-            &mut terminal_runtimes,
-            repo_issue_menu(),
-            idx("Copy URL"),
-        );
-        assert_eq!(
-            state.request_clipboard_write.as_deref(),
-            Some("https://github.com/owner/proj/issues/12".as_bytes())
-        );
-        assert_ne!(state.mode, Mode::ContextMenu, "menu closed after action");
-    }
-
-    #[test]
-    fn repo_issue_context_menu_offers_flow_run_only_when_template_resolves() {
-        assert_eq!(
-            repo_issue_menu_with_flow(true).items,
-            [
-                "Run with bora-flow",
-                crate::app::state::CONTEXT_MENU_SEPARATOR,
-                "Open in browser",
-                "Copy URL",
-            ]
-        );
-        assert_eq!(
-            repo_issue_menu_with_flow(false).items,
-            ["Open in browser", "Copy URL"]
-        );
-
-        let mut terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
-        let mut state = state_with_workspaces(&["proj"]);
-        let menu = repo_issue_menu_with_flow(true);
-        let idx = menu
-            .items
-            .iter()
-            .position(|item| item == "Run with bora-flow")
-            .expect("menu item");
-        apply_context_menu_action(&mut state, &mut terminal_runtimes, menu, idx);
-        assert_eq!(
-            state.request_flow_run,
-            Some(crate::app::state::FlowRunRequest {
-                number: 12,
-                url: "https://github.com/owner/proj/issues/12".into(),
-            })
-        );
-        assert_ne!(state.mode, Mode::ContextMenu, "menu closed after action");
     }
 }

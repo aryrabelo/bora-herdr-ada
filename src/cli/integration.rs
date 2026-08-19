@@ -1,7 +1,7 @@
 use crate::api::schema::IntegrationTarget;
 
 pub(super) fn run_integration_command(args: &[String]) -> std::io::Result<i32> {
-    let Some(subcommand) = args.first().map(std::string::String::as_str) else {
+    let Some(subcommand) = args.first().map(|arg| arg.as_str()) else {
         print_integration_help();
         return Ok(2);
     };
@@ -26,7 +26,7 @@ fn integration_status(args: &[String]) -> std::io::Result<i32> {
         [] => false,
         [flag] if flag == "--outdated-only" => true,
         _ => {
-            eprintln!("usage: bora integration status [--outdated-only]");
+            eprintln!("usage: herdr integration status [--outdated-only]");
             return Ok(2);
         }
     };
@@ -46,13 +46,6 @@ fn integration_status(args: &[String]) -> std::io::Result<i32> {
             crate::integration::IntegrationStatusKind::NotInstalled => "not installed".to_string(),
             crate::integration::IntegrationStatusKind::Current => {
                 format!("current ({version})")
-            }
-            crate::integration::IntegrationStatusKind::Outdated
-                if status
-                    .installed_version
-                    .is_some_and(|installed| installed >= status.expected_version) =>
-            {
-                format!("needs repair ({version})")
             }
             crate::integration::IntegrationStatusKind::Outdated => {
                 format!("outdated ({version} < v{})", status.expected_version)
@@ -108,15 +101,15 @@ fn parse_integration_target(
     args: &[String],
     action: &str,
 ) -> std::io::Result<Option<IntegrationTarget>> {
-    let Some(target) = args.first().map(std::string::String::as_str) else {
+    let Some(target) = args.first().map(|arg| arg.as_str()) else {
         eprintln!(
-            "usage: bora integration {action} <pi|omp|claude|codex|copilot|devin|droid|kimi|opencode|kilo|hermes|qodercli|qwen|cursor|mastracode|grok>"
+            "usage: herdr integration {action} <pi|omp|claude|codex|copilot|devin|droid|kimi|opencode|kilo|hermes|qodercli|cursor>"
         );
         return Ok(None);
     };
     if args.len() != 1 {
         eprintln!(
-            "usage: bora integration {action} <pi|omp|claude|codex|copilot|devin|droid|kimi|opencode|kilo|hermes|qodercli|qwen|cursor|mastracode|grok>"
+            "usage: herdr integration {action} <pi|omp|claude|codex|copilot|devin|droid|kimi|opencode|kilo|hermes|qodercli|cursor>"
         );
         return Ok(None);
     }
@@ -134,15 +127,11 @@ fn parse_integration_target(
         "kilo" => IntegrationTarget::Kilo,
         "hermes" => IntegrationTarget::Hermes,
         "qodercli" => IntegrationTarget::Qodercli,
-        "qwen" => IntegrationTarget::Qwen,
         "cursor" => IntegrationTarget::Cursor,
-        "mastracode" => IntegrationTarget::Mastracode,
-        "antigravity-cli" | "antigravity_cli" => IntegrationTarget::AntigravityCli,
-        "grok" => IntegrationTarget::Grok,
         _ => {
             eprintln!("unknown integration target: {target}");
             eprintln!(
-                "currently supported: pi, omp, claude, codex, copilot, devin, droid, kimi, opencode, kilo, hermes, qodercli, qwen, cursor, mastracode, antigravity-cli, grok"
+                "currently supported: pi, omp, claude, codex, copilot, devin, droid, kimi, opencode, kilo, hermes, qodercli, cursor"
             );
             return Ok(None);
         }
@@ -152,40 +141,32 @@ fn parse_integration_target(
 }
 
 fn print_integration_help() {
-    eprintln!("bora integration commands:");
-    eprintln!("  bora integration install pi");
-    eprintln!("  bora integration install omp");
-    eprintln!("  bora integration install claude");
-    eprintln!("  bora integration install codex");
-    eprintln!("  bora integration install copilot");
-    eprintln!("  bora integration install devin");
-    eprintln!("  bora integration install droid");
-    eprintln!("  bora integration install kimi");
-    eprintln!("  bora integration install opencode");
-    eprintln!("  bora integration install kilo");
-    eprintln!("  bora integration install hermes");
-    eprintln!("  bora integration install qodercli");
-    eprintln!("  bora integration install qwen");
-    eprintln!("  bora integration install cursor");
-    eprintln!("  bora integration install mastracode");
-    eprintln!("  bora integration install antigravity-cli");
-    eprintln!("  bora integration install grok");
-    eprintln!("  bora integration uninstall pi");
-    eprintln!("  bora integration uninstall omp");
-    eprintln!("  bora integration uninstall claude");
-    eprintln!("  bora integration uninstall codex");
-    eprintln!("  bora integration uninstall copilot");
-    eprintln!("  bora integration uninstall devin");
-    eprintln!("  bora integration uninstall droid");
-    eprintln!("  bora integration uninstall kimi");
-    eprintln!("  bora integration uninstall opencode");
-    eprintln!("  bora integration uninstall kilo");
-    eprintln!("  bora integration uninstall hermes");
-    eprintln!("  bora integration uninstall qodercli");
-    eprintln!("  bora integration uninstall qwen");
-    eprintln!("  bora integration uninstall cursor");
-    eprintln!("  bora integration uninstall mastracode");
-    eprintln!("  bora integration uninstall antigravity-cli");
-    eprintln!("  bora integration uninstall grok");
-    eprintln!("  bora integration status [--outdated-only]");
+    eprintln!("herdr integration commands:");
+    eprintln!("  herdr integration install pi");
+    eprintln!("  herdr integration install omp");
+    eprintln!("  herdr integration install claude");
+    eprintln!("  herdr integration install codex");
+    eprintln!("  herdr integration install copilot");
+    eprintln!("  herdr integration install devin");
+    eprintln!("  herdr integration install droid");
+    eprintln!("  herdr integration install kimi");
+    eprintln!("  herdr integration install opencode");
+    eprintln!("  herdr integration install kilo");
+    eprintln!("  herdr integration install hermes");
+    eprintln!("  herdr integration install qodercli");
+    eprintln!("  herdr integration install cursor");
+    eprintln!("  herdr integration uninstall pi");
+    eprintln!("  herdr integration uninstall omp");
+    eprintln!("  herdr integration uninstall claude");
+    eprintln!("  herdr integration uninstall codex");
+    eprintln!("  herdr integration uninstall copilot");
+    eprintln!("  herdr integration uninstall devin");
+    eprintln!("  herdr integration uninstall droid");
+    eprintln!("  herdr integration uninstall kimi");
+    eprintln!("  herdr integration uninstall opencode");
+    eprintln!("  herdr integration uninstall kilo");
+    eprintln!("  herdr integration uninstall hermes");
+    eprintln!("  herdr integration uninstall qodercli");
+    eprintln!("  herdr integration uninstall cursor");
+    eprintln!("  herdr integration status [--outdated-only]");
 }

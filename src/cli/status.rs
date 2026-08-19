@@ -31,14 +31,14 @@ enum StatusScope {
 }
 
 fn parse_status_args(args: &[String]) -> Option<(StatusScope, bool)> {
-    match args.first().map(std::string::String::as_str) {
+    match args.first().map(|arg| arg.as_str()) {
         None => Some((StatusScope::Full, false)),
         Some("--json") if args.len() == 1 => Some((StatusScope::Full, true)),
         Some("server") => {
-            parse_status_scope_args(args, StatusScope::Server, "bora status server [--json]")
+            parse_status_scope_args(args, StatusScope::Server, "herdr status server [--json]")
         }
         Some("client") => {
-            parse_status_scope_args(args, StatusScope::Client, "bora status client [--json]")
+            parse_status_scope_args(args, StatusScope::Client, "herdr status client [--json]")
         }
         Some("help" | "--help" | "-h") => {
             if args.len() > 1 {
@@ -59,7 +59,7 @@ fn parse_status_scope_args(
     scope: StatusScope,
     usage: &str,
 ) -> Option<(StatusScope, bool)> {
-    match args.get(1).map(std::string::String::as_str) {
+    match args.get(1).map(|arg| arg.as_str()) {
         None => Some((scope, false)),
         Some("--json") if args.len() == 2 => Some((scope, true)),
         _ => {
@@ -159,11 +159,18 @@ fn read_server_runtime_status() -> std::io::Result<ServerRuntimeStatus> {
             protocol: status.protocol,
             capabilities: status.capabilities,
         }),
-        Err(ApiClientError::Io(err)) if super::server_not_running_error(&err) => {
+        Err(ApiClientError::Io(err)) if server_not_running_error(&err) => {
             Ok(ServerRuntimeStatus::NotRunning)
         }
         Err(err) => Err(api_client_error_to_io(err)),
     }
+}
+
+fn server_not_running_error(err: &std::io::Error) -> bool {
+    matches!(
+        err.kind(),
+        std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+    )
 }
 
 fn api_client_error_to_io(err: ApiClientError) -> std::io::Error {
@@ -234,7 +241,6 @@ struct ServerStatusJson {
 #[derive(Serialize)]
 struct ServerCapabilitiesJson {
     live_handoff: bool,
-    detached_server_daemon: bool,
 }
 
 #[derive(Serialize)]
@@ -267,7 +273,6 @@ fn server_status_json(server: &ServerRuntimeStatus) -> ServerStatusJson {
                 .as_ref()
                 .map(|capabilities| ServerCapabilitiesJson {
                     live_handoff: capabilities.live_handoff,
-                    detached_server_daemon: capabilities.detached_server_daemon,
                 }),
             compatible: protocol.map(|value| value == crate::protocol::PROTOCOL_VERSION),
             socket: api::socket_path().display().to_string(),
@@ -317,8 +322,8 @@ fn current_exe_label() -> String {
 }
 
 fn print_status_help() {
-    eprintln!("bora status commands:");
-    eprintln!("  bora status [--json]         show local client and running server status");
-    eprintln!("  bora status server [--json]  show running server status");
-    eprintln!("  bora status client [--json]  show local client binary status");
+    eprintln!("herdr status commands:");
+    eprintln!("  herdr status [--json]         show local client and running server status");
+    eprintln!("  herdr status server [--json]  show running server status");
+    eprintln!("  herdr status client [--json]  show local client binary status");
 }

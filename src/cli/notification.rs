@@ -2,7 +2,7 @@ use crate::api::schema::{Method, NotificationShowParams, NotificationShowSound, 
 use crate::config::ToastHerdrPosition;
 
 pub(super) fn run_notification_command(args: &[String]) -> std::io::Result<i32> {
-    let Some(subcommand) = args.first().map(std::string::String::as_str) else {
+    let Some(subcommand) = args.first().map(|arg| arg.as_str()) else {
         print_notification_help();
         return Ok(2);
     };
@@ -25,7 +25,7 @@ fn notification_show(args: &[String]) -> std::io::Result<i32> {
         Ok(params) => params,
         Err(NotificationShowArgError::Usage) => {
             eprintln!(
-                "usage: bora notification show <title> [--body TEXT] [--position top-left|top-right|bottom-left|bottom-right] [--sound none|done|request]"
+                "usage: herdr notification show <title> [--body TEXT] [--position top-left|top-right|bottom-left|bottom-right] [--sound none|done|request]"
             );
             return Ok(2);
         }
@@ -132,9 +132,9 @@ fn parse_notification_sound(
 }
 
 fn print_notification_help() {
-    eprintln!("bora notification commands:");
+    eprintln!("herdr notification commands:");
     eprintln!(
-        "  bora notification show <title> [--body TEXT] [--position top-left|top-right|bottom-left|bottom-right] [--sound none|done|request]"
+        "  herdr notification show <title> [--body TEXT] [--position top-left|top-right|bottom-left|bottom-right] [--sound none|done|request]"
     );
 }
 

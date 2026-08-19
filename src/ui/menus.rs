@@ -40,10 +40,9 @@ pub(super) fn render_prefix_overlay(app: &AppState, frame: &mut Frame, area: Rec
 
     let workspace_picker = prefix_rhs_label(&app.keybinds.workspace_picker);
     let help = prefix_rhs_label(&app.keybinds.help);
-    let chat = prefix_rhs_label(&app.keybinds.chat);
     let prefix = crate::config::format_key_combo((app.prefix_code, app.prefix_mods));
 
-    let mut spans = vec![
+    let line = Line::from(vec![
         Span::styled(" PREFIX ", mode_style),
         Span::raw(" "),
         Span::styled("esc", key),
@@ -52,14 +51,9 @@ pub(super) fn render_prefix_overlay(app: &AppState, frame: &mut Frame, area: Rec
         Span::styled(" send prefix  ", dim),
         Span::styled(workspace_picker, key),
         Span::styled(" workspace nav  ", dim),
-    ];
-    if app.chat_view {
-        spans.push(Span::styled(chat, key));
-        spans.push(Span::styled(" chat  ", dim));
-    }
-    spans.push(Span::styled(help, key));
-    spans.push(Span::styled(" keybinds", dim));
-    let line = Line::from(spans);
+        Span::styled(help, key),
+        Span::styled(" keybinds", dim),
+    ]);
 
     let overlay_y = area.y + area.height.saturating_sub(1);
     let overlay_area = Rect::new(area.x, overlay_y, area.width, 1);
@@ -76,57 +70,26 @@ pub(super) fn render_copy_mode_overlay(app: &AppState, frame: &mut Frame, area: 
         .bg(app.palette.accent)
         .add_modifier(Modifier::BOLD);
 
-    let Some(copy_mode) = app.copy_mode.as_ref() else {
-        return;
-    };
-    let line = if let Some(prompt) = copy_mode.search.prompt.as_ref() {
-        let marker = match prompt.direction {
-            crate::app::state::CopyModeSearchDirection::Forward => "/",
-            crate::app::state::CopyModeSearchDirection::Backward => "?",
-        };
-        Line::from(vec![
-            Span::styled(" COPY ", mode_style),
-            Span::raw(" "),
-            Span::styled(marker, key),
-            Span::styled(prompt.query.clone(), Style::default().fg(app.palette.text)),
-            Span::styled("█", key),
-            Span::styled("  enter search  esc cancel", dim),
-        ])
+    let select = if app
+        .copy_mode
+        .is_some_and(|copy_mode| copy_mode.selection.is_some())
+    {
+        "selecting"
     } else {
-        let select = if copy_mode.selection.is_some() {
-            "selecting"
-        } else {
-            "select"
-        };
-        let match_status = copy_mode
-            .search
-            .current
-            .map(|current| format!(" {}/{}", current + 1, copy_mode.search.matches.len()))
-            .or_else(|| (!copy_mode.search.query.is_empty()).then(|| " 0/0".to_string()))
-            .unwrap_or_default();
-        let (exit_keys, exit_label) =
-            if copy_mode.search.query.is_empty() && copy_mode.selection.is_none() {
-                ("q/esc", " exit")
-            } else {
-                ("esc", " clear  q exit")
-            };
-        Line::from(vec![
-            Span::styled(" COPY ", mode_style),
-            Span::raw(" "),
-            Span::styled("h/j/k/l w/b/e { }", key),
-            Span::styled(" move  ", dim),
-            Span::styled("/ ?", key),
-            Span::styled(" search  ", dim),
-            Span::styled("n/N", key),
-            Span::styled(format!(" repeat{match_status}  "), dim),
-            Span::styled("v/space", key),
-            Span::styled(format!(" {select}  "), dim),
-            Span::styled("y/enter", key),
-            Span::styled(" copy  ", dim),
-            Span::styled(exit_keys, key),
-            Span::styled(exit_label, dim),
-        ])
+        "select"
     };
+    let line = Line::from(vec![
+        Span::styled(" COPY ", mode_style),
+        Span::raw(" "),
+        Span::styled("h/j/k/l w/b/e { }", key),
+        Span::styled(" move  ", dim),
+        Span::styled("v/space", key),
+        Span::styled(format!(" {select}  "), dim),
+        Span::styled("y/enter", key),
+        Span::styled(" copy  ", dim),
+        Span::styled("q/esc", key),
+        Span::styled(" exit", dim),
+    ]);
 
     let overlay_y = area.y + area.height.saturating_sub(1);
     let overlay_area = Rect::new(area.x, overlay_y, area.width, 1);
@@ -302,26 +265,10 @@ pub(super) fn render_context_menu(app: &AppState, frame: &mut Frame) {
         return;
     };
 
-    let separator = crate::app::state::CONTEXT_MENU_SEPARATOR;
-    let sep_width = inner.width as usize;
     let items: Vec<ListItem> = menu
         .items()
         .iter()
-        .map(|item| {
-            if item.as_str() == separator {
-                ListItem::new(Line::from(Span::styled(
-                    "─".repeat(sep_width),
-                    Style::default().fg(p.surface1),
-                )))
-            } else if item == "Close" || item == "Close workspace" || item.starts_with("Delete") {
-                ListItem::new(Line::from(Span::styled(
-                    item.as_str(),
-                    Style::default().fg(p.red),
-                )))
-            } else {
-                ListItem::new(Line::from(item.as_str()))
-            }
-        })
+        .map(|item| ListItem::new(Line::from(*item)))
         .collect();
     let list = List::new(items)
         .style(Style::default().fg(p.text))

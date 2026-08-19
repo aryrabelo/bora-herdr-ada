@@ -1,63 +1,41 @@
 use serde::{Deserialize, Serialize};
 
-pub(super) fn metadata_token_patch_schema(
-    _generator: &mut schemars::SchemaGenerator,
-) -> schemars::Schema {
-    schemars::json_schema!({
-        "type": "object",
-        "maxProperties": 16,
-        "propertyNames": { "pattern": "^[A-Za-z0-9_-]{1,32}$" },
-        "additionalProperties": { "type": ["string", "null"] }
-    })
-}
-
-pub(super) fn metadata_token_values_schema(
-    _generator: &mut schemars::SchemaGenerator,
-) -> schemars::Schema {
-    schemars::json_schema!({
-        "type": "object",
-        "maxProperties": 32,
-        "propertyNames": { "pattern": "^[A-Za-z0-9_-]{1,32}$" },
-        "additionalProperties": { "type": "string" }
-    })
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct EmptyParams {}
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkspaceTarget {
     pub workspace_id: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaneTarget {
     pub pane_id: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TabTarget {
     pub tab_id: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentTarget {
     pub target: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClientWindowTitleSetParams {
     pub title: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SplitDirection {
     Right,
     Down,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReadSource {
     Visible,
@@ -66,16 +44,7 @@ pub enum ReadSource {
     Detection,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub(crate) enum ReadIntent {
-    #[default]
-    Interactive,
-    Passive,
-}
-
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, Default,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum ReadFormat {
     #[default]
@@ -83,7 +52,7 @@ pub enum ReadFormat {
     Ansi,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NotificationShowParams {
     pub title: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -94,9 +63,7 @@ pub struct NotificationShowParams {
     pub sound: NotificationShowSound,
 }
 
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, Default,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum NotificationShowSound {
     #[default]
@@ -119,7 +86,7 @@ impl NotificationShowSound {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NotificationShowReason {
     Shown,
@@ -129,7 +96,7 @@ pub enum NotificationShowReason {
     Busy,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ClientWindowTitleReason {
     Set,
@@ -137,7 +104,7 @@ pub enum ClientWindowTitleReason {
     NoForegroundClient,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PaneAgentState {
     Idle,
@@ -146,7 +113,7 @@ pub enum PaneAgentState {
     Unknown,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentStatus {
     Idle,
