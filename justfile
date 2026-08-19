@@ -139,6 +139,7 @@ release-docs-check:
     node website/scripts/docs-preview.mjs check
     @test -f docs/next/README.md
     @test -f docs/next/README.zh-CN.md
+    @test -f docs/next/README.pt-BR.md
     @python3 scripts/changelog.py check-history-sync || { \
         echo "run this before releasing: reconcile CHANGELOG.md and docs/next/CHANGELOG.md (the staging file)"; \
         exit 1; \

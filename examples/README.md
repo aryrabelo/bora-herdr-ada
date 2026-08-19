@@ -1,5 +1,9 @@
 # bora example setup
 
+<p align="center">
+  English · <a href="README.pt-BR.md">Português (BR)</a>
+</p>
+
 ## 1. What you get
 
 bora is a terminal agent multiplexer — a fork of [herdr](https://github.com/herdrdev/herdr) that tracks upstream closely and layers its own additions on top: agent-to-agent channels with a native chat view (`bora channel`), sidebar repo grouping, a "Programs" launcher band, configurable agent-panel scope/sort, rendering/full-repaint fixes, and an MCP server (`bora mcp serve`) for exposing bora itself to an MCP-client harness. Ary runs [OMP (oh-my-pi)](https://github.com/can1357/oh-my-pi) coding agents inside it day to day, which is what this example setup is built around — but bora detects and drives most terminal coding agents (Claude Code, Codex, OpenCode, and more; see `src/detect/manifests/`), not just OMP. This directory is a working example of the outer-terminal setup bora is built to run inside: [Ghostty](https://ghostty.org) as the terminal, wired so its keybinds and menu don't eat bora's chords, plus example `bora` and OMP configs you can copy as a starting point.

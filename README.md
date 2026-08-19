@@ -11,7 +11,7 @@ a fork of [herdr](https://github.com/herdrdev/herdr): tracks upstream, layers fo
 </p>
 
 <p align="center">
-  English · <a href="README.zh-CN.md">简体中文</a>
+  English · <a href="README.zh-CN.md">简体中文</a> · <a href="README.pt-BR.md">Português (BR)</a>
 </p>
 
 <p align="center">
