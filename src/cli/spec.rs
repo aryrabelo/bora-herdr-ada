@@ -846,10 +846,7 @@ fn mcp_command() -> Command {
                     "Comma-separated channel names this server may see or touch; omit for none",
                 ))
                 .arg(option("nick", "NAME").help("Informational nick reported in serverInfo"))
-                .arg(
-                    flag("allow-prompt")
-                        .help("Expose the agent_prompt tool (absent by default)"),
-                ),
+                .arg(flag("allow-prompt").help("Expose the agent_prompt tool (absent by default)")),
         )
 }
 

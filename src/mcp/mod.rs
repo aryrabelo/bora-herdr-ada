@@ -64,14 +64,23 @@ pub(crate) fn serve<R: BufRead, W: Write>(
 fn handle_line(line: &str, options: &McpOptions) -> Option<Value> {
     let message: Value = match serde_json::from_str(line) {
         Ok(value) => value,
-        Err(err) => return Some(error_response(Value::Null, -32700, &format!("parse error: {err}"))),
+        Err(err) => {
+            return Some(error_response(
+                Value::Null,
+                -32700,
+                &format!("parse error: {err}"),
+            ))
+        }
     };
     let id = message.get("id").cloned();
     let method = message.get("method").and_then(Value::as_str).unwrap_or("");
     let params = message.get("params").cloned();
 
     match method {
-        "initialize" => Some(ok_response(id.unwrap_or(Value::Null), initialize_result(options))),
+        "initialize" => Some(ok_response(
+            id.unwrap_or(Value::Null),
+            initialize_result(options),
+        )),
         "notifications/initialized" => None,
         "ping" => id.map(|id| ok_response(id, json!({}))),
         "tools/list" => {

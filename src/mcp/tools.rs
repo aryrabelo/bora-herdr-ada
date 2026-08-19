@@ -237,7 +237,10 @@ pub(crate) fn dispatch(
 ) -> Result<String, DispatchError> {
     let tools = build_tools(opts.allow_prompt);
     let Some(entry) = tools.iter().find(|t| t.name == name) else {
-        return Err(DispatchError::Protocol(-32602, format!("unknown tool: {name}")));
+        return Err(DispatchError::Protocol(
+            -32602,
+            format!("unknown tool: {name}"),
+        ));
     };
 
     if CHANNEL_NAME_SCOPED_TOOLS.contains(&name) {
@@ -341,7 +344,11 @@ mod tests {
             ("agent_list", "agent.list"),
             ("agent_prompt", "agent.prompt"),
         ] {
-            assert_eq!(index.get(tool).map(String::as_str), Some(wire), "tool {tool}");
+            assert_eq!(
+                index.get(tool).map(String::as_str),
+                Some(wire),
+                "tool {tool}"
+            );
         }
     }
 
@@ -351,7 +358,11 @@ mod tests {
         assert!(!tools.is_empty());
         for tool in &tools {
             let schema = &tool["inputSchema"];
-            assert!(schema.is_object(), "{} inputSchema not an object", tool["name"]);
+            assert!(
+                schema.is_object(),
+                "{} inputSchema not an object",
+                tool["name"]
+            );
             assert!(
                 !contains_ref(schema),
                 "{} inputSchema still has a $ref",
@@ -397,7 +408,10 @@ mod tests {
         );
         match err {
             Err(DispatchError::Protocol(-32602, message)) => {
-                assert!(message.contains("eng"), "message should name allowed channels: {message}");
+                assert!(
+                    message.contains("eng"),
+                    "message should name allowed channels: {message}"
+                );
             }
             _ => panic!("expected a protocol error rejecting the out-of-scope channel"),
         }
