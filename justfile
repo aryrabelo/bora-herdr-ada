@@ -120,16 +120,23 @@ plugin-marketplace-test:
 build-libghostty-vt:
     scripts/build_vendored_libghostty_vt.sh
 
-# Fetch the prebuilt libghostty-vt static lib for this host into prebuilt/
-# (fallback when zig 0.15.2 cannot build locally — remove when upstream zig-0.16 port lands)
+# Fetch the prebuilt libghostty-vt static lib (+ .vendor-hash stamp) for this
+# host into prebuilt/ (fallback when zig 0.15.2 cannot build locally — remove
+# when upstream zig-0.16 port lands)
 fetch-libghostty-vt:
     scripts/fetch_libghostty_vt_prebuilt.sh
 
-# Cross-build prebuilt/libghostty-vt-<target>.a locally in a Linux container
-# (zig 0.15.2), no GitHub Actions. macOS 26 fast dev loop; remove with the rest
-# of the prebuilt fallback when upstream zig-0.16 port lands.
+# Cross-build prebuilt/libghostty-vt-<target>.a + its .vendor-hash stamp
+# locally in a Linux container (zig 0.15.2), no GitHub Actions. macOS 26 fast
+# dev loop; remove with the rest of the prebuilt fallback when upstream
+# zig-0.16 port lands.
 build-libghostty-vt-prebuilt:
     scripts/build_libghostty_vt_prebuilt.sh
+
+# Alias: regenerate the local prebuilt/libghostty-vt-<target>.a shortcut
+# (from-source cross-build + matching .vendor-hash stamp) so build.rs's
+# staleness guard accepts it again.
+prebuilt-ghostty: build-libghostty-vt-prebuilt
 
 # Check that release docs and changelog have been finalized from docs/next before release
 release-docs-check:

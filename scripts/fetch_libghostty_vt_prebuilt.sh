@@ -80,3 +80,4 @@ if ! curl -fL --progress-bar -o "$OUT" "$URL"; then
 fi
 
 printf 'fetch-libghostty-vt: saved %s\n' "$OUT"
+"$ROOT_DIR/scripts/write_libghostty_vt_stamp.sh" "$ZIGTARGET"

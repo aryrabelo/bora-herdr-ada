@@ -32,7 +32,12 @@ command -v docker >/dev/null 2>&1 || {
 
 OUT_DIR="$ROOT_DIR/prebuilt"
 mkdir -p "$OUT_DIR"
-TMP_OUT=$(mktemp -d)
+# Scratch dir must live under the repo (inside $HOME), not mktemp's default
+# $TMPDIR (macOS: /var/folders/...): container runtimes commonly only share
+# $HOME with the VM (e.g. Colima's default virtiofs mount), so a bind mount
+# rooted outside it silently fails to sync the container's writes back.
+mkdir -p "$ROOT_DIR/target"
+TMP_OUT=$(mktemp -d "$ROOT_DIR/target/libghostty-vt-prebuilt-tmp.XXXXXX")
 trap 'rm -rf "$TMP_OUT"' EXIT
 
 printf 'build-libghostty-vt-prebuilt: target=%s platform=%s\n' "$ZIGTARGET" "$PLATFORM"
@@ -63,3 +68,4 @@ INNER
 
 cp "$TMP_OUT/lib/libghostty-vt.a" "$OUT_DIR/libghostty-vt-${ZIGTARGET}.a"
 printf 'build-libghostty-vt-prebuilt: saved %s\n' "$OUT_DIR/libghostty-vt-${ZIGTARGET}.a"
+"$ROOT_DIR/scripts/write_libghostty_vt_stamp.sh" "$ZIGTARGET"

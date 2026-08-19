@@ -92,7 +92,7 @@ pub fn wait_for_socket(path: &Path, timeout: Duration) {
         if path.exists() && UnixStream::connect(path).is_ok() {
             return;
         }
-        thread::sleep(Duration::from_millis(25));
+        thread::sleep(Duration::from_millis(5));
     }
     panic!("socket did not appear at {}", path.display());
 }
@@ -103,7 +103,7 @@ pub fn wait_for_file(path: &Path, timeout: Duration) {
         if path.exists() {
             return;
         }
-        thread::sleep(Duration::from_millis(25));
+        thread::sleep(Duration::from_millis(5));
     }
     panic!("file did not appear at {}", path.display());
 }
@@ -365,7 +365,7 @@ pub fn wait_for_disconnect(stream: &mut UnixStream, timeout: Duration) -> Result
         if Instant::now() >= deadline {
             break Ok(false);
         }
-        thread::sleep(Duration::from_millis(25));
+        thread::sleep(Duration::from_millis(5));
     };
     let _ = stream.set_nonblocking(false);
     result
@@ -675,7 +675,7 @@ fn wait_for_pid_exit(pid: libc::pid_t, timeout: Duration) -> bool {
             }
         }
 
-        thread::sleep(Duration::from_millis(20));
+        thread::sleep(Duration::from_millis(5));
     }
 
     !process_exists(pid)

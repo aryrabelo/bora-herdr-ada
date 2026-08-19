@@ -299,7 +299,7 @@ fn wait_for_api(socket_path: &Path, timeout: Duration) {
                 last_error = err.message;
             }
         }
-        thread::sleep(Duration::from_millis(25));
+        thread::sleep(Duration::from_millis(5));
     }
     panic!(
         "api did not become ready at {}; last error: {last_error}",
@@ -345,7 +345,7 @@ fn start_agent_when_ready(
             Instant::now() < deadline,
             "agent target pane never became an available shell: {response}"
         );
-        thread::sleep(Duration::from_millis(25));
+        thread::sleep(Duration::from_millis(5));
     }
 }
 
@@ -428,7 +428,7 @@ fn wait_for_output(socket_path: &Path, pane_id: &str, needle: &str) {
         if text.contains(needle) {
             return;
         }
-        thread::sleep(Duration::from_millis(50));
+        thread::sleep(Duration::from_millis(5));
     }
     panic!(
         "pane output did not contain {needle:?}; last text was {last_text:?}; last response was {last_response}"
@@ -445,7 +445,7 @@ fn wait_for_file_contains(path: &Path, needle: &str, timeout: Duration) -> Strin
                 return last_text;
             }
         }
-        thread::sleep(Duration::from_millis(50));
+        thread::sleep(Duration::from_millis(5));
     }
     panic!(
         "{} did not contain {needle:?}; last text was {last_text:?}",
@@ -489,7 +489,7 @@ fn wait_for_server_ptmx_fd_count(pid: u32, expected: usize, timeout: Duration) {
         if last_count == expected {
             return;
         }
-        thread::sleep(Duration::from_millis(25));
+        thread::sleep(Duration::from_millis(5));
     }
     panic!("server pid {pid} had {last_count} ptmx master fds; expected {expected}");
 }
@@ -503,7 +503,7 @@ fn wait_for_replacement_server_pid(runtime_dir: &Path, old_pid: u32, timeout: Du
         if let Some(pid) = last_pids.iter().copied().find(|pid| *pid != old_pid) {
             return pid;
         }
-        thread::sleep(Duration::from_millis(25));
+        thread::sleep(Duration::from_millis(5));
     }
     panic!(
         "replacement server for {} did not appear; last pids: {:?}",
@@ -535,7 +535,7 @@ fn wait_for_replacement_server_pid(_runtime_dir: &Path, old_pid: u32, timeout: D
                 }
             }
         }
-        thread::sleep(Duration::from_millis(25));
+        thread::sleep(Duration::from_millis(5));
     }
     panic!(
         "replacement server for {} did not appear; last pgrep output: {}",
@@ -566,11 +566,55 @@ fn wait_for_http_contains(port: u16, needle: &str, timeout: Duration) -> String 
                 return last_response;
             }
         }
-        thread::sleep(Duration::from_millis(50));
+        thread::sleep(Duration::from_millis(5));
     }
     panic!(
         "http server on port {port} did not return {needle:?}; last response was {last_response:?}"
     );
+}
+
+// After a foreground process exits, an `exited_marker` file it wrote just
+// before exiting only proves the child is gone — not that the server has
+// finished its own async state transition (SIGCHLD handling, restoring the
+// pane's PTY to shell-foreground). Input sent in that window can be lost to
+// the exiting process rather than reaching the shell. Instead of guessing a
+// fixed settle delay before one attempt, retry the send until the marker it
+// produces shows up: whichever attempt lands after the transition completes
+// wins, and the common case (already settled) pays no extra delay at all.
+fn send_input_until_marker(
+    socket_path: &Path,
+    pane_id: &str,
+    text: &str,
+    marker: &Path,
+    timeout: Duration,
+) {
+    let deadline = Instant::now() + timeout;
+    loop {
+        assert_ok(request(
+            socket_path,
+            serde_json::json!({
+                "id": "test:pane:retry-send",
+                "method": "pane.send_input",
+                "params": {"pane_id": pane_id, "text": text, "keys": ["Enter"]}
+            }),
+        ));
+        let attempt_deadline = std::cmp::min(Instant::now() + Duration::from_millis(200), deadline);
+        while Instant::now() < attempt_deadline {
+            if marker.exists() {
+                return;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        if marker.exists() {
+            return;
+        }
+        if Instant::now() >= deadline {
+            panic!(
+                "{} did not appear after retried sends to pane {pane_id}",
+                marker.display()
+            );
+        }
+    }
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -938,7 +982,6 @@ fn live_handoff_preserves_pane_process_io() {
         wait_for_disconnect(&mut client_stream, Duration::from_secs(5)).unwrap(),
         "connected clients should disconnect during live handoff"
     );
-    thread::sleep(Duration::from_millis(300));
     wait_for_api(&api_socket, Duration::from_secs(10));
     wait_for_socket(&client_socket, Duration::from_secs(5));
     assert_eq!(unsafe { libc::kill(child_pid as libc::pid_t, 0) }, 0);
@@ -1382,7 +1425,7 @@ fn live_handoff_keeps_unmanaged_agent_name_bound_to_saved_session() {
             Instant::now() < deadline,
             "agent process was not detected: {response}"
         );
-        thread::sleep(Duration::from_millis(25));
+        thread::sleep(Duration::from_millis(5));
     }
     assert_ok(request(
         &api_socket,
@@ -1432,7 +1475,7 @@ fn live_handoff_keeps_unmanaged_agent_name_bound_to_saved_session() {
             Instant::now() < deadline,
             "old session alias was not cleared: {old_name}"
         );
-        thread::sleep(Duration::from_millis(25));
+        thread::sleep(Duration::from_millis(5));
     }
 
     let _ = request(
@@ -1512,17 +1555,13 @@ fn live_handoff_keeps_agent_started_pane_after_agent_exits() {
     drop(spawned);
     wait_for_api(&api_socket, Duration::from_secs(10));
     support::wait_for_file(&exited_marker, Duration::from_secs(5));
-    thread::sleep(Duration::from_millis(300));
-
-    assert_ok(request(
+    send_input_until_marker(
         &api_socket,
-        serde_json::json!({
-            "id": "test:pane:shell-after-agent",
-            "method": "pane.send_input",
-            "params": {"pane_id": pane_id, "text": format!("echo alive > {}", shell_marker.display()), "keys": ["Enter"]}
-        }),
-    ));
-    support::wait_for_file(&shell_marker, Duration::from_secs(5));
+        &pane_id,
+        &format!("echo alive > {}", shell_marker.display()),
+        &shell_marker,
+        Duration::from_secs(5),
+    );
 
     let _ = request(
         &api_socket,

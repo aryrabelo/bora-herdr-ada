@@ -9,6 +9,10 @@ Bora is a fork of [herdr](https://github.com/ogulcancelik/herdr). This changelog
 ### Added
 - Sidebar workspace rows now show three identity badges after the name: ` @nome` for the pane's registered `agent rename` name (falling back to the detected agent kind), ` #canal` (` +N` for more than one) for a workspace with a pane explicitly joined to a channel elsewhere, and a dim `✓` for a linked worktree that's clean and fully merged into the repo's default branch — safe to close. Channel membership refreshes on the same 2s cadence as git status; the collectible mark piggybacks on the existing git-status refresh pipeline and caches its one expensive call (`git merge-base --is-ancestor`) by `(head_sha, default_branch_sha)`, only re-running it when either moves.
 
+
+### Fixed
+- A stale `prebuilt/libghostty-vt-<target>.a` (built against an older `vendor/libghostty-vt` tree, e.g. before the modify-other-keys patch) could link silently and SIGBUS at runtime — the auto-detected prebuilt bypass in `build.rs` never checked whether the `.a` still matched the vendored source. It now requires a matching `.vendor-hash` stamp (a deterministic FNV-1a content hash over `vendor/libghostty-vt`'s tracked source paths) sitting next to the `.a`; a missing or mismatched stamp falls back to a from-source build with a `cargo:warning` instead of linking blind. `just prebuilt-ghostty` (`build-libghostty-vt-prebuilt`/`fetch-libghostty-vt`) now regenerates both the `.a` and its stamp together. `LIBGHOSTTY_VT_PREBUILT` (the manual override) is unaffected — whoever sets it owns the consequences.
+
 ## [0.23.0] - 2026-08-19
 
 ### Added

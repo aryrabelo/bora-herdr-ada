@@ -2800,6 +2800,75 @@ mod tests {
     }
 
     #[test]
+    fn workspace_agent_label_prefers_registered_name_over_detected_label() {
+        let mut app = crate::app::state::AppState::test_new();
+        let workspace = Workspace::test_new("bridge");
+        let first_pane = workspace.tabs[0].root_pane;
+        app.workspaces = vec![workspace];
+        app.ensure_test_terminals();
+        let terminal_id = app.workspaces[0].tabs[0].panes[&first_pane]
+            .attached_terminal_id
+            .clone();
+        app.terminals.get_mut(&terminal_id).unwrap().detected_agent = Some(Agent::Pi);
+
+        // Detected only: falls back to the detected agent's label.
+        let detected_only = workspace_agent_label(&app.workspaces[0], &app.terminals);
+        assert_eq!(detected_only.as_deref(), Some("pi"));
+
+        // A registered `agent rename` name wins over the detected label.
+        app.terminals
+            .get_mut(&terminal_id)
+            .unwrap()
+            .set_agent_name("planner".into());
+        let registered = workspace_agent_label(&app.workspaces[0], &app.terminals);
+        assert_eq!(registered.as_deref(), Some("planner"));
+    }
+
+    #[test]
+    fn workspace_row_renders_agent_channel_and_collectible_badges() {
+        let mut app = crate::app::state::AppState::test_new();
+        let workspace = Workspace::test_new("worktree-branch");
+        let root_pane = workspace.tabs[0].root_pane;
+        app.workspaces = vec![workspace];
+        app.group_workspaces_by_repo = false;
+        app.ensure_test_terminals();
+        let terminal_id = app.workspaces[0].tabs[0].panes[&root_pane]
+            .attached_terminal_id
+            .clone();
+        app.terminals
+            .get_mut(&terminal_id)
+            .unwrap()
+            .set_agent_name("planner".into());
+        app.workspaces[0].cached_channels = vec!["eng".into()];
+        app.workspaces[0].cached_collectible = Some(true);
+        app.active = Some(0);
+
+        let area = Rect::new(0, 0, 60, 10);
+        let mut terminal = Terminal::new(TestBackend::new(area.width, area.height)).unwrap();
+        terminal
+            .draw(|frame| render_sidebar(&app, &TerminalRuntimeRegistry::new(), frame, area))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let full_text: String = (0..area.height)
+            .map(|row| row_text(buffer, row, area.width))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(
+            full_text.contains("@planner"),
+            "row should show registered agent name: {full_text:?}"
+        );
+        assert!(
+            full_text.contains("#eng"),
+            "row should show joined channel: {full_text:?}"
+        );
+        assert!(
+            full_text.contains('✓'),
+            "row should show collectible marker: {full_text:?}"
+        );
+    }
+
+    #[test]
     fn default_agent_rows_remove_redundant_state_text() {
         let mut app = crate::app::state::AppState::test_new();
         let workspace = Workspace::test_new("one");

@@ -8,7 +8,7 @@ const FNV_PRIME: u64 = 0x100000001b3;
 
 fn fnv1a(mut hash: u64, bytes: &[u8]) -> u64 {
     for &b in bytes {
-        hash ^= b as u64;
+        hash ^= u64::from(b);
         hash = hash.wrapping_mul(FNV_PRIME);
     }
     hash
@@ -156,6 +156,15 @@ fn env_bool(name: &str) -> Option<bool> {
 }
 
 fn main() {
+    let args: Vec<String> = env::args().collect();
+    if let Some(pos) = args.iter().position(|a| a == "--write-stamp") {
+        let target = args
+            .get(pos + 1)
+            .expect("--write-stamp requires a <zig-target> argument");
+        write_prebuilt_stamp(target);
+        return;
+    }
+
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=vendor/libghostty-vt.vendor.json");
     println!("cargo:rerun-if-changed=vendor/libghostty-vt/build.zig");
@@ -164,6 +173,7 @@ fn main() {
     println!("cargo:rerun-if-changed=vendor/libghostty-vt/pkg");
     println!("cargo:rerun-if-changed=vendor/libghostty-vt/src");
     println!("cargo:rerun-if-changed=vendor/libghostty-vt/VERSION");
+    println!("cargo:rerun-if-changed=prebuilt");
     println!("cargo:rerun-if-env-changed=LIBGHOSTTY_VT_OPTIMIZE");
     println!("cargo:rerun-if-env-changed=LIBGHOSTTY_VT_SIMD");
     println!("cargo:rerun-if-env-changed=LIBGHOSTTY_VT_ZIG_SYSTEM_DIR");
@@ -186,12 +196,19 @@ fn main() {
     // which cannot link the macOS 26 SDK, and zig 0.16 is rejected by the vendored build.zig.
     // Remove once upstream Ghostty's zig-0.16 migration (PR #12726) lands and we vendor-update;
     // at that point delete this block and return to from-source build.
+    //
+    // Auto-detected prebuilt/libghostty-vt-<target>.a must carry a matching
+    // .vendor-hash stamp (see prebuilt_stamp_matches) or it's ignored and we
+    // fall through to from-source — this is what stops a stale .a (built
+    // against an older vendor tree) from linking silently. LIBGHOSTTY_VT_PREBUILT
+    // is an explicit manual override and skips the guard: whoever sets it owns
+    // the consequences.
     println!("cargo:rerun-if-env-changed=LIBGHOSTTY_VT_PREBUILT");
     let prebuilt: Option<PathBuf> = if let Ok(p) = env::var("LIBGHOSTTY_VT_PREBUILT") {
         Some(PathBuf::from(p))
     } else {
         let candidate = manifest_dir.join(format!("prebuilt/libghostty-vt-{zig_target}.a"));
-        if candidate.exists() {
+        if candidate.exists() && prebuilt_stamp_matches(&candidate, &manifest_dir) {
             Some(candidate)
         } else {
             None
@@ -243,5 +260,47 @@ fn main() {
         println!("cargo:rustc-link-lib=static=ghostty-vt-static");
     } else {
         println!("cargo:rustc-link-lib=static=ghostty-vt");
+    }
+}
+
+// Run standalone (not wired into `cargo test`/nextest — build.rs is a
+// build-dependency binary, not part of the crate's test target):
+//   rustc --edition 2021 --test build.rs -o /tmp/build_rs_tests && /tmp/build_rs_tests
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hash_entries_is_order_independent() {
+        let mut a = vec![
+            ("b.zig".to_string(), b"two".to_vec()),
+            ("a.zig".to_string(), b"one".to_vec()),
+        ];
+        let mut b = vec![
+            ("a.zig".to_string(), b"one".to_vec()),
+            ("b.zig".to_string(), b"two".to_vec()),
+        ];
+        assert_eq!(hash_entries(&mut a), hash_entries(&mut b));
+    }
+
+    #[test]
+    fn hash_entries_changes_when_content_changes() {
+        let mut a = vec![("src/x.zig".to_string(), b"old".to_vec())];
+        let mut b = vec![("src/x.zig".to_string(), b"new".to_vec())];
+        assert_ne!(hash_entries(&mut a), hash_entries(&mut b));
+    }
+
+    #[test]
+    fn hash_entries_changes_when_path_changes() {
+        let mut a = vec![("src/a.zig".to_string(), b"same".to_vec())];
+        let mut b = vec![("src/b.zig".to_string(), b"same".to_vec())];
+        assert_ne!(hash_entries(&mut a), hash_entries(&mut b));
+    }
+
+    #[test]
+    fn hash_entries_is_deterministic() {
+        let mut a = vec![("src/x.zig".to_string(), b"content".to_vec())];
+        let mut b = a.clone();
+        assert_eq!(hash_entries(&mut a), hash_entries(&mut b));
     }
 }
