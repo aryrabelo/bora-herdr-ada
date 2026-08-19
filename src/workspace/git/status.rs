@@ -256,8 +256,10 @@ fn collectible_for(
     let Some(head_oid) = head_oid else {
         return (None, None);
     };
-    let prev_ref = prev.map(|(head, default, ancestor)| (head.as_str(), default.as_str(), *ancestor));
-    let Some((head, default, ancestor)) = super::collectible::compute(&space.repo_root, head_oid, prev_ref)
+    let prev_ref =
+        prev.map(|(head, default, ancestor)| (head.as_str(), default.as_str(), *ancestor));
+    let Some((head, default, ancestor)) =
+        super::collectible::compute(&space.repo_root, head_oid, prev_ref)
     else {
         return (None, None);
     };
@@ -701,7 +703,10 @@ mod tests {
         let base = temp_test_dir(name);
         let repo = base.join("repo");
         let checkout = base.join("checkout");
-        run_git(&base, &["init", "--quiet", "-b", "main", repo.to_str().unwrap()]);
+        run_git(
+            &base,
+            &["init", "--quiet", "-b", "main", repo.to_str().unwrap()],
+        );
         run_git(&repo, &["config", "user.email", "herdr@example.invalid"]);
         run_git(&repo, &["config", "user.name", "Herdr Test"]);
         std::fs::write(repo.join("file.txt"), "hello\n").unwrap();
@@ -736,8 +741,7 @@ mod tests {
 
     #[test]
     fn collectible_stays_false_when_worktree_has_unmerged_commits() {
-        let (base, _repo, checkout) =
-            repo_with_worktree_and_tracked_file("collectible-unmerged");
+        let (base, _repo, checkout) = repo_with_worktree_and_tracked_file("collectible-unmerged");
         run_git(&checkout, &["commit", "--allow-empty", "-m", "wip"]);
 
         let (snapshot, _) = git_status_snapshot_for_cwd(&checkout, None);
@@ -749,8 +753,7 @@ mod tests {
 
     #[test]
     fn collectible_stays_false_when_merged_worktree_has_dirty_changes() {
-        let (base, _repo, checkout) =
-            repo_with_worktree_and_tracked_file("collectible-dirty");
+        let (base, _repo, checkout) = repo_with_worktree_and_tracked_file("collectible-dirty");
         std::fs::write(checkout.join("file.txt"), "hello\nmore\n").unwrap();
 
         let (snapshot, _) = git_status_snapshot_for_cwd(&checkout, None);
