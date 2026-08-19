@@ -44,18 +44,23 @@ pub(super) fn command() -> Command {
         .subcommand(integration_command())
         .subcommand(plugin_command())
         .subcommand(mcp_command());
-    configure_help(command, true)
+    configure_help(command, 0)
 }
 
-fn configure_help(command: Command, root: bool) -> Command {
-    let command = if root {
+fn configure_help(command: Command, depth: usize) -> Command {
+    let command = if depth == 0 {
         command
     } else {
         command.disable_help_flag(false)
     };
+    let command = if depth == 1 && command.has_subcommands() {
+        command.after_help(super::AGENT_HELP_FOOTER)
+    } else {
+        command
+    };
     command
         .disable_help_subcommand(true)
-        .mut_subcommands(|subcommand| configure_help(subcommand, false))
+        .mut_subcommands(|subcommand| configure_help(subcommand, depth + 1))
 }
 
 pub(super) fn print_requested_help(args: &[String]) -> std::io::Result<bool> {
@@ -424,7 +429,7 @@ fn agent_command() -> Command {
                         .help("Suppress sender attribution even if HERDR_PANE_ID is set"),
                 )
                 .after_help(
-                    "When submission starts from a non-working state, --wait first requires an observed state change within 5000ms; otherwise it returns agent_prompt_stalled. A shorter --timeout returns timeout instead. It then matches idle, done, or blocked by default, or any exact --until state. It does not track turns: if the agent is already working, that active turn's completion may match. Without --timeout, the settled-state wait is indefinite.",
+                    "If the agent is already blocked, submission is rejected with agent_blocked before any input is sent. When an accepted submission starts from another non-working state, --wait first requires an observed state change within 5000ms; otherwise it returns agent_prompt_stalled. A shorter --timeout returns timeout instead. It then matches idle, done, or blocked by default, or any exact --until state. It does not track turns: if the agent is already working, that active turn's completion may match. Without --timeout, the settled-state wait is indefinite.",
                 ),
         )
         .subcommand(
@@ -1390,6 +1395,57 @@ mod tests {
         assert!(script.contains("'pane:Control terminal panes'"));
         assert!(script.contains("idle working blocked done unknown"));
         assert!(!script.contains("live-handoff"));
+    }
+
+    fn long_help(path: &[&str]) -> String {
+        let mut args = vec!["bora".to_string()];
+        args.extend(path.iter().copied().map(str::to_string));
+        args.push("--help".to_string());
+        let mut output = Vec::new();
+        assert!(
+            super::write_requested_help(&args, &mut output).unwrap(),
+            "help was not handled for bora {}",
+            path.join(" ")
+        );
+        String::from_utf8(output).unwrap()
+    }
+
+    #[test]
+    fn agent_resources_appear_on_command_groups_but_not_leaf_commands() {
+        for group in ["agent", "pane", "workspace", "terminal"] {
+            let help = long_help(&[group]);
+            assert!(
+                help.contains(super::super::AGENT_HELP_FOOTER),
+                "bora {group} is missing agent resources: {help}"
+            );
+        }
+
+        let leaf = long_help(&["agent", "wait"]);
+        assert!(
+            !leaf.contains(super::super::AGENT_HELP_FOOTER),
+            "leaf help should stay focused: {leaf}"
+        );
+    }
+
+    #[test]
+    fn next_step_hints_render_without_replacing_existing_after_help() {
+        let agent_start = long_help(&["agent", "start"]);
+        assert!(
+            agent_start.contains("The pane must be at its interactive shell prompt."),
+            "agent start dropped its existing after_help: {agent_start}"
+        );
+        assert!(
+            agent_start.contains("next: bora agent prompt <TARGET> <TEXT> --wait"),
+            "agent start is missing its next-step hint: {agent_start}"
+        );
+
+        let pane_send_text = long_help(&["pane", "send-text"]);
+        assert!(
+            pane_send_text.contains(
+                "next: bora pane run <PANE_ID> <COMMAND> sends text and Enter in one call"
+            ),
+            "pane send-text is missing its next-step hint: {pane_send_text}"
+        );
     }
 
     #[test]

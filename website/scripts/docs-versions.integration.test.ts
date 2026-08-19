@@ -21,11 +21,13 @@ describe('documentation release publishing', () => {
     await write(root, 'website/latest.json', '{"version":"0.9.0"}\n');
     await write(root, 'README.md', 'stable readme\n');
     await write(root, 'README.zh-CN.md', 'stable readme zh-cn\n');
+    await write(root, 'README.pt-BR.md', 'stable readme pt-br\n');
     const nextDocs = '---\ntitle: Documentation\n---\n\nnext docs\n';
     await write(root, 'docs/next/website/src/content/docs/index.mdx', nextDocs);
     await write(root, 'docs/next/website/src/data/config-reference.json', '{"next":true}\n');
     await write(root, 'docs/next/README.md', 'next readme\n');
     await write(root, 'docs/next/README.zh-CN.md', 'next readme zh-cn\n');
+    await write(root, 'docs/next/README.pt-BR.md', 'next readme pt-br\n');
 
     git(root, ['init', '-q']);
     git(root, ['config', 'user.email', 'test@example.com']);
@@ -41,6 +43,7 @@ describe('documentation release publishing', () => {
     await expect(read(root, 'website/src/data/config-reference.json')).rejects.toThrow();
     expect(await read(root, 'README.md')).toBe('next readme\n');
     expect(await read(root, 'README.zh-CN.md')).toBe('next readme zh-cn\n');
+    expect(await read(root, 'README.pt-BR.md')).toBe('next readme pt-br\n');
     expect(await read(root, 'docs/versions/1.0.0/website/src/content/docs/index.mdx')).toBe(nextDocs);
 
     const manifest = JSON.parse(await read(root, 'docs/versions/manifest.json'));
@@ -155,7 +158,9 @@ describe('documentation release publishing', () => {
     delete archivedManifest.versions[0].commit;
     await write(root, 'docs/versions/manifest.json', `${JSON.stringify(archivedManifest)}\n`);
     expect(() => runScript(root, ['check'])).toThrow();
-  });
+    // This test runs a dozen git and node subprocesses; slow CI builders can
+    // exceed the 5s default timeout.
+  }, 30_000);
 });
 
 async function write(root: string, path: string, content: string) {

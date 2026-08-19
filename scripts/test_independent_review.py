@@ -25,6 +25,18 @@ def gate_pattern() -> re.Pattern[str]:
     return re.compile(match.group("pattern"), re.MULTILINE)
 
 
+def yaml_or_skip():
+    """PyYAML is present on CI runners but not in every local Python (this
+    repo's nix-provided python3 ships without it). Parsing the trigger block
+    by hand would be a worse test than skipping it locally, so skip rather
+    than fail — CI still enforces the assertion."""
+    try:
+        import yaml
+    except ModuleNotFoundError as err:  # pragma: no cover - env dependent
+        raise unittest.SkipTest("PyYAML is not installed") from err
+    return yaml
+
+
 class IndependentReviewWiringTests(unittest.TestCase):
     def test_workflow_calls_the_script_instead_of_inlining_the_review(self) -> None:
         # A gate whose logic lives only in YAML cannot be run locally, so it is
@@ -41,7 +53,7 @@ class IndependentReviewWiringTests(unittest.TestCase):
         self.assertIn("BASE_SHA: ${{ github.event.pull_request.base.sha }}", text)
 
     def test_workflow_runs_on_every_push_to_the_pull_request(self) -> None:
-        import yaml
+        yaml = yaml_or_skip()
 
         spec = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
         # PyYAML parses a bare `on:` key as the boolean True.

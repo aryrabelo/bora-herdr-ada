@@ -9,6 +9,22 @@ Bora is a fork of [herdr](https://github.com/ogulcancelik/herdr). This changelog
 ### Added
 - Sidebar workspace rows now show three identity badges after the name: ` @nome` for the pane's registered `agent rename` name (falling back to the detected agent kind), ` #canal` (` +N` for more than one) for a workspace with a pane explicitly joined to a channel elsewhere, and a dim `✓` for a linked worktree that's clean and fully merged into the repo's default branch — safe to close. Channel membership refreshes on the same 2s cadence as git status; the collectible mark piggybacks on the existing git-status refresh pipeline and caches its one expensive call (`git merge-base --is-ancestor`) by `(head_sha, default_branch_sha)`, only re-running it when either moves.
 
+### Synced from herdr
+- Merged upstream `herdrdev/herdr` master (36 commits, through `a5c69bea`, upstream v0.8.1).
+- Windows is generally available on the stable channel, with `Ctrl+1`–`Ctrl+9` keybindings, PowerShell working-directory sync, verified-local-package updates, ARM64 installer retry while x64 emulation holds the executable, and native support for every agent integration.
+- Headless servers use a configurable 120×40 virtual terminal instead of 80×24 when no client is attached.
+- Hidden panes no longer flood the server loop with redundant wakeups, and foreground typing no longer waits behind render cadence consumed by hidden-tab output.
+- Alternate-screen history reads are faster, and experimental pane graphics support high-DPI direct file frames.
+- macOS Chinese IME commits reach panes in report-all mode; Ctrl-click URL openers are reaped on Unix; remote terminal hangups are handled on the client.
+- Active sidebar rows stay visible, default active rows stay subtle with a new navigate cursor color, and tab/sidebar clicks survive a stray drag report from the terminal.
+- Qwen Code detection uses locale-independent title states with localized confirmation fallbacks; Claude Code half-circle spinner frames are all stripped.
+- Prompts to blocked agents are rejected, and new panes wait for shell readiness before input.
+- OSC 4 palette query bursts are skipped under WSL.
+- CLI help points agents at the plain-text guide, documentation index, and built-in control skill; documentation is published in agent-readable and channel-aware indexes; the plugin marketplace gained trending and new-arrival discovery shelves.
+
+### Changed
+- The version identity moved out of the sidebar header (`spaces v0.21.0`) and into the Settings modal, right-aligned in the title bar. It also grew a fork-aware form, `v0.8.1[a5c69bea].bora-24`: the upstream herdr release and the short commit of the upstream tip merged into this fork, followed by this fork's own build number (`bora-<minor>`, or `bora-<minor>.<patch>` when the patch is non-zero) — so a report against a running build names both which herdr it's built on and which bora shipped it, instead of only the bora semver, which upstream syncs don't move. `bora --version` now prints both forms together (`bora 0.24.0 (v0.8.1[a5c69bea].bora-24)`): the plain Cargo.toml semver stays first because release CI's packaging step greps the output for it verbatim.
+
 ## [0.23.0] - 2026-08-19
 
 ### Added

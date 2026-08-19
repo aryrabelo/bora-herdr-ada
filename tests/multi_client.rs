@@ -869,19 +869,19 @@ fn non_foreground_client_render_preserves_agent_panel_scroll() {
     assert!(wait_for_frame(&mut setup_client, Duration::from_secs(2)));
     drain_server_messages(&mut setup_client, Duration::from_millis(250));
 
-    // Expected labels below reflect the fork's own agent-panel row geometry
-    // (fixed 2-row entries + 1-row gap between them, see agent_entry_gap in
-    // src/ui/sidebar.rs), which predates this upstream sync and was
-    // deliberately kept over upstream's row_gap-driven variable spacing
-    // (whose default row_gap is 0). The fork's extra gap row fits fewer
-    // entries per screen than upstream assumed when authoring this test, so
-    // the settled scroll positions differ from upstream's original values.
+    // Expected labels below reflect the agent-panel row geometry (row
+    // height = number of resolved `[ui.sidebar.agents] rows` rows per
+    // entry, gap = `sidebar_agents.row_gap`, default 0 — see
+    // `agent_entry_height_in_body`/`agent_entry_gap` in src/ui/sidebar.rs).
+    // With the default two-row entries and no gap, more entries fit per
+    // screen than the fork's previous fixed 2-row+1-gap layout did, so the
+    // settled scroll positions differ from that older geometry.
     let wheel_down = b"\x1b[<65;10;30M";
     send_client_input(&mut setup_client, &wheel_down.repeat(20));
     let (reached_bottom, setup_frames) = wait_for_frame_matching_with_snapshots(
         &mut setup_client,
         Duration::from_secs(3),
-        |frame| agent_panel_starts_with(frame, "agent-18"),
+        |frame| agent_panel_starts_with(frame, "agent-16"),
     )
     .expect("setup frame decoding should succeed");
     assert!(
@@ -897,7 +897,7 @@ fn non_foreground_client_render_preserves_agent_panel_scroll() {
     let mut probe = connect_raw_client(&client_socket, 106, 40);
     let (started_at_tall_limit, initial_frames) =
         wait_for_frame_matching_with_snapshots(&mut probe, Duration::from_secs(3), |frame| {
-            agent_panel_starts_with(frame, "agent-14")
+            agent_panel_starts_with(frame, "agent-10")
         })
         .expect("initial probe frame decoding should succeed");
     assert!(
@@ -910,7 +910,7 @@ fn non_foreground_client_render_preserves_agent_panel_scroll() {
     send_client_input(&mut probe, wheel_down);
     let (scrolled, probe_frames) =
         wait_for_frame_matching_with_snapshots(&mut probe, Duration::from_secs(3), |frame| {
-            agent_panel_starts_with(frame, "agent-15")
+            agent_panel_starts_with(frame, "agent-11")
         })
         .expect("probe frame decoding should succeed");
     assert!(

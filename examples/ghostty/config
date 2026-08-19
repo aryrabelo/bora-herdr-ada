@@ -1,0 +1,177 @@
+# Example Ghostty config for driving bora as the outer terminal.
+# Source: a real, in-use dotfiles config (sanitized: no personal paths beyond
+# this repo's own examples). Destination: ~/.config/ghostty/config (or
+# wherever `ghostty +show-config --default --docs | less` says it looks).
+# Copy, then read the "Cmd-shortcuts passed through to bora" section below —
+# those keybind = ...=unbind lines are what makes bora's own bindings work.
+# Reload in place after editing: Cmd+Shift+,   (no restart needed for most keys)
+# Discover options:  ghostty +show-config --default --docs | less
+# List values:       ghostty +list-themes / +list-fonts / +list-actions
+# Validate edits:    ghostty +validate-config
+#
+# Syntax: `key = value`, one per line. `#` starts a comment. Repeating a key
+# usually APPENDS (e.g. fallback fonts, keybinds); set `key = ""` to reset a list.
+
+# ── Font ────────────────────────────────────────────────────────────────────
+# Exact family name as reported by `ghostty +list-fonts` (the "Mono" variant
+# keeps icons single-width). A wrong name fails SILENTLY back to the default.
+# Requires the JetBrainsMono Nerd Font installed (nerdfonts.com); safe to
+# change to any installed font family.
+font-family = JetBrainsMono Nerd Font Mono
+# font-size = 13                 # points; default 13. Live-adjust with Cmd +/-.
+# font-thicken = true            # macOS only; slightly heavier strokes.
+
+# ── Appearance (left at Ghostty defaults on purpose) ──────────────────────────
+# Uncomment to experiment, then Cmd+Shift+, to reload:
+# theme = TokyoNight Night                 # `+list-themes` for all 463
+# theme = light:Catppuccin Latte,dark:Catppuccin Mocha   # follow macOS appearance
+# background-opacity = 0.95                 # 1 = solid, 0 = invisible
+# background-blur = 20                      # macOS blur radius (needs opacity < 1)
+# cursor-style = block                      # block | bar | underline
+# Titlebar NATIVO do macOS, com o fundo transparente (deixa a cor de fundo do
+# terminal passar). E o default do Ghostty e o caminho nativo p/ abas.
+#   hidden  = esconde a titlebar inteira -> DESLIGA as abas nativas: `new_tab`
+#             abre uma JANELA nova, sem erro nenhum (medido 2026-08-14).
+#   tabs    = titlebar "completely custom" (doc oficial) que funde a tab bar
+#             dentro da titlebar p/ economizar 1 linha vertical. Custou um bug
+#             de renderizacao: barra de 3 linhas de altura na 1a aba e normal
+#             na 2a (medido 2026-08-14, Ghostty 1.2.x, macOS 25.6). O renderer
+#             custom e onde esse tipo de quirk vive -> preferir o nativo.
+#   native  = igual a transparent, mas sem a transparencia.
+# Do NOT combine with macos-non-native-fullscreen=true (titlebar reappears bug).
+# Doc: "Changing this option at runtime only applies to new windows" -> Cmd+Q,
+# reload de config (Cmd+Shift+,) NAO basta.
+macos-titlebar-style = transparent
+
+# ── Quality-of-life (commented; enable what you like) ─────────────────────────
+# scrollback-limit = 10000000               # bytes of scrollback per surface
+# mouse-hide-while-typing = true
+# copy-on-select = clipboard                # auto-copy selection
+# confirm-close-surface = false             # skip the close confirmation
+# window-save-state = always                # restore windows/tabs on relaunch
+# clipboard-read = allow                    # let apps read clipboard (OSC 52)
+
+# ── Keybinds (examples; `ghostty +list-actions` for all actions) ──────────────
+# keybind = cmd+enter=toggle_fullscreen
+# keybind = global:cmd+grave_accent=toggle_quick_terminal   # drop-down terminal
+#
+# ── Cmd-shortcuts passed through to bora (herdr fork) ─────────────────────
+# bora enables the kitty keyboard protocol on its outer terminal, so a real
+# ctrl+space (bora's prefix) arrives as an escape sequence, NOT a bare NUL.
+# We used to fake the prefix with a raw NUL byte (0x00) via a `text:` action.
+# Under kitty protocol a bare NUL is an invalid C0 and gets dropped — leaving
+# the trailing literal char to reach the shell (the Cmd+T-types-"c",
+# Cmd+W-types-"x" bug). Fix: unbind these chords here so the real key event
+# transmits to bora, which binds them directly in ~/.config/bora/config.toml:
+#   cmd+t           new_tab          cmd+d           split_vertical
+#   cmd+w           close_pane       cmd+shift+d     split_horizontal
+#   cmd+n           new_workspace    cmd+shift+g     new_worktree
+#   cmd+shift+]     next_workspace   cmd+shift+[     previous_workspace
+#   cmd+]           next_tab         cmd+[           previous_tab
+keybind = cmd+t=unbind
+keybind = cmd+w=unbind
+keybind = cmd+n=unbind
+keybind = cmd+d=unbind
+keybind = cmd+shift+d=unbind
+keybind = cmd+shift+g=unbind
+keybind = ctrl+tab=unbind
+keybind = ctrl+shift+tab=unbind
+# cmd+shift+, = previous_workspace no Bora. Duas metades sao necessarias:
+# (1) este unbind, que tira o keybind reload_config do Ghostty;
+# (2) NSUserKeyEquivalents movendo o item de menu "Reload Configuration" para
+#     cmd+ctrl+shift+, -- item de menu resolve ANTES do terminal, entao o
+#     unbind sozinho NAO libera a tecla (mecanismo completo: ver passo 4 de
+#     examples/README.md).
+# Reload de config passa a ser cmd+ctrl+shift+, (namespace do nivel Ghostty).
+#
+# cmd+. e cmd+, (sem shift) foram TENTADOS e NAO funcionam: medido 2026-08-14
+# com chord de controle na mesma acao (cmd+shift+u deu workspace.focus, cmd+.
+# nao deu nada), provando que o bind do bora estava certo e o Ghostty
+# simplesmente nao transmite esse par. Nao reintroduzir.
+keybind = cmd+shift+,=unbind
+# ATENCAO A SINTAXE: o nome da tecla e o literal `]` / `[`. `right_bracket` e
+# `left_bracket` NAO existem no Ghostty — a linha e ignorada em SILENCIO e o
+# `ghostty +validate-config` passa mesmo assim (medido 2026-08-11: o config
+# tinha 4 unbinds de bracket que nunca removeram nada; o menu Window seguia
+# mostrando "Select Previous Split" com o atalho). Prova objetiva:
+#   ghostty +show-config --default | grep -c keybind   # 93
+#   ghostty +show-config           | grep -c keybind   # 93 menos 1 por unbind
+# Se o total nao cair, o unbind nao pegou.
+#
+# cmd+]/[       = next/previous_tab no Bora. Binds nativos do Ghostty
+# (goto_split e next_tab/previous_tab); sem unbind o Ghostty consome o atalho e
+# ele nunca chega ao Bora — no caso do goto_split sem splits isso aparece como
+# "nada acontece" (janela pisca), nao como erro.
+#
+# ATENCAO cmd+shift+]/[: o unbind abaixo sozinho NAO bastava quando as abas
+# nativas estao ligadas (qualquer titlebar que nao seja `hidden`) -- o proprio
+# macOS/AppKit vira dono de ⌘⇧] / ⌘⇧[ pelo menu Window ("Show Next/Previous
+# Tab"), isso NAO esta na tabela de keybinds do Ghostty, entao `unbind` nao
+# alcanca e o atalho trocava de ABA em vez de chegar ao Bora. Medido
+# 2026-08-14 sob titlebar=transparent (abas nativas ligadas): quebrado.
+# Reteste em 2026-08-17 a pedido explicito, sabendo do risco -- bora/config.toml
+# volta a bindar cmd+shift+]/[ pra next/previous_workspace. Se falhar de novo,
+# ctrl+tab / ctrl+shift+tab continuam como fallback garantido (Mouser usa eles).
+keybind = cmd+shift+]=unbind
+keybind = cmd+shift+[=unbind
+keybind = cmd+]=unbind
+keybind = cmd+[=unbind
+# ── Nivel GHOSTTY: cmd+ctrl e cmd+ctrl+shift ─────────────────────────────────
+# Esquema de tres niveis (decidido 2026-08-14):
+#   cmd / cmd+shift        -> Bora    (workspace, pane, tab do bora)
+#   cmd+ctrl / +shift      -> Ghostty (janela e aba do SO)
+#   ctrl+alt / +shift      -> Sistema (global)
+# Estes chords ANTES viviam em cmd+shift+t/n/w, que e namespace do Bora --
+# sairam de la para nao competir com reviewr (cmd+shift+r), helix
+# (cmd+shift+h), split_horizontal (cmd+shift+d) e new_worktree (cmd+shift+g).
+# new_tab    = aba dentro da MESMA janela (mesmo processo, tab bar do titlebar).
+# new_window = janela do SO nova, independente (outro espaco/monitor possivel).
+keybind = cmd+ctrl+t=new_tab
+keybind = cmd+ctrl+n=new_window
+keybind = cmd+ctrl+w=close_window
+keybind = cmd+ctrl+shift+w=close_surface
+# goto_tab saiu de cmd+1..9 (namespace do Bora) para cmd+ctrl+1..9.
+keybind = cmd+ctrl+1=goto_tab:1
+keybind = cmd+ctrl+2=goto_tab:2
+keybind = cmd+ctrl+3=goto_tab:3
+keybind = cmd+ctrl+4=goto_tab:4
+keybind = cmd+ctrl+5=goto_tab:5
+keybind = cmd+ctrl+6=goto_tab:6
+keybind = cmd+ctrl+7=goto_tab:7
+keybind = cmd+ctrl+8=goto_tab:8
+keybind = cmd+ctrl+9=last_tab
+# Libera cmd+1..9 e cmd+enter para o Bora.
+# ATENCAO: o Ghostty tem DUAS grafias de gatilho para digito -- `cmd+1` e
+# `cmd+digit_1`, e os defaults registram AS DUAS em goto_tab. Desbindar so
+# `cmd+1` deixa `cmd+digit_1` vivo e a tecla continua trocando de aba
+# (medido 2026-08-14). Prova: `ghostty +show-config | grep digit_` = vazio.
+keybind = cmd+1=unbind
+keybind = cmd+2=unbind
+keybind = cmd+3=unbind
+keybind = cmd+4=unbind
+keybind = cmd+5=unbind
+keybind = cmd+6=unbind
+keybind = cmd+7=unbind
+keybind = cmd+8=unbind
+keybind = cmd+9=unbind
+keybind = cmd+digit_1=unbind
+keybind = cmd+digit_2=unbind
+keybind = cmd+digit_3=unbind
+keybind = cmd+digit_4=unbind
+keybind = cmd+digit_5=unbind
+keybind = cmd+digit_6=unbind
+keybind = cmd+digit_7=unbind
+keybind = cmd+digit_8=unbind
+keybind = cmd+enter=unbind
+# Ao remover MEUS binds de cmd+shift+t/w, os DEFAULTS do Ghostty ressurgiram
+# nesses chords (cmd+shift+t=undo, cmd+shift+w=close_window) -- de volta ao
+# namespace do Bora. Unbind explicito: close_window ja vive em cmd+ctrl+w, e
+# undo num terminal e surpresa, nao feature.
+keybind = cmd+shift+t=unbind
+keybind = cmd+shift+w=unbind
+keybind = cmd+ctrl+enter=toggle_fullscreen
+
+# Option = Alt: sem isto, alt+a compõe "å" no macOS em vez de enviar alt+a.
+# Necessário para os keybinds de agente do bora (alt+a / alt+1..9).
+# Só aplica em janelas novas — quit (Cmd+Q) e relança o Ghostty.
+macos-option-as-alt = true

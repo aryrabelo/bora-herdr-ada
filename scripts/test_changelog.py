@@ -25,20 +25,33 @@ from scripts.changelog import (
 )
 
 
+def release_assets(version: str) -> dict[str, str]:
+    normalized = version.removeprefix("v")
+    return {
+        **default_release_assets(normalized),
+        "windows-x86_64": f"https://github.com/herdrdev/herdr/releases/download/v{normalized}/bora-windows-x86_64.zip",
+    }
+
+
 def release_sha256() -> dict[str, str]:
     return {
         "linux-x86_64": "a" * 64,
         "linux-aarch64": "b" * 64,
         "macos-x86_64": "c" * 64,
         "macos-aarch64": "d" * 64,
+        "windows-x86_64": "e" * 64,
     }
 
 
 def release_assets_with_digests() -> list[dict[str, str]]:
     return [
         {
-            "name": f"bora-{target}",
-            "url": f"https://example.com/{target}",
+            "name": (
+                "bora-windows-x86_64.zip"
+                if target == "windows-x86_64"
+                else f"bora-{target}"
+            ),
+            "url": f"https://example.com/{target}{'.zip' if target == 'windows-x86_64' else ''}",
             "digest": f"sha256:{digest * 64}",
         }
         for target, digest in (
@@ -46,6 +59,7 @@ def release_assets_with_digests() -> list[dict[str, str]]:
             ("linux-aarch64", "b"),
             ("macos-x86_64", "c"),
             ("macos-aarch64", "d"),
+            ("windows-x86_64", "e"),
         )
     ]
 
@@ -100,7 +114,7 @@ class ChangelogScriptTests(unittest.TestCase):
             build_latest_json(
                 "0.1.1",
                 "\n### Fixed\n- One\n\n",
-                default_release_assets("0.1.1"),
+                release_assets("0.1.1"),
                 release_sha256(),
             )
         )
@@ -113,7 +127,7 @@ class ChangelogScriptTests(unittest.TestCase):
             build_latest_json(
                 "v0.1.1",
                 "### Fixed\n- Smoothed Claude flapping.\n",
-                default_release_assets("0.1.1"),
+                release_assets("0.1.1"),
                 release_sha256(),
             )
         )
@@ -128,6 +142,7 @@ class ChangelogScriptTests(unittest.TestCase):
                 "linux-aarch64": "https://github.com/herdrdev/herdr/releases/download/v0.1.1/bora-linux-aarch64",
                 "macos-x86_64": "https://github.com/herdrdev/herdr/releases/download/v0.1.1/bora-macos-x86_64",
                 "macos-aarch64": "https://github.com/herdrdev/herdr/releases/download/v0.1.1/bora-macos-aarch64",
+                "windows-x86_64": "https://github.com/herdrdev/herdr/releases/download/v0.1.1/bora-windows-x86_64.zip",
             },
         )
         self.assertEqual(manifest["releases"]["0.1.1"]["assets"], manifest["assets"])
@@ -139,7 +154,7 @@ class ChangelogScriptTests(unittest.TestCase):
             build_latest_json(
                 "0.1.1",
                 "### Fixed\n- One",
-                default_release_assets("0.1.1"),
+                release_assets("0.1.1"),
                 release_sha256(),
                 announcement={"id": "keybinding-v2", "title": "Keybind Refactor", "body": "body"},
             )
@@ -159,7 +174,7 @@ class ChangelogScriptTests(unittest.TestCase):
             build_latest_json(
                 "0.1.2",
                 "### Fixed\n- Two",
-                default_release_assets("0.1.2"),
+                release_assets("0.1.2"),
                 release_sha256(),
                 releases={"0.1.1": {"notes": "### Fixed\n- One"}},
             )
@@ -168,7 +183,7 @@ class ChangelogScriptTests(unittest.TestCase):
         self.assertEqual(list(manifest["releases"]), ["0.1.2", "0.1.1"])
         self.assertEqual(manifest["releases"]["0.1.2"]["notes"], "### Fixed\n- Two")
         self.assertEqual(manifest["releases"]["0.1.2"]["protocol"], read_protocol_version())
-        self.assertEqual(manifest["releases"]["0.1.2"]["assets"], default_release_assets("0.1.2"))
+        self.assertEqual(manifest["releases"]["0.1.2"]["assets"], release_assets("0.1.2"))
         self.assertEqual(manifest["releases"]["0.1.1"]["notes"], "### Fixed\n- One")
         self.assertEqual(manifest["releases"]["0.1.1"]["assets"], default_release_assets("0.1.1"))
 
@@ -178,7 +193,7 @@ class ChangelogScriptTests(unittest.TestCase):
             build_latest_json(
                 "0.1.2",
                 "### Fixed\n- Two",
-                default_release_assets("0.1.2"),
+                release_assets("0.1.2"),
                 release_sha256(),
                 releases={"0.1.1": {"notes": "### Fixed\n- One", "assets": assets}},
             )
@@ -191,7 +206,7 @@ class ChangelogScriptTests(unittest.TestCase):
             build_latest_json(
                 "0.1.2",
                 "### Fixed\n- Two",
-                default_release_assets("0.1.2"),
+                release_assets("0.1.2"),
                 release_sha256(),
                 releases={"0.1.1": {"notes": "### Fixed\n- One", "protocol": 7}},
             )
@@ -204,7 +219,7 @@ class ChangelogScriptTests(unittest.TestCase):
             build_latest_json(
                 "0.1.2",
                 "### Fixed\n- Two",
-                default_release_assets("0.1.2"),
+                release_assets("0.1.2"),
                 release_sha256(),
                 releases={
                     "0.1.1": {
@@ -358,6 +373,7 @@ class ChangelogScriptTests(unittest.TestCase):
                     "linux-aarch64": "https://example.com/linux-aarch64",
                     "macos-x86_64": "https://example.com/macos-x86_64",
                     "macos-aarch64": "https://example.com/macos-aarch64",
+                    "windows-x86_64": "https://example.com/windows-x86_64.zip",
                 },
                 "sha256": release_sha256(),
             },
@@ -447,6 +463,7 @@ class ChangelogScriptTests(unittest.TestCase):
                 "linux-aarch64": "https://example.com/linux-aarch64",
                 "macos-x86_64": "https://example.com/macos-x86_64",
                 "macos-aarch64": "https://example.com/macos-aarch64",
+                "windows-x86_64": "https://example.com/windows-x86_64.zip",
             },
             "sha256": release_sha256(),
         }
@@ -459,6 +476,7 @@ class ChangelogScriptTests(unittest.TestCase):
                 "linux-aarch64": "https://example.com/linux-aarch64",
                 "macos-x86_64": "https://example.com/macos-x86_64",
                 "macos-aarch64": "https://example.com/macos-aarch64",
+                "windows-x86_64": "https://example.com/windows-x86_64.zip",
             },
             "sha256": release_sha256(),
         }
@@ -467,7 +485,7 @@ class ChangelogScriptTests(unittest.TestCase):
         self.assertEqual(canonical, expected)
 
     def test_current_release_assets_must_be_mirrored(self) -> None:
-        assets = default_release_assets("0.1.1")
+        assets = release_assets("0.1.1")
         ensure_current_release_assets_are_mirrored(
             {
                 "version": "0.1.1",
@@ -493,12 +511,12 @@ class ChangelogScriptTests(unittest.TestCase):
                     "version": "0.1.1",
                     "protocol": read_protocol_version(),
                     "notes": "### Fixed\n- One",
-                    "assets": default_release_assets("0.1.1"),
+                    "assets": release_assets("0.1.1"),
                     "sha256": release_sha256(),
                     "releases": {
                         "0.1.1": {
                             "notes": "### Fixed\n- One",
-                            "assets": default_release_assets("0.1.0"),
+                            "assets": release_assets("0.1.0"),
                             "sha256": release_sha256(),
                         }
                     },
@@ -518,6 +536,7 @@ class ChangelogScriptTests(unittest.TestCase):
                         "linux-aarch64": "https://example.com/linux-aarch64",
                         "macos-x86_64": "https://example.com/macos-x86_64",
                         "macos-aarch64": "https://example.com/macos-aarch64",
+                        "windows-x86_64": "https://example.com/windows-x86_64.zip",
                     },
                     "sha256": release_sha256(),
                 },
@@ -530,6 +549,7 @@ class ChangelogScriptTests(unittest.TestCase):
                         "linux-aarch64": "https://example.com/linux-aarch64",
                         "macos-x86_64": "https://example.com/macos-x86_64",
                         "macos-aarch64": "https://example.com/macos-aarch64",
+                        "windows-x86_64": "https://example.com/windows-x86_64.zip",
                     },
                     "sha256": release_sha256(),
                 },
@@ -552,14 +572,14 @@ class ChangelogScriptTests(unittest.TestCase):
             "version": "0.1.1",
             "protocol": read_protocol_version() + 1,
             "notes": "### Fixed\n- One",
-            "assets": default_release_assets("0.1.1"),
+            "assets": release_assets("0.1.1"),
             "sha256": release_sha256(),
         }
         expected = {
             "version": "0.1.1",
             "protocol": read_protocol_version(),
             "notes": "### Fixed\n- One",
-            "assets": default_release_assets("0.1.1"),
+            "assets": release_assets("0.1.1"),
             "sha256": release_sha256(),
         }
 

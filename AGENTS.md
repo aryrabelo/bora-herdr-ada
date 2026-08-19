@@ -89,7 +89,10 @@ Inside pane-scaled render and layout loops:
 
 Prefer deterministic operation or architecture tests to wall-clock CI limits.
 Performance benchmarks are supporting evidence, not substitutes for behavioral
-coverage.
+coverage. Before a stable release, `just bench-release-smoke` must compare the
+candidate with the current stable binary under hidden and visible output. When
+the result moves materially or when validating performance work, repeat it with
+`HERDR_PERF_SAMPLE_SECONDS=60` and investigate the affected scenario.
 
 ### Runtime/client boundary guardrail
 
@@ -125,6 +128,10 @@ classes, and how to resolve them, so the next sync is cheap:
   the array length and any exhaustive match/array-literal sites need both variants accounted
   for — search all `match`/array-literal sites of the enum after merging, not just the ones
   the diff flags.
+
+Every upstream sync also updates `UPSTREAM_HERDR_VERSION`/`UPSTREAM_HERDR_COMMIT` in
+`src/build_info.rs` to the merged upstream tip, in the same commit as the merge — see
+"Fork version identity" under Global Contracts.
 
 (learned 2026-08-13, binding: these three classes caused the recurring merge conflicts in
 today's upstream sync.)
@@ -272,13 +279,15 @@ When updating libghostty-vt, check every active patch in `vendor/libghostty-vt.p
 
 ## Docs
 
+`skills/herdr/SKILL.md` tracks the latest stable Herdr release because the unversioned `npx skills add herdrdev/herdr --skill herdr -g` command installs it from `master`. Do not update this file in feature or preview work. Review and update it only during stable release preparation, and include the change in the release commit with the `Cargo.toml` version bump. Preview builds keep the latest stable skill.
+
 Unreleased docs live in `docs/next/website/src/content/docs/`. Update those when a user-facing change needs docs before the next release. They are committed drafts but are never production website input. `docs/next/README.md` and `docs/next/CHANGELOG.md` stage root README and changelog changes: **`docs/next/CHANGELOG.md` is the single source of truth for unreleased entries.** Append new entries only there. Root `CHANGELOG.md` stays release-generated: its `## Unreleased` section must stay empty between releases, and `just release-prepare` promotes `docs/next/CHANGELOG.md`'s Unreleased section into a new versioned entry in both files (`scripts/changelog.py prepare --path docs/next/CHANGELOG.md`, then that result is copied over root `CHANGELOG.md`, never the other direction). `just release-docs-check` (and therefore `just pre-release-check`/`just release-prepare`) runs `python3 scripts/changelog.py check-history-sync`, which fails loudly instead of silently overwriting either file when root has direct Unreleased content or when released history has diverged between the two files — reconcile by hand before releasing if it fires. (learned 2026-08-13, binding: an earlier version of `release-prepare` copied root into `docs/next` and destroyed docs/next-only content; do not reintroduce that direction.)
 
 The active preview release docs live in `docs/preview/website/`. Preview CI owns this mutable snapshot and commits it atomically with `website/preview.json`; never edit it manually. Validate it with `node website/scripts/docs-preview.mjs check`.
 
 Published stable-release documentation lives in `docs/versions/`. Release CI seeds each version from the tagged `docs/next` tree, and maintainers may correct factual documentation errors in a published version afterward. Apply a correction separately to `docs/next` when it also applies to future releases; never replace a published tree with the current draft. The website build generates `/docs/preview/` from the active preview snapshot, `/docs/<version>/` from the maintained version directories, and `/docs/` from the version selected by `docs/versions/manifest.json`. Do not edit generated files under `website/src/content/docs/`.
 
-During release review, finalize `docs/next` and run `just release-docs-check`. Do not copy draft docs into preview or published versions manually. Preview CI snapshots the selected commit. After a stable GitHub Release succeeds, release CI seeds a new version from the exact tag, updates `latest.json`, and deploys them together. Normal feature/fix work should not edit root `README.md`, root `CHANGELOG.md`, published version docs, or `website/latest.json` unless it is a focused correction to already-published documentation or explicitly requested.
+During release review, finalize `docs/next` and run `just release-docs-check`. Do not copy draft docs into preview or published versions manually. Preview CI snapshots the selected commit. After a stable GitHub Release succeeds, release CI seeds a new version from the exact tag, updates `latest.json`, and deploys them together. Normal feature/fix work should not edit root `README.md`, root `CHANGELOG.md`, published version docs, or `website/latest.json` unless it is a focused correction to already-published documentation or explicitly requested. `docs/next/CHANGELOG.md` is for user-facing Herdr runtime changes; do not add entries for website-only, documentation-only, CI, build-pipeline, or repository-maintenance changes.
 
 Put local PRDs, planning notes, and exploratory specs under `.local/prd/`; `.local/` is ignored and locally controlled.
 
@@ -291,6 +300,18 @@ package, bump `version` in the same commit — never ship code without a version
 because the installed binary reports `bora --version` and an unbumped build is
 indistinguishable from the previous one at runtime. (learned 2026-08-14, binding:
 requested directly by Ary after an update shipped under the old version number.)
+
+### Fork version identity
+
+The fork's human-facing version is `v<upstream herdr version>[<upstream commit>].bora-<our
+minor>`, rendered by `build_info::fork_version_display()`. `UPSTREAM_HERDR_VERSION` and
+`UPSTREAM_HERDR_COMMIT` in `src/build_info.rs` must be updated in the same commit as any
+merge of `upstream/master`: set them to the upstream release the merged tip belongs to and
+the short SHA of that merged upstream tip — never the fork's own merge commit, which says
+nothing about herdr. `BASE_VERSION` and `version()` stay plain semver on purpose: update
+checks (`update::Version`), the wire protocol `version` field, live-handoff acceptance, and
+seen-state storage keys all compare them, and none of those comparisons may see the fork
+suffix. (learned 2026-08-19, binding.)
 
 ### Commit Style
 
@@ -358,12 +379,17 @@ just release 0.x.y
 
 Before stable release, run `/pre-release-audit`, finalize `docs/next`, and run `just pre-release-check` to validate the staged docs, website build, and render scaling. `just release` prepares the changelog and release commit, tags it, and pushes the tag. GitHub Actions builds binaries, creates the GitHub release, closes released issues, snapshots and promotes the tagged docs, and updates `website/latest.json`.
 
-The release workflows must publish these four assets:
+Before the first stable Windows release, publish and verify a preview containing stable-channel support. Existing Windows preview users need that preview before `herdr channel set stable` can migrate them.
+
+The release workflows must publish these five assets:
 
 - `herdr-linux-x86_64`
 - `herdr-linux-aarch64`
 - `herdr-macos-x86_64`
 - `herdr-macos-aarch64`
+- `herdr-windows-x86_64.zip`
+
+The Windows archive must contain `herdr.exe` and its app-local ConPTY runtime. Do not publish a bare executable as the stable Windows asset.
 
 `nix/package.nix` imports `Cargo.lock` directly with `cargoLock.lockFile`, so release version bumps do not require a separate Nix cargo hash update. If Cargo git dependencies are added later, add the required `cargoLock.outputHashes` entries as part of that dependency change.
 

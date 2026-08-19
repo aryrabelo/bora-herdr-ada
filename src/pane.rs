@@ -41,6 +41,8 @@ use self::agent_detection::{
     DetectionScreenReadInput, PendingIdleConfirmation, ScreenDetectionPublishInput,
     AGENT_PENDING_IDLE_RECHECK, AGENT_STARTUP_GRACE_WINDOW,
 };
+#[cfg(any(unix, test))]
+pub use self::terminal::InputState;
 use self::terminal::{GhosttyPaneTerminal, PaneTerminal};
 pub(crate) use self::terminal::{
     TerminalDirtyPatch, TerminalDirtyPatchOutcome, TerminalReadSnapshot, TerminalTextMatch,
@@ -48,7 +50,7 @@ pub(crate) use self::terminal::{
 };
 pub use self::{
     state::PaneState,
-    terminal::{InputState, ScrollMetrics, TerminalCursorState},
+    terminal::{ScrollMetrics, TerminalCursorState},
 };
 
 const RELEASE_REACQUIRE_SUPPRESSION: std::time::Duration = std::time::Duration::from_secs(1);
@@ -1057,6 +1059,7 @@ pub struct PaneRuntime {
     reported_cwd: Arc<Mutex<Option<std::path::PathBuf>>>,
     child_wait_completed: Option<Arc<AtomicBool>>,
     kitty_keyboard_flags: Arc<AtomicU16>,
+    content_seq: Arc<AtomicU64>,
     detection_content_seq: Arc<AtomicU64>,
     full_lifecycle_authority_active: Arc<AtomicBool>,
     detect_reset_notify: Arc<Notify>,
@@ -1629,8 +1632,8 @@ fn resolve_shell_for_login_mode(shell: &str) -> io::Result<String> {
 /// wraps whatever `prompt` function the user's profile left behind so each
 /// prompt render appends the cwd as OSC 9;9 — the sequence Windows Terminal
 /// and ConEmu standardized for shell integration. PowerShell never updates
-/// its Win32 process cwd on `Set-Location`, so prompt-time reporting is the
-/// only reliable cwd source on Windows.
+/// its Win32 process cwd on `Set-Location`, so the prompt hook updates it when
+/// possible before reporting the cwd.
 ///
 /// The snippet must not contain double quotes: powershell.exe parses its
 /// command line with its own rules that disagree with the ArgvQuote escaping
@@ -1642,7 +1645,7 @@ fn resolve_shell_for_login_mode(shell: &str) -> io::Result<String> {
 /// The original prompt must be invoked before any other statement in the
 /// wrapper: anything that runs first resets `$?`, so a status-aware user
 /// prompt would show success after a failed command (verified on 5.1).
-pub(crate) const WINDOWS_POWERSHELL_SHELL_INTEGRATION_COMMAND: &str = r"if ($null -eq $global:__HerdrOriginalPrompt) { $global:__HerdrOriginalPrompt = $function:prompt; function global:prompt { $out = @(& $global:__HerdrOriginalPrompt) -join ' '; $loc = $ExecutionContext.SessionState.Path.CurrentLocation; if ($loc.Provider.Name -eq 'FileSystem') { $esc = [string][char]27; $out += $esc + ']9;9;' + $loc.ProviderPath + $esc + '\' }; $out } }";
+pub(crate) const WINDOWS_POWERSHELL_SHELL_INTEGRATION_COMMAND: &str = r"if ($null -eq $global:__HerdrOriginalPrompt) { $global:__HerdrOriginalPrompt = $function:prompt; function global:prompt { $out = @(& $global:__HerdrOriginalPrompt) -join ' '; $loc = $ExecutionContext.SessionState.Path.CurrentLocation; if ($loc.Provider.Name -eq 'FileSystem') { try { [Environment]::CurrentDirectory = $loc.ProviderPath } catch {}; $esc = [string][char]27; $out += $esc + ']9;9;' + $loc.ProviderPath + $esc + '\' }; $out } }";
 
 fn pane_shell_command_builder_for_target(
     shell_config: PaneShellConfig<'_>,
@@ -1826,11 +1829,7 @@ impl PaneRuntime {
 
     #[cfg(unix)]
     pub fn handoff_history_ansi(&self) -> Option<String> {
-        if self
-            .terminal
-            .input_state()
-            .is_some_and(|input_state| input_state.alternate_screen)
-        {
+        if self.terminal.alternate_screen_active() {
             return None;
         }
         self.snapshot_history().map(|history| {
@@ -2071,11 +2070,13 @@ impl PaneRuntime {
         let child_pid = Arc::new(AtomicU32::new(child_pid));
         let reported_cwd = Arc::new(Mutex::new(None));
         let kitty_keyboard_flags = Arc::new(AtomicU16::new(keyboard_protocol_flags));
+        let content_seq = Arc::new(AtomicU64::new(0));
         let detection_content_seq = Arc::new(AtomicU64::new(0));
 
         let io = {
             let terminal = terminal.clone();
             let response_writer = response_tx;
+            let content_seq = content_seq.clone();
             let detection_content_seq = detection_content_seq.clone();
             let child_pid = child_pid.clone();
             let read_events = events.clone();
@@ -2083,9 +2084,11 @@ impl PaneRuntime {
             let rt = tokio::runtime::Handle::current();
             let delay_rt = rt.clone();
             let on_read = Box::new(move |bytes: &[u8]| {
+                content_seq.fetch_add(1, Ordering::AcqRel);
                 let shell_pid = child_pid.load(Ordering::Acquire);
                 let result =
                     terminal.process_pty_bytes(pane_id, shell_pid, bytes, &response_writer);
+                content_seq.fetch_add(1, Ordering::Release);
                 publish_terminal_bells(pane_id, result.terminal_bells, &read_events);
                 observe_detection_content_change(bytes, &detection_content_seq);
                 let title_requested =
@@ -2154,6 +2157,7 @@ impl PaneRuntime {
             reported_cwd,
             child_wait_completed: None,
             kitty_keyboard_flags,
+            content_seq,
             detection_content_seq,
             full_lifecycle_authority_active,
             detect_reset_notify,
@@ -2209,6 +2213,7 @@ impl PaneRuntime {
         let child_pid = Arc::new(AtomicU32::new(0));
         let reported_cwd = Arc::new(Mutex::new(None));
         let child_wait_completed = Arc::new(AtomicBool::new(false));
+        let content_seq = Arc::new(AtomicU64::new(0));
         let detection_content_seq = Arc::new(AtomicU64::new(0));
         let full_lifecycle_authority_active = Arc::new(AtomicBool::new(false));
         {
@@ -2241,15 +2246,18 @@ impl PaneRuntime {
             let response_writer = response_tx;
             let render_notify = render_notify.clone();
             let render_dirty = render_dirty.clone();
+            let content_seq = content_seq.clone();
             let detection_content_seq = detection_content_seq.clone();
             let child_pid = child_pid.clone();
             let events = events.clone();
             let reported_cwd = reported_cwd.clone();
             let rt = tokio::runtime::Handle::current();
             let on_read = Box::new(move |bytes: &[u8]| {
+                content_seq.fetch_add(1, Ordering::AcqRel);
                 let shell_pid = child_pid.load(Ordering::Acquire);
                 let result =
                     terminal.process_pty_bytes(pane_id, shell_pid, bytes, &response_writer);
+                content_seq.fetch_add(1, Ordering::Release);
                 publish_terminal_bells(pane_id, result.terminal_bells, &events);
                 if agent_detection == AgentDetection::Enabled {
                     observe_detection_content_change(bytes, &detection_content_seq);
@@ -2698,6 +2706,7 @@ impl PaneRuntime {
             reported_cwd,
             child_wait_completed: Some(child_wait_completed),
             kitty_keyboard_flags,
+            content_seq,
             detection_content_seq,
             full_lifecycle_authority_active,
             detect_reset_notify,
@@ -2743,6 +2752,10 @@ impl PaneRuntime {
     pub(crate) fn current_size(&self) -> (u16, u16) {
         let (rows, cols, _, _) = self.current_size.get();
         (rows, cols)
+    }
+
+    pub(crate) fn content_seq(&self) -> u64 {
+        self.content_seq.load(Ordering::Acquire)
     }
 
     /// Resize if the dimensions actually changed.
@@ -2826,10 +2839,35 @@ impl PaneRuntime {
         self.terminal.word_motion_target(row, col, motion)
     }
 
+    #[cfg(any(unix, test))]
     pub fn input_state(&self) -> Option<InputState> {
         #[cfg(test)]
         AGGREGATE_INPUT_STATE_READS.set(AGGREGATE_INPUT_STATE_READS.get() + 1);
         self.terminal.input_state()
+    }
+
+    pub fn keyboard_report_all_requested(&self) -> bool {
+        self.terminal.keyboard_report_all_requested()
+    }
+
+    pub fn bracketed_paste_enabled(&self) -> bool {
+        self.terminal.bracketed_paste_enabled()
+    }
+
+    pub fn focus_reporting_enabled(&self) -> bool {
+        self.terminal.focus_reporting_enabled()
+    }
+
+    pub fn mouse_reporting_enabled(&self) -> bool {
+        self.terminal.mouse_reporting_enabled()
+    }
+
+    pub fn sgr_pixel_mouse_enabled(&self) -> bool {
+        self.terminal.sgr_pixel_mouse_enabled()
+    }
+
+    pub fn plain_page_keys_use_host_scrollback(&self) -> Option<bool> {
+        self.terminal.plain_page_keys_use_host_scrollback()
     }
 
     pub fn alternate_screen_active(&self) -> bool {
@@ -2980,10 +3018,7 @@ impl PaneRuntime {
     }
 
     fn paste_payload(&self, text: String) -> Bytes {
-        let bracketed = self
-            .input_state()
-            .map(|state| state.bracketed_paste)
-            .unwrap_or(false);
+        let bracketed = self.bracketed_paste_enabled();
         let payload = if bracketed {
             format!("\x1b[200~{text}\x1b[201~")
         } else {
@@ -2993,11 +3028,7 @@ impl PaneRuntime {
     }
 
     pub fn try_send_focus_event(&self, event: crate::ghostty::FocusEvent) -> bool {
-        if !self
-            .input_state()
-            .map(|state| state.focus_reporting)
-            .unwrap_or(false)
-        {
+        if !self.focus_reporting_enabled() {
             return false;
         }
 
@@ -3030,7 +3061,7 @@ impl PaneRuntime {
         position: crate::input::mouse::Position,
         modifiers: crossterm::event::KeyModifiers,
     ) -> Option<Vec<u8>> {
-        if !self.input_state()?.mouse_protocol_mode.reporting_enabled() {
+        if !self.mouse_reporting_enabled() {
             return None;
         }
         self.terminal.encode_mouse_button(kind, position, modifiers)
@@ -3068,7 +3099,6 @@ impl PaneRuntime {
         &self,
         kind: crossterm::event::MouseEventKind,
     ) -> Option<Vec<u8>> {
-        self.input_state()?;
         if self.wheel_routing()? != WheelRouting::AlternateScroll {
             return None;
         }
@@ -3165,8 +3195,10 @@ impl PaneRuntime {
     }
 
     pub(crate) fn test_process_pty_bytes(&self, bytes: &[u8]) {
+        self.content_seq.fetch_add(1, Ordering::AcqRel);
         let (tx, _rx) = mpsc::channel(1);
         let _ = self.terminal.process_pty_bytes(self.pane_id, 0, bytes, &tx);
+        self.content_seq.fetch_add(1, Ordering::Release);
     }
 
     pub(crate) fn test_with_scrollback_bytes(
@@ -3207,6 +3239,7 @@ impl PaneRuntime {
                 reported_cwd: Arc::new(Mutex::new(None)),
                 child_wait_completed: None,
                 kitty_keyboard_flags: Arc::new(AtomicU16::new(0)),
+                content_seq: Arc::new(AtomicU64::new(0)),
                 detection_content_seq: Arc::new(AtomicU64::new(0)),
                 full_lifecycle_authority_active: Arc::new(AtomicBool::new(false)),
                 detect_reset_notify: Arc::new(Notify::new()),
@@ -3589,7 +3622,11 @@ mod tests {
         }
 
         let script = WINDOWS_POWERSHELL_SHELL_INTEGRATION_COMMAND;
-        assert!(script.contains("]9;9;"), "missing OSC 9;9 emit: {script}");
+        let cwd_sync = script
+            .find("[Environment]::CurrentDirectory = $loc.ProviderPath")
+            .expect("wrapper must synchronize the Win32 process cwd");
+        let osc_report = script.find("]9;9;").expect("wrapper must emit OSC 9;9");
+        assert!(cwd_sync < osc_report, "cwd sync must precede OSC report");
         assert!(
             script.contains("$global:__HerdrOriginalPrompt = $function:prompt"),
             "must wrap the profile-defined prompt: {script}"
@@ -3854,6 +3891,7 @@ mod tests {
             reported_cwd: Arc::new(Mutex::new(None)),
             child_wait_completed: None,
             kitty_keyboard_flags: Arc::new(AtomicU16::new(0)),
+            content_seq: Arc::new(AtomicU64::new(0)),
             detection_content_seq: Arc::new(AtomicU64::new(0)),
             full_lifecycle_authority_active: Arc::new(AtomicBool::new(false)),
             detect_reset_notify: Arc::new(Notify::new()),
@@ -3886,6 +3924,7 @@ mod tests {
             reported_cwd: Arc::new(Mutex::new(None)),
             child_wait_completed: None,
             kitty_keyboard_flags: Arc::new(AtomicU16::new(0)),
+            content_seq: Arc::new(AtomicU64::new(0)),
             detection_content_seq: Arc::new(AtomicU64::new(0)),
             full_lifecycle_authority_active: Arc::new(AtomicBool::new(false)),
             detect_reset_notify: Arc::new(Notify::new()),
