@@ -124,16 +124,25 @@ pub(crate) enum ChatMembersHit {
     AddAgent,
 }
 
-/// Deterministic channel-list order: most recently active first
-/// (`last_message_seq` descending), with channel name ascending as the
-/// tiebreak so channels with equal recency never swap places between
-/// refreshes. Never-messaged channels (`last_message_seq == 0`) sink to the
-/// bottom for free, since 0 is the lowest possible seq.
+/// Deterministic channel-list order: most recently active first, by the last
+/// message's timestamp descending, with channel name ascending as the tiebreak
+/// so equal-recency channels never swap places between refreshes.
+/// Never-messaged channels (`last_message_ts == None`) sink to the bottom.
+///
+/// The sort key is the timestamp, NOT `last_message_seq`: seq is monotonic
+/// *within* one channel and says nothing across channels, so two rooms whose
+/// counters happen to agree would tie and fall back to name, putting an older
+/// room above a newer one. The timestamps are RFC3339 UTC produced by one code
+/// path, so comparing them as strings orders them correctly.
 fn sort_chat_channels(channels: &mut [ChannelSummary]) {
     channels.sort_by(|a, b| {
-        b.last_message_seq
-            .cmp(&a.last_message_seq)
-            .then_with(|| a.name.cmp(&b.name))
+        let recency = match (a.last_message_ts.as_deref(), b.last_message_ts.as_deref()) {
+            (Some(left), Some(right)) => right.cmp(left),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => std::cmp::Ordering::Equal,
+        };
+        recency.then_with(|| a.name.cmp(&b.name))
     });
 }
 
@@ -876,9 +885,10 @@ mod tests {
         }
     }
 
-    fn channel_with_seq(name: &str, seq: u64) -> ChannelSummary {
+    fn channel_with_activity(name: &str, seq: u64, ts: Option<&str>) -> ChannelSummary {
         ChannelSummary {
             last_message_seq: seq,
+            last_message_ts: ts.map(str::to_string),
             ..channel(name)
         }
     }
@@ -1796,16 +1806,33 @@ mod tests {
     #[test]
     fn sort_chat_channels_orders_by_recency_then_name_never_messaged_last() {
         let mut channels = vec![
-            channel_with_seq("#b", 5),
-            channel_with_seq("#a", 5),
-            channel_with_seq("#never", 0),
-            channel_with_seq("#c", 10),
+            channel_with_activity("#b", 5, Some("2026-08-20T10:00:00.000000Z")),
+            channel_with_activity("#a", 5, Some("2026-08-20T10:00:00.000000Z")),
+            channel_with_activity("#never", 0, None),
+            channel_with_activity("#c", 10, Some("2026-08-20T11:00:00.000000Z")),
         ];
         sort_chat_channels(&mut channels);
         assert_eq!(
             channels.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
             vec!["#c", "#a", "#b", "#never"],
-            "recency descending, name ascending tiebreak, zero-seq last"
+            "recency descending, name ascending tiebreak, never-messaged last"
+        );
+    }
+
+    /// Regression: seq is monotonic per channel, so two rooms can carry the
+    /// same seq while one is hours newer. Sorting on seq tied them and fell
+    /// back to name, ranking the older room first — caught against live data.
+    #[test]
+    fn sort_chat_channels_ranks_by_time_not_per_channel_seq() {
+        let mut channels = vec![
+            channel_with_activity("#ci-check", 4, Some("2026-08-20T13:24:08.158396Z")),
+            channel_with_activity("#runner-disk-full", 4, Some("2026-08-20T15:34:59.977129Z")),
+        ];
+        sort_chat_channels(&mut channels);
+        assert_eq!(
+            channels.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+            vec!["#runner-disk-full", "#ci-check"],
+            "the room with the newer message wins even when both seqs match"
         );
     }
 }
