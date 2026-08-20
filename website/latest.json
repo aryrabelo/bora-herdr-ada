@@ -1,22 +1,40 @@
 {
-  "version": "0.31.0",
+  "version": "0.32.0",
   "protocol": 21,
-  "notes": "### Added\n- A channel workspace now comes up with two panes: one following the transcript and one plain shell to type `bora channel send` into. The previous single pane was seeded with the transcript follower, which made the room readable but left nowhere to reply from.\n- `bora channel open <name>` focuses a channel's workspace and adds whatever the room is missing. Rooms created before the transcript pane existed stayed a bare shell forever with no way to see their traffic; this repairs them, and is a no-op on a room that is already complete.\n\n### Fixed\n- The Linux clipboard and notification tests called `.unwrap()` on a `parking_lot` mutex guard, which does not return a `Result`, so the Linux CI leg could not compile the crate's tests. The file is Linux-only, so a macOS `just check` never saw it.\n\n### Synced from herdr\n- Merged upstream herdr through `2c042bb2`, which includes the `v0.8.2` release. The fork's reported identity moves to `v0.8.2[2c042bb2]`.\n- Unix CLI commands exit quietly when a downstream pipe closes instead of panicking with exit 101, and shell-completion output goes through the same path. (herdr #2994, #2996)\n- Busy multi-pane sessions avoid redundant hidden-pane wakeups and full terminal-state formatting in pane-scaled paths, preventing CPU regressions from high-rate background output. (herdr #2550, #2901, #2962)\n- Mouse capture and forwarding survive a live handoff, so a reattached client keeps working mouse input.\n- Claude screen detection gained activity fallbacks, and Windows recognizes the Cursor CLI's bundled node process.\n- Plugin pane working directories stay synchronized with the pane they were opened from. (herdr #2985)",
+  "notes": "### Added\n- Channels now carry an unread count, so a `channel note` \u2014 the zero-injection verb \u2014 can sit like mail until someone chooses to read it. `bora channel list` run from an agent's pane reports that agent's own unread per room, `bora channel members` reports it per member, and reading a room via `channel history` or `channel tail` catches that member up. The cursor is persisted per member beside the existing roster and scope records.\n- The chat view marks rooms with messages newer than what the window has shown, and ranks them above quiet rooms. This is the window's own view state, not the agents' mailboxes: looking at a room clears its marker for you without touching what any agent still has unread.",
   "assets": {
-    "linux-x86_64": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/v0.31.0/bora-linux-x86_64",
-    "linux-aarch64": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/v0.31.0/bora-linux-aarch64",
-    "macos-x86_64": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/v0.31.0/bora-macos-x86_64",
-    "macos-aarch64": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/v0.31.0/bora-macos-aarch64",
-    "windows-x86_64": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/v0.31.0/bora-windows-x86_64.zip"
+    "linux-x86_64": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/v0.32.0/bora-linux-x86_64",
+    "linux-aarch64": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/v0.32.0/bora-linux-aarch64",
+    "macos-x86_64": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/v0.32.0/bora-macos-x86_64",
+    "macos-aarch64": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/v0.32.0/bora-macos-aarch64",
+    "windows-x86_64": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/v0.32.0/bora-windows-x86_64.zip"
   },
   "sha256": {
-    "linux-x86_64": "30f5904a4bc525e786878e6e5fa89377c5362dd4d9fc0db83bb8d75122953da9",
-    "linux-aarch64": "bd860172de021a0a55db3344d9c4a9d24d0f15892c68a4caee2d99e352f22fb7",
-    "macos-x86_64": "c9c7c03507335783f9c3ce490c4a4121dcabc6a3ff5bf908165466ed567b3696",
-    "macos-aarch64": "4163f85f26e8497d6e1d704e9848ceed343fbba270536cae9d0e0cdb9cff5a1f",
-    "windows-x86_64": "f9482cd6eb5afff0000df952ceea9e226f2e529bc6cfa513c4861ded2b07af1b"
+    "linux-x86_64": "5631da002eda65978582d465a802052c66fdcb8f9e7829e930aa8a615e73e836",
+    "linux-aarch64": "688d91cff27e47a9ada6dccdbdb2b33054aeaadeee0dfbe06a01ca18830fc17c",
+    "macos-x86_64": "cb75f627d09d7ae7ad6e3a06a3ef41e79ed9ecdc6c862403ba06c95512ae3643",
+    "macos-aarch64": "4244fe5d45bdfde171e42253ab65a6e078e787d760725c170de29c511d26d3e9",
+    "windows-x86_64": "edbfb2e1103d4b4bed41cc8fdec9beb5f1087e1729b38cecc2419ebaa1da9de2"
   },
   "releases": {
+    "0.32.0": {
+      "notes": "### Added\n- Channels now carry an unread count, so a `channel note` \u2014 the zero-injection verb \u2014 can sit like mail until someone chooses to read it. `bora channel list` run from an agent's pane reports that agent's own unread per room, `bora channel members` reports it per member, and reading a room via `channel history` or `channel tail` catches that member up. The cursor is persisted per member beside the existing roster and scope records.\n- The chat view marks rooms with messages newer than what the window has shown, and ranks them above quiet rooms. This is the window's own view state, not the agents' mailboxes: looking at a room clears its marker for you without touching what any agent still has unread.",
+      "protocol": 21,
+      "assets": {
+        "linux-x86_64": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/v0.32.0/bora-linux-x86_64",
+        "linux-aarch64": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/v0.32.0/bora-linux-aarch64",
+        "macos-x86_64": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/v0.32.0/bora-macos-x86_64",
+        "macos-aarch64": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/v0.32.0/bora-macos-aarch64",
+        "windows-x86_64": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/v0.32.0/bora-windows-x86_64.zip"
+      },
+      "sha256": {
+        "linux-x86_64": "5631da002eda65978582d465a802052c66fdcb8f9e7829e930aa8a615e73e836",
+        "linux-aarch64": "688d91cff27e47a9ada6dccdbdb2b33054aeaadeee0dfbe06a01ca18830fc17c",
+        "macos-x86_64": "cb75f627d09d7ae7ad6e3a06a3ef41e79ed9ecdc6c862403ba06c95512ae3643",
+        "macos-aarch64": "4244fe5d45bdfde171e42253ab65a6e078e787d760725c170de29c511d26d3e9",
+        "windows-x86_64": "edbfb2e1103d4b4bed41cc8fdec9beb5f1087e1729b38cecc2419ebaa1da9de2"
+      }
+    },
     "0.31.0": {
       "notes": "### Added\n- A channel workspace now comes up with two panes: one following the transcript and one plain shell to type `bora channel send` into. The previous single pane was seeded with the transcript follower, which made the room readable but left nowhere to reply from.\n- `bora channel open <name>` focuses a channel's workspace and adds whatever the room is missing. Rooms created before the transcript pane existed stayed a bare shell forever with no way to see their traffic; this repairs them, and is a no-op on a room that is already complete.\n\n### Fixed\n- The Linux clipboard and notification tests called `.unwrap()` on a `parking_lot` mutex guard, which does not return a `Result`, so the Linux CI leg could not compile the crate's tests. The file is Linux-only, so a macOS `just check` never saw it.\n\n### Synced from herdr\n- Merged upstream herdr through `2c042bb2`, which includes the `v0.8.2` release. The fork's reported identity moves to `v0.8.2[2c042bb2]`.\n- Unix CLI commands exit quietly when a downstream pipe closes instead of panicking with exit 101, and shell-completion output goes through the same path. (herdr #2994, #2996)\n- Busy multi-pane sessions avoid redundant hidden-pane wakeups and full terminal-state formatting in pane-scaled paths, preventing CPU regressions from high-rate background output. (herdr #2550, #2901, #2962)\n- Mouse capture and forwarding survive a live handoff, so a reattached client keeps working mouse input.\n- Claude screen detection gained activity fallbacks, and Windows recognizes the Cursor CLI's bundled node process.\n- Plugin pane working directories stay synchronized with the pane they were opened from. (herdr #2985)",
       "protocol": 21,
