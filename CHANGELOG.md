@@ -4,6 +4,12 @@ Bora is a fork of [herdr](https://github.com/ogulcancelik/herdr). This changelog
 
 ## Unreleased
 
+## [0.26.0] - 2026-08-19
+
+### Changed
+- Agent notification toasts and system notifications now name the pane they came from: the context line appends the pane's public id (`<workspace>:p<number>`, e.g. `w7:p1`) after the workspace label, so a toast shown for a background workspace tells you which split produced it.
+- The sidebar row's ` @nome` agent badge no longer falls back to the detected agent kind (`@omp`, `@pi`) when the pane has no registered `agent rename` name. A tool kind names a tool, not an agent; the badge now shows the pane's addressable id instead (`@w78p1`, the unpunctuated form `bora agent prompt`/`orc channel send` accept), so an unnamed agent is still directly addressable straight from the sidebar. A registered name still wins.
+
 ## [0.24.0] - 2026-08-19
 
 ### Added
