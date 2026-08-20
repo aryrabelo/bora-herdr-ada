@@ -1,22 +1,40 @@
 {
-  "version": "0.29.0",
+  "version": "0.30.0",
   "protocol": 21,
-  "notes": "### Added\n- The chat view's channel list (`prefix+i`) now shows what each channel is worth opening for: pane and agent counts plus the time of the last message, sorted most-recently-active first, with never-messaged rooms dimmed at the bottom. `channel.list` carries the new `last_message_seq`/`last_message_ts` facts; the relative formatting stays in the client.\n\n### Fixed\n- The CLI integration tests referenced the upstream binary name, which cargo does not define for this fork, so they could not compile on Linux. Those tests are gated off macOS, so a local `just check` never compiled them and the break only appeared on CI. A guard test now scans for the stale name on every host.",
+  "notes": "### Fixed\n- The chat view's channel list is ordered by the last message's timestamp instead of its sequence number. Sequence numbers are monotonic within one channel and mean nothing across channels, so two rooms whose counters happened to agree tied and fell back to the name, ranking a room that had been quiet for two hours above one active minutes ago.",
   "assets": {
-    "linux-x86_64": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/v0.29.0/bora-linux-x86_64",
-    "linux-aarch64": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/v0.29.0/bora-linux-aarch64",
-    "macos-x86_64": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/v0.29.0/bora-macos-x86_64",
-    "macos-aarch64": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/v0.29.0/bora-macos-aarch64",
-    "windows-x86_64": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/v0.29.0/bora-windows-x86_64.zip"
+    "linux-x86_64": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/v0.30.0/bora-linux-x86_64",
+    "linux-aarch64": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/v0.30.0/bora-linux-aarch64",
+    "macos-x86_64": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/v0.30.0/bora-macos-x86_64",
+    "macos-aarch64": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/v0.30.0/bora-macos-aarch64",
+    "windows-x86_64": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/v0.30.0/bora-windows-x86_64.zip"
   },
   "sha256": {
-    "linux-x86_64": "d0f0e436482ccc3930ef58b49e1a0c886cce56d3b1ce8c9f2f6c153e70181311",
-    "linux-aarch64": "6011feaa1ed0323201d0e2a7fb2df56c28d4081dc03259454004833919c7c369",
-    "macos-x86_64": "b43c128d894c12a64dac0b469ca6dd8e3ff03db3bf13b97f9cbb6673960f8f5d",
-    "macos-aarch64": "9fe82fec9e9f911831b01b9dbef0c5f7a1b36b32ec1f0d2ad55dd1eb9e4f3b15",
-    "windows-x86_64": "6913465235b53f4cf11cb9f30b4b539cd7216d948c838499061c682aad683c3a"
+    "linux-x86_64": "dd5700ba522747d4d4ffee1e6491a676a82875303269a2d727c596e7cf866adb",
+    "linux-aarch64": "d4d5ba831c164125711c214d95e2119afefa7bea2f7feded6dc6b5e5586d92a8",
+    "macos-x86_64": "7700f1ccfdc1f9efe95eea35d2319a7589973de9af1bb5ea01968ebf3d4189ac",
+    "macos-aarch64": "ccd23e04016cb81eaa5f54f210851bf824ab7d67d211a816b3b800600b403c43",
+    "windows-x86_64": "18df613da446d120896e8c5034c84a627c3c7c962a74db56844d4f87a3739955"
   },
   "releases": {
+    "0.30.0": {
+      "notes": "### Fixed\n- The chat view's channel list is ordered by the last message's timestamp instead of its sequence number. Sequence numbers are monotonic within one channel and mean nothing across channels, so two rooms whose counters happened to agree tied and fell back to the name, ranking a room that had been quiet for two hours above one active minutes ago.",
+      "protocol": 21,
+      "assets": {
+        "linux-x86_64": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/v0.30.0/bora-linux-x86_64",
+        "linux-aarch64": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/v0.30.0/bora-linux-aarch64",
+        "macos-x86_64": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/v0.30.0/bora-macos-x86_64",
+        "macos-aarch64": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/v0.30.0/bora-macos-aarch64",
+        "windows-x86_64": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/v0.30.0/bora-windows-x86_64.zip"
+      },
+      "sha256": {
+        "linux-x86_64": "dd5700ba522747d4d4ffee1e6491a676a82875303269a2d727c596e7cf866adb",
+        "linux-aarch64": "d4d5ba831c164125711c214d95e2119afefa7bea2f7feded6dc6b5e5586d92a8",
+        "macos-x86_64": "7700f1ccfdc1f9efe95eea35d2319a7589973de9af1bb5ea01968ebf3d4189ac",
+        "macos-aarch64": "ccd23e04016cb81eaa5f54f210851bf824ab7d67d211a816b3b800600b403c43",
+        "windows-x86_64": "18df613da446d120896e8c5034c84a627c3c7c962a74db56844d4f87a3739955"
+      }
+    },
     "0.29.0": {
       "notes": "### Added\n- The chat view's channel list (`prefix+i`) now shows what each channel is worth opening for: pane and agent counts plus the time of the last message, sorted most-recently-active first, with never-messaged rooms dimmed at the bottom. `channel.list` carries the new `last_message_seq`/`last_message_ts` facts; the relative formatting stays in the client.\n\n### Fixed\n- The CLI integration tests referenced the upstream binary name, which cargo does not define for this fork, so they could not compile on Linux. Those tests are gated off macOS, so a local `just check` never compiled them and the break only appeared on CI. A guard test now scans for the stale name on every host.",
       "protocol": 21,
