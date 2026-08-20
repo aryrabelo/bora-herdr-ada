@@ -1093,6 +1093,157 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn pending_agent_prompt_settle_cancels_on_flicker_back_to_working() {
+        let mut app = app_with_agent();
+        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        let terminal_id = app.state.workspaces[0].tabs[0].panes[&pane_id]
+            .attached_terminal_id
+            .clone();
+        let terminal = app.state.terminals.get_mut(&terminal_id).unwrap();
+        terminal.set_agent_name("reviewer".into());
+        terminal.set_detected_state(Some(Agent::OpenCode), AgentState::Working);
+        let (runtime, mut rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        app.state.insert_test_runtime(pane_id, runtime);
+        let public_pane_id = app.public_pane_id(0, pane_id).unwrap();
+
+        app.enqueue_pending_agent_prompt(
+            public_pane_id.clone(),
+            AgentPromptParams {
+                target: public_pane_id.clone(),
+                text: "flicker".into(),
+                wait: None,
+                from_pane: None,
+                when_idle: Some(true),
+                when_idle_timeout_ms: None,
+                peer_pid: None,
+                origin_channel: None,
+            },
+        );
+
+        let t0 = Instant::now();
+        // Target observed leaving `Working`: starts the settle window.
+        app.sync_pending_agent_prompt_drain_deadline(&public_pane_id, AgentStatus::Idle, t0);
+        assert!(
+            app.pending_agent_prompt_drain_deadlines
+                .contains_key(&public_pane_id),
+            "leaving Working with a non-empty queue must start the settle window"
+        );
+
+        // Flicker back to `Working` well inside the window: must cancel the settle.
+        app.sync_pending_agent_prompt_drain_deadline(
+            &public_pane_id,
+            AgentStatus::Working,
+            t0 + Duration::from_millis(200),
+        );
+        assert!(
+            !app.pending_agent_prompt_drain_deadlines
+                .contains_key(&public_pane_id),
+            "a return to Working must cancel the pending settle"
+        );
+
+        // Even once the original window would have elapsed, nothing is due:
+        // the cancel must stick, not just delay the fire.
+        let drained = app.drain_settled_pending_agent_prompts(
+            t0 + crate::app::PENDING_AGENT_PROMPT_DRAIN_SETTLE + Duration::from_millis(50),
+        );
+        assert!(!drained, "a cancelled settle must never fire a drain");
+        assert!(
+            rx.try_recv().is_err(),
+            "cancelled settle must not dispatch bytes"
+        );
+        let queue = app
+            .pending_agent_prompts
+            .get(&public_pane_id)
+            .expect("prompt stays queued after a cancelled settle");
+        assert_eq!(queue.len(), 1);
+        assert_eq!(queue[0].params.text, "flicker");
+    }
+
+    #[tokio::test]
+    async fn pending_agent_prompt_settle_delivers_once_target_stays_settled() {
+        let mut app = app_with_agent();
+        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        let terminal_id = app.state.workspaces[0].tabs[0].panes[&pane_id]
+            .attached_terminal_id
+            .clone();
+        let terminal = app.state.terminals.get_mut(&terminal_id).unwrap();
+        terminal.set_agent_name("reviewer".into());
+        terminal.set_detected_state(Some(Agent::OpenCode), AgentState::Working);
+        let (runtime, mut rx) =
+            crate::terminal::TerminalRuntime::test_with_channel_and_scrollback_bytes(
+                80, 24, 0, b"", 1,
+            );
+        runtime.test_process_pty_bytes(b"\x1b[?2004h");
+        app.state.insert_test_runtime(pane_id, runtime);
+        let public_pane_id = app.public_pane_id(0, pane_id).unwrap();
+
+        let (_, queue_id) = app.enqueue_pending_agent_prompt(
+            public_pane_id.clone(),
+            AgentPromptParams {
+                target: public_pane_id.clone(),
+                text: "settled message".into(),
+                wait: None,
+                from_pane: None,
+                when_idle: Some(true),
+                when_idle_timeout_ms: None,
+                peer_pid: None,
+                origin_channel: None,
+            },
+        );
+
+        // Target actually goes idle: the eventual replay re-checks live agent
+        // status too, so this must hold for the whole window, not just the
+        // deadline bookkeeping.
+        app.state
+            .terminals
+            .get_mut(&terminal_id)
+            .unwrap()
+            .set_detected_state(Some(Agent::OpenCode), AgentState::Idle);
+
+        let t0 = Instant::now();
+        app.sync_pending_agent_prompt_drain_deadline(&public_pane_id, AgentStatus::Idle, t0);
+
+        // Before the window elapses, nothing is due yet.
+        let drained_early = app.drain_settled_pending_agent_prompts(
+            t0 + crate::app::PENDING_AGENT_PROMPT_DRAIN_SETTLE - Duration::from_millis(1),
+        );
+        assert!(
+            !drained_early,
+            "must not drain before the settle window elapses"
+        );
+        assert!(rx.try_recv().is_err());
+        assert!(app.pending_agent_prompts.contains_key(&public_pane_id));
+
+        // Once settled, the queued prompt replays.
+        let drained = app.drain_settled_pending_agent_prompts(
+            t0 + crate::app::PENDING_AGENT_PROMPT_DRAIN_SETTLE,
+        );
+        assert!(drained, "must drain once the settle window has elapsed");
+        assert!(
+            !app.pending_agent_prompt_drain_deadlines
+                .contains_key(&public_pane_id),
+            "a fired settle deadline must be cleared"
+        );
+        assert!(!app.pending_agent_prompts.contains_key(&public_pane_id));
+        assert_eq!(
+            rx.try_recv().unwrap(),
+            Bytes::from_static(b"\x1b[200~settled message\x1b[201~")
+        );
+        let events = app.event_hub.events_after(0);
+        assert!(
+            events.iter().any(|(_, envelope)| matches!(
+                &envelope.data,
+                crate::api::schema::EventData::QueuedPromptDelivered {
+                    queue_id: id,
+                    target_pane,
+                    ..
+                } if *id == queue_id && target_pane == &public_pane_id
+            )),
+            "successful settled drain must emit a queued_prompt_delivered event"
+        );
+    }
+
+    #[tokio::test]
     async fn fail_pending_agent_prompts_drops_queue_without_replay() {
         let mut app = app_with_agent();
         let pane_id = app.state.workspaces[0].tabs[0].root_pane;

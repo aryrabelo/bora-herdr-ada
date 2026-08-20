@@ -170,7 +170,33 @@ fn channel_command() -> Command {
                 .about("Post a message to a #channel and prompt its agents")
                 .arg(required("name", "NAME"))
                 .arg(required("text", "TEXT"))
+                .args(current_pane_args())
+                .arg(
+                    option("to", "NICK")
+                        .help("Address one member; fails loudly on an unknown or ambiguous nick"),
+                )
+                .arg(option("reply-to", "SEQ").help("Answer a channel ask question by its seq")),
+        )
+        .subcommand(
+            Command::new("note")
+                .about(
+                    "Append to a #channel with zero bells (no injection, never suppressed by burst)",
+                )
+                .arg(required("name", "NAME"))
+                .arg(required("text", "TEXT"))
                 .args(current_pane_args()),
+        )
+        .subcommand(
+            Command::new("ask")
+                .about("Ask one member and block for their reply")
+                .arg(required("name", "NAME"))
+                .arg(required("nick", "NICK"))
+                .arg(required("text", "TEXT"))
+                .args(current_pane_args())
+                .arg(
+                    option("timeout", "MS")
+                        .help("Reply wait before giving up (default 300000ms, cap 600000ms)"),
+                ),
         )
         .subcommand(
             Command::new("history")
@@ -200,7 +226,15 @@ fn channel_command() -> Command {
             Command::new("join")
                 .about("Add a pane living outside a #channel to its member set")
                 .arg(required("name", "NAME"))
-                .arg(option("pane", "ID").help("Pane to add; defaults to $HERDR_PANE_ID")),
+                .arg(option("pane", "ID").help("Pane to add; defaults to $HERDR_PANE_ID"))
+                .arg(
+                    repeatable_option("scope-write", "DIR")
+                        .help("Directory the pane may write; also grants read (repeatable)"),
+                )
+                .arg(
+                    repeatable_option("scope-read", "DIR")
+                        .help("Directory the pane may read (repeatable; accepts DIR,DIR)"),
+                ),
         )
         .subcommand(
             Command::new("leave")
@@ -1461,6 +1495,61 @@ mod tests {
             let mut output = Vec::new();
             clap_complete::generate(shell, &mut cmd, "bora", &mut output);
             assert!(!output.is_empty(), "empty {shell:?} completion output");
+        }
+    }
+
+    /// `run_channel_command` in `src/cli.rs` dispatches these subcommands and
+    /// these flags on top of them; this spec's `channel_command()` is a
+    /// hand-maintained mirror used only to generate `--help`. Five feature
+    /// commits (2026-08-15 to 08-19) added `note`, `ask`, `send --to`,
+    /// `send --reply-to`, and `join --scope-write`/`--scope-read` to the real
+    /// dispatcher without updating this file, so `--help` silently fell
+    /// behind what the binary actually accepts. This test pins the full
+    /// dispatcher surface so the next drift fails here instead of in a
+    /// confused user's terminal.
+    #[test]
+    fn channel_command_covers_full_dispatcher_surface() {
+        let cmd = super::command();
+        let channel = command_path(&cmd, &["channel"]);
+
+        for name in [
+            "show", "set", "create", "list", "send", "note", "ask", "history", "tail", "members",
+            "join", "leave",
+        ] {
+            assert!(
+                channel.get_subcommands().any(|sub| sub.get_name() == name),
+                "channel spec is missing `bora channel {name}`, which run_channel_command \
+                 in src/cli.rs still dispatches"
+            );
+        }
+
+        let send = command_path(&cmd, &["channel", "send"]);
+        for option in ["to", "reply-to"] {
+            assert!(
+                has_option(send, option),
+                "channel send spec is missing --{option}, accepted by \
+                 parse_channel_send_flags in src/cli.rs"
+            );
+        }
+
+        let note = command_path(&cmd, &["channel", "note"]);
+        assert!(argument(note, "text").get_value_names().is_some());
+
+        let ask = command_path(&cmd, &["channel", "ask"]);
+        assert!(argument(ask, "nick").get_value_names().is_some());
+        assert!(
+            has_option(ask, "timeout"),
+            "channel ask spec is missing --timeout, accepted by parse_channel_ask_flags \
+             in src/cli.rs"
+        );
+
+        let join = command_path(&cmd, &["channel", "join"]);
+        for option in ["scope-write", "scope-read"] {
+            assert!(
+                has_option(join, option),
+                "channel join spec is missing --{option}, accepted by \
+                 parse_channel_join_flags in src/cli.rs"
+            );
         }
     }
 }

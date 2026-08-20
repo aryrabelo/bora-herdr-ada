@@ -4898,6 +4898,7 @@ impl HeadlessServer {
                 .app
                 .start_pending_agent_resumes(self.app.pending_agent_resume_due(now));
         }
+        changed |= self.app.drain_settled_pending_agent_prompts(now);
 
         changed
     }

@@ -8,6 +8,12 @@ Bora is a fork of [herdr](https://github.com/ogulcancelik/herdr). This changelog
 - Plugin tabs now take their name from the manifest pane `title`, so a `placement = "tab"` plugin pane no longer opens as a bare numeric tab and plugins no longer need a follow-up rename call.
 - Bundled a new `gitui` plugin example (`examples/bora/plugins/gitui`) that opens gitui in its own tab and auto-opens it on `worktree.created` / `worktree.opened`, installable with `bora plugin link`.
 
+### Fixed
+- `bora channel members` now always reports an addressable name. It used to derive the name from only `agent view set`/`agent rename`, while `--to`/`@nick` matching fell back further to the detected tool kind, so a pane addressable as `--to omp` showed up as `name: null`. Both paths now share one fallback chain — registered display name, then `agent rename` name, then detected kind, then the pane's compact addressable id (`w78p1`) — so every member is addressable by something unique and typeable even when three same-kind agents share the room.
+- `bora channel --help` no longer hides working commands. The help text is generated from a separate spec that had fallen five commits behind the real parser, so `channel note`, `channel ask`, `send --to`, `send --reply-to`, and `join --scope-write/--scope-read` all worked but appeared nowhere in `--help`, pushing callers onto the in-body `@nick` form that degrades to a broadcast when it does not uniquely resolve. A regression test now asserts the spec covers the dispatcher's real surface.
+- `bora channel create` now seeds the new channel's pane with `channel tail --follow`, so a freshly created room shows its transcript instead of a bare shell prompt. The backlog was never lost — only unseeded — and a seed failure logs a warning without failing channel creation.
+- A queued when-idle message is no longer replayed into a one-tick agent-status flicker. Agent status comes from screen detection, and coding agents routinely clear their busy indicator for an instant between internal steps; the drain fired on that first transition and landed the message mid-turn. Delivery now waits for the target to stay non-working for a short settle window, and a return to working cancels the replay and keeps the message queued.
+
 ## [0.26.0] - 2026-08-19
 
 ### Changed

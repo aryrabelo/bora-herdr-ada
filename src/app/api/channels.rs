@@ -1,11 +1,12 @@
 use crate::api::schema::{
-    AgentPromptParams, AgentStatus, ChannelCreateParams, ChannelDelivery, ChannelDeliveryStatus,
-    ChannelHistoryParams, ChannelJoinParams, ChannelLeaveParams, ChannelMember,
-    ChannelMemberSource, ChannelMembersParams, ChannelMessage, ChannelNoteParams,
+    AgentInfo, AgentPromptParams, AgentStatus, ChannelCreateParams, ChannelDelivery,
+    ChannelDeliveryStatus, ChannelHistoryParams, ChannelJoinParams, ChannelLeaveParams,
+    ChannelMember, ChannelMemberSource, ChannelMembersParams, ChannelMessage, ChannelNoteParams,
     ChannelSendParams, ChannelSenderKind, ChannelSummary, ResponseResult,
 };
 use crate::app::App;
 use crate::persist::channels;
+use bytes::Bytes;
 use std::time::{Duration, Instant};
 
 use super::responses::{encode_error, encode_success};
@@ -89,12 +90,82 @@ impl App {
                     workspace.set_custom_name(format!("#{name}"));
                     crate::logging::workspace_renamed(&workspace.id);
                 }
+                self.seed_channel_tail_pane(index, &name);
                 self.state.mark_session_dirty();
                 self.emit_workspace_open_events(index);
                 let channel = self.channel_summary(index, &name);
                 encode_success(id, ResponseResult::ChannelCreated { channel })
             }
             Err(err) => encode_error(id, "channel_create_failed", err.to_string()),
+        }
+    }
+
+    /// Types `<bora> channel tail <name> --follow` into a freshly created
+    /// channel's root pane and presses Enter — the exact internal path
+    /// `pane.send_input` (`bora pane run`) already uses, which is also the
+    /// documented manual workaround for a channel pane that otherwise
+    /// sits at a bare login shell showing nothing about the channel.
+    /// `<bora>` is resolved by absolute path via [`std::env::current_exe`]
+    /// rather than trusted to be on the server's `PATH`.
+    ///
+    /// Never fails channel creation: an unresolved binary, a not-yet-ready
+    /// runtime, or a send failure is a `warn` log and a no-op — a channel
+    /// that works but looks like today's plain shell is strictly better
+    /// than a channel that cannot be created.
+    fn seed_channel_tail_pane(&mut self, ws_idx: usize, name: &str) {
+        let exe = match std::env::current_exe() {
+            Ok(exe) => exe,
+            Err(err) => {
+                tracing::warn!(
+                    channel = %name,
+                    error = %err,
+                    "could not resolve bora's own binary path; channel pane starts as a plain shell"
+                );
+                return;
+            }
+        };
+        let Some(pane_id) = self
+            .state
+            .workspaces
+            .get(ws_idx)
+            .and_then(|ws| ws.tabs.first())
+            .map(|tab| tab.root_pane)
+        else {
+            return;
+        };
+        let Some(runtime) = self.lookup_runtime_sender(ws_idx, pane_id) else {
+            tracing::warn!(
+                channel = %name,
+                "no runtime for the freshly created channel pane; it starts as a plain shell"
+            );
+            return;
+        };
+        let command = format!(
+            "{} channel tail {} --follow",
+            shell_quote(&exe.display().to_string()),
+            shell_quote(name),
+        );
+        let bytes = match super::super::api_helpers::encode_api_input(
+            runtime,
+            &command,
+            &["Enter".to_string()],
+        ) {
+            Ok(bytes) => bytes,
+            Err(key) => {
+                tracing::warn!(
+                    channel = %name,
+                    key = %key,
+                    "could not encode the channel seed command; channel pane starts as a plain shell"
+                );
+                return;
+            }
+        };
+        if let Err(err) = runtime.try_send_bytes(Bytes::from(bytes)) {
+            tracing::warn!(
+                channel = %name,
+                error = %err,
+                "failed to seed the channel pane with the tail command; it starts as a plain shell"
+            );
         }
     }
 
@@ -881,7 +952,7 @@ impl App {
                 let agent = self.agent_info(member.ws_idx, member.pane_id);
                 let name = agent
                     .as_ref()
-                    .and_then(|info| info.display_agent.clone().or_else(|| info.name.clone()));
+                    .map(|info| member_addressable_name(info, &member.public_id));
                 ChannelMember {
                     pane_id: member.public_id,
                     name,
@@ -936,32 +1007,38 @@ impl App {
 
     /// Resolves a nick (`channel.send`'s `to`, or a leading in-body
     /// `@nick`) against the channel's agent member panes — workspace panes
-    /// and joined panes alike — plus the human seat at the TUI: exact match
-    /// on the raw public pane id, case-insensitive match on any of the
-    /// pane's display names (agent display name -> assigned name ->
-    /// detected kind — the `pane_display_name` rungs that are per-pane; the
-    /// workspace custom_name rung is the channel's own `#name` for every
-    /// workspace member and carries no routing information), or on the
-    /// effective human name (`ui.chat_name` -> `state.chat_name`). The
-    /// human is a candidate in every channel: they read the chat view, not
-    /// a pane, so there is no membership to check. Exactly one match ->
-    /// `Unique` for a pane, `Human` for the seat; two or more ->
-    /// `Ambiguous` with `pane (name)` candidate labels and `human (name)`
-    /// for the seat; none -> `Unknown`.
+    /// and joined panes alike — plus the human seat at the TUI. A nick
+    /// matches a member pane on any of three things: exact match on the
+    /// raw public pane id (`w78:p1`), case-insensitive match on the compact
+    /// colon-free pane id (`w78p1` — always available regardless of which
+    /// rung the display name below settled on, so it is the disambiguator
+    /// of last resort even when every other candidate collides), or
+    /// case-insensitive match on the pane's addressable name from
+    /// [`member_addressable_name`] (display name -> assigned name ->
+    /// detected kind -> compact pane id — the same single fallback chain
+    /// `channel_members` uses, so the two can never drift apart). It also
+    /// matches on the effective human name (`ui.chat_name` ->
+    /// `state.chat_name`). The human is a candidate in every channel: they
+    /// read the chat view, not a pane, so there is no membership to check.
+    /// Exactly one match -> `Unique` for a pane, `Human` for the seat; two
+    /// or more -> `Ambiguous` with `pane (name)` candidate labels and
+    /// `human (name)` for the seat — a nick matching multiple members
+    /// through the same shared rung (two panes both detected as the same
+    /// kind) stays `Ambiguous` rather than silently picking one; none ->
+    /// `Unknown`.
     fn resolve_channel_nick(&self, ws_idx: usize, nick: &str) -> NickResolution {
-        let mut matches: Vec<(String, Option<String>)> = Vec::new();
+        let mut matches: Vec<(String, String)> = Vec::new();
         for member in self.channel_member_panes(ws_idx) {
             let Some(info) = self.agent_info(member.ws_idx, member.pane_id) else {
                 continue;
             };
-            let named = info
-                .display_agent
-                .as_deref()
-                .or(info.name.as_deref())
-                .or(info.agent.as_deref());
-            let named_matches = named.is_some_and(|name| name.eq_ignore_ascii_case(nick));
-            if member.public_id == nick || named_matches {
-                matches.push((member.public_id, named.map(str::to_string)));
+            let named = member_addressable_name(&info, &member.public_id);
+            let compact_id = compact_pane_id(&member.public_id);
+            let matched = member.public_id == nick
+                || compact_id.eq_ignore_ascii_case(nick)
+                || named.eq_ignore_ascii_case(nick);
+            if matched {
+                matches.push((member.public_id, named));
             }
         }
         // The human seat collides with an agent of the same name exactly
@@ -979,16 +1056,41 @@ impl App {
         }
         let mut candidates: Vec<String> = matches
             .into_iter()
-            .map(|(pane_id, name)| match name {
-                Some(name) => format!("{pane_id} ({name})"),
-                None => pane_id,
-            })
+            .map(|(pane_id, name)| format!("{pane_id} ({name})"))
             .collect();
         if human_matches {
             candidates.push(format!("human ({})", self.state.chat_name));
         }
         NickResolution::Ambiguous(candidates)
     }
+}
+
+/// A member pane's addressable name: the single source of truth consumed
+/// by both `channel_members` (what a `channel.members` listing shows) and
+/// `resolve_channel_nick` (what `--to`/leading `@nick` actually match), so
+/// the two fallback chains can never drift apart again. Order, most to
+/// least specific: `display_agent` (the agent's own self-reported name) ->
+/// `name` (registered via `bora agent rename`) -> `agent` (detected tool
+/// kind, e.g. "omp") -> the compact addressable pane id (`w78p1` — the
+/// same colon-free form `workspace_agent_label` mints for the sidebar
+/// badge in 0.26.0, see `src/ui/sidebar.rs`). The last rung guarantees
+/// every member always has a non-null, unique, typeable name: on this
+/// server, most live agents have a detected kind but no registered name,
+/// so landing on rung three is the common case, not the exception.
+fn member_addressable_name(info: &AgentInfo, public_id: &str) -> String {
+    info.display_agent
+        .clone()
+        .or_else(|| info.name.clone())
+        .or_else(|| info.agent.clone())
+        .unwrap_or_else(|| compact_pane_id(public_id))
+}
+
+/// Strips the `:` from a canonical public pane id (`w78:p1` -> `w78p1`) —
+/// the colon-free form `bora agent prompt`/`orc channel send` already
+/// accept for other pane addressing, and the form the sidebar mints for
+/// its agent identity badge (0.26.0).
+fn compact_pane_id(public_id: &str) -> String {
+    public_id.replace(':', "")
 }
 
 /// One resolved channel member pane: where it lives, its canonical public
@@ -1158,6 +1260,14 @@ fn now_rfc3339() -> String {
         .unwrap_or_default()
 }
 
+/// Single-quote a value for safe interpolation into a typed shell command
+/// line — same idiom as `render_flow_command`'s quoting in `flow.rs`.
+/// Needed because [`App::seed_channel_tail_pane`] types a channel name
+/// (arbitrary API input) and a binary path into a live shell.
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1243,6 +1353,66 @@ mod tests {
             duplicate["error"]["code"],
             serde_json::json!("channel_exists")
         );
+        super::super::test_support::shutdown_test_runtimes(&mut app);
+    }
+
+    /// The core acceptance case: a fresh channel's root pane must run
+    /// `bora channel tail <name> --follow`, not sit at a bare shell.
+    /// `/bin/cat` stands in for an interactive shell here — it echoes
+    /// whatever is typed into it back onto the pane's screen, which is
+    /// what makes the seeded command observable without a real `bora`
+    /// binary or a real channel-tail session.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn create_seeds_the_pane_with_the_channel_tail_command() {
+        let mut app = test_app();
+        app.state.default_shell = "/bin/cat".into();
+        create_channel(&mut app, "eng");
+
+        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        let runtime = app
+            .lookup_runtime_sender(0, pane_id)
+            .expect("the freshly created channel workspace must have a runtime");
+
+        // A long test-binary path plus the command can exceed the pane's
+        // column width and wrap mid-word; strip whitespace from both sides
+        // so a wrap-inserted newline can never break the match.
+        let expected: String = format!("channel tail {} --follow", shell_quote("eng"))
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let dense =
+            |screen: &str| -> String { screen.chars().filter(|c| !c.is_whitespace()).collect() };
+        let mut screen = runtime.visible_text();
+        while !dense(&screen).contains(&expected) && std::time::Instant::now() < deadline {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            screen = runtime.visible_text();
+        }
+        assert!(
+            dense(&screen).contains(&expected),
+            "channel pane must run `bora channel tail eng --follow`, got: {screen:?}"
+        );
+
+        super::super::test_support::shutdown_test_runtimes(&mut app);
+    }
+
+    /// A seed that cannot land — no registered runtime at all, standing in
+    /// for the unresolved-binary and send-failure branches too, since they
+    /// all collapse to the same early return — must never turn into a
+    /// failed `channel.create`.
+    #[tokio::test]
+    async fn create_succeeds_even_when_the_channel_pane_cannot_be_seeded() {
+        let mut app = test_app();
+
+        app.seed_channel_tail_pane(0, "ghost");
+
+        let created = create_channel(&mut app, "ops");
+        assert!(
+            created["result"]["channel"].is_object(),
+            "channel creation must succeed even if seeding the pane fails: {created}"
+        );
+
         super::super::test_support::shutdown_test_runtimes(&mut app);
     }
 
@@ -1560,6 +1730,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn members_reports_detected_kind_as_name_when_unregistered() {
+        let _isolated = IsolatedStateDir::new("members-detected-kind-name");
+        let mut app = test_app();
+        create_channel(&mut app, "eng");
+        let ws_idx = app.state.workspaces.len() - 1;
+        let pane_id = app.state.workspaces[ws_idx].tabs[0].root_pane;
+        app.state.ensure_test_terminals();
+        let terminal_id = app.state.workspaces[ws_idx]
+            .pane_state(pane_id)
+            .unwrap()
+            .attached_terminal_id
+            .clone();
+        let terminal = app.state.terminals.get_mut(&terminal_id).unwrap();
+        // No `set_agent_name` (no `bora agent rename`) and no display_agent
+        // — the fleet's common case: a detected tool with no registered
+        // name, which used to report `name: null` here.
+        terminal.detected_agent = Some(crate::detect::Agent::Claude);
+        terminal.state = crate::detect::AgentState::Idle;
+
+        let response =
+            app.handle_channel_members("req".into(), ChannelMembersParams { name: "eng".into() });
+        let response: serde_json::Value = serde_json::from_str(&response).unwrap();
+        let members = response["result"]["members"].as_array().unwrap();
+        assert_eq!(members.len(), 1);
+        assert_eq!(
+            members[0]["name"],
+            serde_json::json!("claude"),
+            "an unnamed pane must still report its detected kind, not a null name"
+        );
+        super::super::test_support::shutdown_test_runtimes(&mut app);
+    }
+
+    #[tokio::test]
     async fn list_reports_member_status_counts() {
         let _isolated = IsolatedStateDir::new("members-counts");
         let mut app = test_app();
@@ -1617,6 +1820,38 @@ mod tests {
         assert_eq!(failed.status, ChannelDeliveryStatus::Failed);
     }
 
+    #[test]
+    fn member_addressable_name_falls_back_to_compact_pane_id_when_all_rungs_are_unset() {
+        let info = AgentInfo {
+            terminal_id: "t1".into(),
+            name: None,
+            agent: None,
+            title: None,
+            terminal_title: None,
+            terminal_title_stripped: None,
+            display_agent: None,
+            agent_status: AgentStatus::Idle,
+            screen_detection_skipped: false,
+            state_labels: Default::default(),
+            tokens: Default::default(),
+            agent_session: None,
+            workspace_id: "w1".into(),
+            tab_id: "w1t1".into(),
+            pane_id: "p1".into(),
+            focused: false,
+            launch_pending: false,
+            interactive_ready: true,
+            state_change_seq: 0,
+            cwd: None,
+            foreground_cwd: None,
+            revision: 1,
+        };
+        // Neither `display_agent`, `name`, nor `agent` is set — every rung
+        // of the display-name chain is empty, so the helper must fall back
+        // to the compact colon-free pane id rather than reporting nothing.
+        assert_eq!(member_addressable_name(&info, "w78:p1"), "w78p1");
+    }
+
     /// Channel workspace with two agent member panes carrying the given
     /// names. The first is idle with a test runtime (promptable ->
     /// `delivered`; its receiver is returned and must stay alive or the
@@ -1653,6 +1888,108 @@ mod tests {
             app.public_pane_id(ws_idx, second).unwrap(),
             rx,
         )
+    }
+
+    /// Channel workspace with two agent member panes sharing a detected
+    /// kind and no registered name — the fleet's common case (12 of 13
+    /// live agents have no `bora agent rename`, only a detected tool).
+    /// The first is idle with a test runtime (promptable -> `delivered`;
+    /// its receiver is returned and must stay alive or the runtime's send
+    /// channel closes); the second is working (no runtime needed ->
+    /// `deferred`). Returns both public pane ids.
+    fn channel_with_two_same_kind_agents(
+        app: &mut App,
+    ) -> (String, String, tokio::sync::mpsc::Receiver<bytes::Bytes>) {
+        create_channel(app, "eng");
+        let ws_idx = app.state.workspaces.len() - 1;
+        let first = app.state.workspaces[ws_idx].tabs[0].root_pane;
+        let second =
+            app.state.workspaces[ws_idx].test_split(ratatui::layout::Direction::Horizontal);
+        app.state.ensure_test_terminals();
+        for (pane, state) in [
+            (first, crate::detect::AgentState::Idle),
+            (second, crate::detect::AgentState::Working),
+        ] {
+            let terminal_id = app.state.workspaces[ws_idx]
+                .pane_state(pane)
+                .unwrap()
+                .attached_terminal_id
+                .clone();
+            let terminal = app.state.terminals.get_mut(&terminal_id).unwrap();
+            terminal.set_detected_state(Some(crate::detect::Agent::OpenCode), state);
+        }
+        let (runtime, rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        app.state.insert_test_runtime(first, runtime);
+        (
+            app.public_pane_id(ws_idx, first).unwrap(),
+            app.public_pane_id(ws_idx, second).unwrap(),
+            rx,
+        )
+    }
+
+    #[tokio::test]
+    async fn send_to_shared_kind_nick_stays_ambiguous_without_registered_names() {
+        let _isolated = IsolatedStateDir::new("send-to-kind-ambiguous");
+        let mut app = test_app();
+        let (first, second, _rx) = channel_with_two_same_kind_agents(&mut app);
+
+        let error = app.handle_channel_send(
+            "req".into(),
+            ChannelSendParams {
+                name: "#eng".into(),
+                text: "which one?".into(),
+                from_pane: Some("w1A:p9".into()),
+                to: Some("opencode".into()),
+                in_reply_to: None,
+                from_human: false,
+            },
+        );
+        let error: serde_json::Value = serde_json::from_str(&error).unwrap();
+        assert_eq!(
+            error["error"]["code"],
+            serde_json::json!("channel_nick_ambiguous")
+        );
+        let message = error["error"]["message"].as_str().unwrap();
+        assert!(
+            message.contains(&first),
+            "candidates must list {first}: {message}"
+        );
+        assert!(
+            message.contains(&second),
+            "candidates must list {second}: {message}"
+        );
+        super::super::test_support::shutdown_test_runtimes(&mut app);
+    }
+
+    #[tokio::test]
+    async fn send_to_compact_pane_id_resolves_uniquely_despite_shared_kind() {
+        let _isolated = IsolatedStateDir::new("send-to-compact-id-unique");
+        let mut app = test_app();
+        let (first, second, _rx) = channel_with_two_same_kind_agents(&mut app);
+        skip_protocol("eng", &first);
+        skip_protocol("eng", &second);
+        let compact_id = first.replace(':', "");
+
+        let sent = app.handle_channel_send(
+            "req".into(),
+            ChannelSendParams {
+                name: "#eng".into(),
+                text: "ping".into(),
+                from_pane: Some("w1A:p9".into()),
+                to: Some(compact_id),
+                in_reply_to: None,
+                from_human: false,
+            },
+        );
+        let sent: serde_json::Value = serde_json::from_str(&sent).unwrap();
+        let deliveries = sent["result"]["deliveries"].as_array().unwrap();
+        assert_eq!(
+            deliveries.len(),
+            1,
+            "the compact pane id must resolve to exactly the first pane, not both same-kind panes"
+        );
+        assert_eq!(deliveries[0]["pane_id"], serde_json::json!(first));
+        super::super::test_support::shutdown_test_runtimes(&mut app);
     }
 
     #[tokio::test]

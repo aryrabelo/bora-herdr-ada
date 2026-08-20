@@ -98,6 +98,18 @@ const CHECKS_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 const OPEN_PRS_REFRESH_INTERVAL: Duration = Duration::from_secs(120);
 const AUTO_UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(30 * 60);
 const PENDING_AGENT_RESUME_THEME_WAIT: Duration = Duration::from_millis(750);
+/// How long a target must be continuously observed away from `Working`
+/// before a queued `when_idle` chat prompt (`PendingAgentPrompt`) is
+/// replayed into it — see `App::sync_pending_agent_prompt_drain_deadline`.
+/// Coding-agent CLIs routinely clear their busy indicator for a single
+/// detection tick between internal steps (a tool call, a sub-turn) while
+/// still mid-task from a human's point of view; draining on the very first
+/// `pane.agent_status_changed` tick away from `Working` replays a queued
+/// message straight into that flicker instead of a genuine idle. 1.2s
+/// comfortably outlasts a one-tick flicker (status re-detection runs well
+/// under that) while staying short enough that this is still a chat path,
+/// not a batch job.
+pub(crate) const PENDING_AGENT_PROMPT_DRAIN_SETTLE: Duration = Duration::from_millis(1200);
 const SESSION_SAVE_DEBOUNCE: Duration = Duration::from_secs(5);
 const SIDEBAR_DOUBLE_CLICK_WINDOW: Duration = Duration::from_millis(350);
 const PANE_DOUBLE_CLICK_WINDOW: Duration = Duration::from_millis(350);
@@ -230,6 +242,13 @@ pub struct App {
     /// Monotonic id source for `PendingAgentPrompt` entries; see
     /// `PendingAgentPrompt::queue_id`.
     pub(crate) next_pending_agent_prompt_queue_id: u64,
+    /// Per-target settle deadline for draining `pending_agent_prompts`: set
+    /// when a target with a non-empty queue is first observed to leave
+    /// `Working`, removed either when it flickers back to `Working`
+    /// (cancelling the queued replay) or once its deadline is reached and
+    /// the queue is drained. See `PENDING_AGENT_PROMPT_DRAIN_SETTLE` and
+    /// `sync_pending_agent_prompt_drain_deadline`.
+    pub(crate) pending_agent_prompt_drain_deadlines: HashMap<String, Instant>,
     pub(crate) last_git_remote_status_refresh: Instant,
     pub(crate) last_channel_membership_refresh: Instant,
     pub(crate) last_git_repo_discovery_refresh: Instant,
@@ -938,6 +957,7 @@ impl App {
             channel_burst_history: HashMap::new(),
             channels_in_burst: HashSet::new(),
             pending_agent_prompts: HashMap::new(),
+            pending_agent_prompt_drain_deadlines: HashMap::new(),
             state,
             pane_graphics: pane_graphics::Runtime::default(),
             pane_graphics_files: Arc::new(crate::pane_graphics_files::FileStore::default()),
@@ -1166,6 +1186,61 @@ impl App {
             }
             self.report_queued_prompt_delivered(queue_id, target_pane, from_pane);
         }
+    }
+
+    /// Called on every `pane.agent_status_changed` observation for
+    /// `target_pane`. Starts or cancels the settle window that gates
+    /// `drain_settled_pending_agent_prompts`:
+    /// - `Working`: cancels any running settle — a flicker back to busy
+    ///   must not let a stale deadline fire later and replay mid-turn.
+    /// - anything else: starts the settle window (`PENDING_AGENT_PROMPT_DRAIN_SETTLE`
+    ///   from `now`) when `target_pane` has a non-empty queue and isn't already
+    ///   counting down. Bouncing between non-`Working` substates (idle,
+    ///   blocked, done) never restarts the clock — only a return to
+    ///   `Working` does — so the target must be continuously non-`Working`
+    ///   for the full window, not just non-`Working` at two sampled instants.
+    pub(crate) fn sync_pending_agent_prompt_drain_deadline(
+        &mut self,
+        target_pane: &str,
+        agent_status: crate::api::schema::AgentStatus,
+        now: Instant,
+    ) {
+        if agent_status == crate::api::schema::AgentStatus::Working {
+            self.pending_agent_prompt_drain_deadlines
+                .remove(target_pane);
+            return;
+        }
+        if self
+            .pending_agent_prompts
+            .get(target_pane)
+            .is_none_or(std::collections::VecDeque::is_empty)
+        {
+            return;
+        }
+        self.pending_agent_prompt_drain_deadlines
+            .entry(target_pane.to_string())
+            .or_insert_with(|| now + PENDING_AGENT_PROMPT_DRAIN_SETTLE);
+    }
+
+    /// Drains every target whose settle deadline (see
+    /// `sync_pending_agent_prompt_drain_deadline`) has elapsed by `now`.
+    /// Called from the scheduled-task tick (`handle_scheduled_tasks` /
+    /// `handle_scheduled_tasks_headless`) so a target that goes quiet and
+    /// never produces another status-change event still gets drained once
+    /// settled, not just on the next incidental status flip. Returns
+    /// whether any target was drained, for the caller's render-dirty flag.
+    pub(crate) fn drain_settled_pending_agent_prompts(&mut self, now: Instant) -> bool {
+        let due: Vec<String> = self
+            .pending_agent_prompt_drain_deadlines
+            .iter()
+            .filter(|(_, deadline)| now >= **deadline)
+            .map(|(target, _)| target.clone())
+            .collect();
+        for target in &due {
+            self.pending_agent_prompt_drain_deadlines.remove(target);
+            self.drain_pending_agent_prompts(target);
+        }
+        !due.is_empty()
     }
 
     /// Drops every prompt queued for `target_pane` (its public pane id) — the

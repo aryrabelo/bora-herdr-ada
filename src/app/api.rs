@@ -739,13 +739,17 @@ impl App {
             || update.previous_presentation != update.presentation
         {
             let presentation = update.presentation.clone();
-            // Drain before emitting: a queued `when_idle` prompt replayed here only
-            // sends bytes to the pty, it cannot synchronously flip `agent_status`
-            // again (detection is async on terminal output), so event ordering is
-            // unaffected either way.
-            if agent_status != crate::api::schema::AgentStatus::Working {
-                self.drain_pending_agent_prompts(&pane_id);
-            }
+            // A queued `when_idle` prompt no longer drains on this first
+            // tick away from `Working` — only its settle timer starts (or,
+            // on a return to `Working`, cancels) here; the actual replay
+            // happens once `PENDING_AGENT_PROMPT_DRAIN_SETTLE` has elapsed
+            // with no intervening flip back to `Working` — see
+            // `sync_pending_agent_prompt_drain_deadline` and
+            // `drain_settled_pending_agent_prompts`. This can run before or
+            // after `emit_event` below with no observable difference: it
+            // only ever touches the settle-deadline map, never pty bytes or
+            // events, synchronously.
+            self.sync_pending_agent_prompt_drain_deadline(&pane_id, agent_status, Instant::now());
             self.emit_event(crate::api::schema::EventEnvelope {
                 event: crate::api::schema::EventKind::PaneAgentStatusChanged,
                 data: crate::api::schema::EventData::PaneAgentStatusChanged {
