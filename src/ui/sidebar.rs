@@ -499,12 +499,12 @@ fn tab_dot_idle_ages(
         .collect()
 }
 
-/// First pane's resolved agent label for a workspace's tree row, e.g. the
-/// ` @nome` badge. `Workspace::pane_details` already filters to panes with
-/// SOME agent identity and prefers a registered `agent rename` name over a
-/// detected agent's label (`effective_display_agent`), so the first result
-/// is already correctly prioritized — nothing to redo here. Pure in-memory
-/// terminal-state lookup, safe to call every render.
+/// First pane's agent identity for a workspace's tree row, e.g. the ` @nome`
+/// badge. A registered `bora agent rename` name wins; a pane with only a
+/// DETECTED agent falls back to its addressable pane id (`w78p1`) — the agent
+/// kind ("omp", "pi") names a tool, not an agent, while the pane id is what
+/// `bora agent prompt`/`orc channel send` actually accept (unpunctuated form
+/// resolves identically to `w78:p1`). Pure in-memory lookup, safe per render.
 fn workspace_agent_label(
     ws: &crate::workspace::Workspace,
     terminals: &std::collections::HashMap<
@@ -512,10 +512,20 @@ fn workspace_agent_label(
         crate::terminal::TerminalState,
     >,
 ) -> Option<String> {
-    ws.pane_details(terminals)
-        .into_iter()
-        .next()
-        .map(|detail| detail.agent_label)
+    let detail = ws.pane_details(terminals).into_iter().next()?;
+    let registered = ws
+        .tabs
+        .iter()
+        .find_map(|tab| tab.panes.get(&detail.pane_id))
+        .and_then(|pane| terminals.get(&pane.attached_terminal_id))
+        .and_then(|terminal| terminal.agent_name.clone());
+    Some(registered.unwrap_or_else(|| {
+        ws.public_pane_number(detail.pane_id)
+            .map(|n| format!("{}p{}", ws.id, crate::workspace::encode_public_number(n)))
+            // No public pane number (shouldn't happen for a live pane): the
+            // detected kind still beats an empty badge.
+            .unwrap_or(detail.agent_label)
+    }))
 }
 
 fn workspace_attention_priority(state: AgentState, seen: bool) -> u8 {
@@ -2811,9 +2821,16 @@ mod tests {
             .clone();
         app.terminals.get_mut(&terminal_id).unwrap().detected_agent = Some(Agent::Pi);
 
-        // Detected only: falls back to the detected agent's label.
-        let detected_only = workspace_agent_label(&app.workspaces[0], &app.terminals);
-        assert_eq!(detected_only.as_deref(), Some("pi"));
+        // Detected only: falls back to the pane's addressable id, never the
+        // agent kind — "pi"/"omp" names a tool, not an agent.
+        let ws = &app.workspaces[0];
+        let expected_addr = format!(
+            "{}p{}",
+            ws.id,
+            crate::workspace::encode_public_number(ws.public_pane_number(first_pane).unwrap())
+        );
+        let detected_only = workspace_agent_label(ws, &app.terminals);
+        assert_eq!(detected_only.as_deref(), Some(expected_addr.as_str()));
 
         // A registered `agent rename` name wins over the detected label.
         app.terminals

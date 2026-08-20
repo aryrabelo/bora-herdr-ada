@@ -132,7 +132,7 @@ dependencies = [
 
 [[package]]
 name = "bora"
-version = "0.25.0"
+version = "0.24.1"
 dependencies = [
  "base64",
  "bincode",
@@ -144,7 +144,6 @@ dependencies = [
  "interprocess",
  "jsonc-parser",
  "libc",
- "parking_lot",
  "png",
  "portable-pty",
  "ratatui",
