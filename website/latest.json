@@ -1,22 +1,40 @@
 {
-  "version": "0.28.0",
+  "version": "0.29.0",
   "protocol": 21,
-  "notes": "### Added\n- Plugin tabs now take their name from the manifest pane `title`, so a `placement = \"tab\"` plugin pane no longer opens as a bare numeric tab and plugins no longer need a follow-up rename call.\n- Bundled a new `gitui` plugin example (`examples/bora/plugins/gitui`) that opens gitui in its own tab and auto-opens it on `worktree.created` / `worktree.opened`, installable with `bora plugin link`.\n\n### Fixed\n- `bora channel members` now always reports an addressable name. It used to derive the name from only `agent view set`/`agent rename`, while `--to`/`@nick` matching fell back further to the detected tool kind, so a pane addressable as `--to omp` showed up as `name: null`. Both paths now share one fallback chain \u2014 registered display name, then `agent rename` name, then detected kind, then the pane's compact addressable id (`w78p1`) \u2014 so every member is addressable by something unique and typeable even when three same-kind agents share the room.\n- `bora channel --help` no longer hides working commands. The help text is generated from a separate spec that had fallen five commits behind the real parser, so `channel note`, `channel ask`, `send --to`, `send --reply-to`, and `join --scope-write/--scope-read` all worked but appeared nowhere in `--help`, pushing callers onto the in-body `@nick` form that degrades to a broadcast when it does not uniquely resolve. A regression test now asserts the spec covers the dispatcher's real surface.\n- `bora channel create` now seeds the new channel's pane with `channel tail --follow`, so a freshly created room shows its transcript instead of a bare shell prompt. The backlog was never lost \u2014 only unseeded \u2014 and a seed failure logs a warning without failing channel creation.\n- A queued when-idle message is no longer replayed into a one-tick agent-status flicker. Agent status comes from screen detection, and coding agents routinely clear their busy indicator for an instant between internal steps; the drain fired on that first transition and landed the message mid-turn. Delivery now waits for the target to stay non-working for a short settle window, and a return to working cancels the replay and keeps the message queued.",
+  "notes": "### Added\n- The chat view's channel list (`prefix+i`) now shows what each channel is worth opening for: pane and agent counts plus the time of the last message, sorted most-recently-active first, with never-messaged rooms dimmed at the bottom. `channel.list` carries the new `last_message_seq`/`last_message_ts` facts; the relative formatting stays in the client.\n\n### Fixed\n- The CLI integration tests referenced the upstream binary name, which cargo does not define for this fork, so they could not compile on Linux. Those tests are gated off macOS, so a local `just check` never compiled them and the break only appeared on CI. A guard test now scans for the stale name on every host.",
   "assets": {
-    "linux-x86_64": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/v0.28.0/bora-linux-x86_64",
-    "linux-aarch64": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/v0.28.0/bora-linux-aarch64",
-    "macos-x86_64": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/v0.28.0/bora-macos-x86_64",
-    "macos-aarch64": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/v0.28.0/bora-macos-aarch64",
-    "windows-x86_64": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/v0.28.0/bora-windows-x86_64.zip"
+    "linux-x86_64": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/v0.29.0/bora-linux-x86_64",
+    "linux-aarch64": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/v0.29.0/bora-linux-aarch64",
+    "macos-x86_64": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/v0.29.0/bora-macos-x86_64",
+    "macos-aarch64": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/v0.29.0/bora-macos-aarch64",
+    "windows-x86_64": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/v0.29.0/bora-windows-x86_64.zip"
   },
   "sha256": {
-    "linux-x86_64": "3a6475fe1019192c45f95522ff1cdf982e24f32d4340bd43ef11926a09554a69",
-    "linux-aarch64": "4d37de485ca84a2feec9883b51d9088a5bb1b06874fde3ca10a513206bae57b6",
-    "macos-x86_64": "db794cac94202b784b8a337a091927437755396e6777a26a72a2c6d7fc80660c",
-    "macos-aarch64": "a6380a1ab092cf938947cb6a379b6cb1b8fb1ad9c20f69736d27dbaf7708b934",
-    "windows-x86_64": "26c475ad6da31da563f8f9678e5d5611d50d90e00c679a6ac40a7af91f9ebc5f"
+    "linux-x86_64": "d0f0e436482ccc3930ef58b49e1a0c886cce56d3b1ce8c9f2f6c153e70181311",
+    "linux-aarch64": "6011feaa1ed0323201d0e2a7fb2df56c28d4081dc03259454004833919c7c369",
+    "macos-x86_64": "b43c128d894c12a64dac0b469ca6dd8e3ff03db3bf13b97f9cbb6673960f8f5d",
+    "macos-aarch64": "9fe82fec9e9f911831b01b9dbef0c5f7a1b36b32ec1f0d2ad55dd1eb9e4f3b15",
+    "windows-x86_64": "6913465235b53f4cf11cb9f30b4b539cd7216d948c838499061c682aad683c3a"
   },
   "releases": {
+    "0.29.0": {
+      "notes": "### Added\n- The chat view's channel list (`prefix+i`) now shows what each channel is worth opening for: pane and agent counts plus the time of the last message, sorted most-recently-active first, with never-messaged rooms dimmed at the bottom. `channel.list` carries the new `last_message_seq`/`last_message_ts` facts; the relative formatting stays in the client.\n\n### Fixed\n- The CLI integration tests referenced the upstream binary name, which cargo does not define for this fork, so they could not compile on Linux. Those tests are gated off macOS, so a local `just check` never compiled them and the break only appeared on CI. A guard test now scans for the stale name on every host.",
+      "protocol": 21,
+      "assets": {
+        "linux-x86_64": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/v0.29.0/bora-linux-x86_64",
+        "linux-aarch64": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/v0.29.0/bora-linux-aarch64",
+        "macos-x86_64": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/v0.29.0/bora-macos-x86_64",
+        "macos-aarch64": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/v0.29.0/bora-macos-aarch64",
+        "windows-x86_64": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/v0.29.0/bora-windows-x86_64.zip"
+      },
+      "sha256": {
+        "linux-x86_64": "d0f0e436482ccc3930ef58b49e1a0c886cce56d3b1ce8c9f2f6c153e70181311",
+        "linux-aarch64": "6011feaa1ed0323201d0e2a7fb2df56c28d4081dc03259454004833919c7c369",
+        "macos-x86_64": "b43c128d894c12a64dac0b469ca6dd8e3ff03db3bf13b97f9cbb6673960f8f5d",
+        "macos-aarch64": "9fe82fec9e9f911831b01b9dbef0c5f7a1b36b32ec1f0d2ad55dd1eb9e4f3b15",
+        "windows-x86_64": "6913465235b53f4cf11cb9f30b4b539cd7216d948c838499061c682aad683c3a"
+      }
+    },
     "0.28.0": {
       "notes": "### Added\n- Plugin tabs now take their name from the manifest pane `title`, so a `placement = \"tab\"` plugin pane no longer opens as a bare numeric tab and plugins no longer need a follow-up rename call.\n- Bundled a new `gitui` plugin example (`examples/bora/plugins/gitui`) that opens gitui in its own tab and auto-opens it on `worktree.created` / `worktree.opened`, installable with `bora plugin link`.\n\n### Fixed\n- `bora channel members` now always reports an addressable name. It used to derive the name from only `agent view set`/`agent rename`, while `--to`/`@nick` matching fell back further to the detected tool kind, so a pane addressable as `--to omp` showed up as `name: null`. Both paths now share one fallback chain \u2014 registered display name, then `agent rename` name, then detected kind, then the pane's compact addressable id (`w78p1`) \u2014 so every member is addressable by something unique and typeable even when three same-kind agents share the room.\n- `bora channel --help` no longer hides working commands. The help text is generated from a separate spec that had fallen five commits behind the real parser, so `channel note`, `channel ask`, `send --to`, `send --reply-to`, and `join --scope-write/--scope-read` all worked but appeared nowhere in `--help`, pushing callers onto the in-body `@nick` form that degrades to a broadcast when it does not uniquely resolve. A regression test now asserts the spec covers the dispatcher's real surface.\n- `bora channel create` now seeds the new channel's pane with `channel tail --follow`, so a freshly created room shows its transcript instead of a bare shell prompt. The backlog was never lost \u2014 only unseeded \u2014 and a seed failure logs a warning without failing channel creation.\n- A queued when-idle message is no longer replayed into a one-tick agent-status flicker. Agent status comes from screen detection, and coding agents routinely clear their busy indicator for an instant between internal steps; the drain fired on that first transition and landed the message mid-turn. Delivery now waits for the target to stay non-working for a short settle window, and a return to working cancels the replay and keeps the message queued.",
       "protocol": 21,
