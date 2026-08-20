@@ -177,17 +177,34 @@ fn render_channel_list(app: &AppState, frame: &mut Frame, area: Rect) {
             "  {}·{} {activity}",
             channel.pane_count, channel.agent_count
         );
+        // Unread is a separate, fixed-width span appended after the elided
+        // name/detail so it's never swallowed by `middle_elide`'s "…" and
+        // stays visually distinct (teal, bold) from the pane/agent counts —
+        // it's rendered as its own span, not concatenated into that text.
+        let unread_badge = if channel.unread > 0 {
+            format!(" {}●", channel.unread)
+        } else {
+            String::new()
+        };
+        let badge_width = display_width(&unread_badge);
         let label = middle_elide(
             &format!("{}{detail}", channel.name),
-            area.width.saturating_sub(1) as usize,
+            area.width
+                .saturating_sub(1)
+                .saturating_sub(badge_width as u16) as usize,
         );
-        let row = if selected {
-            format!("▐{label}")
-        } else {
-            format!(" {label}")
-        };
+        let prefix = if selected { "▐" } else { " " };
+        let mut spans = vec![Span::styled(format!("{prefix}{label}"), style)];
+        if !unread_badge.is_empty() {
+            let badge_style = if selected {
+                style
+            } else {
+                Style::default().fg(p.teal).add_modifier(Modifier::BOLD)
+            };
+            spans.push(Span::styled(unread_badge, badge_style));
+        }
         frame.render_widget(
-            Paragraph::new(row).style(style),
+            Paragraph::new(Line::from(spans)),
             Rect::new(area.x, area.y + idx as u16, area.width, 1),
         );
     }

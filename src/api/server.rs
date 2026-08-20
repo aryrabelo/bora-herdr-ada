@@ -262,6 +262,7 @@ fn handle_connection_with_stop(
                 request_id.clone(),
                 params,
                 &mut stream,
+                api_tx,
                 event_hub,
                 running,
             )?;

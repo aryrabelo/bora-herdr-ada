@@ -16,8 +16,8 @@ use ratatui::layout::Rect;
 
 use crate::api::schema::{
     ChannelCreateParams, ChannelHistoryParams, ChannelJoinParams, ChannelLeaveParams,
-    ChannelMemberSource, ChannelMembersParams, ChannelMessage, ChannelSendParams, ChannelSummary,
-    EmptyParams, Method, ResponseResult, SuccessResponse,
+    ChannelListParams, ChannelMemberSource, ChannelMembersParams, ChannelMessage,
+    ChannelSendParams, ChannelSummary, EmptyParams, Method, ResponseResult, SuccessResponse,
 };
 use crate::app::state::{AppState, ChatMemberCandidate, ChatPrompt, Mode};
 use crate::app::App;
@@ -124,25 +124,47 @@ pub(crate) enum ChatMembersHit {
     AddAgent,
 }
 
-/// Deterministic channel-list order: most recently active first, by the last
-/// message's timestamp descending, with channel name ascending as the tiebreak
-/// so equal-recency channels never swap places between refreshes.
-/// Never-messaged channels (`last_message_ts == None`) sink to the bottom.
+/// Overwrites each cached `ChannelSummary.unread` with the human's own
+/// client-side count: `last_message_seq` minus this channel's entry in
+/// `seen` (`ChatViewState::seen`, `0` when never viewed). The server
+/// always reports `0` here since the TUI's `channel.list` read carries no
+/// pane identity — this restores a real per-room signal into the exact
+/// field `sort_chat_channels` and the sidebar badge already read, so
+/// neither needs to change.
+fn apply_chat_seen_cursor(
+    channels: &mut [ChannelSummary],
+    seen: &std::collections::HashMap<String, u64>,
+) {
+    for channel in channels.iter_mut() {
+        let name = crate::persist::channels::normalize_channel_name(&channel.name);
+        let shown = seen.get(&name).copied().unwrap_or(0);
+        channel.unread = channel.last_message_seq.saturating_sub(shown);
+    }
+}
+
+/// Deterministic channel-list order: rooms with unread messages first, then
+/// most recently active first by the last message's timestamp descending,
+/// with channel name ascending as the final tiebreak so equal-recency
+/// channels never swap places between refreshes. Never-messaged channels
+/// (`last_message_ts == None`) sink to the bottom of their unread/read group.
 ///
-/// The sort key is the timestamp, NOT `last_message_seq`: seq is monotonic
+/// The recency key is the timestamp, NOT `last_message_seq`: seq is monotonic
 /// *within* one channel and says nothing across channels, so two rooms whose
 /// counters happen to agree would tie and fall back to name, putting an older
 /// room above a newer one. The timestamps are RFC3339 UTC produced by one code
-/// path, so comparing them as strings orders them correctly.
+/// path, so comparing them as strings orders them correctly. This is the
+/// 0.30.0 fix — unread only adds a coarser bucket ahead of it, it never
+/// replaces or reorders the comparison within a bucket.
 fn sort_chat_channels(channels: &mut [ChannelSummary]) {
     channels.sort_by(|a, b| {
+        let unread_first = (b.unread > 0).cmp(&(a.unread > 0));
         let recency = match (a.last_message_ts.as_deref(), b.last_message_ts.as_deref()) {
             (Some(left), Some(right)) => right.cmp(left),
             (Some(_), None) => std::cmp::Ordering::Less,
             (None, Some(_)) => std::cmp::Ordering::Greater,
             (None, None) => std::cmp::Ordering::Equal,
         };
-        recency.then_with(|| a.name.cmp(&b.name))
+        unread_first.then(recency).then_with(|| a.name.cmp(&b.name))
     });
 }
 
@@ -161,13 +183,20 @@ impl App {
     fn refresh_chat_channels(&mut self) {
         let response = self.dispatch_api_request(
             "tui.chat.channel_list",
-            Method::ChannelList(EmptyParams::default()),
+            Method::ChannelList(ChannelListParams {
+                // The TUI is a client, not a member pane: it carries no
+                // pane identity here, so the server always reports
+                // `unread: 0`. `apply_chat_seen_cursor` below restores a
+                // real per-room signal from the human's own seen cursor.
+                from_pane: None,
+            }),
         );
         let Ok(parsed) = serde_json::from_str::<SuccessResponse>(&response) else {
             self.state.chat.status = Some("channel.list failed".into());
             return;
         };
         if let ResponseResult::ChannelList { mut channels } = parsed.result {
+            apply_chat_seen_cursor(&mut channels, &self.state.chat.seen);
             sort_chat_channels(&mut channels);
             self.state.chat.selected = self.state.chat.selected.min(channels.len());
             self.state.chat.channels = channels;
@@ -184,6 +213,9 @@ impl App {
             Method::ChannelHistory(ChannelHistoryParams {
                 name: name.clone(),
                 lines: None,
+                // TUI chat reads don't carry a pane identity today: this read
+                // is free and advances no member's read cursor.
+                from_pane: None,
             }),
         );
         if let Ok(parsed) = serde_json::from_str::<SuccessResponse>(&history) {
@@ -192,6 +224,11 @@ impl App {
                 self.state.reset_chat_scroll_to_bottom();
             }
         }
+        // The human is now looking at this room's transcript: catch its
+        // seen cursor up to what the cached summary reports as current, and
+        // clear its badge in-place so the change shows in this render
+        // rather than waiting for the next `channel.list` refresh.
+        self.state.mark_chat_channel_seen(&name);
         let members = self.dispatch_api_request(
             "tui.chat.channel_members",
             Method::ChannelMembers(ChannelMembersParams { name }),
@@ -638,6 +675,23 @@ impl AppState {
             .map(|channel| channel.name.as_str())
     }
 
+    /// Advances the human's seen cursor for `name` to that room's current
+    /// `last_message_seq` from the cached `channel.list` summary, and
+    /// zeroes that summary's cached `unread` immediately — pure arithmetic
+    /// on two integers already in memory, no filesystem or server touch.
+    /// A `name` not present in the cached list (stale selection) is a
+    /// no-op.
+    pub(crate) fn mark_chat_channel_seen(&mut self, name: &str) {
+        let normalized = crate::persist::channels::normalize_channel_name(name);
+        let Some(channel) = self.chat.channels.iter_mut().find(|channel| {
+            crate::persist::channels::normalize_channel_name(&channel.name) == normalized
+        }) else {
+            return;
+        };
+        self.chat.seen.insert(normalized, channel.last_message_seq);
+        channel.unread = 0;
+    }
+
     /// Wheel / key scrolling of the message area, in wrapped display lines.
     pub(crate) fn scroll_chat(&mut self, delta: isize) {
         let max = self.chat_max_scroll() as isize;
@@ -882,6 +936,7 @@ mod tests {
             member_status_counts: Default::default(),
             last_message_seq: 0,
             last_message_ts: None,
+            unread: 0,
         }
     }
 
@@ -1415,6 +1470,7 @@ mod tests {
             name: Some(name.into()),
             agent_status: Some(crate::api::schema::AgentStatus::Idle),
             source,
+            unread: 0,
         }
     }
 
@@ -1834,5 +1890,113 @@ mod tests {
             vec!["#runner-disk-full", "#ci-check"],
             "the room with the newer message wins even when both seqs match"
         );
+    }
+
+    #[test]
+    fn sort_chat_channels_ranks_unread_above_more_recently_active_read_room() {
+        let mut channels = vec![
+            channel_with_activity("#read-recent", 9, Some("2026-08-20T15:00:00.000000Z")),
+            ChannelSummary {
+                unread: 3,
+                ..channel_with_activity("#unread-older", 4, Some("2026-08-20T10:00:00.000000Z"))
+            },
+        ];
+        sort_chat_channels(&mut channels);
+        assert_eq!(
+            channels.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+            vec!["#unread-older", "#read-recent"],
+            "unread rank above read rooms regardless of recency"
+        );
+    }
+
+    #[test]
+    fn sort_chat_channels_keeps_timestamp_order_when_both_unread() {
+        let mut channels = vec![
+            ChannelSummary {
+                unread: 1,
+                ..channel_with_activity("#older", 4, Some("2026-08-20T13:24:08.158396Z"))
+            },
+            ChannelSummary {
+                unread: 5,
+                ..channel_with_activity("#newer", 4, Some("2026-08-20T15:34:59.977129Z"))
+            },
+        ];
+        sort_chat_channels(&mut channels);
+        assert_eq!(
+            channels.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+            vec!["#newer", "#older"],
+            "within the unread group, the 0.30.0 timestamp ordering still wins over unread count"
+        );
+    }
+
+    #[test]
+    fn sort_chat_channels_keeps_timestamp_order_when_both_read() {
+        let mut channels = vec![
+            channel_with_activity("#ci-check", 4, Some("2026-08-20T13:24:08.158396Z")),
+            channel_with_activity("#runner-disk-full", 4, Some("2026-08-20T15:34:59.977129Z")),
+        ];
+        sort_chat_channels(&mut channels);
+        assert_eq!(
+            channels.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+            vec!["#runner-disk-full", "#ci-check"],
+            "0.30.0 behavior untouched when neither room has unread"
+        );
+    }
+
+    #[tokio::test]
+    async fn chat_open_view_clears_the_badge_for_the_viewed_room() {
+        let _isolated = IsolatedStateDir::new("chat-badge-viewed");
+        let mut app = creating_app();
+        app.dispatch_api_request(
+            "test.channel_create",
+            Method::ChannelCreate(ChannelCreateParams { name: "eng".into() }),
+        );
+        app.dispatch_api_request(
+            "test.channel_note",
+            Method::ChannelNote(crate::api::schema::ChannelNoteParams {
+                name: "eng".into(),
+                text: "before the human ever looked".into(),
+                from_pane: None,
+            }),
+        );
+
+        // Opening the chat view is viewing #eng's transcript: the seen
+        // cursor catches up, so the badge a server-side member would carry
+        // for the same unread mail never shows up for the human.
+        app.open_chat_view();
+        assert_eq!(app.state.selected_chat_channel_name(), Some("#eng"));
+        assert_eq!(
+            app.state.chat.channels[0].unread, 0,
+            "a room the human has just viewed shows no badge"
+        );
+        crate::app::api::test_support::shutdown_test_runtimes(&mut app);
+    }
+
+    #[tokio::test]
+    async fn chat_badge_lights_for_a_message_newer_than_the_seen_cursor() {
+        let _isolated = IsolatedStateDir::new("chat-badge-newer");
+        let mut app = creating_app();
+        app.dispatch_api_request(
+            "test.channel_create",
+            Method::ChannelCreate(ChannelCreateParams { name: "eng".into() }),
+        );
+        app.open_chat_view();
+        assert_eq!(app.state.chat.channels[0].unread, 0);
+
+        // A message lands after the view already caught the room up.
+        app.dispatch_api_request(
+            "test.channel_note",
+            Method::ChannelNote(crate::api::schema::ChannelNoteParams {
+                name: "eng".into(),
+                text: "arrives after the view was opened".into(),
+                from_pane: None,
+            }),
+        );
+        app.refresh_chat_channels();
+        assert_eq!(
+            app.state.chat.channels[0].unread, 1,
+            "a room with messages newer than what this window has shown lights the badge"
+        );
+        crate::app::api::test_support::shutdown_test_runtimes(&mut app);
     }
 }

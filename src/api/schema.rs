@@ -257,7 +257,7 @@ pub enum Method {
     #[serde(rename = "channel.open")]
     ChannelOpen(ChannelOpenParams),
     #[serde(rename = "channel.list")]
-    ChannelList(EmptyParams),
+    ChannelList(ChannelListParams),
     #[serde(rename = "channel.send")]
     ChannelSend(ChannelSendParams),
     #[serde(rename = "channel.history")]

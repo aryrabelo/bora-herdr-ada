@@ -2063,6 +2063,13 @@
         },
         "ChannelHistoryParams": {
           "properties": {
+            "from_pane": {
+              "description": "Calling pane, for read-cursor tracking: when it resolves to a\nchannel member, this read advances that member's cursor to the\nhighest seq among the returned messages. The CLI defaults it to\n`$HERDR_PANE_ID`. `None` (no pane identity, e.g. a human shell) or a\npane that isn't currently a member reads freely and advances no\ncursor.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "lines": {
               "format": "uint32",
               "minimum": 0,
@@ -2131,6 +2138,18 @@
             "name",
             "pane"
           ],
+          "type": "object"
+        },
+        "ChannelListParams": {
+          "description": "`channel.list`: every `#channel` workspace's [`ChannelSummary`]. Unread\nis per-caller like `channel.history`/`channel.wait` — see\n[`ChannelHistoryParams::from_pane`]. The CLI defaults `from_pane` to\n`$HERDR_PANE_ID`; a client with no pane identity (a human shell, the TUI\nchat view) gets `unread: 0` on every summary, never a room's total\nmessage count.",
+          "properties": {
+            "from_pane": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
           "type": "object"
         },
         "ChannelMembersParams": {
@@ -2224,6 +2243,13 @@
               "format": "uint64",
               "minimum": 0,
               "type": "integer"
+            },
+            "from_pane": {
+              "description": "Calling pane, for read-cursor tracking — see\n[`ChannelHistoryParams::from_pane`]. The CLI defaults it to\n`$HERDR_PANE_ID`.",
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "name": {
               "type": "string"
@@ -6690,7 +6716,7 @@
               "type": "string"
             },
             "params": {
-              "$ref": "#/schemas/request/$defs/EmptyParams"
+              "$ref": "#/schemas/request/$defs/ChannelListParams"
             }
           },
           "required": [
@@ -7351,11 +7377,18 @@
             "source": {
               "$ref": "#/schemas/success_response/$defs/ChannelMemberSource",
               "description": "Workspace-implicit or explicitly joined membership."
+            },
+            "unread": {
+              "description": "Messages in the channel this member's stored read cursor has not\nreached yet: `last_message_seq - cursor`, floored at zero. A member\nwith no stored cursor (never read via `channel tail` /\n`channel history`) sees the channel's full message count.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
             }
           },
           "required": [
             "pane_id",
-            "source"
+            "source",
+            "unread"
           ],
           "type": "object"
         },
@@ -7485,13 +7518,20 @@
               "format": "uint",
               "minimum": 0,
               "type": "integer"
+            },
+            "unread": {
+              "description": "Messages this summary counts as unread, for the caller identified by\n`channel.list`'s `from_pane` (`channel.create`/`channel.open` pass no\npane identity, so they always report `0` here). A resolved member\npane nets its stored cursor against `last_message_seq`, same rule as\n`channel.members`' per-member `unread`; a caller with no pane\nidentity, an unresolvable pane, or a pane that isn't a member of\nthis channel sees `0` — never the room's full message count.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
             }
           },
           "required": [
             "name",
             "pane_count",
             "agent_count",
-            "last_message_seq"
+            "last_message_seq",
+            "unread"
           ],
           "type": "object"
         },

@@ -20,6 +20,18 @@ pub struct ChannelOpenParams {
     pub name: String,
 }
 
+/// `channel.list`: every `#channel` workspace's [`ChannelSummary`]. Unread
+/// is per-caller like `channel.history`/`channel.wait` — see
+/// [`ChannelHistoryParams::from_pane`]. The CLI defaults `from_pane` to
+/// `$HERDR_PANE_ID`; a client with no pane identity (a human shell, the TUI
+/// chat view) gets `unread: 0` on every summary, never a room's total
+/// message count.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct ChannelListParams {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_pane: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ChannelSendParams {
     pub name: String,
@@ -98,6 +110,14 @@ pub struct ChannelHistoryParams {
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lines: Option<u32>,
+    /// Calling pane, for read-cursor tracking: when it resolves to a
+    /// channel member, this read advances that member's cursor to the
+    /// highest seq among the returned messages. The CLI defaults it to
+    /// `$HERDR_PANE_ID`. `None` (no pane identity, e.g. a human shell) or a
+    /// pane that isn't currently a member reads freely and advances no
+    /// cursor.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_pane: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -152,6 +172,11 @@ pub struct ChannelWaitParams {
     pub after_seq: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_ms: Option<u64>,
+    /// Calling pane, for read-cursor tracking — see
+    /// [`ChannelHistoryParams::from_pane`]. The CLI defaults it to
+    /// `$HERDR_PANE_ID`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_pane: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -167,6 +192,14 @@ pub struct ChannelSummary {
     /// `last_message_seq` is `0`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_message_ts: Option<String>,
+    /// Messages this summary counts as unread, for the caller identified by
+    /// `channel.list`'s `from_pane` (`channel.create`/`channel.open` pass no
+    /// pane identity, so they always report `0` here). A resolved member
+    /// pane nets its stored cursor against `last_message_seq`, same rule as
+    /// `channel.members`' per-member `unread`; a caller with no pane
+    /// identity, an unresolvable pane, or a pane that isn't a member of
+    /// this channel sees `0` — never the room's full message count.
+    pub unread: u64,
     /// Member panes' agent status (`"idle"`, `"working"`, ...) mapped to how
     /// many panes are currently in that status. Panes not hosting a detected
     /// agent are excluded, so this can undercount `pane_count`.
@@ -197,6 +230,11 @@ pub struct ChannelMember {
     pub agent_status: Option<AgentStatus>,
     /// Workspace-implicit or explicitly joined membership.
     pub source: ChannelMemberSource,
+    /// Messages in the channel this member's stored read cursor has not
+    /// reached yet: `last_message_seq - cursor`, floored at zero. A member
+    /// with no stored cursor (never read via `channel tail` /
+    /// `channel history`) sees the channel's full message count.
+    pub unread: u64,
 }
 
 /// A single line of a channel's append-only JSONL transcript. Reused as both

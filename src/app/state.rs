@@ -1799,6 +1799,15 @@ pub struct ChatViewState {
     pub messages: Vec<crate::api::schema::ChannelMessage>,
     /// Cached `channel.members` for the selected channel.
     pub members: Vec<crate::api::schema::ChannelMember>,
+    /// Human's own per-channel "last seq shown" cursor — client
+    /// presentation state, keyed by normalized (hashless) channel name.
+    /// Advanced only when the human actually views a room's transcript
+    /// (see `App::refresh_chat_channel_data`); never persisted, never sent
+    /// to the server. `channel.list` reads with no pane identity from this
+    /// view, so the server always reports `unread: 0` for it — this cursor
+    /// is what restores a real badge/sort signal for the human, distinct
+    /// from an agent's own server-side read cursor.
+    pub seen: std::collections::HashMap<String, u64>,
     /// Open modal sub-mode (new channel / add member), when any.
     pub prompt: Option<ChatPrompt>,
     /// Mode to return to when the view closes, recorded when the view

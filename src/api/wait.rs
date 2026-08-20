@@ -1154,6 +1154,7 @@ pub(super) fn wait_for_channel_message(
     request_id: String,
     params: crate::api::schema::ChannelWaitParams,
     stream: &mut LocalStream,
+    api_tx: &ApiRequestSender,
     event_hub: &EventHub,
     running: &Arc<AtomicBool>,
 ) -> std::io::Result<Option<String>> {
@@ -1193,6 +1194,13 @@ pub(super) fn wait_for_channel_message(
             ));
         }
     };
+    advance_channel_wait_cursor(
+        &name,
+        params.from_pane.as_deref(),
+        params.after_seq,
+        &outcome,
+        api_tx,
+    );
     Ok(Some(
         serde_json::to_string(&SuccessResponse {
             id: request_id,
@@ -1205,6 +1213,63 @@ pub(super) fn wait_for_channel_message(
         })
         .unwrap(),
     ))
+}
+
+/// Resolves `from_pane` to a channel member via `channel.members` — the
+/// same identity machinery `channel.history`'s cursor tracking uses,
+/// reached over the existing `api_tx` App round-trip since this poll loop
+/// runs off the App thread and has no direct access to its live pane
+/// graph. When `from_pane` is a member, advances that member's stored read
+/// cursor to the highest seq this call actually returned — or, if nothing
+/// new arrived, to the cursor the caller already claims via `after_seq`
+/// (never regresses; see `advance_channel_cursor`). A caller with no pane
+/// identity, or one that doesn't resolve to a member, reads freely and
+/// advances nothing. Never fails the wait: a lookup or persistence error
+/// is a `tracing` warning, like every other channel sidecar write.
+fn advance_channel_wait_cursor(
+    name: &str,
+    from_pane: Option<&str>,
+    after_seq: u64,
+    outcome: &ChannelWaitOutcome,
+    api_tx: &ApiRequestSender,
+) {
+    let Some(from_pane) = from_pane else {
+        return;
+    };
+    let high_water = outcome
+        .messages
+        .last()
+        .map_or(after_seq, |message| message.seq);
+    let members_response = dispatch_to_app_with_timeout(
+        Request {
+            id: "internal:channel-wait-cursor".into(),
+            method: Method::ChannelMembers(crate::api::schema::ChannelMembersParams {
+                name: name.to_string(),
+            }),
+        },
+        api_tx,
+        Some(APP_RESPONSE_TIMEOUT),
+    );
+    let is_member = serde_json::from_str::<serde_json::Value>(&members_response)
+        .ok()
+        .and_then(|value| value.get("result")?.get("members")?.as_array().cloned())
+        .is_some_and(|members| {
+            members
+                .iter()
+                .any(|member| member.get("pane_id").and_then(|v| v.as_str()) == Some(from_pane))
+        });
+    if !is_member {
+        return;
+    }
+    if let Err(err) = crate::persist::channels::advance_channel_cursor(name, from_pane, high_water)
+    {
+        tracing::warn!(
+            channel = %name,
+            pane = %from_pane,
+            error = %err,
+            "failed to advance channel read cursor"
+        );
+    }
 }
 
 /// Poll ticks between belt-and-braces history re-reads for `channel.ask`,

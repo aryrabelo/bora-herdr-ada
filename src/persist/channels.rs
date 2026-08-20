@@ -1,6 +1,6 @@
 //! Append-only JSONL transcript store for `#`-channel workspaces, plus the
-//! explicit-membership roster and per-pane scope registry that live beside
-//! it.
+//! explicit-membership roster, per-pane scope registry, and per-member
+//! read-cursor registry that live beside it.
 //!
 //! Each channel's messages live at `state_dir()/channels/<name>.jsonl` (name
 //! without the leading `#`), one JSON object per line. Panes that joined a
@@ -8,7 +8,10 @@
 //! `state_dir()/channels/<name>.members.json` as a JSON array of public pane
 //! ids. Declared write/read directories per pane live at
 //! `state_dir()/channels/<name>.scope.json` (CANAL-ESCOPO.md Shape 2) — the
-//! registry the harness scope gate consults at runtime.
+//! registry the harness scope gate consults at runtime. Each member's
+//! high-water read cursor lives at `state_dir()/channels/<name>.cursors.json`
+//! (CANAL-NAO-LIDO's unread primitive) — the seq a `channel tail` /
+//! `channel history` read has advanced that member through.
 
 use std::fs::{self, OpenOptions};
 use std::io::{self, BufRead, Write};
@@ -43,6 +46,10 @@ pub fn channel_protocol_file_path(name: &str) -> PathBuf {
 
 pub fn channel_scope_file_path(name: &str) -> PathBuf {
     channels_dir().join(format!("{}.scope.json", normalize_channel_name(name)))
+}
+
+pub fn channel_cursors_file_path(name: &str) -> PathBuf {
+    channels_dir().join(format!("{}.cursors.json", normalize_channel_name(name)))
 }
 
 /// Hard cap on JSONL lines kept per channel. Once `append_message` would
@@ -364,6 +371,85 @@ pub fn remove_channel_scope_entry(name: &str, pane: &str) -> io::Result<bool> {
         write_channel_scope(name, &entries)?;
     }
     Ok(removed)
+}
+
+/// One member's read cursor for a channel: the highest message `seq` they
+/// have read via `channel tail` / `channel history`. Keyed by public pane
+/// id, same identity `channel_members` reports — a stable per-pane record,
+/// never `terminal_id`. A pane with no entry has never read: everything is
+/// unread.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChannelReadCursor {
+    pub pane: String,
+    pub seq: u64,
+}
+
+/// Every member's read cursor for `name`. A missing or unparseable record
+/// reads as empty — a corrupt cursor file must not take the channel down,
+/// only make every member look like they've never read (full-unread is the
+/// safe default here, never an error).
+pub fn read_channel_cursors(name: &str) -> Vec<ChannelReadCursor> {
+    let raw = match fs::read_to_string(channel_cursors_file_path(name)) {
+        Ok(raw) => raw,
+        Err(err) => {
+            if err.kind() != io::ErrorKind::NotFound {
+                tracing::warn!(channel = %name, error = %err, "channel read cursor record unreadable");
+            }
+            return Vec::new();
+        }
+    };
+    match serde_json::from_str(&raw) {
+        Ok(entries) => entries,
+        Err(err) => {
+            tracing::warn!(channel = %name, error = %err, "channel read cursor record malformed");
+            Vec::new()
+        }
+    }
+}
+
+/// `pane`'s stored read cursor for `name`, or `None` if it has never read
+/// (including when the whole record is unreadable/corrupt — see
+/// [`read_channel_cursors`]).
+pub fn read_channel_cursor(name: &str, pane: &str) -> Option<u64> {
+    read_channel_cursors(name)
+        .into_iter()
+        .find(|entry| entry.pane == pane)
+        .map(|entry| entry.seq)
+}
+
+/// Replace `name`'s whole cursor record. Writes a sibling `.tmp` and
+/// renames over it, mirroring every other channel sidecar file.
+fn write_channel_cursors(name: &str, entries: &[ChannelReadCursor]) -> io::Result<()> {
+    fs::create_dir_all(channels_dir())?;
+    let path = channel_cursors_file_path(name);
+    let body = serde_json::to_string(entries)
+        .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
+    let tmp_path = path.with_extension("json.tmp");
+    {
+        let mut tmp = fs::File::create(&tmp_path)?;
+        tmp.write_all(body.as_bytes())?;
+        tmp.flush()?;
+    }
+    fs::rename(&tmp_path, &path)
+}
+
+/// Records that `pane` has read through `seq` in `name`, replacing any
+/// prior cursor for that pane — but only forward: a `seq` at or below the
+/// stored cursor (or a `seq` of 0 with no stored cursor at all) is a
+/// silent no-op, so re-reading old history, or a caller passing seq 0,
+/// can never rewind or invent a member's cursor.
+pub fn advance_channel_cursor(name: &str, pane: &str, seq: u64) -> io::Result<()> {
+    let mut entries = read_channel_cursors(name);
+    match entries.iter_mut().find(|entry| entry.pane == pane) {
+        Some(entry) if seq <= entry.seq => return Ok(()),
+        Some(entry) => entry.seq = seq,
+        None if seq == 0 => return Ok(()),
+        None => entries.push(ChannelReadCursor {
+            pane: pane.to_string(),
+            seq,
+        }),
+    }
+    write_channel_cursors(name, &entries)
 }
 
 #[cfg(test)]
@@ -756,6 +842,44 @@ mod tests {
 
             assert!(remove_channel_scope_entry("eng", "w1A:p2").unwrap());
             assert!(!path.exists(), "removing the last entry deletes the file");
+        });
+    }
+
+    #[test]
+    fn cursor_has_no_entry_until_advanced() {
+        with_isolated_state_dir("cursor-missing", || {
+            assert_eq!(read_channel_cursor("eng", "w1A:p2"), None);
+        });
+    }
+
+    #[test]
+    fn cursor_advances_and_never_regresses() {
+        with_isolated_state_dir("cursor-advance", || {
+            advance_channel_cursor("eng", "w1A:p2", 5).unwrap();
+            assert_eq!(read_channel_cursor("eng", "w1A:p2"), Some(5));
+
+            // A lower or equal seq is a silent no-op — re-reading old
+            // history can never rewind the stored cursor.
+            advance_channel_cursor("eng", "w1A:p2", 3).unwrap();
+            assert_eq!(read_channel_cursor("eng", "w1A:p2"), Some(5));
+            advance_channel_cursor("eng", "w1A:p2", 5).unwrap();
+            assert_eq!(read_channel_cursor("eng", "w1A:p2"), Some(5));
+
+            advance_channel_cursor("eng", "w1A:p2", 9).unwrap();
+            assert_eq!(read_channel_cursor("eng", "w1A:p2"), Some(9));
+
+            // A second pane's cursor is independent.
+            assert_eq!(read_channel_cursor("eng", "w1A:p9"), None);
+        });
+    }
+
+    #[test]
+    fn corrupt_cursor_file_reads_as_no_cursor_not_an_error() {
+        with_isolated_state_dir("cursor-corrupt", || {
+            fs::create_dir_all(channels_dir()).unwrap();
+            fs::write(channel_cursors_file_path("eng"), b"not json").unwrap();
+            assert_eq!(read_channel_cursor("eng", "w1A:p2"), None);
+            assert!(read_channel_cursors("eng").is_empty());
         });
     }
 }

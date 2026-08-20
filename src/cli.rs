@@ -5,9 +5,9 @@ use serde::Serialize;
 use crate::api::client::{ApiClient, ApiClientError};
 use crate::api::schema::{
     AgentStatus, ChannelAskParams, ChannelCreateParams, ChannelHistoryParams, ChannelJoinParams,
-    ChannelLeaveParams, ChannelMembersParams, ChannelNoteParams, ChannelOpenParams,
-    ChannelSendParams, ChannelWaitParams, ClientWindowTitleSetParams, EmptyParams, Method,
-    PaneAgentState, ReadFormat, ReadSource, Request, SplitDirection,
+    ChannelLeaveParams, ChannelListParams, ChannelMembersParams, ChannelNoteParams,
+    ChannelOpenParams, ChannelSendParams, ChannelWaitParams, ClientWindowTitleSetParams,
+    EmptyParams, Method, PaneAgentState, ReadFormat, ReadSource, Request, SplitDirection,
 };
 
 macro_rules! print {
@@ -194,9 +194,15 @@ fn channel_open(args: &[String]) -> std::io::Result<i32> {
 }
 
 fn channel_list() -> std::io::Result<i32> {
+    let env_pane_id = std::env::var("HERDR_PANE_ID")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| normalize_pane_id(&value));
     print_response(&send_request(&Request {
         id: "cli:channel:list".into(),
-        method: Method::ChannelList(EmptyParams::default()),
+        method: Method::ChannelList(ChannelListParams {
+            from_pane: env_pane_id,
+        }),
     })?)
 }
 
@@ -475,11 +481,16 @@ fn channel_history(args: &[String]) -> std::io::Result<i32> {
             }
         }
     }
+    let env_pane_id = std::env::var("HERDR_PANE_ID")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| normalize_pane_id(&value));
     let response = send_request(&Request {
         id: "cli:channel:history".into(),
         method: Method::ChannelHistory(ChannelHistoryParams {
             name: name.clone(),
             lines,
+            from_pane: env_pane_id,
         }),
     })?;
     if json {
@@ -548,6 +559,11 @@ fn channel_tail(args: &[String]) -> std::io::Result<i32> {
         }
     }
 
+    let env_pane_id = std::env::var("HERDR_PANE_ID")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| normalize_pane_id(&value));
+
     loop {
         // One-shot (`--follow` absent) uses timeout 0: backlog snapshot,
         // never blocks. Follow mode blocks server-side per poll window.
@@ -561,6 +577,7 @@ fn channel_tail(args: &[String]) -> std::io::Result<i32> {
                 } else {
                     0
                 }),
+                from_pane: env_pane_id.clone(),
             }),
         })?;
         if response.get("error").is_some() {

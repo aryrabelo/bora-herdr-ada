@@ -1,9 +1,9 @@
 use crate::api::schema::{
     AgentInfo, AgentPromptParams, AgentStatus, ChannelCreateParams, ChannelDelivery,
     ChannelDeliveryStatus, ChannelHistoryParams, ChannelJoinParams, ChannelLeaveParams,
-    ChannelMember, ChannelMemberSource, ChannelMembersParams, ChannelMessage, ChannelNoteParams,
-    ChannelOpenParams, ChannelSendParams, ChannelSenderKind, ChannelSummary, PaneRightClickTarget,
-    PaneSplitParams, ResponseResult, SplitDirection,
+    ChannelListParams, ChannelMember, ChannelMemberSource, ChannelMembersParams, ChannelMessage,
+    ChannelNoteParams, ChannelOpenParams, ChannelSendParams, ChannelSenderKind, ChannelSummary,
+    PaneRightClickTarget, PaneSplitParams, ResponseResult, SplitDirection,
 };
 use crate::app::App;
 use crate::persist::channels;
@@ -95,7 +95,7 @@ impl App {
                 self.ensure_channel_shell_pane(index, &name);
                 self.state.mark_session_dirty();
                 self.emit_workspace_open_events(index);
-                let channel = self.channel_summary(index, &name);
+                let channel = self.channel_summary(index, &name, None);
                 encode_success(id, ResponseResult::ChannelCreated { channel })
             }
             Err(err) => encode_error(id, "channel_create_failed", err.to_string()),
@@ -124,7 +124,7 @@ impl App {
         self.ensure_channel_tail_pane(ws_idx, &name);
         self.ensure_channel_shell_pane(ws_idx, &name);
         self.state.mark_session_dirty();
-        let channel = self.channel_summary(ws_idx, &name);
+        let channel = self.channel_summary(ws_idx, &name, None);
         encode_success(id, ResponseResult::ChannelOpened { channel })
     }
 
@@ -348,14 +348,15 @@ impl App {
         }
     }
 
-    pub(super) fn handle_channel_list(&mut self, id: String) -> String {
+    pub(super) fn handle_channel_list(&mut self, id: String, params: ChannelListParams) -> String {
         let channels = self
             .state
             .workspaces
             .iter()
             .enumerate()
             .filter_map(|(idx, ws)| {
-                workspace_channel_name(ws).map(|name| self.channel_summary(idx, name))
+                workspace_channel_name(ws)
+                    .map(|name| self.channel_summary(idx, name, params.from_pane.as_deref()))
             })
             .collect();
         encode_success(id, ResponseResult::ChannelList { channels })
@@ -802,7 +803,19 @@ impl App {
             .unwrap_or(DEFAULT_CHANNEL_HISTORY_LINES)
             .min(MAX_CHANNEL_HISTORY_LINES) as usize;
         match channels::read_tail(&name, limit) {
-            Ok(messages) => encode_success(id, ResponseResult::ChannelHistory { messages }),
+            Ok(messages) => {
+                if let Some(ws_idx) = self.find_channel_workspace(&name) {
+                    if let Some(last) = messages.last() {
+                        self.advance_channel_read_cursor(
+                            &name,
+                            ws_idx,
+                            params.from_pane.as_deref(),
+                            last.seq,
+                        );
+                    }
+                }
+                encode_success(id, ResponseResult::ChannelHistory { messages })
+            }
             Err(err) => encode_error(id, "channel_history_failed", err.to_string()),
         }
     }
@@ -820,7 +833,7 @@ impl App {
                 format!("channel #{name} not found"),
             );
         };
-        let members = self.channel_members(ws_idx);
+        let members = self.channel_members(ws_idx, &name);
         encode_success(id, ResponseResult::ChannelMembers { members })
     }
 
@@ -1058,7 +1071,66 @@ impl App {
             .position(|ws| workspace_channel_name(ws) == Some(name))
     }
 
-    fn channel_summary(&self, ws_idx: usize, name: &str) -> ChannelSummary {
+    /// Resolves `from_pane` to a channel member and advances that member's
+    /// stored read cursor to `high_water_seq` — the shared mechanism
+    /// behind both `channel.history` and `channel.wait` ("channel tail")'s
+    /// read-cursor tracking (the source `unread` counts against). Uses the
+    /// same identity resolution as `channel.join`/`channel.leave`
+    /// (`resolve_public_pane`) and the same membership test `channel.send`
+    /// fan-out uses (`channel_member_panes`), so "who counts as a member"
+    /// can never drift between sending, addressing, and read tracking. A
+    /// caller with no pane identity, an unresolvable pane, or a pane that
+    /// is not currently a member reads freely and advances nothing — only
+    /// a verified member's cursor ever moves. Never fails the caller: a
+    /// cursor-persistence error is a `tracing` warning, like every other
+    /// channel sidecar write.
+    fn advance_channel_read_cursor(
+        &self,
+        name: &str,
+        ws_idx: usize,
+        from_pane: Option<&str>,
+        high_water_seq: u64,
+    ) {
+        let Some(from_pane) = from_pane else {
+            return;
+        };
+        let Some((public_id, _)) = self.resolve_public_pane(from_pane) else {
+            return;
+        };
+        let is_member = self
+            .channel_member_panes(ws_idx)
+            .iter()
+            .any(|member| member.public_id == public_id);
+        if !is_member {
+            return;
+        }
+        if let Err(err) = channels::advance_channel_cursor(name, &public_id, high_water_seq) {
+            tracing::warn!(
+                channel = %name,
+                pane = %public_id,
+                error = %err,
+                "failed to advance channel read cursor"
+            );
+        }
+    }
+
+    /// Builds a channel's room-level summary, including `unread` for
+    /// `from_pane`'s caller. Uses the exact identity resolution and
+    /// membership test [`Self::advance_channel_read_cursor`] uses
+    /// (`resolve_public_pane` + `channel_member_panes`) so "who counts as a
+    /// member" can never drift between advancing a cursor and reading it
+    /// back here, then reads that member's stored cursor
+    /// ([`channels::read_channel_cursor`]) on this same refresh pass — the
+    /// same pass that already reads the tail for `last_message_seq` /
+    /// `last_message_ts`, never on a render or per-pane path. A caller with
+    /// no pane identity, an unresolvable pane, or a pane that isn't a
+    /// member of this channel has no mailbox here and sees `0`.
+    fn channel_summary(
+        &self,
+        ws_idx: usize,
+        name: &str,
+        from_pane: Option<&str>,
+    ) -> ChannelSummary {
         let members = self.channel_member_panes(ws_idx);
         let agent_count = members
             .iter()
@@ -1077,12 +1149,20 @@ impl App {
                 (0, None)
             }
         };
+        let unread = from_pane
+            .and_then(|pane| self.resolve_public_pane(pane))
+            .filter(|(public_id, _)| members.iter().any(|member| &member.public_id == public_id))
+            .map_or(0, |(public_id, _)| {
+                let cursor = channels::read_channel_cursor(name, &public_id).unwrap_or(0);
+                last_message_seq.saturating_sub(cursor)
+            });
         ChannelSummary {
             name: format!("#{name}"),
             pane_count: members.len(),
             agent_count,
             last_message_seq,
             last_message_ts,
+            unread,
             member_status_counts: self.channel_member_status_counts(ws_idx),
         }
     }
@@ -1144,7 +1224,19 @@ impl App {
 
     /// Every member pane of the channel, as a `channel.members` listing —
     /// who would receive a `channel.send`, and how they got there.
-    fn channel_members(&self, ws_idx: usize) -> Vec<ChannelMember> {
+    fn channel_members(&self, ws_idx: usize, name: &str) -> Vec<ChannelMember> {
+        let last_message_seq = match channels::read_tail(name, 1) {
+            Ok(tail) => tail.last().map_or(0, |message| message.seq),
+            Err(err) => {
+                tracing::warn!(
+                    channel = %name,
+                    error = %err,
+                    "failed to read channel tail for members; reporting no unread"
+                );
+                0
+            }
+        };
+        let cursors = channels::read_channel_cursors(name);
         self.channel_member_panes(ws_idx)
             .into_iter()
             .map(|member| {
@@ -1152,11 +1244,16 @@ impl App {
                 let name = agent
                     .as_ref()
                     .map(|info| member_addressable_name(info, &member.public_id));
+                let cursor = cursors
+                    .iter()
+                    .find(|entry| entry.pane == member.public_id)
+                    .map_or(0, |entry| entry.seq);
                 ChannelMember {
                     pane_id: member.public_id,
                     name,
                     agent_status: agent.map(|info| info.agent_status),
                     source: member.source,
+                    unread: last_message_seq.saturating_sub(cursor),
                 }
             })
             .collect()
@@ -1859,7 +1956,7 @@ mod tests {
             },
         );
 
-        let list = app.handle_channel_list("req".into());
+        let list = app.handle_channel_list("req".into(), ChannelListParams { from_pane: None });
         let list: serde_json::Value = serde_json::from_str(&list).unwrap();
         let channels = list["result"]["channels"].as_array().unwrap();
         assert_eq!(channels.len(), 1);
@@ -1895,6 +1992,7 @@ mod tests {
             ChannelHistoryParams {
                 name: "eng".into(),
                 lines: None,
+                from_pane: None,
             },
         );
         let history: serde_json::Value = serde_json::from_str(&history).unwrap();
@@ -2049,6 +2147,7 @@ mod tests {
             ChannelHistoryParams {
                 name: "nope".into(),
                 lines: Some(10),
+                from_pane: None,
             },
         );
         let history: serde_json::Value = serde_json::from_str(&history).unwrap();
@@ -2217,7 +2316,7 @@ mod tests {
         terminal.detected_agent = Some(crate::detect::Agent::Claude);
         terminal.state = crate::detect::AgentState::Working;
 
-        let list = app.handle_channel_list("req".into());
+        let list = app.handle_channel_list("req".into(), ChannelListParams { from_pane: None });
         let list: serde_json::Value = serde_json::from_str(&list).unwrap();
         let channels = list["result"]["channels"].as_array().unwrap();
         assert_eq!(
@@ -2246,7 +2345,7 @@ mod tests {
             },
         );
 
-        let list = app.handle_channel_list("req".into());
+        let list = app.handle_channel_list("req".into(), ChannelListParams { from_pane: None });
         let list: serde_json::Value = serde_json::from_str(&list).unwrap();
         let channels = list["result"]["channels"].as_array().unwrap();
         let eng = channels
@@ -3361,7 +3460,7 @@ mod tests {
         expected.sort();
         assert_eq!(sources, expected);
 
-        let list = app.handle_channel_list("req".into());
+        let list = app.handle_channel_list("req".into(), ChannelListParams { from_pane: None });
         let list: serde_json::Value = serde_json::from_str(&list).unwrap();
         let channel = &list["result"]["channels"][0];
         assert_eq!(
@@ -4054,6 +4153,320 @@ mod tests {
         let accepted: serde_json::Value = serde_json::from_str(&accepted).unwrap();
         assert!(accepted["result"].is_object(), "{accepted}");
 
+        super::super::test_support::shutdown_test_runtimes(&mut app);
+    }
+
+    // --- Read-cursor / unread tests (CANAL-NAO-LIDO) ---
+
+    fn member_unread(app: &mut App, name: &str, pane_id: &str) -> u64 {
+        let response =
+            app.handle_channel_members("req".into(), ChannelMembersParams { name: name.into() });
+        let response: serde_json::Value = serde_json::from_str(&response).unwrap();
+        response["result"]["members"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|member| member["pane_id"] == serde_json::json!(pane_id))
+            .unwrap_or_else(|| panic!("{pane_id} must be a listed member: {response}"))["unread"]
+            .as_u64()
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn fresh_member_sees_every_message_as_unread() {
+        let _isolated = IsolatedStateDir::new("unread-fresh");
+        let mut app = test_app();
+        create_channel(&mut app, "eng");
+        let ws_idx = app.state.workspaces.len() - 1;
+        let pane_id = app.state.workspaces[ws_idx].tabs[0].root_pane;
+        let public_id = app.public_pane_id(ws_idx, pane_id).unwrap();
+
+        app.handle_channel_note(
+            "req1".into(),
+            ChannelNoteParams {
+                name: "eng".into(),
+                text: "first".into(),
+                from_pane: None,
+            },
+        );
+        app.handle_channel_note(
+            "req2".into(),
+            ChannelNoteParams {
+                name: "eng".into(),
+                text: "second".into(),
+                from_pane: None,
+            },
+        );
+
+        assert_eq!(
+            member_unread(&mut app, "eng", &public_id),
+            2,
+            "a member who has never read must see every message as unread"
+        );
+        super::super::test_support::shutdown_test_runtimes(&mut app);
+    }
+
+    /// `channel tail`'s cursor advance ultimately lands through the same
+    /// shared persistence primitive (`channels::advance_channel_cursor`)
+    /// this test exercises directly, after confirming the pane is a member
+    /// through the same `channel.members` listing `wait_for_channel_message`
+    /// (`src/api/wait.rs`) dispatches to over the App's request channel —
+    /// the wire handler runs on the connection thread, off the `App` this
+    /// test module drives directly, so the identity check is reproduced
+    /// here rather than round-tripped through a socket.
+    #[tokio::test]
+    async fn channel_tail_read_marks_member_caught_up() {
+        let _isolated = IsolatedStateDir::new("unread-tail-read");
+        let mut app = test_app();
+        create_channel(&mut app, "eng");
+        let ws_idx = app.state.workspaces.len() - 1;
+        let pane_id = app.state.workspaces[ws_idx].tabs[0].root_pane;
+        let public_id = app.public_pane_id(ws_idx, pane_id).unwrap();
+
+        app.handle_channel_note(
+            "req1".into(),
+            ChannelNoteParams {
+                name: "eng".into(),
+                text: "first".into(),
+                from_pane: None,
+            },
+        );
+        assert_eq!(member_unread(&mut app, "eng", &public_id), 1);
+
+        let members =
+            app.handle_channel_members("req".into(), ChannelMembersParams { name: "eng".into() });
+        let members: serde_json::Value = serde_json::from_str(&members).unwrap();
+        assert!(
+            members["result"]["members"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|member| member["pane_id"] == serde_json::json!(public_id)),
+            "pane must resolve as a member before its cursor advances"
+        );
+        let last_seq = channels::read_tail("eng", 1).unwrap().last().unwrap().seq;
+        channels::advance_channel_cursor("eng", &public_id, last_seq).unwrap();
+
+        assert_eq!(
+            member_unread(&mut app, "eng", &public_id),
+            0,
+            "reading via channel tail must catch the member up to the last seq"
+        );
+        super::super::test_support::shutdown_test_runtimes(&mut app);
+    }
+
+    #[tokio::test]
+    async fn note_after_tail_read_makes_unread_exactly_one() {
+        let _isolated = IsolatedStateDir::new("unread-note-after-read");
+        let mut app = test_app();
+        create_channel(&mut app, "eng");
+        let ws_idx = app.state.workspaces.len() - 1;
+        let pane_id = app.state.workspaces[ws_idx].tabs[0].root_pane;
+        let public_id = app.public_pane_id(ws_idx, pane_id).unwrap();
+
+        app.handle_channel_note(
+            "req1".into(),
+            ChannelNoteParams {
+                name: "eng".into(),
+                text: "first".into(),
+                from_pane: None,
+            },
+        );
+        let last_seq = channels::read_tail("eng", 1).unwrap().last().unwrap().seq;
+        channels::advance_channel_cursor("eng", &public_id, last_seq).unwrap();
+        assert_eq!(member_unread(&mut app, "eng", &public_id), 0);
+
+        // A zero-injection `channel.note` still registers as mail — the
+        // actual point of the unread primitive.
+        app.handle_channel_note(
+            "req2".into(),
+            ChannelNoteParams {
+                name: "eng".into(),
+                text: "second".into(),
+                from_pane: None,
+            },
+        );
+        assert_eq!(member_unread(&mut app, "eng", &public_id), 1);
+        super::super::test_support::shutdown_test_runtimes(&mut app);
+    }
+
+    #[tokio::test]
+    async fn non_member_history_read_does_not_change_any_members_unread() {
+        let _isolated = IsolatedStateDir::new("unread-non-member");
+        let mut app = test_app();
+        create_channel(&mut app, "eng");
+        let ws_idx = app.state.workspaces.len() - 1;
+        let pane_id = app.state.workspaces[ws_idx].tabs[0].root_pane;
+        let public_id = app.public_pane_id(ws_idx, pane_id).unwrap();
+
+        app.handle_channel_note(
+            "req1".into(),
+            ChannelNoteParams {
+                name: "eng".into(),
+                text: "first".into(),
+                from_pane: None,
+            },
+        );
+        assert_eq!(member_unread(&mut app, "eng", &public_id), 1);
+
+        // A caller with no pane identity — a human shell without
+        // `HERDR_PANE_ID` — reads the same history but is nobody's cursor.
+        let history = app.handle_channel_history(
+            "req2".into(),
+            ChannelHistoryParams {
+                name: "eng".into(),
+                lines: None,
+                from_pane: None,
+            },
+        );
+        let history: serde_json::Value = serde_json::from_str(&history).unwrap();
+        assert_eq!(history["result"]["messages"].as_array().unwrap().len(), 1);
+
+        assert_eq!(
+            member_unread(&mut app, "eng", &public_id),
+            1,
+            "a non-member (or identity-less) read must not touch any member's cursor"
+        );
+        super::super::test_support::shutdown_test_runtimes(&mut app);
+    }
+
+    #[tokio::test]
+    async fn corrupt_cursor_file_yields_full_unread_not_error() {
+        let _isolated = IsolatedStateDir::new("unread-corrupt-cursor");
+        let mut app = test_app();
+        create_channel(&mut app, "eng");
+        let ws_idx = app.state.workspaces.len() - 1;
+        let pane_id = app.state.workspaces[ws_idx].tabs[0].root_pane;
+        let public_id = app.public_pane_id(ws_idx, pane_id).unwrap();
+
+        app.handle_channel_note(
+            "req1".into(),
+            ChannelNoteParams {
+                name: "eng".into(),
+                text: "first".into(),
+                from_pane: None,
+            },
+        );
+
+        let cursor_path = channels::channel_cursors_file_path("eng");
+        std::fs::create_dir_all(cursor_path.parent().unwrap()).unwrap();
+        std::fs::write(&cursor_path, b"not json").unwrap();
+
+        assert_eq!(
+            member_unread(&mut app, "eng", &public_id),
+            1,
+            "a corrupt cursor file must read as no cursor (full unread), never an error"
+        );
+        super::super::test_support::shutdown_test_runtimes(&mut app);
+    }
+
+    #[tokio::test]
+    async fn list_reports_callers_own_unread_and_clears_after_reading() {
+        let _isolated = IsolatedStateDir::new("list-caller-unread");
+        let mut app = test_app();
+        create_channel(&mut app, "eng");
+        let ws_idx = app.state.workspaces.len() - 1;
+        let pane_id = app.state.workspaces[ws_idx].tabs[0].root_pane;
+        let public_id = app.public_pane_id(ws_idx, pane_id).unwrap();
+
+        app.handle_channel_note(
+            "req1".into(),
+            ChannelNoteParams {
+                name: "eng".into(),
+                text: "first".into(),
+                from_pane: None,
+            },
+        );
+
+        let unread = |app: &mut App, pane: &str| -> u64 {
+            let list = app.handle_channel_list(
+                "req".into(),
+                ChannelListParams {
+                    from_pane: Some(pane.to_string()),
+                },
+            );
+            let list: serde_json::Value = serde_json::from_str(&list).unwrap();
+            list["result"]["channels"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|channel| channel["name"] == serde_json::json!("#eng"))
+                .expect("eng must be listed")["unread"]
+                .as_u64()
+                .unwrap()
+        };
+
+        assert_eq!(
+            unread(&mut app, &public_id),
+            1,
+            "a member calling channel.list from its own pane sees its own mailbox"
+        );
+
+        // Reading via channel.history from the same pane advances that
+        // member's stored cursor, same as channel tail.
+        app.handle_channel_history(
+            "req2".into(),
+            ChannelHistoryParams {
+                name: "eng".into(),
+                lines: None,
+                from_pane: Some(public_id.clone()),
+            },
+        );
+        assert_eq!(unread(&mut app, &public_id), 0);
+
+        app.handle_channel_note(
+            "req3".into(),
+            ChannelNoteParams {
+                name: "eng".into(),
+                text: "second".into(),
+                from_pane: None,
+            },
+        );
+        assert_eq!(
+            unread(&mut app, &public_id),
+            1,
+            "unread rises by exactly one after a later note"
+        );
+        super::super::test_support::shutdown_test_runtimes(&mut app);
+    }
+
+    #[tokio::test]
+    async fn list_reports_zero_unread_for_caller_with_no_pane_identity() {
+        let _isolated = IsolatedStateDir::new("list-no-pane-identity");
+        let mut app = test_app();
+        create_channel(&mut app, "eng");
+
+        app.handle_channel_note(
+            "req1".into(),
+            ChannelNoteParams {
+                name: "eng".into(),
+                text: "first".into(),
+                from_pane: None,
+            },
+        );
+        app.handle_channel_note(
+            "req2".into(),
+            ChannelNoteParams {
+                name: "eng".into(),
+                text: "second".into(),
+                from_pane: None,
+            },
+        );
+
+        let list = app.handle_channel_list("req3".into(), ChannelListParams { from_pane: None });
+        let list: serde_json::Value = serde_json::from_str(&list).unwrap();
+        let eng = list["result"]["channels"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|channel| channel["name"] == serde_json::json!("#eng"))
+            .expect("eng must be listed");
+        assert_eq!(eng["last_message_seq"], serde_json::json!(2));
+        assert_eq!(
+            eng["unread"],
+            serde_json::json!(0),
+            "a caller with no pane identity must never see the room's message count as unread"
+        );
         super::super::test_support::shutdown_test_runtimes(&mut app);
     }
 }
