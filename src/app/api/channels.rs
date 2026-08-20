@@ -885,10 +885,25 @@ impl App {
             .iter()
             .filter(|member| self.agent_info(member.ws_idx, member.pane_id).is_some())
             .count();
+        let (last_message_seq, last_message_ts) = match channels::read_tail(name, 1) {
+            Ok(tail) => tail
+                .last()
+                .map_or((0, None), |message| (message.seq, Some(message.ts.clone()))),
+            Err(err) => {
+                tracing::warn!(
+                    channel = %name,
+                    error = %err,
+                    "failed to read channel tail for summary; reporting no last message"
+                );
+                (0, None)
+            }
+        };
         ChannelSummary {
             name: format!("#{name}"),
             pane_count: members.len(),
             agent_count,
+            last_message_seq,
+            last_message_ts,
             member_status_counts: self.channel_member_status_counts(ws_idx),
         }
     }
@@ -1786,6 +1801,50 @@ mod tests {
             channels[0]["member_status_counts"]["working"],
             serde_json::json!(1)
         );
+        super::super::test_support::shutdown_test_runtimes(&mut app);
+    }
+
+    #[tokio::test]
+    async fn list_reports_last_message_seq_and_ts_and_zero_for_unmessaged_channel() {
+        let _isolated = IsolatedStateDir::new("list-last-message");
+        let mut app = test_app();
+        create_channel(&mut app, "eng");
+        create_channel(&mut app, "quiet");
+
+        app.handle_channel_send(
+            "req".into(),
+            ChannelSendParams {
+                name: "#eng".into(),
+                text: "hello".into(),
+                from_pane: Some("w1A:p2".into()),
+                to: None,
+                in_reply_to: None,
+                from_human: false,
+            },
+        );
+
+        let list = app.handle_channel_list("req".into());
+        let list: serde_json::Value = serde_json::from_str(&list).unwrap();
+        let channels = list["result"]["channels"].as_array().unwrap();
+        let eng = channels
+            .iter()
+            .find(|channel| channel["name"] == serde_json::json!("#eng"))
+            .expect("eng must be listed");
+        assert_eq!(eng["last_message_seq"], serde_json::json!(1));
+        assert!(
+            eng["last_message_ts"]
+                .as_str()
+                .is_some_and(|ts| !ts.is_empty()),
+            "a messaged channel must report a non-empty last_message_ts: {eng}"
+        );
+
+        let quiet = channels
+            .iter()
+            .find(|channel| channel["name"] == serde_json::json!("#quiet"))
+            .expect("quiet must be listed");
+        assert_eq!(quiet["last_message_seq"], serde_json::json!(0));
+        assert_eq!(quiet["last_message_ts"], serde_json::Value::Null);
+
         super::super::test_support::shutdown_test_runtimes(&mut app);
     }
 

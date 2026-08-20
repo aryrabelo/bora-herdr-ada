@@ -158,12 +158,29 @@ fn render_channel_list(app: &AppState, frame: &mut Frame, area: Rect) {
     let rows = area.height.saturating_sub(new_channel.height);
     for (idx, channel) in app.chat.channels.iter().enumerate().take(rows as usize) {
         let selected = idx == app.chat.selected;
+        let never_messaged = channel.last_message_seq == 0;
         let style = if selected {
             Style::default().bg(p.accent).fg(p.panel_bg)
+        } else if never_messaged {
+            Style::default().fg(p.overlay0)
         } else {
             Style::default().fg(panel_contrast_fg(p))
         };
-        let label = middle_elide(&channel.name, area.width.saturating_sub(1) as usize);
+        // "never" is the same width as `short_time`'s "HH:MM" so the badge
+        // column doesn't jitter between messaged and never-messaged rows.
+        let activity = channel
+            .last_message_ts
+            .as_deref()
+            .map(short_time)
+            .unwrap_or("never");
+        let detail = format!(
+            "  {}·{} {activity}",
+            channel.pane_count, channel.agent_count
+        );
+        let label = middle_elide(
+            &format!("{}{detail}", channel.name),
+            area.width.saturating_sub(1) as usize,
+        );
         let row = if selected {
             format!("▐{label}")
         } else {

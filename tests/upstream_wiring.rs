@@ -228,6 +228,41 @@ fn sidebar_token_rendering_stays_wired() {
     );
 }
 
+/// Fork-rename guard. This fork builds the binary as `bora`, so cargo only
+/// defines `CARGO_BIN_EXE_bora`; an upstream-era `env!` on the old name is a
+/// hard compile error. The integration tests that spawn the binary live in
+/// `tests/cli/`, reached through a whole-file `#![cfg(not(target_os =
+/// "macos"))]` gate, so a macOS `just check` never compiles them and the
+/// breakage only surfaces on CI's ubuntu leg -- which is exactly how it
+/// reached `main` in v0.28.0. A text scan sees it on every host.
+///
+/// The needle is assembled at runtime on purpose: spelled as one literal it
+/// would match this file and fail against itself.
+#[test]
+fn no_source_file_references_the_upstream_binary_name() {
+    let root = repo_root();
+    let needle = format!("CARGO_BIN_EXE_{}", "herdr");
+    let mut files = Vec::new();
+    for dir in ["src", "tests"] {
+        walk_rs(&root.join(dir), &root, &mut files);
+    }
+    files.sort();
+
+    let offenders: Vec<String> = files
+        .into_iter()
+        .filter(|rel| {
+            fs::read_to_string(root.join(rel)).is_ok_and(|text| text.contains(needle.as_str()))
+        })
+        .collect();
+
+    assert!(
+        offenders.is_empty(),
+        "these files reference the upstream binary name, which cargo does not define for \
+         this fork (the bin is `bora`): {}. Use env!(\"CARGO_BIN_EXE_bora\") instead.",
+        offenders.join(", ")
+    );
+}
+
 #[test]
 fn no_source_file_is_orphaned_from_the_build() {
     let (reached, dep_file_count) = reached_src_files();

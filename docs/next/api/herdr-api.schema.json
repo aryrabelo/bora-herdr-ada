@@ -7427,6 +7427,19 @@
               "minimum": 0,
               "type": "integer"
             },
+            "last_message_seq": {
+              "description": "Monotonic seq of the channel's most recent message (`ChannelMessage`'s\n`seq`); `0` when the channel has never been messaged.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "last_message_ts": {
+              "description": "RFC 3339 timestamp of the most recent message. `None` exactly when\n`last_message_seq` is `0`.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "member_status_counts": {
               "additionalProperties": {
                 "format": "uint",
@@ -7449,7 +7462,8 @@
           "required": [
             "name",
             "pane_count",
-            "agent_count"
+            "agent_count",
+            "last_message_seq"
           ],
           "type": "object"
         },

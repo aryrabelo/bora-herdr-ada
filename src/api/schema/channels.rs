@@ -149,6 +149,13 @@ pub struct ChannelSummary {
     pub name: String,
     pub pane_count: usize,
     pub agent_count: usize,
+    /// Monotonic seq of the channel's most recent message (`ChannelMessage`'s
+    /// `seq`); `0` when the channel has never been messaged.
+    pub last_message_seq: u64,
+    /// RFC 3339 timestamp of the most recent message. `None` exactly when
+    /// `last_message_seq` is `0`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_message_ts: Option<String>,
     /// Member panes' agent status (`"idle"`, `"working"`, ...) mapped to how
     /// many panes are currently in that status. Panes not hosting a detected
     /// agent are excluded, so this can undercount `pane_count`.

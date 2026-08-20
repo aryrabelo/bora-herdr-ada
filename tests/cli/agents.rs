@@ -21,7 +21,7 @@ fn write_delayed_shell_and_fake_pi(
         format!(
             "#!/bin/sh\nprintf '%s\\n' \"$@\" >> '{}'\nexport HERDR_AGENT=pi\n'{}' pane report-agent \"$HERDR_PANE_ID\" --source custom:delayed-shell-pi --agent pi --state idle >/dev/null\nwhile IFS= read -r _prompt; do :; done\n",
             invocations.display(),
-            env!("CARGO_BIN_EXE_herdr"),
+            env!("CARGO_BIN_EXE_bora"),
         ),
     )
     .unwrap();

@@ -4,6 +4,12 @@ Bora is a fork of [herdr](https://github.com/ogulcancelik/herdr). This changelog
 
 ## Unreleased
 
+### Added
+- The chat view's channel list (`prefix+i`) now shows what each channel is worth opening for: pane and agent counts plus the time of the last message, sorted most-recently-active first, with never-messaged rooms dimmed at the bottom. `channel.list` carries the new `last_message_seq`/`last_message_ts` facts; the relative formatting stays in the client.
+
+### Fixed
+- The CLI integration tests referenced the upstream binary name, which cargo does not define for this fork, so they could not compile on Linux. Those tests are gated off macOS, so a local `just check` never compiled them and the break only appeared on CI. A guard test now scans for the stale name on every host.
+
 ## [0.28.0] - 2026-08-20
 
 ### Added

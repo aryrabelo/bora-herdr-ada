@@ -16,8 +16,8 @@ use ratatui::layout::Rect;
 
 use crate::api::schema::{
     ChannelCreateParams, ChannelHistoryParams, ChannelJoinParams, ChannelLeaveParams,
-    ChannelMemberSource, ChannelMembersParams, ChannelMessage, ChannelSendParams, EmptyParams,
-    Method, ResponseResult, SuccessResponse,
+    ChannelMemberSource, ChannelMembersParams, ChannelMessage, ChannelSendParams, ChannelSummary,
+    EmptyParams, Method, ResponseResult, SuccessResponse,
 };
 use crate::app::state::{AppState, ChatMemberCandidate, ChatPrompt, Mode};
 use crate::app::App;
@@ -124,6 +124,19 @@ pub(crate) enum ChatMembersHit {
     AddAgent,
 }
 
+/// Deterministic channel-list order: most recently active first
+/// (`last_message_seq` descending), with channel name ascending as the
+/// tiebreak so channels with equal recency never swap places between
+/// refreshes. Never-messaged channels (`last_message_seq == 0`) sink to the
+/// bottom for free, since 0 is the lowest possible seq.
+fn sort_chat_channels(channels: &mut [ChannelSummary]) {
+    channels.sort_by(|a, b| {
+        b.last_message_seq
+            .cmp(&a.last_message_seq)
+            .then_with(|| a.name.cmp(&b.name))
+    });
+}
+
 impl App {
     /// Open the chat view and fetch initial data through the channel API.
     /// No-op unless the `ui.chat_view` config flag is on (fork-only surface).
@@ -145,7 +158,8 @@ impl App {
             self.state.chat.status = Some("channel.list failed".into());
             return;
         };
-        if let ResponseResult::ChannelList { channels } = parsed.result {
+        if let ResponseResult::ChannelList { mut channels } = parsed.result {
+            sort_chat_channels(&mut channels);
             self.state.chat.selected = self.state.chat.selected.min(channels.len());
             self.state.chat.channels = channels;
         }
@@ -857,6 +871,15 @@ mod tests {
             pane_count: 2,
             agent_count: 1,
             member_status_counts: Default::default(),
+            last_message_seq: 0,
+            last_message_ts: None,
+        }
+    }
+
+    fn channel_with_seq(name: &str, seq: u64) -> ChannelSummary {
+        ChannelSummary {
+            last_message_seq: seq,
+            ..channel(name)
         }
     }
 
@@ -1768,5 +1791,21 @@ mod tests {
             "and the member is still there"
         );
         crate::app::api::test_support::shutdown_test_runtimes(&mut app);
+    }
+
+    #[test]
+    fn sort_chat_channels_orders_by_recency_then_name_never_messaged_last() {
+        let mut channels = vec![
+            channel_with_seq("#b", 5),
+            channel_with_seq("#a", 5),
+            channel_with_seq("#never", 0),
+            channel_with_seq("#c", 10),
+        ];
+        sort_chat_channels(&mut channels);
+        assert_eq!(
+            channels.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+            vec!["#c", "#a", "#b", "#never"],
+            "recency descending, name ascending tiebreak, zero-seq last"
+        );
     }
 }
