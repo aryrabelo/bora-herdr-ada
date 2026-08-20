@@ -2,7 +2,8 @@ use crate::api::schema::{
     AgentInfo, AgentPromptParams, AgentStatus, ChannelCreateParams, ChannelDelivery,
     ChannelDeliveryStatus, ChannelHistoryParams, ChannelJoinParams, ChannelLeaveParams,
     ChannelMember, ChannelMemberSource, ChannelMembersParams, ChannelMessage, ChannelNoteParams,
-    ChannelSendParams, ChannelSenderKind, ChannelSummary, ResponseResult,
+    ChannelOpenParams, ChannelSendParams, ChannelSenderKind, ChannelSummary, PaneRightClickTarget,
+    PaneSplitParams, ResponseResult, SplitDirection,
 };
 use crate::app::App;
 use crate::persist::channels;
@@ -90,7 +91,8 @@ impl App {
                     workspace.set_custom_name(format!("#{name}"));
                     crate::logging::workspace_renamed(&workspace.id);
                 }
-                self.seed_channel_tail_pane(index, &name);
+                self.ensure_channel_tail_pane(index, &name);
+                self.ensure_channel_shell_pane(index, &name);
                 self.state.mark_session_dirty();
                 self.emit_workspace_open_events(index);
                 let channel = self.channel_summary(index, &name);
@@ -100,19 +102,205 @@ impl App {
         }
     }
 
-    /// Types `<bora> channel tail <name> --follow` into a freshly created
-    /// channel's root pane and presses Enter — the exact internal path
-    /// `pane.send_input` (`bora pane run`) already uses, which is also the
-    /// documented manual workaround for a channel pane that otherwise
-    /// sits at a bare login shell showing nothing about the channel.
-    /// `<bora>` is resolved by absolute path via [`std::env::current_exe`]
-    /// rather than trusted to be on the server's `PATH`.
+    /// `channel.open`: focus the channel's own workspace and repair its
+    /// two-pane shape — see [`Self::ensure_channel_tail_pane`] and
+    /// [`Self::ensure_channel_shell_pane`] — adding only whatever pane is
+    /// missing. The only path that fixes a channel workspace created
+    /// before either half of the two-pane shape shipped (which otherwise
+    /// stays exactly as broken as the day it was created — nothing else
+    /// ever re-checks an existing channel's panes). Idempotent: called
+    /// again on an already-repaired channel, both `ensure_*` calls are
+    /// no-ops.
+    pub(super) fn handle_channel_open(&mut self, id: String, params: ChannelOpenParams) -> String {
+        let name = channels::normalize_channel_name(&params.name);
+        let Some(ws_idx) = self.find_channel_workspace(&name) else {
+            return encode_error(
+                id,
+                "channel_not_found",
+                format!("channel #{name} not found"),
+            );
+        };
+        self.state.switch_workspace(ws_idx);
+        self.ensure_channel_tail_pane(ws_idx, &name);
+        self.ensure_channel_shell_pane(ws_idx, &name);
+        self.state.mark_session_dirty();
+        let channel = self.channel_summary(ws_idx, &name);
+        encode_success(id, ResponseResult::ChannelOpened { channel })
+    }
+
+    /// Ensures the channel workspace at `ws_idx` has a pane running
+    /// `channel tail <name> --follow` — the transcript half of the
+    /// two-pane shape (batch contract item 1). A no-op when one is already
+    /// running, detected via real process info
+    /// ([`Self::channel_workspace_has_tail_pane`], contract item 3) rather
+    /// than a side file, which is what keeps this safe to call from both
+    /// `channel.create` and every `channel.open` repair without ever
+    /// stacking a second transcript pane (contract item 2). Splits the new
+    /// pane off the workspace's root pane rather than retyping into it, so
+    /// an existing plain shell — the `#runner-disk-full` repair case — is
+    /// left alone and still typeable. Never fails the caller (contract
+    /// item 5): [`Self::split_channel_pane`] already reduces every failure
+    /// to a `tracing` warning and a no-op.
+    fn ensure_channel_tail_pane(&mut self, ws_idx: usize, name: &str) {
+        if self.channel_workspace_has_tail_pane(ws_idx, name) {
+            return;
+        }
+        let Some(target_pane_id) = self
+            .state
+            .workspaces
+            .get(ws_idx)
+            .and_then(|ws| ws.tabs.first())
+            .map(|tab| tab.root_pane)
+        else {
+            return;
+        };
+        if let Some((new_ws_idx, new_pane_id)) =
+            self.split_channel_pane(ws_idx, target_pane_id, name, "transcript")
+        {
+            self.seed_channel_tail_pane(new_ws_idx, new_pane_id, name);
+        }
+    }
+
+    /// Ensures the channel workspace at `ws_idx` has at least one pane that
+    /// is *not* running `channel tail --follow` — somewhere to type
+    /// `bora channel send`, the other half of the two-pane shape (contract
+    /// item 1). Only fires when every existing pane is a transcript pane —
+    /// the shape a channel created before this fix landed can be stuck in
+    /// forever otherwise. A workspace that already has any non-tail pane
+    /// (the common case, including one [`Self::ensure_channel_tail_pane`]
+    /// just left alone above) is untouched.
+    fn ensure_channel_shell_pane(&mut self, ws_idx: usize, name: &str) {
+        let Some(pane_ids) = self.state.workspaces.get(ws_idx).map(|ws| {
+            ws.tabs
+                .iter()
+                .flat_map(|tab| tab.layout.pane_ids())
+                .collect::<Vec<_>>()
+        }) else {
+            return;
+        };
+        let has_shell = pane_ids
+            .iter()
+            .any(|&pane_id| !self.pane_runs_channel_tail(ws_idx, pane_id, name));
+        if has_shell {
+            return;
+        }
+        if let Some(&target_pane_id) = pane_ids.first() {
+            self.split_channel_pane(ws_idx, target_pane_id, name, "shell");
+        }
+    }
+
+    /// Whether the channel workspace at `ws_idx` already has a pane
+    /// running `channel tail <name> --follow`, scanning every pane in the
+    /// workspace (not just its root).
+    fn channel_workspace_has_tail_pane(&self, ws_idx: usize, name: &str) -> bool {
+        let Some(ws) = self.state.workspaces.get(ws_idx) else {
+            return false;
+        };
+        ws.tabs
+            .iter()
+            .flat_map(|tab| tab.layout.pane_ids())
+            .any(|pane_id| self.pane_runs_channel_tail(ws_idx, pane_id, name))
+    }
+
+    /// Whether `pane_id`'s live foreground process is running
+    /// `channel tail <name> --follow` — real process info (the same
+    /// [`crate::detect::foreground_job`] source `bora pane process-info`
+    /// reports via `handle_pane_process_info`), not a persisted flag.
+    fn pane_runs_channel_tail(
+        &self,
+        ws_idx: usize,
+        pane_id: crate::layout::PaneId,
+        name: &str,
+    ) -> bool {
+        let Some((runtime, _workspace_id)) = self.lookup_runtime(ws_idx, pane_id) else {
+            return false;
+        };
+        let Some(shell_pid) = runtime.child_pid() else {
+            return false;
+        };
+        let Some(job) = crate::detect::foreground_job(shell_pid) else {
+            return false;
+        };
+        job.processes
+            .iter()
+            .any(|process| is_channel_tail_process(process, name))
+    }
+
+    /// Splits a new, unseeded pane off `target_pane_id` in the channel
+    /// workspace, via [`Self::handle_pane_split`] — the same machinery
+    /// `pane.split` itself calls — and resolves its id back to
+    /// `(ws_idx, pane_id)`. `purpose` only labels the warning on failure
+    /// (`"transcript"` or `"shell"`). Never fails the caller (contract item
+    /// 5): a pane that can't be split is a `tracing` warning and `None`,
+    /// leaving the workspace exactly as it was.
+    fn split_channel_pane(
+        &mut self,
+        ws_idx: usize,
+        target_pane_id: crate::layout::PaneId,
+        name: &str,
+        purpose: &'static str,
+    ) -> Option<(usize, crate::layout::PaneId)> {
+        let Some(target_public_id) = self.public_pane_id(ws_idx, target_pane_id) else {
+            tracing::warn!(
+                channel = %name,
+                purpose,
+                "could not resolve the channel workspace's target pane; cannot split a {purpose} pane"
+            );
+            return None;
+        };
+        let response = self.handle_pane_split(
+            format!("internal:channel-{purpose}-split:{name}"),
+            PaneSplitParams {
+                workspace_id: None,
+                target_pane_id: Some(target_public_id),
+                direction: SplitDirection::Down,
+                ratio: None,
+                cwd: None,
+                focus: false,
+                right_click: PaneRightClickTarget::default(),
+                env: std::collections::HashMap::new(),
+            },
+        );
+        let new_pane_public_id = serde_json::from_str::<serde_json::Value>(&response)
+            .ok()
+            .and_then(|value| {
+                value
+                    .get("result")?
+                    .get("pane")?
+                    .get("pane_id")?
+                    .as_str()
+                    .map(str::to_string)
+            });
+        let Some(new_pane_public_id) = new_pane_public_id else {
+            tracing::warn!(
+                channel = %name,
+                purpose,
+                response = %response,
+                "failed to split a pane for the channel; it stays without one"
+            );
+            return None;
+        };
+        self.parse_pane_id(&new_pane_public_id)
+    }
+
+    /// Types `<bora> channel tail <name> --follow` into `pane_id` and
+    /// presses Enter — the exact internal path `pane.send_input`
+    /// (`bora pane run`) already uses, which is also the documented manual
+    /// workaround for a channel pane that otherwise sits at a bare login
+    /// shell showing nothing about the channel. `<bora>` is resolved by
+    /// absolute path via [`std::env::current_exe`] rather than trusted to
+    /// be on the server's `PATH`.
     ///
-    /// Never fails channel creation: an unresolved binary, a not-yet-ready
+    /// Never fails the caller: an unresolved binary, a not-yet-ready
     /// runtime, or a send failure is a `warn` log and a no-op — a channel
     /// that works but looks like today's plain shell is strictly better
-    /// than a channel that cannot be created.
-    fn seed_channel_tail_pane(&mut self, ws_idx: usize, name: &str) {
+    /// than a channel that cannot be created or repaired.
+    fn seed_channel_tail_pane(
+        &mut self,
+        ws_idx: usize,
+        pane_id: crate::layout::PaneId,
+        name: &str,
+    ) {
         let exe = match std::env::current_exe() {
             Ok(exe) => exe,
             Err(err) => {
@@ -123,15 +311,6 @@ impl App {
                 );
                 return;
             }
-        };
-        let Some(pane_id) = self
-            .state
-            .workspaces
-            .get(ws_idx)
-            .and_then(|ws| ws.tabs.first())
-            .map(|tab| tab.root_pane)
-        else {
-            return;
         };
         let Some(runtime) = self.lookup_runtime_sender(ws_idx, pane_id) else {
             tracing::warn!(
@@ -914,7 +1093,12 @@ impl App {
     /// pane that is both appears once, as `Workspace`. This is the single
     /// traversal every other member query is built on — members listing,
     /// summary counts, send fan-out, nick resolution — so the four can never
-    /// disagree about who is in a channel.
+    /// disagree about who is in a channel. This includes the workspace's own
+    /// transcript pane (running `channel tail --follow`): it lives in the
+    /// channel's workspace like any other pane, so — consistent with every
+    /// other workspace-implicit member — it counts too, just never as an
+    /// agent (it hosts none, so `agent_count`/nick resolution/delivery
+    /// fan-out — all of which filter on `agent_info` — naturally skip it).
     fn channel_member_panes(&self, ws_idx: usize) -> Vec<ChannelMemberPane> {
         let Some(ws) = self.state.workspaces.get(ws_idx) else {
             return Vec::new();
@@ -1283,6 +1467,24 @@ fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
+/// True when `process`'s argv contains `channel tail <name> --follow` as a
+/// contiguous run — the exact shape [`App::seed_channel_tail_pane`] types,
+/// once the shell that ran it has parsed away the quoting. Matched on argv
+/// (not the raw `cmdline` string) so shell quoting or incidental whitespace
+/// can never produce a false negative or a false positive on an unrelated
+/// process that merely mentions "channel tail" in passing.
+fn is_channel_tail_process(process: &crate::platform::ForegroundProcess, name: &str) -> bool {
+    let Some(argv) = process.argv.as_deref() else {
+        return false;
+    };
+    argv.windows(4).any(|window| {
+        window[0] == "channel"
+            && window[1] == "tail"
+            && window[2] == name
+            && window[3] == "--follow"
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1384,10 +1586,17 @@ mod tests {
         app.state.default_shell = "/bin/cat".into();
         create_channel(&mut app, "eng");
 
-        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
-        let runtime = app
-            .lookup_runtime_sender(0, pane_id)
-            .expect("the freshly created channel workspace must have a runtime");
+        // The transcript lives in its own pane now, not the tab root, so scan
+        // every pane in the room for the seeded command.
+        let pane_ids: Vec<_> = app.state.workspaces[0].tabs[0]
+            .panes
+            .keys()
+            .copied()
+            .collect();
+        assert!(
+            pane_ids.len() >= 2,
+            "a created channel must have a transcript pane and a shell pane, got {pane_ids:?}"
+        );
 
         // A long test-binary path plus the command can exceed the pane's
         // column width and wrap mid-word; strip whitespace from both sides
@@ -1396,17 +1605,27 @@ mod tests {
             .chars()
             .filter(|c| !c.is_whitespace())
             .collect();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
         let dense =
             |screen: &str| -> String { screen.chars().filter(|c| !c.is_whitespace()).collect() };
-        let mut screen = runtime.visible_text();
-        while !dense(&screen).contains(&expected) && std::time::Instant::now() < deadline {
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-            screen = runtime.visible_text();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let mut screens: Vec<String> = Vec::new();
+        let mut seeded = false;
+        while !seeded && std::time::Instant::now() < deadline {
+            screens = pane_ids
+                .iter()
+                .filter_map(|pane_id| app.lookup_runtime_sender(0, *pane_id))
+                .map(crate::terminal::TerminalRuntime::visible_text)
+                .collect();
+            seeded = screens
+                .iter()
+                .any(|screen| dense(screen).contains(&expected));
+            if !seeded {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
         }
         assert!(
-            dense(&screen).contains(&expected),
-            "channel pane must run `bora channel tail eng --follow`, got: {screen:?}"
+            seeded,
+            "one channel pane must run `bora channel tail eng --follow`, got: {screens:?}"
         );
 
         super::super::test_support::shutdown_test_runtimes(&mut app);
@@ -1420,12 +1639,205 @@ mod tests {
     async fn create_succeeds_even_when_the_channel_pane_cannot_be_seeded() {
         let mut app = test_app();
 
-        app.seed_channel_tail_pane(0, "ghost");
+        app.seed_channel_tail_pane(0, crate::layout::PaneId::alloc(), "ghost");
 
         let created = create_channel(&mut app, "ops");
         assert!(
             created["result"]["channel"].is_object(),
             "channel creation must succeed even if seeding the pane fails: {created}"
+        );
+
+        super::super::test_support::shutdown_test_runtimes(&mut app);
+    }
+
+    #[tokio::test]
+    async fn create_gives_the_channel_both_a_transcript_and_a_shell_pane() {
+        let mut app = test_app();
+        create_channel(&mut app, "twopane");
+        let ws_idx = app
+            .find_channel_workspace("twopane")
+            .expect("the channel workspace must exist");
+        let pane_count = app.state.workspaces[ws_idx]
+            .tabs
+            .iter()
+            .flat_map(|tab| tab.layout.pane_ids())
+            .count();
+        assert_eq!(
+            pane_count, 2,
+            "a freshly created channel must have both a transcript pane and a \
+             shell pane, got {pane_count}"
+        );
+        super::super::test_support::shutdown_test_runtimes(&mut app);
+    }
+
+    /// The `#runner-disk-full` repair case: a channel workspace built
+    /// before the two-pane shape shipped stays a single bare-shell pane
+    /// forever, since nothing but `channel.open` ever re-checks an
+    /// existing channel's panes.
+    #[tokio::test]
+    async fn open_repairs_a_pre_two_pane_shape_channel_workspace() {
+        let mut app = test_app();
+        let ws_idx = app
+            .create_workspace_with_launch_env(std::env::temp_dir(), false, Vec::new())
+            .expect("workspace creation must succeed");
+        app.state.workspaces[ws_idx].set_custom_name("#runner-disk-full".into());
+
+        let pane_count_before = app.state.workspaces[ws_idx]
+            .tabs
+            .iter()
+            .flat_map(|tab| tab.layout.pane_ids())
+            .count();
+        assert_eq!(
+            pane_count_before, 1,
+            "the pre-fix channel shape is a single bare-shell pane"
+        );
+
+        let response = app.handle_channel_open(
+            "req".into(),
+            ChannelOpenParams {
+                name: "runner-disk-full".into(),
+            },
+        );
+        let response: serde_json::Value = serde_json::from_str(&response).unwrap();
+        assert!(
+            response["result"]["channel"].is_object(),
+            "channel.open must succeed: {response}"
+        );
+
+        let pane_count_after = app.state.workspaces[ws_idx]
+            .tabs
+            .iter()
+            .flat_map(|tab| tab.layout.pane_ids())
+            .count();
+        assert_eq!(
+            pane_count_after, 2,
+            "channel.open must repair a bare-shell channel workspace by \
+             adding its transcript pane"
+        );
+
+        super::super::test_support::shutdown_test_runtimes(&mut app);
+    }
+
+    #[tokio::test]
+    async fn open_on_unknown_channel_returns_channel_not_found() {
+        let mut app = test_app();
+        let response = app.handle_channel_open(
+            "req".into(),
+            ChannelOpenParams {
+                name: "ghost-channel".into(),
+            },
+        );
+        let response: serde_json::Value = serde_json::from_str(&response).unwrap();
+        assert_eq!(
+            response["error"]["code"],
+            serde_json::json!("channel_not_found")
+        );
+        assert!(
+            app.state.workspaces.is_empty(),
+            "channel.open must never create a workspace for an unknown channel"
+        );
+        super::super::test_support::shutdown_test_runtimes(&mut app);
+    }
+
+    /// `channel.open` on an already-repaired channel — both halves of the
+    /// two-pane shape already present — must be a true no-op. Pane 2 is
+    /// made to impersonate a real `channel tail idem --follow` process: a
+    /// genuine `/bin/sh` subprocess whose own argv ends in exactly those
+    /// four tokens (`sleep 999 & wait` keeps it alive so detection can
+    /// never race its exit), so [`App::channel_workspace_has_tail_pane`]
+    /// sees the same shape a real seeded pane produces — proving
+    /// idempotency is driven by real process info (contract item 3), not
+    /// by remembering that this test itself added the pane.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn open_twice_on_an_already_repaired_channel_does_not_duplicate_the_transcript_pane() {
+        let mut app = test_app();
+        app.state.default_shell = "/bin/sh".into();
+
+        let ws_idx = app
+            .create_workspace_with_launch_env(std::env::temp_dir(), false, Vec::new())
+            .expect("workspace creation must succeed");
+        app.state.workspaces[ws_idx].set_custom_name("#idem".into());
+
+        let root_pane_id = app.state.workspaces[ws_idx].tabs[0].root_pane;
+        let root_public_id = app.public_pane_id(ws_idx, root_pane_id).unwrap();
+        let split_response = app.handle_pane_split(
+            "req:split".into(),
+            PaneSplitParams {
+                workspace_id: None,
+                target_pane_id: Some(root_public_id),
+                direction: SplitDirection::Down,
+                ratio: None,
+                cwd: None,
+                focus: false,
+                right_click: PaneRightClickTarget::default(),
+                env: std::collections::HashMap::new(),
+            },
+        );
+        let split_response: serde_json::Value = serde_json::from_str(&split_response).unwrap();
+        let pane2_public_id = split_response["result"]["pane"]["pane_id"]
+            .as_str()
+            .expect("the setup split must succeed")
+            .to_string();
+        let (_, pane2_id) = app.parse_pane_id(&pane2_public_id).unwrap();
+
+        let runtime = app
+            .lookup_runtime_sender(ws_idx, pane2_id)
+            .expect("pane 2 must have a runtime");
+        let command = "/bin/sh -c 'sleep 999 & wait' channel tail idem --follow";
+        let bytes =
+            crate::app::api_helpers::encode_api_input(runtime, command, &["Enter".to_string()])
+                .expect("encoding the marker command must not fail");
+        runtime
+            .try_send_bytes(Bytes::from(bytes))
+            .expect("sending the marker command must not fail");
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while !app.channel_workspace_has_tail_pane(ws_idx, "idem")
+            && std::time::Instant::now() < deadline
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(
+            app.channel_workspace_has_tail_pane(ws_idx, "idem"),
+            "the marker process must be detected as the channel's transcript pane"
+        );
+
+        let pane_count = |app: &App| -> usize {
+            app.state.workspaces[ws_idx]
+                .tabs
+                .iter()
+                .flat_map(|tab| tab.layout.pane_ids())
+                .count()
+        };
+        assert_eq!(
+            pane_count(&app),
+            2,
+            "sanity: root pane plus the marker pane"
+        );
+
+        app.handle_channel_open(
+            "req1".into(),
+            ChannelOpenParams {
+                name: "idem".into(),
+            },
+        );
+        assert_eq!(
+            pane_count(&app),
+            2,
+            "an already-complete channel must not grow a pane on the first open"
+        );
+
+        app.handle_channel_open(
+            "req2".into(),
+            ChannelOpenParams {
+                name: "idem".into(),
+            },
+        );
+        assert_eq!(
+            pane_count(&app),
+            2,
+            "a second channel.open must not duplicate the transcript pane either"
         );
 
         super::super::test_support::shutdown_test_runtimes(&mut app);
@@ -1738,9 +2150,16 @@ mod tests {
             app.handle_channel_members("req".into(), ChannelMembersParams { name: "eng".into() });
         let response: serde_json::Value = serde_json::from_str(&response).unwrap();
         let members = response["result"]["members"].as_array().unwrap();
-        assert_eq!(members.len(), 1);
-        assert_eq!(members[0]["agent_status"], serde_json::json!("idle"));
-        assert!(members[0]["pane_id"].as_str().unwrap().contains(':'));
+        assert_eq!(
+            members.len(),
+            2,
+            "the channel's shell pane and its transcript pane are both members: {members:?}"
+        );
+        let agent_member = members
+            .iter()
+            .find(|member| member["agent_status"] == serde_json::json!("idle"))
+            .expect("the agent-hosting pane must be listed with its status");
+        assert!(agent_member["pane_id"].as_str().unwrap().contains(':'));
         super::super::test_support::shutdown_test_runtimes(&mut app);
     }
 
@@ -1768,12 +2187,16 @@ mod tests {
             app.handle_channel_members("req".into(), ChannelMembersParams { name: "eng".into() });
         let response: serde_json::Value = serde_json::from_str(&response).unwrap();
         let members = response["result"]["members"].as_array().unwrap();
-        assert_eq!(members.len(), 1);
         assert_eq!(
-            members[0]["name"],
-            serde_json::json!("claude"),
-            "an unnamed pane must still report its detected kind, not a null name"
+            members.len(),
+            2,
+            "the channel's shell pane and its transcript pane are both members: {members:?}"
         );
+        let agent_member = members
+            .iter()
+            .find(|member| member["name"] == serde_json::json!("claude"))
+            .expect("an unnamed pane must still report its detected kind, not a null name");
+        assert!(agent_member["pane_id"].as_str().unwrap().contains(':'));
         super::super::test_support::shutdown_test_runtimes(&mut app);
     }
 
@@ -1911,6 +2334,21 @@ mod tests {
         assert_eq!(member_addressable_name(&info, "w78:p1"), "w78p1");
     }
 
+    /// A `#name` channel workspace with exactly one bare pane — bypassing
+    /// `channel.create`'s own two-pane seeding, so fixtures built on top
+    /// (agent panes added via `test_split`) get to control every pane in
+    /// the workspace themselves rather than sharing it with an auto-added
+    /// transcript pane that is not part of what they are testing.
+    fn create_bare_channel_workspace(app: &mut App, name: &str) -> usize {
+        let index = app
+            .create_workspace_with_launch_env(std::env::temp_dir(), false, Vec::new())
+            .expect("workspace creation must succeed");
+        if let Some(workspace) = app.state.workspaces.get_mut(index) {
+            workspace.set_custom_name(format!("#{name}"));
+        }
+        index
+    }
+
     /// Channel workspace with two agent member panes carrying the given
     /// names. The first is idle with a test runtime (promptable ->
     /// `delivered`; its receiver is returned and must stay alive or the
@@ -1921,8 +2359,7 @@ mod tests {
         first_name: &str,
         second_name: &str,
     ) -> (String, String, tokio::sync::mpsc::Receiver<bytes::Bytes>) {
-        create_channel(app, "eng");
-        let ws_idx = app.state.workspaces.len() - 1;
+        let ws_idx = create_bare_channel_workspace(app, "eng");
         let first = app.state.workspaces[ws_idx].tabs[0].root_pane;
         let second =
             app.state.workspaces[ws_idx].test_split(ratatui::layout::Direction::Horizontal);
@@ -1959,8 +2396,7 @@ mod tests {
     fn channel_with_two_same_kind_agents(
         app: &mut App,
     ) -> (String, String, tokio::sync::mpsc::Receiver<bytes::Bytes>) {
-        create_channel(app, "eng");
-        let ws_idx = app.state.workspaces.len() - 1;
+        let ws_idx = create_bare_channel_workspace(app, "eng");
         let first = app.state.workspaces[ws_idx].tabs[0].root_pane;
         let second =
             app.state.workspaces[ws_idx].test_split(ratatui::layout::Direction::Horizontal);

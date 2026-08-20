@@ -1321,6 +1321,9 @@ impl App {
             Method::ChannelCreate(params) => {
                 return self.handle_channel_create(request.id, params);
             }
+            Method::ChannelOpen(params) => {
+                return self.handle_channel_open(request.id, params);
+            }
             Method::ChannelList(_) => return self.handle_channel_list(request.id),
             Method::ChannelSend(params) => {
                 return self.handle_channel_send(request.id, params);

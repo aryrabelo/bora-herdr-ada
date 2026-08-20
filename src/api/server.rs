@@ -511,6 +511,7 @@ fn api_method_name(method: &Method) -> &'static str {
         Method::GithubPullsList(_) => "github.pulls.list",
         Method::GithubIssuesList(_) => "github.issues.list",
         Method::ChannelCreate(_) => "channel.create",
+        Method::ChannelOpen(_) => "channel.open",
         Method::ChannelList(_) => "channel.list",
         Method::ChannelSend(_) => "channel.send",
         Method::ChannelHistory(_) => "channel.history",

@@ -254,6 +254,8 @@ pub enum Method {
     GithubIssuesList(GithubIssuesListParams),
     #[serde(rename = "channel.create")]
     ChannelCreate(ChannelCreateParams),
+    #[serde(rename = "channel.open")]
+    ChannelOpen(ChannelOpenParams),
     #[serde(rename = "channel.list")]
     ChannelList(EmptyParams),
     #[serde(rename = "channel.send")]

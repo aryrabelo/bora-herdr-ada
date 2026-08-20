@@ -2166,6 +2166,18 @@
           ],
           "type": "object"
         },
+        "ChannelOpenParams": {
+          "description": "`channel.open`: focus a channel's own workspace and repair its\ntwo-pane shape (a `channel tail --follow` transcript pane plus a plain\ninteractive shell pane) if either half is missing. Idempotent: a\nchannel that already has both is untouched. The only path that fixes a\nchannel workspace created before the two-pane shape shipped, since\nnothing else ever re-checks an existing channel's panes.",
+          "properties": {
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "name"
+          ],
+          "type": "object"
+        },
         "ChannelSendParams": {
           "properties": {
             "from_pane": {
@@ -6647,6 +6659,22 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/ChannelCreateParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "channel.open",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/ChannelOpenParams"
             }
           },
           "required": [
@@ -11388,6 +11416,23 @@
                 },
                 "type": {
                   "const": "channel_created",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "channel"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "`channel.open` result: same summary shape as `channel.create`,\nafter focusing the channel's workspace and repairing whichever half\nof its two-pane shape (transcript pane, shell pane) was missing.",
+              "properties": {
+                "channel": {
+                  "$ref": "#/schemas/success_response/$defs/ChannelSummary"
+                },
+                "type": {
+                  "const": "channel_opened",
                   "type": "string"
                 }
               },

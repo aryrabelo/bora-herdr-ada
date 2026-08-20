@@ -293,6 +293,12 @@ pub enum ResponseResult {
     ChannelCreated {
         channel: ChannelSummary,
     },
+    /// `channel.open` result: same summary shape as `channel.create`,
+    /// after focusing the channel's workspace and repairing whichever half
+    /// of its two-pane shape (transcript pane, shell pane) was missing.
+    ChannelOpened {
+        channel: ChannelSummary,
+    },
     ChannelList {
         channels: Vec<ChannelSummary>,
     },

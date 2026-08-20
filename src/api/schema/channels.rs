@@ -9,6 +9,17 @@ pub struct ChannelCreateParams {
     pub name: String,
 }
 
+/// `channel.open`: focus a channel's own workspace and repair its
+/// two-pane shape (a `channel tail --follow` transcript pane plus a plain
+/// interactive shell pane) if either half is missing. Idempotent: a
+/// channel that already has both is untouched. The only path that fixes a
+/// channel workspace created before the two-pane shape shipped, since
+/// nothing else ever re-checks an existing channel's panes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct ChannelOpenParams {
+    pub name: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ChannelSendParams {
     pub name: String,

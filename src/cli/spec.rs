@@ -169,6 +169,11 @@ fn channel_command() -> Command {
                 .about("Create a #channel workspace")
                 .arg(required("name", "NAME")),
         )
+        .subcommand(
+            Command::new("open")
+                .about("Focus a #channel and repair its two-pane shape (transcript + shell)")
+                .arg(required("name", "NAME")),
+        )
         .subcommand(Command::new("list").about("List #channel workspaces"))
         .subcommand(
             Command::new("send")
@@ -1519,8 +1524,8 @@ mod tests {
         let channel = command_path(&cmd, &["channel"]);
 
         for name in [
-            "show", "set", "create", "list", "send", "note", "ask", "history", "tail", "members",
-            "join", "leave",
+            "show", "set", "create", "open", "list", "send", "note", "ask", "history", "tail",
+            "members", "join", "leave",
         ] {
             assert!(
                 channel.get_subcommands().any(|sub| sub.get_name() == name),

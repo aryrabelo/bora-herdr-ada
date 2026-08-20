@@ -5,9 +5,9 @@ use serde::Serialize;
 use crate::api::client::{ApiClient, ApiClientError};
 use crate::api::schema::{
     AgentStatus, ChannelAskParams, ChannelCreateParams, ChannelHistoryParams, ChannelJoinParams,
-    ChannelLeaveParams, ChannelMembersParams, ChannelNoteParams, ChannelSendParams,
-    ChannelWaitParams, ClientWindowTitleSetParams, EmptyParams, Method, PaneAgentState, ReadFormat,
-    ReadSource, Request, SplitDirection,
+    ChannelLeaveParams, ChannelMembersParams, ChannelNoteParams, ChannelOpenParams,
+    ChannelSendParams, ChannelWaitParams, ClientWindowTitleSetParams, EmptyParams, Method,
+    PaneAgentState, ReadFormat, ReadSource, Request, SplitDirection,
 };
 
 macro_rules! print {
@@ -142,6 +142,7 @@ fn run_channel_command(args: &[String]) -> std::io::Result<i32> {
             Ok(0)
         }
         Some("create") => channel_create(&args[1..]),
+        Some("open") => channel_open(&args[1..]),
         Some("list") if args.len() == 1 => channel_list(),
         Some("send") => channel_send(&args[1..]),
         Some("note") => channel_note(&args[1..]),
@@ -174,6 +175,21 @@ fn channel_create(args: &[String]) -> std::io::Result<i32> {
     print_response(&send_request(&Request {
         id: "cli:channel:create".into(),
         method: Method::ChannelCreate(ChannelCreateParams { name: name.clone() }),
+    })?)
+}
+
+fn channel_open(args: &[String]) -> std::io::Result<i32> {
+    let Some(name) = args.first() else {
+        eprintln!("usage: bora channel open <name>");
+        return Ok(2);
+    };
+    if args.len() != 1 {
+        eprintln!("usage: bora channel open <name>");
+        return Ok(2);
+    }
+    print_response(&send_request(&Request {
+        id: "cli:channel:open".into(),
+        method: Method::ChannelOpen(ChannelOpenParams { name: name.clone() }),
     })?)
 }
 
@@ -895,6 +911,10 @@ fn print_channel_help() {
     eprintln!("  bora channel show                            print the configured update channel");
     eprintln!("  bora channel set <stable|preview>            choose the update channel");
     eprintln!("  bora channel create <name>                   create a #channel workspace");
+    eprintln!("  bora channel open <name>                     focus a #channel and repair its");
+    eprintln!(
+        "                                                two-pane shape (transcript + shell)"
+    );
     eprintln!("  bora channel list                            list #channel workspaces");
     eprintln!(
         "  bora channel send <name> <text> [--pane ID|--current] [--to NICK] [--reply-to SEQ]"

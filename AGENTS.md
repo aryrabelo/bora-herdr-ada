@@ -147,6 +147,25 @@ today's upstream sync.)
   2026-08-19, binding: four such breaks shipped in one sync and each cost a failed release
   attempt — workflow version check, bench-release-smoke path, perf-smoke socket dir, and
   the windows asset-name test.)
+- **New upstream test files arrive with the upstream binary name.** Upstream added
+  `tests/broken_pipe.rs`, which calls `env!("CARGO_BIN_EXE_herdr")`; Cargo only defines
+  `CARGO_BIN_EXE_bora` for this fork, so it's a hard compile error. This is the same rename
+  class as user-facing strings, but it arrives in files the merge *adds* rather than files
+  the diff touches, so grepping the merged diff for renamed strings doesn't surface it —
+  after any sync, scan newly added files for the upstream binary name. Note that
+  `tests/upstream_wiring.rs::no_source_file_references_the_upstream_binary_name` now catches
+  this on any host.
+- **Upstream blocks conflicting wholesale where the fork moved code.** `src/ui/sidebar.rs`
+  is roughly 5.8k lines in the fork versus 3.2k upstream, so git can't align them and
+  produces one large conflict whose "ours" side is empty. Taking `theirs` would duplicate
+  functions the fork already defines elsewhere (compile error) and resurrect code the fork
+  deliberately replaced (e.g. `workspace_drop_slots`, superseded by
+  `DragTarget::WorkspaceReorder`). The resolution that works: take `ours` to keep the fork's
+  structure, then find the genuine upstream delta inside the block and port it by hand to
+  every fork site with equivalent logic — in this sync that was one new function applied to
+  three separate selection-background call sites. An `unused import` warning after
+  resolving such a conflict usually means a real upstream delta was dropped; a merged
+  upstream test that fails afterward points at the fork site still missing the port.
 
 ## Maintainer Workflow
 
