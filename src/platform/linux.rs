@@ -1035,7 +1035,7 @@ mod tests {
 
     #[test]
     fn clipboard_commands_prefer_wayland_when_available() {
-        let _guard = env_lock().lock().unwrap();
+        let _guard = env_lock().lock();
         unsafe {
             std::env::set_var("WAYLAND_DISPLAY", "wayland-0");
             std::env::remove_var("DISPLAY");
@@ -1047,7 +1047,7 @@ mod tests {
 
     #[test]
     fn clipboard_commands_include_x11_fallbacks() {
-        let _guard = env_lock().lock().unwrap();
+        let _guard = env_lock().lock();
         unsafe {
             std::env::remove_var("WAYLAND_DISPLAY");
             std::env::set_var("DISPLAY", ":0");
@@ -1060,7 +1060,7 @@ mod tests {
 
     #[test]
     fn read_clipboard_text_commands_include_session_backends() {
-        let _guard = env_lock().lock().unwrap();
+        let _guard = env_lock().lock();
         unsafe {
             std::env::set_var("WAYLAND_DISPLAY", "wayland-0");
             std::env::set_var("DISPLAY", ":0");
@@ -1120,7 +1120,7 @@ mod tests {
 
     #[test]
     fn read_clipboard_image_rejects_xclip_text_served_for_image_target() {
-        let _guard = env_lock().lock().unwrap();
+        let _guard = env_lock().lock();
         let temp_dir =
             std::env::temp_dir().join(format!("herdr-fake-xclip-{}", std::process::id()));
         std::fs::create_dir_all(&temp_dir).expect("temp dir should be created");
@@ -1172,7 +1172,7 @@ mod tests {
 
     #[test]
     fn read_clipboard_image_rejects_wayland_xclip_fallback_text_for_image_target() {
-        let _guard = env_lock().lock().unwrap();
+        let _guard = env_lock().lock();
         let temp_dir =
             std::env::temp_dir().join(format!("herdr-fake-wayland-xclip-{}", std::process::id()));
         std::fs::create_dir_all(&temp_dir).expect("temp dir should be created");
@@ -1276,7 +1276,7 @@ mod tests {
 
     #[test]
     fn desktop_notification_separates_option_like_titles() {
-        let _guard = env_lock().lock().unwrap();
+        let _guard = env_lock().lock();
         unsafe {
             std::env::remove_var("WAYLAND_DISPLAY");
             std::env::set_var("DISPLAY", ":0");
