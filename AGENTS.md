@@ -136,6 +136,18 @@ Every upstream sync also updates `UPSTREAM_HERDR_VERSION`/`UPSTREAM_HERDR_COMMIT
 (learned 2026-08-13, binding: these three classes caused the recurring merge conflicts in
 today's upstream sync.)
 
+- **Renamed paths in tooling, not just strings.** Upstream tooling hardcodes the `herdr`
+  binary name and the `herdr` config-dir in places a string grep of the diff misses:
+  release workflow asset checks (`bora.exe` vs the installer's staged `herdr.exe` — the
+  Windows install ecosystem keeps `herdr.exe` internally, on purpose), justfile recipes
+  (`target/release/herdr`), perf scripts (`$XDG_CONFIG_HOME/herdr/sessions/...` — the fork
+  writes under `bora/`), and manifest tests asserting upstream asset filenames. After a
+  sync, run the release pipeline end to end (`just pre-release-check` at minimum) before
+  tagging; each of these fails only at release time, never in `just check`. (learned
+  2026-08-19, binding: four such breaks shipped in one sync and each cost a failed release
+  attempt — workflow version check, bench-release-smoke path, perf-smoke socket dir, and
+  the windows asset-name test.)
+
 ## Maintainer Workflow
 
 This section applies only to verified maintainers as defined under Scope and
