@@ -4,6 +4,8 @@ Bora is a fork of [herdr](https://github.com/ogulcancelik/herdr). This changelog
 
 ## Unreleased
 
+## [0.28.0] - 2026-08-20
+
 ### Added
 - Plugin tabs now take their name from the manifest pane `title`, so a `placement = "tab"` plugin pane no longer opens as a bare numeric tab and plugins no longer need a follow-up rename call.
 - Bundled a new `gitui` plugin example (`examples/bora/plugins/gitui`) that opens gitui in its own tab and auto-opens it on `worktree.created` / `worktree.opened`, installable with `bora plugin link`.
