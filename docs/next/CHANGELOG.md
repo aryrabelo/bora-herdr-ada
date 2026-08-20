@@ -4,6 +4,8 @@ Bora is a fork of [herdr](https://github.com/ogulcancelik/herdr). This changelog
 
 ## Unreleased
 
+## [0.29.0] - 2026-08-20
+
 ### Added
 - The chat view's channel list (`prefix+i`) now shows what each channel is worth opening for: pane and agent counts plus the time of the last message, sorted most-recently-active first, with never-messaged rooms dimmed at the bottom. `channel.list` carries the new `last_message_seq`/`last_message_ts` facts; the relative formatting stays in the client.
 
