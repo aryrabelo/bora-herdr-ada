@@ -114,6 +114,14 @@ Notable choices in that file:
 - **Triple-bound actions:** most actions are bound to three chords at once — `prefix+X`, `cmd+X`, and `ctrl+alt+X`. That's deliberate, not redundancy for its own sake: which chord actually reaches bora depends on the terminal and how much of the menu-vs-keybind unbinding from step 4 you've done. `ctrl+alt+X` is the safe fallback that transmits even without a modern keyboard protocol.
 - **`[[keys.command]]` entries** bind chords to plugin actions (`type = "plugin_action"`) or shell commands (`type = "shell"`). Several reference plugins (e.g. a file-viewer, a review pane) or `examples/bora/helix-tab.sh` (a script that opens or focuses a "helix" tab and launches `hx .` in it — requires `bora` on your PATH and `jq` installed). What happens when the target is missing depends on the binding type: `type = "shell"` bindings (`cmd+shift+e`, `prefix+a` in the example) fail **silently** — pressing the chord does nothing, no error. `type = "plugin_action"` bindings (`prefix+f`, `cmd+shift+r`, `prefix+shift+b`) surface a visible **"custom command failed"** toast naming the missing plugin — `src/app/input/navigate.rs`'s `launch_custom_command` catches the `plugin_action_not_found` error from `find_plugin_action` and raises the toast. Delete the entries you don't want, or install what they point to.
 
+**Bundled plugin example — `examples/bora/plugins/gitui`:** a minimal in-repo plugin manifest and script that opens [gitui](https://github.com/gitui-org/gitui) in its own tab. Install it with:
+
+```sh
+bora plugin link examples/bora/plugins/gitui
+```
+
+It needs `gitui` on your `PATH` (e.g. `brew install gitui`). Unlike the config-driven bindings above, its `worktree.created`/`worktree.opened` event hooks auto-open the tab for you whenever a worktree is created or opened — no `[[keys.command]]` entry required, though `toggle`/`open`/`close` actions are also available if you want to bind one.
+
 ## 6. OMP (oh-my-pi) configuration
 
 OMP is the coding-agent harness Ary runs inside bora panes. Its config lives under `~/.omp/agent/`:

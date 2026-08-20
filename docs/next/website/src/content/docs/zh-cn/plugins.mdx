@@ -259,6 +259,9 @@ shell 插件可以从各个环境变量读取常用 id,或解析上下文 JSON �
 临时的缩放覆盖层,关闭时恢复之前的焦点和缩放。`plugin.pane.open` 请求
 可以用 `overlay`、`popup`、`split`、`tab` 或 `zoomed` 覆盖清单的 placement。
 
+`placement = "tab"` 的窗格会打开一个以清单窗格 `title` 命名的新标签页,
+因此插件在打开后不需要重命名标签页。
+
 `placement = "popup"` 会打开一个会话级模态终端弹窗,而不改变平铺布局。
 可以在清单或 open 请求中指定可选的 `width` 和 `height`;省略时默认为终端大小的一半,数字表示外层终端单元格数,`"80%"` 这样的字符串表示终端区域的百分比。
 弹窗会接收包括 Escape 在内的所有终端输入,并在命令退出或发送 `popup.close` 请求时关闭。

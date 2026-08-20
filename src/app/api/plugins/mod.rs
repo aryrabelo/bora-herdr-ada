@@ -1760,6 +1760,75 @@ command = ["sh", "-c", "sleep 1"]
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn plugin_pane_open_tab_sets_custom_name_from_manifest_title() {
+        let event_hub = crate::api::EventHub::default();
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(
+            &crate::config::Config::default(),
+            true,
+            None,
+            api_rx,
+            event_hub,
+        );
+        app.state.workspaces = vec![crate::workspace::Workspace::test_new("plugin-tab-title")];
+        app.state.ensure_test_terminals();
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.mode = crate::app::Mode::Terminal;
+
+        let root = unique_temp_path("plugin-pane-tab-title");
+        write_manifest_content(
+            &root,
+            r#"
+id = "example.tab-title"
+name = "Tab Title Plugin"
+version = "0.1.0"
+min_herdr_version = "0.6.10"
+platforms = ["linux", "macos"]
+
+[[panes]]
+id = "board"
+title = "Plugin Board"
+placement = "tab"
+command = ["sh", "-c", "sleep 1"]
+"#,
+        );
+        link_manifest(&mut app, &root);
+
+        let open = app.handle_api_request(Request {
+            id: "pane-open-tab-title".into(),
+            method: Method::PluginPaneOpen(PluginPaneOpenParams {
+                plugin_id: "example.tab-title".into(),
+                entrypoint: "board".into(),
+                placement: None,
+                width: None,
+                height: None,
+                workspace_id: None,
+                target_pane_id: None,
+                direction: None,
+                cwd: None,
+                focus: true,
+                env: std::collections::HashMap::new(),
+            }),
+        });
+        let ResponseResult::PluginPaneOpened { .. } = response_result(&open) else {
+            panic!("expected plugin pane opened response: {open}");
+        };
+
+        let new_tab = app.state.workspaces[0]
+            .tabs
+            .last()
+            .expect("plugin tab should have been created");
+        assert_eq!(new_tab.custom_name.as_deref(), Some("Plugin Board"));
+
+        for (_, runtime) in app.terminal_runtimes.drain() {
+            runtime.shutdown();
+        }
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn plugin_pane_open_zoomed_split_emits_layout_updated() {
         let event_hub = crate::api::EventHub::default();
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();

@@ -209,6 +209,19 @@ impl App {
             Err(err) => return encode_error(id, "plugin_pane_open_failed", err.to_string()),
         };
         let pane_id = ws.tabs[tab_idx].root_pane;
+        let workspace_id = ws.id.clone();
+        let tab_id = self.public_tab_id(ws_idx, tab_idx).unwrap_or_else(|| {
+            crate::workspace::public_tab_id_for_number(&workspace_id, tab_idx + 1)
+        });
+        if let Some(tab) = self
+            .state
+            .workspaces
+            .get_mut(ws_idx)
+            .and_then(|ws| ws.tabs.get_mut(tab_idx))
+        {
+            tab.set_custom_name(pane.title.clone());
+            crate::logging::tab_renamed(&workspace_id, &tab_id);
+        }
         if params.focus {
             self.state.switch_workspace_tab(ws_idx, tab_idx);
             self.state.mode = crate::app::Mode::Terminal;

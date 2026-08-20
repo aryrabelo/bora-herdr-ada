@@ -1,0 +1,51 @@
+id = "ary.gitui"
+name = "gitui"
+version = "0.1.0"
+# The core fix this plugin relies on: `open_plugin_tab` applies the manifest
+# pane's `title` as the new tab's custom name. On an older bora the tab would
+# open reading a bare index instead of "gitui" (this file has no `[[build]]`
+# step for bora to reject on a version mismatch, so this is advisory, not
+# enforced — see min_herdr_version validation in src/app/api/plugins/manifest.rs).
+min_herdr_version = "0.27.0"
+platforms = ["macos", "linux"]
+description = "Open gitui in its own tab, auto-opened when a worktree is created or opened."
+
+# Installed with `bora plugin link examples/bora/plugins/gitui` — no
+# download/build step, gitui itself is expected on PATH (e.g. via
+# `brew install gitui`).
+[[panes]]
+id = "tab"
+title = "gitui"
+placement = "tab"
+command = ["gitui"]
+
+[[actions]]
+id = "toggle"
+title = "gitui: toggle tab"
+contexts = ["pane", "workspace"]
+command = ["bash", "tab.sh", "toggle"]
+
+[[actions]]
+id = "open"
+title = "gitui: open tab"
+contexts = ["pane", "workspace"]
+command = ["bash", "tab.sh", "open"]
+
+[[actions]]
+id = "close"
+title = "gitui: close tab"
+contexts = ["pane", "workspace"]
+command = ["bash", "tab.sh", "close"]
+
+# Auto-open a gitui tab for the worktree a task lands in — fits a
+# worktree-per-task workflow. Both events fire on the same shape
+# (.data.workspace.workspace_id / .data.workspace.worktree.checkout_path);
+# `created` covers a brand-new worktree, `opened` covers switching into one
+# that already existed.
+[[events]]
+on = "worktree.created"
+command = ["bash", "tab.sh", "auto-open"]
+
+[[events]]
+on = "worktree.opened"
+command = ["bash", "tab.sh", "auto-open"]

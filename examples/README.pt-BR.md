@@ -114,6 +114,14 @@ Escolhas notáveis nesse arquivo:
 - **Ações triplamente vinculadas:** a maioria das ações é vinculada a três chords ao mesmo tempo — `prefix+X`, `cmd+X`, e `ctrl+alt+X`. Isso é deliberado, não redundância por redundância: qual chord de fato chega ao bora depende do terminal e de quanto do unbind menu-vs-keybind do passo 4 você já fez. `ctrl+alt+X` é o fallback seguro que transmite mesmo sem um protocolo de teclado moderno.
 - **Entradas `[[keys.command]]`** vinculam chords a ações de plugin (`type = "plugin_action"`) ou comandos de shell (`type = "shell"`). Várias referenciam plugins (ex.: um visualizador de arquivos, um pane de review) ou `examples/bora/helix-tab.sh` (um script que abre ou foca uma tab "helix" e lança `hx .` nela — precisa do `bora` no seu PATH e do `jq` instalado). O que acontece quando o alvo está faltando depende do tipo do binding: bindings `type = "shell"` (`cmd+shift+e`, `prefix+a` no exemplo) falham **silenciosamente** — apertar o chord não faz nada, sem erro. Bindings `type = "plugin_action"` (`prefix+f`, `cmd+shift+r`, `prefix+shift+b`) mostram um toast visível de **"custom command failed"** nomeando o plugin faltante — o `launch_custom_command` de `src/app/input/navigate.rs` captura o erro `plugin_action_not_found` de `find_plugin_action` e dispara o toast. Apague as entradas que você não quer, ou instale o que elas apontam.
 
+**Exemplo de plugin empacotado — `examples/bora/plugins/gitui`:** um manifesto de plugin mínimo, já no repo, que abre o [gitui](https://github.com/gitui-org/gitui) na própria tab. Instale com:
+
+```sh
+bora plugin link examples/bora/plugins/gitui
+```
+
+Precisa do `gitui` no seu `PATH` (ex.: `brew install gitui`). Diferente dos bindings vindos da config acima, os hooks de evento `worktree.created`/`worktree.opened` abrem a tab automaticamente sempre que um worktree é criado ou aberto — sem precisar de nenhuma entrada `[[keys.command]]`, embora as ações `toggle`/`open`/`close` também estejam disponíveis caso queira vincular uma.
+
 ## 6. Configuração do OMP (oh-my-pi)
 
 OMP é o harness de agente de código que o Ary roda dentro dos panes do bora. A config dele fica em `~/.omp/agent/`:
