@@ -37,11 +37,12 @@ trap 'exit 143' TERM
 mkdir -p "$root/results"
 
 if [[ -z "$baseline" ]]; then
-  baseline_version=$(jq -er '.version' "$repo_root/website/latest.json")
-  baseline="$root/herdr-baseline"
-  curl -fL --retry 3 \
-    "https://github.com/herdrdev/herdr/releases/download/v${baseline_version}/herdr-${platform}-${arch}" \
-    -o "$baseline"
+  # The baseline binary comes from the same manifest the installer and `bora
+  # update` read, so the fork's repo and its `bora-<platform>-<arch>` asset
+  # naming can never drift out of this script again.
+  baseline_url=$(jq -er --arg key "${platform}-${arch}" '.assets[$key]' "$repo_root/website/latest.json")
+  baseline="$root/bora-baseline"
+  curl -fL --retry 3 "$baseline_url" -o "$baseline"
   chmod +x "$baseline"
 else
   baseline=$(cd "$(dirname "$baseline")" && pwd)/$(basename "$baseline")
