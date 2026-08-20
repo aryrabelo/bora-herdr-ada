@@ -4,6 +4,8 @@ Bora is a fork of [herdr](https://github.com/ogulcancelik/herdr). This changelog
 
 ## Unreleased
 
+## [0.30.0] - 2026-08-20
+
 ### Fixed
 - The chat view's channel list is ordered by the last message's timestamp instead of its sequence number. Sequence numbers are monotonic within one channel and mean nothing across channels, so two rooms whose counters happened to agree tied and fell back to the name, ranking a room that had been quiet for two hours above one active minutes ago.
 
