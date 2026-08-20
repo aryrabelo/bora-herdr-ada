@@ -4,6 +4,8 @@ Bora is a fork of [herdr](https://github.com/ogulcancelik/herdr). This changelog
 
 ## Unreleased
 
+## [0.32.0] - 2026-08-20
+
 ### Added
 - Channels now carry an unread count, so a `channel note` — the zero-injection verb — can sit like mail until someone chooses to read it. `bora channel list` run from an agent's pane reports that agent's own unread per room, `bora channel members` reports it per member, and reading a room via `channel history` or `channel tail` catches that member up. The cursor is persisted per member beside the existing roster and scope records.
 - The chat view marks rooms with messages newer than what the window has shown, and ranks them above quiet rooms. This is the window's own view state, not the agents' mailboxes: looking at a room clears its marker for you without touching what any agent still has unread.
