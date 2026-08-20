@@ -3741,7 +3741,14 @@ mod tests {
         }
 
         if let Some(windows) = manifest.assets.get("windows-x86_64") {
-            assert!(windows.url.ends_with("/herdr-windows-x86_64.zip"));
+            // fork: release CI publishes bora-windows-x86_64.zip; upstream-era
+            // entries in older manifests keep the herdr- name.
+            assert!(
+                windows.url.ends_with("/bora-windows-x86_64.zip")
+                    || windows.url.ends_with("/herdr-windows-x86_64.zip"),
+                "unexpected windows asset name: {}",
+                windows.url
+            );
             assert_eq!(
                 manifest.sha256.get("windows-x86_64").map(String::len),
                 Some(64),
@@ -3784,7 +3791,12 @@ mod tests {
             if let Some(windows) = assets.get("windows-x86_64") {
                 let windows: AssetRef = serde_json::from_value(windows.clone())
                     .unwrap_or_else(|_| panic!("invalid Windows asset for release {version}"));
-                assert!(windows.url.ends_with("/herdr-windows-x86_64.zip"));
+                assert!(
+                    windows.url.ends_with("/bora-windows-x86_64.zip")
+                        || windows.url.ends_with("/herdr-windows-x86_64.zip"),
+                    "unexpected windows asset name for release {version}: {}",
+                    windows.url
+                );
                 let checksums = release
                     .get("sha256")
                     .and_then(serde_json::Value::as_object)
