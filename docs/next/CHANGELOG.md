@@ -4,6 +4,14 @@ Bora is a fork of [herdr](https://github.com/ogulcancelik/herdr). This changelog
 
 ## Unreleased
 
+### Synced from herdr
+- Merged upstream herdr through `2c042bb2`, which includes the `v0.8.2` release. The fork's reported identity moves to `v0.8.2[2c042bb2]`.
+- Unix CLI commands exit quietly when a downstream pipe closes instead of panicking with exit 101, and shell-completion output goes through the same path. (herdr #2994, #2996)
+- Busy multi-pane sessions avoid redundant hidden-pane wakeups and full terminal-state formatting in pane-scaled paths, preventing CPU regressions from high-rate background output. (herdr #2550, #2901, #2962)
+- Mouse capture and forwarding survive a live handoff, so a reattached client keeps working mouse input.
+- Claude screen detection gained activity fallbacks, and Windows recognizes the Cursor CLI's bundled node process.
+- Plugin pane working directories stay synchronized with the pane they were opened from. (herdr #2985)
+
 ## [0.30.0] - 2026-08-20
 
 ### Fixed
@@ -203,6 +211,7 @@ Keybinds versionados em `dotfiles-2026/dotfiles/bora/config.toml`.
 - `theme.custom.sidebar_bg` can now give the desktop sidebar its own background without changing built-in theme defaults.
 
 ### Fixed
+
 - Configs containing the retired Herdr-written `ui.agent_panel_scope` setting no longer report it as an unknown key after upgrades. (#2292)
 - `pane query --current` now resolves the calling pane correctly instead of an unrelated one. (#2298, refs #2297)
 - Default mouse reports, including ones split across reads, now parse correctly instead of being dropped. (#2312, refs #2309)

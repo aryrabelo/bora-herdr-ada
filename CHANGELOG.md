@@ -203,6 +203,7 @@ Keybinds versionados em `dotfiles-2026/dotfiles/bora/config.toml`.
 - `theme.custom.sidebar_bg` can now give the desktop sidebar its own background without changing built-in theme defaults.
 
 ### Fixed
+
 - Configs containing the retired Herdr-written `ui.agent_panel_scope` setting no longer report it as an unknown key after upgrades. (#2292)
 - `pane query --current` now resolves the calling pane correctly instead of an unrelated one. (#2298, refs #2297)
 - Default mouse reports, including ones split across reads, now parse correctly instead of being dropped. (#2312, refs #2309)

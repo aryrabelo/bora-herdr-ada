@@ -65,10 +65,14 @@ fn configure_help(command: Command, depth: usize) -> Command {
 
 pub(super) fn print_requested_help(args: &[String]) -> std::io::Result<bool> {
     let mut stdout = std::io::stdout().lock();
-    write_requested_help(args, &mut stdout)
+    write_requested_help(args, &mut stdout, crate::platform::begin_cli_output)
 }
 
-fn write_requested_help(args: &[String], output: &mut impl Write) -> std::io::Result<bool> {
+fn write_requested_help(
+    args: &[String],
+    output: &mut impl Write,
+    before_write: impl FnOnce(),
+) -> std::io::Result<bool> {
     let Some(help_index) = args
         .iter()
         .position(|arg| matches!(arg.as_str(), "--help" | "-h"))
@@ -100,6 +104,7 @@ fn write_requested_help(args: &[String], output: &mut impl Write) -> std::io::Re
     }
 
     selected.set_bin_name(path.join(" "));
+    before_write();
     selected.write_long_help(&mut *output)?;
     writeln!(output)?;
     Ok(true)
@@ -1201,7 +1206,7 @@ mod tests {
                 args.push(flag.to_string());
                 let mut output = Vec::new();
                 assert!(
-                    super::write_requested_help(&args, &mut output).unwrap(),
+                    super::write_requested_help(&args, &mut output, || {}).unwrap(),
                     "help was not handled for bora {} {flag}",
                     path.join(" ")
                 );
@@ -1315,6 +1320,7 @@ mod tests {
                 "--help".to_string(),
             ],
             &mut help,
+            || {},
         )
         .unwrap();
         assert!(String::from_utf8(help)
@@ -1437,7 +1443,7 @@ mod tests {
         args.push("--help".to_string());
         let mut output = Vec::new();
         assert!(
-            super::write_requested_help(&args, &mut output).unwrap(),
+            super::write_requested_help(&args, &mut output, || {}).unwrap(),
             "help was not handled for bora {}",
             path.join(" ")
         );
