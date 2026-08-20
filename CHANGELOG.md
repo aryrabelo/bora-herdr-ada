@@ -4,6 +4,23 @@ Bora is a fork of [herdr](https://github.com/ogulcancelik/herdr). This changelog
 
 ## Unreleased
 
+## [0.31.0] - 2026-08-20
+
+### Added
+- A channel workspace now comes up with two panes: one following the transcript and one plain shell to type `bora channel send` into. The previous single pane was seeded with the transcript follower, which made the room readable but left nowhere to reply from.
+- `bora channel open <name>` focuses a channel's workspace and adds whatever the room is missing. Rooms created before the transcript pane existed stayed a bare shell forever with no way to see their traffic; this repairs them, and is a no-op on a room that is already complete.
+
+### Fixed
+- The Linux clipboard and notification tests called `.unwrap()` on a `parking_lot` mutex guard, which does not return a `Result`, so the Linux CI leg could not compile the crate's tests. The file is Linux-only, so a macOS `just check` never saw it.
+
+### Synced from herdr
+- Merged upstream herdr through `2c042bb2`, which includes the `v0.8.2` release. The fork's reported identity moves to `v0.8.2[2c042bb2]`.
+- Unix CLI commands exit quietly when a downstream pipe closes instead of panicking with exit 101, and shell-completion output goes through the same path. (herdr #2994, #2996)
+- Busy multi-pane sessions avoid redundant hidden-pane wakeups and full terminal-state formatting in pane-scaled paths, preventing CPU regressions from high-rate background output. (herdr #2550, #2901, #2962)
+- Mouse capture and forwarding survive a live handoff, so a reattached client keeps working mouse input.
+- Claude screen detection gained activity fallbacks, and Windows recognizes the Cursor CLI's bundled node process.
+- Plugin pane working directories stay synchronized with the pane they were opened from. (herdr #2985)
+
 ## [0.30.0] - 2026-08-20
 
 ### Fixed

@@ -4,6 +4,8 @@ Bora is a fork of [herdr](https://github.com/ogulcancelik/herdr). This changelog
 
 ## Unreleased
 
+## [0.31.0] - 2026-08-20
+
 ### Added
 - A channel workspace now comes up with two panes: one following the transcript and one plain shell to type `bora channel send` into. The previous single pane was seeded with the transcript follower, which made the room readable but left nowhere to reply from.
 - `bora channel open <name>` focuses a channel's workspace and adds whatever the room is missing. Rooms created before the transcript pane existed stayed a bare shell forever with no way to see their traffic; this repairs them, and is a no-op on a room that is already complete.
