@@ -4,6 +4,9 @@ Bora is a fork of [herdr](https://github.com/ogulcancelik/herdr). This changelog
 
 ## Unreleased
 
+### Changed
+- The sidebar row's ` @nome` agent badge no longer falls back to the detected agent kind (`@omp`, `@pi`) when the pane has no registered `agent rename` name. A tool kind names a tool, not an agent; the badge now shows the pane's addressable id instead (`@w78p1`, the unpunctuated form `bora agent prompt`/`orc channel send` accept), so an unnamed agent is still directly addressable straight from the sidebar. A registered name still wins.
+
 ## [0.24.0] - 2026-08-19
 
 ### Added
