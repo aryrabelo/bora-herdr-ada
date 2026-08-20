@@ -1,22 +1,40 @@
 {
-  "version": "0.30.0",
+  "version": "0.31.0",
   "protocol": 21,
-  "notes": "### Fixed\n- The chat view's channel list is ordered by the last message's timestamp instead of its sequence number. Sequence numbers are monotonic within one channel and mean nothing across channels, so two rooms whose counters happened to agree tied and fell back to the name, ranking a room that had been quiet for two hours above one active minutes ago.",
+  "notes": "### Added\n- A channel workspace now comes up with two panes: one following the transcript and one plain shell to type `bora channel send` into. The previous single pane was seeded with the transcript follower, which made the room readable but left nowhere to reply from.\n- `bora channel open <name>` focuses a channel's workspace and adds whatever the room is missing. Rooms created before the transcript pane existed stayed a bare shell forever with no way to see their traffic; this repairs them, and is a no-op on a room that is already complete.\n\n### Fixed\n- The Linux clipboard and notification tests called `.unwrap()` on a `parking_lot` mutex guard, which does not return a `Result`, so the Linux CI leg could not compile the crate's tests. The file is Linux-only, so a macOS `just check` never saw it.\n\n### Synced from herdr\n- Merged upstream herdr through `2c042bb2`, which includes the `v0.8.2` release. The fork's reported identity moves to `v0.8.2[2c042bb2]`.\n- Unix CLI commands exit quietly when a downstream pipe closes instead of panicking with exit 101, and shell-completion output goes through the same path. (herdr #2994, #2996)\n- Busy multi-pane sessions avoid redundant hidden-pane wakeups and full terminal-state formatting in pane-scaled paths, preventing CPU regressions from high-rate background output. (herdr #2550, #2901, #2962)\n- Mouse capture and forwarding survive a live handoff, so a reattached client keeps working mouse input.\n- Claude screen detection gained activity fallbacks, and Windows recognizes the Cursor CLI's bundled node process.\n- Plugin pane working directories stay synchronized with the pane they were opened from. (herdr #2985)",
   "assets": {
-    "linux-x86_64": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/v0.30.0/bora-linux-x86_64",
-    "linux-aarch64": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/v0.30.0/bora-linux-aarch64",
-    "macos-x86_64": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/v0.30.0/bora-macos-x86_64",
-    "macos-aarch64": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/v0.30.0/bora-macos-aarch64",
-    "windows-x86_64": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/v0.30.0/bora-windows-x86_64.zip"
+    "linux-x86_64": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/v0.31.0/bora-linux-x86_64",
+    "linux-aarch64": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/v0.31.0/bora-linux-aarch64",
+    "macos-x86_64": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/v0.31.0/bora-macos-x86_64",
+    "macos-aarch64": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/v0.31.0/bora-macos-aarch64",
+    "windows-x86_64": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/v0.31.0/bora-windows-x86_64.zip"
   },
   "sha256": {
-    "linux-x86_64": "dd5700ba522747d4d4ffee1e6491a676a82875303269a2d727c596e7cf866adb",
-    "linux-aarch64": "d4d5ba831c164125711c214d95e2119afefa7bea2f7feded6dc6b5e5586d92a8",
-    "macos-x86_64": "7700f1ccfdc1f9efe95eea35d2319a7589973de9af1bb5ea01968ebf3d4189ac",
-    "macos-aarch64": "ccd23e04016cb81eaa5f54f210851bf824ab7d67d211a816b3b800600b403c43",
-    "windows-x86_64": "18df613da446d120896e8c5034c84a627c3c7c962a74db56844d4f87a3739955"
+    "linux-x86_64": "30f5904a4bc525e786878e6e5fa89377c5362dd4d9fc0db83bb8d75122953da9",
+    "linux-aarch64": "bd860172de021a0a55db3344d9c4a9d24d0f15892c68a4caee2d99e352f22fb7",
+    "macos-x86_64": "c9c7c03507335783f9c3ce490c4a4121dcabc6a3ff5bf908165466ed567b3696",
+    "macos-aarch64": "4163f85f26e8497d6e1d704e9848ceed343fbba270536cae9d0e0cdb9cff5a1f",
+    "windows-x86_64": "f9482cd6eb5afff0000df952ceea9e226f2e529bc6cfa513c4861ded2b07af1b"
   },
   "releases": {
+    "0.31.0": {
+      "notes": "### Added\n- A channel workspace now comes up with two panes: one following the transcript and one plain shell to type `bora channel send` into. The previous single pane was seeded with the transcript follower, which made the room readable but left nowhere to reply from.\n- `bora channel open <name>` focuses a channel's workspace and adds whatever the room is missing. Rooms created before the transcript pane existed stayed a bare shell forever with no way to see their traffic; this repairs them, and is a no-op on a room that is already complete.\n\n### Fixed\n- The Linux clipboard and notification tests called `.unwrap()` on a `parking_lot` mutex guard, which does not return a `Result`, so the Linux CI leg could not compile the crate's tests. The file is Linux-only, so a macOS `just check` never saw it.\n\n### Synced from herdr\n- Merged upstream herdr through `2c042bb2`, which includes the `v0.8.2` release. The fork's reported identity moves to `v0.8.2[2c042bb2]`.\n- Unix CLI commands exit quietly when a downstream pipe closes instead of panicking with exit 101, and shell-completion output goes through the same path. (herdr #2994, #2996)\n- Busy multi-pane sessions avoid redundant hidden-pane wakeups and full terminal-state formatting in pane-scaled paths, preventing CPU regressions from high-rate background output. (herdr #2550, #2901, #2962)\n- Mouse capture and forwarding survive a live handoff, so a reattached client keeps working mouse input.\n- Claude screen detection gained activity fallbacks, and Windows recognizes the Cursor CLI's bundled node process.\n- Plugin pane working directories stay synchronized with the pane they were opened from. (herdr #2985)",
+      "protocol": 21,
+      "assets": {
+        "linux-x86_64": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/v0.31.0/bora-linux-x86_64",
+        "linux-aarch64": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/v0.31.0/bora-linux-aarch64",
+        "macos-x86_64": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/v0.31.0/bora-macos-x86_64",
+        "macos-aarch64": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/v0.31.0/bora-macos-aarch64",
+        "windows-x86_64": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/v0.31.0/bora-windows-x86_64.zip"
+      },
+      "sha256": {
+        "linux-x86_64": "30f5904a4bc525e786878e6e5fa89377c5362dd4d9fc0db83bb8d75122953da9",
+        "linux-aarch64": "bd860172de021a0a55db3344d9c4a9d24d0f15892c68a4caee2d99e352f22fb7",
+        "macos-x86_64": "c9c7c03507335783f9c3ce490c4a4121dcabc6a3ff5bf908165466ed567b3696",
+        "macos-aarch64": "4163f85f26e8497d6e1d704e9848ceed343fbba270536cae9d0e0cdb9cff5a1f",
+        "windows-x86_64": "f9482cd6eb5afff0000df952ceea9e226f2e529bc6cfa513c4861ded2b07af1b"
+      }
+    },
     "0.30.0": {
       "notes": "### Fixed\n- The chat view's channel list is ordered by the last message's timestamp instead of its sequence number. Sequence numbers are monotonic within one channel and mean nothing across channels, so two rooms whose counters happened to agree tied and fell back to the name, ranking a room that had been quiet for two hours above one active minutes ago.",
       "protocol": 21,
