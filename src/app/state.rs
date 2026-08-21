@@ -1907,6 +1907,10 @@ pub struct AppState {
     /// Global `[flow]` command template from config.toml. Repos can override
     /// it via `[flow]` in their `.bora.toml`; see `repo_issue_flow_template`.
     pub flow_command_template: Option<String>,
+    /// `[agents.commands]` overrides from config.toml, keyed by canonical
+    /// agent id; `agent start` uses these to pick the executable it types
+    /// into the target pane instead of the built-in canonical one.
+    pub agent_commands: crate::config::AgentsConfig,
     pub collapsed_space_keys: std::collections::HashSet<String>,
     /// Sidebar-only, non-persisted: workspace/group keys temporarily hidden
     /// from the main list, mapped to the instant each hide expires.
@@ -2402,6 +2406,7 @@ impl AppState {
             worktree_remove: None,
             worktree_directory: std::path::PathBuf::from("/tmp/herdr-worktrees"),
             flow_command_template: None,
+            agent_commands: crate::config::AgentsConfig::default(),
             collapsed_space_keys: std::collections::HashSet::new(),
             hidden_space_keys: std::collections::HashMap::new(),
             hidden_section_expanded: false,

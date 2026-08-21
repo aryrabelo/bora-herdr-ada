@@ -739,6 +739,7 @@ impl App {
             worktree_remove: None,
             worktree_directory,
             flow_command_template: config.flow.command.clone(),
+            agent_commands: config.agents.clone(),
             collapsed_space_keys,
             hidden_space_keys: std::collections::HashMap::new(),
             hidden_section_expanded: false,
@@ -2272,6 +2273,10 @@ impl App {
 
         if !invalid_section("flow") {
             self.state.flow_command_template = config.flow.command.clone();
+        }
+
+        if !invalid_section("agents") {
+            self.state.agent_commands = config.agents.clone();
         }
 
         if !invalid_section("theme") {

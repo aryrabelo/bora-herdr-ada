@@ -4,6 +4,9 @@ Bora is a fork of [herdr](https://github.com/ogulcancelik/herdr). This changelog
 
 ## Unreleased
 
+### Added
+- `[agents.commands]` config: per-agent-kind override for the executable `bora agent start` types into the target pane, keyed by canonical agent id (e.g. `omp = "omp-raw"`). Falls back to the built-in canonical executable name for any kind without an override. Useful when an agent's normal command is actually a local shell function or alias (a sandboxing wrapper, for example) and you want `agent start` to bypass it.
+
 ## [0.32.0] - 2026-08-20
 
 ### Added
