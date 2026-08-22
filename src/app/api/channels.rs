@@ -592,7 +592,7 @@ impl App {
                 match &to_pane {
                     Some(target) if target != &sender_pane => vec![target.clone()],
                     Some(_) => Vec::new(),
-                    None => self.channel_agent_member_pane_ids(ws_idx),
+                    None => self.channel_agent_member_pane_ids(ws_idx, &sender_pane),
                 }
             };
             targets
@@ -1292,10 +1292,23 @@ impl App {
 
     /// Public pane ids of the channel's agent-hosting member panes —
     /// workspace panes and joined panes alike — which is the broadcast
-    /// delivery set.
-    fn channel_agent_member_pane_ids(&self, ws_idx: usize) -> Vec<String> {
+    /// delivery set, minus `sender_pane`.
+    ///
+    /// The sender is excluded here rather than at the call site so that
+    /// "who a broadcast reaches" has exactly one definition: a second
+    /// caller cannot reintroduce the echo by forgetting the filter. A
+    /// sender left in its own fan-out is delivered its own message and
+    /// accumulates unread counts for text it wrote itself — measured on
+    /// `#bun-nix`, where `w22:p6` sent and then held six unreads of its
+    /// own sends. Targeted delivery already excluded the sender at the
+    /// `to_pane` match; broadcast was the only path that did not, which is
+    /// why the echo looked like it depended on addressing. `orc` draws the
+    /// same line with `grep -vxF "$nick"` (`bin/orc:722,732`): same channel
+    /// topology, same recipient list.
+    fn channel_agent_member_pane_ids(&self, ws_idx: usize, sender_pane: &str) -> Vec<String> {
         self.channel_member_panes(ws_idx)
             .into_iter()
+            .filter(|member| member.public_id != sender_pane)
             .filter(|member| self.agent_info(member.ws_idx, member.pane_id).is_some())
             .map(|member| member.public_id)
             .collect()
@@ -3708,6 +3721,58 @@ mod tests {
             system_lines_after.len(),
             1,
             "no second protocol system line after a later send"
+        );
+        super::super::test_support::shutdown_test_runtimes(&mut app);
+    }
+
+    /// A broadcast reaches every agent member except its own sender.
+    ///
+    /// Three agent panes join `#eng`; `a` sends. Without the filter in
+    /// `channel_agent_member_pane_ids`, `a` is delivered its own message
+    /// and this test fails on both the length and the membership
+    /// assertion — the failure mode measured on `#bun-nix`, where the
+    /// sender accumulated unreads of its own sends. The receiver check is
+    /// what makes the assertion about delivery rather than bookkeeping: a
+    /// pane id absent from `deliveries` but still written to would pass a
+    /// length-only test.
+    #[tokio::test]
+    async fn broadcast_never_delivers_to_its_own_sender() {
+        let _isolated = IsolatedStateDir::new("broadcast-no-echo");
+        let mut app = test_app();
+        create_channel(&mut app, "eng");
+        let (sender, mut sender_rx) = outside_agent_pane(&mut app, "sender");
+        let (second, _second_rx) = outside_agent_pane(&mut app, "second");
+        let (third, _third_rx) = outside_agent_pane(&mut app, "third");
+        for pane in [&sender, &second, &third] {
+            let joined = join(&mut app, "#eng", pane);
+            assert_eq!(joined["result"]["source"], serde_json::json!("joined"));
+        }
+
+        // Drain the protocol block `join` injects, so a later `try_recv`
+        // can only observe the broadcast itself.
+        while sender_rx.try_recv().is_ok() {}
+
+        let sent = broadcast(&mut app, &sender, "hello");
+        let deliveries = sent["result"]["deliveries"].as_array().unwrap();
+        let reached: Vec<&str> = deliveries
+            .iter()
+            .map(|delivery| delivery["pane_id"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            reached.len(),
+            2,
+            "broadcast reaches the two other members, not the sender: {sent}"
+        );
+        assert!(
+            !reached.contains(&sender.as_str()),
+            "sender must not be in its own fan-out: {reached:?}"
+        );
+        assert!(reached.contains(&second.as_str()), "{reached:?}");
+        assert!(reached.contains(&third.as_str()), "{reached:?}");
+
+        assert!(
+            sender_rx.try_recv().is_err(),
+            "nothing may be written to the sender's own pane"
         );
         super::super::test_support::shutdown_test_runtimes(&mut app);
     }

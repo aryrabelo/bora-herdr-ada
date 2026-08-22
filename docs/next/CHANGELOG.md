@@ -10,6 +10,7 @@ Bora is a fork of [herdr](https://github.com/ogulcancelik/herdr). This changelog
 
 ### Fixed
 - Chat view timestamps printed a stray digit (`16:111` instead of `16:11`), from a format string interpolating the column-gap constant instead of that many spaces.
+- A channel broadcast no longer delivers back to the pane that sent it. The sender was in its own fan-out, so it received its own message and accumulated unread counts for text it wrote itself. Targeted sends (`--to <nick>`) were never affected, which is why the echo looked like it depended on addressing.
 
 ## [0.32.0] - 2026-08-20
 
