@@ -6,6 +6,10 @@ Bora is a fork of [herdr](https://github.com/ogulcancelik/herdr). This changelog
 
 ### Added
 - `[agents.commands]` config: per-agent-kind override for the executable `bora agent start` types into the target pane, keyed by canonical agent id (e.g. `omp = "omp-raw"`). Falls back to the built-in canonical executable name for any kind without an override. Useful when an agent's normal command is actually a local shell function or alias (a sandboxing wrapper, for example) and you want `agent start` to bypass it.
+- Chat view nicks are coloured per sender, deterministically, so a wall of agent traffic is scannable by colour before you read a name. The accent colour stays reserved for the human seat.
+
+### Fixed
+- Chat view timestamps printed a stray digit (`16:111` instead of `16:11`), from a format string interpolating the column-gap constant instead of that many spaces.
 
 ## [0.32.0] - 2026-08-20
 

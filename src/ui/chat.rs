@@ -3,7 +3,7 @@
 
 use ratatui::{
     layout::Rect,
-    style::{Modifier, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::Paragraph,
     Frame,
@@ -429,6 +429,24 @@ fn short_time(ts: &str) -> &str {
     ts.split('T').nth(1).and_then(|t| t.get(0..5)).unwrap_or("")
 }
 
+/// Deterministic per-sender colour, the way every IRC client since the
+/// nineties has done it: same nick, same hue, every session, no state. Makes
+/// a wall of agent traffic scannable — you find your reviewer by colour
+/// before you finish reading the name. `to_human` and `Human` senders are
+/// styled by the caller and never reach this.
+fn sender_color(name: &str, p: &Palette) -> Color {
+    // FNV-1a: tiny, stable across runs and platforms, and unlike `DefaultHasher`
+    // it is specified — a hash that changed between releases would repaint
+    // everyone's nick on upgrade.
+    let mut hash: u32 = 0x811c_9dc5;
+    for byte in name.as_bytes() {
+        hash ^= u32::from(*byte);
+        hash = hash.wrapping_mul(0x0100_0193);
+    }
+    let wheel = [p.mauve, p.green, p.yellow, p.blue, p.teal, p.peach, p.red];
+    wheel[hash as usize % wheel.len()]
+}
+
 /// Wrapped display lines for the message timeline. Shared by render and the
 /// AppState scroll math so both agree on line counts. Styling only — the
 /// wrap math is width-driven, so line counts are style-independent (the
@@ -467,7 +485,9 @@ pub(crate) fn chat_display_lines(
         } else if message.from_kind == ChannelSenderKind::Human {
             Style::default().fg(p.accent).add_modifier(Modifier::BOLD)
         } else {
-            Style::default().add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(sender_color(&message.from_name, p))
+                .add_modifier(Modifier::BOLD)
         };
         for (wrapped_idx, chunk) in wrap_width(&message.text, text_width)
             .into_iter()
@@ -475,7 +495,10 @@ pub(crate) fn chat_display_lines(
         {
             let mut spans = Vec::new();
             if wrapped_idx == 0 {
-                spans.push(Span::raw(format!("{time}{COLUMN_GAP}")));
+                // Literal separator, not `{COLUMN_GAP}` — that formats the
+                // usize and printed a stray "1" after every timestamp
+                // ("16:111" instead of "16:11 ").
+                spans.push(Span::raw(format!("{time}{}", " ".repeat(COLUMN_GAP))));
                 spans.push(Span::styled(sender.clone(), sender_style));
                 spans.push(Span::raw(" "));
             } else {
@@ -573,6 +596,44 @@ mod tests {
     }
 
     #[test]
+    fn timestamp_column_is_time_then_space_not_the_gap_constant() {
+        let mut state = AppState::test_new();
+        state.chat.messages = vec![agent_message("oi")];
+
+        let lines = chat_display_lines(&state.chat, &state.palette, 80);
+        let time = lines[0].spans[0].content.to_string();
+
+        // Regression: this span was `format!("{time}{COLUMN_GAP}")`, which
+        // formats the usize and rendered "15:311" on every single line.
+        assert_eq!(time, "15:31 ");
+        assert!(
+            !time.ends_with(&COLUMN_GAP.to_string()),
+            "the gap constant must never be printed as a digit"
+        );
+    }
+
+    #[test]
+    fn sender_colour_is_stable_and_spreads_across_the_wheel() {
+        let p = crate::app::state::Palette::catppuccin();
+
+        // Same nick, same hue — every session, or the view repaints itself
+        // between restarts and colour stops being a way to find anyone.
+        assert_eq!(sender_color("reviewer", &p), sender_color("reviewer", &p));
+
+        // And the wheel actually spreads: a handful of real pane names must
+        // not all collapse onto one colour, which would pass a stability
+        // test while being useless on screen.
+        let names = ["builder", "reviewer", "scout", "w40:p1", "w42:p1", "omp"];
+        let distinct: std::collections::HashSet<_> =
+            names.iter().map(|n| sender_color(n, &p)).collect();
+        assert!(
+            distinct.len() >= 3,
+            "6 senders collapsed onto {} colour(s)",
+            distinct.len()
+        );
+    }
+
+    #[test]
     fn human_and_agent_senders_render_distinctly() {
         let mut state = AppState::test_new();
         state.chat.messages = vec![
@@ -585,7 +646,16 @@ mod tests {
         assert_eq!(lines.len(), 2, "both messages fit on one line each");
         let agent = sender_span(&lines, 0).style;
         let human = sender_span(&lines, 1).style;
-        assert_eq!(agent.fg, None, "agent sender uses the default text color");
+        assert_eq!(
+            agent.fg,
+            Some(sender_color("builder", &state.palette)),
+            "agent sender carries its own deterministic colour"
+        );
+        assert_ne!(
+            agent.fg,
+            Some(state.palette.accent),
+            "and it is never the accent, which is reserved for the human seat"
+        );
         assert_eq!(
             human.fg,
             Some(state.palette.accent),
