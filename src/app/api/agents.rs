@@ -473,7 +473,7 @@ mod tests {
     use crate::{
         api::schema::{AgentStatus, SuccessResponse},
         app::Mode,
-        config::Config,
+        config::{Config, IsolatedStateDir},
         detect::{Agent, AgentState},
         workspace::Workspace,
     };
@@ -1046,6 +1046,105 @@ mod tests {
                 .any(|(_, e)| e.event == crate::api::schema::EventKind::QueuedPromptDropped),
             "a delivered prompt must never also be reported as dropped"
         );
+    }
+
+    /// The bead's acceptance path end to end: a prompt is deferred, the server
+    /// goes away, a new one comes up, and the message still gets delivered.
+    /// Before `persist::pending_prompts` existed this was the exact failure —
+    /// the sender got a `deferred` receipt and the restart silently ate the
+    /// message, so a receipt that promised eventual delivery was a lie across
+    /// any restart.
+    #[tokio::test]
+    async fn deferred_prompt_survives_a_server_restart_and_delivers() {
+        let _isolated = IsolatedStateDir::new("pending-prompt-restart");
+
+        let (queue_id, saved_workspace_id) = {
+            let mut first = app_with_agent();
+            let pane_id = first.state.workspaces[0].tabs[0].root_pane;
+            let terminal_id = first.state.workspaces[0].tabs[0].panes[&pane_id]
+                .attached_terminal_id
+                .clone();
+            let terminal = first.state.terminals.get_mut(&terminal_id).unwrap();
+            terminal.set_agent_name("reviewer".into());
+            terminal.set_detected_state(Some(Agent::OpenCode), AgentState::Working);
+            let public_pane_id = first.public_pane_id(0, pane_id).unwrap();
+
+            let (_, queue_id) = first.enqueue_pending_agent_prompt(
+                public_pane_id.clone(),
+                AgentPromptParams {
+                    target: public_pane_id,
+                    text: "survives the restart".into(),
+                    wait: None,
+                    from_pane: None,
+                    when_idle: Some(true),
+                    when_idle_timeout_ms: None,
+                    peer_pid: None,
+                    origin_channel: None,
+                },
+            );
+            let workspace_id = first.state.workspaces[0].id.clone();
+            crate::app::api::test_support::shutdown_test_runtimes(&mut first);
+            (queue_id, workspace_id)
+        };
+
+        // The restart. A brand new `App` over the same state directory: it must
+        // rehydrate the queue in its constructor, with no help from the caller.
+        let mut second = app_with_agent();
+        // Restore also restores workspace identity: `reserve_workspace_ids`
+        // exists precisely so a restored workspace keeps the public id its
+        // panes were addressed by. `generate_workspace_id`'s counter is
+        // process-global, so a second `App` in the same test binary would
+        // otherwise mint `w2` and the restored queue — correctly keyed by the
+        // id the sender was given — would have no pane to drain to.
+        second.state.workspaces[0].id = saved_workspace_id;
+        let pane_id = second.state.workspaces[0].tabs[0].root_pane;
+        let public_pane_id = second.public_pane_id(0, pane_id).unwrap();
+        let restored = second
+            .pending_agent_prompts
+            .get(&public_pane_id)
+            .expect("the deferred prompt must come back from disk on boot");
+        assert_eq!(restored.len(), 1);
+        assert_eq!(
+            restored.front().unwrap().params.text,
+            "survives the restart"
+        );
+        assert_eq!(
+            restored.front().unwrap().queue_id,
+            queue_id,
+            "the queue_id on the receipt the sender already holds must survive too"
+        );
+        assert!(
+            second.next_pending_agent_prompt_queue_id > queue_id,
+            "a fresh enqueue must not reuse a restored queue_id: two prompts \
+             sharing one id make their terminal-fate events indistinguishable"
+        );
+
+        // ...and it actually delivers, which is the promise the receipt made.
+        let terminal_id = second.state.workspaces[0].tabs[0].panes[&pane_id]
+            .attached_terminal_id
+            .clone();
+        let terminal = second.state.terminals.get_mut(&terminal_id).unwrap();
+        terminal.set_agent_name("reviewer".into());
+        terminal.set_detected_state(Some(Agent::OpenCode), AgentState::Idle);
+        let (runtime, mut rx) =
+            crate::terminal::TerminalRuntime::test_with_channel_and_scrollback_bytes(
+                80, 24, 0, b"", 1,
+            );
+        runtime.test_process_pty_bytes(b"\x1b[?2004h");
+        second.state.insert_test_runtime(pane_id, runtime);
+
+        second.drain_pending_agent_prompts(&public_pane_id);
+
+        assert_eq!(
+            rx.try_recv().unwrap(),
+            Bytes::from_static(b"\x1b[200~survives the restart\x1b[201~")
+        );
+        assert!(
+            crate::persist::pending_prompts::read_pending_prompts().is_empty(),
+            "a delivered prompt must be gone from disk, or the next restart \
+             would deliver it a second time"
+        );
+        crate::app::api::test_support::shutdown_test_runtimes(&mut second);
     }
 
     #[tokio::test]

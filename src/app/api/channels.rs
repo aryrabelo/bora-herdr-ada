@@ -1646,7 +1646,7 @@ fn is_channel_tail_process(process: &crate::platform::ForegroundProcess, name: &
 mod tests {
     use super::*;
     use crate::api::schema::ChannelDeliveryStatus;
-    use crate::config::ShellModeConfig;
+    use crate::config::{IsolatedStateDir, ShellModeConfig};
 
     fn test_app() -> App {
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -1675,40 +1675,6 @@ mod tests {
     fn skip_protocol(name: &str, pane: &str) {
         channels::mark_protocol_sent(name, pane, CHANNEL_PROTOCOL_VERSION)
             .expect("seeding the protocol record must not fail");
-    }
-
-    struct IsolatedStateDir {
-        _guard: parking_lot::MutexGuard<'static, ()>,
-        old_state: Option<std::ffi::OsString>,
-        dir: std::path::PathBuf,
-    }
-
-    impl IsolatedStateDir {
-        fn new(name: &str) -> Self {
-            let guard = crate::config::test_config_env_lock().lock();
-            let old_state = std::env::var_os("XDG_STATE_HOME");
-            let dir = std::env::temp_dir().join(format!(
-                "bora-channel-handler-test-{name}-{}",
-                std::process::id()
-            ));
-            let _ = std::fs::remove_dir_all(&dir);
-            std::env::set_var("XDG_STATE_HOME", &dir);
-            Self {
-                _guard: guard,
-                old_state,
-                dir,
-            }
-        }
-    }
-
-    impl Drop for IsolatedStateDir {
-        fn drop(&mut self) {
-            match self.old_state.take() {
-                Some(value) => std::env::set_var("XDG_STATE_HOME", value),
-                None => std::env::remove_var("XDG_STATE_HOME"),
-            }
-            let _ = std::fs::remove_dir_all(&self.dir);
-        }
     }
 
     #[tokio::test]

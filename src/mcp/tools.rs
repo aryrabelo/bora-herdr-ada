@@ -29,11 +29,30 @@ const ALLOWLIST: &[(&str, Option<&str>)] = &[
     ("channel.leave", None),
     ("agent.list", None),
     ("agent.prompt", None),
+    // Free bucket: verbs whose params carry no channel `name` and no
+    // `from_pane`, so neither scoping table below applies (each table's
+    // comment says why these stay out).
+    ("agent.start", None),
+    ("agent.read", None),
+    ("agent.wait", None),
+    ("pane.read", None),
+    ("pane.process_info", None),
+    ("pane.wait_for_output", None),
+    ("events.wait", None),
+    ("events.subscribe", None),
+    ("plugin.action.list", None),
+    ("plugin.action.invoke", None),
 ];
 
 /// Channel-scoped tools: their params carry a bare (no leading `#`) channel
 /// `name` field that `--channels` fences before the request reaches the
 /// socket. `channel_list` is scoped separately, by filtering its result.
+/// No free-bucket verb belongs here: `agent_start`'s `name` is the agent's
+/// name, not a channel, and `events_wait`/`events_subscribe` see channels
+/// only nested inside `match_event`/`subscriptions`, which this top-level
+/// `name` fence cannot see into — `events_wait`'s nested channel is fenced
+/// by `fence_events_wait_match_event` inside `dispatch` instead, and
+/// `events_subscribe` has no channel-carrying variant to fence.
 const CHANNEL_NAME_SCOPED_TOOLS: &[&str] = &[
     "channel_members",
     "channel_history",
@@ -46,7 +65,8 @@ const CHANNEL_NAME_SCOPED_TOOLS: &[&str] = &[
 ];
 
 /// Tools whose params struct has a `from_pane` field the CLI would normally
-/// fill from `$HERDR_PANE_ID`. MCP callers get the same default.
+/// fill from `$HERDR_PANE_ID`. MCP callers get the same default. No
+/// free-bucket verb carries `from_pane`, so none belongs here.
 const FROM_PANE_TOOLS: &[&str] = &[
     "channel_send",
     "channel_note",
@@ -226,6 +246,60 @@ fn fill_from_pane(arguments: &mut Value) {
     }
 }
 
+/// Fences the channel nested inside `events_wait`'s `match_event`.
+/// `EventMatch::ChannelMessage` serializes as
+/// `{"event": "channel_message", "channel": "..."}` one level below the
+/// tool's params, where `dispatch`'s top-level `name` fence cannot see it
+/// — yet the event it waits for carries the channel's traffic verbatim, so
+/// without this check `--channels` would be decorative for `events_wait`
+/// while it is enforced for `channel_history`/`channel_tail`. Any other
+/// `match_event` variant carries no channel and passes untouched. Fails
+/// closed: a `channel_message` match whose `channel` is missing or not a
+/// string is rejected here, never allowed through unparsed.
+/// (`events_subscribe` needs no such fence: `Subscription` has no
+/// channel-message variant.)
+///
+/// Takes the whole decision — tool name and fence configuration included —
+/// so the permit cases are testable without `dispatch`. They have to be:
+/// `events.wait` is a long poll, so a test that reaches the socket to prove
+/// the fence permitted a call does not fail fast, it blocks forever against
+/// whatever bora server happens to be running on the machine.
+fn fence_events_wait_match_event(
+    name: &str,
+    arguments: &Value,
+    channels: Option<&Vec<String>>,
+) -> Result<(), DispatchError> {
+    if name != "events_wait" {
+        return Ok(());
+    }
+    let Some(allowed) = channels else {
+        // No `--channels`: the fence is inert, exactly as before it existed.
+        return Ok(());
+    };
+    let Some(match_event) = arguments.get("match_event") else {
+        // `match_event` is required by `EventsWaitParams`; if absent, the
+        // envelope below fails to parse, so nothing reaches the socket.
+        return Ok(());
+    };
+    if match_event.get("event").and_then(Value::as_str) != Some("channel_message") {
+        return Ok(());
+    }
+    match match_event.get("channel").and_then(Value::as_str) {
+        Some(requested) if allowed.iter().any(|c| c == requested) => Ok(()),
+        Some(requested) => Err(DispatchError::Protocol(
+            -32602,
+            format!(
+                "channel '{requested}' is out of scope; allowed channels: {}",
+                allowed.join(", ")
+            ),
+        )),
+        None => Err(DispatchError::Protocol(
+            -32602,
+            "match_event.channel is missing or not a string".into(),
+        )),
+    }
+}
+
 static REQUEST_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 fn next_request_id() -> String {
@@ -273,6 +347,10 @@ pub(crate) fn dispatch(
             }
         }
     }
+
+    // Nested fencing: `events_wait` carries its channel inside
+    // `match_event`, invisible to the top-level `name` fence above.
+    fence_events_wait_match_event(name, &arguments, opts.channels.as_ref())?;
 
     if FROM_PANE_TOOLS.contains(&name) {
         fill_from_pane(&mut arguments);
@@ -348,6 +426,16 @@ mod tests {
             ("channel_leave", "channel.leave"),
             ("agent_list", "agent.list"),
             ("agent_prompt", "agent.prompt"),
+            ("agent_start", "agent.start"),
+            ("agent_read", "agent.read"),
+            ("agent_wait", "agent.wait"),
+            ("pane_read", "pane.read"),
+            ("pane_process_info", "pane.process_info"),
+            ("pane_wait_for_output", "pane.wait_for_output"),
+            ("events_wait", "events.wait"),
+            ("events_subscribe", "events.subscribe"),
+            ("plugin_action_list", "plugin.action.list"),
+            ("plugin_action_invoke", "plugin.action.invoke"),
         ] {
             assert_eq!(
                 index.get(tool).map(String::as_str),
@@ -374,6 +462,86 @@ mod tests {
                 tool["name"]
             );
         }
+    }
+
+    #[test]
+    fn free_bucket_tools_stay_out_of_both_scoping_tables() {
+        // None of these verbs' params carries a top-level channel `name` or a
+        // `from_pane`: `agent_start`'s `name` names the agent to spawn, and
+        // `events_wait`/`events_subscribe` only see channels nested inside
+        // `match_event`/`subscriptions`, which this top-level-`name` fence
+        // cannot see into (`events_wait`'s nested channel is fenced
+        // separately, by `fence_events_wait_match_event`; `Subscription`
+        // carries no channel at all). Adding any of them to
+        // CHANNEL_NAME_SCOPED_TOOLS would reject every legitimate call with
+        // "missing required parameter: name".
+        for tool in [
+            "agent_start",
+            "agent_read",
+            "agent_wait",
+            "pane_read",
+            "pane_process_info",
+            "pane_wait_for_output",
+            "events_wait",
+            "events_subscribe",
+            "plugin_action_list",
+            "plugin_action_invoke",
+        ] {
+            assert!(
+                !CHANNEL_NAME_SCOPED_TOOLS.contains(&tool),
+                "{tool} must not be channel-name fenced"
+            );
+            assert!(
+                !FROM_PANE_TOOLS.contains(&tool),
+                "{tool} has no from_pane param to default"
+            );
+        }
+
+        // The tools whose params DO carry a channel name or `from_pane` must
+        // stay in their scoping table, or `--channels` fencing silently
+        // weakens while the allowlist grows beside it.
+        for tool in [
+            "channel_members",
+            "channel_history",
+            "channel_tail",
+            "channel_send",
+            "channel_note",
+            "channel_ask",
+            "channel_join",
+            "channel_leave",
+        ] {
+            assert!(
+                CHANNEL_NAME_SCOPED_TOOLS.contains(&tool),
+                "{tool} carries a channel name and must stay fenced"
+            );
+        }
+        for tool in [
+            "channel_send",
+            "channel_note",
+            "channel_ask",
+            "agent_prompt",
+        ] {
+            assert!(
+                FROM_PANE_TOOLS.contains(&tool),
+                "{tool} carries from_pane and must keep its default"
+            );
+        }
+    }
+
+    #[test]
+    fn agent_start_name_param_is_not_a_fenced_channel() {
+        // `agent_start`'s `name` is the agent's name, so the `--channels`
+        // fence must not compare it against channel slugs. Asserted against
+        // the table that decides it, NOT by calling `dispatch`: `agent.start`
+        // spawns a process, so a dispatch-level test on a machine with a live
+        // bora server would start a real agent in the developer's session
+        // rather than failing at the socket.
+        assert!(
+            !CHANNEL_NAME_SCOPED_TOOLS.contains(&"agent_start"),
+            "agent_start's `name` is an agent name; fencing it would reject \
+             every legitimate call as an out-of-scope channel"
+        );
+        assert!(ALLOWLIST.iter().any(|(method, _)| *method == "agent.start"));
     }
 
     fn contains_ref(value: &Value) -> bool {
@@ -432,6 +600,110 @@ mod tests {
             &opts(Some(vec!["eng"]), true),
         );
         assert!(matches!(err, Err(DispatchError::Tool(_))));
+    }
+
+    #[test]
+    fn dispatch_rejects_events_wait_on_out_of_scope_channel() {
+        // `events_wait`'s channel rides inside `match_event`, past the
+        // top-level fence; without this check a server scoped to
+        // `--channels eng` could wait on — and read verbatim — any other
+        // channel's traffic.
+        // `timeout_ms` is not needed to pass — the fence returns before the
+        // socket — but it is needed to FAIL FAST when the fence is removed.
+        // Without it, a missing fence turns this test into an indefinite long
+        // poll against whatever bora server is running, i.e. a CI stall
+        // instead of a red test.
+        let err = dispatch(
+            "events_wait",
+            serde_json::json!({
+                "match_event": {"event": "channel_message", "channel": "other"},
+                "timeout_ms": 1,
+            }),
+            &opts(Some(vec!["eng"]), true),
+        );
+        match err {
+            Err(DispatchError::Protocol(-32602, message)) => {
+                assert!(
+                    message.contains("other") && message.contains("eng"),
+                    "message should name requested and allowed channels: {message}"
+                );
+            }
+            _ => panic!("expected a protocol error rejecting the out-of-scope channel"),
+        }
+    }
+
+    /// The permit cases go through the fence function, never `dispatch`:
+    /// `events.wait` is a long poll, so a call that clears the fence with no
+    /// `timeout_ms` blocks on the socket for as long as the server lives
+    /// instead of failing fast — and a developer machine running bora has a
+    /// live server, so such a test hangs the whole suite rather than failing.
+    #[test]
+    fn fence_permits_events_wait_on_an_in_scope_channel() {
+        assert!(fence_events_wait_match_event(
+            "events_wait",
+            &serde_json::json!({"match_event": {"event": "channel_message", "channel": "eng"}}),
+            Some(&vec!["eng".to_string()]),
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn fence_permits_a_non_channel_events_wait_match() {
+        // Fencing must not over-reach: a pane wait carries no channel.
+        assert!(fence_events_wait_match_event(
+            "events_wait",
+            &serde_json::json!({
+                "match_event": {
+                    "event": "pane_agent_status_changed",
+                    "pane_id": "w1:p1",
+                    "agent_status": "blocked",
+                }
+            }),
+            Some(&vec!["eng".to_string()]),
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn fence_is_inert_without_channels_configured() {
+        // `--channels` unset: the fence must not become an unconditional
+        // restriction, so even an out-of-scope channel passes.
+        assert!(fence_events_wait_match_event(
+            "events_wait",
+            &serde_json::json!({"match_event": {"event": "channel_message", "channel": "other"}}),
+            None,
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn fence_ignores_every_tool_but_events_wait() {
+        // The nested shape is `events_wait`-specific; another tool that
+        // happened to carry a `match_event` must not be fenced by it.
+        assert!(fence_events_wait_match_event(
+            "pane_read",
+            &serde_json::json!({"match_event": {"event": "channel_message", "channel": "other"}}),
+            Some(&vec!["eng".to_string()]),
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn dispatch_rejects_events_wait_channel_message_without_a_channel() {
+        // Fails closed: a channel_message match whose channel is missing or
+        // not a string must be rejected at the fence, not passed through
+        // unparsed. Safe at `dispatch` level because it never reaches the
+        // socket.
+        for bad in [
+            serde_json::json!({"match_event": {"event": "channel_message"}}),
+            serde_json::json!({"match_event": {"event": "channel_message", "channel": 7}}),
+        ] {
+            let err = dispatch("events_wait", bad, &opts(Some(vec!["eng"]), true));
+            assert!(
+                matches!(err, Err(DispatchError::Protocol(-32602, _))),
+                "channel_message without a usable channel must fail closed"
+            );
+        }
     }
 
     #[test]

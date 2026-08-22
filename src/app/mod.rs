@@ -1036,7 +1036,73 @@ impl App {
         };
         app.configure_tab_bar_status(&config.ui.tab_bar_right, &config.ui.tab_bar_right_separator);
         app.configure_window_title(&config.ui.window_title);
+        app.load_pending_agent_prompts();
         app
+    }
+
+    /// Rehydrates `pending_agent_prompts` from
+    /// `persist::pending_prompts`. Without this the `deferred` receipt was a
+    /// promise the server broke on every restart: the queue was memory-only,
+    /// so a restart silently dropped messages a sender had been told were
+    /// queued for delivery.
+    ///
+    /// `enqueued_at` is stamped now, not restored: it is an `Instant`, and the
+    /// only thing it gates is the drain settle window, which should start when
+    /// this process began watching the target. `next_pending_agent_prompt_queue_id`
+    /// is advanced past every loaded id so a fresh entry can never collide with a
+    /// restored one — a duplicate `queue_id` would make two prompts'
+    /// terminal-fate events indistinguishable to the sender that is correlating
+    /// them.
+    fn load_pending_agent_prompts(&mut self) {
+        let records = crate::persist::pending_prompts::read_pending_prompts();
+        if records.is_empty() {
+            return;
+        }
+        let now = Instant::now();
+        let mut highest_queue_id = 0;
+        for record in records {
+            highest_queue_id = highest_queue_id.max(record.queue_id);
+            self.pending_agent_prompts
+                .entry(record.target)
+                .or_default()
+                .push_back(PendingAgentPrompt {
+                    queue_id: record.queue_id,
+                    params: record.params,
+                    enqueued_at: now,
+                });
+        }
+        self.next_pending_agent_prompt_queue_id = self
+            .next_pending_agent_prompt_queue_id
+            .max(highest_queue_id + 1);
+        tracing::info!(
+            targets = self.pending_agent_prompts.len(),
+            "restored deferred agent prompts"
+        );
+    }
+
+    /// Mirrors `pending_agent_prompts` to disk. Called after every mutation of
+    /// the map — enqueue, cap eviction, drain, pane-close drop — so the stored
+    /// queue is never a stale superset that would replay an already-delivered
+    /// prompt after a restart. A write failure is logged, never propagated:
+    /// losing durability is strictly better than failing the delivery that was
+    /// already accepted.
+    pub(crate) fn persist_pending_agent_prompts(&self) {
+        let records: Vec<crate::persist::pending_prompts::PendingPromptRecord> = self
+            .pending_agent_prompts
+            .iter()
+            .flat_map(|(target, queue)| {
+                queue.iter().map(move |pending| {
+                    crate::persist::pending_prompts::PendingPromptRecord {
+                        target: target.clone(),
+                        queue_id: pending.queue_id,
+                        params: pending.params.clone(),
+                    }
+                })
+            })
+            .collect();
+        if let Err(err) = crate::persist::pending_prompts::write_pending_prompts(&records) {
+            tracing::warn!(error = %err, "failed to persist deferred agent prompts");
+        }
     }
 
     /// Checks and records an `agent.prompt` call from `from_pane` to
@@ -1115,7 +1181,9 @@ impl App {
             params,
             enqueued_at: Instant::now(),
         });
-        (queue.len(), queue_id)
+        let depth = queue.len();
+        self.persist_pending_agent_prompts();
+        (depth, queue_id)
     }
 
     fn next_pending_agent_prompt_queue_id(&mut self) -> u64 {
@@ -1138,6 +1206,11 @@ impl App {
         let Some(queue) = self.pending_agent_prompts.remove(target_pane) else {
             return;
         };
+        // Persist the removal BEFORE replaying: a crash mid-drain must not
+        // leave a stored queue that redelivers prompts already written to the
+        // pane. A re-queue (target flipped busy again) goes back through
+        // `enqueue_pending_agent_prompt`, which persists on its own.
+        self.persist_pending_agent_prompts();
         for pending in queue {
             let queue_id = pending.queue_id;
             let from_pane = pending.params.from_pane.clone();
@@ -1250,6 +1323,7 @@ impl App {
         let Some(queue) = self.pending_agent_prompts.remove(target_pane) else {
             return;
         };
+        self.persist_pending_agent_prompts();
         for pending in queue {
             tracing::warn!(
                 target = %target_pane,

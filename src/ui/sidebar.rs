@@ -2025,12 +2025,13 @@ fn render_workspace_list(
                             Span::styled(name.clone(), name_style),
                         ]
                     };
+                    // The branch label span is inserted just before render
+                    // (below) so it can be truncated to the width that
+                    // actually remains after the row's chrome.
+                    let mut branch_label_idx = None;
                     if let Some(b) = branch {
                         spans.push(Span::styled(" ", Style::default()));
-                        spans.push(Span::styled(
-                            format!("[{}]", b.label),
-                            Style::default().fg(p.overlay1),
-                        ));
+                        branch_label_idx = Some(spans.len());
                         if b.ahead > 0 {
                             spans.push(Span::styled(" ", Style::default()));
                             spans.push(Span::styled(
@@ -2086,6 +2087,25 @@ fn render_workspace_list(
                                 Style::default().fg(idle_age_color(Some(age), p)),
                             ));
                         }
+                    }
+                    if let (Some(idx), Some(b)) = (branch_label_idx, branch.as_ref()) {
+                        // Truncate the branch label to the width left after
+                        // the row's fixed chrome (rail, name, ahead/behind,
+                        // PR badge, collapse dot) — the same display_width
+                        // budget the Workspace arm uses for workspace names.
+                        // The +2 is the `[` `]` around the label.
+                        let used: usize = spans
+                            .iter()
+                            .map(|s| display_width(s.content.as_ref()))
+                            .sum();
+                        let avail = (body.width as usize).saturating_sub(used + 2);
+                        spans.insert(
+                            idx,
+                            Span::styled(
+                                format!("[{}]", truncate_end(&b.label, avail)),
+                                Style::default().fg(p.overlay1),
+                            ),
+                        );
                     }
                     frame.render_widget(
                         Paragraph::new(Line::from(spans)),
@@ -2172,7 +2192,9 @@ fn render_workspace_list(
                             spans.push(Span::styled(" ", Style::default()));
                         }
                     }
-                    spans.push(Span::styled(label.clone(), name_style));
+                    // The label span is inserted just before render (below)
+                    // so it can be truncated to the width that remains.
+                    let label_span_idx = spans.len();
                     if *ahead > 0 {
                         spans.push(Span::styled(" ", Style::default()));
                         spans.push(Span::styled(
@@ -2222,6 +2244,19 @@ fn render_workspace_list(
                             }
                         }
                     }
+                    // Truncate the branch label to the width left after the
+                    // row's fixed chrome (connector, tab dots, ahead/behind,
+                    // idle age or PR badge) — the same display_width budget
+                    // the Workspace arm uses for workspace names.
+                    let used: usize = spans
+                        .iter()
+                        .map(|s| display_width(s.content.as_ref()))
+                        .sum();
+                    let avail = (body.width as usize).saturating_sub(used);
+                    spans.insert(
+                        label_span_idx,
+                        Span::styled(truncate_end(label, avail), name_style),
+                    );
                     frame.render_widget(
                         Paragraph::new(Line::from(spans)),
                         Rect::new(body.x, row_y, body.width, 1),
@@ -3831,6 +3866,81 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
             .collect::<String>();
 
         assert!(text.contains("#42"), "PR badge present: {text:?}");
+    }
+
+    #[test]
+    fn project_header_branch_label_truncates_with_explicit_ellipsis() {
+        // The branch folded into a project header must truncate to an
+        // explicit `…` sized to the row's chrome, never be hard-clipped.
+        // Budget: width - ("╭─" + "herdr" + gap + brackets) = width - 10.
+        let mut app = AppState::test_new();
+        app.mouse_capture = false;
+        app.active = None;
+        let mut ws = git_space_member("main", "key-main", false);
+        ws.cached_git_branch = Some("feature/branch-name-longer-than-sidebar".into());
+        app.workspaces = vec![ws];
+        app.mode = Mode::Terminal;
+
+        let runtimes = crate::terminal::TerminalRuntimeRegistry::new();
+        for (width, expected) in [
+            (20u16, "╭─herdr [feature/b…]"),
+            (30u16, "╭─herdr [feature/branch-name…]"),
+            (40u16, "╭─herdr [feature/branch-name-longer-th…]"),
+        ] {
+            let mut terminal = Terminal::new(TestBackend::new(width, 20)).expect("test terminal");
+            terminal
+                .draw(|frame| {
+                    render_workspace_list(&app, &runtimes, frame, Rect::new(0, 0, width, 20), false)
+                })
+                .expect("workspace list should render");
+            assert_eq!(
+                row_text(terminal.backend().buffer(), 2, width),
+                expected,
+                "project header row at {width} cols"
+            );
+        }
+    }
+
+    #[test]
+    fn branch_header_label_truncates_with_explicit_ellipsis() {
+        // A branch sub-header must truncate its label to an explicit `…`
+        // sized to the row's chrome, never be hard-clipped.
+        // Budget: width - ("├── " connector) = width - 4.
+        let mut app = AppState::test_new();
+        app.mouse_capture = false;
+        app.active = None;
+        let identity = "github.com/owner/resume-builder";
+        let mut first = git_space_member("main", "key-main", false);
+        first.cached_git_branch = Some("first".into());
+        let long = "feature/branch-name-longer-than-sidebar";
+        let mut zebra = git_space_member("zebra", "key-zebra", false);
+        zebra.cached_git_branch = Some(long.into());
+        let mut yak = git_space_member("yak", "key-yak", false);
+        yak.cached_git_branch = Some(long.into());
+        for ws in [&mut first, &mut zebra, &mut yak] {
+            ws.cached_git_space.as_mut().unwrap().repo_identity = identity.into();
+        }
+        app.workspaces = vec![first, zebra, yak];
+        app.mode = Mode::Terminal;
+
+        let runtimes = crate::terminal::TerminalRuntimeRegistry::new();
+        for (width, expected) in [
+            (20u16, "├── feature/branch-…"),
+            (30u16, "├── feature/branch-name-longe…"),
+            (40u16, "├── feature/branch-name-longer-than-sid…"),
+        ] {
+            let mut terminal = Terminal::new(TestBackend::new(width, 20)).expect("test terminal");
+            terminal
+                .draw(|frame| {
+                    render_workspace_list(&app, &runtimes, frame, Rect::new(0, 0, width, 20), false)
+                })
+                .expect("workspace list should render");
+            assert_eq!(
+                row_text(terminal.backend().buffer(), 4, width),
+                expected,
+                "branch header row at {width} cols"
+            );
+        }
     }
 
     fn workspace_with_worktree_space(

@@ -40,6 +40,9 @@ pub use self::{
 // sidebar token renderer, so these re-exports are unused outside config-parsing
 // tests. Kept for schema/API completeness.
 pub(crate) use self::keybinds::parse_key_combo;
+
+#[cfg(test)]
+pub(crate) use self::io::IsolatedStateDir;
 #[allow(unused_imports)]
 pub use self::sidebar::{SidebarTokenStyle, SpaceSidebarToken};
 pub(crate) use self::{

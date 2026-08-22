@@ -6,7 +6,14 @@ use ratatui::{
 };
 
 mod chat;
-pub(crate) use self::chat::{agent_status_label, chat_display_line_count};
+pub(crate) use self::chat::{
+    agent_status_label, chat_display_line_count, chat_message_index_at_line,
+};
+// Only the input-layer tests assert against the clamp constant; the render
+// path reads it from `chat` directly, so a plain re-export is dead code in a
+// non-test build.
+#[cfg(test)]
+pub(crate) use self::chat::MAX_MESSAGE_LINES;
 mod dialogs;
 mod keybind_help;
 mod menus;

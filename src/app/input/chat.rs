@@ -246,6 +246,9 @@ impl App {
             return;
         }
         self.state.chat.selected = idx;
+        // The new room's message list is about to replace this one; an
+        // expansion index from the old room would land on a stranger.
+        self.state.chat.expanded_message = None;
         self.refresh_chat_channel_data();
     }
 
@@ -472,8 +475,9 @@ impl App {
     }
 
     /// Left-click inside the chat overlay. An open prompt is modal, so it
-    /// consumes clicks first; then the members column affordances, then the
-    /// channel list, then a click outside the popup closes the view.
+    /// consumes clicks first; then the members column affordances, then a
+    /// timeline row (toggles that message's expansion), then the channel
+    /// list, then a click outside the popup closes the view.
     pub(crate) fn handle_chat_click(&mut self, col: u16, row: u16) {
         if self.state.chat.prompt.is_some() {
             if let Some(idx) = self.state.chat_prompt_candidate_at(col, row) {
@@ -483,11 +487,18 @@ impl App {
             }
             return;
         }
-        match self.state.chat_members_hit_at(col, row) {
-            Some(ChatMembersHit::AddAgent) => return self.open_chat_add_member(),
-            Some(ChatMembersHit::Remove(idx)) => return self.remove_chat_member(idx),
-            Some(ChatMembersHit::Mention(idx)) => return self.mention_chat_member(idx),
-            None => {}
+        if let Some(idx) = self.state.chat_members_hit_at(col, row) {
+            match idx {
+                ChatMembersHit::AddAgent => return self.open_chat_add_member(),
+                ChatMembersHit::Remove(idx) => return self.remove_chat_member(idx),
+                ChatMembersHit::Mention(idx) => return self.mention_chat_member(idx),
+            }
+        }
+        // A click in the message body toggles that message's expansion —
+        // the timeline's counterpart to the sidebar's row click, and the
+        // only way to read a message the clamp collapsed.
+        if let Some(idx) = self.state.chat_message_hit_at(col, row) {
+            return self.state.toggle_chat_message_expansion(idx);
         }
         if self.state.chat_new_channel_hit(col, row) {
             return self.open_new_channel_prompt();
@@ -665,6 +676,9 @@ impl AppState {
         self.chat.input.clear();
         self.chat.status = None;
         self.chat.prompt = None;
+        // A fresh room means any expansion index from the previous room is
+        // stale — it points into a different message list now.
+        self.chat.expanded_message = None;
         self.mode = Mode::Chat;
     }
 
@@ -710,6 +724,41 @@ impl AppState {
 
     pub(crate) fn reset_chat_scroll_to_bottom(&mut self) {
         self.chat.scroll = self.chat_max_scroll();
+    }
+
+    /// Toggle full-render (no clamp) for one timeline message. The timeline
+    /// is variable-height layout: expanding or collapsing a message reflows
+    /// the messages column while the outer terminal size is unchanged, so
+    /// this must request a full repaint — a plain re-render would run the
+    /// encoder's diff path against already-reflowed content and desync the
+    /// physical terminal (AGENTS.md layout rule, 2026-08-13).
+    pub(crate) fn toggle_chat_message_expansion(&mut self, idx: usize) {
+        if idx >= self.chat.messages.len() {
+            return;
+        }
+        self.chat.expanded_message = if self.chat.expanded_message == Some(idx) {
+            None
+        } else {
+            Some(idx)
+        };
+        self.request_full_repaint();
+        // The total line count changed; the old scroll offset may now point
+        // past the end.
+        self.chat.scroll = self.chat.scroll.min(self.chat_max_scroll());
+    }
+
+    /// Message a left-click in the timeline body landed on, if any. Maps the
+    /// clicked row (viewport row + scroll offset) back to its owning message
+    /// through the same wrap render uses, so a click lands on exactly the
+    /// message the human saw — including on a collapsed message's `… +N`
+    /// marker row, which expands the message it summarizes.
+    pub(crate) fn chat_message_hit_at(&self, col: u16, row: u16) -> Option<usize> {
+        let area = self.chat_messages_rect();
+        if !rect_contains(area, col, row) {
+            return None;
+        }
+        let line = self.chat.scroll + (row - area.y) as usize;
+        crate::ui::chat_message_index_at_line(&self.chat, self.chat_messages_width(), line)
     }
 
     /// Live-update hook called by the channel send path after a successful
@@ -927,6 +976,7 @@ impl AppState {
 mod tests {
     use super::*;
     use crate::api::schema::{ChannelMessage, ChannelSenderKind, ChannelSummary};
+    use crate::config::IsolatedStateDir;
 
     fn channel(name: &str) -> ChannelSummary {
         ChannelSummary {
@@ -1684,38 +1734,104 @@ mod tests {
         );
     }
 
-    /// Isolates the channel roster/transcript files this test writes, so a
-    /// join never touches the developer's real state directory.
-    struct IsolatedStateDir {
-        _guard: parking_lot::MutexGuard<'static, ()>,
-        previous: Option<std::ffi::OsString>,
-        dir: std::path::PathBuf,
+    /// ~2k characters of words that wrap far past the clamp at the width
+    /// the mouse-test geometry gives the timeline.
+    fn long_message_text() -> String {
+        let words = [
+            "lorem",
+            "ipsum",
+            "dolor",
+            "sit",
+            "amet",
+            "consectetur",
+            "adipiscing",
+            "elit",
+            "sed",
+            "do",
+            "eiusmod",
+            "tempor",
+            "incididunt",
+            "ut",
+            "labore",
+            "et",
+            "dolore",
+            "magna",
+            "aliqua",
+        ];
+        let mut text = String::new();
+        let mut i = 0usize;
+        while text.len() < 2000 {
+            text.push_str(words[i % words.len()]);
+            text.push(' ');
+            i += 1;
+        }
+        text
     }
 
-    impl IsolatedStateDir {
-        fn new(name: &str) -> Self {
-            let guard = crate::config::test_config_env_lock().lock();
-            let previous = std::env::var_os("XDG_STATE_HOME");
-            let dir = std::env::temp_dir()
-                .join(format!("bora-chat-members-{name}-{}", std::process::id()));
-            let _ = std::fs::remove_dir_all(&dir);
-            std::env::set_var("XDG_STATE_HOME", &dir);
-            Self {
-                _guard: guard,
-                previous,
-                dir,
-            }
-        }
+    /// The mouse-test app with the chat view open over an 80x24 terminal
+    /// and one overflowing message in the timeline, collapsed. Returns the
+    /// app and the messages-column rect.
+    fn chat_app_with_overflowing_message() -> (App, ratatui::layout::Rect) {
+        let mut app = super::super::app_for_mouse_test();
+        app.state.view.sidebar_rect = ratatui::layout::Rect::new(0, 0, 26, 24);
+        app.state.view.terminal_area = ratatui::layout::Rect::new(0, 0, 80, 24);
+        app.state.open_chat_view();
+        app.state.chat.scroll = 0;
+        app.state.chat.messages = vec![message(&long_message_text())];
+        let area = app.state.chat_messages_rect();
+        assert!(
+            area.width > 0 && area.height > 0,
+            "timeline geometry exists"
+        );
+        let clamped = crate::ui::chat_display_line_count(&app.state.chat, area.width);
+        assert_eq!(
+            clamped,
+            crate::ui::MAX_MESSAGE_LINES + 1,
+            "precondition: the message is collapsed to the clamp + marker"
+        );
+        (app, area)
     }
 
-    impl Drop for IsolatedStateDir {
-        fn drop(&mut self) {
-            match self.previous.take() {
-                Some(value) => std::env::set_var("XDG_STATE_HOME", value),
-                None => std::env::remove_var("XDG_STATE_HOME"),
-            }
-            let _ = std::fs::remove_dir_all(&self.dir);
-        }
+    #[test]
+    fn clicking_a_collapsed_message_expands_it_and_requests_a_full_repaint() {
+        let (mut app, area) = chat_app_with_overflowing_message();
+
+        // Click the marker row (last display line of the message).
+        let marker_row = area.y + crate::ui::MAX_MESSAGE_LINES as u16;
+        app.handle_chat_click(area.x + 10, marker_row);
+
+        assert_eq!(
+            app.state.chat.expanded_message,
+            Some(0),
+            "the clicked message is now the expanded one"
+        );
+        assert!(
+            app.state.force_full_repaint,
+            "expansion reflows the timeline: a diff-only repaint would desync the terminal"
+        );
+        // And the full text is on screen now: every wrapped line, no marker.
+        let expanded = crate::ui::chat_display_line_count(&app.state.chat, area.width);
+        assert!(
+            expanded > crate::ui::MAX_MESSAGE_LINES + 1,
+            "expansion shows the whole message, not the clamp"
+        );
+
+        // Clicking again collapses back, with the same repaint contract.
+        app.state.force_full_repaint = false;
+        app.handle_chat_click(area.x + 10, marker_row);
+        assert_eq!(app.state.chat.expanded_message, None);
+        assert!(app.state.force_full_repaint, "collapse reflows too");
+    }
+
+    #[test]
+    fn toggling_expansion_out_of_range_is_a_no_op() {
+        let mut state = AppState::test_new();
+        state.open_chat_view();
+        state.chat.messages = vec![message("short")];
+
+        state.toggle_chat_message_expansion(7);
+
+        assert_eq!(state.chat.expanded_message, None, "no message 7 exists");
     }
 
     /// `#eng` plus a named agent pane in a *different* workspace — the case

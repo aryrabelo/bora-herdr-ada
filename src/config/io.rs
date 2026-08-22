@@ -54,7 +54,89 @@ pub fn state_dir() -> PathBuf {
     if let Ok(dir) = std::env::var("XDG_STATE_HOME") {
         return PathBuf::from(dir).join(app_dir_name());
     }
-    platform_state_dir()
+    #[cfg(test)]
+    {
+        test_default_state_dir()
+    }
+    #[cfg(not(test))]
+    {
+        platform_state_dir()
+    }
+}
+
+/// Per-process temp fallback so a unit test that reaches a `state_dir()`
+/// write never touches the developer's real state directory.
+///
+/// This is a harness-level default, not a per-test guard, because the hazard
+/// is not per-test: any code path that persists under `state_dir()` — the
+/// deferred agent-prompt queue, the plugin registry, channel transcripts —
+/// leaks from any test that reaches it, including ones added later that never
+/// heard of the rule. Setting `XDG_STATE_HOME` from inside individual tests is
+/// strictly worse: the variable is process-global, so a test that sets it
+/// mutates what every concurrently running test reads. That is not
+/// theoretical — widening those per-test guards to the prompt-queue tests made
+/// `startup_hooks_run_once_with_plugin_environment` fail in a full run while
+/// passing alone.
+///
+/// Tests that need their own isolated directory, separate from every other
+/// test in the process, use the `IsolatedStateDir` guard below, which sets
+/// `XDG_STATE_HOME` explicitly while holding `test_config_env_lock`. The
+/// branch above honours that and takes precedence over this fallback.
+#[cfg(test)]
+fn test_default_state_dir() -> PathBuf {
+    std::env::temp_dir()
+        .join(format!("bora-test-state-{}", std::process::id()))
+        .join(app_dir_name())
+}
+
+/// Test-only guard that points `state_dir()` at a fresh temp directory for the
+/// duration of one test, and restores the previous `XDG_STATE_HOME` on drop.
+///
+/// Needed on top of `test_default_state_dir` because that fallback is
+/// per-*process*: every test in the binary shares it, so a test that writes
+/// under `state_dir()` is visible to every other test that reads there. A
+/// channel roster, a transcript, or the deferred-prompt queue left behind by
+/// one test would then be loaded by the next `App::new`.
+///
+/// `XDG_STATE_HOME` is process-global, so setting it is only safe while
+/// holding `test_config_env_lock` — the guard holds it for its whole
+/// lifetime, which serializes the tests that need isolation against each
+/// other and against every other config-env mutation.
+///
+/// `prefix` only names the temp directory; make it descriptive enough to
+/// identify the owning test if one leaks a directory on a hard abort.
+#[cfg(test)]
+pub(crate) struct IsolatedStateDir {
+    _guard: parking_lot::MutexGuard<'static, ()>,
+    previous: Option<std::ffi::OsString>,
+    dir: PathBuf,
+}
+
+#[cfg(test)]
+impl IsolatedStateDir {
+    pub(crate) fn new(prefix: &str) -> Self {
+        let guard = crate::config::test_config_env_lock().lock();
+        let previous = std::env::var_os("XDG_STATE_HOME");
+        let dir = std::env::temp_dir().join(format!("bora-{prefix}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::env::set_var("XDG_STATE_HOME", &dir);
+        Self {
+            _guard: guard,
+            previous,
+            dir,
+        }
+    }
+}
+
+#[cfg(test)]
+impl Drop for IsolatedStateDir {
+    fn drop(&mut self) {
+        match self.previous.take() {
+            Some(value) => std::env::set_var("XDG_STATE_HOME", value),
+            None => std::env::remove_var("XDG_STATE_HOME"),
+        }
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
 }
 
 #[cfg(windows)]
@@ -83,7 +165,7 @@ fn platform_config_dir() -> PathBuf {
     }
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, not(test)))]
 fn platform_state_dir() -> PathBuf {
     if let Ok(dir) = std::env::var("LOCALAPPDATA") {
         return PathBuf::from(dir).join(app_dir_name());
@@ -100,7 +182,7 @@ fn platform_state_dir() -> PathBuf {
     std::env::temp_dir().join(format!("{}-state", app_dir_name()))
 }
 
-#[cfg(not(windows))]
+#[cfg(all(not(windows), not(test)))]
 fn platform_state_dir() -> PathBuf {
     if let Ok(home) = std::env::var("HOME") {
         PathBuf::from(home).join(format!(".local/state/{}", app_dir_name()))

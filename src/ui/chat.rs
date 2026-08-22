@@ -447,6 +447,13 @@ fn sender_color(name: &str, p: &Palette) -> Color {
     wheel[hash as usize % wheel.len()]
 }
 
+/// Max timeline rows one message may occupy before it collapses. A
+/// ~2k-character agent post wraps to ~30 rows at typical widths and buries
+/// the rest of the room; 8 rows reads about a paragraph of context while
+/// leaving the timeline usable for everyone else. The one expanded message
+/// renders in full (twitch-tui-style explicit `… +N lines` marker).
+pub(crate) const MAX_MESSAGE_LINES: usize = 8;
+
 /// Wrapped display lines for the message timeline. Shared by render and the
 /// AppState scroll math so both agree on line counts. Styling only — the
 /// wrap math is width-driven, so line counts are style-independent (the
@@ -462,12 +469,45 @@ pub(crate) fn chat_display_lines(
     p: &Palette,
     width: u16,
 ) -> Vec<Line<'static>> {
+    chat_display_lines_indexed(chat, p, width)
+        .into_iter()
+        .map(|(_, line)| line)
+        .collect()
+}
+
+pub(crate) fn chat_display_line_count(chat: &ChatViewState, width: u16) -> usize {
+    chat_display_lines_indexed(chat, &Palette::catppuccin(), width).len()
+}
+
+/// Which message a wrapped display line belongs to — the input layer's
+/// click-to-expand must land on the same message render drew. A collapsed
+/// message's `… +N lines` marker maps to that message, so clicking the
+/// marker expands it too.
+pub(crate) fn chat_message_index_at_line(
+    chat: &ChatViewState,
+    width: u16,
+    line: usize,
+) -> Option<usize> {
+    chat_display_lines_indexed(chat, &Palette::catppuccin(), width)
+        .get(line)
+        .map(|(idx, _)| *idx)
+}
+
+/// `chat_display_lines` with each line tagged by its owning message index.
+/// Render, scroll math, and hit-testing all run through this one function,
+/// so the three can never disagree about where a message starts or how
+/// tall the timeline is.
+fn chat_display_lines_indexed(
+    chat: &ChatViewState,
+    p: &Palette,
+    width: u16,
+) -> Vec<(usize, Line<'static>)> {
     let width = width.max(1) as usize;
     let text_width = width
         .saturating_sub(TIME_WIDTH + SENDER_WIDTH + COLUMN_GAP * 2)
         .max(1);
     let mut lines = Vec::new();
-    for message in &chat.messages {
+    for (message_idx, message) in chat.messages.iter().enumerate() {
         let time = short_time(&message.ts);
         let mut sender = middle_elide(&message.from_name, SENDER_WIDTH);
         if message.to_pane.is_some() {
@@ -489,10 +529,11 @@ pub(crate) fn chat_display_lines(
                 .fg(sender_color(&message.from_name, p))
                 .add_modifier(Modifier::BOLD)
         };
-        for (wrapped_idx, chunk) in wrap_width(&message.text, text_width)
-            .into_iter()
-            .enumerate()
-        {
+        let wrapped = wrap_width(&message.text, text_width);
+        let total = wrapped.len();
+        let expanded = chat.expanded_message == Some(message_idx);
+        let shown = if expanded { total } else { MAX_MESSAGE_LINES };
+        for (wrapped_idx, chunk) in wrapped.into_iter().take(shown).enumerate() {
             let mut spans = Vec::new();
             if wrapped_idx == 0 {
                 // Literal separator, not `{COLUMN_GAP}` — that formats the
@@ -505,17 +546,31 @@ pub(crate) fn chat_display_lines(
                 spans.push(Span::raw(indent.clone()));
             }
             spans.push(Span::raw(chunk));
-            lines.push(match band {
+            let line = match band {
                 Some(style) => Line::from(spans).style(style),
                 None => Line::from(spans),
-            });
+            };
+            lines.push((message_idx, line));
+        }
+        // Real wrapped-line total minus what was shown — never estimated
+        // from character count, which word boundaries routinely contradict.
+        let hidden = total.saturating_sub(shown);
+        if hidden > 0 {
+            let spans = vec![
+                Span::raw(indent),
+                Span::styled(
+                    format!("… +{hidden} lines"),
+                    Style::default().fg(p.overlay0),
+                ),
+            ];
+            let line = match band {
+                Some(style) => Line::from(spans).style(style),
+                None => Line::from(spans),
+            };
+            lines.push((message_idx, line));
         }
     }
     lines
-}
-
-pub(crate) fn chat_display_line_count(chat: &ChatViewState, width: u16) -> usize {
-    chat_display_lines(chat, &Palette::catppuccin(), width).len()
 }
 
 /// Greedy word wrap on display width, breaking over-long words.
@@ -706,5 +761,130 @@ mod tests {
 
         assert_eq!(plain, highlighted);
         assert!(plain > 1);
+    }
+
+    /// ~2k chars of irregular words — long enough to wrap far past the
+    /// clamp at any sane width, and irregular enough that a character-count
+    /// estimate of the wrapped total can never be trusted to match the
+    /// greedy wrap's real answer.
+    fn long_agent_text() -> String {
+        let words = [
+            "lorem",
+            "ipsum",
+            "dolor",
+            "sit",
+            "amet",
+            "consectetur",
+            "adipiscing",
+            "elit",
+            "sed",
+            "do",
+            "eiusmod",
+            "tempor",
+            "incididunt",
+            "ut",
+            "labore",
+            "et",
+            "dolore",
+            "magna",
+            "aliqua",
+        ];
+        let mut text = String::new();
+        let mut i = 0usize;
+        while text.len() < 2000 {
+            text.push_str(words[i % words.len()]);
+            text.push(' ');
+            i += 1;
+        }
+        text
+    }
+
+    /// The display width a message body gets inside an 80-column timeline.
+    fn text_width_at(width: usize) -> usize {
+        width
+            .saturating_sub(TIME_WIDTH + SENDER_WIDTH + COLUMN_GAP * 2)
+            .max(1)
+    }
+
+    #[test]
+    fn long_message_clamps_to_max_lines_with_real_hidden_count() {
+        let mut state = AppState::test_new();
+        let text = long_agent_text();
+        state.chat.messages = vec![agent_message(&text)];
+
+        let lines = chat_display_lines(&state.chat, &state.palette, 80);
+
+        // The truth the marker must report: the production wrap of the same
+        // text at the same width the timeline used.
+        let total = wrap_width(&text, text_width_at(80)).len();
+        assert!(
+            total > MAX_MESSAGE_LINES + 5,
+            "fixture must truly overflow the clamp (wraps to {total})"
+        );
+
+        // Exactly the clamp in content lines, plus one marker line — no
+        // more, no less. Without the clamp this renders all {total} lines.
+        assert_eq!(
+            lines.len(),
+            MAX_MESSAGE_LINES + 1,
+            "clamped message = {MAX_MESSAGE_LINES} content lines + 1 marker"
+        );
+
+        // The marker sits on the last line and carries the REAL hidden
+        // count: wrapped total minus shown, never chars-estimated.
+        let marker = lines[MAX_MESSAGE_LINES]
+            .spans
+            .iter()
+            .map(|span| span.content.to_string())
+            .collect::<String>();
+        assert_eq!(
+            marker.trim(),
+            format!("… +{} lines", total - MAX_MESSAGE_LINES),
+            "marker count is the true wrapped-line remainder"
+        );
+
+        // The shown content is a prefix of the full wrap: the first line
+        // still carries the timestamp/sender header, so a collapsed message
+        // remains attributable.
+        assert_eq!(
+            lines[0].spans[0].content.to_string(),
+            "15:31 ",
+            "clamped first line keeps the timestamp column"
+        );
+    }
+
+    #[test]
+    fn the_expanded_message_renders_in_full_with_no_marker() {
+        let mut state = AppState::test_new();
+        let text = long_agent_text();
+        state.chat.messages = vec![agent_message(&text)];
+        state.chat.expanded_message = Some(0);
+
+        let lines = chat_display_lines(&state.chat, &state.palette, 80);
+        let total = wrap_width(&text, text_width_at(80)).len();
+
+        assert_eq!(
+            lines.len(),
+            total,
+            "the expanded message renders every wrapped line and no marker"
+        );
+    }
+
+    #[test]
+    fn the_marker_line_maps_back_to_its_own_message_for_clicks() {
+        let mut state = AppState::test_new();
+        let text = long_agent_text();
+        state.chat.messages = vec![agent_message("first"), agent_message(&text)];
+
+        // With the long message collapsed, display line 1 + MAX is its
+        // marker row; that row must hit-test to message 1, so clicking
+        // "… +N lines" expands the message it summarizes.
+        let width = 80u16;
+        assert_eq!(chat_message_index_at_line(&state.chat, width, 0), Some(0));
+        assert_eq!(
+            chat_message_index_at_line(&state.chat, width, 1 + MAX_MESSAGE_LINES),
+            Some(1),
+            "the marker row belongs to the message it collapses"
+        );
     }
 }

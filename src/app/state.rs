@@ -1815,6 +1815,12 @@ pub struct ChatViewState {
     /// Manual opens leave it `None` and close through the standard
     /// leave-modal path.
     pub return_mode: Option<Mode>,
+    /// Index of the timeline message currently rendered expanded (unclamped).
+    /// Lives here rather than in the render path because `render()` is pure:
+    /// it can only read this, never derive or mutate it — the input layer
+    /// toggles it and requests the full repaint the reflow requires. Chat
+    /// local view state, never sent to the server.
+    pub expanded_message: Option<usize>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

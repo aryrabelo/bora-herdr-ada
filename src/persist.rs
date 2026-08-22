@@ -3,10 +3,14 @@
 //! Stored at `~/.config/herdr/session.json`.
 //! Optional pane screen history is stored separately at `session-history.json`.
 //! Installed plugins are persisted separately at `plugins.json`.
+//! Deferred `when_idle` agent prompts are persisted separately at
+//! `pending-prompts.json`.
 
 pub mod channels;
 mod io;
+pub mod pending_prompts;
 pub mod plugin_registry;
+pub mod projects;
 mod restore;
 mod snapshot;
 
