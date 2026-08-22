@@ -26,6 +26,9 @@ lint:
         -A clippy::cognitive_complexity \
         -A clippy::too_many_lines
     @gated=$(grep -rlF '#![cfg(not(target_os = "macos"))]' src tests 2>/dev/null || true); \
+    for f in src/platform/linux.rs src/platform/windows.rs; do \
+        [ -f "$f" ] && gated="$gated $f"; \
+    done; \
     if [ -n "$gated" ] && [ "$(uname)" = "Darwin" ]; then \
         echo ""; \
         echo "note: these files are gated off entirely on macOS and were NOT compiled or linted by the clippy run above:"; \
