@@ -11,6 +11,7 @@ Bora is a fork of [herdr](https://github.com/ogulcancelik/herdr). This changelog
 ### Fixed
 - Chat view timestamps printed a stray digit (`16:111` instead of `16:11`), from a format string interpolating the column-gap constant instead of that many spaces.
 - A channel broadcast no longer delivers back to the pane that sent it. The sender was in its own fan-out, so it received its own message and accumulated unread counts for text it wrote itself. Targeted sends (`--to <nick>`) were never affected, which is why the echo looked like it depended on addressing.
+- The message a channel delivers into an agent's pane now carries its own sequence id: `[#eng seq=7 from w2:p1 rev] text`. The channel protocol block already told agents to catch up with `channel tail --after <seq>` and to answer a `channel.ask` with `--reply-to <seq>`, but the seq was only ever returned to the *sender*, so a recipient was being told to pass a number it had no way to read. Field order is otherwise unchanged. `CHANNEL_PROTOCOL_VERSION` moves to 3, so every already-briefed pane is re-briefed with the shape it will actually receive.
 
 ## [0.32.0] - 2026-08-20
 

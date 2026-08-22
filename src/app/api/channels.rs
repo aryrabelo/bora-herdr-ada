@@ -21,15 +21,19 @@ const MAX_CHANNEL_HISTORY_LINES: u32 = 1000;
 /// `channels::read_protocol_sent`) is behind this. v2: a pane with a
 /// recorded scope entry (`channels::ChannelScopeEntry`) now gets a
 /// formatted suffix naming its write/read directories, built by
-/// `channel_scope_briefing` — CANAL-ESCOPO.md Shape 3's T1 layer.
-const CHANNEL_PROTOCOL_VERSION: u32 = 2;
+/// `channel_scope_briefing` — CANAL-ESCOPO.md Shape 3's T1 layer. v3: the
+/// injected channel prefix now carries `seq=N`, so every pane briefed
+/// under v2 must be re-briefed — it was told a shape the runtime no
+/// longer emits, and `--after <seq>`/`--reply-to <seq>` were unusable
+/// without a visible seq.
+const CHANNEL_PROTOCOL_VERSION: u32 = 3;
 
 /// Injected once per pane into every channel it joins or is already a
 /// member of — see `App::send_channel_protocol`. Teaches an LLM agent, in
 /// its own terminal, how to use `#channel` messaging.
 const CHANNEL_PROTOCOL: &str = concat!(
     "You are now on a bora #channel. Messages you receive look like:\n",
-    "  [#channel from <pane> <nick>] <text>   (channel)\n",
+    "  [#channel seq=N from <pane> <nick>] <text>   (channel)\n",
     "  [from <pane> <nick>] <text>            (direct)\n",
     "\n",
     "Reply in-channel:\n",
@@ -46,11 +50,12 @@ const CHANNEL_PROTOCOL: &str = concat!(
     "\n",
     "Answering a channel.ask question: reply with\n",
     "  bora channel send <name> \"<text>\" --reply-to <seq>\n",
-    "using the seq of the question you were sent — that is how the asker's\n",
-    "wait resolves.\n",
+    "using the `seq=N` printed in that question's own prefix — that is how the\n",
+    "asker's wait resolves.\n",
     "\n",
     "Catch up on history you missed:\n",
     "  bora channel tail <name> --after <seq>\n",
+    "passing the highest `seq=N` you have already seen.\n",
     "\n",
     "Sends are rate-limited (2s per sender->target) and deferred while the\n",
     "target is busy. A `deferred` receipt means QUEUED for delivery — that\n",
@@ -573,7 +578,17 @@ impl App {
         // own from_pane attribution) so the delivered text carries the
         // channel name too; from_pane is passed as None below to avoid a
         // second `[from ...]` prefix being layered on top of this one.
-        let prefixed = format!("[#{name} from {sender_pane} {sender_name}] {text}");
+        //
+        // `seq` is in the prefix because it is the only place an agent can
+        // read it. The protocol block tells agents to catch up with `tail
+        // --after <seq>` and to answer a `channel.ask` with `--reply-to
+        // <seq>`, and before this both instructions named a number the
+        // agent had no way to obtain — the seq existed only in the
+        // `channel.send` response the SENDER got, never in what the
+        // recipient was handed. Field order is otherwise unchanged, so a
+        // reader parsing `from <pane> <nick>` positionally still works.
+        let seq = message.seq;
+        let prefixed = format!("[#{name} seq={seq} from {sender_pane} {sender_name}] {text}");
 
         // Targeted delivery reaches only the resolved pane — and never the
         // sender's own. A message addressed to the human seat reaches no
@@ -2638,7 +2653,7 @@ mod tests {
             .try_recv()
             .expect("targeted delivery must inject into the target pane");
         let injected = String::from_utf8_lossy(&injected);
-        assert!(injected.contains("[#eng from "), "got: {injected}");
+        assert!(injected.contains("[#eng seq=1 from "), "got: {injected}");
         assert!(injected.contains("ping"), "got: {injected}");
 
         // Reply addressed by raw pane id, threaded back to seq 1.
@@ -3359,7 +3374,7 @@ mod tests {
             .try_recv()
             .expect("joined pane's runtime must receive the prefixed message");
         let injected = String::from_utf8_lossy(&injected);
-        assert!(injected.contains("[#eng from "), "got {injected}");
+        assert!(injected.contains("[#eng seq=2 from "), "got {injected}");
         assert!(injected.contains("after join"), "got {injected}");
         assert!(
             after.iter().any(|d| d["pane_id"] == json_str(&reviewer)),
@@ -3378,6 +3393,68 @@ mod tests {
             "leaving stops fan-out to the pane"
         );
         assert!(channels::read_joined_members("eng", |_| true).is_empty());
+        super::super::test_support::shutdown_test_runtimes(&mut app);
+    }
+
+    /// The injected prefix carries the message's own `seq`, and that value
+    /// is a usable cursor.
+    ///
+    /// The protocol block tells an agent to catch up with `tail --after
+    /// <seq>` and to answer a `channel.ask` with `--reply-to <seq>`. Before
+    /// the prefix carried it, the seq existed only in the `channel.send`
+    /// response handed to the SENDER — a recipient was told to pass a
+    /// number it could not obtain. So this test does not merely regex the
+    /// prefix: it parses the seq out of the delivered bytes and feeds it to
+    /// `channels::read_since`, the exact store call `channel.wait` /
+    /// `channel tail --after` runs. A prefix printing a seq that does not
+    /// resolve as a cursor would satisfy a regex and still be useless.
+    #[tokio::test]
+    async fn injected_prefix_carries_a_seq_that_works_as_a_tail_cursor() {
+        let _isolated = IsolatedStateDir::new("prefix-seq-cursor");
+        let mut app = test_app();
+        create_channel(&mut app, "eng");
+        let (first, _first_rx) = outside_agent_pane(&mut app, "first");
+        let (second, mut second_rx) = outside_agent_pane(&mut app, "second");
+        for pane in [&first, &second] {
+            let joined = join(&mut app, "#eng", pane);
+            assert_eq!(joined["result"]["source"], serde_json::json!("joined"));
+        }
+        while second_rx.try_recv().is_ok() {}
+
+        let sent = broadcast(&mut app, &first, "first message");
+        let reported_seq = sent["result"]["seq"].as_u64().expect("send reports a seq");
+
+        let injected = second_rx
+            .try_recv()
+            .expect("broadcast must reach the other member");
+        let injected = String::from_utf8_lossy(&injected);
+        let parsed_seq: u64 = injected
+            .split("seq=")
+            .nth(1)
+            .and_then(|rest| {
+                let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+                digits.parse().ok()
+            })
+            .unwrap_or_else(|| panic!("no parsable seq= in injected prefix: {injected}"));
+        assert_eq!(
+            parsed_seq, reported_seq,
+            "the seq the recipient can read must be the message's own: {injected}"
+        );
+
+        // A second message, so the cursor has something to resolve to.
+        broadcast(&mut app, &second, "second message");
+
+        let since = channels::read_since("eng", parsed_seq).expect("cursor read");
+        let texts: Vec<&str> = since
+            .messages
+            .iter()
+            .map(|message| message.text.as_str())
+            .collect();
+        assert_eq!(
+            texts,
+            vec!["second message"],
+            "the parsed seq must exclude its own message and yield the next one"
+        );
         super::super::test_support::shutdown_test_runtimes(&mut app);
     }
 
