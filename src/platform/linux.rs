@@ -786,7 +786,6 @@ fn process_session_id(pid: u32) -> Option<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Mutex, OnceLock};
     use std::{cell::RefCell, collections::HashMap};
 
     fn env_lock() -> &'static parking_lot::Mutex<()> {
