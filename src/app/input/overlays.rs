@@ -18,6 +18,13 @@ pub(super) fn rect_contains(rect: Rect, col: u16, row: u16) -> bool {
     col >= rect.x && col < rect.x + rect.width && row >= rect.y && row < rect.y + rect.height
 }
 
+/// Rows the framed composer occupies at the bottom of the chat overlay:
+/// top border (title + counter live on it), the input line, bottom border.
+/// Every chat column rect must end where these rows begin — the composer
+/// consuming rows is what shrinks the timeline, and the rects agree through
+/// this one constant.
+const COMPOSER_FRAME_ROWS: u16 = 3;
+
 impl App {
     pub(super) fn handle_overlay_mouse(&mut self, mouse: MouseEvent) -> bool {
         if self.state.mode == Mode::Chat {
@@ -765,7 +772,12 @@ impl AppState {
     pub(crate) fn chat_channel_list_rect(&self) -> Rect {
         let inner = self.chat_inner_rect();
         let width = self.chat_channel_list_width();
-        Rect::new(inner.x, inner.y, width, inner.height.saturating_sub(2))
+        Rect::new(
+            inner.x,
+            inner.y,
+            width,
+            inner.height.saturating_sub(COMPOSER_FRAME_ROWS),
+        )
     }
 
     pub(crate) fn chat_members_rect(&self) -> Rect {
@@ -775,11 +787,12 @@ impl AppState {
             inner.x + inner.width.saturating_sub(width),
             inner.y,
             width,
-            inner.height.saturating_sub(2),
+            inner.height.saturating_sub(COMPOSER_FRAME_ROWS),
         )
     }
 
-    /// Middle column: header row, divider, scrollable message body.
+    /// Middle column: header row, divider, scrollable message body. The body
+    /// stops above the composer frame, same bottom edge as both side columns.
     pub(crate) fn chat_messages_rect(&self) -> Rect {
         let inner = self.chat_inner_rect();
         let left = self.chat_channel_list_width();
@@ -789,7 +802,7 @@ impl AppState {
             left + right + if left > 0 { 1 } else { 0 } + if right > 0 { 1 } else { 0 },
         );
         let body_top = inner.y + 2;
-        let body_height = inner.height.saturating_sub(4);
+        let body_height = inner.height.saturating_sub(2 + COMPOSER_FRAME_ROWS);
         Rect::new(x, body_top, width, body_height)
     }
 
@@ -802,13 +815,19 @@ impl AppState {
         self.chat_messages_rect().width
     }
 
+    /// The composer: one framed text row (border / input / border) owning the
+    /// bottom `COMPOSER_FRAME_ROWS` inner rows, full inner width. The frame
+    /// is drawn by `render_input` through `render_panel_shell`, so this rect
+    /// and the columns above it must agree on those three rows — see the
+    /// lockstep test in `ui::chat`.
     pub(crate) fn chat_input_rect(&self) -> Rect {
         let inner = self.chat_inner_rect();
+        let height = inner.height.min(COMPOSER_FRAME_ROWS);
         Rect::new(
             inner.x,
-            inner.y + inner.height.saturating_sub(1),
+            inner.y + inner.height.saturating_sub(COMPOSER_FRAME_ROWS),
             inner.width,
-            inner.height.min(1),
+            height,
         )
     }
 

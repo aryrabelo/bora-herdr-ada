@@ -1,0 +1,99 @@
+//! Wire types for the `project.*` socket verbs — CRUD over
+//! `~/.config/bora/projects.yml` (see `persist::projects`) plus member
+//! management. Handlers live in `app::api::projects`.
+
+use serde::{Deserialize, Serialize};
+
+/// `project.create`: adds a new, empty project (no members) at `slug`.
+/// Errors `project_exists` when `slug` is already taken — this is never a
+/// silent overwrite; use `project.update` to change an existing project's
+/// `name`/`channel`, and `project.member_add` to populate its members.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct ProjectCreateParams {
+    pub slug: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Explicit channel override; omitted falls back to `"#" + slug` — see
+    /// `persist::projects::Project::effective_channel`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channel: Option<String>,
+}
+
+/// `project.update`: replaces `name` and `channel` wholesale with whatever
+/// this request carries — a full replacement of exactly those two fields,
+/// not a partial "only touch what's `Some`" patch. Omitting `name` (or
+/// `channel`) clears it back to unset, it does NOT mean "leave unchanged".
+/// Never touches `members` — that is `project.member_add`/
+/// `project.member_remove`'s job — nor `orchestrator`/`sections`, which
+/// have no verb yet in this bead. Errors `project_not_found` when `slug`
+/// does not exist.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct ProjectUpdateParams {
+    pub slug: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channel: Option<String>,
+}
+
+/// `project.member_add`: idempotent on `dir` — an exact string match
+/// against an existing member's `dir` (the same key `project.member_remove`
+/// matches on) updates that member's `worktrees` scope in place rather than
+/// appending a duplicate row. Errors `project_not_found` when `slug` does
+/// not exist.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct ProjectMemberAddParams {
+    pub slug: String,
+    pub dir: String,
+    #[serde(default)]
+    pub worktrees: crate::persist::projects::WorktreesScope,
+}
+
+/// `project.member_remove`: errors `project_member_not_found` (naming
+/// `slug` and `dir`) when `dir` is not a member of `slug`, so a caller
+/// never thinks it removed something it did not. Errors `project_not_found`
+/// when `slug` does not exist at all.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct ProjectMemberRemoveParams {
+    pub slug: String,
+    pub dir: String,
+}
+
+/// `project.list`'s per-project entry, and the `project` payload every
+/// other `project.*` verb returns: the parsed project plus each member's
+/// RESOLVED identity (via `persist::projects::Member::resolve`), so a
+/// caller never has to redo git discovery itself.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct ProjectSummary {
+    pub slug: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Always present: `channel` override, or `"#" + slug` — see
+    /// `persist::projects::Project::effective_channel`. A caller never has
+    /// to re-derive the default.
+    pub channel: String,
+    pub members: Vec<ProjectMemberInfo>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct ProjectMemberInfo {
+    pub dir: String,
+    pub worktrees: crate::persist::projects::WorktreesScope,
+    pub resolution: ProjectMemberResolution,
+}
+
+/// Wire shape of `persist::projects::MemberResolution`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum ProjectMemberResolution {
+    Resolved {
+        repo_identity: String,
+        checkout_key: String,
+        /// Empty when the member dir *is* the checkout root.
+        subdir: String,
+    },
+    Unresolved {
+        dir: String,
+        reason: String,
+    },
+}

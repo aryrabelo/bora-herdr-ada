@@ -189,3 +189,55 @@ em inglês pra casar com as strings vizinhas). O lead fechou o que faltava:
   EVIDENCE: `0.33.0` → `0.34.0`, `Cargo.lock` atualizado no mesmo commit.
 - [x] J5 entrada de changelog do jp0 corrigida: afirmava que o fencing "behaves exactly
   as before", o que deixou de ser verdade quando o fence aninhado entrou.
+
+## bora-e9i.2 — socket verbs de project · FECHADO
+
+- [x] V1 os cinco verbos seguem o padrão Method de 5 passos
+- [x] V2 escrita atômica (tmp + rename) sobre read-modify-write do arquivo ATUAL,
+  não de uma cópia em memória — é essa parte que faz o "concurrent write safety" do aceite
+- [x] V3 semântica decidida e documentada: `create` em slug existente é erro; `update`
+  substitui `name`/`channel`; `member_add` atualiza no lugar; `member_remove` de dir
+  ausente é erro que nomeia o que não achou
+- [x] V4 dois panics removidos do caminho de request pelo lead: `expect("verified present
+  above")` num handler derruba a sessão inteira do servidor se a suposição furar, e
+  `dispatch` está documentado como "never panics". Virou `encode_error`.
+- [x] V5 artefato de schema regenerado
+  EVIDENCE: `docs/next/api/herdr-api.schema.json` — o builder sinalizou honestamente que
+  não podia rodar `HERDR_UPDATE_API_SCHEMA=1`, e sem isso
+  `generated_protocol_schema_artifact_is_current` quebraria o CI.
+- [x] V6 um teste entregue era CEGO, e o mutante provou
+  EVIDENCE: `member_add_on_existing_dir_is_idempotent_not_a_duplicate_row` chamava o verbo
+  duas vezes com o MESMO `worktrees`, então `Some(_) => {}` (atualização removida) passava.
+  Cobria "não duplica" e não cobria "atualiza". Reescrito pra variar o escopo entre as duas
+  chamadas: agora `all` → `this` e afirma o valor. Com o teste novo, o mutante é pego.
+- [x] V7 três mutantes, três pegos
+  EVIDENCE: `fs::rename` fora → `write_never_leaves_a_tmp_file` FAILED; código
+  `project_exists` trocado → `create_on_existing_slug` FAILED; atualização in-place fora
+  → `member_add_on_existing_dir` FAILED.
+
+## bora-rlu.2 — rows filhas mostram token único, não o nome do repo · FECHADO
+
+- [x] W1 row indentada renderiza badge `@wNpN` + branch só quando o header não imprimiu
+- [x] W2 `custom_name` passa verbatim; pane sem agente detectado mantém o display name
+  (não há badge pra mostrar, e nome duplicado diz mais que label vazio) — decisão do
+  builder, com teste próprio
+- [x] W3 `grouped_child_display_label` não foi reusada, como o bead exigia
+- [x] W4 mutante pego
+  EVIDENCE: label de volta pra `display_name_from` →
+  `indented_same_branch_children_render_distinct` FAILED. O primeiro mutante que escrevi
+  não compilou (assinatura errada) e o harness marcou COMPILE ERROR em vez de CAUGHT —
+  mutante que não compila não é evidência de nada.
+
+## bora-7c5.2 — composer com borda, título e contador · FECHADO
+
+- [x] X1 borda, título ` [ Chat ] ` e contador vivo, reusando `render_panel_shell`
+- [x] X2 a moldura custa 2 linhas da timeline, e os QUATRO rects do overlay concordam por
+  uma constante só (`COMPOSER_FRAME_ROWS`)
+- [x] X3 sem `request_full_repaint` novo, e o motivo é certo: a geometria é derivada em
+  tempo de render do tamanho do terminal, não de estado mutável em runtime — mudança de
+  dimensão externa já dispara repaint completo nos dois encoders
+- [x] X4 o mutante que importava: UM só dos quatro rects de volta na borda antiga
+  EVIDENCE: `chat_column_rects_stop_where_the_composer_frame_begins` FAILED. É exatamente
+  a classe de bug que o contrato de lockstep existe pra pegar — quatro funções editadas à
+  mão é onde ela se esconde.
+- [x] X5 testes existentes de chat atualizados para a geometria nova, não afrouxados

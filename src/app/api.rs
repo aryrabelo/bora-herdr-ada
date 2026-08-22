@@ -9,6 +9,7 @@ mod layouts;
 mod pane_graphics;
 mod panes;
 pub(crate) mod plugins;
+mod projects;
 mod responses;
 mod session;
 mod tabs;
@@ -1345,6 +1346,19 @@ impl App {
             }
             Method::ChannelAsk(params) => {
                 return self.handle_channel_ask_question(request.id, params);
+            }
+            Method::ProjectList(params) => return self.handle_project_list(request.id, params),
+            Method::ProjectCreate(params) => {
+                return self.handle_project_create(request.id, params);
+            }
+            Method::ProjectUpdate(params) => {
+                return self.handle_project_update(request.id, params);
+            }
+            Method::ProjectMemberAdd(params) => {
+                return self.handle_project_member_add(request.id, params);
+            }
+            Method::ProjectMemberRemove(params) => {
+                return self.handle_project_member_remove(request.id, params);
             }
             _ => {
                 return responses::encode_error(

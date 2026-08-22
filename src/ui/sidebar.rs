@@ -528,6 +528,25 @@ fn workspace_agent_label(
     }))
 }
 
+/// Label for an indented (child) workspace row. The repo-derived display
+/// name is not unique there — two workspaces on the same checkout and
+/// branch render the same string — so the row identifies itself by the
+/// `@wNpN` pane badge the Workspace arm draws beside this label, plus the
+/// branch only when the parent header did not already print it. A custom
+/// name is the user's own label and passes through verbatim.
+fn indented_child_label(ws: &crate::workspace::Workspace, parent_branch: Option<&str>) -> String {
+    if let Some(name) = ws.custom_name.as_deref() {
+        return name.to_string();
+    }
+    match ws
+        .branch()
+        .map(|branch| branch_display_label(&branch).to_string())
+    {
+        Some(label) if parent_branch != Some(label.as_str()) => label,
+        _ => String::new(),
+    }
+}
+
 fn workspace_attention_priority(state: AgentState, seen: bool) -> u8 {
     match (state, seen) {
         (AgentState::Blocked, _) => 4,
@@ -1957,6 +1976,10 @@ fn render_workspace_list(
     let body = workspace_list_body_rect(app, area, scrollbar_rect.is_some());
     let mut row_y = body.y;
     let now = Instant::now();
+    // Branch label the most recently visited header row printed (None = it
+    // printed none). Indented child rows consult this so they never repeat
+    // a branch the header directly above them already shows.
+    let mut parent_branch: Option<String> = None;
 
     for (entry_idx, entry) in entries.iter().enumerate().skip(scroll) {
         let needed = entry_row_height(entry, &entries, entry_idx);
@@ -1965,6 +1988,7 @@ fn render_workspace_list(
         }
         match entry {
             WorkspaceListEntry::GroupHeader { name, collapse_key } => {
+                parent_branch = None;
                 if row_y < list_bottom {
                     let collapsed = app.collapsed_space_keys.contains(collapse_key);
                     let chevron = if collapsed { "▸" } else { "▾" };
@@ -2012,6 +2036,7 @@ fn render_workspace_list(
                 indented,
                 branch,
             } => {
+                parent_branch = branch.as_ref().map(|b| b.label.clone());
                 if row_y < list_bottom {
                     let collapsed = app.collapsed_space_keys.contains(collapse_key);
                     let name_style = Style::default().fg(p.accent).add_modifier(Modifier::BOLD);
@@ -2127,6 +2152,7 @@ fn render_workspace_list(
                 last,
                 ws_idx,
             } => {
+                parent_branch = Some(label.clone());
                 if row_y < list_bottom {
                     let indent = if *indented { " " } else { "" };
                     // All connectors are 4 cells wide so branch labels align
@@ -2264,6 +2290,7 @@ fn render_workspace_list(
                 }
             }
             WorkspaceListEntry::HiddenHeader { count } => {
+                parent_branch = None;
                 if row_y < list_bottom {
                     let chevron = if app.hidden_section_expanded {
                         "▾"
@@ -2434,7 +2461,21 @@ fn render_workspace_list(
                 // every configured token (state icon aside, which is always
                 // shown via the tab dots) draws in the order and style they
                 // wrote, even if that repeats the workspace name.
-                let full_label = ws.display_name_from(&app.terminals, terminal_runtimes);
+
+                // An indented child drops the repo-derived name (not unique
+                // under its header — same checkout+branch siblings collide):
+                // the row is its `@wNpN` badge plus, only when the header
+                // above did not print it, the branch. The badge is computed
+                // once here and reused for the row's ` @name` suffix; a
+                // plain-shell pane reports no agent identity at all, and
+                // such a row keeps the display name — a duplicate name still
+                // says more than an anonymous empty label.
+                let agent_badge = workspace_agent_label(ws, &app.terminals);
+                let full_label = if *indented && agent_badge.is_some() {
+                    indented_child_label(ws, parent_branch.as_deref())
+                } else {
+                    ws.display_name_from(&app.terminals, terminal_runtimes)
+                };
                 let token_spans: Vec<Span<'static>> = if ws.metadata_tokens.is_empty() {
                     Vec::new()
                 } else {
@@ -2517,8 +2558,7 @@ fn render_workspace_list(
                 // `#`-channels, and the "safe to close" collectible mark.
                 // Purely in-memory or already-cached lookups — nothing here
                 // touches disk.
-                let agent_suffix =
-                    workspace_agent_label(ws, &app.terminals).map(|name| format!(" @{name}"));
+                let agent_suffix = agent_badge.map(|name| format!(" @{name}"));
                 let agent_width = agent_suffix.as_deref().map(display_width).unwrap_or(0);
                 let channel_suffix = match ws.cached_channels.split_first() {
                     Some((first, [])) => Some(format!(" #{first}")),
@@ -3941,6 +3981,197 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
                 "branch header row at {width} cols"
             );
         }
+    }
+
+    /// Give a workspace's root pane a detected agent so it reports a pane
+    /// detail (and thus an `@wNpN` badge) the way a live agent pane does.
+    fn detect_agent_on_root_pane(app: &mut AppState, ws_idx: usize) {
+        let pane = app.workspaces[ws_idx].tabs[0].root_pane;
+        let terminal_id = app.workspaces[ws_idx].tabs[0].panes[&pane]
+            .attached_terminal_id
+            .clone();
+        app.terminals
+            .get_mut(&terminal_id)
+            .expect("ensure_test_terminals created the terminal")
+            .detected_agent = Some(Agent::Pi);
+    }
+
+    #[test]
+    fn indented_same_branch_children_render_distinct_badge_rows() {
+        // Two workspaces on one checkout+branch used to render the same
+        // repo-derived name under their header. An indented child row now
+        // carries only its `@wNpN` pane badge (plus a branch only when the
+        // parent header did not print it), so same-branch siblings stay
+        // distinct. Exercises both parent shapes: the branch folded into
+        // the project header and a `├──` branch sub-header.
+        let mut app = AppState::test_new();
+        app.mouse_capture = false;
+        app.active = None;
+        let identity = "github.com/owner/resume-builder";
+        let mut first = git_space_member("first", identity, false);
+        first.custom_name = None;
+        first.cached_git_branch = Some("first".into());
+        let mut second = git_space_member("second", identity, false);
+        second.custom_name = None;
+        second.cached_git_branch = Some("main".into());
+        let mut third = git_space_member("third", identity, false);
+        third.custom_name = None;
+        third.cached_git_branch = Some("main".into());
+        let ids = (first.id.clone(), second.id.clone(), third.id.clone());
+        app.workspaces = vec![first, second, third];
+        app.ensure_test_terminals();
+        for ws_idx in 0..3 {
+            detect_agent_on_root_pane(&mut app, ws_idx);
+        }
+        app.mode = Mode::Terminal;
+
+        let runtimes = crate::terminal::TerminalRuntimeRegistry::new();
+        let mut terminal = Terminal::new(TestBackend::new(30, 20)).expect("test terminal");
+        terminal
+            .draw(|frame| {
+                render_workspace_list(&app, &runtimes, frame, Rect::new(0, 0, 30, 20), false)
+            })
+            .expect("workspace list should render");
+
+        let buffer = terminal.backend().buffer();
+        // Project header with the first branch folded in, then its child:
+        // the branch is already printed above, so the row is badge-only.
+        assert_eq!(row_text(buffer, 2, 30).trim_end(), "╭─herdr [first]");
+        assert_eq!(
+            row_text(buffer, 3, 30).trim_end(),
+            format!("│   ◰  @{}p1", ids.0)
+        );
+        // Branch sub-header for the remaining branch, then its two children.
+        assert_eq!(row_text(buffer, 4, 30).trim_end(), "├── main");
+        let row5 = row_text(buffer, 5, 30);
+        let row6 = row_text(buffer, 6, 30);
+        assert_eq!(row5.trim_end(), format!("│   ◰  @{}p1", ids.1));
+        assert_eq!(row6.trim_end(), format!("╰── ◰  @{}p1", ids.2));
+        assert_ne!(row5, row6, "same-branch siblings must render distinct rows");
+    }
+
+    #[test]
+    fn indented_child_custom_name_renders_verbatim() {
+        // A custom name is the user's own label: it passes through verbatim
+        // and is never replaced by the badge-only child treatment.
+        let mut app = AppState::test_new();
+        app.mouse_capture = false;
+        app.active = None;
+        let identity = "github.com/owner/resume-builder";
+        let mut auto = git_space_member("auto", identity, false);
+        auto.custom_name = None;
+        auto.cached_git_branch = Some("main".into());
+        let mut named = git_space_member("named", identity, false);
+        named.custom_name = Some("release-hotfix".into());
+        named.cached_git_branch = Some("main".into());
+        let auto_id = auto.id.clone();
+        let named_id = named.id.clone();
+        app.workspaces = vec![auto, named];
+        app.ensure_test_terminals();
+        for ws_idx in 0..2 {
+            detect_agent_on_root_pane(&mut app, ws_idx);
+        }
+        app.mode = Mode::Terminal;
+
+        let runtimes = crate::terminal::TerminalRuntimeRegistry::new();
+        let mut terminal = Terminal::new(TestBackend::new(30, 20)).expect("test terminal");
+        terminal
+            .draw(|frame| {
+                render_workspace_list(&app, &runtimes, frame, Rect::new(0, 0, 30, 20), false)
+            })
+            .expect("workspace list should render");
+
+        let buffer = terminal.backend().buffer();
+        assert_eq!(row_text(buffer, 2, 30).trim_end(), "╭─herdr [main]");
+        assert_eq!(
+            row_text(buffer, 3, 30).trim_end(),
+            format!("│   ◰  @{}p1", auto_id)
+        );
+        assert_eq!(
+            row_text(buffer, 4, 30).trim_end(),
+            format!("╰── ◰ release-hotfix @{named_id}p1")
+        );
+    }
+
+    #[test]
+    fn indented_child_under_collapsed_header_shows_branch_header_omitted() {
+        // A collapsed project header prints no branch, so its active child
+        // row carries the branch itself — the one case where an indented
+        // child's branch differs from what the header above printed.
+        let mut app = AppState::test_new();
+        app.mouse_capture = false;
+        let identity = "github.com/owner/resume-builder";
+        let mut active = git_space_member("active", identity, false);
+        active.custom_name = None;
+        active.cached_git_branch = Some("main".into());
+        let mut other = git_space_member("other", identity, false);
+        other.custom_name = None;
+        other.cached_git_branch = Some("main".into());
+        let active_id = active.id.clone();
+        app.workspaces = vec![active, other];
+        app.ensure_test_terminals();
+        detect_agent_on_root_pane(&mut app, 0);
+        app.active = Some(0);
+        app.mode = Mode::Terminal;
+        app.collapsed_space_keys.insert(identity.into());
+
+        let runtimes = crate::terminal::TerminalRuntimeRegistry::new();
+        let mut terminal = Terminal::new(TestBackend::new(30, 20)).expect("test terminal");
+        terminal
+            .draw(|frame| {
+                render_workspace_list(&app, &runtimes, frame, Rect::new(0, 0, 30, 20), false)
+            })
+            .expect("workspace list should render");
+
+        let buffer = terminal.backend().buffer();
+        // Collapsed header: no `[main]`, just the aggregate dot.
+        assert_eq!(row_text(buffer, 2, 30).trim_end(), "╭─herdr ◰");
+        // Active child: branch shown because the header above omitted it.
+        assert_eq!(
+            row_text(buffer, 3, 30).trim_end(),
+            format!(" ◰ main @{active_id}p1")
+        );
+    }
+
+    #[test]
+    fn indented_child_without_agent_badge_keeps_display_name() {
+        // A plain-shell pane reports no agent identity, so the row has no
+        // `@wNpN` badge to carry it: such a child keeps its display name
+        // instead of rendering an anonymous empty label.
+        let mut app = AppState::test_new();
+        app.mouse_capture = false;
+        app.active = None;
+        let identity = "github.com/owner/resume-builder";
+        let mut first = git_space_member("first", identity, false);
+        first.custom_name = None;
+        first.cached_git_branch = Some("first".into());
+        first.identity_cwd = std::path::PathBuf::from("/repo/first");
+        let mut second = git_space_member("second", identity, false);
+        second.custom_name = None;
+        second.cached_git_branch = Some("main".into());
+        second.identity_cwd = std::path::PathBuf::from("/repo/second");
+        let mut third = git_space_member("third", identity, false);
+        third.custom_name = None;
+        third.cached_git_branch = Some("main".into());
+        third.identity_cwd = std::path::PathBuf::from("/repo/third");
+        // No detected agents: no workspace has a pane badge.
+        app.workspaces = vec![first, second, third];
+        app.ensure_test_terminals();
+        app.mode = Mode::Terminal;
+
+        let runtimes = crate::terminal::TerminalRuntimeRegistry::new();
+        let mut terminal = Terminal::new(TestBackend::new(30, 20)).expect("test terminal");
+        terminal
+            .draw(|frame| {
+                render_workspace_list(&app, &runtimes, frame, Rect::new(0, 0, 30, 20), false)
+            })
+            .expect("workspace list should render");
+
+        let buffer = terminal.backend().buffer();
+        // Badge-less children fall back to the cwd-derived display name.
+        assert_eq!(row_text(buffer, 3, 30).trim_end(), "│   ◰ first");
+        assert_eq!(row_text(buffer, 5, 30).trim_end(), "│   ◰ second");
+        assert_eq!(row_text(buffer, 6, 30).trim_end(), "╰── ◰ third");
     }
 
     fn workspace_with_worktree_space(

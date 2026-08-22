@@ -16,6 +16,7 @@ use super::plugins::{
     InstalledPluginInfo, PluginActionInfo, PluginCommandLogInfo, PluginInvocationContext,
     PluginPaneInfo,
 };
+use super::projects::ProjectSummary;
 use super::server::ServerCapabilities;
 use super::session::SessionSnapshot;
 use super::tabs::TabInfo;
@@ -361,6 +362,21 @@ pub enum ResponseResult {
         question_seq: u64,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reply: Option<ChannelMessage>,
+    },
+    ProjectList {
+        projects: Vec<ProjectSummary>,
+    },
+    ProjectCreated {
+        project: ProjectSummary,
+    },
+    ProjectUpdated {
+        project: ProjectSummary,
+    },
+    ProjectMemberAdded {
+        project: ProjectSummary,
+    },
+    ProjectMemberRemoved {
+        project: ProjectSummary,
     },
 }
 

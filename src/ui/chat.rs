@@ -23,6 +23,9 @@ const COLUMN_GAP: usize = 1;
 /// Bottom row of the channel column: click (or Ctrl+N) to create a channel.
 /// Same `+` vocabulary the sidebar uses for "new worktree" / "run command".
 pub(crate) const NEW_CHANNEL_LABEL: &str = "+ new channel";
+/// Caption painted on the composer's top border (GOAL 2026-08-22 §12.2):
+/// the input line reads as a control, not floating text.
+const COMPOSER_TITLE: &str = "[ Chat ]";
 
 fn agent_state(status: AgentStatus) -> crate::detect::AgentState {
     match status {
@@ -379,14 +382,49 @@ fn render_members(app: &AppState, frame: &mut Frame, area: Rect) {
     }
 }
 
+/// The composer: the chat overlay's input control, framed like every other
+/// panel (`render_panel_shell`), with its title and a live character count
+/// drawn on the top border. Both are derived from existing state at render
+/// time — the counter is never stored.
 fn render_input(app: &AppState, frame: &mut Frame, area: Rect) {
     if area.height == 0 || area.width == 0 {
         return;
     }
     let p = &app.palette;
+    let Some(inner) = render_panel_shell(frame, area, p.accent, p.panel_bg) else {
+        return;
+    };
+
+    // Title and counter share the top border row, inside the corners.
+    let title = format!(" {} ", COMPOSER_TITLE);
+    let title_width = display_width(&title) as u16;
+    frame.render_widget(
+        Paragraph::new(title).style(Style::default().fg(p.accent).add_modifier(Modifier::BOLD)),
+        Rect::new(
+            area.x + 1,
+            area.y,
+            area.width.saturating_sub(2).min(title_width),
+            1,
+        ),
+    );
+    let counter = format!("{} ", app.chat.input.chars().count());
+    let counter_width = counter.chars().count() as u16;
+    frame.render_widget(
+        Paragraph::new(counter).style(Style::default().fg(p.overlay0)),
+        Rect::new(
+            area.x + area.width.saturating_sub(1 + counter_width),
+            area.y,
+            counter_width,
+            1,
+        ),
+    );
+
+    if inner.height == 0 || inner.width == 0 {
+        return;
+    }
     let status = app.chat.status.as_deref().unwrap_or("");
     let prompt_width = 2;
-    let input_width = area.width.saturating_sub(prompt_width as u16 + 1) as usize;
+    let input_width = inner.width.saturating_sub(prompt_width as u16 + 1) as usize;
     let mut spans = vec![
         Span::styled(
             "> ",
@@ -403,7 +441,7 @@ fn render_input(app: &AppState, frame: &mut Frame, area: Rect) {
             Style::default().fg(p.red),
         ));
     }
-    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+    frame.render_widget(Paragraph::new(Line::from(spans)), inner);
 }
 
 fn truncate_input(input: &str, max_width: usize) -> String {
@@ -613,6 +651,7 @@ mod tests {
     use super::*;
     use crate::api::schema::ChannelSenderKind;
     use crate::app::state::AppState;
+    use ratatui::{backend::TestBackend, Terminal};
 
     fn agent_message(text: &str) -> crate::api::schema::ChannelMessage {
         crate::api::schema::ChannelMessage {
@@ -886,5 +925,140 @@ mod tests {
             Some(1),
             "the marker row belongs to the message it collapses"
         );
+    }
+
+    // ---- composer frame (bora-7c5.2) -------------------------------------
+
+    fn row_text(buffer: &ratatui::buffer::Buffer, row: u16, width: u16) -> String {
+        (0..width)
+            .map(|x| buffer[(x, row)].symbol())
+            .collect::<String>()
+    }
+
+    /// Chat state at a given terminal size, laid out like the mouse tests:
+    /// 26-col sidebar, terminal beside it.
+    fn chat_state_at(width: u16, height: u16) -> AppState {
+        let mut state = AppState::test_new();
+        state.view.sidebar_rect = Rect::new(0, 0, 26, height);
+        state.view.terminal_area = Rect::new(26, 0, width.saturating_sub(26), height);
+        state
+    }
+
+    #[test]
+    fn composer_renders_frame_title_and_counter() {
+        // 106x20 -> popup (3,1,100,18) -> inner (4,2,98,16); the composer
+        // owns the bottom three inner rows (15..17) at cols 4..101. Every
+        // row is asserted in full, so a missing border, title, or counter
+        // cell anywhere in it fails.
+        let mut state = chat_state_at(106, 20);
+        let mut terminal = Terminal::new(TestBackend::new(106, 20)).expect("test terminal");
+        terminal
+            .draw(|frame| render_chat_overlay(&state, frame))
+            .expect("chat overlay renders");
+
+        // Empty draft -> the counter reads 0, right-aligned inside the
+        // composer's top border (ends one col before the corner).
+        assert_eq!(
+            row_text(terminal.backend().buffer(), 15, 106),
+            format!("   │┌ [ Chat ] {}0 ┐│   ", "─".repeat(84)),
+            "top border: corner, title, dashes, counter, corner"
+        );
+        assert_eq!(
+            row_text(terminal.backend().buffer(), 16, 106),
+            format!("   ││> {}││   ", " ".repeat(94)),
+            "input row: prompt, empty draft, padding, both frames"
+        );
+        assert_eq!(
+            row_text(terminal.backend().buffer(), 17, 106),
+            format!("   │└{}┘│   ", "─".repeat(96)),
+            "bottom border of the composer frame"
+        );
+
+        // The typed draft itself renders inside the frame.
+        state.chat.input = "hi".into();
+        terminal
+            .draw(|frame| render_chat_overlay(&state, frame))
+            .expect("chat overlay renders");
+        assert_eq!(
+            row_text(terminal.backend().buffer(), 16, 106),
+            format!("   ││> hi{}││   ", " ".repeat(92)),
+            "the draft renders inside the composer frame"
+        );
+    }
+
+    #[test]
+    fn composer_counter_tracks_the_draft_length() {
+        let mut state = chat_state_at(106, 20);
+        let mut terminal = Terminal::new(TestBackend::new(106, 20)).expect("test terminal");
+
+        let mut border_row = |input: &str| -> String {
+            state.chat.input = input.into();
+            terminal
+                .draw(|frame| render_chat_overlay(&state, frame))
+                .expect("chat overlay renders");
+            row_text(terminal.backend().buffer(), 15, 106)
+        };
+
+        // Two drafts, two counters, both asserted as full rows — the dash
+        // run shrinks as the counter widens, so a stale counter cannot pass.
+        assert_eq!(
+            border_row("hi"),
+            format!("   │┌ [ Chat ] {}2 ┐│   ", "─".repeat(84))
+        );
+        assert_eq!(
+            border_row("hello there"),
+            format!("   │┌ [ Chat ] {}11 ┐│   ", "─".repeat(83))
+        );
+    }
+
+    #[test]
+    fn chat_column_rects_stop_where_the_composer_frame_begins() {
+        // Lockstep: the composer frame consumes the bottom three inner rows,
+        // so every chat column rect must end exactly where it starts. If one
+        // rect keeps the old bottom edge while the others shrink, the column
+        // draws under the frame (or a gap opens) — this catches that.
+        for (width, height) in [(106u16, 20u16), (60, 24), (36, 20), (30, 8)] {
+            let state = chat_state_at(width, height);
+            let inner = state.chat_inner_rect();
+            let input = state.chat_input_rect();
+
+            assert_eq!(
+                input.height,
+                inner.height.min(3),
+                "composer owns three rows at {width}x{height}"
+            );
+            assert_eq!(
+                input.y + input.height,
+                inner.y + inner.height,
+                "frame flush with the inner bottom at {width}x{height}"
+            );
+            assert_eq!(input.x, inner.x, "full inner width");
+            assert_eq!(input.width, inner.width, "full inner width");
+
+            for (name, column) in [
+                ("channel", state.chat_channel_list_rect()),
+                ("members", state.chat_members_rect()),
+                ("messages", state.chat_messages_rect()),
+            ] {
+                if column.height == 0 {
+                    continue;
+                }
+                assert_eq!(
+                    column.y + column.height,
+                    input.y,
+                    "{name} column ends where the composer begins at {width}x{height}"
+                );
+            }
+            // Header + divider sit directly above the timeline body.
+            let messages = state.chat_messages_rect();
+            let header = state.chat_header_rect();
+            if header.height > 0 {
+                assert_eq!(
+                    header.y + header.height,
+                    messages.y,
+                    "header tiles onto the timeline at {width}x{height}"
+                );
+            }
+        }
     }
 }

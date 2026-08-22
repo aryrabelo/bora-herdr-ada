@@ -3,10 +3,11 @@
 //! (repos or subdirectories of repos, derived via git discovery) under a name,
 //! a channel, an optional orchestrator, and per-project check/command sections.
 //!
-//! The sidebar is the only reader; right-click, an editor, and MCP tools are
-//! all writers of the same file (later beads in epic bora-e9i). This module
-//! owns three things only: the schema, parsing it, and a cheap reload trigger.
-//! Socket verbs, MCP tools, and sidebar rendering are later beads.
+//! The sidebar is the only *unconditional* reader; the socket verbs in
+//! `app::api::projects` (bora-e9i.2) are the only writer, and re-read this
+//! module's `load_projects_file_fresh` immediately before every mutation
+//! rather than trusting any cached `ProjectsStore` value. MCP tools and an
+//! editor are later beads in epic bora-e9i.
 //!
 //! YAML: `serde_yaml_ng`, not `serde_yaml`. The repo had zero YAML
 //! dependencies before this; the design mandates YAML for this file, and
@@ -22,15 +23,25 @@
 //! A parse error never replaces the last good value — the caller (sidebar)
 //! surfaces the error as a toast and keeps rendering whatever last parsed
 //! cleanly. This module never panics and never `unwrap()`s.
+//!
+//! Writes go through [`write_projects_file`]: serialize, write a sibling
+//! `.tmp`, then rename — same idiom as
+//! `persist::pending_prompts::write_pending_prompts` — so
+//! `ProjectsStore::reload_if_changed`'s mtime/len poll never observes a
+//! half-written file. [`update_projects_file`] wraps that with a fresh
+//! read-modify-write: it reads the CURRENT on-disk content immediately
+//! before applying the mutation, never a stale in-memory copy, so a socket
+//! verb handler can never clobber another handler's edit with a write that
+//! started from data it read a while ago.
 
-// bora-e9i.1 lands the store, resolver, and reload trigger only. Socket
-// verbs (bora-e9i.2), MCP tools, and sidebar rendering are later beads in
-// epic bora-e9i and are what will call most of this module's public API;
-// until then it is only exercised from this module's own tests.
+// bora-e9i.1 landed the store, resolver, and reload trigger. bora-e9i.2
+// (this bead) adds the write path the socket verbs in `app::api::projects`
+// call. MCP tools and sidebar rendering are later beads in epic bora-e9i.
 #![allow(dead_code)]
 
 use std::collections::BTreeMap;
 use std::fs;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -154,7 +165,14 @@ impl Member {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+/// Derives `schemars::JsonSchema` in addition to the file-schema traits
+/// because `api::schema::projects::ProjectMemberInfo` (the `project.list`
+/// wire shape) reuses this type directly rather than mirroring it — the
+/// same pattern `ResponseResult::ConfigReload` already uses for
+/// `config::ConfigReloadStatus`.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, schemars::JsonSchema,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum WorktreesScope {
     #[default]
@@ -186,6 +204,80 @@ pub fn parse_projects_yaml(raw: &str) -> Result<ProjectsFile, String> {
 
 pub fn to_yaml(file: &ProjectsFile) -> Result<String, String> {
     serde_yaml_ng::to_string(file).map_err(|err| err.to_string())
+}
+
+/// Reads and parses `projects.yml` fresh from disk — never a cached
+/// `ProjectsStore` value. Every `project.*` socket verb (read or write)
+/// goes through this, so a handler's answer or write always starts from
+/// the current on-disk content, not a copy that may already be stale. A
+/// missing file reads as an empty `ProjectsFile`, the same convention
+/// `ProjectsStore::load` uses for "nothing written yet".
+pub fn load_projects_file_fresh() -> Result<ProjectsFile, String> {
+    let path = projects_file_path();
+    match fs::read_to_string(&path) {
+        Ok(raw) => parse_projects_yaml(&raw),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(ProjectsFile::default()),
+        Err(err) => Err(format!("{}: {err}", path.display())),
+    }
+}
+
+/// Serializes `file` to YAML and writes it to `projects_file_path()` via a
+/// sibling `.tmp` + rename — same idiom as
+/// `persist::pending_prompts::write_pending_prompts` — so
+/// `ProjectsStore::reload_if_changed`'s mtime/len poll never observes a
+/// half-written file.
+pub fn write_projects_file(file: &ProjectsFile) -> io::Result<()> {
+    let path = projects_file_path();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let body = to_yaml(file).map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
+    let tmp_path = path.with_extension("yml.tmp");
+    {
+        let mut tmp = fs::File::create(&tmp_path)?;
+        tmp.write_all(body.as_bytes())?;
+        tmp.flush()?;
+    }
+    fs::rename(&tmp_path, &path)
+}
+
+/// Which stage of [`update_projects_file`] failed: reading/parsing the
+/// current file before the mutation, the mutation closure's own business
+/// rule (`E` — a verb-specific validation failure), or writing the result
+/// back to disk.
+#[derive(Debug)]
+pub enum ProjectsUpdateError<E> {
+    Load(String),
+    Mutate(E),
+    Save(String),
+}
+
+/// Read-modify-write `projects.yml`: reads the CURRENT file fresh from disk
+/// via [`load_projects_file_fresh`] (never a stale in-memory copy), applies
+/// `mutate`, then writes the result back atomically via
+/// [`write_projects_file`]. `mutate` returning `Err` aborts before any
+/// write, so a rejected mutation (duplicate slug, unknown project, ...)
+/// never touches the file on disk.
+///
+/// This is not a cross-process lock: two truly concurrent writers can still
+/// each read before either writes, and the second write to land wins,
+/// silently overwriting the first's edit. What it does guarantee is the two
+/// things the acceptance criteria for the socket verbs ask for: a reader
+/// (the sidebar's poll) never observes a half-written file, because the
+/// write is a rename over a fully-written temp file; and a write never
+/// starts from a handler-local cache that could already be behind the
+/// file another handler just wrote, because every call re-reads from disk
+/// first. Within this process, `app::api` dispatches one request at a
+/// time, so that races-within-the-app-process case does not arise in
+/// practice — this still holds against an external writer (a second `bora`
+/// process, an editor) touching the same file concurrently.
+pub fn update_projects_file<E>(
+    mutate: impl FnOnce(&mut ProjectsFile) -> Result<(), E>,
+) -> Result<ProjectsFile, ProjectsUpdateError<E>> {
+    let mut file = load_projects_file_fresh().map_err(ProjectsUpdateError::Load)?;
+    mutate(&mut file).map_err(ProjectsUpdateError::Mutate)?;
+    write_projects_file(&file).map_err(|err| ProjectsUpdateError::Save(err.to_string()))?;
+    Ok(file)
 }
 
 // ── Resolver: member dir -> (repo_identity, checkout_key, subdir) ─────────
@@ -321,6 +413,7 @@ impl ProjectsStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::IsolatedConfigDir;
 
     // `r##` because the YAML contains `"#cnb"`, and `"#` would close an `r#"` literal.
     const EXAMPLE_YAML: &str = r##"
@@ -350,42 +443,7 @@ projects:
       - dir: ~/Sites/wt
 "##;
 
-    // ponytail: local copy, matching the pattern already used in
-    // `persist::pending_prompts` and elsewhere for `XDG_STATE_HOME`. Extract
-    // a shared helper if a fourth XDG-isolation copy appears.
-    struct IsolatedConfigDir {
-        _guard: parking_lot::MutexGuard<'static, ()>,
-        old: Option<std::ffi::OsString>,
-        dir: PathBuf,
-    }
-
-    impl IsolatedConfigDir {
-        fn new(name: &str) -> Self {
-            let guard = crate::config::test_config_env_lock().lock();
-            let old = std::env::var_os("XDG_CONFIG_HOME");
-            let dir =
-                std::env::temp_dir().join(format!("bora-projects-{name}-{}", std::process::id()));
-            let _ = fs::remove_dir_all(&dir);
-            std::env::set_var("XDG_CONFIG_HOME", &dir);
-            Self {
-                _guard: guard,
-                old,
-                dir,
-            }
-        }
-    }
-
-    impl Drop for IsolatedConfigDir {
-        fn drop(&mut self) {
-            match self.old.take() {
-                Some(value) => std::env::set_var("XDG_CONFIG_HOME", value),
-                None => std::env::remove_var("XDG_CONFIG_HOME"),
-            }
-            let _ = fs::remove_dir_all(&self.dir);
-        }
-    }
-
-    fn write_projects_file(raw: &str) {
+    fn write_raw_projects_file(raw: &str) {
         let path = projects_file_path();
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(&path, raw).unwrap();
@@ -535,14 +593,14 @@ projects:
     #[test]
     fn malformed_file_returns_error_and_keeps_last_good_value() {
         let _isolated = IsolatedConfigDir::new("malformed");
-        write_projects_file(EXAMPLE_YAML);
+        write_raw_projects_file(EXAMPLE_YAML);
         let mut store = ProjectsStore::load();
         assert!(
             store.current().projects.contains_key("cnb"),
             "the good file must have loaded"
         );
 
-        write_projects_file("{ not: [valid, yaml");
+        write_raw_projects_file("{ not: [valid, yaml");
         let result = store.reload_if_changed();
         assert!(
             result.is_err(),
@@ -557,7 +615,7 @@ projects:
     #[test]
     fn reload_if_changed_detects_a_change_and_is_a_noop_when_unchanged() {
         let _isolated = IsolatedConfigDir::new("reload");
-        write_projects_file(
+        write_raw_projects_file(
             r#"
 projects:
   a:
@@ -570,7 +628,7 @@ projects:
 
         // Content length changes, so the (mtime, len) stamp differs even on
         // filesystems with coarse mtime resolution — no sleep-and-hope timing.
-        write_projects_file(
+        write_raw_projects_file(
             r#"
 projects:
   a:

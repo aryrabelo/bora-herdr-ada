@@ -521,6 +521,11 @@ fn api_method_name(method: &Method) -> &'static str {
         Method::ChannelLeave(_) => "channel.leave",
         Method::ChannelNote(_) => "channel.note",
         Method::ChannelAsk(_) => "channel.ask",
+        Method::ProjectList(_) => "project.list",
+        Method::ProjectCreate(_) => "project.create",
+        Method::ProjectUpdate(_) => "project.update",
+        Method::ProjectMemberAdd(_) => "project.member_add",
+        Method::ProjectMemberRemove(_) => "project.member_remove",
     }
 }
 

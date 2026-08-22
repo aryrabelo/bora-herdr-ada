@@ -139,6 +139,50 @@ impl Drop for IsolatedStateDir {
     }
 }
 
+/// Test-only guard that points `config_dir()` at a fresh temp directory for
+/// the duration of one test, and restores the previous `XDG_CONFIG_HOME` on
+/// drop. Sibling of `IsolatedStateDir` above, for the other XDG variable:
+/// `persist::projects` (`projects.yml` lives under `config_dir()`) and
+/// `app::api::projects`'s handler tests both need it, which is the "fourth
+/// copy" threshold `persist::projects` used to note before this existed.
+///
+/// Same locking rule as `IsolatedStateDir`: `XDG_CONFIG_HOME` is
+/// process-global, so setting it is only safe while holding
+/// `test_config_env_lock`, held for this guard's whole lifetime.
+#[cfg(test)]
+pub(crate) struct IsolatedConfigDir {
+    _guard: parking_lot::MutexGuard<'static, ()>,
+    previous: Option<std::ffi::OsString>,
+    dir: PathBuf,
+}
+
+#[cfg(test)]
+impl IsolatedConfigDir {
+    pub(crate) fn new(prefix: &str) -> Self {
+        let guard = crate::config::test_config_env_lock().lock();
+        let previous = std::env::var_os("XDG_CONFIG_HOME");
+        let dir = std::env::temp_dir().join(format!("bora-{prefix}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::env::set_var("XDG_CONFIG_HOME", &dir);
+        Self {
+            _guard: guard,
+            previous,
+            dir,
+        }
+    }
+}
+
+#[cfg(test)]
+impl Drop for IsolatedConfigDir {
+    fn drop(&mut self) {
+        match self.previous.take() {
+            Some(value) => std::env::set_var("XDG_CONFIG_HOME", value),
+            None => std::env::remove_var("XDG_CONFIG_HOME"),
+        }
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
 #[cfg(windows)]
 fn platform_config_dir() -> PathBuf {
     if let Ok(dir) = std::env::var("APPDATA") {

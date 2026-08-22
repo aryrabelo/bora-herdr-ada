@@ -8,6 +8,7 @@ pub mod github;
 pub mod integrations;
 pub mod panes;
 pub mod plugins;
+pub mod projects;
 pub mod response;
 pub mod server;
 pub mod session;
@@ -23,6 +24,7 @@ pub use github::*;
 pub use integrations::*;
 pub use panes::*;
 pub use plugins::*;
+pub use projects::*;
 pub use response::*;
 pub use server::*;
 pub use session::*;
@@ -274,6 +276,16 @@ pub enum Method {
     ChannelNote(ChannelNoteParams),
     #[serde(rename = "channel.ask")]
     ChannelAsk(ChannelAskParams),
+    #[serde(rename = "project.list")]
+    ProjectList(EmptyParams),
+    #[serde(rename = "project.create")]
+    ProjectCreate(ProjectCreateParams),
+    #[serde(rename = "project.update")]
+    ProjectUpdate(ProjectUpdateParams),
+    #[serde(rename = "project.member_add")]
+    ProjectMemberAdd(ProjectMemberAddParams),
+    #[serde(rename = "project.member_remove")]
+    ProjectMemberRemove(ProjectMemberRemoveParams),
 }
 
 #[cfg(test)]
