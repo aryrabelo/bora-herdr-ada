@@ -235,10 +235,22 @@ fn render_channel_list(app: &AppState, frame: &mut Frame, area: Rect) {
             "  {}·{} {activity}",
             channel.pane_count, channel.agent_count
         );
-        // Unread is a separate, fixed-width span appended after the elided
-        // name/detail so it's never swallowed by `middle_elide`'s "…" and
-        // stays visually distinct (teal, bold) from the pane/agent counts —
-        // it's rendered as its own span, not concatenated into that text.
+        // Unread marker (bora-7c5.4): two distinct "unread" notions exist
+        // in this codebase. `ChannelSummary.unread` is nominally the
+        // per-member mailbox count, but by the time it reaches this render
+        // function `apply_chat_seen_cursor` (app/input/chat.rs) has already
+        // overwritten it with the window's own view state — rooms with
+        // messages newer than what THIS chat window has displayed
+        // (`ChatViewState::seen`). That's the one a human staring at the
+        // channel list wants, not the persisted per-member cursor, so this
+        // render function reuses the field as-is rather than adding a
+        // parallel mechanism. A read channel renders nothing: no empty
+        // bracket, no "0", nothing to learn to ignore — that asymmetry is
+        // the whole point. The badge is a separate, fixed-width span
+        // appended after the elided name/detail so it's never swallowed by
+        // `middle_elide`'s "…" and stays visually distinct (teal, bold)
+        // from the pane/agent counts — it's rendered as its own span, not
+        // concatenated into that text.
         let unread_badge = if channel.unread > 0 {
             format!(" {}●", channel.unread)
         } else {
@@ -1291,5 +1303,89 @@ mod tests {
                 "the members header starts at the content origin at {width}x{height}"
             );
         }
+    }
+
+    // ---- unread marker (bora-7c5.4) ---------------------------------
+
+    fn channel_fixture(name: &str, unread: u64) -> crate::api::schema::ChannelSummary {
+        crate::api::schema::ChannelSummary {
+            name: name.into(),
+            pane_count: 1,
+            agent_count: 1,
+            last_message_seq: 42,
+            last_message_ts: Some("2026-08-15T10:00:00Z".into()),
+            unread,
+            member_status_counts: Default::default(),
+        }
+    }
+
+    #[test]
+    fn channel_with_unread_shows_marker_read_channel_shows_nothing() {
+        // Two channels, identical name/detail, differing only in `unread`:
+        // the rendered rows must differ only by the trailing marker span.
+        // The read row carries no residue of it — no empty bracket, no
+        // "0", nothing a reader has to learn to ignore.
+        let mut state = chat_state_at(106, 20);
+        state.chat.channels = vec![channel_fixture("#a", 3), channel_fixture("#a", 0)];
+        state.chat.selected = 99; // neither row selected
+
+        let mut terminal = Terminal::new(TestBackend::new(106, 20)).expect("test terminal");
+        terminal
+            .draw(|frame| render_chat_overlay(&state, frame))
+            .expect("chat overlay renders");
+
+        let content = state.chat_channel_list_rect();
+        let buffer = terminal.backend().buffer();
+        let unread_row = strip_text(buffer, content.x, content.y, content.width);
+        let read_row = strip_text(buffer, content.x, content.y + 1, content.width);
+
+        assert_eq!(
+            unread_row, " #a  1·1 10:00 3●",
+            "unread channel: label then a fixed-width unread marker"
+        );
+        assert_eq!(
+            read_row, " #a  1·1 10:00   ",
+            "read channel: identical label, no marker, no residue in its place"
+        );
+        assert_eq!(
+            unread_row,
+            format!("{} 3●", read_row.trim_end()),
+            "the two rows differ only by the trailing marker"
+        );
+    }
+
+    #[test]
+    fn unread_marker_survives_the_narrowest_bordered_channel_column() {
+        // 46-wide terminal -> onboarding area union width 46 -> popup
+        // width 42 -> inner width 40, the exact threshold below which the
+        // channel column hides entirely (`chat_channel_list_outer_width`).
+        // At 40 the column is 12 wide including its own border, 10 wide
+        // inside it — the narrowest content width the chat view ever
+        // shows. The channel name/detail must lose the eliding race
+        // against the marker, not the other way around: the marker must
+        // come through intact rather than get ratatui-hard-clipped.
+        let mut state = chat_state_at(46, 20);
+        assert_eq!(
+            state.chat_inner_rect().width,
+            40,
+            "fixture must sit exactly at the column-visibility threshold"
+        );
+        state.chat.channels = vec![channel_fixture("#g", 3)];
+        state.chat.selected = 99; // not selected
+
+        let mut terminal = Terminal::new(TestBackend::new(46, 20)).expect("test terminal");
+        terminal
+            .draw(|frame| render_chat_overlay(&state, frame))
+            .expect("chat overlay renders");
+
+        let content = state.chat_channel_list_rect();
+        assert_eq!(content.width, 10, "narrowest channel column content width");
+        let buffer = terminal.backend().buffer();
+        let row = strip_text(buffer, content.x, content.y, content.width);
+
+        assert_eq!(
+            row, " #g…:00 3●",
+            "name/detail elides so the full, unclipped marker fits at the narrowest width"
+        );
     }
 }

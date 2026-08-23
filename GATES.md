@@ -286,3 +286,30 @@ em inglês pra casar com as strings vizinhas). O lead fechou o que faltava:
   EVIDENCE: `column.y + column.height == input.y` virou `... + 1 == input.y`, porque
   agora existe a linha de borda de baixo da própria coluna entre o conteúdo e o composer.
   Continua igualdade exata, por coluna e por largura.
+
+## bora-7c5.4 — marcador de não-lidas explícito · FECHADO (bead obsoleto)
+
+- [x] U1 o builder reportou "já está feito"; o lead conferiu, porque esse é o achado mais
+  conveniente que existe
+  EVIDENCE: `render_channel_list` (`src/ui/chat.rs:254-275`) já monta ` {n}●` como span
+  próprio, desconta `badge_width` ANTES do `middle_elide` e renderiza string vazia quando
+  `unread == 0`. Entregue em `1d7e6d1b` — o MESMO commit que o bead cita como "o contador
+  por membro já existe", sem perceber que ele trouxe o badge da lista também.
+- [x] U2 e a semântica também já era a certa, que era a parte fácil de errar
+  EVIDENCE: `apply_chat_seen_cursor` (`src/app/input/chat.rs:134-143`) sobrescreve
+  `channel.unread` com `last_message_seq - seen`, ou seja o cursor da PRÓPRIA JANELA, não
+  a caixa postal por membro. É a segunda das duas noções, que é a que um humano quer.
+  Já documentado no changelog da 0.32.0.
+- [x] U3 o que faltava de verdade: teste. Não havia nenhum.
+  EVIDENCE: `channel_with_unread_shows_marker_read_channel_shows_nothing` e
+  `unread_marker_survives_the_narrowest_bordered_channel_column`, os dois fixando a row
+  inteira célula por célula.
+- [x] U4 dois mutantes, dois pegos
+  EVIDENCE: badge sempre vazio → `channel_with_unread_shows_marker` FAILED; largura do
+  badge não reservada antes de elidir → `unread_marker_survives_the_narrowest` FAILED
+  (o `●` sai cortado).
+- [x] U5 changelog revertido pelo lead
+  EVIDENCE: o builder anexou um bullet em `### Added` descrevendo o marcador como novidade
+  desta versão. É falso — o comportamento é da 0.32.0 e já está descrito lá. Release note
+  que anuncia de novo o que já saiu é pior que nenhuma.
+- [x] U6 `just check` verde: `3854 tests run: 3854 passed`
