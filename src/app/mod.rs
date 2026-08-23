@@ -10,6 +10,10 @@ pub(crate) mod agent_view;
 mod agents;
 pub(crate) use agents::{AGENT_START_SETTLE_DELAY, MAX_AGENT_START_TIMEOUT};
 mod api;
+// `mod api` is private, so a `crate::app::api::…` path does not resolve from
+// outside this module; the headless server's deferred-action consumer needs
+// this id, so it is re-exported here like every other cross-module item above.
+pub(crate) use api::plugins::DAGR_OPEN_ACTION_ID;
 mod api_helpers;
 pub(crate) use api_helpers::limit_snapshot_lines;
 mod channel_membership;
@@ -724,6 +728,7 @@ impl App {
             request_client_config_reload: false,
             request_clipboard_write: None,
             request_open_url: None,
+            request_open_dagr: false,
             request_open_pr_worktree: None,
             request_flow_run: None,
             request_open_chat: false,
@@ -1731,6 +1736,20 @@ impl App {
                 // client-forwarded action when remote TUI clients land.
                 if let Err(error) = crate::platform::open_url(&url) {
                     tracing::warn!(%url, %error, "failed to open url in browser");
+                }
+                needs_render = true;
+            }
+
+            if self.state.request_open_dagr {
+                self.state.request_open_dagr = false;
+                // bora-1le.3: invoke re-checks the registry, so a plugin
+                // uninstalled between menu-open and click degrades to one
+                // warn here, never a crash or a stale spawn.
+                if let Err(message) = self.invoke_plugin_action_from_ui(
+                    crate::app::api::plugins::DAGR_OPEN_ACTION_ID.to_string(),
+                    "sidebar",
+                ) {
+                    tracing::warn!(%message, "failed to open dagr");
                 }
                 needs_render = true;
             }

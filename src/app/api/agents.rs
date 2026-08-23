@@ -473,7 +473,7 @@ mod tests {
     use crate::{
         api::schema::{AgentStatus, SuccessResponse},
         app::Mode,
-        config::{Config, IsolatedStateDir},
+        config::{Config, IsolatedDirs},
         detect::{Agent, AgentState},
         workspace::Workspace,
     };
@@ -1056,7 +1056,7 @@ mod tests {
     /// any restart.
     #[tokio::test]
     async fn deferred_prompt_survives_a_server_restart_and_delivers() {
-        let _isolated = IsolatedStateDir::new("pending-prompt-restart");
+        let _isolated = IsolatedDirs::new("pending-prompt-restart");
 
         let (queue_id, saved_workspace_id) = {
             let mut first = app_with_agent();

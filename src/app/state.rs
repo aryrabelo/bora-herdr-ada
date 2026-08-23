@@ -1292,11 +1292,17 @@ pub enum ContextMenuKind {
     },
     /// A sidebar group/project header row (visual group or repo group).
     /// `collapse_key` is the same key used for collapse state; `hidden` is
-    /// whether that key is currently hidden.
+    /// whether that key is currently hidden. `dagr_available` (bora-1le.3)
+    /// is resolved at menu-open time for the channels group header only:
+    /// true iff the plugin registry has an enabled install exposing the
+    /// `open-dagr` action. It gates the "Open dagr" entry — absent means
+    /// the entry is simply not built (silent skip, sidebar-design
+    /// decision #9: integrate when present, never absorb).
     GroupHeader {
         name: String,
         collapse_key: String,
         hidden: bool,
+        dagr_available: bool,
     },
     Tab {
         ws_idx: usize,
@@ -1499,8 +1505,12 @@ pub fn build_context_menu_items(
             push_hide(&mut v, *hidden);
             v
         }
-        ContextMenuKind::GroupHeader { hidden, .. } => {
-            if *hidden {
+        ContextMenuKind::GroupHeader {
+            hidden,
+            dagr_available,
+            ..
+        } => {
+            let mut v = if *hidden {
                 vec!["Unhide".to_string()]
             } else {
                 vec![
@@ -1509,7 +1519,12 @@ pub fn build_context_menu_items(
                     "Hide 15m".to_string(),
                     "Hide 30m".to_string(),
                 ]
+            };
+            if *dagr_available {
+                v.push(sep());
+                v.push("Open dagr".to_string());
             }
+            v
         }
         ContextMenuKind::Tab { .. } => {
             vec![
@@ -1884,6 +1899,9 @@ pub struct AppState {
     pub request_clipboard_write: Option<Vec<u8>>,
     /// Set when UI interaction asked to open a URL in the system browser.
     pub request_open_url: Option<String>,
+    /// Set when the channels group header's "Open dagr" entry (bora-1le.3)
+    /// was chosen: the App loop invokes the `open-dagr` plugin action.
+    pub request_open_dagr: bool,
     /// Set when UI interaction asked to open a PR in a new worktree:
     /// (representative workspace index of the repo group, PR number).
     pub request_open_pr_worktree: Option<(usize, u64)>,
@@ -2395,6 +2413,7 @@ impl AppState {
             request_submit_worktree_remove: false,
             request_submit_worktree_merge: false,
             request_reload_config: false,
+            request_open_dagr: false,
             request_client_config_reload: false,
             request_clipboard_write: None,
             request_open_url: None,
@@ -3347,6 +3366,51 @@ mod tests {
                 "Hide 15m",
                 "Hide 30m",
             ]
+        );
+    }
+
+    #[test]
+    fn group_header_menu_open_dagr_entry_tracks_availability_both_ways() {
+        // bora-1le.3: "appears only when installed" is two assertions — a
+        // one-sided test would pass an implementation that always shows the
+        // entry, and an always-hidden one would never be noticed either.
+        let with_dagr = ContextMenuKind::GroupHeader {
+            name: "channels".to_string(),
+            collapse_key: "vg:channels".to_string(),
+            hidden: false,
+            dagr_available: true,
+        };
+        let items = build_context_menu_items(&with_dagr, &[], &[]);
+        assert!(
+            items.iter().any(|item| item == "Open dagr"),
+            "entry must be present when the dagr plugin is registered: {items:?}"
+        );
+        // The separator keeps the entry visually distinct from the hide
+        // actions; without it the menu reads as one list.
+        let dagr_idx = items
+            .iter()
+            .position(|item| item == "Open dagr")
+            .expect("checked present above");
+        assert_eq!(
+            items.get(dagr_idx - 1),
+            Some(&CONTEXT_MENU_SEPARATOR.to_string()),
+            "Open dagr must follow a separator"
+        );
+
+        let without_dagr = ContextMenuKind::GroupHeader {
+            name: "channels".to_string(),
+            collapse_key: "vg:channels".to_string(),
+            hidden: false,
+            dagr_available: false,
+        };
+        let items = build_context_menu_items(&without_dagr, &[], &[]);
+        assert!(
+            !items.iter().any(|item| item == "Open dagr"),
+            "entry must be absent when dagr is not installed — silent skip, no greyed-out row: {items:?}"
+        );
+        assert!(
+            !items.iter().any(|item| item == CONTEXT_MENU_SEPARATOR),
+            "absent entry must not leave an orphan separator"
         );
     }
 }

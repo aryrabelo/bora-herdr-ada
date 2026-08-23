@@ -9,9 +9,9 @@
 //! comment for why.
 
 use crate::api::schema::{
-    EmptyParams, ProjectCreateParams, ProjectMemberAddParams, ProjectMemberInfo,
-    ProjectMemberRemoveParams, ProjectMemberResolution, ProjectSummary, ProjectUpdateParams,
-    ResponseResult,
+    ChannelCreateParams, EmptyParams, ProjectCreateParams, ProjectMemberAddParams,
+    ProjectMemberInfo, ProjectMemberRemoveParams, ProjectMemberResolution, ProjectSummary,
+    ProjectUpdateParams, ResponseResult,
 };
 use crate::app::App;
 use crate::persist::projects::{self, Member, MemberResolution, Project, ProjectsUpdateError};
@@ -42,6 +42,7 @@ impl MutationFailure {
 /// has to redo git discovery itself.
 fn project_summary(slug: String, project: Project) -> ProjectSummary {
     let channel = project.effective_channel(&slug);
+    let auto_join = project.auto_join;
     let members = project
         .members
         .into_iter()
@@ -58,6 +59,7 @@ fn project_summary(slug: String, project: Project) -> ProjectSummary {
         slug,
         name: project.name,
         channel,
+        auto_join,
         members,
     }
 }
@@ -101,6 +103,7 @@ impl App {
         }
         let name = params.name;
         let channel = params.channel;
+        let auto_join = params.auto_join.unwrap_or(true);
         let insert_slug = slug.clone();
         let result = projects::update_projects_file(move |file| {
             if file.projects.contains_key(&insert_slug) {
@@ -117,6 +120,7 @@ impl App {
                     members: Vec::new(),
                     orchestrator: None,
                     sections: None,
+                    auto_join,
                 },
             );
             Ok(())
@@ -128,6 +132,7 @@ impl App {
                     .get(&slug)
                     .cloned()
                     .expect("just inserted above");
+                self.ensure_project_channel(&project.effective_channel(&slug));
                 encode_success(
                     id,
                     ResponseResult::ProjectCreated {
@@ -154,6 +159,7 @@ impl App {
         }
         let name = params.name;
         let channel = params.channel;
+        let auto_join = params.auto_join.unwrap_or(true);
         let target_slug = slug.clone();
         let result = projects::update_projects_file(move |file| {
             let Some(project) = file.projects.get_mut(&target_slug) else {
@@ -164,6 +170,7 @@ impl App {
             };
             project.name = name;
             project.channel = channel;
+            project.auto_join = auto_join;
             Ok(())
         });
         match result {
@@ -173,6 +180,13 @@ impl App {
                     .get(&slug)
                     .cloned()
                     .expect("verified present above");
+                // Re-bind, never rename (design doc §"Project = channel —
+                // resolved", decision A): the OLD channel this project may
+                // have pointed at before is left completely untouched —
+                // its transcript, roster, and workspace all stay exactly
+                // as they were, just unbound from this project. Only the
+                // NEW effective channel gets ensured here.
+                self.ensure_project_channel(&project.effective_channel(&slug));
                 encode_success(
                     id,
                     ResponseResult::ProjectUpdated {
@@ -186,6 +200,42 @@ impl App {
             Err(ProjectsUpdateError::Load(msg)) => encode_error(id, "project_update_failed", msg),
             Err(ProjectsUpdateError::Save(msg)) => encode_error(id, "project_update_failed", msg),
         }
+    }
+
+    /// Creates `channel_name`'s channel workspace via the existing
+    /// `channel.create` verb when it does not already exist, or leaves an
+    /// existing one — transcript, roster, panes — completely untouched.
+    /// `handle_channel_create`'s own `channel_exists` response IS the
+    /// reuse path, not a separate one this bead needs to build. Called by
+    /// both `project.create` (bind on creation) and `project.update`
+    /// (re-bind on a `channel:` change).
+    ///
+    /// Never fails the caller: `projects.yml` has already been written by
+    /// the time this runs, so a channel workspace that could not be
+    /// created must not roll back or fail an otherwise-successful
+    /// `project.create`/`project.update` — it is logged and the project is
+    /// left pointing at a channel name with no live workspace yet, exactly
+    /// as if an operator had hand-typed a `channel:` no one created.
+    fn ensure_project_channel(&mut self, channel_name: &str) {
+        let name = crate::persist::channels::normalize_channel_name(channel_name);
+        if name.is_empty() {
+            return;
+        }
+        let response = self.handle_channel_create(
+            "internal:project-channel-bind".into(),
+            ChannelCreateParams { name: name.clone() },
+        );
+        let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&response) else {
+            return;
+        };
+        if parsed.get("result").is_some() || parsed["error"]["code"] == "channel_exists" {
+            return;
+        }
+        tracing::warn!(
+            channel = %name,
+            error = %parsed["error"]["message"].as_str().unwrap_or("unknown"),
+            "project channel binding failed; project persisted without a live channel workspace"
+        );
     }
 
     pub(super) fn handle_project_member_add(
@@ -220,6 +270,7 @@ impl App {
                 None => project.members.push(Member {
                     dir: target_dir,
                     worktrees,
+                    template: None,
                 }),
             }
             Ok(())
@@ -320,18 +371,26 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{Config, IsolatedConfigDir};
+    use crate::api::schema::{ChannelJoinParams, ChannelMessage, ChannelSenderKind};
+    use crate::config::{Config, IsolatedDirs};
     use crate::persist::projects::{projects_file_path, WorktreesScope};
 
+    /// `NonLogin` is not cosmetic here: `project.create` binds a channel,
+    /// which spawns a real channel workspace, and a login shell sources the
+    /// developer's full profile and never exits — every test in this module
+    /// hung until this matched `app::api::channels`'s helper.
     fn test_app() -> App {
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
-        App::new(
+        let mut app = App::new(
             &Config::default(),
             true,
             None,
             api_rx,
             crate::api::EventHub::default(),
-        )
+        );
+        app.state.default_shell = super::super::test_support::exiting_test_command().into();
+        app.state.shell_mode = crate::config::ShellModeConfig::NonLogin;
+        app
     }
 
     fn create(app: &mut App, slug: &str) -> serde_json::Value {
@@ -341,6 +400,7 @@ mod tests {
                 slug: slug.into(),
                 name: None,
                 channel: None,
+                auto_join: None,
             },
         );
         serde_json::from_str(&response).unwrap()
@@ -351,9 +411,35 @@ mod tests {
         serde_json::from_str(&response).unwrap()
     }
 
-    #[test]
-    fn create_then_list_round_trips_and_persists_to_disk() {
-        let _isolated = IsolatedConfigDir::new("project-create-list");
+    /// A pane living outside any channel workspace, via a real (but
+    /// instant-exit) spawned workspace — enough to exercise
+    /// `channel.join`'s explicit-membership path against a channel
+    /// `project.create`/`.update` bound.
+    fn outside_pane(app: &mut App) -> String {
+        let idx = app
+            .create_workspace_with_launch_env(std::env::temp_dir(), false, Vec::new())
+            .expect("outside workspace must spawn");
+        let pane = app.state.workspaces[idx].tabs[0].root_pane;
+        app.public_pane_id(idx, pane).unwrap()
+    }
+
+    fn seeded_message(text: &str) -> ChannelMessage {
+        ChannelMessage {
+            ts: "2026-01-01T00:00:00Z".into(),
+            seq: 1,
+            from_pane: "system".into(),
+            from_name: "bora".into(),
+            from_kind: ChannelSenderKind::Agent,
+            text: text.into(),
+            in_reply_to: None,
+            to_pane: None,
+            to_human: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn create_then_list_round_trips_and_persists_to_disk() {
+        let _isolated = IsolatedDirs::new("project-create-list");
         let mut app = test_app();
 
         let created = app.handle_project_create(
@@ -362,12 +448,14 @@ mod tests {
                 slug: "cnb".into(),
                 name: Some("CNB".into()),
                 channel: Some("#cnb-room".into()),
+                auto_join: None,
             },
         );
         let created: serde_json::Value = serde_json::from_str(&created).unwrap();
         assert_eq!(created["result"]["project"]["slug"], "cnb");
         assert_eq!(created["result"]["project"]["name"], "CNB");
         assert_eq!(created["result"]["project"]["channel"], "#cnb-room");
+        assert_eq!(created["result"]["project"]["auto_join"], true);
 
         let listed = list(&mut app);
         let projects = listed["result"]["projects"].as_array().unwrap();
@@ -384,9 +472,9 @@ mod tests {
         assert_eq!(disk_project.channel.as_deref(), Some("#cnb-room"));
     }
 
-    #[test]
-    fn create_on_existing_slug_is_an_error_not_a_silent_overwrite() {
-        let _isolated = IsolatedConfigDir::new("project-create-duplicate");
+    #[tokio::test]
+    async fn create_on_existing_slug_is_an_error_not_a_silent_overwrite() {
+        let _isolated = IsolatedDirs::new("project-create-duplicate");
         let mut app = test_app();
         create(&mut app, "cnb");
 
@@ -396,6 +484,7 @@ mod tests {
                 slug: "cnb".into(),
                 name: Some("Overwritten".into()),
                 channel: None,
+                auto_join: None,
             },
         );
         let duplicate: serde_json::Value = serde_json::from_str(&duplicate).unwrap();
@@ -414,9 +503,9 @@ mod tests {
         );
     }
 
-    #[test]
-    fn update_replaces_name_and_channel_and_persists() {
-        let _isolated = IsolatedConfigDir::new("project-update");
+    #[tokio::test]
+    async fn update_replaces_name_and_channel_and_persists() {
+        let _isolated = IsolatedDirs::new("project-update");
         let mut app = test_app();
         create(&mut app, "cnb");
 
@@ -426,6 +515,7 @@ mod tests {
                 slug: "cnb".into(),
                 name: Some("CNB Landing".into()),
                 channel: Some("#cnb-eng".into()),
+                auto_join: None,
             },
         );
         let updated: serde_json::Value = serde_json::from_str(&updated).unwrap();
@@ -444,7 +534,7 @@ mod tests {
 
     #[test]
     fn update_on_unknown_slug_errors_project_not_found() {
-        let _isolated = IsolatedConfigDir::new("project-update-missing");
+        let _isolated = IsolatedDirs::new("project-update-missing");
         let mut app = test_app();
 
         let response = app.handle_project_update(
@@ -453,15 +543,16 @@ mod tests {
                 slug: "ghost".into(),
                 name: Some("nope".into()),
                 channel: None,
+                auto_join: None,
             },
         );
         let response: serde_json::Value = serde_json::from_str(&response).unwrap();
         assert_eq!(response["error"]["code"], "project_not_found");
     }
 
-    #[test]
-    fn member_add_then_list_shows_resolved_identity() {
-        let _isolated = IsolatedConfigDir::new("project-member-add");
+    #[tokio::test]
+    async fn member_add_then_list_shows_resolved_identity() {
+        let _isolated = IsolatedDirs::new("project-member-add");
         let repo = std::env::temp_dir().join(format!(
             "bora-project-member-add-repo-{}",
             std::process::id()
@@ -508,9 +599,9 @@ mod tests {
         std::fs::remove_dir_all(&repo).ok();
     }
 
-    #[test]
-    fn member_add_on_existing_dir_updates_in_place_never_appends() {
-        let _isolated = IsolatedConfigDir::new("project-member-add-idempotent");
+    #[tokio::test]
+    async fn member_add_on_existing_dir_updates_in_place_never_appends() {
+        let _isolated = IsolatedDirs::new("project-member-add-idempotent");
         let mut app = test_app();
         create(&mut app, "cnb");
 
@@ -542,9 +633,9 @@ mod tests {
         }
     }
 
-    #[test]
-    fn member_remove_of_absent_dir_errors_naming_what_was_not_found() {
-        let _isolated = IsolatedConfigDir::new("project-member-remove-missing");
+    #[tokio::test]
+    async fn member_remove_of_absent_dir_errors_naming_what_was_not_found() {
+        let _isolated = IsolatedDirs::new("project-member-remove-missing");
         let mut app = test_app();
         create(&mut app, "cnb");
 
@@ -566,9 +657,9 @@ mod tests {
         );
     }
 
-    #[test]
-    fn member_remove_deletes_the_member_and_persists() {
-        let _isolated = IsolatedConfigDir::new("project-member-remove");
+    #[tokio::test]
+    async fn member_remove_deletes_the_member_and_persists() {
+        let _isolated = IsolatedDirs::new("project-member-remove");
         let mut app = test_app();
         create(&mut app, "cnb");
         app.handle_project_member_add(
@@ -598,9 +689,9 @@ mod tests {
         assert!(on_disk.projects.get("cnb").unwrap().members.is_empty());
     }
 
-    #[test]
-    fn write_never_leaves_a_tmp_file_and_leaves_a_fully_parseable_file() {
-        let _isolated = IsolatedConfigDir::new("project-atomic-write");
+    #[tokio::test]
+    async fn write_never_leaves_a_tmp_file_and_leaves_a_fully_parseable_file() {
+        let _isolated = IsolatedDirs::new("project-atomic-write");
         let mut app = test_app();
         create(&mut app, "cnb");
         app.handle_project_update(
@@ -609,6 +700,7 @@ mod tests {
                 slug: "cnb".into(),
                 name: Some("CNB".into()),
                 channel: None,
+                auto_join: None,
             },
         );
 
@@ -625,6 +717,160 @@ mod tests {
             Some("CNB"),
             "the file on disk must reflect the update, proving the rename actually \
              landed the new content rather than abandoning it in the .tmp sibling"
+        );
+    }
+
+    #[tokio::test]
+    async fn create_binds_a_channel_that_join_accepts() {
+        let _isolated = IsolatedDirs::new("project-create-channel-bind");
+        let mut app = test_app();
+        create(&mut app, "cnb");
+
+        let pane_id = outside_pane(&mut app);
+        let joined = app.handle_channel_join(
+            "req".into(),
+            ChannelJoinParams {
+                name: "#cnb".into(),
+                pane: pane_id.clone(),
+                scope_write: None,
+                scope_read: None,
+            },
+        );
+        let joined: serde_json::Value = serde_json::from_str(&joined).unwrap();
+        assert_eq!(
+            joined["result"]["pane_id"],
+            serde_json::json!(pane_id),
+            "project.create must bind a channel workspace channel.join can find, got: {joined}"
+        );
+        assert_eq!(joined["result"]["source"], serde_json::json!("joined"));
+    }
+
+    #[tokio::test]
+    async fn create_reuses_an_existing_channel_and_leaves_its_transcript_intact() {
+        let _isolated = IsolatedDirs::new("project-create-channel-reuse");
+        let mut app = test_app();
+
+        // The channel exists BEFORE any project references it — e.g. an
+        // orchestrator that assembled its own project at runtime (design
+        // doc, "Single store, many writers"). `project.create` must find
+        // and reuse this, not spin up a second workspace or wipe it.
+        app.handle_channel_create("req".into(), ChannelCreateParams { name: "cnb".into() });
+        assert_eq!(app.state.workspaces.len(), 1);
+        crate::persist::channels::append_message("cnb", &seeded_message("pre-existing line"))
+            .unwrap();
+
+        create(&mut app, "cnb");
+
+        assert_eq!(
+            app.state.workspaces.len(),
+            1,
+            "reusing an existing channel must not spin up a second channel workspace"
+        );
+        let tail = crate::persist::channels::read_tail("cnb", 10).unwrap();
+        assert!(
+            tail.iter().any(|m| m.text == "pre-existing line"),
+            "reusing an existing channel must leave its transcript intact, got: {tail:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn update_rebinds_the_channel_without_touching_the_old_one() {
+        let _isolated = IsolatedDirs::new("project-update-channel-rebind");
+        let mut app = test_app();
+        app.handle_project_create(
+            "req".into(),
+            ProjectCreateParams {
+                slug: "cnb".into(),
+                name: None,
+                channel: Some("#cnb-old".into()),
+                auto_join: None,
+            },
+        );
+        crate::persist::channels::append_message("cnb-old", &seeded_message("old line")).unwrap();
+
+        app.handle_project_update(
+            "req2".into(),
+            ProjectUpdateParams {
+                slug: "cnb".into(),
+                name: None,
+                channel: Some("#cnb-new".into()),
+                auto_join: None,
+            },
+        );
+
+        let old_tail = crate::persist::channels::read_tail("cnb-old", 10).unwrap();
+        assert!(
+            old_tail.iter().any(|m| m.text == "old line"),
+            "re-binding to a new channel must never touch the old one's transcript"
+        );
+        assert_eq!(
+            app.state.workspaces.len(),
+            2,
+            "re-bind creates the new channel workspace alongside the untouched old one"
+        );
+
+        let pane_id = outside_pane(&mut app);
+        let joined = app.handle_channel_join(
+            "req3".into(),
+            ChannelJoinParams {
+                name: "#cnb-new".into(),
+                pane: pane_id,
+                scope_write: None,
+                scope_read: None,
+            },
+        );
+        let joined: serde_json::Value = serde_json::from_str(&joined).unwrap();
+        assert!(
+            joined.get("error").is_none(),
+            "the newly re-bound channel must be joinable, got: {joined}"
+        );
+    }
+
+    #[tokio::test]
+    async fn auto_join_flag_defaults_true_and_is_persisted_when_set_false() {
+        let _isolated = IsolatedDirs::new("project-auto-join-flag");
+        let mut app = test_app();
+
+        let created = create(&mut app, "cnb");
+        assert_eq!(
+            created["result"]["project"]["auto_join"], true,
+            "auto_join must default to true and be reported on create"
+        );
+
+        let opted_out = app.handle_project_create(
+            "req2".into(),
+            ProjectCreateParams {
+                slug: "quiet".into(),
+                name: None,
+                channel: None,
+                auto_join: Some(false),
+            },
+        );
+        let opted_out: serde_json::Value = serde_json::from_str(&opted_out).unwrap();
+        assert_eq!(opted_out["result"]["project"]["auto_join"], false);
+
+        let on_disk = crate::persist::projects::parse_projects_yaml(
+            &std::fs::read_to_string(projects_file_path()).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            !on_disk.projects.get("quiet").unwrap().auto_join,
+            "auto_join: false must persist to disk"
+        );
+
+        let updated = app.handle_project_update(
+            "req3".into(),
+            ProjectUpdateParams {
+                slug: "cnb".into(),
+                name: None,
+                channel: None,
+                auto_join: Some(false),
+            },
+        );
+        let updated: serde_json::Value = serde_json::from_str(&updated).unwrap();
+        assert_eq!(
+            updated["result"]["project"]["auto_join"], false,
+            "project.update must be able to flip auto_join off"
         );
     }
 }

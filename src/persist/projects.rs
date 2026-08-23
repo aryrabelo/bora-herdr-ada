@@ -139,6 +139,25 @@ pub struct Project {
     pub orchestrator: Option<Orchestrator>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sections: Option<Sections>,
+    /// bora-1le.1 decision (`.local/prd/sidebar-design.md`, "Project =
+    /// channel — resolved"): `false` opts every member of this project out
+    /// of auto-join. An agent started in a member workspace then never
+    /// joins `effective_channel` on its own; `channel.join` still works by
+    /// hand. Defaults to `true` so a bare `members:` project keeps working
+    /// with zero setup, per decision #8.
+    #[serde(
+        default = "default_auto_join",
+        skip_serializing_if = "is_default_auto_join"
+    )]
+    pub auto_join: bool,
+}
+
+fn default_auto_join() -> bool {
+    true
+}
+
+fn is_default_auto_join(value: &bool) -> bool {
+    *value
 }
 
 impl Project {
@@ -157,11 +176,48 @@ pub struct Member {
     pub dir: String,
     #[serde(default)]
     pub worktrees: WorktreesScope,
+    /// bora-1le.3 (sidebar-design decision #10): a herdr-plus template
+    /// name this member opens with — substituted for `<template>` in
+    /// `defaults.open_with` by [`resolve_open_with`]. Absent member or
+    /// absent opener falls back to bora's own open; never a hard
+    /// dependency on herdr-plus.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub template: Option<String>,
 }
 
 impl Member {
     pub fn resolve(&self) -> MemberResolution {
         resolve_member(&self.dir)
+    }
+}
+
+/// Which command line opens a project member (bora-1le.3, sidebar-design
+/// decision #10: herdr-plus is detect-and-integrate, never a hard
+/// dependency).
+///
+/// The shape: take `defaults.open_with`, substitute a per-member
+/// `template:` for the literal `<template>` placeholder, and use the result
+/// only when the caller reports the named opener program as available.
+/// Anything else — opener absent, empty command — falls back to bora's own
+/// open ([`default_open_with`]), once, with no error to surface. Detection
+/// is the caller's concern (`opener_available`); this function is the pure
+/// decision so it stays testable without an installed herdr-plus.
+pub fn resolve_open_with(
+    defaults: &ProjectDefaults,
+    member: Option<&Member>,
+    opener_available: impl Fn(&str) -> bool,
+) -> String {
+    let mut command = defaults.open_with.clone();
+    if let Some(template) = member.and_then(|member| member.template.as_deref()) {
+        command = command.replace("<template>", template);
+    }
+    let Some(program) = command.split_whitespace().next() else {
+        return default_open_with();
+    };
+    if opener_available(program) {
+        command
+    } else {
+        default_open_with()
     }
 }
 
@@ -413,7 +469,7 @@ impl ProjectsStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::IsolatedConfigDir;
+    use crate::config::IsolatedDirs;
 
     // `r##` because the YAML contains `"#cnb"`, and `"#` would close an `r#"` literal.
     const EXAMPLE_YAML: &str = r##"
@@ -479,6 +535,10 @@ projects:
         assert_eq!(parsed.defaults.commands, CommandsScope::All);
 
         let cnb = parsed.projects.get("cnb").expect("cnb project present");
+        assert!(
+            cnb.auto_join,
+            "auto_join must default to true when the field is absent from yaml"
+        );
         assert_eq!(cnb.name.as_deref(), Some("CNB"));
         assert_eq!(cnb.channel.as_deref(), Some("#cnb"));
         assert_eq!(cnb.effective_channel("cnb"), "#cnb");
@@ -505,6 +565,10 @@ projects:
         );
 
         let bora = parsed.projects.get("bora").expect("bora project present");
+        assert!(
+            bora.auto_join,
+            "auto_join must default to true when the field is absent from yaml"
+        );
         assert_eq!(bora.name, None);
         assert_eq!(bora.channel, None, "channel is derived, not stored");
         assert_eq!(
@@ -522,6 +586,42 @@ projects:
             parsed, reparsed,
             "serialize -> reparse must round-trip to the same value"
         );
+    }
+
+    #[test]
+    fn auto_join_false_round_trips_and_true_is_omitted_from_yaml() {
+        let yaml = r#"
+projects:
+  quiet:
+    members: []
+    auto_join: false
+  loud:
+    members: []
+"#;
+        let parsed = parse_projects_yaml(yaml).expect("yaml must parse");
+        assert!(
+            !parsed.projects.get("quiet").unwrap().auto_join,
+            "explicit auto_join: false must be honored, not defaulted away"
+        );
+        assert!(
+            parsed.projects.get("loud").unwrap().auto_join,
+            "an omitted auto_join must default to true"
+        );
+
+        let serialized = to_yaml(&parsed).expect("serializes back to yaml");
+        assert!(
+            serialized.contains("auto_join: false"),
+            "an explicit false must survive serialization, got:\n{serialized}"
+        );
+        assert_eq!(
+            serialized.matches("auto_join").count(),
+            1,
+            "auto_join must appear exactly once (quiet's explicit false); \
+             loud's default true must be omitted (skip_serializing_if), got:\n{serialized}"
+        );
+
+        let reparsed = parse_projects_yaml(&serialized).expect("serialized yaml re-parses");
+        assert_eq!(parsed, reparsed, "serialize -> reparse must round-trip");
     }
 
     #[test]
@@ -592,7 +692,7 @@ projects:
 
     #[test]
     fn malformed_file_returns_error_and_keeps_last_good_value() {
-        let _isolated = IsolatedConfigDir::new("malformed");
+        let _isolated = IsolatedDirs::new("malformed");
         write_raw_projects_file(EXAMPLE_YAML);
         let mut store = ProjectsStore::load();
         assert!(
@@ -614,7 +714,7 @@ projects:
 
     #[test]
     fn reload_if_changed_detects_a_change_and_is_a_noop_when_unchanged() {
-        let _isolated = IsolatedConfigDir::new("reload");
+        let _isolated = IsolatedDirs::new("reload");
         write_raw_projects_file(
             r#"
 projects:
@@ -650,6 +750,91 @@ projects:
             store.reload_if_changed(),
             Ok(false),
             "calling again with no change must not re-parse"
+        );
+    }
+
+    #[test]
+    fn member_template_field_parses_and_defaults_to_absent() {
+        // deny_unknown_fields means the `template:` key only parses once the
+        // field exists — this test is a compile+parse lock on the schema.
+        let parsed = parse_projects_yaml(
+            r#"
+defaults:
+  open_with: "herdr-plus open <template>"
+projects:
+  cnb:
+    members:
+      - dir: ~/Sites/cnb_hono
+        template: web
+      - dir: ~/Sites/wt
+"#,
+        )
+        .expect("template member must parse");
+        let cnb = parsed.projects.get("cnb").expect("cnb present");
+        assert_eq!(cnb.members[0].template.as_deref(), Some("web"));
+        assert_eq!(
+            cnb.members[1].template, None,
+            "template is opt-in per member"
+        );
+    }
+
+    #[test]
+    fn open_with_template_path_is_exercised_when_opener_available() {
+        let defaults = ProjectDefaults {
+            open_with: "herdr-plus open <template>".to_string(),
+            ..ProjectDefaults::default()
+        };
+        let member = Member {
+            dir: "~/Sites/cnb_hono".to_string(),
+            worktrees: WorktreesScope::All,
+            template: Some("web".to_string()),
+        };
+
+        assert_eq!(
+            resolve_open_with(&defaults, Some(&member), |program| program == "herdr-plus"),
+            "herdr-plus open web",
+            "member template substitutes into the open_with placeholder"
+        );
+        // A member without a template leaves the placeholder for the opener
+        // to interpret — bora does not invent a default template.
+        assert_eq!(
+            resolve_open_with(&defaults, None, |program| program == "herdr-plus"),
+            "herdr-plus open <template>"
+        );
+    }
+
+    #[test]
+    fn open_with_missing_opener_falls_back_to_bora_open() {
+        let defaults = ProjectDefaults {
+            open_with: "herdr-plus open <template>".to_string(),
+            ..ProjectDefaults::default()
+        };
+        let member = Member {
+            dir: "~/Sites/cnb_hono".to_string(),
+            worktrees: WorktreesScope::All,
+            template: Some("web".to_string()),
+        };
+
+        assert_eq!(
+            resolve_open_with(&defaults, Some(&member), |_| false),
+            "bora workspace open",
+            "absent opener degrades to bora's own open, returning a command — never an error"
+        );
+        // Degradation is total, not partial: the missing opener's template
+        // argument must not leak into the fallback command line.
+        assert!(
+            !resolve_open_with(&defaults, Some(&member), |_| false).contains("herdr-plus"),
+            "fallback must not reference the missing opener"
+        );
+        // An empty open_with degrades the same way instead of yielding an
+        // empty command line.
+        let empty = ProjectDefaults {
+            open_with: String::new(),
+            ..ProjectDefaults::default()
+        };
+        assert_eq!(
+            resolve_open_with(&empty, None, |_| true),
+            "bora workspace open"
         );
     }
 }

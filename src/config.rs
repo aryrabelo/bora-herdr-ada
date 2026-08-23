@@ -42,7 +42,7 @@ pub use self::{
 pub(crate) use self::keybinds::parse_key_combo;
 
 #[cfg(test)]
-pub(crate) use self::io::{IsolatedConfigDir, IsolatedStateDir};
+pub(crate) use self::io::IsolatedDirs;
 #[allow(unused_imports)]
 pub use self::sidebar::{SidebarTokenStyle, SpaceSidebarToken};
 pub(crate) use self::{

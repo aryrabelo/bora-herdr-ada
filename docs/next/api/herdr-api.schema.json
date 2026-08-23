@@ -4281,6 +4281,13 @@
         "ProjectCreateParams": {
           "description": "`project.create`: adds a new, empty project (no members) at `slug`.\nErrors `project_exists` when `slug` is already taken — this is never a\nsilent overwrite; use `project.update` to change an existing project's\n`name`/`channel`, and `project.member_add` to populate its members.",
           "properties": {
+            "auto_join": {
+              "description": "bora-1le.1: opts every member of this project out of auto-join when\n`Some(false)`. Omitted (or `Some(true)`) keeps the default: an agent\nstarted in a member workspace auto-joins `channel`.",
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
             "channel": {
               "description": "Explicit channel override; omitted falls back to `\"#\" + slug` — see\n`persist::projects::Project::effective_channel`.",
               "type": [
@@ -4340,8 +4347,14 @@
           "type": "object"
         },
         "ProjectUpdateParams": {
-          "description": "`project.update`: replaces `name` and `channel` wholesale with whatever\nthis request carries — a full replacement of exactly those two fields,\nnot a partial \"only touch what's `Some`\" patch. Omitting `name` (or\n`channel`) clears it back to unset, it does NOT mean \"leave unchanged\".\nNever touches `members` — that is `project.member_add`/\n`project.member_remove`'s job — nor `orchestrator`/`sections`, which\nhave no verb yet in this bead. Errors `project_not_found` when `slug`\ndoes not exist.",
+          "description": "`project.update`: replaces `name`, `channel`, and `auto_join` wholesale\nwith whatever this request carries — a full replacement of exactly\nthose fields, not a partial \"only touch what's `Some`\" patch. Omitting\n`name`/`channel` clears them back to unset; omitting `auto_join` resets\nit back to its default (`true`) — none of the three mean \"leave\nunchanged\". Never touches `members` — that is `project.member_add`/\n`project.member_remove`'s job — nor `orchestrator`/`sections`, which\nhave no verb yet in this bead. Errors `project_not_found` when `slug`\ndoes not exist.",
           "properties": {
+            "auto_join": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
             "channel": {
               "type": [
                 "string",
@@ -10416,6 +10429,10 @@
         "ProjectSummary": {
           "description": "`project.list`'s per-project entry, and the `project` payload every\nother `project.*` verb returns: the parsed project plus each member's\nRESOLVED identity (via `persist::projects::Member::resolve`), so a\ncaller never has to redo git discovery itself.",
           "properties": {
+            "auto_join": {
+              "description": "Effective `auto_join` (bora-1le.1) — always present, resolved from\n`Project::auto_join`'s own default, so a caller never has to\nre-derive it either.",
+              "type": "boolean"
+            },
             "channel": {
               "description": "Always present: `channel` override, or `\"#\" + slug` — see\n`persist::projects::Project::effective_channel`. A caller never has\nto re-derive the default.",
               "type": "string"
@@ -10439,6 +10456,7 @@
           "required": [
             "slug",
             "channel",
+            "auto_join",
             "members"
           ],
           "type": "object"

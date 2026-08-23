@@ -1646,7 +1646,7 @@ fn is_channel_tail_process(process: &crate::platform::ForegroundProcess, name: &
 mod tests {
     use super::*;
     use crate::api::schema::ChannelDeliveryStatus;
-    use crate::config::{IsolatedStateDir, ShellModeConfig};
+    use crate::config::{IsolatedDirs, ShellModeConfig};
 
     fn test_app() -> App {
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -1992,7 +1992,7 @@ mod tests {
 
     #[tokio::test]
     async fn send_appends_transcript_and_reports_history() {
-        let _isolated = IsolatedStateDir::new("send");
+        let _isolated = IsolatedDirs::new("send");
         let mut app = test_app();
         create_channel(&mut app, "eng");
 
@@ -2068,7 +2068,7 @@ mod tests {
 
     #[tokio::test]
     async fn human_send_attributes_kind_and_name_without_pane() {
-        let _isolated = IsolatedStateDir::new("send-human");
+        let _isolated = IsolatedDirs::new("send-human");
         let mut app = test_app();
         app.state.chat_name = "tester".into();
         let (reviewer, worker, _rx) = channel_with_two_agents(&mut app, "reviewer", "worker");
@@ -2117,7 +2117,7 @@ mod tests {
 
     #[tokio::test]
     async fn human_sends_stay_exempt_from_the_channel_rate_limit() {
-        let _isolated = IsolatedStateDir::new("send-human-rate");
+        let _isolated = IsolatedDirs::new("send-human-rate");
         let mut app = test_app();
         app.state.chat_name = "tester".into();
         let (reviewer, worker, _rx) = channel_with_two_agents(&mut app, "reviewer", "worker");
@@ -2166,7 +2166,7 @@ mod tests {
 
     #[tokio::test]
     async fn history_on_missing_channel_is_empty_not_error() {
-        let _isolated = IsolatedStateDir::new("missing");
+        let _isolated = IsolatedDirs::new("missing");
         let mut app = test_app();
         let history = app.handle_channel_history(
             "req".into(),
@@ -2183,7 +2183,7 @@ mod tests {
 
     #[tokio::test]
     async fn queued_prompt_drop_appends_system_line_to_originating_channel_history() {
-        let _isolated = IsolatedStateDir::new("drop-notice");
+        let _isolated = IsolatedDirs::new("drop-notice");
         let mut app = test_app();
         create_channel(&mut app, "eng");
         let ws_idx = app.state.workspaces.len() - 1;
@@ -2238,7 +2238,7 @@ mod tests {
 
     #[tokio::test]
     async fn members_on_missing_channel_is_error() {
-        let _isolated = IsolatedStateDir::new("members-missing");
+        let _isolated = IsolatedDirs::new("members-missing");
         let mut app = test_app();
         let response = app.handle_channel_members(
             "req".into(),
@@ -2256,7 +2256,7 @@ mod tests {
 
     #[tokio::test]
     async fn members_lists_agent_pane_with_status_and_name() {
-        let _isolated = IsolatedStateDir::new("members-agent");
+        let _isolated = IsolatedDirs::new("members-agent");
         let mut app = test_app();
         create_channel(&mut app, "eng");
         let ws_idx = app.state.workspaces.len() - 1;
@@ -2290,7 +2290,7 @@ mod tests {
 
     #[tokio::test]
     async fn members_reports_detected_kind_as_name_when_unregistered() {
-        let _isolated = IsolatedStateDir::new("members-detected-kind-name");
+        let _isolated = IsolatedDirs::new("members-detected-kind-name");
         let mut app = test_app();
         create_channel(&mut app, "eng");
         let ws_idx = app.state.workspaces.len() - 1;
@@ -2327,7 +2327,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_reports_member_status_counts() {
-        let _isolated = IsolatedStateDir::new("members-counts");
+        let _isolated = IsolatedDirs::new("members-counts");
         let mut app = test_app();
         create_channel(&mut app, "eng");
         let ws_idx = app.state.workspaces.len() - 1;
@@ -2354,7 +2354,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_reports_last_message_seq_and_ts_and_zero_for_unmessaged_channel() {
-        let _isolated = IsolatedStateDir::new("list-last-message");
+        let _isolated = IsolatedDirs::new("list-last-message");
         let mut app = test_app();
         create_channel(&mut app, "eng");
         create_channel(&mut app, "quiet");
@@ -2549,7 +2549,7 @@ mod tests {
 
     #[tokio::test]
     async fn send_to_shared_kind_nick_stays_ambiguous_without_registered_names() {
-        let _isolated = IsolatedStateDir::new("send-to-kind-ambiguous");
+        let _isolated = IsolatedDirs::new("send-to-kind-ambiguous");
         let mut app = test_app();
         let (first, second, _rx) = channel_with_two_same_kind_agents(&mut app);
 
@@ -2583,7 +2583,7 @@ mod tests {
 
     #[tokio::test]
     async fn send_to_compact_pane_id_resolves_uniquely_despite_shared_kind() {
-        let _isolated = IsolatedStateDir::new("send-to-compact-id-unique");
+        let _isolated = IsolatedDirs::new("send-to-compact-id-unique");
         let mut app = test_app();
         let (first, second, _rx) = channel_with_two_same_kind_agents(&mut app);
         skip_protocol("eng", &first);
@@ -2614,7 +2614,7 @@ mod tests {
 
     #[tokio::test]
     async fn send_to_param_targets_unique_nick_and_threads_reply_by_pane_id() {
-        let _isolated = IsolatedStateDir::new("send-to-unique");
+        let _isolated = IsolatedDirs::new("send-to-unique");
         let mut app = test_app();
         let (reviewer, worker, mut rx) = channel_with_two_agents(&mut app, "reviewer", "worker");
         skip_protocol("eng", &reviewer);
@@ -2685,7 +2685,7 @@ mod tests {
 
     #[tokio::test]
     async fn send_to_param_ambiguous_nick_errors_with_candidates() {
-        let _isolated = IsolatedStateDir::new("send-to-ambiguous");
+        let _isolated = IsolatedDirs::new("send-to-ambiguous");
         let mut app = test_app();
         let (first, second, _rx) = channel_with_two_agents(&mut app, "dup", "dup");
 
@@ -2723,7 +2723,7 @@ mod tests {
 
     #[tokio::test]
     async fn send_to_param_unknown_nick_errors() {
-        let _isolated = IsolatedStateDir::new("send-to-unknown");
+        let _isolated = IsolatedDirs::new("send-to-unknown");
         let mut app = test_app();
         let (_, _, _rx) = channel_with_two_agents(&mut app, "reviewer", "worker");
 
@@ -2752,7 +2752,7 @@ mod tests {
 
     #[tokio::test]
     async fn send_to_param_resolves_human_seat_case_insensitively_and_delivers_to_no_pane() {
-        let _isolated = IsolatedStateDir::new("send-to-human");
+        let _isolated = IsolatedDirs::new("send-to-human");
         let mut app = test_app();
         app.state.chat_name = "arya".into();
         let (reviewer, _worker, mut rx) = channel_with_two_agents(&mut app, "reviewer", "worker");
@@ -2795,7 +2795,7 @@ mod tests {
 
     #[tokio::test]
     async fn send_to_param_name_shared_with_agent_is_ambiguous_between_human_and_agent() {
-        let _isolated = IsolatedStateDir::new("send-to-human-collision");
+        let _isolated = IsolatedDirs::new("send-to-human-collision");
         let mut app = test_app();
         app.state.chat_name = "reviewer".into();
         let (reviewer, _worker, _rx) = channel_with_two_agents(&mut app, "reviewer", "worker");
@@ -2834,7 +2834,7 @@ mod tests {
 
     #[tokio::test]
     async fn leading_mention_to_human_targets_the_seat_and_unknown_still_broadcasts() {
-        let _isolated = IsolatedStateDir::new("mention-human");
+        let _isolated = IsolatedDirs::new("mention-human");
         let mut app = test_app();
         app.state.chat_name = "arya".into();
         let (reviewer, worker, _rx) = channel_with_two_agents(&mut app, "reviewer", "worker");
@@ -2895,7 +2895,7 @@ mod tests {
 
     #[tokio::test]
     async fn channel_send_rate_limits_repeated_from_pane_but_exempts_missing_from_pane() {
-        let _isolated = IsolatedStateDir::new("send-rate-limit");
+        let _isolated = IsolatedDirs::new("send-rate-limit");
         let mut app = test_app();
         let (reviewer, worker, _rx) = channel_with_two_agents(&mut app, "reviewer", "worker");
         skip_protocol("eng", &reviewer);
@@ -2975,7 +2975,7 @@ mod tests {
 
     #[tokio::test]
     async fn leading_mention_targets_unique_nick() {
-        let _isolated = IsolatedStateDir::new("mention-unique");
+        let _isolated = IsolatedDirs::new("mention-unique");
         let mut app = test_app();
         let (reviewer, worker, _rx) = channel_with_two_agents(&mut app, "reviewer", "worker");
 
@@ -3004,7 +3004,7 @@ mod tests {
 
     #[tokio::test]
     async fn leading_mention_degrades_to_broadcast_when_not_uniquely_resolvable() {
-        let _isolated = IsolatedStateDir::new("mention-degrade");
+        let _isolated = IsolatedDirs::new("mention-degrade");
         let mut app = test_app();
         let (reviewer, worker, _rx) = channel_with_two_agents(&mut app, "reviewer", "worker");
         skip_protocol("eng", &reviewer);
@@ -3067,7 +3067,7 @@ mod tests {
 
     #[tokio::test]
     async fn escapes_unescape_to_literal_and_never_address() {
-        let _isolated = IsolatedStateDir::new("escapes");
+        let _isolated = IsolatedDirs::new("escapes");
         let mut app = test_app();
         let (reviewer, worker, _rx) = channel_with_two_agents(&mut app, "reviewer", "worker");
         skip_protocol("eng", &reviewer);
@@ -3123,7 +3123,7 @@ mod tests {
 
     #[tokio::test]
     async fn targeted_send_to_sender_pane_appends_without_delivery() {
-        let _isolated = IsolatedStateDir::new("self-target");
+        let _isolated = IsolatedDirs::new("self-target");
         let mut app = test_app();
         let (reviewer, _worker, _rx) = channel_with_two_agents(&mut app, "reviewer", "worker");
 
@@ -3285,7 +3285,7 @@ mod tests {
 
     #[tokio::test]
     async fn join_of_unknown_channel_errors() {
-        let _isolated = IsolatedStateDir::new("join-unknown-channel");
+        let _isolated = IsolatedDirs::new("join-unknown-channel");
         let mut app = test_app();
         let (outsider, _rx) = outside_agent_pane(&mut app, "brandos");
         let error = join(&mut app, "ghost", &outsider);
@@ -3303,7 +3303,7 @@ mod tests {
 
     #[tokio::test]
     async fn join_of_unknown_pane_errors() {
-        let _isolated = IsolatedStateDir::new("join-unknown-pane");
+        let _isolated = IsolatedDirs::new("join-unknown-pane");
         let mut app = test_app();
         create_channel(&mut app, "eng");
         let error = join(&mut app, "#eng", "w9Z:p9");
@@ -3317,7 +3317,7 @@ mod tests {
 
     #[tokio::test]
     async fn join_of_workspace_pane_reports_implicit_membership() {
-        let _isolated = IsolatedStateDir::new("join-implicit");
+        let _isolated = IsolatedDirs::new("join-implicit");
         let mut app = test_app();
         let (reviewer, _worker, _rx) = channel_with_two_agents(&mut app, "reviewer", "worker");
 
@@ -3338,7 +3338,7 @@ mod tests {
 
     #[tokio::test]
     async fn joined_pane_receives_broadcast_until_it_leaves() {
-        let _isolated = IsolatedStateDir::new("join-delivery");
+        let _isolated = IsolatedDirs::new("join-delivery");
         let mut app = test_app();
         let (reviewer, worker, _rx) = channel_with_two_agents(&mut app, "reviewer", "worker");
         skip_protocol("eng", &reviewer);
@@ -3408,7 +3408,7 @@ mod tests {
     /// resolve as a cursor would satisfy a regex and still be useless.
     #[tokio::test]
     async fn injected_prefix_carries_a_seq_that_works_as_a_tail_cursor() {
-        let _isolated = IsolatedStateDir::new("prefix-seq-cursor");
+        let _isolated = IsolatedDirs::new("prefix-seq-cursor");
         let mut app = test_app();
         create_channel(&mut app, "eng");
         let (first, _first_rx) = outside_agent_pane(&mut app, "first");
@@ -3458,7 +3458,7 @@ mod tests {
 
     #[tokio::test]
     async fn joined_pane_resolves_by_nick() {
-        let _isolated = IsolatedStateDir::new("join-nick");
+        let _isolated = IsolatedDirs::new("join-nick");
         let mut app = test_app();
         let (_reviewer, _worker, _rx) = channel_with_two_agents(&mut app, "reviewer", "worker");
         let (outsider, _outsider_rx) = outside_agent_pane(&mut app, "brandos");
@@ -3523,7 +3523,7 @@ mod tests {
 
     #[tokio::test]
     async fn members_and_summary_report_joined_panes_once() {
-        let _isolated = IsolatedStateDir::new("join-members");
+        let _isolated = IsolatedDirs::new("join-members");
         let mut app = test_app();
         let (reviewer, worker, _rx) = channel_with_two_agents(&mut app, "reviewer", "worker");
         let (outsider, _outsider_rx) = outside_agent_pane(&mut app, "brandos");
@@ -3567,7 +3567,7 @@ mod tests {
 
     #[tokio::test]
     async fn dead_joined_panes_are_pruned_and_leave_is_idempotent() {
-        let _isolated = IsolatedStateDir::new("join-prune");
+        let _isolated = IsolatedDirs::new("join-prune");
         let mut app = test_app();
         let (reviewer, worker, _rx) = channel_with_two_agents(&mut app, "reviewer", "worker");
         let (outsider, _outsider_rx) = outside_agent_pane(&mut app, "brandos");
@@ -3605,7 +3605,7 @@ mod tests {
 
     #[tokio::test]
     async fn join_with_scope_persists_sidecar_and_leave_removes_it() {
-        let _isolated = IsolatedStateDir::new("join-scope-roundtrip");
+        let _isolated = IsolatedDirs::new("join-scope-roundtrip");
         let mut app = test_app();
         create_channel(&mut app, "eng");
         let (outsider, _outsider_rx) = outside_agent_pane(&mut app, "brandos");
@@ -3637,7 +3637,7 @@ mod tests {
 
     #[tokio::test]
     async fn rejoin_with_new_scope_replaces_and_canonicalizes_pane_id() {
-        let _isolated = IsolatedStateDir::new("join-scope-replace");
+        let _isolated = IsolatedDirs::new("join-scope-replace");
         let mut app = test_app();
         create_channel(&mut app, "eng");
         let (outsider, _outsider_rx) = outside_agent_pane(&mut app, "brandos");
@@ -3665,7 +3665,7 @@ mod tests {
 
     #[tokio::test]
     async fn join_scope_rejects_empty_write_and_read() {
-        let _isolated = IsolatedStateDir::new("join-scope-empty");
+        let _isolated = IsolatedDirs::new("join-scope-empty");
         let mut app = test_app();
         create_channel(&mut app, "eng");
         let (outsider, _outsider_rx) = outside_agent_pane(&mut app, "brandos");
@@ -3690,7 +3690,7 @@ mod tests {
 
     #[tokio::test]
     async fn channel_protocol_names_scope_when_present_and_stays_silent_otherwise() {
-        let _isolated = IsolatedStateDir::new("protocol-scope");
+        let _isolated = IsolatedDirs::new("protocol-scope");
         let mut app = test_app();
         create_channel(&mut app, "eng");
         let (scoped, mut scoped_rx) = outside_agent_pane(&mut app, "brandos");
@@ -3738,7 +3738,7 @@ mod tests {
 
     #[tokio::test]
     async fn joined_pane_receives_protocol_once_and_broadcast_never_re_injects() {
-        let _isolated = IsolatedStateDir::new("protocol-join");
+        let _isolated = IsolatedDirs::new("protocol-join");
         let mut app = test_app();
         create_channel(&mut app, "eng");
         let (outsider, mut outsider_rx) = outside_agent_pane(&mut app, "brandos");
@@ -3817,7 +3817,7 @@ mod tests {
     /// stops being appended.
     #[tokio::test]
     async fn protocol_briefing_defines_nick_forms_and_names_the_human() {
-        let _isolated = IsolatedStateDir::new("protocol-nick-namespace");
+        let _isolated = IsolatedDirs::new("protocol-nick-namespace");
         let mut app = test_app();
         app.state.chat_name = "arya".into();
         create_channel(&mut app, "eng");
@@ -3869,7 +3869,7 @@ mod tests {
     /// length-only test.
     #[tokio::test]
     async fn broadcast_never_delivers_to_its_own_sender() {
-        let _isolated = IsolatedStateDir::new("broadcast-no-echo");
+        let _isolated = IsolatedDirs::new("broadcast-no-echo");
         let mut app = test_app();
         create_channel(&mut app, "eng");
         let (sender, mut sender_rx) = outside_agent_pane(&mut app, "sender");
@@ -3911,7 +3911,7 @@ mod tests {
 
     #[tokio::test]
     async fn channel_protocol_survives_restart_without_resend() {
-        let _isolated = IsolatedStateDir::new("protocol-restart");
+        let _isolated = IsolatedDirs::new("protocol-restart");
         let mut app = test_app();
         create_channel(&mut app, "eng");
         app.send_channel_protocol("eng", 0, "w1A:p2");
@@ -3963,7 +3963,7 @@ mod tests {
 
     #[tokio::test]
     async fn channel_protocol_is_deferred_for_a_working_target() {
-        let _isolated = IsolatedStateDir::new("protocol-deferred");
+        let _isolated = IsolatedDirs::new("protocol-deferred");
         let mut app = test_app();
         let (_reviewer, worker, _rx) = channel_with_two_agents(&mut app, "reviewer", "worker");
 
@@ -3979,7 +3979,7 @@ mod tests {
 
     #[tokio::test]
     async fn channel_protocol_send_never_records_a_rate_limit_entry() {
-        let _isolated = IsolatedStateDir::new("protocol-rate-limit");
+        let _isolated = IsolatedDirs::new("protocol-rate-limit");
         let mut app = test_app();
         create_channel(&mut app, "eng");
         let (outsider, mut rx) = outside_agent_pane(&mut app, "brandos");
@@ -4021,7 +4021,7 @@ mod tests {
 
     #[tokio::test]
     async fn channel_burst_suppresses_injection_at_default_threshold_and_appends_one_notice() {
-        let _isolated = IsolatedStateDir::new("burst-default");
+        let _isolated = IsolatedDirs::new("burst-default");
         let mut app = test_app();
         let (reviewer, worker, _rx) = channel_with_two_agents(&mut app, "reviewer", "worker");
         skip_protocol("eng", &reviewer);
@@ -4094,7 +4094,7 @@ mod tests {
 
     #[tokio::test]
     async fn channel_burst_force_bell_pierces_suppression() {
-        let _isolated = IsolatedStateDir::new("burst-force-bell");
+        let _isolated = IsolatedDirs::new("burst-force-bell");
         let mut app = test_app();
         let (reviewer, worker, _rx) = channel_with_two_agents(&mut app, "reviewer", "worker");
         skip_protocol("eng", &reviewer);
@@ -4145,7 +4145,7 @@ mod tests {
 
     #[tokio::test]
     async fn note_appends_with_zero_injections_outside_burst() {
-        let _isolated = IsolatedStateDir::new("note-no-burst");
+        let _isolated = IsolatedDirs::new("note-no-burst");
         let mut app = test_app();
         let (reviewer, worker, _rx) = channel_with_two_agents(&mut app, "reviewer", "worker");
         skip_protocol("eng", &reviewer);
@@ -4174,7 +4174,7 @@ mod tests {
 
     #[tokio::test]
     async fn note_during_burst_still_appends_with_no_bell() {
-        let _isolated = IsolatedStateDir::new("note-burst");
+        let _isolated = IsolatedDirs::new("note-burst");
         let mut app = test_app();
         let (reviewer, worker, _rx) = channel_with_two_agents(&mut app, "reviewer", "worker");
         skip_protocol("eng", &reviewer);
@@ -4231,7 +4231,7 @@ mod tests {
 
     #[tokio::test]
     async fn ask_to_unknown_nick_fails_before_anything_is_appended() {
-        let _isolated = IsolatedStateDir::new("ask-unknown-nick");
+        let _isolated = IsolatedDirs::new("ask-unknown-nick");
         let mut app = test_app();
         create_channel(&mut app, "eng");
 
@@ -4262,7 +4262,7 @@ mod tests {
 
     #[tokio::test]
     async fn ask_reuses_send_inner_single_target_path_and_reports_question_seq() {
-        let _isolated = IsolatedStateDir::new("ask-single-target");
+        let _isolated = IsolatedDirs::new("ask-single-target");
         let mut app = test_app();
         let (reviewer, worker, _rx) = channel_with_two_agents(&mut app, "reviewer", "worker");
         skip_protocol("eng", &reviewer);
@@ -4293,7 +4293,7 @@ mod tests {
 
     #[tokio::test]
     async fn reply_to_seq_past_current_max_is_rejected_but_past_seqs_are_fine() {
-        let _isolated = IsolatedStateDir::new("reply-to-future-seq");
+        let _isolated = IsolatedDirs::new("reply-to-future-seq");
         let mut app = test_app();
         create_channel(&mut app, "eng");
 
@@ -4371,7 +4371,7 @@ mod tests {
 
     #[tokio::test]
     async fn fresh_member_sees_every_message_as_unread() {
-        let _isolated = IsolatedStateDir::new("unread-fresh");
+        let _isolated = IsolatedDirs::new("unread-fresh");
         let mut app = test_app();
         create_channel(&mut app, "eng");
         let ws_idx = app.state.workspaces.len() - 1;
@@ -4413,7 +4413,7 @@ mod tests {
     /// here rather than round-tripped through a socket.
     #[tokio::test]
     async fn channel_tail_read_marks_member_caught_up() {
-        let _isolated = IsolatedStateDir::new("unread-tail-read");
+        let _isolated = IsolatedDirs::new("unread-tail-read");
         let mut app = test_app();
         create_channel(&mut app, "eng");
         let ws_idx = app.state.workspaces.len() - 1;
@@ -4454,7 +4454,7 @@ mod tests {
 
     #[tokio::test]
     async fn note_after_tail_read_makes_unread_exactly_one() {
-        let _isolated = IsolatedStateDir::new("unread-note-after-read");
+        let _isolated = IsolatedDirs::new("unread-note-after-read");
         let mut app = test_app();
         create_channel(&mut app, "eng");
         let ws_idx = app.state.workspaces.len() - 1;
@@ -4489,7 +4489,7 @@ mod tests {
 
     #[tokio::test]
     async fn non_member_history_read_does_not_change_any_members_unread() {
-        let _isolated = IsolatedStateDir::new("unread-non-member");
+        let _isolated = IsolatedDirs::new("unread-non-member");
         let mut app = test_app();
         create_channel(&mut app, "eng");
         let ws_idx = app.state.workspaces.len() - 1;
@@ -4529,7 +4529,7 @@ mod tests {
 
     #[tokio::test]
     async fn corrupt_cursor_file_yields_full_unread_not_error() {
-        let _isolated = IsolatedStateDir::new("unread-corrupt-cursor");
+        let _isolated = IsolatedDirs::new("unread-corrupt-cursor");
         let mut app = test_app();
         create_channel(&mut app, "eng");
         let ws_idx = app.state.workspaces.len() - 1;
@@ -4559,7 +4559,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_reports_callers_own_unread_and_clears_after_reading() {
-        let _isolated = IsolatedStateDir::new("list-caller-unread");
+        let _isolated = IsolatedDirs::new("list-caller-unread");
         let mut app = test_app();
         create_channel(&mut app, "eng");
         let ws_idx = app.state.workspaces.len() - 1;
@@ -4629,7 +4629,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_reports_zero_unread_for_caller_with_no_pane_identity() {
-        let _isolated = IsolatedStateDir::new("list-no-pane-identity");
+        let _isolated = IsolatedDirs::new("list-no-pane-identity");
         let mut app = test_app();
         create_channel(&mut app, "eng");
 

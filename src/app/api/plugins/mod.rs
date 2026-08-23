@@ -226,6 +226,19 @@ impl App {
         &mut self,
         action_id: String,
     ) -> Result<(), String> {
+        self.invoke_plugin_action_from_ui(action_id, "keybinding")
+    }
+
+    /// UI-surface invocation of a plugin action by bare action id: refresh
+    /// the registry, resolve the action, check enabled + platform, then run
+    /// it with the current context. The keybind path and the sidebar's
+    /// "Open dagr" entry (bora-1le.3) both come through here; the only
+    /// difference is the `invocation_source` the plugin's context reports.
+    pub(crate) fn invoke_plugin_action_from_ui(
+        &mut self,
+        action_id: String,
+        source: &str,
+    ) -> Result<(), String> {
         self.refresh_installed_plugins()
             .map_err(|err| format!("failed to load plugin registry: {err}"))?;
         let (plugin, action) = self
@@ -239,8 +252,8 @@ impl App {
             &action.qualified_id(),
         )
         .map_err(|(_, message)| message)?;
-        let mut context = self.current_plugin_context("keybinding");
-        context.invocation_source = Some("keybinding".to_string());
+        let mut context = self.current_plugin_context(source);
+        context.invocation_source = Some(source.to_string());
         self.start_plugin_command(
             &plugin,
             Some(action.action_id),
@@ -700,6 +713,25 @@ fn manifest_actions(
                 .iter()
                 .map(|action| manifest_action_info(&plugin.plugin_id, &plugin.platforms, action))
         })
+}
+
+/// The action id a herdr-dagr install exposes for opening its DAG pane;
+/// the sidebar's "Open dagr" entry (bora-1le.3) invokes exactly this.
+pub(crate) const DAGR_OPEN_ACTION_ID: &str = "open-dagr";
+
+/// Registry-driven detection for the sidebar's "Open dagr" entry
+/// (bora-1le.3, sidebar-design decision #9: integrate when present, never
+/// absorb). herdr-dagr counts as installed iff an enabled plugin with an
+/// available manifest declares the [`DAGR_OPEN_ACTION_ID`] action — the
+/// plugin registry IS the install signal; never probe the filesystem for
+/// a binary.
+pub(crate) fn dagr_open_action_available(
+    plugins: &crate::app::state::InstalledPluginRegistry,
+) -> bool {
+    plugins
+        .values()
+        .filter(|plugin| plugin.enabled && plugin_manifest_available(plugin))
+        .any(|plugin| plugin.actions.iter().any(|a| a.id == DAGR_OPEN_ACTION_ID))
 }
 
 #[cfg(test)]

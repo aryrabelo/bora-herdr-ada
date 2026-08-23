@@ -1010,6 +1010,20 @@ impl HeadlessServer {
             crate::render_prof::event("full_render_cause.deferred_worktree_pr");
         }
 
+        if self.app.state.request_open_dagr {
+            self.app.state.request_open_dagr = false;
+            // bora-1le.3: mirrors the TUI loop's consumer so a semantic-frame
+            // client driving the context menu gets the same behavior headless.
+            if let Err(message) = self.app.invoke_plugin_action_from_ui(
+                crate::app::DAGR_OPEN_ACTION_ID.to_string(),
+                "sidebar",
+            ) {
+                tracing::warn!(%message, "failed to open dagr");
+            }
+            needs_render = true;
+            crate::render_prof::event("full_render_cause.deferred_open_dagr");
+        }
+
         if let Some(ws_idx) = self.app.state.request_sync_workspace_git.take() {
             self.app.start_workspace_git_sync(ws_idx);
             needs_render = true;

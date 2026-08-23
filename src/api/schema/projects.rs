@@ -17,13 +17,19 @@ pub struct ProjectCreateParams {
     /// `persist::projects::Project::effective_channel`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub channel: Option<String>,
+    /// bora-1le.1: opts every member of this project out of auto-join when
+    /// `Some(false)`. Omitted (or `Some(true)`) keeps the default: an agent
+    /// started in a member workspace auto-joins `channel`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_join: Option<bool>,
 }
 
-/// `project.update`: replaces `name` and `channel` wholesale with whatever
-/// this request carries — a full replacement of exactly those two fields,
-/// not a partial "only touch what's `Some`" patch. Omitting `name` (or
-/// `channel`) clears it back to unset, it does NOT mean "leave unchanged".
-/// Never touches `members` — that is `project.member_add`/
+/// `project.update`: replaces `name`, `channel`, and `auto_join` wholesale
+/// with whatever this request carries — a full replacement of exactly
+/// those fields, not a partial "only touch what's `Some`" patch. Omitting
+/// `name`/`channel` clears them back to unset; omitting `auto_join` resets
+/// it back to its default (`true`) — none of the three mean "leave
+/// unchanged". Never touches `members` — that is `project.member_add`/
 /// `project.member_remove`'s job — nor `orchestrator`/`sections`, which
 /// have no verb yet in this bead. Errors `project_not_found` when `slug`
 /// does not exist.
@@ -34,6 +40,8 @@ pub struct ProjectUpdateParams {
     pub name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub channel: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_join: Option<bool>,
 }
 
 /// `project.member_add`: idempotent on `dir` — an exact string match
@@ -72,6 +80,10 @@ pub struct ProjectSummary {
     /// `persist::projects::Project::effective_channel`. A caller never has
     /// to re-derive the default.
     pub channel: String,
+    /// Effective `auto_join` (bora-1le.1) — always present, resolved from
+    /// `Project::auto_join`'s own default, so a caller never has to
+    /// re-derive it either.
+    pub auto_join: bool,
     pub members: Vec<ProjectMemberInfo>,
 }
 

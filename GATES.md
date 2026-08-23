@@ -313,3 +313,69 @@ em inglês pra casar com as strings vizinhas). O lead fechou o que faltava:
   desta versão. É falso — o comportamento é da 0.32.0 e já está descrito lá. Release note
   que anuncia de novo o que já saiu é pior que nenhuma.
 - [x] U6 `just check` verde: `3854 tests run: 3854 passed`
+
+## bora-49p.1 — rede de segurança adversarial do lockstep · FECHADO
+
+- [x] A1 exaustividade POR CONSTRUÇÃO: três `match` sem braço `_` sobre
+  `WorkspaceListEntry`, então uma variante nova não compila até ser tratada
+- [x] A2 o teste entregue NÃO PASSAVA
+  EVIDENCE: `expect("fixture sets custom_name on every workspace used here")` sobre
+  `branch_c1`/`branch_c2`, que o fixture deixa com `custom_name: None` de propósito. O
+  builder disse ter verificado "relendo e conferindo à mão"; releitura não roda nada.
+  Consertado dando nome a todas: folding de branch só liga com membro ÚNICO auto-nomeado,
+  então nomear não custa cobertura.
+- [x] A3 o meu primeiro mutante foi FALSO POSITIVO, e o harness era o culpado
+  EVIDENCE: um teste permanentemente vermelho "acusa" qualquer mutante. O harness passou
+  a exigir BASELINE VERDE antes de creditar qualquer mutante, e reporta
+  `*** BASELINE RED: no evidence ***` em vez de CAUGHT.
+- [x] A4 os dois mutantes seguintes também eram inválidos, por um motivo que importa
+  EVIDENCE: hoje TODA variante tem altura 1, então mutar `entry_row_height` mantém os três
+  passes concordando, e hardcodear `1` num pass é semanticamente um no-op. O valor deste
+  teste é prospectivo — épico 49p introduz rows de altura ≠ 1. Mutante fiel: fazer um pass
+  só alocar uma linha extra pra `ProjectHeader`. Aí sim FAILED.
+
+## bora-1le.1 — project = channel, com auto-join · FECHADO
+
+- [x] B1 `project.create` liga o projeto ao canal e reusa canal existente sem apagar
+  transcript
+- [x] B2 auto-join mapeia dir → projeto pelo RESOLVER (`member_covers` compara
+  `repo_identity`/`checkout_key`), nunca por prefixo de path cru
+- [x] B3 as duas decisões que o bead exigia estão documentadas no design: rename vira
+  RE-BIND (canal antigo intacto, escolhido justamente porque não exige verbo de rename,
+  que não existe) e opt-out é `auto_join: false` no nível do projeto
+- [x] B4 o teste de opt-out era CEGO quando entregue
+  EVIDENCE: os dois testes positivos falhavam (auto-join não acontecia por causa do
+  fixture) e o de opt-out passava — porque ele afirma roster VAZIO, que é exatamente o que
+  a feature ausente também produz. Só passou a valer quando os positivos ficaram verdes.
+  Mutante removendo o gate `project.auto_join` agora acusa.
+- [x] B5 três defeitos de fixture, todos no mesmo tema: teste de unidade que toca o mundo
+  real. (a) `member_workspace` largava o `_rx` do pty no fim da função, fechando o canal →
+  `agent_start_input_failed: channel closed`; agora devolve o receptor, `#[must_use]`.
+  (b) `test_app` sem `NonLogin` spawna shell de LOGIN, que nunca sai. (c) o workspace de
+  canal criado de verdade é reapado dentro do próprio request porque seus panes rodam
+  `/usr/bin/true`; o fixture passou a criá-lo sinteticamente, e o binding real segue
+  coberto pelos testes de `app::api::projects`.
+- [x] B6 três mutantes, três pegos: gate de opt-out fora, chamada de auto-join fora,
+  comparação por identidade resolvida desligada.
+
+## bora-1le.3 — hooks de detecção dagr + herdr-plus · FECHADO
+
+- [x] C1 "open dagr" só aparece com o plugin registrado, detectado pelo registry e não por
+  sondagem de filesystem; ausência é silenciosa (sem row cinza, sem toast)
+- [x] C2 `open_with` com opener ausente cai pro open do bora sem erro visível
+- [x] C3 mutante pego: menu sempre oferecendo "Open dagr" →
+  `group_header_menu_open_dagr_entry_tracks_availability` FAILED. Os dois primeiros
+  mutantes que escrevi tinham indentação errada e o harness disse ANCHOR MISSING —
+  que é o harness se recusando a mentir, e não uma aprovação.
+
+## Achado transversal desta rodada
+
+- [x] D1 o `IsolatedStateDir` que eu extraí no começo desta sessão CAUSOU um deadlock
+  EVIDENCE: virou dois structs (state e config) sobre o MESMO `test_config_env_lock`, que
+  é `parking_lot::Mutex`, não reentrante. Um teste que precisava dos dois (handler de
+  `project.create`: `projects.yml` fica em `config_dir()`, e ligar o canal escreve roster
+  em `state_dir()`) construía os dois e travava para sempre. Nada no sistema de tipos
+  impedia, e o sintoma não era teste vermelho: era suíte pendurada, `just check` de 22s
+  virando 30 min. Os dois foram FUNDIDOS em `IsolatedDirs`, que isola as duas variáveis:
+  não existe mais um segundo guard pra aninhar.
+- [x] D2 `just check` verde: `3869 tests run: 3869 passed, 1 skipped`

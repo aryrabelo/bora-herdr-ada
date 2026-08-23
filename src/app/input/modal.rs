@@ -1140,6 +1140,18 @@ pub(super) fn apply_context_menu_action(
             leave_modal(state);
         }
         (
+            ContextMenuKind::GroupHeader {
+                dagr_available: true,
+                ..
+            },
+            Some("Open dagr"),
+        ) => {
+            // bora-1le.3: deferred like every App-owned action — the invoke
+            // spawns a plugin command and cannot run inside state-only code.
+            state.request_open_dagr = true;
+            leave_modal(state);
+        }
+        (
             ContextMenuKind::Workspace { ws_idx, .. }
             | ContextMenuKind::GitWorkspace { ws_idx, .. },
             Some(label),
@@ -1780,6 +1792,19 @@ impl App {
             }
             (ContextMenuKind::GroupHeader { collapse_key, .. }, Some("Unhide")) => {
                 self.state.hidden_space_keys.remove(&collapse_key);
+                leave_modal(&mut self.state);
+            }
+            (
+                ContextMenuKind::GroupHeader {
+                    dagr_available: true,
+                    ..
+                },
+                Some("Open dagr"),
+            ) => {
+                // bora-1le.3: same deferred-flag path as the state-only
+                // twin — the App loop performs the invoke so the headless
+                // server and the TUI share one behavior.
+                self.state.request_open_dagr = true;
                 leave_modal(&mut self.state);
             }
             (
@@ -3201,5 +3226,52 @@ mod tests {
             })
         );
         assert_ne!(state.mode, Mode::ContextMenu, "menu closed after action");
+    }
+
+    fn group_header_menu_with_dagr(dagr_available: bool) -> ContextMenuState {
+        let kind = ContextMenuKind::GroupHeader {
+            name: "channels".into(),
+            collapse_key: "vg:channels".into(),
+            hidden: false,
+            dagr_available,
+        };
+        ContextMenuState {
+            items: build_context_menu_items(&kind, &[], &[]),
+            kind,
+            x: 0,
+            y: 0,
+            list: MenuListState::new(0),
+            bora_commands: vec![],
+            bora_port: None,
+        }
+    }
+
+    #[test]
+    fn group_header_open_dagr_defers_to_app_loop_and_only_when_available() {
+        // bora-1le.3: choosing the entry defers the plugin invoke to the App
+        // loop (request flag, like every App-owned action); the entry only
+        // exists when the dagr plugin is registered.
+        let mut state = state_with_workspaces(&["proj"]);
+        let menu = group_header_menu_with_dagr(true);
+        let idx = menu
+            .items
+            .iter()
+            .position(|item| item == "Open dagr")
+            .expect("Open dagr item when dagr is available");
+        let mut terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
+        apply_context_menu_action(&mut state, &mut terminal_runtimes, menu, idx);
+        assert!(
+            state.request_open_dagr,
+            "choosing Open dagr must request the deferred invoke"
+        );
+        assert_ne!(state.mode, Mode::ContextMenu, "menu closed after action");
+
+        // Absence is silent: no entry, so choosing its index is impossible —
+        // pin that the unavailable menu has no such item at all.
+        let unavailable = group_header_menu_with_dagr(false);
+        assert!(
+            !unavailable.items.iter().any(|item| item == "Open dagr"),
+            "no Open dagr item when dagr is not installed"
+        );
     }
 }

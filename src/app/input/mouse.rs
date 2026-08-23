@@ -1425,10 +1425,25 @@ impl AppState {
                     .cloned()
                 {
                     let hidden = self.is_hidden(&header.collapse_key);
+                    // bora-1le.3: the "Open dagr" entry belongs to the
+                    // project surface — today the channels group header
+                    // (sidebar-design decision #8: project = channel) — not
+                    // to every visual group or repo header. Availability
+                    // comes from the plugin registry state (refreshed by
+                    // every plugin verb and re-checked at invoke time),
+                    // never from probing the filesystem: absent registry
+                    // entry means the menu entry is simply not built.
+                    let is_channels_group =
+                        header.collapse_key == format!("vg:{}", self.channel_group_name);
+                    let dagr_available = is_channels_group
+                        && crate::app::api::plugins::dagr_open_action_available(
+                            &self.installed_plugins,
+                        );
                     let kind = ContextMenuKind::GroupHeader {
                         name: header.name.clone(),
                         collapse_key: header.collapse_key,
                         hidden,
+                        dagr_available,
                     };
                     self.context_menu = Some(ContextMenuState {
                         items: build_context_menu_items(&kind, &self.workspaces, &[]),
@@ -5934,5 +5949,122 @@ mode = "shell"
         assert_eq!(app.state.mode, Mode::LaunchProgramPrompt);
 
         let _ = std::fs::remove_dir_all(&repo_root);
+    }
+
+    fn dagr_test_plugin(enabled: bool) -> crate::api::schema::InstalledPluginInfo {
+        crate::api::schema::InstalledPluginInfo {
+            plugin_id: "dev.dagr".into(),
+            name: "herdr-dagr".into(),
+            version: "0.1.0".into(),
+            min_herdr_version: String::new(),
+            description: None,
+            manifest_path: "/nonexistent".into(),
+            plugin_root: "/nonexistent".into(),
+            enabled,
+            platforms: None,
+            build: vec![],
+            startup: vec![],
+            actions: vec![crate::api::schema::PluginManifestAction {
+                id: crate::app::api::plugins::DAGR_OPEN_ACTION_ID.into(),
+                title: "Open dagr".into(),
+                description: None,
+                contexts: vec![],
+                platforms: None,
+                command: vec!["true".into()],
+            }],
+            events: vec![],
+            panes: vec![],
+            link_handlers: vec![],
+            source: crate::api::schema::PluginSourceInfo::default(),
+            warnings: vec![],
+        }
+    }
+
+    #[test]
+    fn right_click_channels_group_header_offers_open_dagr_only_when_registered() {
+        // bora-1le.3: the entry is registry-driven and scoped to the channels
+        // group header (the project surface, decision #8) — both directions
+        // asserted, plus the not-every-group negative, so an implementation
+        // that shows it everywhere or nowhere both fail here.
+        let mut app = app_for_mouse_test();
+        app.state.view.workspace_group_header_areas = vec![
+            crate::app::state::GroupHeaderCardArea {
+                name: "channels".into(),
+                collapse_key: "vg:channels".into(),
+                rect: Rect::new(0, 2, 20, 1),
+            },
+            crate::app::state::GroupHeaderCardArea {
+                name: "side-quest".into(),
+                collapse_key: "vg:side-quest".into(),
+                rect: Rect::new(0, 3, 20, 1),
+            },
+        ];
+
+        let reset = |app: &mut crate::app::App| {
+            app.state.context_menu = None;
+            app.state.mode = Mode::Terminal;
+        };
+
+        // Registered and enabled: entry present on the channels group header.
+        app.state
+            .installed_plugins
+            .insert("dev.dagr".into(), dagr_test_plugin(true));
+        app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Right), 2, 2));
+        let menu = app
+            .state
+            .context_menu
+            .as_ref()
+            .expect("channels group menu");
+        assert!(
+            menu.items.iter().any(|item| item == "Open dagr"),
+            "entry must appear when the dagr plugin is registered: {:?}",
+            menu.items
+        );
+        assert!(matches!(
+            &menu.kind,
+            ContextMenuKind::GroupHeader {
+                dagr_available: true,
+                ..
+            }
+        ));
+
+        // Not the channels group: entry never appears, even with the plugin.
+        reset(&mut app);
+        app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Right), 2, 3));
+        let menu = app.state.context_menu.as_ref().expect("other group menu");
+        assert!(
+            !menu.items.iter().any(|item| item == "Open dagr"),
+            "the entry belongs to the project (channels) surface, not every visual group"
+        );
+
+        // Plugin disabled: registry present but not enabled reads as absent.
+        reset(&mut app);
+        app.state
+            .installed_plugins
+            .insert("dev.dagr".into(), dagr_test_plugin(false));
+        app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Right), 2, 2));
+        let menu = app
+            .state
+            .context_menu
+            .as_ref()
+            .expect("channels group menu");
+        assert!(
+            !menu.items.iter().any(|item| item == "Open dagr"),
+            "a disabled install is not an available one"
+        );
+
+        // No plugin at all: same silent skip, menu still opens normally.
+        reset(&mut app);
+        app.state.installed_plugins.clear();
+        app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Right), 2, 2));
+        let menu = app
+            .state
+            .context_menu
+            .as_ref()
+            .expect("channels group menu");
+        assert!(
+            !menu.items.iter().any(|item| item == "Open dagr"),
+            "absent plugin means no entry — and no error, the menu still opens"
+        );
     }
 }

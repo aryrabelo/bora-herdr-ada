@@ -103,7 +103,7 @@ pub fn write_pending_prompts(records: &[PendingPromptRecord]) -> io::Result<()> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::IsolatedStateDir;
+    use crate::config::IsolatedDirs;
 
     fn record(target: &str, queue_id: u64, text: &str) -> PendingPromptRecord {
         PendingPromptRecord {
@@ -124,7 +124,7 @@ mod tests {
 
     #[test]
     fn round_trips_in_order() {
-        let _isolated = IsolatedStateDir::new("pending-prompts-roundtrip");
+        let _isolated = IsolatedDirs::new("pending-prompts-roundtrip");
         let records = vec![
             record("w1:p1", 1, "first"),
             record("w1:p1", 2, "second"),
@@ -136,7 +136,7 @@ mod tests {
 
     #[test]
     fn missing_and_malformed_read_as_empty() {
-        let _isolated = IsolatedStateDir::new("pending-prompts-absent");
+        let _isolated = IsolatedDirs::new("pending-prompts-absent");
         assert!(read_pending_prompts().is_empty());
 
         fs::create_dir_all(state_dir()).unwrap();
@@ -149,7 +149,7 @@ mod tests {
 
     #[test]
     fn empty_write_removes_the_file() {
-        let _isolated = IsolatedStateDir::new("pending-prompts-empty");
+        let _isolated = IsolatedDirs::new("pending-prompts-empty");
         write_pending_prompts(&[record("w1:p1", 1, "queued")]).unwrap();
         assert!(pending_prompts_file_path().exists());
 

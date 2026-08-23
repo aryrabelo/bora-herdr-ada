@@ -79,7 +79,7 @@ pub fn state_dir() -> PathBuf {
 /// passing alone.
 ///
 /// Tests that need their own isolated directory, separate from every other
-/// test in the process, use the `IsolatedStateDir` guard below, which sets
+/// test in the process, use the `IsolatedDirs` guard below, which sets
 /// `XDG_STATE_HOME` explicitly while holding `test_config_env_lock`. The
 /// branch above honours that and takes precedence over this fallback.
 #[cfg(test)]
@@ -89,8 +89,9 @@ fn test_default_state_dir() -> PathBuf {
         .join(app_dir_name())
 }
 
-/// Test-only guard that points `state_dir()` at a fresh temp directory for the
-/// duration of one test, and restores the previous `XDG_STATE_HOME` on drop.
+/// Test-only guard that points BOTH `config_dir()` and `state_dir()` at fresh
+/// temp directories for the duration of one test, restoring `XDG_CONFIG_HOME`
+/// and `XDG_STATE_HOME` on drop.
 ///
 /// Needed on top of `test_default_state_dir` because that fallback is
 /// per-*process*: every test in the binary shares it, so a test that writes
@@ -98,86 +99,62 @@ fn test_default_state_dir() -> PathBuf {
 /// channel roster, a transcript, or the deferred-prompt queue left behind by
 /// one test would then be loaded by the next `App::new`.
 ///
-/// `XDG_STATE_HOME` is process-global, so setting it is only safe while
-/// holding `test_config_env_lock` — the guard holds it for its whole
+/// Both variables are process-global, so setting either is only safe while
+/// holding `test_config_env_lock` — this guard holds it for its whole
 /// lifetime, which serializes the tests that need isolation against each
 /// other and against every other config-env mutation.
+///
+/// **One guard, both variables, on purpose.** This was briefly two structs,
+/// one per variable, and a test that needed both (a `project.create` handler
+/// test: `projects.yml` lives under `config_dir()`, and binding the project's
+/// channel writes a roster under `state_dir()`) constructed both — which
+/// self-deadlocks forever, because `test_config_env_lock` is a plain
+/// `parking_lot::Mutex` and is not reentrant. Nothing in the type system
+/// stopped that, and the symptom was not a failing test but a hung suite, so
+/// the two were merged: there is now no second guard to nest. Isolating the
+/// variable a test does not care about costs nothing and is strictly safer.
 ///
 /// `prefix` only names the temp directory; make it descriptive enough to
 /// identify the owning test if one leaks a directory on a hard abort.
 #[cfg(test)]
-pub(crate) struct IsolatedStateDir {
+pub(crate) struct IsolatedDirs {
     _guard: parking_lot::MutexGuard<'static, ()>,
-    previous: Option<std::ffi::OsString>,
+    previous_config: Option<std::ffi::OsString>,
+    previous_state: Option<std::ffi::OsString>,
     dir: PathBuf,
 }
 
 #[cfg(test)]
-impl IsolatedStateDir {
+impl IsolatedDirs {
     pub(crate) fn new(prefix: &str) -> Self {
         let guard = crate::config::test_config_env_lock().lock();
-        let previous = std::env::var_os("XDG_STATE_HOME");
+        let previous_config = std::env::var_os("XDG_CONFIG_HOME");
+        let previous_state = std::env::var_os("XDG_STATE_HOME");
         let dir = std::env::temp_dir().join(format!("bora-{prefix}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        std::env::set_var("XDG_STATE_HOME", &dir);
+        // Separate subtrees, so a test that lists one directory never sees the
+        // other's files and mistake them for its own.
+        std::env::set_var("XDG_CONFIG_HOME", dir.join("config"));
+        std::env::set_var("XDG_STATE_HOME", dir.join("state"));
         Self {
             _guard: guard,
-            previous,
+            previous_config,
+            previous_state,
             dir,
         }
     }
 }
 
 #[cfg(test)]
-impl Drop for IsolatedStateDir {
+impl Drop for IsolatedDirs {
     fn drop(&mut self) {
-        match self.previous.take() {
-            Some(value) => std::env::set_var("XDG_STATE_HOME", value),
-            None => std::env::remove_var("XDG_STATE_HOME"),
-        }
-        let _ = std::fs::remove_dir_all(&self.dir);
-    }
-}
-
-/// Test-only guard that points `config_dir()` at a fresh temp directory for
-/// the duration of one test, and restores the previous `XDG_CONFIG_HOME` on
-/// drop. Sibling of `IsolatedStateDir` above, for the other XDG variable:
-/// `persist::projects` (`projects.yml` lives under `config_dir()`) and
-/// `app::api::projects`'s handler tests both need it, which is the "fourth
-/// copy" threshold `persist::projects` used to note before this existed.
-///
-/// Same locking rule as `IsolatedStateDir`: `XDG_CONFIG_HOME` is
-/// process-global, so setting it is only safe while holding
-/// `test_config_env_lock`, held for this guard's whole lifetime.
-#[cfg(test)]
-pub(crate) struct IsolatedConfigDir {
-    _guard: parking_lot::MutexGuard<'static, ()>,
-    previous: Option<std::ffi::OsString>,
-    dir: PathBuf,
-}
-
-#[cfg(test)]
-impl IsolatedConfigDir {
-    pub(crate) fn new(prefix: &str) -> Self {
-        let guard = crate::config::test_config_env_lock().lock();
-        let previous = std::env::var_os("XDG_CONFIG_HOME");
-        let dir = std::env::temp_dir().join(format!("bora-{prefix}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::env::set_var("XDG_CONFIG_HOME", &dir);
-        Self {
-            _guard: guard,
-            previous,
-            dir,
-        }
-    }
-}
-
-#[cfg(test)]
-impl Drop for IsolatedConfigDir {
-    fn drop(&mut self) {
-        match self.previous.take() {
+        match self.previous_config.take() {
             Some(value) => std::env::set_var("XDG_CONFIG_HOME", value),
             None => std::env::remove_var("XDG_CONFIG_HOME"),
+        }
+        match self.previous_state.take() {
+            Some(value) => std::env::set_var("XDG_STATE_HOME", value),
+            None => std::env::remove_var("XDG_STATE_HOME"),
         }
         let _ = std::fs::remove_dir_all(&self.dir);
     }

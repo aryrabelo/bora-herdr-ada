@@ -5458,6 +5458,29 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
         ws
     }
 
+    /// Adversarial counterpart of `git_space_member`: base state comes from
+    /// `Workspace::test_adversarial_identity_state()` (raw pane id != public
+    /// pane number, a closed pane still holding stale bookkeeping, active
+    /// tab position != public tab number) instead of a pristine
+    /// `Workspace::test_new`, so grouping/lockstep code below is exercised
+    /// against pathological internal workspace state, not just tidy ones.
+    fn adversarial_git_space_member(
+        key: &str,
+        is_linked_worktree: bool,
+    ) -> crate::workspace::Workspace {
+        let mut ws = crate::workspace::Workspace::test_adversarial_identity_state();
+        ws.cached_git_branch = None;
+        ws.cached_git_space = Some(crate::workspace::GitSpaceMetadata {
+            key: key.into(),
+            repo_identity: key.into(),
+            checkout_key: format!("/repo/{key}"),
+            repo_name: "herdr".into(),
+            repo_root: std::path::PathBuf::from("/repo/herdr"),
+            is_linked_worktree,
+        });
+        ws
+    }
+
     #[test]
     fn clones_on_same_branch_get_one_bracket_with_rail() {
         let mut app = AppState::test_new();
@@ -6086,6 +6109,272 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
             "last member closes bracket: {:?}",
             row_text(body_y + 2)
         );
+
+        // Invariants gate for the state used above, so later field additions
+        // keep passing through this check.
+        app.assert_invariants_for_test();
+        for ws in &app.workspaces {
+            ws.assert_invariants_for_test();
+        }
+    }
+
+    // Exhaustive counterpart to `workspace_list_lockstep_passes_agree_for_git_repo_group`:
+    // that test pins ONE shape (a git repo group producing ProjectHeader +
+    // Workspace only). This test instead builds a fixture that forces every
+    // `WorkspaceListEntry` variant to appear at least once -- GroupHeader (a
+    // user visual group), ProjectHeader + Workspace (a git repo group),
+    // BranchHeader both folded (`ws_idx: Some`, a single auto-named branch
+    // member) and plain (`ws_idx: None`, two members on one branch), and
+    // HiddenHeader (a hidden workspace) -- and every workspace involved comes
+    // from `Workspace::test_adversarial_identity_state()` rather than a
+    // pristine fixture, so the lockstep contract is checked against
+    // pathological internal state, not just tidy ones.
+    //
+    // The THREE lockstep passes named at sidebar.rs:703-705 are
+    // `workspace_list_visible_count` (visible-count pass),
+    // `compute_workspace_list_areas` (geometry pass), and
+    // `render_workspace_list` (render pass); all three MUST consume exactly
+    // `entry_row_height` rows per entry, for every entry, regardless of
+    // variant. This test checks all three against the same
+    // `workspace_list_entries(&app)` sequence.
+    //
+    // Exhaustiveness is enforced BY THE COMPILER, not a hand-maintained list:
+    // every `match entry { .. }` below is a non-wildcard match over
+    // `WorkspaceListEntry`. Adding a variant to the enum without adding an
+    // arm to every match here fails to compile.
+    #[test]
+    fn workspace_list_lockstep_passes_agree_for_every_entry_variant() {
+        let mut app = AppState::test_with_adversarial_identity_state();
+        // app.workspaces[0] is the adversarial base workspace: no git space,
+        // no visual group, not hidden -> renders as a flat `Workspace` entry.
+        // Every workspace that reaches a `Workspace` row gets a custom_name,
+        // because the render pass below asserts that name verbatim: a row
+        // without one renders a *derived* label (the repo-derived display name,
+        // or — for an indented child, since bora-rlu.2 — its `@wNpN` badge),
+        // and asserting that would mean re-implementing the renderer inside its
+        // own test. Naming them costs no coverage: branch folding turns on
+        // auto-naming only for a LONE member, so the two-member branch below
+        // stays uncollapsed either way.
+        app.workspaces[0].custom_name = Some("adv-base".into());
+
+        let identity = "github.com/owner/adversarial-proj";
+
+        // Git repo group: parent (no branch, rides inside the bracket),
+        // branch-a (folds into the ProjectHeader's own `branch` field),
+        // branch-b (single auto-named member -> BranchHeader{ws_idx: Some}),
+        // branch-c (two auto-named members -> BranchHeader{ws_idx: None} + 2
+        // Workspace rows -- 2+ members must never collapse).
+        let mut parent = adversarial_git_space_member("key-parent", false);
+        parent.cached_git_space.as_mut().unwrap().repo_identity = identity.into();
+        parent.custom_name = Some("adv-parent".into());
+
+        let mut branch_a = adversarial_git_space_member("key-a", false);
+        branch_a.cached_git_branch = Some("feat/a".into());
+        branch_a.cached_git_space.as_mut().unwrap().repo_identity = identity.into();
+        branch_a.custom_name = Some("adv-branch-a".into());
+
+        let mut branch_b = adversarial_git_space_member("key-b", false);
+        branch_b.cached_git_branch = Some("feat/b".into());
+        branch_b.cached_git_space.as_mut().unwrap().repo_identity = identity.into();
+        branch_b.custom_name = None; // lone auto-named member -> folds into its BranchHeader
+
+        let mut branch_c1 = adversarial_git_space_member("key-c1", true);
+        branch_c1.cached_git_branch = Some("feat/c".into());
+        branch_c1.cached_git_space.as_mut().unwrap().repo_identity = identity.into();
+        branch_c1.custom_name = Some("adv-branch-c1".into());
+        let mut branch_c2 = adversarial_git_space_member("key-c2", true);
+        branch_c2.cached_git_branch = Some("feat/c".into());
+        branch_c2.cached_git_space.as_mut().unwrap().repo_identity = identity.into();
+        branch_c2.custom_name = Some("adv-branch-c2".into()); // 2 members on one branch must never collapse
+
+        // Visual group: a lone member renders GroupHeader + indented Workspace.
+        let mut vg_member = Workspace::test_adversarial_identity_state();
+        vg_member.cached_git_branch = None;
+        vg_member.custom_name = Some("adv-vg-member".into());
+        vg_member.visual_group = Some("adv-group".into());
+
+        // Hidden workspace: its row disappears, folded into the trailing
+        // HiddenHeader count instead.
+        let mut hidden_ws = Workspace::test_adversarial_identity_state();
+        hidden_ws.cached_git_branch = None;
+        hidden_ws.custom_name = Some("adv-hidden".into());
+
+        app.workspaces.extend([
+            parent, branch_a, branch_b, branch_c1, branch_c2, vg_member, hidden_ws,
+        ]);
+        let hidden_idx = app.workspaces.len() - 1;
+        let hide_key = AppState::workspace_hide_key(&app.workspaces[hidden_idx]);
+        app.hidden_space_keys.insert(
+            hide_key,
+            std::time::Instant::now() + std::time::Duration::from_secs(300),
+        );
+        app.ensure_test_terminals();
+
+        let entries = workspace_list_entries(&app);
+
+        // --- By-construction exhaustiveness: every variant must appear at
+        // least once, or the fixture above needs extending. ---
+        #[derive(Default, Debug)]
+        struct VariantsSeen {
+            workspace: bool,
+            group_header: bool,
+            project_header: bool,
+            branch_header_folded: bool,
+            branch_header_plain: bool,
+            hidden_header: bool,
+        }
+        let mut seen = VariantsSeen::default();
+        for entry in &entries {
+            match entry {
+                WorkspaceListEntry::Workspace { .. } => seen.workspace = true,
+                WorkspaceListEntry::GroupHeader { .. } => seen.group_header = true,
+                WorkspaceListEntry::ProjectHeader { .. } => seen.project_header = true,
+                WorkspaceListEntry::BranchHeader { ws_idx, .. } => {
+                    if ws_idx.is_some() {
+                        seen.branch_header_folded = true;
+                    } else {
+                        seen.branch_header_plain = true;
+                    }
+                }
+                WorkspaceListEntry::HiddenHeader { .. } => seen.hidden_header = true,
+            }
+        }
+        assert!(
+            seen.workspace,
+            "fixture must produce a Workspace entry: {entries:#?}"
+        );
+        assert!(
+            seen.group_header,
+            "fixture must produce a GroupHeader entry: {entries:#?}"
+        );
+        assert!(
+            seen.project_header,
+            "fixture must produce a ProjectHeader entry: {entries:#?}"
+        );
+        assert!(
+            seen.branch_header_folded,
+            "fixture must produce a BranchHeader{{ws_idx: Some}} entry: {entries:#?}"
+        );
+        assert!(
+            seen.branch_header_plain,
+            "fixture must produce a BranchHeader{{ws_idx: None}} entry: {entries:#?}"
+        );
+        assert!(
+            seen.hidden_header,
+            "fixture must produce a HiddenHeader entry: {entries:#?}"
+        );
+
+        // --- Pass 1: height. Shared per-entry height helper. ---
+        let total_height: u16 = entries
+            .iter()
+            .enumerate()
+            .map(|(idx, entry)| entry_row_height(entry, &entries, idx))
+            .sum();
+
+        // --- Pass 2: visible-count. An exact-fit body shows every entry; one
+        // row less drops exactly the last entry (every current variant is 1
+        // row tall, so "one row" is "one entry" -- if a future change makes
+        // any variant taller without updating `entry_row_height`, either
+        // this or pass 3/4 below catches the drift). ---
+        let width = 60;
+        let exact = Rect::new(
+            0,
+            0,
+            width,
+            total_height + WORKSPACE_SECTION_HEADER_ROWS + 2,
+        );
+        assert_eq!(workspace_list_visible_count(&app, exact, 0), entries.len());
+        let short = Rect::new(
+            0,
+            0,
+            width,
+            total_height + WORKSPACE_SECTION_HEADER_ROWS + 1,
+        );
+        assert_eq!(
+            workspace_list_visible_count(&app, short, 0),
+            entries.len() - 1
+        );
+
+        // --- Pass 3: geometry. Card/header rects sit at the prefix sums of
+        // `entry_row_height`, generically for every entry regardless of
+        // variant (a `BranchHeader{ws_idx: None}` contributes no area of its
+        // own but must still advance `row_y` by its `entry_row_height`, or
+        // every card/header after it would land on the wrong row -- which is
+        // exactly what these two `assert_eq!` calls would catch). ---
+        let sidebar = Rect::new(
+            0,
+            0,
+            width,
+            total_height + WORKSPACE_SECTION_HEADER_ROWS + 20,
+        );
+        let (cards, headers) = compute_workspace_list_areas(&app, sidebar);
+        let ws_area = workspace_list_rect(sidebar, app.sidebar_section_split);
+        let body = workspace_list_body_rect(&app, ws_area, false);
+        let mut expected_cards: Vec<(usize, u16)> = Vec::new();
+        let mut expected_headers: Vec<(String, u16)> = Vec::new();
+        let mut y = body.y;
+        for (idx, entry) in entries.iter().enumerate() {
+            match entry {
+                WorkspaceListEntry::Workspace { ws_idx, .. } => expected_cards.push((*ws_idx, y)),
+                WorkspaceListEntry::BranchHeader {
+                    ws_idx: Some(idx2), ..
+                } => expected_cards.push((*idx2, y)),
+                WorkspaceListEntry::BranchHeader { ws_idx: None, .. } => {}
+                WorkspaceListEntry::GroupHeader { collapse_key, .. }
+                | WorkspaceListEntry::ProjectHeader { collapse_key, .. } => {
+                    expected_headers.push((collapse_key.clone(), y))
+                }
+                WorkspaceListEntry::HiddenHeader { .. } => {
+                    expected_headers.push(("hidden:".to_string(), y))
+                }
+            }
+            y += entry_row_height(entry, &entries, idx);
+        }
+        assert_eq!(y - body.y, total_height);
+        assert_eq!(
+            cards
+                .iter()
+                .map(|c| (c.ws_idx, c.rect.y))
+                .collect::<Vec<_>>(),
+            expected_cards
+        );
+        assert_eq!(
+            headers
+                .iter()
+                .map(|h| (h.collapse_key.clone(), h.rect.y))
+                .collect::<Vec<_>>(),
+            expected_headers
+        );
+
+        // --- Pass 4: render. Every entry's own distinguishing text lands on
+        // the same prefix-sum row the height/geometry passes computed above --
+        // generically, per entry, not just for one hand-picked row. ---
+        let mut terminal =
+            Terminal::new(TestBackend::new(exact.width, exact.height)).expect("test terminal");
+        let runtimes = TerminalRuntimeRegistry::new();
+        terminal
+            .draw(|frame| render_workspace_list(&app, &runtimes, frame, exact, false))
+            .expect("workspace list should render");
+        let body_y = WORKSPACE_SECTION_HEADER_ROWS; // exact rect starts at y = 0
+        let mut y = body_y;
+        for (idx, entry) in entries.iter().enumerate() {
+            let expected_substr: String = match entry {
+                WorkspaceListEntry::Workspace { ws_idx, .. } => app.workspaces[*ws_idx]
+                    .custom_name
+                    .clone()
+                    .expect("fixture sets custom_name on every workspace used here"),
+                WorkspaceListEntry::GroupHeader { name, .. } => name.clone(),
+                WorkspaceListEntry::ProjectHeader { name, .. } => name.clone(),
+                WorkspaceListEntry::BranchHeader { label, .. } => label.clone(),
+                WorkspaceListEntry::HiddenHeader { .. } => "Hidden".to_string(),
+            };
+            let actual = row_text(terminal.backend().buffer(), y, exact.width);
+            assert!(
+                actual.contains(&expected_substr),
+                "entry {idx} ({entry:?}) expected {expected_substr:?} at row {y}, got {actual:?}"
+            );
+            y += entry_row_height(entry, &entries, idx);
+        }
 
         // Invariants gate for the state used above, so later field additions
         // keep passing through this check.

@@ -1599,6 +1599,28 @@ pub(super) mod test_support {
         }
     }
 
+    /// A shell that blocks on stdin instead of exiting, for tests whose
+    /// workspace must still exist on a LATER request.
+    ///
+    /// [`exiting_test_command`] is right for a test that asserts inside the
+    /// same request that created the pane. It is wrong for one that creates a
+    /// workspace, issues another request, and then expects the first workspace
+    /// to still be there: the process is already gone, so the pane and its
+    /// now-empty workspace get reaped in between, and the second request fails
+    /// with something unrelated-looking (`channel_not_found`, for a channel
+    /// workspace) that reads like a product bug.
+    pub(crate) fn long_running_test_command() -> &'static str {
+        #[cfg(windows)]
+        {
+            // Reads stdin and blocks, like `cat`.
+            "C:\\Windows\\System32\\more.com"
+        }
+        #[cfg(not(windows))]
+        {
+            "/bin/cat"
+        }
+    }
+
     pub(crate) fn shutdown_test_runtimes(app: &mut crate::app::App) {
         let runtimes: Vec<_> = app.terminal_runtimes.drain().collect();
         for (_terminal_id, runtime) in runtimes {

@@ -976,7 +976,7 @@ impl AppState {
 mod tests {
     use super::*;
     use crate::api::schema::{ChannelMessage, ChannelSenderKind, ChannelSummary};
-    use crate::config::IsolatedStateDir;
+    use crate::config::IsolatedDirs;
 
     fn channel(name: &str) -> ChannelSummary {
         ChannelSummary {
@@ -1884,7 +1884,7 @@ mod tests {
 
     #[tokio::test]
     async fn enter_joins_the_highlighted_agent_and_the_members_column_shows_it() {
-        let _isolated = IsolatedStateDir::new("join");
+        let _isolated = IsolatedDirs::new("join");
         let (mut app, scout) = app_with_channel_and_outside_agent();
         assert_eq!(app.state.selected_chat_channel_name(), Some("#eng"));
         assert!(
@@ -1935,7 +1935,7 @@ mod tests {
 
     #[tokio::test]
     async fn removing_a_workspace_resident_member_reports_the_refusal() {
-        let _isolated = IsolatedStateDir::new("remove");
+        let _isolated = IsolatedDirs::new("remove");
         let (mut app, _scout) = app_with_channel_and_outside_agent();
         let resident = app
             .state
@@ -2061,7 +2061,7 @@ mod tests {
 
     #[tokio::test]
     async fn chat_open_view_clears_the_badge_for_the_viewed_room() {
-        let _isolated = IsolatedStateDir::new("chat-badge-viewed");
+        let _isolated = IsolatedDirs::new("chat-badge-viewed");
         let mut app = creating_app();
         app.dispatch_api_request(
             "test.channel_create",
@@ -2090,7 +2090,7 @@ mod tests {
 
     #[tokio::test]
     async fn chat_badge_lights_for_a_message_newer_than_the_seen_cursor() {
-        let _isolated = IsolatedStateDir::new("chat-badge-newer");
+        let _isolated = IsolatedDirs::new("chat-badge-newer");
         let mut app = creating_app();
         app.dispatch_api_request(
             "test.channel_create",
