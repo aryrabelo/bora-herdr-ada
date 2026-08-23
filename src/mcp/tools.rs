@@ -42,6 +42,36 @@ const ALLOWLIST: &[(&str, Option<&str>)] = &[
     ("events.subscribe", None),
     ("plugin.action.list", None),
     ("plugin.action.invoke", None),
+    // Project verbs. Per-verb channel/`from_pane` audit (params in
+    // `api::schema::projects`): `project.list` (`EmptyParams`) carries
+    // neither a channel nor a `from_pane`; `project.member_add`
+    // (`slug`, `dir`, `worktrees`) and `project.member_remove`
+    // (`slug`, `dir`) carry neither; `project.create`/`project.update`
+    // DO carry a channel — at the TOP level, under the field `channel`
+    // (never `name`). Decision: that is not a `--channels` fence escape.
+    // What a fence protects is channel TRAFFIC, and every traffic verb
+    // (`channel_history`, `channel_tail`, `channel_send`, `channel_ask`,
+    // `events_wait`'s channel_message match) takes its own top-level
+    // `name`, each already fenced. Writing `channel: "#x"` into
+    // projects.yml stores a string the caller chose and the response
+    // hands back that same string (`effective_channel`'s only production
+    // caller is `project_summary`, which just echoes it) — nothing
+    // joins, subscribes, or reads any channel's messages off it, so
+    // unlike `events_wait`'s nested channel the caller observes only its
+    // own input, never another party's traffic. The residual leak is the
+    // same class as a project's name or member dirs, which these verbs
+    // expose by design: `project.list` shows which channel OTHER
+    // projects point at — config metadata in the operator's own file,
+    // not live channel state like the filtered `channel_list`. Fencing
+    // here would also be mechanically wrong: the top-level fence reads
+    // `name`, which on these two verbs is the project DISPLAY name, so
+    // every project not named after a channel slug would be rejected as
+    // an out-of-scope channel.
+    ("project.list", None),
+    ("project.create", None),
+    ("project.update", None),
+    ("project.member_add", None),
+    ("project.member_remove", None),
 ];
 
 /// Channel-scoped tools: their params carry a bare (no leading `#`) channel
@@ -52,7 +82,13 @@ const ALLOWLIST: &[(&str, Option<&str>)] = &[
 /// only nested inside `match_event`/`subscriptions`, which this top-level
 /// `name` fence cannot see into — `events_wait`'s nested channel is fenced
 /// by `fence_events_wait_match_event` inside `dispatch` instead, and
-/// `events_subscribe` has no channel-carrying variant to fence.
+/// `events_subscribe` has no channel-carrying variant to fence. No
+/// `project_*` verb belongs here either: `project_list`/`project_member_*`
+/// carry no channel at all, and `project_create`/`project_update` carry
+/// theirs under `channel` — a config-file string that grants no read of
+/// that channel's traffic (see the audit at their ALLOWLIST entries), and
+/// whose `name` sibling is the project display name, which this `name`
+/// fence must never compare against channel slugs.
 const CHANNEL_NAME_SCOPED_TOOLS: &[&str] = &[
     "channel_members",
     "channel_history",
@@ -66,7 +102,10 @@ const CHANNEL_NAME_SCOPED_TOOLS: &[&str] = &[
 
 /// Tools whose params struct has a `from_pane` field the CLI would normally
 /// fill from `$HERDR_PANE_ID`. MCP callers get the same default. No
-/// free-bucket verb carries `from_pane`, so none belongs here.
+/// free-bucket verb carries `from_pane`, and neither does any project verb
+/// (`project_list`'s `EmptyParams` and the four mutation params structs are
+/// `from_pane`-free, field by field — audited at their ALLOWLIST entries),
+/// so none belongs here.
 const FROM_PANE_TOOLS: &[&str] = &[
     "channel_send",
     "channel_note",
@@ -436,6 +475,11 @@ mod tests {
             ("events_subscribe", "events.subscribe"),
             ("plugin_action_list", "plugin.action.list"),
             ("plugin_action_invoke", "plugin.action.invoke"),
+            ("project_list", "project.list"),
+            ("project_create", "project.create"),
+            ("project_update", "project.update"),
+            ("project_member_add", "project.member_add"),
+            ("project_member_remove", "project.member_remove"),
         ] {
             assert_eq!(
                 index.get(tool).map(String::as_str),
@@ -542,6 +586,86 @@ mod tests {
              every legitimate call as an out-of-scope channel"
         );
         assert!(ALLOWLIST.iter().any(|(method, _)| *method == "agent.start"));
+    }
+
+    #[test]
+    fn project_verbs_appear_in_the_tool_list() {
+        // One ALLOWLIST line per verb; every entry is asserted by name
+        // against the generated index, so dropping any single line turns
+        // this red (no counting — a count would pass with four of five).
+        let index = tool_index(true);
+        for (tool, wire) in [
+            ("project_list", "project.list"),
+            ("project_create", "project.create"),
+            ("project_update", "project.update"),
+            ("project_member_add", "project.member_add"),
+            ("project_member_remove", "project.member_remove"),
+        ] {
+            assert_eq!(
+                index.get(tool).map(String::as_str),
+                Some(wire),
+                "tool {tool}"
+            );
+        }
+    }
+
+    #[test]
+    fn project_verbs_belong_to_no_scoping_table() {
+        // The scoping decision, pinned. `dispatch` consults these tables
+        // directly, so table membership IS the pure fence decision — and
+        // asserting it here avoids `dispatch` entirely, which matters
+        // because the project mutation verbs would perform their real
+        // effect (write projects.yml) against whatever bora server is
+        // live on this machine. Decision being pinned: none of the five
+        // carries `from_pane`, none carries a fenceable channel —
+        // `project_create`/`project_update` carry a top-level `channel`
+        // STRING, which names a channel in a config file and grants no
+        // read of its traffic (nothing subscribes off it; the response
+        // echoes the caller's own string), and their `name` is the
+        // project display name, which the `name` fence must never
+        // compare against channel slugs.
+        for tool in [
+            "project_list",
+            "project_create",
+            "project_update",
+            "project_member_add",
+            "project_member_remove",
+        ] {
+            assert!(
+                !CHANNEL_NAME_SCOPED_TOOLS.contains(&tool),
+                "{tool} must not be channel-name fenced"
+            );
+            assert!(
+                !FROM_PANE_TOOLS.contains(&tool),
+                "{tool} has no from_pane param to default"
+            );
+        }
+        // Wholesale equality, so no verb can later move across the fence
+        // boundary in either direction without this test going red.
+        assert_eq!(
+            CHANNEL_NAME_SCOPED_TOOLS,
+            [
+                "channel_members",
+                "channel_history",
+                "channel_tail",
+                "channel_send",
+                "channel_note",
+                "channel_ask",
+                "channel_join",
+                "channel_leave",
+            ]
+            .as_slice()
+        );
+        assert_eq!(
+            FROM_PANE_TOOLS,
+            [
+                "channel_send",
+                "channel_note",
+                "channel_ask",
+                "agent_prompt"
+            ]
+            .as_slice()
+        );
     }
 
     fn contains_ref(value: &Value) -> bool {

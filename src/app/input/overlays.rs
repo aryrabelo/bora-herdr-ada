@@ -25,6 +25,29 @@ pub(super) fn rect_contains(rect: Rect, col: u16, row: u16) -> bool {
 /// this one constant.
 const COMPOSER_FRAME_ROWS: u16 = 3;
 
+/// Cells a bordered chat column's frame consumes on each axis: one border
+/// row/column on every side. Mirrors `COMPOSER_FRAME_ROWS`'s role for the
+/// composer — `panel_content_rect` is the single place this budget is
+/// spent, so every column narrows by exactly the amount its border costs
+/// and no truncation math anywhere else has to know the number.
+const CHAT_PANEL_BORDER_SIZE: u16 = 2;
+
+/// A bordered chat column's content rect: its panel footprint minus the
+/// one-cell border on every side, computed without a `Frame` (mirrors what
+/// `render_panel_shell` draws). Panels too small for a border content out
+/// to nothing instead of underflowing.
+fn panel_content_rect(panel: Rect) -> Rect {
+    if panel.width < CHAT_PANEL_BORDER_SIZE || panel.height < CHAT_PANEL_BORDER_SIZE {
+        return Rect::new(panel.x, panel.y, 0, 0);
+    }
+    Rect::new(
+        panel.x + 1,
+        panel.y + 1,
+        panel.width - CHAT_PANEL_BORDER_SIZE,
+        panel.height - CHAT_PANEL_BORDER_SIZE,
+    )
+}
+
 impl App {
     pub(super) fn handle_overlay_mouse(&mut self, mouse: MouseEvent) -> bool {
         if self.state.mode == Mode::Chat {
@@ -751,8 +774,10 @@ impl AppState {
             .inner(self.chat_popup_rect())
     }
 
-    /// Left column width: channel list. Hidden below 40 inner columns.
-    fn chat_channel_list_width(&self) -> u16 {
+    /// Left column outer width (channel list), border included — each
+    /// bordered column spends `CHAT_PANEL_BORDER_SIZE` of this on its own
+    /// frame before any content is drawn. Hidden below 40 inner columns.
+    fn chat_channel_list_outer_width(&self) -> u16 {
         let inner = self.chat_inner_rect();
         if inner.width < 40 {
             return 0;
@@ -760,8 +785,9 @@ impl AppState {
         (inner.width / 5).clamp(12, 22)
     }
 
-    /// Right column width: member list. Hidden below 64 inner columns.
-    fn chat_members_width(&self) -> u16 {
+    /// Right column outer width (member list), border included. Hidden
+    /// below 64 inner columns.
+    fn chat_members_outer_width(&self) -> u16 {
         let inner = self.chat_inner_rect();
         if inner.width < 64 {
             return 0;
@@ -769,9 +795,13 @@ impl AppState {
         (inner.width / 5).clamp(14, 22)
     }
 
-    pub(crate) fn chat_channel_list_rect(&self) -> Rect {
+    /// Channel column's full footprint, border included — what
+    /// `render_column_frame` draws into. Columns abut directly with no
+    /// separator gap: each one's own border is the seam between it and its
+    /// neighbour.
+    pub(crate) fn chat_channel_list_panel_rect(&self) -> Rect {
         let inner = self.chat_inner_rect();
-        let width = self.chat_channel_list_width();
+        let width = self.chat_channel_list_outer_width();
         Rect::new(
             inner.x,
             inner.y,
@@ -780,9 +810,10 @@ impl AppState {
         )
     }
 
-    pub(crate) fn chat_members_rect(&self) -> Rect {
+    /// Member column's full footprint, border included.
+    pub(crate) fn chat_members_panel_rect(&self) -> Rect {
         let inner = self.chat_inner_rect();
-        let width = self.chat_members_width();
+        let width = self.chat_members_outer_width();
         Rect::new(
             inner.x + inner.width.saturating_sub(width),
             inner.y,
@@ -791,24 +822,55 @@ impl AppState {
         )
     }
 
-    /// Middle column: header row, divider, scrollable message body. The body
-    /// stops above the composer frame, same bottom edge as both side columns.
-    pub(crate) fn chat_messages_rect(&self) -> Rect {
+    /// Timeline column's full footprint, border included — the remainder
+    /// once the side columns take their share. No separator columns are
+    /// reserved here either: this panel's own left/right border is what
+    /// touches the neighbours.
+    pub(crate) fn chat_messages_panel_rect(&self) -> Rect {
         let inner = self.chat_inner_rect();
-        let left = self.chat_channel_list_width();
-        let right = self.chat_members_width();
-        let x = inner.x + left + if left > 0 { 1 } else { 0 };
-        let width = inner.width.saturating_sub(
-            left + right + if left > 0 { 1 } else { 0 } + if right > 0 { 1 } else { 0 },
-        );
-        let body_top = inner.y + 2;
-        let body_height = inner.height.saturating_sub(2 + COMPOSER_FRAME_ROWS);
-        Rect::new(x, body_top, width, body_height)
+        let left = self.chat_channel_list_outer_width();
+        let right = self.chat_members_outer_width();
+        Rect::new(
+            inner.x + left,
+            inner.y,
+            inner.width.saturating_sub(left + right),
+            inner.height.saturating_sub(COMPOSER_FRAME_ROWS),
+        )
+    }
+
+    /// Channel list content rect: the panel footprint minus its own
+    /// border. This is the width `render_channel_list` and
+    /// `chat_new_channel_rect` actually truncate against — narrower than
+    /// the old, unbordered column by `CHAT_PANEL_BORDER_SIZE`.
+    pub(crate) fn chat_channel_list_rect(&self) -> Rect {
+        panel_content_rect(self.chat_channel_list_panel_rect())
+    }
+
+    /// Member list content rect: the panel footprint minus its own border.
+    pub(crate) fn chat_members_rect(&self) -> Rect {
+        panel_content_rect(self.chat_members_panel_rect())
+    }
+
+    /// Timeline content rect: the message panel's content area minus the
+    /// two rows the inline per-channel header (name/counts + divider)
+    /// keeps above the scrollable body. `chat_header_rect` owns those two
+    /// rows; the pair always tiles exactly against the border-shrunk
+    /// content, so render and scroll math can never disagree about where
+    /// the body starts.
+    pub(crate) fn chat_messages_rect(&self) -> Rect {
+        let content = panel_content_rect(self.chat_messages_panel_rect());
+        let header_height = content.height.min(2);
+        Rect::new(
+            content.x,
+            content.y + header_height,
+            content.width,
+            content.height.saturating_sub(header_height),
+        )
     }
 
     pub(crate) fn chat_header_rect(&self) -> Rect {
-        let messages = self.chat_messages_rect();
-        Rect::new(messages.x, messages.y.saturating_sub(2), messages.width, 2)
+        let content = panel_content_rect(self.chat_messages_panel_rect());
+        Rect::new(content.x, content.y, content.width, content.height.min(2))
     }
 
     pub(crate) fn chat_messages_width(&self) -> u16 {

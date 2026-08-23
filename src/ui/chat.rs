@@ -26,6 +26,46 @@ pub(crate) const NEW_CHANNEL_LABEL: &str = "+ new channel";
 /// Caption painted on the composer's top border (GOAL 2026-08-22 §12.2):
 /// the input line reads as a control, not floating text.
 const COMPOSER_TITLE: &str = "[ Chat ]";
+/// Caption on the channel column's border (GOAL 2026-08-22 §12.3): borders
+/// plus a title replace the old single-character column separator.
+const CHANNELS_TITLE: &str = "[ Channels ]";
+/// Caption on the timeline column's border — same bracketed format as
+/// `COMPOSER_TITLE`, distinct word so the transcript and the input control
+/// don't share a caption.
+const MESSAGES_TITLE: &str = "[ Messages ]";
+/// Caption on the member column's border.
+const MEMBERS_TITLE: &str = "[ Members ]";
+
+/// Draws a chat column's frame: border via `render_panel_shell` plus a
+/// bracketed caption painted inside the top border's corners — the same
+/// treatment the composer introduced (bora-7c5.2). Every bordered column in
+/// the chat view goes through this one function, so there is exactly one
+/// border style and one caption layout to keep in sync.
+fn render_column_frame(
+    frame: &mut Frame,
+    area: Rect,
+    title: &str,
+    border_color: Color,
+    bg: Color,
+) -> Option<Rect> {
+    let inner = render_panel_shell(frame, area, border_color, bg)?;
+    let caption = format!(" {title} ");
+    let caption_width = display_width(&caption) as u16;
+    frame.render_widget(
+        Paragraph::new(caption).style(
+            Style::default()
+                .fg(border_color)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Rect::new(
+            area.x + 1,
+            area.y,
+            area.width.saturating_sub(2).min(caption_width),
+            1,
+        ),
+    );
+    Some(inner)
+}
 
 fn agent_state(status: AgentStatus) -> crate::detect::AgentState {
     match status {
@@ -42,6 +82,23 @@ pub(super) fn render_chat_overlay(app: &AppState, frame: &mut Frame) {
     else {
         return;
     };
+    let p = &app.palette;
+
+    let channel_panel = app.chat_channel_list_panel_rect();
+    let messages_panel = app.chat_messages_panel_rect();
+    let members_panel = app.chat_members_panel_rect();
+
+    render_column_frame(frame, channel_panel, CHANNELS_TITLE, p.surface1, p.panel_bg);
+    render_column_frame(
+        frame,
+        messages_panel,
+        MESSAGES_TITLE,
+        p.surface1,
+        p.panel_bg,
+    );
+    if members_panel.width > 0 {
+        render_column_frame(frame, members_panel, MEMBERS_TITLE, p.surface1, p.panel_bg);
+    }
 
     let list = app.chat_channel_list_rect();
     let messages = app.chat_messages_rect();
@@ -49,10 +106,8 @@ pub(super) fn render_chat_overlay(app: &AppState, frame: &mut Frame) {
     let input = app.chat_input_rect();
 
     render_channel_list(app, frame, list);
-    render_column_separator(frame, list, app);
     render_messages(app, frame, messages);
     if members.width > 0 {
-        render_column_separator(frame, messages, app);
         render_members(app, frame, members);
     }
     render_input(app, frame, input);
@@ -229,23 +284,6 @@ fn render_channel_list(app: &AppState, frame: &mut Frame, area: Rect) {
     }
 }
 
-fn render_column_separator(frame: &mut Frame, left: Rect, app: &AppState) {
-    if left.height == 0 || left.width == 0 {
-        return;
-    }
-    let area = Rect::new(left.x + left.width, left.y, 1, left.height);
-    if area.width == 0 {
-        return;
-    }
-    let line = "─".repeat(area.height as usize);
-    for (offset, ch) in line.chars().enumerate() {
-        frame.render_widget(
-            Paragraph::new(ch.to_string()).style(Style::default().fg(app.palette.surface1)),
-            Rect::new(area.x, area.y + offset as u16, 1, 1),
-        );
-    }
-}
-
 fn render_messages(app: &AppState, frame: &mut Frame, area: Rect) {
     if area.height == 0 || area.width == 0 {
         return;
@@ -391,22 +429,12 @@ fn render_input(app: &AppState, frame: &mut Frame, area: Rect) {
         return;
     }
     let p = &app.palette;
-    let Some(inner) = render_panel_shell(frame, area, p.accent, p.panel_bg) else {
+    let Some(inner) = render_column_frame(frame, area, COMPOSER_TITLE, p.accent, p.panel_bg) else {
         return;
     };
 
-    // Title and counter share the top border row, inside the corners.
-    let title = format!(" {} ", COMPOSER_TITLE);
-    let title_width = display_width(&title) as u16;
-    frame.render_widget(
-        Paragraph::new(title).style(Style::default().fg(p.accent).add_modifier(Modifier::BOLD)),
-        Rect::new(
-            area.x + 1,
-            area.y,
-            area.width.saturating_sub(2).min(title_width),
-            1,
-        ),
-    );
+    // The counter shares the top border row with the title, inside the
+    // corners — the title itself is painted by `render_column_frame`.
     let counter = format!("{} ", app.chat.input.chars().count());
     let counter_width = counter.chars().count() as u16;
     frame.render_widget(
@@ -935,6 +963,15 @@ mod tests {
             .collect::<String>()
     }
 
+    /// Reads `width` cells starting at `(x, y)` — the column-scoped
+    /// counterpart of `row_text`, for asserting a single panel's border or
+    /// content without hand-slicing the full terminal row.
+    fn strip_text(buffer: &ratatui::buffer::Buffer, x: u16, y: u16, width: u16) -> String {
+        (x..x + width)
+            .map(|col| buffer[(col, y)].symbol())
+            .collect::<String>()
+    }
+
     /// Chat state at a given terminal size, laid out like the mouse tests:
     /// 26-col sidebar, terminal beside it.
     fn chat_state_at(width: u16, height: u16) -> AppState {
@@ -1014,9 +1051,10 @@ mod tests {
     #[test]
     fn chat_column_rects_stop_where_the_composer_frame_begins() {
         // Lockstep: the composer frame consumes the bottom three inner rows,
-        // so every chat column rect must end exactly where it starts. If one
-        // rect keeps the old bottom edge while the others shrink, the column
-        // draws under the frame (or a gap opens) — this catches that.
+        // so every chat column's content rect must end exactly one row above
+        // it — that one row is the column's own bottom border (bora-7c5.3).
+        // If one column's border-shrink math goes stale while its siblings
+        // pick up a fix, the column draws under the frame (or a gap opens).
         for (width, height) in [(106u16, 20u16), (60, 24), (36, 20), (30, 8)] {
             let state = chat_state_at(width, height);
             let inner = state.chat_inner_rect();
@@ -1044,9 +1082,9 @@ mod tests {
                     continue;
                 }
                 assert_eq!(
-                    column.y + column.height,
+                    column.y + column.height + 1,
                     input.y,
-                    "{name} column ends where the composer begins at {width}x{height}"
+                    "{name} column content plus its own bottom border ends where the composer begins at {width}x{height}"
                 );
             }
             // Header + divider sit directly above the timeline body.
@@ -1059,6 +1097,199 @@ mod tests {
                     "header tiles onto the timeline at {width}x{height}"
                 );
             }
+        }
+    }
+
+    // ---- column borders and titles (bora-7c5.3) --------------------------
+
+    #[test]
+    fn chat_columns_render_bordered_titled_panels() {
+        // 106x20 -> popup (3,1,100,18) -> inner (4,2,98,16); with both side
+        // columns clear of their visibility thresholds, the three panels
+        // land at fixed, hand-verified positions that exactly tile the
+        // inner width: channel (4,2,19,13), messages (23,2,60,13), members
+        // (83,2,19,13) — replacing the old single-character separator with
+        // a border and a bracketed title per column.
+        let state = chat_state_at(106, 20);
+        let mut terminal = Terminal::new(TestBackend::new(106, 20)).expect("test terminal");
+        terminal
+            .draw(|frame| render_chat_overlay(&state, frame))
+            .expect("chat overlay renders");
+
+        let channel_panel = state.chat_channel_list_panel_rect();
+        let messages_panel = state.chat_messages_panel_rect();
+        let members_panel = state.chat_members_panel_rect();
+        assert_eq!(channel_panel, Rect::new(4, 2, 19, 13));
+        assert_eq!(messages_panel, Rect::new(23, 2, 60, 13));
+        assert_eq!(members_panel, Rect::new(83, 2, 19, 13));
+        assert_eq!(
+            channel_panel.x + channel_panel.width,
+            messages_panel.x,
+            "channel's right border and the timeline's left border sit in adjacent columns, no gap"
+        );
+        assert_eq!(
+            messages_panel.x + messages_panel.width,
+            members_panel.x,
+            "the timeline's right border and members' left border sit in adjacent columns, no gap"
+        );
+
+        let buffer = terminal.backend().buffer();
+
+        // Top border: corner, bracketed caption, dash run, corner — one per
+        // column, each with its own title.
+        assert_eq!(
+            strip_text(
+                buffer,
+                channel_panel.x,
+                channel_panel.y,
+                channel_panel.width
+            ),
+            format!("┌ [ Channels ] {}┐", "─".repeat(3)),
+            "channel column top border and title"
+        );
+        assert_eq!(
+            strip_text(
+                buffer,
+                messages_panel.x,
+                messages_panel.y,
+                messages_panel.width
+            ),
+            format!("┌ [ Messages ] {}┐", "─".repeat(44)),
+            "timeline column top border and title"
+        );
+        assert_eq!(
+            strip_text(
+                buffer,
+                members_panel.x,
+                members_panel.y,
+                members_panel.width
+            ),
+            format!("┌ [ Members ] {}┐", "─".repeat(4)),
+            "members column top border and title"
+        );
+
+        // Bottom border: plain frame, no caption, flush with the composer.
+        let bottom_row = channel_panel.y + channel_panel.height - 1;
+        assert_eq!(
+            strip_text(buffer, channel_panel.x, bottom_row, channel_panel.width),
+            format!("└{}┘", "─".repeat(17)),
+            "channel column bottom border carries no caption"
+        );
+
+        // A content row: vertical bars on both edges of every column, with
+        // no gap between the channel/timeline seam.
+        let content_row = channel_panel.y + 1;
+        assert_eq!(strip_text(buffer, channel_panel.x, content_row, 1), "│");
+        assert_eq!(
+            strip_text(
+                buffer,
+                channel_panel.x + channel_panel.width - 1,
+                content_row,
+                1
+            ),
+            "│",
+            "channel's own right border"
+        );
+        assert_eq!(
+            strip_text(buffer, messages_panel.x, content_row, 1),
+            "│",
+            "the timeline's own left border, immediately after channel's right border"
+        );
+    }
+
+    #[test]
+    fn members_column_nick_gets_ellipsis_after_the_border_shrinks_its_budget() {
+        // 106x20 -> members panel (83,2,19,13) -> content (84,3,17,11): the
+        // border eats 2 of the outer 19 columns, so the name/status
+        // truncation must budget against 17, not 19. If that budget were
+        // forgotten (truncation still sized for the unbordered column),
+        // this 26-char nick would either overflow past the border or get
+        // ratatui-hard-clipped with no ellipsis, and the row below would
+        // stop matching.
+        let mut state = chat_state_at(106, 20);
+        state.chat.members = vec![crate::api::schema::ChannelMember {
+            pane_id: "w1:p1".into(),
+            name: Some("abcdefghijklmnopqrstuvwxyz".into()),
+            agent_status: Some(AgentStatus::Idle),
+            source: crate::api::schema::ChannelMemberSource::Workspace,
+            unread: 0,
+        }];
+        let mut terminal = Terminal::new(TestBackend::new(106, 20)).expect("test terminal");
+        terminal
+            .draw(|frame| render_chat_overlay(&state, frame))
+            .expect("chat overlay renders");
+
+        let members = state.chat_members_rect();
+        assert_eq!(
+            members,
+            Rect::new(84, 3, 17, 11),
+            "content rect is the members panel minus its own border"
+        );
+
+        let buffer = terminal.backend().buffer();
+        let row = strip_text(buffer, members.x, members.y + 1, members.width);
+        assert_eq!(
+            row, "○ abc…wxyz idle ×",
+            "the 26-char nick is elided to fit the border-shrunk 17-column row"
+        );
+    }
+
+    #[test]
+    fn chat_column_content_positions_track_the_panel_across_widths() {
+        // Every column's content starts exactly one cell inside its own
+        // panel's border, on both axes. If one column's panel-to-content
+        // arithmetic goes stale while its siblings pick up a fix, the
+        // border and the drawn content drift apart — this renders and
+        // checks both at once, at several widths where all three columns
+        // are visible.
+        for (width, height) in [(106u16, 20u16), (140, 24)] {
+            let state = chat_state_at(width, height);
+            let mut terminal =
+                Terminal::new(TestBackend::new(width, height)).expect("test terminal");
+            terminal
+                .draw(|frame| render_chat_overlay(&state, frame))
+                .expect("chat overlay renders");
+
+            let channel_panel = state.chat_channel_list_panel_rect();
+            let messages_panel = state.chat_messages_panel_rect();
+            let members_panel = state.chat_members_panel_rect();
+            assert!(
+                channel_panel.width > 0 && members_panel.width > 0,
+                "both side columns are visible at {width}x{height}"
+            );
+
+            let channel_content = state.chat_channel_list_rect();
+            let members_content = state.chat_members_rect();
+            let header = state.chat_header_rect();
+
+            for (name, panel, content) in [
+                ("channel", channel_panel, channel_content),
+                ("members", members_panel, members_content),
+                ("messages header", messages_panel, header),
+            ] {
+                assert_eq!(
+                    (content.x, content.y),
+                    (panel.x + 1, panel.y + 1),
+                    "{name} content starts one cell inside its own border at {width}x{height}"
+                );
+                assert_eq!(
+                    content.width,
+                    panel.width - 2,
+                    "{name} content is the panel minus its border at {width}x{height}"
+                );
+            }
+
+            let buffer = terminal.backend().buffer();
+            assert_eq!(
+                buffer[(channel_content.x, channel_content.y)].symbol(),
+                "n",
+                "the channel column's empty-state text starts at the content origin, not the border, at {width}x{height}"
+            );
+            assert_eq!(
+                buffer[(members_content.x, members_content.y)].symbol(),
+                "0",
+                "the members header starts at the content origin at {width}x{height}"
+            );
         }
     }
 }

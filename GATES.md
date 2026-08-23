@@ -241,3 +241,48 @@ em inglês pra casar com as strings vizinhas). O lead fechou o que faltava:
   a classe de bug que o contrato de lockstep existe pra pegar — quatro funções editadas à
   mão é onde ela se esconde.
 - [x] X5 testes existentes de chat atualizados para a geometria nova, não afrouxados
+
+## bora-e9i.3 — expor os verbos de project no MCP · FECHADO
+
+- [x] Y1 as cinco linhas no allowlist; nenhuma outra mudança foi necessária, porque
+  `build_tools` deriva o schema do `Method`
+- [x] Y2 a análise de escopo que o jp0 errou na primeira volta, feita direito
+  EVIDENCE: `project.create`/`project.update` CARREGAM um canal (`channel`, topo). O
+  builder concluiu que não é fuga de fence e raciocinou pelo que o chamador OBSERVA, como
+  pedido. O lead conferiu independentemente: `effective_channel` tem UM chamador de
+  produção (`project_summary`, `src/app/api/projects.rs:44`) que devolve a string do
+  próprio chamador, e nada no subsistema de canais conhece project — logo a string é
+  inerte, não concede leitura de tráfego. Divulgação residual (quem olha `project.list`
+  vê pra que canal outros projetos apontam) registrada honestamente: é metadado do
+  arquivo do próprio operador, não estado vivo de canal.
+- [x] Y3 nenhum dos cinco params carrega `from_pane` — auditado campo por campo
+- [x] Y4 aceite verificado VIVO pelo lead, não por afirmação
+  EVIDENCE: `bora mcp serve` real por stdio, `initialize` + `tools/list` →
+  `project_create project_list project_member_add project_member_remove project_update`.
+  A segunda cláusula ("tools/call project_member_add mutates the file") NÃO foi rodada
+  viva de propósito: `mcp serve` encaminha pro servidor vivo, que usa o config dir REAL,
+  então um tools/call escreveria no `~/.config/bora/projects.yml` do operador. A mutação
+  em si está coberta por teste de handler no e9i.2, e o encaminhamento é a mesma máquina
+  genérica que os outros 26 tools já exercitam.
+- [x] Y5 mutante pego
+  EVIDENCE: `("project.member_add", None)` fora do allowlist →
+  `project_verbs_appear_in_the_tool_list` FAILED.
+
+## bora-7c5.3 — colunas com borda e título · FECHADO
+
+- [x] Z1 as três colunas passam por `render_panel_shell` com título; o separador de um
+  caractere e `render_column_separator` foram removidos, não deixados mortos
+- [x] Z2 a metade que quebra coisas: o orçamento de truncagem seguiu a perda de largura
+  EVIDENCE: `panel_content_rect` é o único lugar que desconta a borda, e os accessors
+  antigos (contrato: rect de conteúdo) passaram a derivar dele — por isso os chamadores
+  em `input/chat.rs` não precisaram mudar: já leem largura viva do accessor.
+- [x] Z3 três mutantes, três pegos, incluindo os dois que interessavam
+  EVIDENCE: coluna de membros com a largura pré-borda →
+  `members_column_nick_gets_ellipsis` FAILED (o nick perde a elipse); coluna de canais
+  deixada obsoleta enquanto as irmãs encolhem →
+  `chat_column_content_positions_track_the_panel` FAILED; título fora →
+  `chat_columns_render_bordered_titled_panels` FAILED.
+- [x] Z4 o teste de lockstep do 7c5.2 foi ATUALIZADO, não afrouxado
+  EVIDENCE: `column.y + column.height == input.y` virou `... + 1 == input.y`, porque
+  agora existe a linha de borda de baixo da própria coluna entre o conteúdo e o composer.
+  Continua igualdade exata, por coluna e por largura.
