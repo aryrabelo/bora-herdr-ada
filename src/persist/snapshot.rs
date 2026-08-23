@@ -30,6 +30,10 @@ pub struct SessionSnapshot {
     pub right_panel_width: Option<u16>,
     #[serde(default)]
     pub right_panel_collapsed: Option<bool>,
+    /// Sidebar view mode. Defaults to `Repo` when absent, matching an old
+    /// snapshot written before this bead — never a compatibility break.
+    #[serde(default)]
+    pub view_mode: crate::config::ViewMode,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -195,6 +199,8 @@ struct RawSessionSnapshot {
     right_panel_width: Option<u16>,
     #[serde(default)]
     right_panel_collapsed: Option<bool>,
+    #[serde(default)]
+    view_mode: crate::config::ViewMode,
 }
 
 fn migrate_snapshot(raw: RawSessionSnapshot) -> Result<SessionSnapshot, String> {
@@ -212,6 +218,7 @@ fn migrate_snapshot(raw: RawSessionSnapshot) -> Result<SessionSnapshot, String> 
         collapsed_space_keys: raw.collapsed_space_keys,
         right_panel_width: raw.right_panel_width,
         right_panel_collapsed: raw.right_panel_collapsed,
+        view_mode: raw.view_mode,
     })
 }
 
@@ -276,6 +283,7 @@ pub fn capture(
     collapsed_space_keys: std::collections::HashSet<String>,
     right_panel_width: u16,
     right_panel_collapsed: bool,
+    view_mode: crate::config::ViewMode,
 ) -> SessionSnapshot {
     SessionSnapshot {
         version: SNAPSHOT_VERSION,
@@ -290,6 +298,7 @@ pub fn capture(
         collapsed_space_keys,
         right_panel_width: Some(right_panel_width),
         right_panel_collapsed: Some(right_panel_collapsed),
+        view_mode,
     }
 }
 
@@ -561,6 +570,7 @@ mod tests {
             state.collapsed_space_keys.clone(),
             state.right_panel_width,
             state.right_panel_collapsed,
+            state.view_mode,
         )
     }
 
@@ -627,6 +637,7 @@ mod tests {
             collapsed_space_keys: std::collections::HashSet::new(),
             right_panel_width: None,
             right_panel_collapsed: None,
+            view_mode: crate::config::ViewMode::Repo,
         };
         let json = serde_json::to_string(&snap).unwrap();
         let restored = parse_snapshot(&json).unwrap();
@@ -634,6 +645,39 @@ mod tests {
         assert_eq!(restored.active, None);
         assert_eq!(restored.sidebar_width, Some(26));
         assert_eq!(restored.sidebar_section_split, Some(0.5));
+    }
+
+    #[test]
+    fn round_trip_snapshot_written_in_project_mode_reloads_as_project() {
+        let snap = SessionSnapshot {
+            version: SNAPSHOT_VERSION,
+            workspaces: vec![],
+            active: None,
+            selected: 0,
+            sidebar_width: None,
+            sidebar_section_split: None,
+            collapsed_space_keys: std::collections::HashSet::new(),
+            right_panel_width: None,
+            right_panel_collapsed: None,
+            view_mode: crate::config::ViewMode::Project,
+        };
+        let json = serde_json::to_string(&snap).unwrap();
+        let restored = parse_snapshot(&json).unwrap();
+        assert_eq!(restored.view_mode, crate::config::ViewMode::Project);
+    }
+
+    #[test]
+    fn snapshot_missing_view_mode_field_reloads_as_repo() {
+        // Simulates a snapshot file written before this bead: no
+        // "view_mode" key at all, not even a null.
+        let json = r#"{
+            "version": 1,
+            "workspaces": [],
+            "active": null,
+            "selected": 0
+        }"#;
+        let restored = parse_snapshot(json).unwrap();
+        assert_eq!(restored.view_mode, crate::config::ViewMode::Repo);
     }
 
     #[test]
@@ -718,6 +762,7 @@ mod tests {
             version: SNAPSHOT_VERSION,
             right_panel_width: None,
             right_panel_collapsed: None,
+            view_mode: crate::config::ViewMode::Repo,
         };
 
         let json = serde_json::to_string_pretty(&snap).unwrap();
@@ -1282,6 +1327,7 @@ mod tests {
             collapsed_space_keys: std::collections::HashSet::new(),
             right_panel_width: None,
             right_panel_collapsed: None,
+            view_mode: crate::config::ViewMode::Repo,
         };
 
         let json = serde_json::to_string(&snap).unwrap();

@@ -778,6 +778,14 @@ impl AppState {
                         });
                     }
 
+                    if self.on_view_mode_toggle(mouse.column, mouse.row) {
+                        self.view_mode = self.view_mode.cycle();
+                        self.workspace_scroll = 0;
+                        self.mark_session_dirty();
+                        self.request_full_repaint();
+                        return None;
+                    }
+
                     if let Some(target) =
                         self.workspace_list_scrollbar_target_at(mouse.column, mouse.row)
                     {
@@ -954,7 +962,7 @@ impl AppState {
                         let delta_col = mouse.column.abs_diff(press.start_col);
                         let delta_row = mouse.row.abs_diff(press.start_row);
                         let can_reorder = self.workspaces.get(press.ws_idx).is_some_and(|ws| {
-                            !self.group_workspaces_by_repo
+                            !self.groups_workspaces()
                                 || ws
                                     .worktree_space()
                                     .is_none_or(|space| !space.is_linked_worktree)
@@ -1142,7 +1150,7 @@ impl AppState {
                                 ..
                             },
                     }) => {
-                        if !self.group_workspaces_by_repo {
+                        if !self.groups_workspaces() {
                             // Flat mode: every row is an independent drag
                             // target, never a block. `insert_idx` is already
                             // a raw vec position; `move_workspace` no-ops on

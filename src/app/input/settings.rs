@@ -6,7 +6,7 @@ use crate::{
         state::{AppState, SettingsSection, THEME_NAMES},
         App, Mode,
     },
-    config::{StatusIndicatorStyle, ToastDelivery},
+    config::{StatusIndicatorStyle, ToastDelivery, ViewMode},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -18,7 +18,7 @@ pub(super) enum SettingsAction {
     SaveSound(bool),
     SaveToastDelivery(ToastDelivery),
     SaveAgentBorderLabels(bool),
-    SaveGroupWorkspacesByRepo(bool),
+    SaveViewMode(ViewMode),
     InstallRecommendedIntegrations,
 }
 
@@ -34,9 +34,7 @@ impl App {
                 SettingsAction::SaveAgentBorderLabels(enabled) => {
                     self.save_agent_border_labels(enabled)
                 }
-                SettingsAction::SaveGroupWorkspacesByRepo(enabled) => {
-                    self.save_group_workspaces_by_repo(enabled)
-                }
+                SettingsAction::SaveViewMode(mode) => self.save_view_mode(mode),
                 SettingsAction::InstallRecommendedIntegrations => {
                     self.install_recommended_integrations()
                 }
@@ -83,6 +81,22 @@ fn toast_delivery_index(delivery: ToastDelivery) -> usize {
         ToastDelivery::Herdr => 1,
         ToastDelivery::Terminal => 2,
         ToastDelivery::System => 3,
+    }
+}
+
+fn view_mode_index(mode: ViewMode) -> usize {
+    match mode {
+        ViewMode::Flat => 0,
+        ViewMode::Repo => 1,
+        ViewMode::Project => 2,
+    }
+}
+
+fn view_mode_for_index(idx: usize) -> ViewMode {
+    match idx {
+        0 => ViewMode::Flat,
+        1 => ViewMode::Repo,
+        _ => ViewMode::Project,
     }
 }
 
@@ -264,7 +278,7 @@ pub(super) fn update_settings_state(state: &mut AppState, key: KeyEvent) -> Opti
             }
             KeyCode::Tab | KeyCode::Right | KeyCode::Char('l') => {
                 state.settings.section = SettingsSection::Sidebar;
-                state.settings.list.selected = usize::from(!state.group_workspaces_by_repo());
+                state.settings.list.selected = view_mode_index(state.view_mode());
             }
             _ => {
                 if let Some(super::modal::ModalAction::Close) =
@@ -275,12 +289,11 @@ pub(super) fn update_settings_state(state: &mut AppState, key: KeyEvent) -> Opti
             }
         },
         SettingsSection::Sidebar => match key.code {
-            KeyCode::Up | KeyCode::Char('k') | KeyCode::Down | KeyCode::Char('j') => {
-                state.settings.list.selected = 1 - state.settings.list.selected.min(1);
-            }
+            KeyCode::Up | KeyCode::Char('k') => state.settings.list.move_prev(),
+            KeyCode::Down | KeyCode::Char('j') => state.settings.list.move_next(3),
             KeyCode::Enter | KeyCode::Char(' ') => {
-                let enabled = state.settings.list.selected == 0;
-                return Some(SettingsAction::SaveGroupWorkspacesByRepo(enabled));
+                let mode = view_mode_for_index(state.settings.list.selected);
+                return Some(SettingsAction::SaveViewMode(mode));
             }
             KeyCode::BackTab | KeyCode::Left | KeyCode::Char('h') => {
                 state.settings.section = SettingsSection::PaneLabels;
@@ -304,7 +317,7 @@ pub(super) fn update_settings_state(state: &mut AppState, key: KeyEvent) -> Opti
             }
             KeyCode::BackTab | KeyCode::Left | KeyCode::Char('h') => {
                 state.settings.section = SettingsSection::Sidebar;
-                state.settings.list.selected = usize::from(!state.group_workspaces_by_repo());
+                state.settings.list.selected = view_mode_index(state.view_mode());
             }
             KeyCode::Tab | KeyCode::Right | KeyCode::Char('l') => {
                 state.settings.section = SettingsSection::Theme;
@@ -336,7 +349,7 @@ pub(crate) fn open_settings_at(state: &mut AppState, section: SettingsSection) {
         SettingsSection::Sound => usize::from(!state.sound_enabled()),
         SettingsSection::Toast => toast_delivery_index(state.toast_delivery()),
         SettingsSection::PaneLabels => usize::from(!state.agent_border_labels_enabled()),
-        SettingsSection::Sidebar => usize::from(!state.group_workspaces_by_repo()),
+        SettingsSection::Sidebar => view_mode_index(state.view_mode()),
         SettingsSection::Integrations => 0,
     };
     state.mode = Mode::Settings;
@@ -433,7 +446,7 @@ impl AppState {
             }
             SettingsSection::Sidebar => {
                 let list_y = area.y + 3;
-                if row >= list_y && row < list_y + 2 {
+                if row >= list_y && row < list_y + 3 {
                     Some((row - list_y) as usize)
                 } else {
                     None
@@ -458,7 +471,7 @@ impl AppState {
                         SettingsSection::PaneLabels => {
                             usize::from(!self.agent_border_labels_enabled())
                         }
-                        SettingsSection::Sidebar => usize::from(!self.group_workspaces_by_repo()),
+                        SettingsSection::Sidebar => view_mode_index(self.view_mode()),
                         SettingsSection::Integrations => 0,
                     });
                     return None;
@@ -486,8 +499,7 @@ impl AppState {
                             Some(SettingsAction::SaveAgentBorderLabels(enabled))
                         }
                         SettingsSection::Sidebar => {
-                            let enabled = idx == 0;
-                            Some(SettingsAction::SaveGroupWorkspacesByRepo(enabled))
+                            Some(SettingsAction::SaveViewMode(view_mode_for_index(idx)))
                         }
                         SettingsSection::Integrations => None,
                     };

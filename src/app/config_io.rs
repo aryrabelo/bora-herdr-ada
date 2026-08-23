@@ -105,9 +105,15 @@ impl App {
         }
     }
 
-    pub(super) fn save_group_workspaces_by_repo(&mut self, enabled: bool) {
-        if self.update_config_file("group workspaces by repo setting", |content| {
-            crate::config::upsert_section_bool(content, "ui", "group_workspaces_by_repo", enabled)
+    pub(super) fn save_view_mode(&mut self, mode: crate::config::ViewMode) {
+        if self.update_config_file("sidebar view mode", |content| {
+            let content = crate::config::upsert_section_value(
+                content,
+                "ui",
+                "view_mode",
+                &format!("\"{}\"", mode.as_str()),
+            );
+            crate::config::remove_section_key(&content, "ui", "group_workspaces_by_repo")
         }) {
             self.apply_config_from_disk(false);
         }

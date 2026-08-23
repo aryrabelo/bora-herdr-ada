@@ -209,6 +209,7 @@ mod tests {
             collapsed_space_keys: std::collections::HashSet::new(),
             right_panel_width: None,
             right_panel_collapsed: None,
+            view_mode: Default::default(),
         }
     }
 

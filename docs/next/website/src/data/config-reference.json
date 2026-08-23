@@ -620,6 +620,12 @@
           "description": "Keybinding that toggles the right panel (Changes / Checks / Issues / PRs) open or closed."
         },
         {
+          "key": "keys.cycle_view_mode",
+          "type": "string",
+          "default": "unset",
+          "description": "Keybinding that cycles the sidebar view mode: flat -> repo -> project -> flat. Same thing the view-mode label on the sidebar's workspace header toggles when clicked."
+        },
+        {
           "key": "keys.chat",
           "type": "string",
           "default": "\"prefix+i\"",
@@ -858,10 +864,15 @@
           "description": "Accent color for highlights, borders, and navigation UI. Accepts hex (#89b4fa), named colors (cyan, blue), or RGB (rgb(137,180,250))."
         },
         {
-          "key": "ui.group_workspaces_by_repo",
-          "type": "boolean",
-          "default": "true",
-          "description": "Group workspaces by repository in the sidebar. When off, the sidebar shows a flat list that can be freely drag-reordered — repo, channel, and visual groups all dissolve; turning it back on regroups automatically."
+          "key": "ui.view_mode",
+          "type": "enum",
+          "default": "\"repo\"",
+          "description": "How the sidebar groups workspaces. \"repo\" groups them by repository (the default). \"flat\" shows one flat list that can be freely drag-reordered — repo, channel, and visual groups all dissolve, and switching back regroups automatically. \"project\" groups them by declared project (projects.yml); until the project entry model lands it renders like \"repo\". Replaces the retired boolean ui.group_workspaces_by_repo, which is still accepted as an alias: false means \"flat\", true means \"repo\".",
+          "values": [
+            "flat",
+            "repo",
+            "project"
+          ]
         },
         {
           "key": "ui.show_pane_ids_on_pane_borders",

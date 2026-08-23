@@ -12,7 +12,7 @@ use super::widgets::{
 };
 use crate::{
     app::{state::Palette, AppState},
-    config::{StatusIndicatorStyle, ToastDelivery},
+    config::{StatusIndicatorStyle, ToastDelivery, ViewMode},
 };
 
 pub(crate) const SETTINGS_POPUP_WIDTH: u16 = 80;
@@ -179,14 +179,20 @@ pub(super) fn render_settings_overlay(app: &AppState, frame: &mut Frame, area: R
             );
         }
         SettingsSection::Sidebar => {
-            render_settings_toggle(
+            render_modal_choice_list(
                 frame,
                 content_area,
-                p,
-                "group workspaces by repo",
-                "group under repo headers; off shows a flat, freely drag-reorderable list",
-                app.group_workspaces_by_repo(),
+                "sidebar view",
+                "flat: freely drag-reorderable, no grouping. repo: grouped under repo headers. project: reserved for a later project entry model, renders like repo for now",
+                &[
+                    ("flat", ViewMode::Flat),
+                    ("repo", ViewMode::Repo),
+                    ("project", ViewMode::Project),
+                ],
+                app.view_mode(),
                 app.settings.list.selected,
+                p,
+                1,
             );
         }
         SettingsSection::Integrations => {

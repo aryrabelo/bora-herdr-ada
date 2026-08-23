@@ -1333,6 +1333,7 @@ impl HeadlessServer {
             self.app.state.collapsed_space_keys.clone(),
             self.app.state.right_panel_width,
             self.app.state.right_panel_collapsed,
+            self.app.state.view_mode,
         );
 
         let mut handoff_entries = Vec::new();

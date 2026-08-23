@@ -379,3 +379,62 @@ em inglês pra casar com as strings vizinhas). O lead fechou o que faltava:
   virando 30 min. Os dois foram FUNDIDOS em `IsolatedDirs`, que isola as duas variáveis:
   não existe mais um segundo guard pra aninhar.
 - [x] D2 `just check` verde: `3869 tests run: 3869 passed, 1 skipped`
+
+## bora-49p.2 — view mode Flat | Repo | Project · FECHADO
+
+- [x] E1 o bool `group_workspaces_by_repo` virou enum de três estados, com `Repo` como
+  default do tipo E do serde; snapshot sem o campo carrega como `Repo`
+- [x] E2 compatibilidade com o bool ANTIGO mantida, que era a parte mais fácil de quebrar
+  em silêncio: `#[serde(alias = "group_workspaces_by_repo")]` + `Deserialize` que aceita
+  bool cru (`false` → Flat, `true` → Repo). Config com as DUAS chaves falha em vez de
+  escolher uma.
+- [x] E3 `Project` renderiza igual a `Repo` por enquanto, de propósito — o modelo de
+  entrada do project é o bead 49p.3. Meio-caminho não foi construído.
+- [x] E4 dois mutantes, dois pegos
+  EVIDENCE: ordem do ciclo quebrada → `cycles_flat_repo_project_and_wraps` FAILED; alias
+  removido → `view_mode_legacy_bool` FAILED. O primeiro anchor que escrevi pegou a menção
+  do atributo DENTRO do doc comment em vez do atributo, e o harness reportou BLIND — o
+  mutante era inválido, não o teste.
+- [x] E5 golden hash de frame atualizado COM atribuição, não bumpado às cegas
+  EVIDENCE: `desktop_full_app_semantic_frame_is_characterized` mudou porque o header da
+  seção passou a ter o label do modo alinhado à direita. Atribuído: o characterization
+  MOBILE segue inalterado, que é o que se espera de afordância só-desktop, e nenhuma outra
+  asserção do teste mexeu (geometria, contagem de panes, cursor, hyperlinks).
+- [x] E6 gate de docs pegou o que faltava
+  EVIDENCE: `test_config_reference_check` reprovou por `keys.cycle_view_mode` e
+  `ui.view_mode` ausentes e `ui.group_workspaces_by_repo` obsoleto na referência. Depois
+  reprovou de novo exigindo a lista `values` do enum. Corrigido nas duas voltas.
+- [x] E7 o builder ADMITIU ter rodado `cargo check` uma vez, contra a instrução
+  EVIDENCE: reportou honestamente, e pegou um re-export faltando (`view_mode_toggle_rect`).
+  Registrado porque a honestidade do relatório é o que torna o relatório utilizável.
+
+## bora-1le.2 — spawn do orquestrador sandboxado por srt · FECHADO
+
+- [x] F1 primeira volta REPROVOU: composição pura entregue, nada ligado, e o perfil estava
+  errado. O builder alegou que "o schema do srt é deny-only para leitura, não existe
+  allowRead".
+- [x] F2 o lead leu o README do srt instalado e o builder estava metade errado
+  EVIDENCE: `/Users/aryrabelo/.bun/install/global/node_modules/@anthropic-ai/sandbox-runtime/README.md`.
+  `allowRead` EXISTE. Mas leitura é deny-then-allow — tudo legível por default — então
+  `allowRead: [dirs]` sozinho não cerca nada: o orquestrador continuava lendo o home
+  inteiro, `~/.ssh` incluso. O fence real exige `denyRead` de uma região ampla + `allowRead`
+  dentro dela.
+- [x] F3 segundo gap, que ninguém tinha visto: o perfil contradizia a própria instrução
+  injetada. A instrução prometia "research allowed" e `allowedDomains: []` significa ZERO
+  rede. Resolvido reescrevendo a instrução (pesquisa delegada a um worker pelo canal), não
+  inventando allowlist e não usando `*`.
+- [x] F4 terceiro gap: nada estava ligado, então nenhuma cláusula do aceite era
+  demonstrável. Agora `orchestrator_launch_for_start` decide no caminho do spawn.
+- [x] F5 quarta coisa, de segurança: `allowUnixSockets` é IGNORADO no Linux (seccomp não
+  filtra socket por path). Registrado no doc do módulo em vez de virar surpresa de quem
+  confiar no código.
+- [x] F6 quoting de shell testado, porque `agent start` DIGITA a linha num shell
+  interativo: um member path com espaço tem de sobreviver como uma palavra só.
+- [x] F7 dois mutantes, dois pegos — e o segundo revelou um teste incompleto
+  EVIDENCE: fence de leitura sem negar o home → `denies_the_operators_home` FAILED. O gate
+  de `kind` do orquestrador passava com o gate REMOVIDO, porque
+  `ordinary_agent_start_is_never_sandbox_wrapped` usa projeto SEM orquestrador e nunca
+  chega na comparação. Teste novo adicionado: worker de kind diferente iniciado no
+  diretório membro DO orquestrador não é sandboxado — senão um worker perderia em silêncio
+  a escrita que é a razão dele existir. Aí o mutante acusa.
+- [x] F8 `just check` verde: `3886 tests run: 3886 passed`

@@ -486,6 +486,7 @@ mod tests {
             sidebar_section_split: None,
             right_panel_width: None,
             right_panel_collapsed: None,
+            view_mode: Default::default(),
             collapsed_space_keys: Default::default(),
         }
     }

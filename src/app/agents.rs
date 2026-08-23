@@ -192,10 +192,31 @@ impl App {
         let shell_name = available_shell_name(runtime)
             .ok_or_else(|| AgentStartError::TargetBusy(params.pane_id.clone()))?;
 
-        let mut argv = vec![self.state.agent_commands.command_for(kind).to_string()];
-        argv.extend(params.args);
-        let command = crate::platform::interactive_shell_command(&argv, &shell_name)
-            .ok_or(AgentStartError::InvalidArgument)?;
+        let orchestrator_launch = self.orchestrator_launch_for_start(ws_idx, pane_id, kind);
+        let (command, argv) = if let Some(mut launch) = orchestrator_launch {
+            launch.agent_argv.extend(params.args);
+            let settings_dir = launch.profile.allow_write.first().cloned().ok_or_else(|| {
+                AgentStartError::InputFailed(
+                    "orchestrator profile has no writable run-file directory".to_string(),
+                )
+            })?;
+            let settings_path = settings_dir.join("srt-settings.json");
+            let settings_json = serde_json::to_string_pretty(&launch.profile.to_srt_settings())
+                .map_err(|err| AgentStartError::InputFailed(err.to_string()))?;
+            std::fs::create_dir_all(&settings_dir)
+                .and_then(|()| std::fs::write(&settings_path, settings_json))
+                .map_err(|err| AgentStartError::InputFailed(err.to_string()))?;
+            let wrapped_argv = launch.command_line(&settings_path);
+            let command = crate::platform::interactive_shell_command(&wrapped_argv, &shell_name)
+                .ok_or(AgentStartError::InvalidArgument)?;
+            (command, wrapped_argv)
+        } else {
+            let mut argv = vec![self.state.agent_commands.command_for(kind).to_string()];
+            argv.extend(params.args);
+            let command = crate::platform::interactive_shell_command(&argv, &shell_name)
+                .ok_or(AgentStartError::InvalidArgument)?;
+            (command, argv)
+        };
         let bytes = crate::app::api_helpers::encode_api_submission(runtime, &command);
         let timeout = Duration::from_millis(
             params
@@ -225,6 +246,66 @@ impl App {
             .ok_or(AgentStartError::TargetUnavailable(params.pane_id))?;
         self.auto_join_project_channel(ws_idx, pane_id, &agent.pane_id);
         Ok((agent, argv))
+    }
+
+    /// Whether starting `kind` in the pane at `ws_idx`/`pane_id` is
+    /// starting a project's declared orchestrator, not an ordinary
+    /// agent: the pane's cwd must resolve to the same checkout
+    /// `orchestrator` declares as `member`, and `kind` must be the agent
+    /// that orchestrator names. Matches by resolved identity
+    /// (`persist::projects::resolve_member`), same as
+    /// `auto_join_project_channel` — never a raw path prefix compare, so
+    /// a `~`-relative `member:` still matches.
+    ///
+    /// `None` for every non-match: no project claims this cwd as its
+    /// orchestrator's checkout, `kind` doesn't match the declared
+    /// orchestrator agent, the cwd doesn't resolve to a git checkout at
+    /// all, or the projects file fails to load. An ordinary `agent.start`
+    /// must never be sandbox-wrapped, so every failure mode here falls
+    /// through to `None`, never an error.
+    fn orchestrator_launch_for_start(
+        &self,
+        ws_idx: usize,
+        pane_id: crate::layout::PaneId,
+        kind: crate::detect::Agent,
+    ) -> Option<crate::sandbox::OrchestratorLaunch> {
+        let cwd = self.launch_cwd_for_pane_in_workspace(ws_idx, pane_id)?;
+        let crate::persist::projects::MemberResolution::Resolved(pane_identity) =
+            crate::persist::projects::resolve_member(&cwd.to_string_lossy())
+        else {
+            return None;
+        };
+        let file = crate::persist::projects::load_projects_file_fresh().ok()?;
+        let (slug, project) = file.projects.iter().find(|(_, project)| {
+            project.orchestrator.as_ref().is_some_and(|orchestrator| {
+                crate::detect::parse_agent_label(&orchestrator.agent) == Some(kind)
+                    && matches!(
+                        crate::persist::projects::resolve_member(&orchestrator.member),
+                        crate::persist::projects::MemberResolution::Resolved(identity)
+                            if identity == pane_identity
+                    )
+            })
+        })?;
+
+        let orchestrator = project.orchestrator.as_ref()?;
+        let resolved_member_dirs: Vec<std::path::PathBuf> = project
+            .members
+            .iter()
+            .map(|member| crate::worktree::expand_tilde_absolute_path(&member.dir))
+            .collect();
+        let run_file_path = crate::worktree::expand_tilde_absolute_path(&orchestrator.member)
+            .join(&orchestrator.run_file);
+        let socket_path = crate::api::socket_path();
+        let home_dir = crate::worktree::expand_tilde_path("~");
+
+        crate::sandbox::compose_orchestrator_launch(
+            project,
+            slug,
+            &resolved_member_dirs,
+            &run_file_path,
+            &socket_path,
+            &home_dir,
+        )
     }
 
     pub(super) fn agent_start_error_body(
@@ -692,18 +773,46 @@ mod tests {
         }
     }
 
-    fn start_agent_ok(app: &mut App, pane_id: &str, name: &str) -> serde_json::Value {
+    fn start_agent_with_kind(
+        app: &mut App,
+        pane_id: &str,
+        name: &str,
+        kind: &str,
+    ) -> serde_json::Value {
         let response = app.handle_api_request(Request {
             id: "req".into(),
             method: Method::AgentStart(AgentStartParams {
                 name: name.into(),
-                kind: "pi".into(),
+                kind: kind.into(),
                 pane_id: pane_id.into(),
                 args: Vec::new(),
                 timeout_ms: Some(4_000),
             }),
         });
         serde_json::from_str(&response).unwrap()
+    }
+
+    fn start_agent_ok(app: &mut App, pane_id: &str, name: &str) -> serde_json::Value {
+        start_agent_with_kind(app, pane_id, name, "pi")
+    }
+
+    /// `project.create`/`project.member_add` have no verb yet for
+    /// `orchestrator:` (see `persist::projects::Project`'s own doc
+    /// comment), so tests that need one write it directly via
+    /// `update_projects_file` — the same store the socket verbs
+    /// themselves read and write, just without a request round-trip.
+    fn set_project_orchestrator(slug: &str, agent: &str, member: &str, run_file: &str) {
+        crate::persist::projects::update_projects_file(|file| {
+            if let Some(project) = file.projects.get_mut(slug) {
+                project.orchestrator = Some(crate::persist::projects::Orchestrator {
+                    agent: agent.to_string(),
+                    member: member.to_string(),
+                    run_file: run_file.to_string(),
+                });
+            }
+            Ok::<(), std::convert::Infallible>(())
+        })
+        .expect("update_projects_file must succeed in tests");
     }
 
     #[tokio::test]
@@ -788,6 +897,124 @@ mod tests {
         assert!(
             members.is_empty(),
             "auto_join: false must keep the agent out of the channel roster, got: {members:?}"
+        );
+
+        std::fs::remove_dir_all(&repo).ok();
+    }
+
+    // Gap 3's positive wiring acceptance: `agent.start` for the pane and
+    // kind a project declares as its orchestrator must type the
+    // srt-wrapped command line, not the bare agent command. This never
+    // spawns anything real — `member_workspace`'s runtime is a synthetic
+    // test channel, and the assertion reads the literal bytes
+    // `agent.start` queued for it, exactly like `auto_join`'s tests read
+    // the channel roster instead of a live process. Value that would
+    // still satisfy this test with the wiring removed: none — an
+    // unwrapped `pi` command line never contains `srt --settings`.
+    #[tokio::test]
+    async fn orchestrator_start_composes_the_srt_wrapped_command_line() {
+        let _isolated = IsolatedDirs::new("agents-orchestrator-wired");
+        let mut app = test_app();
+        let repo = temp_repo("orchestrator-wired");
+        create_project_with_member(&mut app, "proj", &repo, None);
+        set_project_orchestrator("proj", "pi", &repo.display().to_string(), ".bora/run.json");
+
+        let (_ws_idx, pane_id, mut pty_rx) = member_workspace(&mut app, "member", &repo);
+        let started = start_agent_with_kind(&mut app, &pane_id, "orch", "pi");
+        assert_eq!(
+            started["result"]["type"], "agent_started",
+            "agent.start must succeed for this test to prove anything, got: {started}"
+        );
+
+        let typed = pty_rx
+            .recv()
+            .await
+            .expect("agent.start must type a command into the pane");
+        let typed = String::from_utf8_lossy(&typed);
+        assert!(
+            typed.contains("srt") && typed.contains("--settings"),
+            "starting the declared orchestrator must type the srt-wrapped command \
+             line, got: {typed}"
+        );
+
+        std::fs::remove_dir_all(&repo).ok();
+    }
+
+    // Gap 3's negative wiring acceptance, the explicit converse of the
+    // test above: an ordinary agent — no orchestrator declared for the
+    // project at all — must never be sandbox-wrapped. Value that would
+    // still satisfy this test with the change removed: an
+    // `orchestrator_launch_for_start` that matched on cwd alone,
+    // ignoring both the missing `orchestrator:` declaration and `kind` —
+    // this project has no orchestrator, so any such over-matching wraps
+    // this ordinary start and fails the assertion.
+    #[tokio::test]
+    async fn ordinary_agent_start_is_never_sandbox_wrapped() {
+        let _isolated = IsolatedDirs::new("agents-ordinary-not-wrapped");
+        let mut app = test_app();
+        let repo = temp_repo("ordinary-not-wrapped");
+        create_project_with_member(&mut app, "proj", &repo, None);
+
+        let (_ws_idx, pane_id, mut pty_rx) = member_workspace(&mut app, "member", &repo);
+        let started = start_agent_ok(&mut app, &pane_id, "worker");
+        assert_eq!(started["result"]["type"], "agent_started", "got: {started}");
+
+        let typed = pty_rx
+            .recv()
+            .await
+            .expect("agent.start must type a command into the pane");
+        let typed = String::from_utf8_lossy(&typed);
+        assert!(
+            !typed.contains("srt"),
+            "an ordinary agent start must never be sandbox-wrapped, got: {typed}"
+        );
+
+        std::fs::remove_dir_all(&repo).ok();
+    }
+
+    /// The `kind` half of the orchestrator gate, which the test above cannot
+    /// reach: it uses a project with no orchestrator at all, so the agent-kind
+    /// comparison never runs. Without this, dropping that comparison would
+    /// sandbox-wrap an ORDINARY worker started in the orchestrator's own
+    /// member directory — silently taking away the write access that is the
+    /// entire point of a worker.
+    #[tokio::test]
+    async fn a_worker_in_the_orchestrators_own_member_dir_is_not_sandbox_wrapped() {
+        let _isolated = IsolatedDirs::new("agents-worker-not-wrapped");
+        let mut app = test_app();
+        let repo = temp_repo("worker-not-wrapped");
+        create_project_with_member(&mut app, "proj", &repo, None);
+
+        // Declare an orchestrator for a DIFFERENT agent kind than the one the
+        // worker below starts (`start_agent_ok` starts `pi`).
+        let member_dir = repo.display().to_string();
+        crate::persist::projects::update_projects_file(|file| {
+            let project = file
+                .projects
+                .get_mut("proj")
+                .ok_or("project proj must exist")?;
+            project.orchestrator = Some(crate::persist::projects::Orchestrator {
+                agent: "claude".into(),
+                member: member_dir,
+                run_file: ".bora/run.json".into(),
+            });
+            Ok::<(), &'static str>(())
+        })
+        .expect("declaring the orchestrator must succeed");
+
+        let (_ws_idx, pane_id, mut pty_rx) = member_workspace(&mut app, "member", &repo);
+        let started = start_agent_ok(&mut app, &pane_id, "worker");
+        assert_eq!(started["result"]["type"], "agent_started", "got: {started}");
+
+        let typed = pty_rx
+            .recv()
+            .await
+            .expect("agent.start must type a command into the pane");
+        let typed = String::from_utf8_lossy(&typed);
+        assert!(
+            !typed.contains("srt"),
+            "a worker whose kind is not the declared orchestrator's must not be \
+             sandbox-wrapped, even in the orchestrator's own member dir, got: {typed}"
         );
 
         std::fs::remove_dir_all(&repo).ok();

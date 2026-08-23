@@ -302,9 +302,16 @@ mod tests {
         assert!(!app.view.split_borders.is_empty());
         assert!(frame.cursor.is_some());
         assert_eq!(frame.hyperlinks, vec![uri.to_owned()]);
+        // Golden updated for bora-49p.2: the workspace section header now
+        // carries a right-aligned view-mode label (`repo` here), rendered by
+        // `ui::sidebar::view_mode_toggle_rect`. Attributed, not just bumped —
+        // the mobile characterization below is unchanged, which is what you
+        // would expect from a desktop-sidebar-only affordance, and no other
+        // assertion in this test moved (geometry, pane count, cursor and
+        // hyperlinks all still hold).
         assert_eq!(
             frame_digest(&frame),
-            "6e0f348c64e2c3fa8d289f681946c7953b8ddc14e4048a6f6a6fd6b5b92b0b9c"
+            "4751368ebe396fea6ca6887df81895e0e9d2741ebeef78b281736c51bb254bf7"
         );
     }
 

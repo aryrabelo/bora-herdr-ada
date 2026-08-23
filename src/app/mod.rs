@@ -852,7 +852,7 @@ impl App {
             pane_scrollbars: config.ui.pane_scrollbars,
             pane_gaps: config.ui.pane_gaps,
             show_agent_labels_on_pane_borders: config.ui.show_agent_labels_on_pane_borders,
-            group_workspaces_by_repo: config.ui.group_workspaces_by_repo,
+            view_mode: config.ui.view_mode,
             show_pane_ids_on_pane_borders: config.ui.show_pane_ids_on_pane_borders,
             channel_group_name: config.ui.channel_group_name.clone(),
             chat_view: config.ui.chat_view,
@@ -1541,6 +1541,7 @@ impl App {
         if let Some(collapsed) = snapshot.right_panel_collapsed {
             app.state.right_panel_collapsed = collapsed;
         }
+        app.state.view_mode = snapshot.view_mode;
         app.state.mode = if app.state.active.is_some() {
             state::Mode::Terminal
         } else {
@@ -2247,7 +2248,7 @@ impl App {
                 self.state.pane_gaps = config.ui.pane_gaps;
                 self.state.show_agent_labels_on_pane_borders =
                     config.ui.show_agent_labels_on_pane_borders;
-                self.state.group_workspaces_by_repo = config.ui.group_workspaces_by_repo;
+                self.state.view_mode = config.ui.view_mode;
                 self.state.show_pane_ids_on_pane_borders = config.ui.show_pane_ids_on_pane_borders;
                 self.state.chat_view = config.ui.chat_view;
                 self.state.chat_name = config.ui.effective_chat_name();

@@ -122,6 +122,16 @@ fn agent_panel_header_label_rect(area: Rect, label: &str) -> Rect {
     )
 }
 
+pub(crate) fn view_mode_toggle_rect(area: Rect, mode: crate::config::ViewMode) -> Rect {
+    if area.width == 0 || area.height == 0 {
+        return Rect::default();
+    }
+
+    let label = mode.as_str();
+    let width = display_width_u16(label).min(area.width);
+    Rect::new(area.x + area.width.saturating_sub(width), area.y, width, 1)
+}
+
 fn active_agent_view_label(app: &AppState) -> Option<&str> {
     app.agent_view_override
         .as_ref()
@@ -812,7 +822,7 @@ pub(crate) fn next_entry_is_indented_workspace(entries: &[WorkspaceListEntry], i
 }
 
 fn workspace_list_entries_inner(app: &AppState, force_expanded: bool) -> Vec<WorkspaceListEntry> {
-    if !app.group_workspaces_by_repo {
+    if !app.groups_workspaces() {
         // Flat sidebar: one row per workspace in workspace-vec order (which
         // flat-mode drags mutate), with no grouping at all -- repo brackets,
         // the channels group, and visual groups all dissolve while this is
@@ -1965,6 +1975,17 @@ fn render_workspace_list(
             Paragraph::new(header_line),
             Rect::new(area.x, area.y, area.width, 1),
         );
+        let toggle_rect = view_mode_toggle_rect(area, app.view_mode);
+        if toggle_rect != Rect::default() {
+            frame.render_widget(
+                Paragraph::new(Span::styled(
+                    app.view_mode.as_str(),
+                    Style::default().fg(p.overlay0).add_modifier(Modifier::BOLD),
+                ))
+                .alignment(Alignment::Right),
+                toggle_rect,
+            );
+        }
     }
 
     let metrics = workspace_list_scroll_metrics(app, area);
@@ -2936,7 +2957,7 @@ mod tests {
         let workspace = Workspace::test_new("worktree-branch");
         let root_pane = workspace.tabs[0].root_pane;
         app.workspaces = vec![workspace];
-        app.group_workspaces_by_repo = false;
+        app.view_mode = crate::config::ViewMode::Flat;
         app.ensure_test_terminals();
         let terminal_id = app.workspaces[0].tabs[0].panes[&root_pane]
             .attached_terminal_id
@@ -5309,7 +5330,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
     #[test]
     fn toggle_false_emits_flat_entries_no_headers() {
         let mut app = AppState::test_new();
-        app.group_workspaces_by_repo = false;
+        app.view_mode = crate::config::ViewMode::Flat;
         let ws0 = git_space_member("main", "repo-key", false);
         let ws1 = git_space_member("child", "repo-key", true);
         app.workspaces = vec![ws0, ws1];
@@ -5341,7 +5362,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
         // Control: with the toggle at its default (true), the same pair
         // still brackets into a repo header the way it always has.
         let mut app = AppState::test_new();
-        assert!(app.group_workspaces_by_repo);
+        assert_eq!(app.view_mode, crate::config::ViewMode::Repo);
         let ws0 = git_space_member("main", "repo-key", false);
         let ws1 = git_space_member("child", "repo-key", true);
         app.workspaces = vec![ws0, ws1];
@@ -5381,7 +5402,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
         let ws1 = git_space_member("child", "repo-key", true);
         app.workspaces = vec![ws0, ws1];
 
-        app.group_workspaces_by_repo = false;
+        app.view_mode = crate::config::ViewMode::Flat;
         let flat = workspace_list_entries(&app);
         assert!(flat
             .iter()
@@ -5390,7 +5411,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
         // Simulate the drag reorder a user performs while flat.
         app.workspaces.swap(0, 1);
 
-        app.group_workspaces_by_repo = true;
+        app.view_mode = crate::config::ViewMode::Repo;
         let grouped = workspace_list_entries(&app);
         assert!(matches!(
             grouped[0],

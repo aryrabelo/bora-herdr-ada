@@ -421,6 +421,12 @@ impl App {
                 self.state.request_full_repaint();
                 leave_navigate_mode(&mut self.state);
             }
+            NavigateAction::CycleViewMode => {
+                self.state.view_mode = self.state.view_mode.cycle();
+                self.state.mark_session_dirty();
+                self.state.request_full_repaint();
+                leave_navigate_mode(&mut self.state);
+            }
             NavigateAction::CyclePaneNext => {
                 self.cycle_pane_via_api(false);
                 leave_navigate_mode(&mut self.state);
@@ -1459,6 +1465,7 @@ pub(crate) enum NavigateAction {
     ResizePaneRight,
     ToggleSidebar,
     ToggleRightPanel,
+    CycleViewMode,
     CyclePaneNext,
     CyclePanePrevious,
     LastPane,
@@ -1610,6 +1617,7 @@ fn non_indexed_action_for_key(
         (&kb.resize_pane_right, NavigateAction::ResizePaneRight),
         (&kb.toggle_sidebar, NavigateAction::ToggleSidebar),
         (&kb.toggle_right_panel, NavigateAction::ToggleRightPanel),
+        (&kb.cycle_view_mode, NavigateAction::CycleViewMode),
         (&kb.reload_config, NavigateAction::ReloadConfig),
         (
             &kb.open_notification_target,
@@ -1873,6 +1881,12 @@ pub(super) fn execute_navigate_action_in_context(
         NavigateAction::ToggleRightPanel => {
             // ponytail: wire keybind in config when user demand exists
             state.right_panel_collapsed = !state.right_panel_collapsed;
+            state.request_full_repaint();
+            leave_navigate_mode(state);
+        }
+        NavigateAction::CycleViewMode => {
+            state.view_mode = state.view_mode.cycle();
+            state.mark_session_dirty();
             state.request_full_repaint();
             leave_navigate_mode(state);
         }
@@ -2460,6 +2474,31 @@ mod tests {
 
         assert!(state.sidebar_collapsed);
         assert_eq!(state.mode, Mode::Terminal);
+    }
+
+    #[test]
+    fn custom_view_mode_key_cycles_flat_repo_project_and_wraps() {
+        let mut state = state_with_workspaces(&["test"]);
+        state.keybinds.cycle_view_mode = crate::config::ActionKeybinds::prefix("g");
+        assert_eq!(state.view_mode, crate::config::ViewMode::Repo);
+
+        handle_navigate_key(
+            &mut state,
+            KeyEvent::new(KeyCode::Char('g'), KeyModifiers::empty()),
+        );
+        assert_eq!(state.view_mode, crate::config::ViewMode::Project);
+
+        handle_navigate_key(
+            &mut state,
+            KeyEvent::new(KeyCode::Char('g'), KeyModifiers::empty()),
+        );
+        assert_eq!(state.view_mode, crate::config::ViewMode::Flat);
+
+        handle_navigate_key(
+            &mut state,
+            KeyEvent::new(KeyCode::Char('g'), KeyModifiers::empty()),
+        );
+        assert_eq!(state.view_mode, crate::config::ViewMode::Repo);
     }
 
     #[test]

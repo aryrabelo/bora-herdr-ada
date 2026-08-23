@@ -432,9 +432,7 @@ impl App {
                         SettingsAction::SaveAgentBorderLabels(enabled) => {
                             self.save_agent_border_labels(enabled)
                         }
-                        SettingsAction::SaveGroupWorkspacesByRepo(enabled) => {
-                            self.save_group_workspaces_by_repo(enabled)
-                        }
+                        SettingsAction::SaveViewMode(mode) => self.save_view_mode(mode),
                         SettingsAction::InstallRecommendedIntegrations => {
                             self.install_recommended_integrations()
                         }
@@ -955,6 +953,7 @@ fn capture_snapshot(state: &AppState) -> crate::persist::SessionSnapshot {
         state.collapsed_space_keys.clone(),
         state.right_panel_width,
         state.right_panel_collapsed,
+        state.view_mode,
     )
 }
 

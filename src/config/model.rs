@@ -182,6 +182,83 @@ pub enum SidebarCollapsedModeConfig {
     Hidden,
 }
 
+/// Sidebar workspace view mode. `Flat` shows a freely drag-reorderable list
+/// with no grouping at all — repo, channel, and visual groups all dissolve.
+/// `Repo` groups workspaces under repo headers and is the historical
+/// default. `Project` is reserved for a later bead's project entry model
+/// (bora-49p.3) and renders identically to `Repo` until that lands.
+///
+/// Deliberately backward compatible with the retired
+/// `group_workspaces_by_repo` boolean: this type's `Deserialize` impl
+/// accepts a bare bool (`true` -> `Repo`, `false` -> `Flat`) in addition to
+/// the `"flat"`/`"repo"`/`"project"` strings, and `UiConfig::view_mode`
+/// carries `#[serde(alias = "group_workspaces_by_repo")]` so the old key
+/// still works. A config that sets BOTH keys at once is a genuine
+/// ambiguity and fails to parse rather than silently picking one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ViewMode {
+    Flat,
+    #[default]
+    Repo,
+    Project,
+}
+
+impl ViewMode {
+    /// Flat -> Repo -> Project -> Flat.
+    pub fn cycle(self) -> ViewMode {
+        match self {
+            ViewMode::Flat => ViewMode::Repo,
+            ViewMode::Repo => ViewMode::Project,
+            ViewMode::Project => ViewMode::Flat,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ViewMode::Flat => "flat",
+            ViewMode::Repo => "repo",
+            ViewMode::Project => "project",
+        }
+    }
+}
+
+impl Serialize for ViewMode {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for ViewMode {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Raw {
+            Bool(bool),
+            Str(String),
+        }
+
+        match Raw::deserialize(deserializer)? {
+            Raw::Bool(true) => Ok(ViewMode::Repo),
+            Raw::Bool(false) => Ok(ViewMode::Flat),
+            Raw::Str(s) => match s.as_str() {
+                "flat" => Ok(ViewMode::Flat),
+                "repo" => Ok(ViewMode::Repo),
+                "project" => Ok(ViewMode::Project),
+                other => Err(de::Error::unknown_variant(
+                    other,
+                    &["flat", "repo", "project"],
+                )),
+            },
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct RightClickPassthroughModifierConfig(Option<KeyModifiers>);
 
@@ -495,6 +572,9 @@ pub struct KeysConfig {
     pub toggle_sidebar: BindingConfig,
     /// Toggle right panel collapse. Default: "prefix+g"
     pub toggle_right_panel: BindingConfig,
+    /// Cycle the sidebar view mode: flat -> repo -> project -> flat.
+    /// Default: "prefix+shift+v"
+    pub cycle_view_mode: BindingConfig,
     /// Optional indexed shortcuts expanded over number keys 1-9.
     pub indexed: IndexedKeysConfig,
     /// Prefix-mode custom command bindings.
@@ -630,6 +710,8 @@ pub(crate) struct KeysConfigOverlay {
     #[serde(skip_serializing_if = "Option::is_none")]
     toggle_right_panel: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    cycle_view_mode: Option<BindingConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     indexed: Option<IndexedKeysConfig>,
     #[serde(skip_serializing)]
     command: Option<Vec<CommandKeybindConfig>>,
@@ -713,6 +795,7 @@ impl<'de> Deserialize<'de> for KeysConfig {
         apply_field!(resize_pane_right);
         apply_field!(toggle_sidebar);
         apply_field!(toggle_right_panel);
+        apply_field!(cycle_view_mode);
         apply_field!(indexed);
         apply_field!(command);
 
@@ -819,6 +902,7 @@ impl KeysConfig {
         copy_effective_action_field!(resize_pane_right, keybinds.resize_pane_right);
         copy_effective_action_field!(toggle_sidebar, keybinds.toggle_sidebar);
         copy_effective_action_field!(toggle_right_panel, keybinds.toggle_right_panel);
+        copy_effective_action_field!(cycle_view_mode, keybinds.cycle_view_mode);
         copy_user_field!(indexed);
 
         profile
@@ -933,11 +1017,20 @@ pub struct UiConfig {
     pub pane_gaps: bool,
     /// Show agent labels in split pane borders when no manual pane label is set. Default: false.
     pub show_agent_labels_on_pane_borders: bool,
-    /// Group workspaces by repository in the sidebar. When off, the sidebar
-    /// shows a flat list that can be freely drag-reordered — repo, channel,
-    /// and visual groups all dissolve; turning it back on regroups
-    /// automatically. Default: true.
-    pub group_workspaces_by_repo: bool,
+    /// Sidebar workspace view mode: `flat` shows a freely drag-reorderable
+    /// list with no grouping (repo, channel, and visual groups all
+    /// dissolve); `repo` groups workspaces under repo headers (default);
+    /// `project` is reserved for a later bead's project entry model and
+    /// renders identically to `repo` for now. Default: repo.
+    ///
+    /// Deliberately backward compatible with the retired
+    /// `group_workspaces_by_repo` boolean via a serde alias plus a
+    /// bool-accepting `Deserialize` impl on `ViewMode`:
+    /// `group_workspaces_by_repo = false` still means flat, `= true` still
+    /// means repo. A config carrying both keys at once is a genuine
+    /// ambiguity and fails to parse rather than silently picking one.
+    #[serde(alias = "group_workspaces_by_repo")]
+    pub view_mode: ViewMode,
     /// Lead each split pane border with its public pane id (`w26:p1`) so two panes
     /// running the same agent stay distinguishable. Default: false.
     pub show_pane_ids_on_pane_borders: bool,
@@ -1166,6 +1259,7 @@ impl Default for KeysConfig {
             resize_pane_right: BindingConfig::empty(),
             toggle_sidebar: BindingConfig::one("prefix+b"),
             toggle_right_panel: BindingConfig::one("prefix+shift+b"),
+            cycle_view_mode: BindingConfig::one("prefix+shift+v"),
             indexed: IndexedKeysConfig::default(),
             command: Vec::new(),
             user_fields: BTreeSet::new(),
@@ -1204,7 +1298,7 @@ impl Default for UiConfig {
             pane_scrollbars: true,
             pane_gaps: true,
             show_agent_labels_on_pane_borders: false,
-            group_workspaces_by_repo: true,
+            view_mode: ViewMode::Repo,
             show_pane_ids_on_pane_borders: false,
             channel_group_name: "channels".to_string(),
             chat_view: false,
@@ -1607,7 +1701,7 @@ status_indicators = "symbols"
         assert!(default_config.ui.pane_scrollbars);
         assert!(default_config.ui.pane_gaps);
         assert!(!default_config.ui.show_agent_labels_on_pane_borders);
-        assert!(default_config.ui.group_workspaces_by_repo);
+        assert_eq!(default_config.ui.view_mode, ViewMode::Repo);
         assert!(!default_config.ui.hide_tab_bar_when_single_tab);
         assert_eq!(
             default_config.ui.tab_bar_position,
@@ -1641,7 +1735,7 @@ tab_bar_right_separator = " · "
         assert!(!config.ui.pane_scrollbars);
         assert!(config.ui.pane_gaps);
         assert!(config.ui.show_agent_labels_on_pane_borders);
-        assert!(!config.ui.group_workspaces_by_repo);
+        assert_eq!(config.ui.view_mode, ViewMode::Flat);
         assert!(config.ui.hide_tab_bar_when_single_tab);
         assert_eq!(config.ui.tab_bar_position, TabBarPositionConfig::Bottom);
         assert_eq!(config.ui.tab_bar_right.len(), 5);
@@ -1650,6 +1744,22 @@ tab_bar_right_separator = " · "
             TabBarRightEntryConfig::Hostname
         ));
         assert_eq!(config.ui.tab_bar_right_separator, " · ");
+    }
+
+    #[test]
+    fn view_mode_legacy_bool_still_means_flat_or_repo() {
+        let config: Config = toml::from_str("[ui]\ngroup_workspaces_by_repo = false\n").unwrap();
+        assert_eq!(config.ui.view_mode, ViewMode::Flat);
+
+        let config: Config = toml::from_str("[ui]\ngroup_workspaces_by_repo = true\n").unwrap();
+        assert_eq!(config.ui.view_mode, ViewMode::Repo);
+
+        let config: Config = toml::from_str("[ui]\nview_mode = \"project\"\n").unwrap();
+        assert_eq!(config.ui.view_mode, ViewMode::Project);
+
+        // Field absent entirely -> Repo, matching the retired bool's own
+        // default (`group_workspaces_by_repo` defaulted to `true`).
+        assert_eq!(Config::default().ui.view_mode, ViewMode::Repo);
     }
 
     #[test]

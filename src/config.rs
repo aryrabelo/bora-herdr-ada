@@ -27,7 +27,7 @@ pub use self::{
         ConfigReloadStatus, HostCursorModeConfig, NewTerminalCwdConfig, ShellModeConfig,
         SidebarCollapsedModeConfig, StatusIndicatorStyle, TabBarPositionConfig,
         ToastClipboardPosition, ToastConfig, ToastDelivery, ToastHerdrPosition,
-        UpdateChannelConfig, MAX_TOAST_DELAY_SECONDS,
+        UpdateChannelConfig, ViewMode, MAX_TOAST_DELAY_SECONDS,
     },
     sidebar::{AgentSidebarToken, AgentsSidebarConfig, SidebarConfig, SpacesSidebarConfig},
     sound::SoundConfig,

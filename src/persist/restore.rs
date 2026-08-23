@@ -1225,6 +1225,7 @@ mod tests {
             collapsed_space_keys: Default::default(),
             right_panel_width: None,
             right_panel_collapsed: None,
+            view_mode: Default::default(),
         };
         let (events, _event_rx) = mpsc::channel(4);
 
@@ -1321,6 +1322,7 @@ mod tests {
             collapsed_space_keys: Default::default(),
             right_panel_width: None,
             right_panel_collapsed: None,
+            view_mode: Default::default(),
         };
         let (events, _event_rx) = mpsc::channel(4);
 
@@ -1431,6 +1433,7 @@ mod tests {
             collapsed_space_keys: Default::default(),
             right_panel_width: None,
             right_panel_collapsed: None,
+            view_mode: Default::default(),
         };
         let (events, _event_rx) = mpsc::channel(4);
 
@@ -1546,6 +1549,7 @@ mod tests {
             collapsed_space_keys: Default::default(),
             right_panel_width: None,
             right_panel_collapsed: None,
+            view_mode: Default::default(),
         };
         let (events, _event_rx) = mpsc::channel(4);
 
@@ -1743,6 +1747,7 @@ mod tests {
             collapsed_space_keys: Default::default(),
             right_panel_width: None,
             right_panel_collapsed: None,
+            view_mode: Default::default(),
         };
         (snapshot, history)
     }

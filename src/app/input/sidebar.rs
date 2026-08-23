@@ -556,9 +556,8 @@ impl AppState {
                     .and_then(|ws| ws.worktree_space())
                     .map(|space| space.key.as_str())
             });
-            let inside_group_gap = self.group_workspaces_by_repo
-                && card_group.is_some()
-                && card_group == previous_group;
+            let inside_group_gap =
+                self.groups_workspaces() && card_group.is_some() && card_group == previous_group;
             if !inside_group_gap {
                 insert_indices.push(card.ws_idx);
             }
@@ -699,6 +698,23 @@ impl AppState {
             self.sidebar_section_split,
         );
         let rect = crate::ui::agent_panel_toggle_rect(detail_area, self.agent_panel_sort);
+        rect.width > 0
+            && col >= rect.x
+            && col < rect.x + rect.width
+            && row >= rect.y
+            && row < rect.y + rect.height
+    }
+
+    pub(super) fn on_view_mode_toggle(&self, col: u16, row: u16) -> bool {
+        if self.sidebar_collapsed {
+            return false;
+        }
+
+        let (ws_area, _) = crate::ui::expanded_sidebar_sections(
+            self.view.sidebar_rect,
+            self.sidebar_section_split,
+        );
+        let rect = crate::ui::view_mode_toggle_rect(ws_area, self.view_mode);
         rect.width > 0
             && col >= rect.x
             && col < rect.x + rect.width
@@ -1702,7 +1718,7 @@ mod tests {
         // --- Flat mode: the same linked worktree row is a free-standing,
         // directly drag-reorderable card. `active` tracks it by id, not by
         // index, so the drag must not lose the pointer.
-        app.state.group_workspaces_by_repo = false;
+        app.state.view_mode = crate::config::ViewMode::Flat;
         let active_id = app.state.workspaces[1].id.clone();
         app.state.active = Some(1);
         crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 20));

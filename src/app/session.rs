@@ -51,6 +51,7 @@ impl App {
                 self.state.collapsed_space_keys.clone(),
                 self.state.right_panel_width,
                 self.state.right_panel_collapsed,
+                self.state.view_mode,
             );
             let history = self.persist_pane_history.then(|| {
                 crate::persist::capture_history(&self.state.workspaces, &self.terminal_runtimes)

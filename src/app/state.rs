@@ -2029,8 +2029,9 @@ pub struct AppState {
     pub pane_scrollbars: bool,
     pub pane_gaps: bool,
     pub show_agent_labels_on_pane_borders: bool,
-    /// Group workspaces by repository in the sidebar (`ui.group_workspaces_by_repo`).
-    pub(crate) group_workspaces_by_repo: bool,
+    /// Sidebar workspace view mode (`ui.view_mode`, back-compat alias
+    /// `ui.group_workspaces_by_repo`).
+    pub(crate) view_mode: crate::config::ViewMode,
     pub show_pane_ids_on_pane_borders: bool,
     pub channel_group_name: String,
     /// Whether the fork-only chat view surface is enabled (`ui.chat_view`).
@@ -2201,8 +2202,15 @@ impl AppState {
         self.show_agent_labels_on_pane_borders
     }
 
-    pub fn group_workspaces_by_repo(&self) -> bool {
-        self.group_workspaces_by_repo
+    pub fn view_mode(&self) -> crate::config::ViewMode {
+        self.view_mode
+    }
+
+    /// True for any mode that visually groups workspaces (`Repo` and
+    /// `Project` — `Project` renders like `Repo` until bora-49p.3 lands its
+    /// own entry model). Only `Flat` disables grouping.
+    pub(crate) fn groups_workspaces(&self) -> bool {
+        self.view_mode != crate::config::ViewMode::Flat
     }
 
     pub(crate) fn pane_exposes_host_cursor(
@@ -2533,7 +2541,7 @@ impl AppState {
             pane_scrollbars: true,
             pane_gaps: false,
             show_agent_labels_on_pane_borders: false,
-            group_workspaces_by_repo: true,
+            view_mode: crate::config::ViewMode::Repo,
             show_pane_ids_on_pane_borders: false,
             channel_group_name: "channels".to_string(),
             chat_view: false,
