@@ -1854,6 +1854,461 @@ impl AppState {
     }
 }
 
+// ── Project assembly menu (bora-49p.5) ──────────────────────────────────
+//
+// The right-click menu for a Project-view row that edits `projects.yml`
+// membership and per-project sections. Deliberately NOT wired into
+// `ContextMenuKind`/`ContextMenuState` (both defined in `src/app/state.rs`,
+// owned by a sibling bead in this same parallel batch, out of this bead's
+// file ownership): the decision logic here — which items apply to a row,
+// what each one writes — is complete and tested on its own; turning it into
+// an actual on-screen menu needs a `ContextMenuKind::ProjectRow` variant.
+// The menu is an editor of the file, nothing more: every mutation goes
+// through `persist::projects::update_projects_file` — the same
+// read-modify-write, atomic tmp+rename helper `app::api::projects` uses —
+// never hand-rolled YAML, never a cached `ProjectsStore` value.
+
+use crate::persist::projects::{self, Member, Project, WorktreesScope};
+
+/// One Project-view row's membership, resolved at the moment the assembly
+/// menu would open. `member_dir` is the exact string stored as `Member.dir`
+/// in `projects.yml` — the same representation `ProjectRowTarget::OpenWorktree`
+/// already carries as `checkout_key`, compared by plain string equality just
+/// like `app::api::projects::handle_project_member_add`/`_remove` do; never
+/// re-resolved through git discovery here.
+#[allow(dead_code)]
+// bora-49p.5: exercised by project_assembly_menu_tests
+// only, until a follow-up bead wires ContextMenuKind::ProjectRow (see the
+// module note above — src/app/state.rs is out of this bead's ownership).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ProjectAssemblyContext {
+    pub member_dir: String,
+    /// `Some(slug)` when `member_dir` is already a declared member of that
+    /// project; `None` for a workspace/worktree with no project yet.
+    pub current_project_slug: Option<String>,
+}
+
+#[allow(dead_code)] // see the module note above
+impl ProjectAssemblyContext {
+    /// Resolves `dir`'s membership against the CURRENT `projects.yml`
+    /// content (`file`) — caller's responsibility to have read it fresh via
+    /// `projects::load_projects_file_fresh`, never a cached `ProjectsStore`
+    /// value, matching every other `project.*` writer's own rule.
+    pub(super) fn for_dir(file: &projects::ProjectsFile, dir: &str) -> Self {
+        let current_project_slug = file
+            .projects
+            .iter()
+            .find(|(_, project)| project.members.iter().any(|member| member.dir == dir))
+            .map(|(slug, _)| slug.clone());
+        Self {
+            member_dir: dir.to_string(),
+            current_project_slug,
+        }
+    }
+}
+
+/// Assembly-menu item labels for `ctx`. `known_project_slugs` is every slug
+/// currently in `projects.yml`, in the order `"Add to <slug>"` should offer
+/// them. Membership is the only thing gating item presence: `Remove` /
+/// `Toggle CHECKS` / `Choose commands…` / `Rename` only when
+/// `ctx.current_project_slug` is `Some` (there is a project to act on);
+/// `"Add to <slug>"` / `"New project…"` only when it is `None`.
+#[allow(dead_code)] // see the module note above
+pub(super) fn project_assembly_menu_items(
+    ctx: &ProjectAssemblyContext,
+    known_project_slugs: &[String],
+) -> Vec<String> {
+    let mut items = Vec::new();
+    if ctx.current_project_slug.is_none() {
+        for slug in known_project_slugs {
+            items.push(add_to_project_item(slug));
+        }
+        items.push("New project\u{2026}".to_string());
+    } else {
+        items.push("Rename".to_string());
+        items.push("Toggle CHECKS".to_string());
+        items.push("Choose commands\u{2026}".to_string());
+        items.push("Remove".to_string());
+    }
+    items
+}
+
+#[allow(dead_code)] // see the module note above
+fn add_to_project_item(slug: &str) -> String {
+    format!("Add to {slug}")
+}
+
+/// Why an assembly-menu item could not be applied.
+#[allow(dead_code)] // see the module note above
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum ProjectAssemblyError {
+    /// The item needs a project to act on (`Remove`, `Toggle CHECKS`), but
+    /// `ctx.current_project_slug` was `None`.
+    NotAMember,
+    /// `item` is a real, contextually valid menu label, but doing it needs
+    /// infrastructure this epic has not built yet: a text-input flow for
+    /// `Rename`, a COMMANDS provider/picker for `Choose commands…` (bora-55c).
+    /// Never silently succeeds instead.
+    Unsupported(&'static str),
+    /// Not one of `project_assembly_menu_items`'s own labels.
+    UnknownItem(String),
+    /// `update_projects_file`'s own mutation rule rejected the write (e.g.
+    /// duplicate slug, unknown project) — the file was NOT touched.
+    Rejected(String),
+    /// Reading or writing `projects.yml` itself failed.
+    Io(String),
+}
+
+#[allow(dead_code)] // see the module note above
+impl From<projects::ProjectsUpdateError<String>> for ProjectAssemblyError {
+    fn from(err: projects::ProjectsUpdateError<String>) -> Self {
+        match err {
+            projects::ProjectsUpdateError::Mutate(message) => Self::Rejected(message),
+            projects::ProjectsUpdateError::Load(message)
+            | projects::ProjectsUpdateError::Save(message) => Self::Io(message),
+        }
+    }
+}
+
+/// Applies one `project_assembly_menu_items` label to `projects.yml`. The
+/// menu IS the file editor: every branch below is a read-modify-write
+/// through `update_projects_file`, nothing else.
+#[allow(dead_code)] // see the module note above
+pub(super) fn apply_project_assembly_item(
+    item: &str,
+    ctx: &ProjectAssemblyContext,
+) -> Result<(), ProjectAssemblyError> {
+    if let Some(slug) = item.strip_prefix("Add to ") {
+        return add_member(slug, &ctx.member_dir);
+    }
+    match item {
+        "New project\u{2026}" => new_project_with_member(&ctx.member_dir),
+        "Remove" => {
+            let slug = ctx
+                .current_project_slug
+                .as_deref()
+                .ok_or(ProjectAssemblyError::NotAMember)?;
+            remove_member(slug, &ctx.member_dir)
+        }
+        "Toggle CHECKS" => {
+            let slug = ctx
+                .current_project_slug
+                .as_deref()
+                .ok_or(ProjectAssemblyError::NotAMember)?;
+            toggle_checks_section(slug)
+        }
+        "Rename" => Err(ProjectAssemblyError::Unsupported(
+            "needs a name-input flow; out of this bead's file ownership (src/app/state.rs)",
+        )),
+        "Choose commands\u{2026}" => Err(ProjectAssemblyError::Unsupported(
+            "needs a COMMANDS provider/picker (bora-55c), not built yet",
+        )),
+        other => Err(ProjectAssemblyError::UnknownItem(other.to_string())),
+    }
+}
+
+#[allow(dead_code)] // see the module note above
+fn add_member(slug: &str, dir: &str) -> Result<(), ProjectAssemblyError> {
+    let slug = slug.to_string();
+    let dir = dir.to_string();
+    projects::update_projects_file(move |file| {
+        let Some(project) = file.projects.get_mut(&slug) else {
+            return Err(format!("project {slug:?} not found"));
+        };
+        match project.members.iter_mut().find(|member| member.dir == dir) {
+            Some(existing) => existing.worktrees = WorktreesScope::All,
+            None => project.members.push(Member {
+                dir: dir.clone(),
+                worktrees: WorktreesScope::All,
+                template: None,
+            }),
+        }
+        Ok(())
+    })
+    .map(|_| ())
+    .map_err(ProjectAssemblyError::from)
+}
+
+#[allow(dead_code)] // see the module note above
+fn remove_member(slug: &str, dir: &str) -> Result<(), ProjectAssemblyError> {
+    let slug = slug.to_string();
+    let dir = dir.to_string();
+    projects::update_projects_file(move |file| {
+        let Some(project) = file.projects.get_mut(&slug) else {
+            return Err(format!("project {slug:?} not found"));
+        };
+        let before = project.members.len();
+        project.members.retain(|member| member.dir != dir);
+        if project.members.len() == before {
+            return Err(format!("project {slug:?} has no member dir {dir:?}"));
+        }
+        Ok(())
+    })
+    .map(|_| ())
+    .map_err(ProjectAssemblyError::from)
+}
+
+/// Slugifies `dir`'s basename for `new_project_with_member`'s default slug:
+/// lowercase ASCII alphanumerics, everything else collapsed to `-`. Never
+/// prompts for a name — same ponytail tradeoff as `Rename`'s
+/// `ProjectAssemblyError::Unsupported`, applied at creation time instead of
+/// left broken.
+#[allow(dead_code)] // see the module note above
+fn slug_from_dir(dir: &str) -> String {
+    let slug: String = std::path::Path::new(dir)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(dir)
+        .to_lowercase()
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
+        .collect();
+    if slug.is_empty() {
+        "project".to_string()
+    } else {
+        slug
+    }
+}
+
+#[allow(dead_code)] // see the module note above
+fn new_project_with_member(dir: &str) -> Result<(), ProjectAssemblyError> {
+    let slug = slug_from_dir(dir);
+    let dir = dir.to_string();
+    projects::update_projects_file(move |file| {
+        if file.projects.contains_key(&slug) {
+            return Err(format!("project {slug:?} already exists"));
+        }
+        file.projects.insert(
+            slug,
+            Project {
+                name: None,
+                channel: None,
+                members: vec![Member {
+                    dir,
+                    worktrees: WorktreesScope::All,
+                    template: None,
+                }],
+                orchestrator: None,
+                sections: None,
+                auto_join: true,
+            },
+        );
+        Ok(())
+    })
+    .map(|_| ())
+    .map_err(ProjectAssemblyError::from)
+}
+
+/// Flips a project's CHECKS section between "configured" and "off":
+/// `sections.checks` present means the CHECKS band can render (bora-i1r
+/// fills in what it actually shows); absent means the section is disabled.
+/// Seeds a freshly-enabled section from `defaults.checks` — the same
+/// provider list `ProjectDefaults` already models — never invents a
+/// provider name. Drops `sections` entirely once both bands are empty, so
+/// toggling never leaves a stray `sections: {}` behind.
+#[allow(dead_code)] // see the module note above
+fn toggle_checks_section(slug: &str) -> Result<(), ProjectAssemblyError> {
+    let slug = slug.to_string();
+    projects::update_projects_file(move |file| {
+        let default_checks = file.defaults.checks.clone();
+        let Some(project) = file.projects.get_mut(&slug) else {
+            return Err(format!("project {slug:?} not found"));
+        };
+        let mut sections = project.sections.take().unwrap_or_default();
+        sections.checks = match sections.checks.take() {
+            Some(_) => None,
+            None => Some(default_checks),
+        };
+        project.sections =
+            (sections.checks.is_some() || sections.commands.is_some()).then_some(sections);
+        Ok(())
+    })
+    .map(|_| ())
+    .map_err(ProjectAssemblyError::from)
+}
+
+#[cfg(test)]
+mod project_assembly_menu_tests {
+    use super::*;
+    use crate::config::IsolatedDirs;
+
+    fn seed_project(slug: &str, members: &[&str]) {
+        let slug = slug.to_string();
+        let members: Vec<String> = members.iter().map(ToString::to_string).collect();
+        projects::update_projects_file::<String>(move |file| {
+            file.projects.insert(
+                slug.clone(),
+                Project {
+                    name: None,
+                    channel: None,
+                    members: members
+                        .iter()
+                        .map(|dir| Member {
+                            dir: dir.clone(),
+                            worktrees: WorktreesScope::All,
+                            template: None,
+                        })
+                        .collect(),
+                    orchestrator: None,
+                    sections: None,
+                    auto_join: true,
+                },
+            );
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn context_for_a_declared_member_carries_its_project_slug() {
+        let _isolated = IsolatedDirs::new("assembly-menu-context-member");
+        seed_project("cnb", &["/repo/cnb"]);
+
+        let file = projects::load_projects_file_fresh().unwrap();
+        let ctx = ProjectAssemblyContext::for_dir(&file, "/repo/cnb");
+
+        assert_eq!(ctx.current_project_slug.as_deref(), Some("cnb"));
+    }
+
+    #[test]
+    fn context_for_an_unmatched_workspace_has_no_project() {
+        let _isolated = IsolatedDirs::new("assembly-menu-context-unmatched");
+        seed_project("cnb", &["/repo/cnb"]);
+
+        let file = projects::load_projects_file_fresh().unwrap();
+        let ctx = ProjectAssemblyContext::for_dir(&file, "/repo/other");
+
+        assert_eq!(ctx.current_project_slug, None);
+    }
+
+    #[test]
+    fn menu_items_are_gated_on_membership_never_shown_in_both_cases() {
+        let member = ProjectAssemblyContext {
+            member_dir: "/repo/cnb".into(),
+            current_project_slug: Some("cnb".into()),
+        };
+        let unmatched = ProjectAssemblyContext {
+            member_dir: "/repo/other".into(),
+            current_project_slug: None,
+        };
+        let slugs = vec!["cnb".to_string()];
+
+        let member_items = project_assembly_menu_items(&member, &slugs);
+        let unmatched_items = project_assembly_menu_items(&unmatched, &slugs);
+
+        assert!(member_items.contains(&"Remove".to_string()));
+        assert!(!unmatched_items.contains(&"Remove".to_string()));
+
+        assert!(unmatched_items.contains(&"Add to cnb".to_string()));
+        assert!(!member_items.contains(&"Add to cnb".to_string()));
+    }
+
+    #[test]
+    fn add_to_project_action_persists_a_new_member_to_projects_yml() {
+        let _isolated = IsolatedDirs::new("assembly-menu-add-to-project");
+        seed_project("cnb", &[]);
+        let ctx = ProjectAssemblyContext {
+            member_dir: "/repo/cnb-worktree".into(),
+            current_project_slug: None,
+        };
+
+        apply_project_assembly_item("Add to cnb", &ctx).unwrap();
+
+        let file = projects::load_projects_file_fresh().unwrap();
+        let project = file.projects.get("cnb").expect("project still present");
+        assert!(project
+            .members
+            .iter()
+            .any(|m| m.dir == "/repo/cnb-worktree"));
+    }
+
+    #[test]
+    fn remove_action_deletes_the_member_and_persists() {
+        let _isolated = IsolatedDirs::new("assembly-menu-remove");
+        seed_project("cnb", &["/repo/cnb"]);
+        let ctx = ProjectAssemblyContext {
+            member_dir: "/repo/cnb".into(),
+            current_project_slug: Some("cnb".into()),
+        };
+
+        apply_project_assembly_item("Remove", &ctx).unwrap();
+
+        let file = projects::load_projects_file_fresh().unwrap();
+        assert!(file.projects.get("cnb").unwrap().members.is_empty());
+    }
+
+    #[test]
+    fn remove_without_a_project_in_context_is_rejected_before_any_write() {
+        let _isolated = IsolatedDirs::new("assembly-menu-remove-guard");
+        let ctx = ProjectAssemblyContext {
+            member_dir: "/repo/cnb".into(),
+            current_project_slug: None,
+        };
+
+        let result = apply_project_assembly_item("Remove", &ctx);
+
+        assert_eq!(result, Err(ProjectAssemblyError::NotAMember));
+        assert!(!projects::projects_file_path().exists());
+    }
+
+    #[test]
+    fn new_project_action_creates_a_project_slugified_from_the_member_dir() {
+        let _isolated = IsolatedDirs::new("assembly-menu-new-project");
+        let ctx = ProjectAssemblyContext {
+            member_dir: "/repo/arycast".into(),
+            current_project_slug: None,
+        };
+
+        apply_project_assembly_item("New project\u{2026}", &ctx).unwrap();
+
+        let file = projects::load_projects_file_fresh().unwrap();
+        let project = file
+            .projects
+            .get("arycast")
+            .expect("slugified from dir basename");
+        assert_eq!(project.members[0].dir, "/repo/arycast");
+    }
+
+    #[test]
+    fn toggle_checks_enables_then_disables_the_section() {
+        let _isolated = IsolatedDirs::new("assembly-menu-toggle-checks");
+        seed_project("cnb", &["/repo/cnb"]);
+        let ctx = ProjectAssemblyContext {
+            member_dir: "/repo/cnb".into(),
+            current_project_slug: Some("cnb".into()),
+        };
+
+        apply_project_assembly_item("Toggle CHECKS", &ctx).unwrap();
+        let enabled = projects::load_projects_file_fresh().unwrap();
+        assert!(enabled.projects["cnb"]
+            .sections
+            .as_ref()
+            .unwrap()
+            .checks
+            .is_some());
+
+        apply_project_assembly_item("Toggle CHECKS", &ctx).unwrap();
+        let disabled = projects::load_projects_file_fresh().unwrap();
+        assert!(disabled.projects["cnb"].sections.is_none());
+    }
+
+    #[test]
+    fn rename_and_choose_commands_are_explicitly_unsupported_not_silently_ignored() {
+        let ctx = ProjectAssemblyContext {
+            member_dir: "/repo/cnb".into(),
+            current_project_slug: Some("cnb".into()),
+        };
+        assert!(matches!(
+            apply_project_assembly_item("Rename", &ctx),
+            Err(ProjectAssemblyError::Unsupported(_))
+        ));
+        assert!(matches!(
+            apply_project_assembly_item("Choose commands\u{2026}", &ctx),
+            Err(ProjectAssemblyError::Unsupported(_))
+        ));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};

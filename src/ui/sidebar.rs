@@ -1,3 +1,4 @@
+mod project_view;
 mod tokens;
 
 use std::time::Instant;
@@ -16,7 +17,7 @@ use super::status::{
     agent_icon, format_idle_age, idle_age_color, state_dot, state_label, state_label_color,
 };
 use super::text::{display_width, display_width_u16, truncate_end};
-use crate::app::state::{AgentPanelSort, Palette};
+use crate::app::state::{AgentPanelSort, Palette, ProjectRowHitArea, ProjectRowTarget};
 use crate::app::{AppState, Mode};
 use crate::detect::AgentState;
 use crate::terminal::TerminalRuntimeRegistry;
@@ -75,13 +76,27 @@ fn sidebar_section_heights(total_h: u16, split_ratio: f32) -> (u16, u16) {
     (ws_h, detail_h)
 }
 
+/// Whether the agent-detail panel occupies the bottom of the expanded sidebar.
+///
+/// Retired (2026-08-23): the panel is visually gone so the Project view's three
+/// levels get the whole column. The panel code is deliberately NOT deleted —
+/// every `agent_panel_*` helper keeps its existing call sites and simply runs
+/// against a zero-height rect, so nothing became dead code, no `AppState`
+/// field was dropped, and old snapshots (`sidebar_section_split`) restore
+/// unchanged. Flip this to `true` to bring the panel back.
+const AGENT_PANEL_VISIBLE: bool = false;
+
 pub(crate) fn expanded_sidebar_sections(area: Rect, split_ratio: f32) -> (Rect, Rect) {
     let content = Rect::new(area.x, area.y, area.width.saturating_sub(1), area.height);
     if content.width == 0 || content.height == 0 {
         return (Rect::default(), Rect::default());
     }
 
-    let (ws_h, detail_h) = sidebar_section_heights(content.height, split_ratio);
+    let (ws_h, detail_h) = if AGENT_PANEL_VISIBLE {
+        sidebar_section_heights(content.height, split_ratio)
+    } else {
+        (content.height, 0)
+    };
     let ws_area = Rect::new(content.x, content.y, content.width, ws_h);
     let detail_area = Rect::new(content.x, content.y + ws_h, content.width, detail_h);
     (ws_area, detail_area)
@@ -89,7 +104,7 @@ pub(crate) fn expanded_sidebar_sections(area: Rect, split_ratio: f32) -> (Rect, 
 
 pub(crate) fn sidebar_section_divider_rect(area: Rect, split_ratio: f32) -> Rect {
     let content = Rect::new(area.x, area.y, area.width.saturating_sub(1), area.height);
-    if content.width == 0 || content.height < 6 {
+    if !AGENT_PANEL_VISIBLE || content.width == 0 || content.height < 6 {
         return Rect::default();
     }
 
@@ -647,6 +662,14 @@ pub(crate) struct ProjectHeaderBranch {
     pub behind: usize,
 }
 
+/// The two section bands a worktree can carry in the Project view. Ordering is
+/// fixed (COMMANDS then CHECKS) so the tree never reshuffles under the cursor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ProjectSection {
+    Commands,
+    Checks,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum WorkspaceListEntry {
     Workspace {
@@ -688,6 +711,64 @@ pub(crate) enum WorkspaceListEntry {
     /// Collapsible header for the bottom "Hidden" section; `count` is the
     /// number of temporarily-hidden workspaces beneath it.
     HiddenHeader { count: usize },
+
+    // ── Project view (`ViewMode::Project`) ────────────────────────────────
+    // These five variants are emitted ONLY by the project-view builder in
+    // `sidebar::project_view`; the Flat and Repo views never produce them and
+    // are untouched. Every one is height 1, like every variant above.
+    /// Top level: a user-declared project from `projects.yml`. `live`/`total`
+    /// is the aggregate workspace count rendered right-aligned. The trailing
+    /// implicit group holding workspaces that match no member has
+    /// `declared: false`.
+    ProjectRow {
+        name: String,
+        collapse_key: String,
+        live: usize,
+        total: usize,
+        declared: bool,
+    },
+    /// Second level: one checkout, keyed by `GitSpaceMetadata.checkout_key` —
+    /// the level the Repo view does not have (it groups by `repo_identity`
+    /// and re-derives branches). `repo` is `None` when the project holds a
+    /// single repo and the column collapses. `unopened: true` is a worktree
+    /// found on disk with no workspace open on it: rendered dimmed as an open
+    /// affordance, and it carries no `ws_idx` children.
+    WorktreeRow {
+        checkout_key: String,
+        repo: Option<String>,
+        branch: String,
+        ahead: usize,
+        behind: usize,
+        pr: Option<u64>,
+        collapse_key: String,
+        unopened: bool,
+    },
+    /// Third level: a `COMMANDS` or `CHECKS` band hanging off a worktree,
+    /// with a right-aligned `done/total`. Emitted only when non-empty, always
+    /// COMMANDS before CHECKS.
+    SectionHeader {
+        kind: ProjectSection,
+        collapse_key: String,
+        done: usize,
+        total: usize,
+    },
+    /// A row inside a `SectionHeader` band.
+    SectionItem {
+        kind: ProjectSection,
+        label: String,
+        detail: Option<String>,
+        running: bool,
+    },
+    /// A pane of a workspace that has 2+ panes. A single-pane workspace stays
+    /// one plain `Workspace` row and emits no `PaneRow` at all, so the common
+    /// shape is unchanged; `bora pane split` + `bora agent start --pane` would
+    /// otherwise be invisible, since the workspace row's agent label only ever
+    /// reflects the first pane.
+    PaneRow {
+        ws_idx: usize,
+        pane_id: String,
+        label: String,
+    },
 }
 
 /// Derive the repo-header "+" (create worktree) hit areas from the sidebar
@@ -724,7 +805,263 @@ fn entry_row_height(
         WorkspaceListEntry::BranchHeader { .. } => 1,
         WorkspaceListEntry::Workspace { .. } => 1,
         WorkspaceListEntry::HiddenHeader { .. } => 1,
+        WorkspaceListEntry::ProjectRow { .. } => 1,
+        WorkspaceListEntry::WorktreeRow { .. } => 1,
+        WorkspaceListEntry::SectionHeader { .. } => 1,
+        WorkspaceListEntry::SectionItem { .. } => 1,
+        WorkspaceListEntry::PaneRow { .. } => 1,
     }
+}
+
+/// Chevron glyph for a collapsible Project-view row (`ProjectRow`,
+/// `WorktreeRow`). Shared so the two variants' chevrons never drift.
+fn project_chevron(collapsed: bool) -> &'static str {
+    if collapsed {
+        "▸"
+    } else {
+        "▾"
+    }
+}
+
+/// Compose a Project-view row from left-hand spans plus a right-aligned
+/// trailing span, filling the gap between them with `fill` (plain spaces
+/// when `None`, a ruler character when `Some`). Centralizes the width
+/// arithmetic: `ProjectRow`'s `n/m` and `SectionHeader`'s ruled `n/m` both
+/// go through this, so the left and right budgets can't drift out of sync —
+/// forgetting to reserve the trailing width in one place while truncating
+/// in another is exactly the truncation-budget bug this session's sidebar
+/// work has already shipped twice.
+fn project_row_trailing(
+    mut spans: Vec<Span<'static>>,
+    trailing: Span<'static>,
+    fill: Option<(char, Style)>,
+    width: u16,
+) -> Line<'static> {
+    let width = width as usize;
+    let used: usize = spans
+        .iter()
+        .map(|s| display_width(s.content.as_ref()))
+        .sum();
+    let trailing_width = display_width(trailing.content.as_ref());
+    let gap = width.saturating_sub(used + trailing_width);
+    if gap > 0 {
+        match fill {
+            Some((ch, style)) => spans.push(Span::styled(ch.to_string().repeat(gap), style)),
+            None => spans.push(Span::styled(" ".repeat(gap), Style::default())),
+        }
+    }
+    spans.push(trailing);
+    Line::from(spans)
+}
+
+/// Top-level Project-view row: chevron, `⬢` glyph, project name, `n/m`
+/// (live/total workspaces) right-aligned. See `WorkspaceListEntry::ProjectRow`.
+pub(crate) fn project_row_line(
+    name: &str,
+    collapsed: bool,
+    live: usize,
+    total: usize,
+    p: &Palette,
+    width: u16,
+) -> Line<'static> {
+    let counter = format!(" {live}/{total}");
+    let mut spans = vec![
+        Span::styled(project_chevron(collapsed), Style::default().fg(p.accent)),
+        Span::styled(" ", Style::default()),
+        Span::styled("⬢", Style::default().fg(p.mauve)),
+        Span::styled(" ", Style::default()),
+    ];
+    let prefix_width: usize = spans
+        .iter()
+        .map(|s| display_width(s.content.as_ref()))
+        .sum();
+    let avail = (width as usize).saturating_sub(prefix_width + display_width(&counter));
+    spans.push(Span::styled(
+        truncate_end(name, avail),
+        Style::default().fg(p.overlay0).add_modifier(Modifier::BOLD),
+    ));
+    project_row_trailing(
+        spans,
+        Span::styled(counter, Style::default().fg(p.overlay0)),
+        None,
+        width,
+    )
+}
+
+/// Second-level Project-view row: chevron, optional repo name (omitted when
+/// the project holds a single repo, per `WorkspaceListEntry::WorktreeRow`'s
+/// `repo: None`), branch, ahead/behind, PR badge. `unopened` dims the whole
+/// row — it is a worktree found on disk with no workspace open on it, an
+/// open affordance rather than a live row.
+pub(crate) fn worktree_row_line(
+    repo: Option<&str>,
+    branch: &str,
+    ahead: usize,
+    behind: usize,
+    pr: Option<u64>,
+    collapsed: bool,
+    unopened: bool,
+    p: &Palette,
+    width: u16,
+) -> Line<'static> {
+    let dim = |style: Style| {
+        if unopened {
+            style.add_modifier(Modifier::DIM)
+        } else {
+            style
+        }
+    };
+    let mut spans = vec![
+        Span::styled("  ", Style::default()),
+        Span::styled(
+            project_chevron(collapsed),
+            dim(Style::default().fg(p.accent)),
+        ),
+        Span::styled(" ", Style::default()),
+    ];
+    if let Some(repo) = repo {
+        spans.push(Span::styled(
+            format!("{repo}  "),
+            dim(Style::default().fg(p.overlay0)),
+        ));
+    }
+    let mut trailing: Vec<Span<'static>> = Vec::new();
+    if ahead > 0 {
+        trailing.push(Span::styled(" ", Style::default()));
+        trailing.push(Span::styled(
+            format!("↑{ahead}"),
+            dim(Style::default().fg(p.green)),
+        ));
+    }
+    if behind > 0 {
+        trailing.push(Span::styled(" ", Style::default()));
+        trailing.push(Span::styled(
+            format!("↓{behind}"),
+            dim(Style::default().fg(p.red)),
+        ));
+    }
+    if let Some(pr) = pr {
+        trailing.push(Span::styled(" ", Style::default()));
+        trailing.push(Span::styled(
+            format!("#{pr}"),
+            dim(Style::default().fg(p.green)),
+        ));
+    }
+    let prefix_width: usize = spans
+        .iter()
+        .map(|s| display_width(s.content.as_ref()))
+        .sum();
+    let trailing_width: usize = trailing
+        .iter()
+        .map(|s| display_width(s.content.as_ref()))
+        .sum();
+    let avail = (width as usize).saturating_sub(prefix_width + trailing_width);
+    spans.push(Span::styled(
+        truncate_end(branch, avail),
+        dim(Style::default().fg(p.overlay1)),
+    ));
+    spans.extend(trailing);
+    Line::from(spans)
+}
+
+/// Third-level Project-view row: a `COMMANDS`/`CHECKS` band header — glyph,
+/// uppercase name, a `─` ruler filling the remaining width, then a
+/// right-aligned `done/total`. The ruler is load-bearing: without it the row
+/// reads as a plain label instead of a section.
+pub(crate) fn section_header_line(
+    kind: ProjectSection,
+    done: usize,
+    total: usize,
+    p: &Palette,
+    width: u16,
+) -> Line<'static> {
+    let (glyph, name) = match kind {
+        ProjectSection::Commands => ("≡", "COMMANDS"),
+        ProjectSection::Checks => ("✓", "CHECKS"),
+    };
+    let counter = format!(" {done}/{total}");
+    let spans = vec![
+        Span::styled("    ", Style::default()),
+        Span::styled(glyph, Style::default().fg(p.overlay1)),
+        Span::styled(" ", Style::default()),
+        Span::styled(
+            name,
+            Style::default().fg(p.overlay0).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" ", Style::default()),
+    ];
+    project_row_trailing(
+        spans,
+        Span::styled(counter, Style::default().fg(p.overlay0)),
+        Some(('─', Style::default().fg(p.surface1))),
+        width,
+    )
+}
+
+/// Fourth-level Project-view row: a single COMMANDS/CHECKS entry — a state
+/// bullet, its label, and an optional right-aligned detail (e.g. a port).
+pub(crate) fn section_item_line(
+    label: &str,
+    detail: Option<&str>,
+    running: bool,
+    p: &Palette,
+    width: u16,
+) -> Line<'static> {
+    let (bullet, bullet_style) = if running {
+        ("●", Style::default().fg(p.green))
+    } else {
+        ("·", Style::default().fg(p.overlay0))
+    };
+    let mut spans = vec![
+        Span::styled("      ", Style::default()),
+        Span::styled(bullet, bullet_style),
+        Span::styled(" ", Style::default()),
+    ];
+    let trailing = detail.map(|d| Span::styled(d.to_string(), Style::default().fg(p.overlay0)));
+    let prefix_width: usize = spans
+        .iter()
+        .map(|s| display_width(s.content.as_ref()))
+        .sum();
+    let trailing_width = trailing
+        .as_ref()
+        .map(|s| display_width(s.content.as_ref()))
+        .unwrap_or(0);
+    let avail = (width as usize).saturating_sub(prefix_width + trailing_width);
+    spans.push(Span::styled(
+        truncate_end(label, avail),
+        Style::default().fg(p.overlay1),
+    ));
+    match trailing {
+        Some(trailing) => project_row_trailing(spans, trailing, None, width),
+        None => Line::from(spans),
+    }
+}
+
+/// Fifth-level Project-view row: one pane of a multi-pane workspace — a
+/// state dot and its label. Never the repo name and never a `repo` field to
+/// pass one from: the row's whole reason to exist is the pane, not the
+/// checkout it lives in.
+pub(crate) fn pane_row_line(
+    label: &str,
+    dot: (&str, Style),
+    p: &Palette,
+    width: u16,
+) -> Line<'static> {
+    let mut spans = vec![
+        Span::styled("      ", Style::default()),
+        Span::styled(dot.0.to_string(), dot.1),
+        Span::styled(" ", Style::default()),
+    ];
+    let prefix_width: usize = spans
+        .iter()
+        .map(|s| display_width(s.content.as_ref()))
+        .sum();
+    let avail = (width as usize).saturating_sub(prefix_width);
+    spans.push(Span::styled(
+        truncate_end(label, avail),
+        Style::default().fg(p.overlay1),
+    ));
+    Line::from(spans)
 }
 
 pub(crate) fn normalized_workspace_scroll(app: &AppState, area: Rect, requested: usize) -> usize {
@@ -822,6 +1159,16 @@ pub(crate) fn next_entry_is_indented_workspace(entries: &[WorkspaceListEntry], i
 }
 
 fn workspace_list_entries_inner(app: &AppState, force_expanded: bool) -> Vec<WorkspaceListEntry> {
+    if app.view_mode == crate::config::ViewMode::Project {
+        // Three levels, built by the pure module. Never falls through to the
+        // Flat or Repo paths below: the Repo view and its tests stay untouched.
+        let entries = project_view::project_view_entries(app, force_expanded);
+        if force_expanded {
+            return entries;
+        }
+        return apply_hidden_filter(app, &std::collections::HashSet::new(), entries);
+    }
+
     if !app.groups_workspaces() {
         // Flat sidebar: one row per workspace in workspace-vec order (which
         // flat-mode drags mutate), with no grouping at all -- repo brackets,
@@ -1096,6 +1443,15 @@ fn apply_hidden_filter(
         WorkspaceListEntry::ProjectHeader { .. } => 1,
         WorkspaceListEntry::BranchHeader { .. } => 2,
         WorkspaceListEntry::Workspace { .. } => 3,
+        // Project view depths. The hidden filter drops a header whose members
+        // all became hidden, so these must nest correctly or a project row
+        // would survive with nothing under it.
+        WorkspaceListEntry::ProjectRow { .. } => 0,
+        WorkspaceListEntry::WorktreeRow { .. } => 1,
+        WorkspaceListEntry::SectionHeader { .. } => 2,
+        WorkspaceListEntry::SectionItem { .. } => 3,
+        // Strictly deeper than `Workspace`, whose child it is.
+        WorkspaceListEntry::PaneRow { .. } => 4,
     };
     let ws_hidden = |ws_idx: usize| -> bool {
         let Some(ws) = app.workspaces.get(ws_idx) else {
@@ -1143,8 +1499,13 @@ fn apply_hidden_filter(
             }
             WorkspaceListEntry::GroupHeader { .. }
             | WorkspaceListEntry::ProjectHeader { .. }
-            | WorkspaceListEntry::BranchHeader { .. } => open.push(i),
-            WorkspaceListEntry::HiddenHeader { .. } => {}
+            | WorkspaceListEntry::BranchHeader { .. }
+            | WorkspaceListEntry::ProjectRow { .. }
+            | WorkspaceListEntry::WorktreeRow { .. }
+            | WorkspaceListEntry::SectionHeader { .. } => open.push(i),
+            WorkspaceListEntry::HiddenHeader { .. }
+            | WorkspaceListEntry::SectionItem { .. }
+            | WorkspaceListEntry::PaneRow { .. } => {}
         }
     }
 
@@ -1172,6 +1533,24 @@ fn apply_hidden_filter(
                 }
             }
             WorkspaceListEntry::HiddenHeader { .. } => result.push(entry),
+            // Project view. A pane belongs to a workspace, so it hides with it;
+            // the container rows follow the same all-children-hidden rule as
+            // their repo-view counterparts above.
+            WorkspaceListEntry::PaneRow { ws_idx, .. } => {
+                if !ws_hidden(*ws_idx) {
+                    result.push(entry);
+                }
+            }
+            WorkspaceListEntry::ProjectRow { collapse_key, .. }
+            | WorkspaceListEntry::WorktreeRow { collapse_key, .. } => {
+                let drop = app.is_hidden(collapse_key) || (had_child[i] && !has_kept_child[i]);
+                if !drop {
+                    result.push(entry);
+                }
+            }
+            WorkspaceListEntry::SectionHeader { .. } | WorkspaceListEntry::SectionItem { .. } => {
+                result.push(entry)
+            }
         }
     }
 
@@ -1558,33 +1937,28 @@ pub(crate) fn agent_panel_scrollbar_rect(app: &AppState, area: Rect) -> Option<R
     ))
 }
 
-pub(crate) fn compute_workspace_list_areas(
-    app: &AppState,
-    area: Rect,
+/// Core geometry walk shared by `compute_workspace_list_areas` (Flat/Repo
+/// card + group-header areas) and `compute_project_row_areas` (Project-view
+/// row areas). Takes entries and the body rect directly rather than
+/// `AppState`, so the Project-view arms are testable with hand-built
+/// entries — no dependency on the entries builder in `sidebar::project_view`.
+fn workspace_list_areas_for_entries(
+    entries: &[WorkspaceListEntry],
+    scroll: usize,
+    body: Rect,
 ) -> (
     Vec<crate::app::state::WorkspaceCardArea>,
     Vec<crate::app::state::GroupHeaderCardArea>,
+    Vec<ProjectRowHitArea>,
 ) {
-    let ws_area = workspace_list_rect(area, app.sidebar_section_split);
-    if ws_area == Rect::default() {
-        return (Vec::new(), Vec::new());
-    }
-
-    let metrics = workspace_list_scroll_metrics(app, ws_area);
-    let body = workspace_list_body_rect(app, ws_area, should_show_scrollbar(metrics));
-    if body.width == 0 || body.height == 0 {
-        return (Vec::new(), Vec::new());
-    }
-
-    let scroll = app.workspace_scroll;
     let mut row_y = body.y;
     let body_bottom = body.y + body.height;
     let mut cards = Vec::new();
     let mut headers: Vec<crate::app::state::GroupHeaderCardArea> = Vec::new();
+    let mut project_rows: Vec<ProjectRowHitArea> = Vec::new();
 
-    let entries = workspace_list_entries(app);
     for (entry_idx, entry) in entries.iter().enumerate().skip(scroll) {
-        let needed = entry_row_height(entry, &entries, entry_idx);
+        let needed = entry_row_height(entry, entries, entry_idx);
         if row_y.saturating_add(needed) > body_bottom {
             break;
         }
@@ -1629,6 +2003,63 @@ pub(crate) fn compute_workspace_list_areas(
                     rect: Rect::new(body.x, row_y, body.width, 1),
                 });
             }
+            WorkspaceListEntry::ProjectRow { collapse_key, .. } => {
+                project_rows.push(ProjectRowHitArea {
+                    rect: Rect::new(body.x, row_y, body.width, 1),
+                    target: ProjectRowTarget::Project {
+                        collapse_key: collapse_key.clone(),
+                    },
+                });
+            }
+            WorkspaceListEntry::WorktreeRow {
+                checkout_key,
+                collapse_key,
+                unopened,
+                ..
+            } => {
+                // An unopened worktree has no collapse state of its own — a
+                // click opens it instead of toggling a band.
+                let target = if *unopened {
+                    ProjectRowTarget::OpenWorktree {
+                        checkout_key: checkout_key.clone(),
+                    }
+                } else {
+                    ProjectRowTarget::Worktree {
+                        collapse_key: collapse_key.clone(),
+                    }
+                };
+                project_rows.push(ProjectRowHitArea {
+                    rect: Rect::new(body.x, row_y, body.width, 1),
+                    target,
+                });
+            }
+            WorkspaceListEntry::SectionHeader { collapse_key, .. } => {
+                project_rows.push(ProjectRowHitArea {
+                    rect: Rect::new(body.x, row_y, body.width, 1),
+                    target: ProjectRowTarget::Section {
+                        collapse_key: collapse_key.clone(),
+                    },
+                });
+            }
+            WorkspaceListEntry::SectionItem { label, .. } => {
+                project_rows.push(ProjectRowHitArea {
+                    rect: Rect::new(body.x, row_y, body.width, 1),
+                    target: ProjectRowTarget::SectionItem {
+                        label: label.clone(),
+                    },
+                });
+            }
+            WorkspaceListEntry::PaneRow {
+                ws_idx, pane_id, ..
+            } => {
+                project_rows.push(ProjectRowHitArea {
+                    rect: Rect::new(body.x, row_y, body.width, 1),
+                    target: ProjectRowTarget::Pane {
+                        ws_idx: *ws_idx,
+                        pane_id: pane_id.clone(),
+                    },
+                });
+            }
             WorkspaceListEntry::Workspace {
                 ws_idx, indented, ..
             } => {
@@ -1643,6 +2074,46 @@ pub(crate) fn compute_workspace_list_areas(
         row_y = row_y.saturating_add(needed);
     }
 
+    (cards, headers, project_rows)
+}
+
+/// The whole geometry pass, once: workspace cards, group headers, and
+/// Project-view row hit areas. `render`/`compute_view` MUST use this rather
+/// than calling the two narrower wrappers below in sequence — each of those
+/// rebuilds the entry list and re-walks every row, and this runs per render,
+/// per pane, per attached client (AGENTS.md, "Multiplicative performance
+/// paths").
+pub(crate) fn compute_workspace_list_areas_all(
+    app: &AppState,
+    area: Rect,
+) -> (
+    Vec<crate::app::state::WorkspaceCardArea>,
+    Vec<crate::app::state::GroupHeaderCardArea>,
+    Vec<ProjectRowHitArea>,
+) {
+    let ws_area = workspace_list_rect(area, app.sidebar_section_split);
+    if ws_area == Rect::default() {
+        return (Vec::new(), Vec::new(), Vec::new());
+    }
+
+    let metrics = workspace_list_scroll_metrics(app, ws_area);
+    let body = workspace_list_body_rect(app, ws_area, should_show_scrollbar(metrics));
+    if body.width == 0 || body.height == 0 {
+        return (Vec::new(), Vec::new(), Vec::new());
+    }
+
+    let entries = workspace_list_entries(app);
+    workspace_list_areas_for_entries(&entries, app.workspace_scroll, body)
+}
+
+pub(crate) fn compute_workspace_list_areas(
+    app: &AppState,
+    area: Rect,
+) -> (
+    Vec<crate::app::state::WorkspaceCardArea>,
+    Vec<crate::app::state::GroupHeaderCardArea>,
+) {
+    let (cards, headers, _project_rows) = compute_workspace_list_areas_all(app, area);
     (cards, headers)
 }
 
@@ -2332,6 +2803,130 @@ fn render_workspace_list(
                     );
                 }
             }
+            WorkspaceListEntry::ProjectRow {
+                name,
+                collapse_key,
+                live,
+                total,
+                ..
+            } => {
+                if row_y < list_bottom {
+                    let collapsed = app.collapsed_space_keys.contains(collapse_key);
+                    frame.render_widget(
+                        Paragraph::new(project_row_line(
+                            name, collapsed, *live, *total, p, body.width,
+                        )),
+                        Rect::new(body.x, row_y, body.width, 1),
+                    );
+                }
+            }
+            WorkspaceListEntry::WorktreeRow {
+                repo,
+                branch,
+                ahead,
+                behind,
+                pr,
+                collapse_key,
+                unopened,
+                ..
+            } => {
+                if row_y < list_bottom {
+                    let collapsed = app.collapsed_space_keys.contains(collapse_key);
+                    frame.render_widget(
+                        Paragraph::new(worktree_row_line(
+                            repo.as_deref(),
+                            branch,
+                            *ahead,
+                            *behind,
+                            *pr,
+                            collapsed,
+                            *unopened,
+                            p,
+                            body.width,
+                        )),
+                        Rect::new(body.x, row_y, body.width, 1),
+                    );
+                }
+            }
+            WorkspaceListEntry::SectionHeader {
+                kind, done, total, ..
+            } => {
+                if row_y < list_bottom {
+                    frame.render_widget(
+                        Paragraph::new(section_header_line(*kind, *done, *total, p, body.width)),
+                        Rect::new(body.x, row_y, body.width, 1),
+                    );
+                }
+            }
+            WorkspaceListEntry::SectionItem {
+                label,
+                detail,
+                running,
+                ..
+            } => {
+                if row_y < list_bottom {
+                    frame.render_widget(
+                        Paragraph::new(section_item_line(
+                            label,
+                            detail.as_deref(),
+                            *running,
+                            p,
+                            body.width,
+                        )),
+                        Rect::new(body.x, row_y, body.width, 1),
+                    );
+                }
+            }
+            WorkspaceListEntry::PaneRow {
+                ws_idx,
+                pane_id,
+                label,
+            } => {
+                if row_y < list_bottom {
+                    // Resolve the pane's live agent state from its
+                    // addressable id (the same `wNpN` form `bora agent
+                    // prompt` accepts) — the variant itself carries no
+                    // status, only enough to locate the pane. Unresolved
+                    // (stale id from a since-closed pane) falls back to a
+                    // plain idle dot rather than guessing.
+                    let dot = app
+                        .workspaces
+                        .get(*ws_idx)
+                        .and_then(|ws| {
+                            ws.pane_details(&app.terminals).into_iter().find(|d| {
+                                ws.public_pane_number(d.pane_id)
+                                    .map(|n| {
+                                        format!(
+                                            "{}p{}",
+                                            ws.id,
+                                            crate::workspace::encode_public_number(n)
+                                        )
+                                    })
+                                    .as_deref()
+                                    == Some(pane_id.as_str())
+                            })
+                        })
+                        .map(|detail| {
+                            let age = (!detail.seen)
+                                .then_some(detail.idle_since)
+                                .flatten()
+                                .map(|since| now.saturating_duration_since(since));
+                            state_dot(
+                                detail.state,
+                                detail.seen,
+                                app.spinner_tick,
+                                app.status_indicators,
+                                p,
+                                age,
+                            )
+                        })
+                        .unwrap_or(("○", Style::default().fg(p.overlay0)));
+                    frame.render_widget(
+                        Paragraph::new(pane_row_line(label, dot, p, body.width)),
+                        Rect::new(body.x, row_y, body.width, 1),
+                    );
+                }
+            }
             WorkspaceListEntry::Workspace {
                 ws_idx,
                 indented,
@@ -3010,13 +3605,18 @@ mod tests {
         terminal_state.detected_agent = Some(Agent::Pi);
         terminal_state.state = AgentState::Working;
 
-        let area = Rect::new(0, 0, 26, 20);
-        let mut terminal = Terminal::new(TestBackend::new(26, 20)).unwrap();
+        // The panel is retired from the live sidebar layout (bora-49p.6) but
+        // its rendering is retained, so paint it directly into an area instead
+        // of asking the layout for one it no longer allots. What this test
+        // guards is the row content, which is unchanged either way.
+        let agent_area = Rect::new(0, 0, 25, 10);
+        let mut terminal = Terminal::new(TestBackend::new(25, 10)).unwrap();
         terminal
-            .draw(|frame| render_sidebar(&app, &TerminalRuntimeRegistry::new(), frame, area))
+            .draw(|frame| {
+                render_agent_detail(&app, &TerminalRuntimeRegistry::new(), frame, agent_area)
+            })
             .unwrap();
         let buffer = terminal.backend().buffer();
-        let (_, agent_area) = expanded_sidebar_sections(area, app.sidebar_section_split);
         let body = agent_panel_body_rect(agent_area, false);
 
         let first = row_text(buffer, body.y, 25);
@@ -3062,12 +3662,15 @@ rows = [[{ token = "workspace", bold = false }, { token = "agent", dim = false }
             .clone();
         app.terminals.get_mut(&terminal_id).unwrap().detected_agent = Some(Agent::Pi);
 
-        let area = Rect::new(0, 0, 26, 20);
-        let mut terminal = Terminal::new(TestBackend::new(26, 20)).unwrap();
+        // Panel retired from the live layout (bora-49p.6); its rendering is
+        // retained, so paint it directly into an area of our own.
+        let agent_area = Rect::new(0, 0, 25, 10);
+        let mut terminal = Terminal::new(TestBackend::new(25, 10)).unwrap();
         terminal
-            .draw(|frame| render_sidebar(&app, &TerminalRuntimeRegistry::new(), frame, area))
+            .draw(|frame| {
+                render_agent_detail(&app, &TerminalRuntimeRegistry::new(), frame, agent_area)
+            })
             .unwrap();
-        let (_, agent_area) = expanded_sidebar_sections(area, app.sidebar_section_split);
         let body = agent_panel_body_rect(agent_area, false);
         let buffer = terminal.backend().buffer();
         let workspace = buffer[(find_symbol_x(buffer, body.y, body.width, "o"), body.y)].style();
@@ -3352,13 +3955,16 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
             .clone();
         app.terminals.get_mut(&terminal_id).unwrap().detected_agent = Some(Agent::Pi);
 
-        let area = Rect::new(0, 0, 18, 20);
-        let mut terminal = Terminal::new(TestBackend::new(18, 20)).unwrap();
+        // Panel retired from the live layout (bora-49p.6); its rendering is
+        // retained, so paint it directly into an area of our own.
+        let agent_area = Rect::new(0, 0, 17, 10);
+        let mut terminal = Terminal::new(TestBackend::new(17, 10)).unwrap();
         terminal
-            .draw(|frame| render_sidebar(&app, &TerminalRuntimeRegistry::new(), frame, area))
+            .draw(|frame| {
+                render_agent_detail(&app, &TerminalRuntimeRegistry::new(), frame, agent_area)
+            })
             .unwrap();
         let buffer = terminal.backend().buffer();
-        let (_, agent_area) = expanded_sidebar_sections(area, app.sidebar_section_split);
         let body = agent_panel_body_rect(agent_area, false);
         let first = row_text(buffer, body.y, 17);
 
@@ -3805,19 +4411,43 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
         assert_eq!(entries[0].agent_label.as_deref(), Some("planner"));
     }
 
+    /// The agent panel is retired (bora-49p.6): the workspace list takes the
+    /// whole content column at every height, and the split ratio is ignored.
     #[test]
-    fn expanded_sidebar_sections_handle_tiny_heights() {
-        let (ws_area, detail_area) = expanded_sidebar_sections(Rect::new(0, 0, 20, 5), 0.9);
+    fn expanded_sidebar_sections_give_the_whole_column_to_the_workspace_list() {
+        for (rect, ratio) in [
+            (Rect::new(0, 0, 20, 5), 0.9),
+            (Rect::new(0, 0, 20, 5), 0.1),
+            (Rect::new(0, 0, 26, 40), 0.5),
+        ] {
+            let (ws_area, detail_area) = expanded_sidebar_sections(rect, ratio);
 
-        assert_eq!(ws_area, Rect::new(0, 0, 19, 3));
-        assert_eq!(detail_area, Rect::new(0, 3, 19, 2));
+            assert_eq!(
+                ws_area,
+                Rect::new(rect.x, rect.y, rect.width - 1, rect.height)
+            );
+            assert_eq!(detail_area.height, 0);
+        }
+
+        // Degenerate rects still yield nothing rather than a panic.
+        assert_eq!(
+            expanded_sidebar_sections(Rect::new(0, 0, 1, 5), 0.5),
+            (Rect::default(), Rect::default())
+        );
+        assert_eq!(
+            expanded_sidebar_sections(Rect::new(0, 0, 20, 0), 0.5),
+            (Rect::default(), Rect::default())
+        );
     }
 
+    /// No second section means no drag handle, at any height.
     #[test]
-    fn sidebar_section_divider_is_hidden_for_tiny_heights() {
-        let divider = sidebar_section_divider_rect(Rect::new(0, 0, 20, 5), 0.5);
+    fn sidebar_section_divider_is_always_empty_while_the_panel_is_retired() {
+        for height in [0u16, 5, 20, 40] {
+            let divider = sidebar_section_divider_rect(Rect::new(0, 0, 20, height), 0.5);
 
-        assert_eq!(divider, Rect::default());
+            assert_eq!(divider, Rect::default(), "height {height}");
+        }
     }
 
     #[test]
@@ -6025,6 +6655,13 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
                 WorkspaceListEntry::BranchHeader { .. } => "BranchHeader",
                 WorkspaceListEntry::Workspace { .. } => "Workspace",
                 WorkspaceListEntry::HiddenHeader { .. } => "HiddenHeader",
+                WorkspaceListEntry::ProjectRow { .. }
+                | WorkspaceListEntry::WorktreeRow { .. }
+                | WorkspaceListEntry::SectionHeader { .. }
+                | WorkspaceListEntry::SectionItem { .. }
+                | WorkspaceListEntry::PaneRow { .. } => {
+                    panic!("repo-view fixture must never emit a project-view entry")
+                }
             })
             .collect();
         assert_eq!(
@@ -6068,6 +6705,13 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
                 | WorkspaceListEntry::ProjectHeader { .. } => expected_header_ys.push(y),
                 WorkspaceListEntry::BranchHeader { .. } => {}
                 WorkspaceListEntry::HiddenHeader { .. } => {}
+                WorkspaceListEntry::ProjectRow { .. }
+                | WorkspaceListEntry::WorktreeRow { .. }
+                | WorkspaceListEntry::SectionHeader { .. }
+                | WorkspaceListEntry::SectionItem { .. }
+                | WorkspaceListEntry::PaneRow { .. } => {
+                    panic!("repo-view fixture must never emit a project-view entry")
+                }
             }
             y += entry_row_height(entry, &entries, idx);
         }
@@ -6258,6 +6902,13 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
                     }
                 }
                 WorkspaceListEntry::HiddenHeader { .. } => seen.hidden_header = true,
+                WorkspaceListEntry::ProjectRow { .. }
+                | WorkspaceListEntry::WorktreeRow { .. }
+                | WorkspaceListEntry::SectionHeader { .. }
+                | WorkspaceListEntry::SectionItem { .. }
+                | WorkspaceListEntry::PaneRow { .. } => {
+                    panic!("repo-view fixture must never emit a project-view entry")
+                }
             }
         }
         assert!(
@@ -6348,6 +6999,13 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
                 WorkspaceListEntry::HiddenHeader { .. } => {
                     expected_headers.push(("hidden:".to_string(), y))
                 }
+                WorkspaceListEntry::ProjectRow { .. }
+                | WorkspaceListEntry::WorktreeRow { .. }
+                | WorkspaceListEntry::SectionHeader { .. }
+                | WorkspaceListEntry::SectionItem { .. }
+                | WorkspaceListEntry::PaneRow { .. } => {
+                    panic!("repo-view fixture must never emit a project-view entry")
+                }
             }
             y += entry_row_height(entry, &entries, idx);
         }
@@ -6388,6 +7046,13 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
                 WorkspaceListEntry::ProjectHeader { name, .. } => name.clone(),
                 WorkspaceListEntry::BranchHeader { label, .. } => label.clone(),
                 WorkspaceListEntry::HiddenHeader { .. } => "Hidden".to_string(),
+                WorkspaceListEntry::ProjectRow { .. }
+                | WorkspaceListEntry::WorktreeRow { .. }
+                | WorkspaceListEntry::SectionHeader { .. }
+                | WorkspaceListEntry::SectionItem { .. }
+                | WorkspaceListEntry::PaneRow { .. } => {
+                    panic!("repo-view fixture must never emit a project-view entry")
+                }
             };
             let actual = row_text(terminal.backend().buffer(), y, exact.width);
             assert!(
@@ -6514,6 +7179,295 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
         assert_eq!(
             workspace_list_entries(&app),
             vec![WorkspaceListEntry::HiddenHeader { count: 2 }]
+        );
+    }
+
+    // ── Project-view row painters + geometry (bora-49p.3) ────────────────
+
+    fn line_text(line: &Line<'_>) -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    #[test]
+    fn project_row_line_right_aligns_counter_and_fits_width() {
+        let p = Palette::catppuccin();
+        let width = 42;
+        let text = line_text(&project_row_line("CNB", false, 3, 4, &p, width));
+
+        assert_eq!(display_width(&text), width as usize);
+        assert!(text.starts_with("▾ ⬢ CNB"));
+        assert!(text.ends_with("3/4"));
+    }
+
+    #[test]
+    fn project_row_line_uses_open_chevron_when_collapsed() {
+        let p = Palette::catppuccin();
+        let collapsed = line_text(&project_row_line("CNB", true, 1, 4, &p, 30));
+        let expanded = line_text(&project_row_line("CNB", false, 1, 4, &p, 30));
+
+        assert!(collapsed.starts_with('▸'));
+        assert!(expanded.starts_with('▾'));
+    }
+
+    #[test]
+    fn section_header_ruler_fills_exact_width_to_the_counter_column() {
+        let p = Palette::catppuccin();
+        let width = 40;
+        let text = line_text(&section_header_line(
+            ProjectSection::Commands,
+            1,
+            3,
+            &p,
+            width,
+        ));
+
+        // Row is loaded exactly to `width`, not merely "wide enough" — a
+        // ruler/counter budget mismatch shows up as drift here.
+        assert_eq!(display_width(&text), width as usize, "row: {text:?}");
+        assert!(text.trim_end().ends_with("1/3"));
+        let dash_run = text.chars().filter(|&c| c == '─').count();
+        assert!(dash_run > 0, "ruler must exist: {text:?}");
+        // Cross-check the ruler length independently of the implementation's
+        // own arithmetic: known prefix + " 1/3" must account for every
+        // remaining column.
+        let prefix = "    ≡ COMMANDS ";
+        let counter = " 1/3";
+        let expected_dashes = width as usize - display_width(prefix) - display_width(counter);
+        assert_eq!(dash_run, expected_dashes, "row: {text:?}");
+    }
+
+    #[test]
+    fn section_header_checks_glyph_differs_from_commands() {
+        let p = Palette::catppuccin();
+        let commands = line_text(&section_header_line(ProjectSection::Commands, 0, 2, &p, 30));
+        let checks = line_text(&section_header_line(ProjectSection::Checks, 2, 2, &p, 30));
+
+        assert!(commands.contains("COMMANDS"));
+        assert!(checks.contains("CHECKS"));
+        assert_ne!(commands.chars().nth(4), checks.chars().nth(4));
+    }
+
+    #[test]
+    fn worktree_row_omits_repo_name_when_single_repo_project() {
+        let p = Palette::catppuccin();
+        let text = line_text(&worktree_row_line(
+            None, "main", 0, 0, None, false, false, &p, 40,
+        ));
+
+        assert_eq!(text, "  ▾ main");
+    }
+
+    #[test]
+    fn worktree_row_shows_repo_name_when_project_spans_repos() {
+        let p = Palette::catppuccin();
+        let text = line_text(&worktree_row_line(
+            Some("cnb_landing_page"),
+            "main",
+            0,
+            0,
+            None,
+            false,
+            false,
+            &p,
+            40,
+        ));
+
+        assert_eq!(text, "  ▾ cnb_landing_page  main");
+    }
+
+    #[test]
+    fn worktree_row_truncates_branch_without_overlapping_the_pr_badge() {
+        let p = Palette::catppuccin();
+        let width = 40;
+        let long_branch = "feature/very-long-branch-name-that-does-not-fit";
+        let text = line_text(&worktree_row_line(
+            Some("cnb_landing_page"),
+            long_branch,
+            0,
+            0,
+            Some(128),
+            false,
+            false,
+            &p,
+            width,
+        ));
+
+        assert!(
+            display_width(&text) <= width as usize,
+            "row must respect its width budget, got {text:?}"
+        );
+        assert!(
+            text.contains('…'),
+            "long branch must be truncated: {text:?}"
+        );
+        assert!(
+            text.trim_end().ends_with("#128"),
+            "PR badge must survive truncation intact: {text:?}"
+        );
+        assert!(
+            !text.contains(long_branch),
+            "full untruncated branch must not appear: {text:?}"
+        );
+    }
+
+    #[test]
+    fn worktree_row_unopened_renders_dimmed_branch() {
+        let p = Palette::catppuccin();
+        let normal = worktree_row_line(None, "main", 0, 0, None, false, false, &p, 40);
+        let unopened = worktree_row_line(None, "main", 0, 0, None, false, true, &p, 40);
+
+        let normal_style = normal
+            .spans
+            .iter()
+            .find(|s| s.content.as_ref() == "main")
+            .expect("normal row has a branch span")
+            .style;
+        let unopened_style = unopened
+            .spans
+            .iter()
+            .find(|s| s.content.as_ref() == "main")
+            .expect("unopened row has a branch span")
+            .style;
+
+        assert!(!normal_style.add_modifier.contains(Modifier::DIM));
+        assert!(unopened_style.add_modifier.contains(Modifier::DIM));
+    }
+
+    #[test]
+    fn section_item_line_shows_bullet_label_and_right_aligned_detail() {
+        let p = Palette::catppuccin();
+        let running = line_text(&section_item_line("dev", Some(":5173"), true, &p, 40));
+        let idle = line_text(&section_item_line("test", None, false, &p, 40));
+
+        assert!(running.trim_start().starts_with('●'));
+        assert!(running.trim_end().ends_with(":5173"));
+        assert!(idle.trim_start().starts_with('·'));
+    }
+
+    #[test]
+    fn pane_row_line_never_contains_a_repo_name() {
+        let p = Palette::catppuccin();
+        let dot = ("○", Style::default().fg(p.overlay0));
+        let text = line_text(&pane_row_line("agent-x", dot, &p, 40));
+
+        assert_eq!(text, "      ○ agent-x");
+        assert!(!text.contains("cnb_landing_page"));
+        assert!(!text.contains("bora"));
+    }
+
+    #[test]
+    fn project_view_geometry_emits_one_hit_area_per_row_with_correct_targets() {
+        let entries = vec![
+            WorkspaceListEntry::ProjectRow {
+                name: "cnb".into(),
+                collapse_key: "proj:cnb".into(),
+                live: 1,
+                total: 2,
+                declared: true,
+            },
+            WorkspaceListEntry::WorktreeRow {
+                checkout_key: "checkout:1".into(),
+                repo: None,
+                branch: "main".into(),
+                ahead: 0,
+                behind: 0,
+                pr: None,
+                collapse_key: "wt:1".into(),
+                unopened: false,
+            },
+            WorkspaceListEntry::SectionHeader {
+                kind: ProjectSection::Commands,
+                collapse_key: "sec:1".into(),
+                done: 1,
+                total: 3,
+            },
+            WorkspaceListEntry::SectionItem {
+                kind: ProjectSection::Commands,
+                label: "dev".into(),
+                detail: Some(":5173".into()),
+                running: true,
+            },
+            WorkspaceListEntry::PaneRow {
+                ws_idx: 0,
+                pane_id: "w1p1".into(),
+                label: "agent".into(),
+            },
+        ];
+        let body = Rect::new(0, 0, 30, 20);
+
+        let (cards, headers, project_rows) = workspace_list_areas_for_entries(&entries, 0, body);
+
+        assert!(
+            cards.is_empty(),
+            "Project-view rows are not workspace cards"
+        );
+        assert!(
+            headers.is_empty(),
+            "Project-view rows are not group headers"
+        );
+        assert_eq!(project_rows.len(), entries.len());
+        for (i, area) in project_rows.iter().enumerate() {
+            assert_eq!(area.rect.height, 1, "every Project-view row is height 1");
+            assert_eq!(
+                area.rect.y,
+                body.y + i as u16,
+                "rows must not overlap or skip"
+            );
+        }
+        assert_eq!(
+            project_rows[0].target,
+            ProjectRowTarget::Project {
+                collapse_key: "proj:cnb".into()
+            }
+        );
+        assert_eq!(
+            project_rows[1].target,
+            ProjectRowTarget::Worktree {
+                collapse_key: "wt:1".into()
+            }
+        );
+        assert_eq!(
+            project_rows[2].target,
+            ProjectRowTarget::Section {
+                collapse_key: "sec:1".into()
+            }
+        );
+        assert_eq!(
+            project_rows[3].target,
+            ProjectRowTarget::SectionItem {
+                label: "dev".into()
+            }
+        );
+        assert_eq!(
+            project_rows[4].target,
+            ProjectRowTarget::Pane {
+                ws_idx: 0,
+                pane_id: "w1p1".into()
+            }
+        );
+    }
+
+    #[test]
+    fn project_view_geometry_unopened_worktree_targets_open_worktree() {
+        let entries = vec![WorkspaceListEntry::WorktreeRow {
+            checkout_key: "checkout:2".into(),
+            repo: Some("cnb_hono".into()),
+            branch: "main".into(),
+            ahead: 0,
+            behind: 0,
+            pr: None,
+            collapse_key: "wt:2".into(),
+            unopened: true,
+        }];
+
+        let (_, _, project_rows) =
+            workspace_list_areas_for_entries(&entries, 0, Rect::new(0, 0, 30, 10));
+
+        assert_eq!(
+            project_rows[0].target,
+            ProjectRowTarget::OpenWorktree {
+                checkout_key: "checkout:2".into()
+            }
         );
     }
 }

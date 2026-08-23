@@ -757,13 +757,21 @@ fn frame_contains_text(frame: &FrameWire, needle: &str) -> bool {
     frame_text(frame).contains(needle)
 }
 
-fn agent_panel_starts_with(frame: &FrameWire, agent_label: &str) -> bool {
-    frame_text(frame)
-        .lines()
-        .skip_while(|line| !line.contains("agents"))
-        .skip(1)
-        .find(|line| line.contains("agent-"))
-        .is_some_and(|line| line.contains(agent_label))
+/// The label of the topmost visible workspace row.
+///
+/// The agent panel was retired in bora-49p.6, so the workspace list now owns
+/// the whole sidebar column and is the scrollable surface this file's
+/// shared-scroll invariant rides on.
+fn first_workspace_row_label(frame: &FrameWire) -> Option<String> {
+    frame_text(frame).lines().find_map(|line| {
+        let start = line.find("agent-")?;
+        Some(
+            line[start..]
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '-')
+                .collect(),
+        )
+    })
 }
 
 #[test]
@@ -847,7 +855,7 @@ fn multi_client_effective_size_shrinks_when_smaller_client_joins() {
 }
 
 #[test]
-fn non_foreground_client_render_preserves_agent_panel_scroll() {
+fn non_foreground_client_render_preserves_workspace_scroll() {
     let _lock = test_lock();
     let base = unique_test_dir();
     let config_home = base.join("config");
@@ -859,62 +867,72 @@ fn non_foreground_client_render_preserves_agent_panel_scroll() {
     wait_for_socket(&api_socket, Duration::from_secs(10));
     wait_for_file(&client_socket, Duration::from_secs(10));
 
-    for index in 1..=23 {
+    // Comfortably more one-row workspaces than a 40-row client can show, so
+    // the list actually scrolls.
+    for index in 1..=60 {
         let (_, pane_id) =
             create_workspace_and_root_pane(&api_socket, &format!("agent-{index:02}"));
         report_idle_agent(&api_socket, &pane_id);
     }
 
+    // This test asserts the invariant, not a row count: a background client's
+    // projection must not undo the foreground client's wheel event. Expected
+    // labels are read from the frames rather than hardcoded, so it does not
+    // re-break every time the sidebar's chrome changes height.
+    let wheel_down = b"\x1b[<65;10;30M";
+    let wheel_up = b"\x1b[<64;10;30M";
+
     let mut setup_client = connect_raw_client(&client_socket, 106, 40);
     assert!(wait_for_frame(&mut setup_client, Duration::from_secs(2)));
     drain_server_messages(&mut setup_client, Duration::from_millis(250));
 
-    // Expected labels below reflect the agent-panel row geometry (row
-    // height = number of resolved `[ui.sidebar.agents] rows` rows per
-    // entry, gap = `sidebar_agents.row_gap`, default 0 — see
-    // `agent_entry_height_in_body`/`agent_entry_gap` in src/ui/sidebar.rs).
-    // With the default two-row entries and no gap, more entries fit per
-    // screen than the fork's previous fixed 2-row+1-gap layout did, so the
-    // settled scroll positions differ from that older geometry.
-    let wheel_down = b"\x1b[<65;10;30M";
     send_client_input(&mut setup_client, &wheel_down.repeat(20));
-    let (reached_bottom, setup_frames) = wait_for_frame_matching_with_snapshots(
+    let (scrolled_away_from_top, setup_frames) = wait_for_frame_matching_with_snapshots(
         &mut setup_client,
         Duration::from_secs(3),
-        |frame| agent_panel_starts_with(frame, "agent-16"),
+        |frame| first_workspace_row_label(frame).is_some_and(|label| label != "agent-01"),
     )
     .expect("setup frame decoding should succeed");
     assert!(
-        reached_bottom,
-        "40-row client should scroll the agent panel to its final page; frames:\n{}",
+        scrolled_away_from_top,
+        "40-row client should scroll the workspace list off its first row; frames:\n{}",
         setup_frames.join("\n--- frame ---\n")
     );
     send_client_detach(&mut setup_client);
     drop(setup_client);
 
+    // A taller client renormalizes the shared scroll; a 40-row probe then
+    // attaches behind it and stays the foreground input surface.
     let mut tall_background = connect_raw_client(&client_socket, 106, 64);
     assert!(wait_for_frame(&mut tall_background, Duration::from_secs(2)));
     let mut probe = connect_raw_client(&client_socket, 106, 40);
-    let (started_at_tall_limit, initial_frames) =
-        wait_for_frame_matching_with_snapshots(&mut probe, Duration::from_secs(3), |frame| {
-            agent_panel_starts_with(frame, "agent-10")
-        })
-        .expect("initial probe frame decoding should succeed");
-    assert!(
-        started_at_tall_limit,
-        "tall client should normalize the shared scroll before the probe attaches; frames:\n{}",
-        initial_frames.join("\n--- frame ---\n")
-    );
+    assert!(wait_for_frame(&mut probe, Duration::from_secs(2)));
     drain_server_messages(&mut probe, Duration::from_millis(250));
 
-    send_client_input(&mut probe, wheel_down);
-    let (scrolled, probe_frames) =
+    // Two observable transitions, so nothing depends on which row the shared
+    // scroll happens to sit on: back to the top, then one row off it. If the
+    // background client's projection clobbered the foreground wheel, the
+    // second wait would time out.
+    send_client_input(&mut probe, &wheel_up.repeat(80));
+    let (back_at_top, top_frames) =
         wait_for_frame_matching_with_snapshots(&mut probe, Duration::from_secs(3), |frame| {
-            agent_panel_starts_with(frame, "agent-11")
+            first_workspace_row_label(frame).is_some_and(|label| label == "agent-01")
         })
         .expect("probe frame decoding should succeed");
     assert!(
-        scrolled,
+        back_at_top,
+        "wheeling up must reach the top of the workspace list; frames:\n{}",
+        top_frames.join("\n--- frame ---\n")
+    );
+
+    send_client_input(&mut probe, &wheel_down.repeat(4));
+    let (moved, probe_frames) =
+        wait_for_frame_matching_with_snapshots(&mut probe, Duration::from_secs(3), |frame| {
+            first_workspace_row_label(frame).is_some_and(|label| label != "agent-01")
+        })
+        .expect("probe frame decoding should succeed");
+    assert!(
+        moved,
         "background client projection must not undo the foreground wheel event; frames:\n{}",
         probe_frames.join("\n--- frame ---\n")
     );

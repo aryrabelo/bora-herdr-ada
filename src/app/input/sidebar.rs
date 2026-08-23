@@ -1,6 +1,6 @@
 use ratatui::layout::Rect;
 
-use crate::app::state::{AppState, ViewLayout};
+use crate::app::state::{AppState, ProjectRowHitArea, ProjectRowTarget, ViewLayout};
 
 use super::ScrollbarClickTarget;
 
@@ -250,7 +250,17 @@ impl AppState {
             6
         }
         .min(footer.width.max(1));
-        let x = footer.x + footer.width.saturating_sub(width);
+        // Since bora-49p.6 retired the agent panel, the workspace list runs to
+        // the sidebar's last row — the same row as the collapse toggle. Stop
+        // the right-aligned launcher before that cell, or it covers the toggle
+        // and, because the launcher is hit-tested first, makes it unclickable.
+        // Rendering reads this same rect, so both move together.
+        let toggle = crate::ui::expanded_sidebar_toggle_rect(self.view.sidebar_rect);
+        let mut right_edge = footer.x + footer.width;
+        if toggle.width > 0 && toggle.y == footer.y && toggle.x < right_edge {
+            right_edge = toggle.x;
+        }
+        let x = right_edge.saturating_sub(width).max(footer.x);
         Rect::new(x, footer.y, width, footer.height)
     }
 
@@ -608,6 +618,12 @@ impl AppState {
                 | crate::ui::WorkspaceListEntry::ProjectHeader { .. }
                 | crate::ui::WorkspaceListEntry::BranchHeader { .. }
                 | crate::ui::WorkspaceListEntry::HiddenHeader { .. } => None,
+                // Project view: no project-view row is a top-level root here.
+                crate::ui::WorkspaceListEntry::ProjectRow { .. }
+                | crate::ui::WorkspaceListEntry::WorktreeRow { .. }
+                | crate::ui::WorkspaceListEntry::SectionHeader { .. }
+                | crate::ui::WorkspaceListEntry::SectionItem { .. }
+                | crate::ui::WorkspaceListEntry::PaneRow { .. } => None,
             })
             .collect::<Vec<_>>();
         let source_pos = roots.iter().position(|ws_idx| *ws_idx == source_ws_idx)?;
@@ -761,6 +777,30 @@ impl AppState {
     }
 }
 
+/// Resolves a sidebar click to the Project-view row it landed on, reading
+/// only the geometry pass's own `ProjectRowHitArea`s
+/// (`ViewState.project_row_areas`) — never the mouse row on its own.
+/// `ProjectRowHitArea::rect` is the single source of truth for where a row
+/// sits; a caller that instead derived a row index from `y` and indexed
+/// into a list would silently land on the wrong target the moment any row
+/// above it collapses, expands, or scrolls. `areas` need not start at
+/// `y == 0` — the scrolled/offset case a collapsed row above produces.
+pub(super) fn project_row_target_at(
+    areas: &[ProjectRowHitArea],
+    x: u16,
+    y: u16,
+) -> Option<&ProjectRowTarget> {
+    areas
+        .iter()
+        .find(|area| {
+            x >= area.rect.x
+                && x < area.rect.x + area.rect.width
+                && y >= area.rect.y
+                && y < area.rect.y + area.rect.height
+        })
+        .map(|area| &area.target)
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -770,11 +810,97 @@ mod tests {
 
     use super::super::{app_for_mouse_test, capture_snapshot, mouse, unique_temp_path};
     use crate::{
-        app::state::{AgentPanelSort, DragTarget, Mode},
+        app::state::{AgentPanelSort, DragTarget, Mode, ProjectRowHitArea, ProjectRowTarget},
         config::SidebarCollapsedModeConfig,
         detect::{Agent, AgentState},
         workspace::Workspace,
     };
+
+    #[test]
+    fn project_row_target_at_resolves_against_offset_area_geometry_not_zero_based_rows() {
+        // Areas start at y=7, not y=0 — the epic's own adversarial case: a
+        // lookup that assumes row N sits at `areas[N]` or derives position
+        // from `y - 0` must fail this test the moment collapsing something
+        // above pushes these rows down.
+        let areas = vec![
+            ProjectRowHitArea {
+                rect: Rect::new(2, 7, 20, 1),
+                target: ProjectRowTarget::Project {
+                    collapse_key: "project:cnb".into(),
+                },
+            },
+            ProjectRowHitArea {
+                rect: Rect::new(2, 8, 20, 1),
+                target: ProjectRowTarget::Worktree {
+                    collapse_key: "worktree:cnb:main".into(),
+                },
+            },
+            ProjectRowHitArea {
+                rect: Rect::new(2, 12, 20, 3),
+                target: ProjectRowTarget::Section {
+                    collapse_key: "section:cnb:main:checks".into(),
+                },
+            },
+        ];
+
+        assert_eq!(
+            super::project_row_target_at(&areas, 5, 7),
+            Some(&ProjectRowTarget::Project {
+                collapse_key: "project:cnb".into()
+            }),
+        );
+        assert_eq!(
+            super::project_row_target_at(&areas, 5, 8),
+            Some(&ProjectRowTarget::Worktree {
+                collapse_key: "worktree:cnb:main".into()
+            }),
+        );
+        // First and last row of the taller (height-3) rect both resolve to
+        // the same target, not just its top row.
+        assert_eq!(
+            super::project_row_target_at(&areas, 5, 12),
+            Some(&ProjectRowTarget::Section {
+                collapse_key: "section:cnb:main:checks".into()
+            }),
+        );
+        assert_eq!(
+            super::project_row_target_at(&areas, 5, 14),
+            Some(&ProjectRowTarget::Section {
+                collapse_key: "section:cnb:main:checks".into()
+            }),
+        );
+    }
+
+    #[test]
+    fn project_row_target_at_returns_none_outside_every_area() {
+        let areas = vec![ProjectRowHitArea {
+            rect: Rect::new(2, 7, 20, 1),
+            target: ProjectRowTarget::Project {
+                collapse_key: "project:cnb".into(),
+            },
+        }];
+
+        assert_eq!(
+            super::project_row_target_at(&areas, 5, 6),
+            None,
+            "row above"
+        );
+        assert_eq!(
+            super::project_row_target_at(&areas, 5, 8),
+            None,
+            "row below"
+        );
+        assert_eq!(
+            super::project_row_target_at(&areas, 1, 7),
+            None,
+            "col left of rect"
+        );
+        assert_eq!(
+            super::project_row_target_at(&areas, 22, 7),
+            None,
+            "col at x + width"
+        );
+    }
 
     #[test]
     fn clicking_launcher_opens_global_menu() {
@@ -939,54 +1065,19 @@ mod tests {
         );
     }
 
+    /// The agent panel is retired from the live layout (bora-49p.6): the
+    /// sidebar hands its whole column to the workspace list, so the panel
+    /// occupies no rows and can be clicked on none of them.
+    ///
+    /// This replaces a test that asserted the panel's row packing through
+    /// `agent_detail_target_at`. That lookup derives its body from the live
+    /// `agent_panel_rect()`, so preserving it would have meant feeding it a
+    /// fabricated rect — asserting that clicks land on a panel the user
+    /// cannot see. The packing math itself is pure and still covered by the
+    /// `crate::ui::sidebar` tests. What is worth guarding here is the
+    /// retirement: if the panel silently returns, this fails.
     #[test]
-    fn clicking_agent_detail_row_switches_to_correct_tab_and_pane() {
-        let mut app = app_for_mouse_test();
-        let mut ws = Workspace::test_new("test");
-        ws.tabs[0].set_custom_name("main".into());
-        let first_pane = ws.tabs[0].root_pane;
-        let first_tab = ws.test_add_tab(Some("logs"));
-        let second_pane = ws.tabs[first_tab].root_pane;
-        app.state.workspaces = vec![ws];
-        app.state.ensure_test_terminals();
-        let first_terminal_id = app.state.workspaces[0].tabs[0].panes[&first_pane]
-            .attached_terminal_id
-            .clone();
-        app.state
-            .terminals
-            .get_mut(&first_terminal_id)
-            .unwrap()
-            .detected_agent = Some(Agent::Pi);
-        let second_terminal_id = app.state.workspaces[0].tabs[first_tab].panes[&second_pane]
-            .attached_terminal_id
-            .clone();
-        app.state
-            .terminals
-            .get_mut(&second_terminal_id)
-            .unwrap()
-            .detected_agent = Some(Agent::Claude);
-        app.state.active = Some(0);
-        app.state.selected = 0;
-        app.state.mode = Mode::Terminal;
-
-        app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 2, 16));
-
-        assert_eq!(app.state.workspaces[0].active_tab, 1);
-        assert_eq!(
-            app.state.workspaces[0].tabs[1].layout.focused(),
-            second_pane
-        );
-        assert_eq!(app.state.mode, Mode::Terminal);
-        let snapshot = capture_snapshot(&app.state);
-        assert_eq!(snapshot.workspaces[0].active_tab, first_tab);
-        assert_eq!(
-            snapshot.workspaces[0].tabs[first_tab].focused,
-            Some(second_pane.raw())
-        );
-    }
-
-    #[test]
-    fn agent_panel_configured_row_heights_pack_entries_and_trailing_mouse_targets() {
+    fn retired_agent_panel_claims_no_rows_and_answers_no_mouse_target() {
         let mut app = app_for_mouse_test();
         let first = Workspace::test_new("one");
         let first_pane = first.tabs[0].root_pane;
@@ -1007,155 +1098,45 @@ mod tests {
                 .detected_agent = Some(agent);
         }
 
-        let detail_area = app.state.agent_panel_rect();
-        let metrics = crate::ui::agent_panel_scroll_metrics(&app.state, detail_area);
-        let body = crate::ui::agent_panel_body_rect(
-            detail_area,
-            crate::ui::should_show_scrollbar(metrics),
-        );
+        // Two agents exist, so the panel would have had entries to show.
+        assert_eq!(app.state.agent_panel_rect().height, 0);
 
-        // `sidebar_agents.row_gap` defaults to 0, so with the default
-        // two-row entries (state_icon+workspace+tab, then agent) consecutive
-        // entries pack back-to-back: entry 0 spans body.y..body.y+2, entry 1
-        // starts immediately at body.y+2 with no gap row between them.
-        assert_eq!(
-            app.state.agent_detail_target_at(body.y),
-            Some((0, 0, first_pane))
-        );
-        assert_eq!(
-            app.state.agent_detail_target_at(body.y + 1),
-            Some((0, 0, first_pane))
-        );
-        assert_eq!(
-            app.state.agent_detail_target_at(body.y + 2),
-            Some((1, 0, second_pane))
-        );
-        assert_eq!(
-            app.state.agent_detail_target_at(body.y + 3),
-            Some((1, 0, second_pane))
-        );
-    }
-
-    #[test]
-    fn agent_hit_testing_clamps_scroll_after_dynamic_filter_shrink() {
-        let mut app = app_for_mouse_test();
-        let first = Workspace::test_new("one");
-        let first_pane = first.tabs[0].root_pane;
-        let second = Workspace::test_new("two");
-        let second_pane = second.tabs[0].root_pane;
-        app.state.workspaces = vec![first, second];
-        app.state.ensure_test_terminals();
-        app.state.active = Some(0);
-        app.state.selected = 0;
-        for (ws_idx, pane_id) in [(0, first_pane), (1, second_pane)] {
-            let terminal_id = app.state.workspaces[ws_idx].tabs[0].panes[&pane_id]
-                .attached_terminal_id
-                .clone();
-            app.state
-                .terminals
-                .get_mut(&terminal_id)
-                .unwrap()
-                .detected_agent = Some(Agent::Claude);
+        let sidebar = app.state.view.sidebar_rect;
+        for row in sidebar.y..sidebar.y + sidebar.height {
+            assert_eq!(
+                app.state.agent_detail_target_at(row),
+                None,
+                "row {row} must not resolve to an agent-panel target"
+            );
         }
-        app.state.agent_view_override = Some(crate::api::schema::AgentViewSetParams {
-            source: "example.views".to_string(),
-            label: None,
-            filter: Some(crate::api::schema::AgentViewFilter::Eq {
-                field: crate::api::schema::AgentViewField::Builtin(
-                    crate::api::schema::AgentViewBuiltinField::WorkspaceId,
-                ),
-                value: crate::api::schema::AgentViewValue::Context {
-                    context: crate::api::schema::AgentViewContext::CurrentWorkspaceId,
-                },
-            }),
-            sort: Vec::new(),
-        });
-        app.state.agent_panel_scroll = 10;
-        let detail_area = app.state.agent_panel_rect();
-        let body = crate::ui::agent_panel_body_rect(detail_area, false);
 
-        assert_eq!(
-            app.state.agent_detail_target_at(body.y),
-            Some((0, 0, first_pane))
-        );
-    }
+        // The workspace list, meanwhile, got the column the panel gave up.
+        let ws_rect = app.state.workspace_list_rect();
+        assert_eq!(ws_rect.height, sidebar.height);
 
-    #[test]
-    fn clicking_agent_panel_toggle_switches_sort() {
-        let mut app = app_for_mouse_test();
-        app.state.workspaces = vec![Workspace::test_new("test")];
-        app.state.active = Some(0);
-        app.state.selected = 0;
-        app.state.mode = Mode::Terminal;
-        app.state.agent_panel_scroll = 3;
-
-        let (_, detail_area) = crate::ui::expanded_sidebar_sections(
-            app.state.view.sidebar_rect,
-            app.state.sidebar_section_split,
-        );
-        let toggle = crate::ui::agent_panel_toggle_rect(detail_area, app.state.agent_panel_sort);
-        app.handle_mouse(mouse(
-            MouseEventKind::Down(MouseButton::Left),
-            toggle.x,
-            toggle.y,
-        ));
-
-        assert_eq!(app.state.agent_panel_sort, AgentPanelSort::Priority);
+        // This also replaces five deleted tests that each clicked one panel
+        // affordance (a detail row, a scrolled detail row, the sort toggle, an
+        // all-workspaces row, and the post-filter scroll clamp). Retired, none
+        // of those clicks can land, so five variants of "nothing happens" are
+        // one fact: no click anywhere in the sidebar touches panel state.
+        let sort_before = app.state.agent_panel_sort;
+        let active_before = app.state.active;
+        let tab_before = app.state.workspaces[0].active_tab;
+        for row in sidebar.y..sidebar.y + sidebar.height {
+            app.handle_mouse(mouse(
+                MouseEventKind::Down(MouseButton::Left),
+                sidebar.x + 1,
+                row,
+            ));
+        }
+        assert_eq!(app.state.agent_panel_sort, sort_before);
         assert_eq!(app.state.agent_panel_scroll, 0);
+        assert_eq!(app.state.workspaces[0].active_tab, tab_before);
+        assert_eq!(app.state.active, active_before);
     }
 
     #[test]
-    fn clicking_all_workspaces_agent_row_switches_to_correct_workspace() {
-        let mut app = app_for_mouse_test();
-        let first = Workspace::test_new("one");
-        let first_pane = first.tabs[0].root_pane;
-
-        let second = Workspace::test_new("two");
-        let second_pane = second.tabs[0].root_pane;
-
-        app.state.workspaces = vec![first, second];
-        app.state.ensure_test_terminals();
-        let first_terminal_id = app.state.workspaces[0].tabs[0].panes[&first_pane]
-            .attached_terminal_id
-            .clone();
-        app.state
-            .terminals
-            .get_mut(&first_terminal_id)
-            .unwrap()
-            .detected_agent = Some(Agent::Pi);
-        let second_terminal_id = app.state.workspaces[1].tabs[0].panes[&second_pane]
-            .attached_terminal_id
-            .clone();
-        app.state
-            .terminals
-            .get_mut(&second_terminal_id)
-            .unwrap()
-            .detected_agent = Some(Agent::Claude);
-        app.state.active = Some(0);
-        app.state.selected = 0;
-        app.state.mode = Mode::Terminal;
-
-        let (_, detail_area) = crate::ui::expanded_sidebar_sections(
-            app.state.view.sidebar_rect,
-            app.state.sidebar_section_split,
-        );
-        app.handle_mouse(mouse(
-            MouseEventKind::Down(MouseButton::Left),
-            detail_area.x + 2,
-            detail_area.y + 6,
-        ));
-
-        assert_eq!(app.state.active, Some(1));
-        assert_eq!(app.state.selected, 1);
-        assert_eq!(app.state.workspaces[1].active_tab, 0);
-        assert_eq!(
-            app.state.workspaces[1].tabs[0].layout.focused(),
-            second_pane
-        );
-    }
-
-    #[test]
-    fn scrolling_agent_panel_with_wheel_updates_agent_panel_scroll() {
+    fn wheel_over_the_sidebar_never_scrolls_the_retired_agent_panel() {
         let mut app = app_for_mouse_test();
         let mut ws = Workspace::test_new("test");
         let first_pane = ws.tabs[0].root_pane;
@@ -1195,90 +1176,21 @@ mod tests {
         app.state.selected = 0;
         app.state.mode = Mode::Terminal;
 
-        let detail_area = app.state.agent_panel_rect();
-        assert!(crate::ui::should_show_scrollbar(
-            crate::ui::agent_panel_scroll_metrics(&app.state, detail_area)
-        ));
+        // Four agents across four tabs: pre-retirement this overflowed the
+        // panel and the wheel scrolled it. Retired (bora-49p.6), the panel
+        // owns no rows, so a wheel event anywhere in the sidebar reaches the
+        // workspace list instead and never moves `agent_panel_scroll`.
+        assert_eq!(app.state.agent_panel_rect().height, 0);
+        let sidebar = app.state.view.sidebar_rect;
 
         app.handle_mouse(mouse(
             MouseEventKind::ScrollDown,
-            detail_area.x + 1,
-            detail_area.y + 4,
+            sidebar.x + 1,
+            sidebar.y + sidebar.height - 2,
         ));
 
-        assert_eq!(app.state.agent_panel_scroll, 1);
+        assert_eq!(app.state.agent_panel_scroll, 0);
         assert_eq!(app.state.selected, 0);
-    }
-
-    #[test]
-    fn clicking_scrolled_agent_detail_row_switches_to_correct_tab_and_pane() {
-        let mut app = app_for_mouse_test();
-        let mut ws = Workspace::test_new("test");
-        let first_pane = ws.tabs[0].root_pane;
-        let second_tab = ws.test_add_tab(Some("logs"));
-        let second_pane = ws.tabs[second_tab].root_pane;
-        let mut extra_tabs = Vec::new();
-        for (tab_name, agent) in [("review", Agent::Codex), ("ops", Agent::Gemini)] {
-            let tab_idx = ws.test_add_tab(Some(tab_name));
-            let pane_id = ws.tabs[tab_idx].root_pane;
-            extra_tabs.push((tab_idx, pane_id, agent));
-        }
-
-        app.state.workspaces = vec![ws];
-        app.state.ensure_test_terminals();
-        let first_terminal_id = app.state.workspaces[0].tabs[0].panes[&first_pane]
-            .attached_terminal_id
-            .clone();
-        app.state
-            .terminals
-            .get_mut(&first_terminal_id)
-            .unwrap()
-            .detected_agent = Some(Agent::Pi);
-        let second_terminal_id = app.state.workspaces[0].tabs[second_tab].panes[&second_pane]
-            .attached_terminal_id
-            .clone();
-        app.state
-            .terminals
-            .get_mut(&second_terminal_id)
-            .unwrap()
-            .detected_agent = Some(Agent::Claude);
-        for (tab_idx, pane_id, agent) in extra_tabs {
-            let terminal_id = app.state.workspaces[0].tabs[tab_idx].panes[&pane_id]
-                .attached_terminal_id
-                .clone();
-            app.state
-                .terminals
-                .get_mut(&terminal_id)
-                .unwrap()
-                .detected_agent = Some(agent);
-        }
-        app.state.active = Some(0);
-        app.state.selected = 0;
-        app.state.mode = Mode::Terminal;
-        app.state.sidebar_agents.rows = vec![vec![crate::config::AgentSidebarToken::Agent]];
-        app.state.sidebar_agents.rows_by_agent.insert(
-            "claude".into(),
-            vec![
-                vec![crate::config::AgentSidebarToken::Agent],
-                vec![crate::config::AgentSidebarToken::Workspace],
-            ],
-        );
-        app.state.agent_panel_scroll = 1;
-
-        let detail_area = app.state.agent_panel_rect();
-        let body = crate::ui::agent_panel_body_rect(detail_area, true);
-        app.handle_mouse(mouse(
-            MouseEventKind::Down(MouseButton::Left),
-            body.x + 1,
-            body.y + 1,
-        ));
-
-        assert_eq!(app.state.workspaces[0].active_tab, second_tab);
-        assert_eq!(
-            app.state.workspaces[0].tabs[second_tab].layout.focused(),
-            second_pane
-        );
-        assert_eq!(app.state.mode, Mode::Terminal);
     }
 
     #[test]
@@ -1420,6 +1332,30 @@ mod tests {
 
         assert!(app.state.sidebar_collapsed);
         assert!(app.state.drag.is_none());
+    }
+
+    /// The workspace list now runs to the sidebar's last row (bora-49p.6), so
+    /// the right-aligned global launcher shares that row with the collapse
+    /// toggle. The launcher is hit-tested first, so any overlap makes the
+    /// toggle silently unclickable — which is exactly what happened before the
+    /// launcher was taught to stop at the toggle's column.
+    #[test]
+    fn global_launcher_never_covers_the_sidebar_collapse_toggle() {
+        let mut app = app_for_mouse_test();
+        app.state.sidebar_collapsed = false;
+        app.state.view.sidebar_rect = Rect::new(0, 0, 26, 20);
+        app.state.view.terminal_area = Rect::new(26, 0, 80, 20);
+
+        let toggle = crate::ui::expanded_sidebar_toggle_rect(app.state.view.sidebar_rect);
+        let launcher = app.state.global_launcher_rect();
+
+        // They do share the bottom row now — the point is that they must not
+        // share a cell.
+        assert_eq!(launcher.y, toggle.y);
+        assert!(
+            launcher.x + launcher.width <= toggle.x,
+            "launcher {launcher:?} must end before the toggle at {toggle:?}"
+        );
     }
 
     #[test]
@@ -2127,31 +2063,41 @@ mod tests {
         assert_eq!(app.state.sidebar_width, 22);
     }
 
+    /// The section divider is gone with the agent panel (bora-49p.6), so there
+    /// is nothing to drag. `sidebar_section_split` itself was deliberately NOT
+    /// deleted, so old sessions still restore — that round-trip is the part
+    /// still worth guarding, and it was previously only covered as a side
+    /// effect of the drag this test used to perform.
     #[test]
-    fn dragging_sidebar_section_divider_sets_split_ratio() {
+    fn retired_section_divider_cannot_be_dragged_but_the_split_still_persists() {
         let mut app = app_for_mouse_test();
         let divider = crate::ui::sidebar_section_divider_rect(
             app.state.view.sidebar_rect,
             app.state.sidebar_section_split,
         );
+        assert_eq!(divider, ratatui::layout::Rect::default());
 
-        app.handle_mouse(mouse(
-            MouseEventKind::Down(MouseButton::Left),
-            divider.x + 1,
-            divider.y,
-        ));
-        app.handle_mouse(mouse(
-            MouseEventKind::Drag(MouseButton::Left),
-            divider.x + 1,
-            divider.y + 4,
-        ));
+        let before = app.state.sidebar_section_split;
+        let sidebar = app.state.view.sidebar_rect;
+        for row in sidebar.y..sidebar.y + sidebar.height {
+            app.handle_mouse(mouse(
+                MouseEventKind::Down(MouseButton::Left),
+                sidebar.x + 1,
+                row,
+            ));
+            app.handle_mouse(mouse(
+                MouseEventKind::Drag(MouseButton::Left),
+                sidebar.x + 1,
+                row + 4,
+            ));
+        }
+        assert_eq!(app.state.sidebar_section_split, before);
 
-        assert!(app.state.sidebar_section_split > 0.5);
+        // Still persisted, so a session written by a build that had the panel
+        // reads back unchanged.
+        app.state.sidebar_section_split = 0.37;
         let snapshot = capture_snapshot(&app.state);
-        assert_eq!(
-            snapshot.sidebar_section_split,
-            Some(app.state.sidebar_section_split)
-        );
+        assert_eq!(snapshot.sidebar_section_split, Some(0.37));
     }
 
     #[test]

@@ -387,6 +387,19 @@ impl App {
         self.start_git_status_refresh_if_due(now);
         self.refresh_channel_membership_if_due(now);
 
+        // bora-49p.3: poll `projects.yml` for changes so the Project view
+        // (`ui::sidebar::project_view`) always builds its tree from
+        // already-refreshed data, never re-reading disk itself.
+        // `reload_if_changed` is cheap on the unchanged path — one `stat`,
+        // no allocation — so it runs unconditionally every scheduled tick.
+        match self.state.projects.reload_if_changed() {
+            Ok(true) => changed = true,
+            Ok(false) => {}
+            Err(err) => {
+                tracing::warn!(err = %err, "failed to reload projects.yml");
+            }
+        }
+
         if self
             .next_auto_update_check
             .is_some_and(|deadline| now >= deadline)

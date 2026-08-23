@@ -302,16 +302,19 @@ mod tests {
         assert!(!app.view.split_borders.is_empty());
         assert!(frame.cursor.is_some());
         assert_eq!(frame.hyperlinks, vec![uri.to_owned()]);
-        // Golden updated for bora-49p.2: the workspace section header now
-        // carries a right-aligned view-mode label (`repo` here), rendered by
-        // `ui::sidebar::view_mode_toggle_rect`. Attributed, not just bumped —
-        // the mobile characterization below is unchanged, which is what you
-        // would expect from a desktop-sidebar-only affordance, and no other
-        // assertion in this test moved (geometry, pane count, cursor and
-        // hyperlinks all still hold).
+        // Golden updated for bora-49p.6, and attributed rather than bumped:
+        // the rendered sidebar was dumped column-by-column and shows exactly
+        // the retirement and nothing else. The workspace list now runs from
+        // row 2 to row 17 (it used to stop around row 10), there is no
+        // horizontal section divider and no agent-panel content anywhere, and
+        // on the footer row `menu` ends at column 23 with the collapse toggle
+        // `«` free at column 24 — the launcher no longer covers it. Every
+        // other assertion in this test still holds (geometry, pane count,
+        // cursor, hyperlinks), and the mobile characterization below is
+        // unchanged, as expected for a desktop-sidebar-only change.
         assert_eq!(
             frame_digest(&frame),
-            "4751368ebe396fea6ca6887df81895e0e9d2741ebeef78b281736c51bb254bf7"
+            "a0e0ef1c0184bedf6826c28f7fa1749d0562774cbf668c0b4934845d44f7e3c1"
         );
     }
 

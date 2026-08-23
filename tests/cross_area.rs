@@ -1041,7 +1041,15 @@ fn cross_area_server_kill_then_restart_and_reconnect() {
             match thin_reader.read(&mut buf) {
                 Ok(n) if n > 0 => {
                     let out = String::from_utf8_lossy(&buf[..n]);
-                    if out.contains("\u{2500}")
+                    // `\u{2502}` is the sidebar's right border. Recognising
+                    // the frame matters more than it looks: `read` on the PTY
+                    // blocks, so the `deadline` in the loop head is only
+                    // checked between reads — a probe that misses the frame
+                    // blocks forever on the next read instead of timing out.
+                    // `\u{2500}` used to come from the agent-panel divider,
+                    // retired in bora-49p.6.
+                    if out.contains('\u{2502}')
+                        || out.contains('\u{2500}')
                         || out.contains("workspace")
                         || out.contains("pane")
                         || out.contains("terminal")

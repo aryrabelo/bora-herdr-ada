@@ -438,3 +438,183 @@ em inglês pra casar com as strings vizinhas). O lead fechou o que faltava:
   diretório membro DO orquestrador não é sandboxado — senão um worker perderia em silêncio
   a escrita que é a razão dele existir. Aí o mutante acusa.
 - [x] F8 `just check` verde: `3886 tests run: 3886 passed`
+
+## bora-49p.6 — agent panel sumido da tela, código intacto · FECHADO
+
+O bead pedia DELETAR. O Ary corrigiu para "sumir visualmente, não deletar", e
+essa correção colide com o critério de aceite do próprio bead: manter o código
+sem renderizar torna tudo morto, clippy exige `#[allow(dead_code)]`, e o aceite
+proíbe `#[allow(dead_code)]`. Resolvido mantendo o código ALCANÇÁVEL em vez de
+morto.
+
+- [x] G1 uma const explícita, `AGENT_PANEL_VISIBLE: bool = false`, consultada
+  pelas duas funções de geometria. Restaurar o painel é virar essa linha.
+- [x] G2 zero código morto, que era o risco real
+  EVIDENCE: nenhum `agent_panel_*` perdeu call site — `src/ui.rs:295`,
+  `src/app/actions.rs:1587`, `src/app/input/sidebar.rs:22` e `:342` continuam
+  chamando, agora contra rect de altura zero, e as métricas voltam zeradas.
+  `sidebar_section_heights` também segue chamada, no ramo `true` da const:
+  se eu tivesse simplesmente retornado `(content.height, 0)`, ELA morreria, que
+  é o mesmo problema com outro nome.
+- [x] G3 nada de estado apagado, então a cirurgia de persistência que era a
+  parte perigosa do bead não aconteceu: `sidebar_section_split`,
+  `agent_panel_scroll` e `agent_panel_sort` seguem no `AppState`, nenhum
+  argumento posicional de `capture_from_state` mudou, e snapshots antigos
+  restauram sem caminho novo.
+- [x] G4 sem config nova. Uma flag que ninguém liga é superfície inventada; a
+  vista Project PRECISA da coluna inteira, então esconder é pré-requisito, não
+  preferência.
+
+## bora-49p.7 — baseline de render-scale, medida ANTES de editar
+
+- [x] H1 baseline colhida em release na árvore limpa, antes de qualquer edição
+  desta leva — depois não dá mais.
+  EVIDENCE: `just bench-render-scale` em `4cd238ca`:
+  layout de workspace em fundo (um pane cada): 1→272µs mediana, 15→272 (1.00×),
+  50→311 (1.14×). Panes ativos (um workspace): 1→209, 15→251 (1.20×),
+  50→314 (1.50×).
+- [ ] H2 comparação pós-árvore, pendente até as três fatias entrarem
+
+## Esqueleto da vista Project — contrato do lead, não delegado
+
+- [x] I1 o compilador virou o mapa de propriedade. As variantes novas num
+  `match` exaustivo fizeram `cargo check` enumerar 12 sites que precisavam
+  saber da vista nova, incluindo dois que eu não teria achado por leitura:
+  `src/app/actions.rs:1321` (ordem de ciclagem do teclado) e
+  `src/app/input/sidebar.rs:600` (raízes não-indentadas). É exatamente o retorno
+  do `bora-49p.1` ter sido escrito sem curinga.
+- [x] I2 um dos arms era decisão de correção, não de conveniência: em
+  `actions.rs` a `PaneRow` devolve `None` de propósito. Devolver o `ws_idx` dela
+  colocaria o mesmo workspace na ordem de ciclagem uma vez por pane, e ciclar
+  visitaria o mesmo workspace repetidamente.
+- [x] I3 os dois passes (geometria e render) avançam `row_y` UMA vez, fora do
+  `match`, a partir de `entry_row_height` — verificado antes de escrever os arms
+  vazios. É por isso que o esqueleto fica em lockstep com as linhas reservadas e
+  ainda não pintadas, em vez de desalinhar tudo.
+- [x] I4 `ProjectsStore` no `AppState` nasceu com `#[cfg(test)]` inerte
+  (`ProjectsStore::empty()`, path vazio, nunca toca disco), espelhando o idioma
+  do `reload_manifests`. Sem isso, `AppState::test_new()` leria o
+  `~/.config/bora/projects.yml` real do operador — a mesma classe de bug dos
+  testes que falavam com o servidor vivo.
+
+## bora-49p.3 / .4 / .5 — a vista Project · FECHADOS
+
+- [x] J1 três fatias em paralelo sem disputar arquivo, porque eu movi a parte
+  pura para módulo próprio (`src/ui/sidebar/project_view.rs`) em vez de deixar
+  dois agentes editando um arquivo de 227KB
+- [x] J2 nove mutantes desta leva, nove pegos (38/38 no total)
+  EVIDENCE: agrupar por `repo_identity` em vez de `checkout_key` → FAILED;
+  coluna de repo nunca colapsa → FAILED; workspace de 1 pane ganha PaneRow →
+  FAILED; casar membro por prefixo de string → FAILED; régua da seção sem
+  reservar o contador → FAILED; worktree não-aberto perde o alvo de abrir →
+  FAILED; hit-test por índice base-zero → FAILED; colapso sem full repaint →
+  FAILED; launcher de volta sobre o toggle → FAILED.
+- [x] J3 dois mutantes MEUS eram inválidos, e o harness disse isso em vez de
+  aprovar. Um reportou BLIND: eu tinha mutado a linha do `subdir`, mas o que
+  protege contra o irmão `/a/foo-bar` é a igualdade de `checkout_key` ANTES
+  dela. Mutando a linha certa, o teste acusa. O outro deu ANCHOR MISSING.
+- [x] J4 bench: sem regressão, e mais rápido. Medido com a MESMA amostra nas
+  duas pontas, porque comparar amostra curta com longa não é comparação.
+  EVIDENCE: `HERDR_PERF_SAMPLE_SECONDS=60`, baseline via `git stash`:
+  fundo 15× 327→242µs (−26%), 50× 331→299 (−10%); panes 15× 274→238 (−13%),
+  50× 311→301 (−3%). Direção atribuível: o pass único de geometria tirou uma
+  construção duplicada da lista de entries do caminho de render.
+
+## O que os builders erraram, e o que eu tive de decidir
+
+- [x] K1 `TreeModel` documentou I/O de disco no caminho de render como
+  "tradeoff" em vez de evitar. `resolved_members` chamava `Member::resolve()`
+  (descoberta git) a CADA render. O argumento dele — "limitado pelo
+  projects.yml, não pela lista de workspaces" — troca cardinalidade por
+  frequência: com 15 panes e vários clientes são dezenas de descobertas git por
+  frame. Movido para o tick, dentro do `ProjectsStore`, que já sabe quando o
+  arquivo mudou. Alegação de builder não é evidência, nem quando vem
+  documentada.
+- [x] K2 `ClickAssembly` relatou ter marcado `#[allow(dead_code)]` — o aceite do
+  épico proíbe. Fui conferir e não havia nenhum no código: o relatório não
+  correspondia à entrega. Verifiquei com o compilador, não com o relatório.
+- [x] K3 a correção do Ary ("sumir visualmente, não deletar") COLIDE com o
+  aceite do próprio bead ("fully deleted, zero `#[allow(dead_code)]`"). Resolvi
+  mantendo o código alcançável em vez de morto — decisão minha, registrada, não
+  silenciada.
+- [x] K4 o compilador foi o mapa de propriedade: variantes novas num `match`
+  exaustivo enumeraram 12 sites, incluindo dois que leitura não acharia (ordem
+  de ciclagem do teclado, raízes não-indentadas).
+
+## O travamento de 40 minutos, e por que ele não era o que parecia
+
+- [x] L1 depois do `.6`, `just check` foi de 22s para 2400s e só rodava ~1000 de
+  3916 testes. Dois testes de integração travavam ~2394s CADA.
+- [x] L2 causa real, e não era o servidor: o probe de prontidão dos testes
+  procurava `─` (U+2500) para decidir "o frame chegou". Esse caractere vinha do
+  DIVISOR DE SEÇÃO que eu removi. E `read` num PTY BLOQUEIA, então o
+  `while Instant::now() < deadline` nunca era reavaliado: o probe consumia o
+  frame, não casava, e bloqueava para sempre na leitura seguinte. Não era
+  timeout — era deadlock por leitura bloqueante.
+  EVIDENCE: `git stash` → PASS em 2.3s; sem stash → FAIL em 12.4s; com
+  `AGENT_PANEL_VISIBLE=true` → PASS. Três medições, uma conclusão.
+- [x] L3 confirmei que o servidor renderizava ANTES de mexer no teste: extraí o
+  texto do frame e havia posicionamento de cursor e `│`, a borda do sidebar.
+  O frame chegava; o teste é que não o reconhecia mais. Se eu tivesse "corrigido
+  o servidor" teria consertado o que não estava quebrado.
+- [x] L4 também poluí minha própria medição: deixei `--test client_mode` em
+  background e lancei `just check` em cima. Load 12, duas suítes de integração
+  competindo. Depois de limpar, load 3. Medição sob contenção não é medição.
+
+## O bug de UI que a aposentadoria criou
+
+- [x] M1 o toggle de colapsar o sidebar ficou INCLICÁVEL, e nenhum teste
+  cobria isso. `sidebar_footer_rect` é a última linha da lista; com a lista
+  ganhando a coluna inteira, o footer desceu para a última linha do sidebar,
+  onde o launcher global (alinhado à direita) passou a cobrir a célula do
+  toggle — e o launcher é hit-testado primeiro.
+- [x] M2 rastreado por instrumentação, não por leitura: `on_sidebar_toggle`
+  respondia `true` e o clique não chegava lá. Instrumentei o dispatch em quatro
+  pontos até achar que havia DOIS `handle_mouse` (um no `App`, um no `AppState`)
+  e que o consumidor era o launcher.
+- [x] M3 conserto na geometria, que render e hit-test compartilham, então os
+  dois andam juntos — não um caso especial no hit-test.
+- [x] M4 guarda nova: `global_launcher_never_covers_the_sidebar_collapse_toggle`,
+  e o mutante que remove o clamp acusa.
+
+## Os testes do painel aposentado: 11 tratados, um a um
+
+- [x] N1 nenhum foi silenciado com `#[ignore]` nem apagado em bloco. Cada um
+  caiu numa de três categorias, e a categoria decidiu o tratamento:
+  (a) RENDER retido — o painel ainda pinta se receber área, então o teste passou
+  a chamar `render_agent_detail` direto com área explícita (3 testes). A
+  primeira tentativa usou largura errada e cortou um "s": a largura de conteúdo
+  era `width - 1`, não `width`.
+  (b) ENTRADA inalcançável — rect vazio, clique não acerta. Fingir a geometria de
+  produção aqui testaria uma MENTIRA (que clique acerta painel escondido).
+  Cinco testes viraram um guarda único que afirma o fato real.
+  (c) GEOMETRIA — expectativas atualizadas para a aposentadoria, incluindo
+  alturas degeneradas.
+- [x] N2 um helper test-only que eu criei (`expanded_sidebar_sections_with_panel`)
+  ficou sem uso quando os cinco testes de entrada saíram. Removi em vez de
+  deixar com `#[allow]`.
+- [x] N3 o round-trip de `sidebar_section_split` no snapshot era coberto só como
+  EFEITO COLATERAL do teste de arrastar o divisor. Eu afirmei no G3 que
+  snapshots antigos restauram; agora isso tem teste próprio.
+- [x] N4 golden do frame atualizado com atribuição por INSPEÇÃO, não por bump:
+  despejei o sidebar coluna a coluna. Lista da linha 2 à 17 (antes parava na
+  ~10), nenhum divisor horizontal, nada do painel, e na linha do footer `menu`
+  termina na coluna 23 com o `«` livre na 24 — o conserto do M1 visível no
+  frame. Todas as outras asserções do teste seguem valendo; o characterization
+  MOBILE não mudou.
+- [x] N5 um teste de multi-cliente (`preserves_agent_panel_scroll`) guardava um
+  invariante REAL — projeção de cliente em background não pode desfazer o wheel
+  do foreground — usando o painel como veículo. Reapontado para a lista de
+  workspaces e reescrito em torno de transições OBSERVÁVEIS (topo → fora do
+  topo) em vez de labels empíricos fixos, que era o que o teste antigo fazia e
+  o que o obrigaria a rebrear a cada mudança de chrome.
+
+## Lacuna que eu NÃO estou fingindo cobrir
+
+- [ ] O1 a pureza do caminho de render (nada de I/O em `project_view_entries`)
+  é arquitetural e NÃO tem teste. Se alguém devolver `Member::resolve()` para
+  lá, nenhum gate acusa — só o bench, e só se a regressão for grande. Registrado
+  como lacuna real em vez de contada como coberta.
+- [ ] O2 inventário de worktrees não-abertos: a variante, o render e o alvo de
+  clique existem e são testados, mas nada popula a lista, porque a fonte teria
+  de chegar pelo tick. `unopened` nunca é `true` em produção hoje.

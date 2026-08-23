@@ -22,6 +22,7 @@ use super::{
         modal_action_from_buttons, open_global_menu, open_new_tab_dialog, ModalAction,
     },
     settings::SettingsAction,
+    sidebar::project_row_target_at,
     ScrollbarClickTarget, TAB_DRAG_THRESHOLD, WORKSPACE_DRAG_THRESHOLD,
 };
 
@@ -784,6 +785,18 @@ impl AppState {
                         self.mark_session_dirty();
                         self.request_full_repaint();
                         return None;
+                    }
+
+                    if !self.view.project_row_areas.is_empty() {
+                        if let Some(target) = project_row_target_at(
+                            &self.view.project_row_areas,
+                            mouse.column,
+                            mouse.row,
+                        )
+                        .cloned()
+                        {
+                            return self.handle_project_row_click(target);
+                        }
                     }
 
                     if let Some(target) =
@@ -2356,6 +2369,58 @@ impl AppState {
             grab_row_offset,
         ))
     }
+
+    /// Dispatches a Project-view row click resolved by
+    /// `sidebar::project_row_target_at` against the geometry pass's own
+    /// `ProjectRowHitArea`s — it never re-derives what a row means from the
+    /// mouse position itself.
+    fn handle_project_row_click(
+        &mut self,
+        target: crate::app::state::ProjectRowTarget,
+    ) -> Option<MouseAction> {
+        use crate::app::state::ProjectRowTarget;
+        match target {
+            ProjectRowTarget::Project { collapse_key }
+            | ProjectRowTarget::Worktree { collapse_key }
+            | ProjectRowTarget::Section { collapse_key } => {
+                self.toggle_project_row_collapse(collapse_key);
+                None
+            }
+            ProjectRowTarget::OpenWorktree { checkout_key } => {
+                self.request_new_workspace_cwd = Some(std::path::PathBuf::from(checkout_key));
+                None
+            }
+            ProjectRowTarget::Pane { ws_idx, pane_id } => {
+                let pane_id = self
+                    .workspaces
+                    .get(ws_idx)
+                    .and_then(|ws| pane_id_from_public_number(ws, &pane_id))?;
+                self.mode = Mode::Terminal;
+                Some(MouseAction::FocusPane { ws_idx, pane_id })
+            }
+            // ponytail: no COMMANDS/CHECKS provider exists yet (bora-55c,
+            // bora-i1r own that data model), so `project_view_entries`
+            // never emits a `SectionItem` today — this arm has nothing to
+            // run. Wire the actual run/open dispatch once a provider lands.
+            ProjectRowTarget::SectionItem { .. } => None,
+        }
+    }
+
+    /// Toggles one Project-view collapse key. Collapsing/expanding reflows
+    /// every row below it without changing the sidebar's own outer
+    /// dimensions, so — unlike a resize — the dimension-keyed full-repaint
+    /// heuristics never see it; the layout change itself must ask for a
+    /// full repaint (AGENTS.md, learned 2026-08-13) or a client keeps
+    /// stale rows under the ones that just moved.
+    fn toggle_project_row_collapse(&mut self, key: String) {
+        if self.collapsed_space_keys.contains(&key) {
+            self.collapsed_space_keys.remove(&key);
+        } else {
+            self.collapsed_space_keys.insert(key);
+        }
+        self.mark_session_dirty();
+        self.request_full_repaint();
+    }
 }
 
 #[cfg(test)]
@@ -2386,6 +2451,25 @@ fn apply_scroll(scroll: &mut usize, delta: i16, max_scroll: usize) {
     }
 }
 
+/// Resolves a `ProjectRowTarget::Pane`'s `pane_id` — the row's public pane
+/// number (e.g. `"p1"`, or the full `"w28p1"` compact id — see
+/// `workspace::public_pane_id_for_number`) — against `ws`'s live panes.
+/// Never reconstructs a raw `layout::PaneId`: that type has no public
+/// constructor from an arbitrary value outside `layout.rs`. The public
+/// pane number is the one stable identifier already shared by chat
+/// addressing and the socket API, so this reuses it rather than inventing
+/// a second convention.
+fn pane_id_from_public_number(
+    ws: &crate::workspace::Workspace,
+    raw: &str,
+) -> Option<crate::layout::PaneId> {
+    let encoded = raw.rsplit('p').next().unwrap_or(raw);
+    let pane_number = crate::workspace::decode_public_number(encoded)?;
+    ws.public_pane_numbers
+        .iter()
+        .find_map(|(id, number)| (*number == pane_number).then_some(*id))
+}
+
 #[cfg(test)]
 mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventKind};
@@ -2399,11 +2483,114 @@ mod tests {
     use crate::{
         app::state::{
             build_context_menu_items, ContextMenuKind, ContextMenuState, MenuListState, Mode,
-            ViewLayout,
+            ProjectRowHitArea, ProjectRowTarget, ViewLayout,
         },
         detect::{Agent, AgentState},
         workspace::Workspace,
     };
+
+    #[test]
+    fn clicking_a_project_row_toggles_collapse_and_forces_full_repaint() {
+        let mut app = app_for_mouse_test();
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 20));
+        let list_area = app.state.workspace_list_rect();
+        // Offset row (not the list's first line) — a dispatcher that
+        // re-derives position instead of trusting the area would miss it.
+        let row_rect = Rect::new(list_area.x, list_area.y + 3, list_area.width, 1);
+        app.state.view.project_row_areas = vec![ProjectRowHitArea {
+            rect: row_rect,
+            target: ProjectRowTarget::Project {
+                collapse_key: "project:cnb".into(),
+            },
+        }];
+        app.state.force_full_repaint = false;
+
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            row_rect.x,
+            row_rect.y,
+        ));
+
+        assert!(app.state.collapsed_space_keys.contains("project:cnb"));
+        assert!(
+            app.state.force_full_repaint,
+            "collapsing a project row must force a full repaint (AGENTS.md 2026-08-13)"
+        );
+
+        app.state.force_full_repaint = false;
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            row_rect.x,
+            row_rect.y,
+        ));
+        assert!(!app.state.collapsed_space_keys.contains("project:cnb"));
+        assert!(
+            app.state.force_full_repaint,
+            "expanding it back must repaint too"
+        );
+    }
+
+    #[test]
+    fn clicking_an_open_worktree_row_requests_a_new_workspace_at_its_checkout_path() {
+        let mut app = app_for_mouse_test();
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 20));
+        let list_area = app.state.workspace_list_rect();
+        let row_rect = Rect::new(list_area.x, list_area.y + 1, list_area.width, 1);
+        app.state.view.project_row_areas = vec![ProjectRowHitArea {
+            rect: row_rect,
+            target: ProjectRowTarget::OpenWorktree {
+                checkout_key: "/repo/cnb-worktree".into(),
+            },
+        }];
+
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            row_rect.x,
+            row_rect.y,
+        ));
+
+        assert_eq!(
+            app.state.request_new_workspace_cwd,
+            Some(std::path::PathBuf::from("/repo/cnb-worktree"))
+        );
+    }
+
+    #[test]
+    fn clicking_a_project_pane_row_focuses_the_pane_by_its_public_number() {
+        let mut app = app_for_mouse_test();
+        let ws = Workspace::test_new("multi-pane");
+        let root_pane = ws.tabs[0].root_pane;
+        app.state.workspaces = vec![ws];
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 20));
+        let list_area = app.state.workspace_list_rect();
+        let row_rect = Rect::new(list_area.x, list_area.y + 2, list_area.width, 1);
+        app.state.view.project_row_areas = vec![ProjectRowHitArea {
+            rect: row_rect,
+            target: ProjectRowTarget::Pane {
+                ws_idx: 0,
+                pane_id: "p1".into(),
+            },
+        }];
+
+        let action = app.state.handle_mouse(
+            &mut app.terminal_runtimes,
+            crate::app::LOCAL_INPUT_SOURCE,
+            mouse(
+                MouseEventKind::Down(MouseButton::Left),
+                row_rect.x,
+                row_rect.y,
+            ),
+        );
+
+        let Some(MouseAction::FocusPane { ws_idx, pane_id }) = action else {
+            panic!("expected FocusPane action");
+        };
+        assert_eq!(ws_idx, 0);
+        assert_eq!(
+            pane_id, root_pane,
+            "the workspace's only (root, public number 1) pane must be the focus target"
+        );
+    }
 
     #[test]
     fn tab_click_survives_stray_drag_report_off_the_tab_bar() {

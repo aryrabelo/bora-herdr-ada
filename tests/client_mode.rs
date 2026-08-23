@@ -676,7 +676,15 @@ fn server_crash_after_attach_causes_lost_connection_error() {
                 Ok(n) if n > 0 => {
                     let out = String::from_utf8_lossy(&buf[..n]);
                     output.push_str(&out);
-                    if out.contains("\u{2500}")
+                    // `\u{2502}` is the sidebar's right border. Recognising
+                    // the frame matters more than it looks: `read` on the PTY
+                    // blocks, so the `deadline` in the loop head is only
+                    // checked between reads — a probe that misses the frame
+                    // blocks forever on the next read instead of timing out.
+                    // `\u{2500}` used to come from the agent-panel divider,
+                    // retired in bora-49p.6.
+                    if out.contains('\u{2502}')
+                        || out.contains('\u{2500}')
                         || out.contains("workspace")
                         || out.contains("pane")
                         || out.contains("terminal")
@@ -857,7 +865,12 @@ fn attach_thin_client_with_config(
     let mut attached = false;
     while Instant::now() < deadline {
         let out = read_output(&output);
-        if out.contains('\u{2500}')
+        // Any of the sidebar's own box-drawing chrome proves a frame arrived.
+        // `\u{2502}` (the sidebar's right border) is the load-bearing one:
+        // `\u{2500}` used to come from the agent-panel section divider, which
+        // was retired in bora-49p.6, and an empty fixture renders no labels.
+        if out.contains('\u{2502}')
+            || out.contains('\u{2500}')
             || out.contains("workspace")
             || out.contains("pane")
             || out.contains("terminal")
@@ -1188,7 +1201,10 @@ fn read_until_client_attaches(client: &SpawnedHerdr) -> String {
             }
             Err(err) => panic!("read thin client PTY: {err}"),
         }
-        if output.contains('\u{2500}')
+        // Same reason as `attach_thin_client_with_config`: the retired agent
+        // panel took the horizontal divider with it.
+        if output.contains('\u{2502}')
+            || output.contains('\u{2500}')
             || output.contains("workspace")
             || output.contains("pane")
             || output.contains("terminal")

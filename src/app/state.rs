@@ -663,6 +663,33 @@ pub struct GroupHeaderCardArea {
     pub rect: Rect,
 }
 
+/// Layout area for one Project-view row. `target` says what a click means, so
+/// hit-testing never re-derives it from the row's position — the geometry pass
+/// is the single source of truth, and a click at an offset row cannot land on
+/// the wrong thing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectRowHitArea {
+    pub rect: Rect,
+    pub target: ProjectRowTarget,
+}
+
+/// What a Project-view row does when clicked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProjectRowTarget {
+    /// Toggle the project's collapse state.
+    Project { collapse_key: String },
+    /// Toggle a checkout's collapse state.
+    Worktree { collapse_key: String },
+    /// Open an on-disk worktree that has no workspace yet.
+    OpenWorktree { checkout_key: String },
+    /// Toggle a COMMANDS/CHECKS band.
+    Section { collapse_key: String },
+    /// Activate a row inside a band (run a command, open a check).
+    SectionItem { label: String },
+    /// Focus one pane of a multi-pane workspace.
+    Pane { ws_idx: usize, pane_id: String },
+}
+
 /// Layout area for the "+" (create worktree) affordance on a repo header row
 /// in the sidebar workspace list.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -879,6 +906,9 @@ pub struct ViewState {
     pub sidebar_rect: Rect,
     pub workspace_card_areas: Vec<WorkspaceCardArea>,
     pub workspace_group_header_areas: Vec<GroupHeaderCardArea>,
+    /// Project-view row hit areas, refreshed by the geometry pass. Empty in
+    /// the Flat and Repo views.
+    pub project_row_areas: Vec<ProjectRowHitArea>,
     pub worktree_new_hit_areas: Vec<WorktreeNewHitArea>,
     pub tab_bar_rect: Rect,
     pub tab_hit_areas: Vec<Rect>,
@@ -1991,6 +2021,11 @@ pub struct AppState {
     pub sidebar_collapsed_mode: crate::config::SidebarCollapsedModeConfig,
     /// Ratio of sidebar height allocated to the workspaces section.
     pub sidebar_section_split: f32,
+    /// `projects.yml`, refreshed from the tick (never from render — the entry
+    /// builder runs on a multiplicative path and must not touch the disk).
+    /// The sidebar is its only reader; right-click, the editor, and MCP are
+    /// the writers.
+    pub projects: crate::persist::projects::ProjectsStore,
     pub right_panel_collapsed: bool,
     pub right_panel_width: u16,
     pub right_panel_min_width: u16,
@@ -2461,6 +2496,7 @@ impl AppState {
                 sidebar_rect: Rect::default(),
                 workspace_card_areas: Vec::new(),
                 workspace_group_header_areas: Vec::new(),
+                project_row_areas: Vec::new(),
                 worktree_new_hit_areas: Vec::new(),
                 tab_bar_rect: Rect::default(),
                 tab_hit_areas: Vec::new(),
@@ -2510,6 +2546,13 @@ impl AppState {
             sidebar_collapsed: false,
             sidebar_collapsed_mode: crate::config::SidebarCollapsedModeConfig::Compact,
             sidebar_section_split: 0.5,
+            // Mirrors the agent-manifest idiom in `App::new`: unit tests get an
+            // inert store so `test_new()` never reads the operator's real
+            // `~/.config/bora/projects.yml`.
+            #[cfg(not(test))]
+            projects: crate::persist::projects::ProjectsStore::load(),
+            #[cfg(test)]
+            projects: crate::persist::projects::ProjectsStore::empty(),
             right_panel_collapsed: true,
             right_panel_width: 30,
             right_panel_min_width: 20,

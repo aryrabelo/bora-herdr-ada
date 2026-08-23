@@ -1330,6 +1330,16 @@ impl AppState {
                 crate::ui::WorkspaceListEntry::GroupHeader { .. }
                 | crate::ui::WorkspaceListEntry::ProjectHeader { .. }
                 | crate::ui::WorkspaceListEntry::HiddenHeader { .. } => None,
+                // Project view. A `PaneRow` deliberately yields nothing: its
+                // `ws_idx` is already in the order via the workspace row above
+                // it, and returning it again would make cycling visit the same
+                // workspace once per pane. Focusing an individual pane from the
+                // keyboard is bora-49p.5, not this order.
+                crate::ui::WorkspaceListEntry::ProjectRow { .. }
+                | crate::ui::WorkspaceListEntry::WorktreeRow { .. }
+                | crate::ui::WorkspaceListEntry::SectionHeader { .. }
+                | crate::ui::WorkspaceListEntry::SectionItem { .. }
+                | crate::ui::WorkspaceListEntry::PaneRow { .. } => None,
             })
             .collect::<Vec<_>>();
         if order.is_empty() {
@@ -4393,7 +4403,7 @@ mod tests {
     }
 
     #[test]
-    fn previous_agent_keeps_wrapped_target_visible_in_agent_panel() {
+    fn previous_agent_wraps_to_the_last_tab_without_the_retired_panel() {
         let mut workspace = Workspace::test_new("one");
         let root = workspace.tabs[0].root_pane;
         for idx in 1..8 {
@@ -4417,7 +4427,12 @@ mod tests {
 
         let last_idx = state.workspaces[0].tabs.len() - 1;
         assert_eq!(state.workspaces[0].active_tab, last_idx);
-        assert!(state.agent_panel_scroll > 0);
+        // `previous_agent` used to scroll the agent panel to keep the wrapped
+        // target visible. The panel is retired from the layout (bora-49p.6),
+        // so there is nothing to scroll and the clamp in `compute_view` pins
+        // this at 0. The tab wrap above is the contract that still holds; this
+        // line fails loudly if the panel comes back without revisiting it.
+        assert_eq!(state.agent_panel_scroll, 0);
         state.assert_invariants_for_test();
     }
 

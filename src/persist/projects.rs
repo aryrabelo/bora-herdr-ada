@@ -407,10 +407,14 @@ impl FileStamp {
     }
 }
 
+#[derive(Debug)]
 pub struct ProjectsStore {
     path: PathBuf,
     value: ProjectsFile,
     stamp: Option<FileStamp>,
+    /// `value`'s members, resolved to checkout identity. Recomputed only when
+    /// the file changes; see `resolved_members`.
+    resolved: std::collections::HashMap<String, Vec<ResolvedMember>>,
 }
 
 impl ProjectsStore {
@@ -421,11 +425,24 @@ impl ProjectsStore {
         Self::at(projects_file_path())
     }
 
+    /// A store bound to no file: `reload_if_changed` stays `Ok(false)` forever
+    /// and nothing is ever read from disk. Unit tests use this so
+    /// `AppState::test_new()` never sees the operator's real `projects.yml`.
+    pub fn empty() -> Self {
+        Self {
+            path: PathBuf::new(),
+            value: ProjectsFile::default(),
+            stamp: None,
+            resolved: std::collections::HashMap::new(),
+        }
+    }
+
     fn at(path: PathBuf) -> Self {
         let mut store = Self {
             path,
             value: ProjectsFile::default(),
             stamp: None,
+            resolved: std::collections::HashMap::new(),
         };
         let _ = store.reload_if_changed();
         store
@@ -433,6 +450,40 @@ impl ProjectsStore {
 
     pub fn current(&self) -> &ProjectsFile {
         &self.value
+    }
+
+    /// A project's declared members, already resolved to checkout identity.
+    ///
+    /// Resolution walks the filesystem (`Member::resolve` -> git discovery), so
+    /// it happens HERE — once per `projects.yml` change, off the tick — and
+    /// never on the render path. The sidebar's entry builder runs per render,
+    /// per pane, per attached client; resolving there would mean dozens of git
+    /// discoveries per frame (AGENTS.md, "Multiplicative performance paths":
+    /// the cost is the frequency, not the cardinality).
+    pub fn resolved_members(&self, slug: &str) -> &[ResolvedMember] {
+        self.resolved.get(slug).map_or(&[], Vec::as_slice)
+    }
+
+    fn resolve_all(&mut self) {
+        self.resolved = self
+            .value
+            .projects
+            .iter()
+            .map(|(slug, project)| {
+                let members = project
+                    .members
+                    .iter()
+                    .filter_map(|member| match member.resolve() {
+                        MemberResolution::Resolved(resolved) => Some(resolved),
+                        // An unresolved member (bad path, not a checkout)
+                        // contributes no matches rather than failing the whole
+                        // project. Surfacing `reason` to the user is a later bead.
+                        MemberResolution::Unresolved { .. } => None,
+                    })
+                    .collect();
+                (slug.clone(), members)
+            })
+            .collect();
     }
 
     /// Cheap on the unchanged path: one `stat`, no allocation, no read. Safe
@@ -459,6 +510,7 @@ impl ProjectsStore {
         match parse_projects_yaml(&raw) {
             Ok(parsed) => {
                 self.value = parsed;
+                self.resolve_all();
                 Ok(true)
             }
             Err(err) => Err(format!("{}: {err}", self.path.display())),

@@ -699,6 +699,12 @@ impl App {
         let (theme_palette, theme_name) = resolve_effective_theme(&theme_runtime, None);
 
         let mut state = AppState {
+            // Same reason as `agent_manifest_summaries` above: unit tests must
+            // not read the operator's real `~/.config/bora/projects.yml`.
+            #[cfg(not(test))]
+            projects: crate::persist::projects::ProjectsStore::load(),
+            #[cfg(test)]
+            projects: crate::persist::projects::ProjectsStore::empty(),
             terminals: std::collections::HashMap::new(),
             direct_attach_resize_locks: std::collections::HashSet::new(),
             pane_id_aliases: std::collections::HashMap::new(),
@@ -776,6 +782,7 @@ impl App {
                 sidebar_rect: Rect::default(),
                 workspace_card_areas: Vec::new(),
                 workspace_group_header_areas: Vec::new(),
+                project_row_areas: Vec::new(),
                 worktree_new_hit_areas: Vec::new(),
                 tab_bar_rect: Rect::default(),
                 tab_hit_areas: Vec::new(),
