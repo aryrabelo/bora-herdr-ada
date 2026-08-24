@@ -58,6 +58,8 @@ sync.remote: "git+ssh://git@github.com/aryrabelo/bora-herdr-ada.git"
 dolt.host: dolt.bugtoprompt.com
 dolt.port: 3307
 repos:
-  primary: "."
-  additional:
-    - "/Users/aryrabelo/.beads-planning"
+    primary: "."
+    additional:
+        - "/Users/aryrabelo/.beads-planning"
+routing:
+    mode: auto
