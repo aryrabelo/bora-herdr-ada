@@ -1,7 +1,5 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use serde::Serialize;
-
 use crate::api::client::{ApiClient, ApiClientError};
 use crate::api::schema::{
     AgentStatus, ChannelAskParams, ChannelCreateParams, ChannelHistoryParams, ChannelJoinParams,
@@ -497,8 +495,7 @@ fn channel_history(args: &[String]) -> std::io::Result<i32> {
         return print_response(&response);
     }
     if response.get("error").is_some() {
-        eprintln!("{}", serde_json::to_string(&response).unwrap());
-        return Ok(1);
+        return print_response(&response);
     }
     let messages = response["result"]["messages"]
         .as_array()
@@ -581,13 +578,12 @@ fn channel_tail(args: &[String]) -> std::io::Result<i32> {
             }),
         })?;
         if response.get("error").is_some() {
-            eprintln!("{}", serde_json::to_string(&response).unwrap());
-            return Ok(1);
+            return print_response(&response);
         }
 
         let result = &response["result"];
         if json {
-            println!("{}", serde_json::to_string(&response).unwrap());
+            println!("{}", encode_response_json(&response));
         } else {
             if result["gap"].as_bool() == Some(true) {
                 match result["oldest_seq"].as_u64() {
@@ -647,8 +643,7 @@ fn channel_members(args: &[String]) -> std::io::Result<i32> {
         return print_response(&response);
     }
     if response.get("error").is_some() {
-        eprintln!("{}", serde_json::to_string(&response).unwrap());
-        return Ok(1);
+        return print_response(&response);
     }
     let members = response["result"]["members"]
         .as_array()
@@ -1477,7 +1472,7 @@ pub(super) fn wait_for_pane_exited(pane_id: &str, timeout_ms: Option<u64>) -> st
         if response["error"]["code"].as_str() == Some("timeout") {
             eprintln!("timed out waiting for pane exit");
         } else {
-            eprintln!("{}", serde_json::to_string(&response).unwrap());
+            eprintln!("{}", encode_response_json(&response));
         }
         return Ok(1);
     }
@@ -1491,13 +1486,25 @@ pub(super) fn wait_for_pane_exited(pane_id: &str, timeout_ms: Option<u64>) -> st
     Ok(0)
 }
 
+/// Single owner of this file's JSON re-encode: every caller passes an
+/// already-decoded `serde_json::Value` (or, for `_print_json`, an owned
+/// `json!` tree of plain scalars) round-tripping back to text, so
+/// `serde_json::to_string` cannot fail — its only failure modes are
+/// non-finite floats and non-string map keys, neither representable in a
+/// `Value` built this way.
+fn encode_response_json(value: &serde_json::Value) -> String {
+    serde_json::to_string(value).expect(
+        "serde_json::Value here always came from decoding valid JSON or from json!() of plain scalars; it cannot hold non-finite floats or non-string map keys",
+    )
+}
+
 pub(super) fn print_response(response: &serde_json::Value) -> std::io::Result<i32> {
     if response.get("error").is_some() {
-        eprintln!("{}", serde_json::to_string(response).unwrap());
+        eprintln!("{}", encode_response_json(response));
         return Ok(1);
     }
 
-    println!("{}", serde_json::to_string(response).unwrap());
+    println!("{}", encode_response_json(response));
     Ok(0)
 }
 
@@ -1508,8 +1515,7 @@ pub(super) fn send_ok_request(method: Method) -> std::io::Result<i32> {
     })?;
 
     if response.get("error").is_some() {
-        eprintln!("{}", serde_json::to_string(&response).unwrap());
-        return Ok(1);
+        return print_response(&response);
     }
 
     Ok(0)
@@ -1758,13 +1764,12 @@ fn print_session_table(sessions: &[crate::session::SessionInfo]) {
 fn print_session_error(code: &str, message: &str) {
     eprintln!(
         "{}",
-        serde_json::to_string(&serde_json::json!({
+        encode_response_json(&serde_json::json!({
             "error": {
                 "code": code,
                 "message": message,
             }
         }))
-        .unwrap()
     );
 }
 
@@ -1793,8 +1798,8 @@ fn print_session_help() {
     eprintln!("  use 'default' as <name> to target the default session for stop");
 }
 
-fn _print_json<T: Serialize>(value: &T) {
-    println!("{}", serde_json::to_string(value).unwrap());
+fn _print_json(value: &serde_json::Value) {
+    println!("{}", encode_response_json(value));
 }
 
 #[cfg(test)]

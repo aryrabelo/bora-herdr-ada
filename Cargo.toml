@@ -1,6 +1,6 @@
 [package]
 name = "bora"
-version = "0.41.0"
+version = "0.42.0"
 edition = "2021"
 build = "build.rs"
 description = "terminal workspace manager for AI coding agents"
@@ -35,7 +35,6 @@ implicit_clone = "deny"
 # Correctness — enforced (cleaned).
 cast_lossless = "deny"
 redundant_closure_for_method_calls = "deny"
-
 # Leftover debug macros — advisory (existing violations in CLI code).
 dbg_macro = "warn"
 todo = "warn"

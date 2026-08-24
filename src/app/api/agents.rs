@@ -297,7 +297,9 @@ impl App {
                     workspace_id,
                     tab_id: self
                         .public_tab_id(resolved.ws_idx, resolved.tab_idx)
-                        .unwrap(),
+                        .expect(
+                            "resolved.tab_idx came from resolve_agent_target's terminal_target_for_pane via find_tab_index_for_pane on the same workspace snapshot; lookup_runtime above confirms the pane is still live and nothing removes tabs in between",
+                        ),
                     source: params.source,
                     format: params.format,
                     text: snapshot.text,

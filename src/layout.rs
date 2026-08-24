@@ -208,7 +208,9 @@ impl TileLayout {
         }
         let target = self.focus;
         let ids = self.pane_ids();
-        let pos = ids.iter().position(|id| *id == target).unwrap();
+        let pos = ids.iter().position(|id| *id == target).expect(
+            "self.focus always names a pane currently in the tree (Layout invariant); pane_count() > 1 was just checked above",
+        );
         let ordered = if pos + 1 < ids.len() {
             ids[pos + 1]
         } else {

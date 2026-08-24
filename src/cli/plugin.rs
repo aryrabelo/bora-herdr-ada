@@ -927,7 +927,7 @@ fn register_installed_plugin(
         Ok(response) => {
             if response.get("error").is_some() {
                 return Err(InstallFailure::Rollback(std::io::Error::other(
-                    serde_json::to_string(&response).unwrap(),
+                    super::encode_response_json(&response),
                 )));
             }
             if let Err(err) =
@@ -947,7 +947,7 @@ fn register_installed_plugin(
                         return Err(InstallFailure::KeepCheckout(std::io::Error::other(
                             format!(
                                 "{err}; failed to undo incompatible plugin registration: {}",
-                                serde_json::to_string(&response).unwrap()
+                                super::encode_response_json(&response)
                             ),
                         )));
                     }
@@ -1020,9 +1020,9 @@ fn live_installed_plugin_info(plugin_id: &str) -> std::io::Result<Option<Install
         }),
     })?;
     if response.get("error").is_some() {
-        return Err(std::io::Error::other(
-            serde_json::to_string(&response).unwrap(),
-        ));
+        return Err(std::io::Error::other(super::encode_response_json(
+            &response,
+        )));
     }
     plugin_info_from_list_response(response)
 }
@@ -1044,9 +1044,9 @@ fn live_installed_plugins() -> std::io::Result<Vec<InstalledPluginInfo>> {
         method: Method::PluginList(PluginListParams { plugin_id: None }),
     })?;
     if response.get("error").is_some() {
-        return Err(std::io::Error::other(
-            serde_json::to_string(&response).unwrap(),
-        ));
+        return Err(std::io::Error::other(super::encode_response_json(
+            &response,
+        )));
     }
     plugin_list_from_response(response)
 }

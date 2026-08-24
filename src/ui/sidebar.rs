@@ -662,10 +662,14 @@ pub(crate) struct ProjectHeaderBranch {
     pub behind: usize,
 }
 
-/// Section bands in the Project view: `Commands`/`Checks` hang off a worktree
-/// (fixed order, COMMANDS then CHECKS), `Todos`/`Notes` off the project row
-/// (bora-s3y.3, TODOS then NOTES) — fixed orders so the tree never reshuffles
-/// under the cursor.
+/// Section bands in the Project view: `Commands`/`Checks` hang off a
+/// worktree, `Todos`/`Notes` off the project row (bora-s3y.3, rendered
+/// between the project row and its worktrees). Within each of those two
+/// groups, relative order defaults to the order below but is declarable per
+/// project via `sections.order:` (bora-5ia,
+/// `project_view::resolve_section_order`) — project-level and
+/// worktree-level bands never interleave with each other, only reorder
+/// within their own group.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ProjectSection {
     Commands,
@@ -675,6 +679,41 @@ pub(crate) enum ProjectSection {
     Todos,
     /// Project-level named scratchpad docs (bora-s3y.3).
     Notes,
+}
+
+impl ProjectSection {
+    /// The four variants in today's fixed order — an absent or empty
+    /// `sections.order:` resolves to exactly this (bora-5ia).
+    pub(crate) const ALL: [ProjectSection; 4] = [
+        ProjectSection::Commands,
+        ProjectSection::Checks,
+        ProjectSection::Todos,
+        ProjectSection::Notes,
+    ];
+
+    /// The wire name a `sections.order:` entry uses. Exhaustive without a
+    /// wildcard arm: adding a fifth variant fails to compile here until it
+    /// is given a name — the same trick
+    /// `workspace_list_lockstep_passes_agree_for_every_entry_variant` relies
+    /// on elsewhere in this crate.
+    const fn wire_name(self) -> &'static str {
+        match self {
+            ProjectSection::Commands => "commands",
+            ProjectSection::Checks => "checks",
+            ProjectSection::Todos => "todos",
+            ProjectSection::Notes => "notes",
+        }
+    }
+
+    /// Case-insensitive lookup of a `sections.order:` entry. `None` for an
+    /// unrecognized name — the resolver ignores it rather than erroring, so
+    /// a future bora writing a fifth section name into `projects.yml`
+    /// cannot break an older binary's sidebar.
+    pub(crate) fn from_name(name: &str) -> Option<ProjectSection> {
+        Self::ALL
+            .into_iter()
+            .find(|section| section.wire_name().eq_ignore_ascii_case(name))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -751,10 +790,11 @@ pub(crate) enum WorkspaceListEntry {
         unopened: bool,
     },
     /// Third level: a `COMMANDS` or `CHECKS` band hanging off a worktree,
-    /// with a right-aligned `done/total`. Emitted only when non-empty, always
-    /// COMMANDS before CHECKS.
+    /// with a right-aligned `done/total`. Emitted only when non-empty, in
+    /// declared order (`sections.order:`, default COMMANDS then CHECKS —
+    /// bora-5ia, `project_view::resolve_section_order`).
     /// `TODOS`/`NOTES` use the same shape one level up, hanging off the
-    /// project row (bora-s3y.3).
+    /// project row (bora-s3y.3), also declarable, default TODOS then NOTES.
     SectionHeader {
         kind: ProjectSection,
         collapse_key: String,

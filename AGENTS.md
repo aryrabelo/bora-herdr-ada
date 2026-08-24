@@ -376,6 +376,19 @@ Do not use GitHub closing keywords like `fixes #<issue-number>`, `closes #<issue
 ### Code Conventions
 
 - Rust: no `unwrap()` in production code. Use `tracing` for logging. Use `#[allow]` only with a comment explaining why.
+  **This is enforced, and where it is enforced matters.** `just lint` runs clippy twice: once
+  `--all-targets` with `-A clippy::unwrap_used`, then once `--bins` with
+  `-D clippy::unwrap_used`. Do NOT move this into `Cargo.toml`'s `[lints.clippy]` — that table
+  has no per-target scope, so a `deny` there also hits the hundreds of legitimate `unwrap()`
+  calls in test fixtures that the `--all-targets` run compiles, and `just check` goes red on
+  code that was never in scope. `--bins` does not compile `#[cfg(test)]` modules, which is
+  exactly the production scope this rule names. `scripts/windows_check.ps1` mirrors it.
+  Two measurement traps make this rule easy to declare "clean" while blind: **clippy does not
+  re-emit warnings from a cached build** (`touch src/main.rs` first, or read a stale zero), and
+  **`--message-format short` omits the lint name**, so grepping that output for
+  `clippy::unwrap_used` matches nothing. Count with `--message-format json` and read
+  `message.code.code`. (learned 2026-08-24, binding: the rule sat unenforced with 48 production
+  violations while both traps independently produced a confident zero during the cleanup.)
 - Rust platform-specific code must be compile-gated. Put OS APIs and substantial OS behavior in `src/platform/`; when platform checks are needed elsewhere, use `#[cfg(windows)]`, `#[cfg(unix)]`, or target-specific `#[cfg(...)]` on imports, fields, functions, impls, and match arms so Windows-only code does not compile into Unix builds and Unix-only code does not compile into Windows builds. Use `cfg!(...)` only for pure cross-platform policy constants whose branches both compile on every target.
 - Don't add dependencies without a reason. Check whether existing dependencies cover the need first.
 - Integration asset versions (`HERDR_INTEGRATION_VERSION` markers and matching `*_INTEGRATION_VERSION` constants) are migration versions relative to the latest released tag, not per-commit counters on `master`. If an integration asset changes multiple times between releases, bump it once from the version in the latest release.

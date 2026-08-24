@@ -25,6 +25,34 @@ const DEFAULT_WHEN_IDLE_TIMEOUT_MS: u64 = 60_000;
 const DEFAULT_ASK_TIMEOUT_MS: u64 = 300_000;
 const MAX_ASK_TIMEOUT_MS: u64 = 600_000;
 
+/// Single owner of this module's success/error wire encoding, mirroring
+/// `app::api::responses`'s helpers for the App-request path — `app::api` is
+/// a private module (see its `mod.rs`), so this file cannot reach those
+/// helpers directly and keeps its own copy instead of piercing that
+/// boundary. `SuccessResponse`/`ErrorResponse` here are always an `id`
+/// string plus plain strings/numbers (or nested structs of the same), so
+/// `serde_json::to_string` cannot fail: its only failure modes are
+/// non-finite floats and non-string map keys, and this shape has neither.
+fn encode_success(id: String, result: ResponseResult) -> String {
+    serde_json::to_string(&SuccessResponse { id, result })
+        .expect("SuccessResponse is id + ResponseResult of strings/numbers; serde_json only fails on non-finite floats or non-string map keys")
+}
+
+fn encode_error(id: String, code: &str, message: impl Into<String>) -> String {
+    encode_error_body(
+        id,
+        ErrorBody {
+            code: code.into(),
+            message: message.into(),
+        },
+    )
+}
+
+fn encode_error_body(id: String, error: ErrorBody) -> String {
+    serde_json::to_string(&ErrorResponse { id, error })
+        .expect("ErrorResponse is id + ErrorBody of strings; serde_json only fails on non-finite floats or non-string map keys")
+}
+
 pub(super) fn wait_for_output(
     request_id: String,
     params: crate::api::schema::PaneWaitForOutputParams,
@@ -41,16 +69,11 @@ pub(super) fn wait_for_output(
         crate::api::schema::OutputMatch::Regex { value } => match Regex::new(value) {
             Ok(regex) => Some(regex),
             Err(err) => {
-                return Ok(Some(
-                    serde_json::to_string(&ErrorResponse {
-                        id: request_id,
-                        error: ErrorBody {
-                            code: "invalid_regex".into(),
-                            message: err.to_string(),
-                        },
-                    })
-                    .unwrap(),
-                ));
+                return Ok(Some(encode_error(
+                    request_id,
+                    "invalid_regex",
+                    err.to_string(),
+                )));
             }
         },
         crate::api::schema::OutputMatch::Substring { .. } => None,
@@ -81,54 +104,43 @@ pub(super) fn wait_for_output(
         if value.get("error").is_some() {
             let mut value = value;
             value["id"] = serde_json::Value::String(request_id);
-            return Ok(Some(serde_json::to_string(&value).unwrap()));
+            return Ok(Some(serde_json::to_string(&value).expect(
+                "value is a re-tagged copy of an already-decoded JSON response; serde_json::Value cannot hold non-finite floats or non-string keys",
+            )));
         }
 
         let read_value = value["result"]["read"].clone();
         let Ok(read) = serde_json::from_value::<crate::api::schema::PaneReadResult>(read_value)
         else {
-            return Ok(Some(
-                serde_json::to_string(&ErrorResponse {
-                    id: request_id,
-                    error: ErrorBody {
-                        code: "internal_error".into(),
-                        message: "failed to decode pane read result".into(),
-                    },
-                })
-                .unwrap(),
-            ));
+            return Ok(Some(encode_error(
+                request_id,
+                "internal_error",
+                "failed to decode pane read result",
+            )));
         };
 
         let matched_line = match_output(&read.text, &params.r#match, regex.as_ref());
         if matched_line.is_some() {
             let revision = read.revision;
             crate::logging::api_wait_completed(&request_id, &params.pane_id, "matched");
-            return Ok(Some(
-                serde_json::to_string(&SuccessResponse {
-                    id: request_id,
-                    result: ResponseResult::OutputMatched {
-                        pane_id: read.pane_id.clone(),
-                        revision,
-                        matched_line,
-                        read,
-                    },
-                })
-                .unwrap(),
-            ));
+            return Ok(Some(encode_success(
+                request_id,
+                ResponseResult::OutputMatched {
+                    pane_id: read.pane_id.clone(),
+                    revision,
+                    matched_line,
+                    read,
+                },
+            )));
         }
 
         if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
             crate::logging::api_wait_timed_out(&request_id, &params.pane_id);
-            return Ok(Some(
-                serde_json::to_string(&ErrorResponse {
-                    id: request_id,
-                    error: ErrorBody {
-                        code: "timeout".into(),
-                        message: "timed out waiting for output match".into(),
-                    },
-                })
-                .unwrap(),
-            ));
+            return Ok(Some(encode_error(
+                request_id,
+                "timeout",
+                "timed out waiting for output match",
+            )));
         }
 
         std::thread::sleep(CONNECTION_POLL_INTERVAL);
@@ -888,31 +900,28 @@ pub(super) fn wait_for_event(
                             state_labels: probe.state_labels,
                         },
                     };
-                    return Ok(Some(
-                        serde_json::to_string(&SuccessResponse {
-                            id: request_id,
-                            result: ResponseResult::WaitMatched { event: envelope },
-                        })
-                        .unwrap(),
-                    ));
+                    return Ok(Some(encode_success(
+                        request_id,
+                        ResponseResult::WaitMatched { event: envelope },
+                    )));
                 }
             }
             Err(mut response) => {
                 response.id = request_id;
-                return Ok(Some(serde_json::to_string(&response).unwrap()));
+                return Ok(Some(encode_error_body(response.id, response.error)));
             }
         }
 
         let subscription = match event_match_subscription(&request_id, params.match_event) {
             Ok(subscription) => subscription,
-            Err(response) => return Ok(Some(serde_json::to_string(&response).unwrap())),
+            Err(response) => return Ok(Some(encode_error_body(response.id, response.error))),
         };
         let mut active =
             match ActiveSubscription::new(subscription, &request_id, 0, api_tx, event_hub) {
                 Ok(active) => active,
                 Err(mut response) => {
                     response.id = request_id;
-                    return Ok(Some(serde_json::to_string(&response).unwrap()));
+                    return Ok(Some(encode_error_body(response.id, response.error)));
                 }
             };
         loop {
@@ -933,16 +942,11 @@ pub(super) fn wait_for_event(
             }
 
             if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
-                return Ok(Some(
-                    serde_json::to_string(&ErrorResponse {
-                        id: request_id,
-                        error: ErrorBody {
-                            code: "timeout".into(),
-                            message: "timed out waiting for event match".into(),
-                        },
-                    })
-                    .unwrap(),
-                ));
+                return Ok(Some(encode_error(
+                    request_id,
+                    "timeout",
+                    "timed out waiting for event match",
+                )));
             }
 
             std::thread::sleep(CONNECTION_POLL_INTERVAL);
@@ -961,27 +965,19 @@ pub(super) fn wait_for_event(
         for (sequence, envelope) in event_hub.events_after(last_sequence) {
             last_sequence = sequence;
             if crate::api::schema::event_matches(&params.match_event, &envelope) {
-                return Ok(Some(
-                    serde_json::to_string(&SuccessResponse {
-                        id: request_id,
-                        result: ResponseResult::WaitMatched { event: envelope },
-                    })
-                    .unwrap(),
-                ));
+                return Ok(Some(encode_success(
+                    request_id,
+                    ResponseResult::WaitMatched { event: envelope },
+                )));
             }
         }
 
         if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
-            return Ok(Some(
-                serde_json::to_string(&ErrorResponse {
-                    id: request_id,
-                    error: ErrorBody {
-                        code: "timeout".into(),
-                        message: "timed out waiting for event match".into(),
-                    },
-                })
-                .unwrap(),
-            ));
+            return Ok(Some(encode_error(
+                request_id,
+                "timeout",
+                "timed out waiting for event match",
+            )));
         }
 
         std::thread::sleep(CONNECTION_POLL_INTERVAL);
@@ -1012,30 +1008,24 @@ fn event_match_subscription(
 
 fn wait_matched_response(request_id: &str, event: serde_json::Value) -> String {
     let Ok(event) = serde_json::from_value::<SubscriptionEventEnvelope>(event) else {
-        return serde_json::to_string(&ErrorResponse {
-            id: request_id.into(),
-            error: ErrorBody {
-                code: "internal_error".into(),
-                message: "failed to decode matched event".into(),
-            },
-        })
-        .unwrap();
+        return encode_error(
+            request_id.into(),
+            "internal_error",
+            "failed to decode matched event",
+        );
     };
 
     let SubscriptionEventData::PaneAgentStatusChanged(data) = event.data else {
-        return serde_json::to_string(&ErrorResponse {
-            id: request_id.into(),
-            error: ErrorBody {
-                code: "unsupported_event_wait_match".into(),
-                message: "events.wait currently supports pane agent status matches".into(),
-            },
-        })
-        .unwrap();
+        return encode_error(
+            request_id.into(),
+            "unsupported_event_wait_match",
+            "events.wait currently supports pane agent status matches",
+        );
     };
 
-    serde_json::to_string(&SuccessResponse {
-        id: request_id.into(),
-        result: ResponseResult::WaitMatched {
+    encode_success(
+        request_id.into(),
+        ResponseResult::WaitMatched {
             event: EventEnvelope {
                 event: EventKind::PaneAgentStatusChanged,
                 data: EventData::PaneAgentStatusChanged {
@@ -1049,8 +1039,7 @@ fn wait_matched_response(request_id: &str, event: serde_json::Value) -> String {
                 },
             },
         },
-    })
-    .unwrap()
+    )
 }
 
 /// Result of a `channel.wait`: the durable answer to "what happened after
@@ -1160,16 +1149,11 @@ pub(super) fn wait_for_channel_message(
 ) -> std::io::Result<Option<String>> {
     let name = crate::persist::channels::normalize_channel_name(&params.name);
     if name.is_empty() {
-        return Ok(Some(
-            serde_json::to_string(&ErrorResponse {
-                id: request_id,
-                error: ErrorBody {
-                    code: "invalid_channel_name".into(),
-                    message: "channel name must not be empty".into(),
-                },
-            })
-            .unwrap(),
-        ));
+        return Ok(Some(encode_error(
+            request_id,
+            "invalid_channel_name",
+            "channel name must not be empty",
+        )));
     }
     let outcome = match poll_channel_wait(
         &name,
@@ -1182,16 +1166,11 @@ pub(super) fn wait_for_channel_message(
         // The client went away mid-wait; there is nobody to answer.
         Ok(None) => return Ok(None),
         Err(err) => {
-            return Ok(Some(
-                serde_json::to_string(&ErrorResponse {
-                    id: request_id,
-                    error: ErrorBody {
-                        code: "channel_wait_failed".into(),
-                        message: err.to_string(),
-                    },
-                })
-                .unwrap(),
-            ));
+            return Ok(Some(encode_error(
+                request_id,
+                "channel_wait_failed",
+                err.to_string(),
+            )));
         }
     };
     advance_channel_wait_cursor(
@@ -1201,18 +1180,15 @@ pub(super) fn wait_for_channel_message(
         &outcome,
         api_tx,
     );
-    Ok(Some(
-        serde_json::to_string(&SuccessResponse {
-            id: request_id,
-            result: ResponseResult::ChannelWait {
-                messages: outcome.messages,
-                gap: outcome.gap,
-                oldest_seq: outcome.oldest_seq,
-                timed_out: outcome.timed_out,
-            },
-        })
-        .unwrap(),
-    ))
+    Ok(Some(encode_success(
+        request_id,
+        ResponseResult::ChannelWait {
+            messages: outcome.messages,
+            gap: outcome.gap,
+            oldest_seq: outcome.oldest_seq,
+            timed_out: outcome.timed_out,
+        },
+    )))
 }
 
 /// Resolves `from_pane` to a channel member via `channel.members` — the
@@ -1422,29 +1398,21 @@ pub(super) fn ask_channel(
         // The client went away mid-wait; there is nobody to answer.
         Ok(None) => return Ok(None),
         Err(err) => {
-            return Ok(Some(
-                serde_json::to_string(&ErrorResponse {
-                    id: request_id,
-                    error: ErrorBody {
-                        code: "channel_ask_failed".into(),
-                        message: err.to_string(),
-                    },
-                })
-                .unwrap(),
-            ));
+            return Ok(Some(encode_error(
+                request_id,
+                "channel_ask_failed",
+                err.to_string(),
+            )));
         }
     };
-    Ok(Some(
-        serde_json::to_string(&SuccessResponse {
-            id: request_id,
-            result: ResponseResult::ChannelAsked {
-                answered: reply.is_some(),
-                question_seq,
-                reply,
-            },
-        })
-        .unwrap(),
-    ))
+    Ok(Some(encode_success(
+        request_id,
+        ResponseResult::ChannelAsked {
+            answered: reply.is_some(),
+            question_seq,
+            reply,
+        },
+    )))
 }
 
 #[cfg(test)]

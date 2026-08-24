@@ -24,7 +24,16 @@ lint:
         -A clippy::dbg_macro \
         -A clippy::todo \
         -A clippy::cognitive_complexity \
-        -A clippy::too_many_lines
+        -A clippy::too_many_lines \
+        -A clippy::unwrap_used
+    # AGENTS.md Code Conventions: "no `unwrap()` in production code". Enforced
+    # here rather than in Cargo.toml's [lints.clippy] because that table has no
+    # per-target scope: it would also deny the hundreds of legitimate unwraps in
+    # test fixtures, and the --all-targets run above compiles those. --bins does
+    # not compile #[cfg(test)] modules, so this run is exactly the production
+    # scope the rule names. Proven non-blind: injecting one production unwrap()
+    # fails this line with "error: used `unwrap()`".
+    cargo clippy --bins --locked -- -D clippy::unwrap_used
     @gated=$(grep -rlF '#![cfg(not(target_os = "macos"))]' src tests 2>/dev/null || true); \
     for f in src/platform/linux.rs src/platform/windows.rs; do \
         [ -f "$f" ] && gated="$gated $f"; \

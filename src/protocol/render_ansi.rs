@@ -483,7 +483,9 @@ fn blit_frame_to_with_cursor_memory_and_clear_policy(
         // Diff-based update: only write changed cells. When the content
         // scrolled uniformly, emit a real terminal scroll first so the
         // client applies a move instead of repainting every shifted row.
-        let prev = prev.unwrap();
+        let prev = prev.expect(
+            "full_redraw is false only when prev.is_none() is false (see the || above), so prev is Some whenever this branch runs",
+        );
         let shift = detect_scroll_shift(frame, prev);
         if let Some(shift) = shift {
             // DECSLRM only takes effect while DECLRMM (mode 69) is enabled,

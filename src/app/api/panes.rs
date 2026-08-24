@@ -122,7 +122,9 @@ impl App {
             .terminals
             .insert(new_pane.terminal.id.clone(), new_pane.terminal);
         self.schedule_session_save();
-        let pane = self.pane_info(ws_idx, new_pane.pane_id).unwrap();
+        let pane = self.pane_info(ws_idx, new_pane.pane_id).expect(
+            "new_pane was just placed into ws's layout by split_pane above and its terminal was just inserted into self.state.terminals on the previous line, so pane_info's ws/pane/terminal/tab lookups all succeed",
+        );
         self.emit_event(EventEnvelope {
             event: EventKind::PaneCreated,
             data: EventData::PaneCreated { pane: pane.clone() },
@@ -1181,7 +1183,9 @@ impl App {
             _ => terminal.clear_manual_label(),
         }
         self.state.mark_session_dirty();
-        let pane = self.pane_info(ws_idx, pane_id).unwrap();
+        let pane = self.pane_info(ws_idx, pane_id).expect(
+            "ws_idx/pane_id were validated by parse_pane_id above and the terminal lookup at the top of this handler; nothing in between removes the pane or its terminal",
+        );
 
         encode_success(id, ResponseResult::PaneInfo { pane })
     }
@@ -1217,7 +1221,9 @@ impl App {
                 read: PaneReadResult {
                     pane_id: public_pane_id,
                     workspace_id,
-                    tab_id: self.public_tab_id(ws_idx, tab_idx).unwrap(),
+                    tab_id: self.public_tab_id(ws_idx, tab_idx).expect(
+                        "tab_idx came from find_tab_index_for_pane on this same ws_idx earlier in this handler; a tab's public number is just its stored `number` field, always present once the tab is found",
+                    ),
                     source: params.source,
                     format: params.format,
                     text: snapshot.text,

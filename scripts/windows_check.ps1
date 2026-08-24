@@ -81,13 +81,31 @@ Invoke-Checked cargo @("fmt", "--check")
 Invoke-CargoWithZigCacheRecovery @(
     "clippy",
     "--bin",
-    "herdr",
+    "bora",
     "--locked",
     "--target",
     "x86_64-pc-windows-msvc",
     "--",
     "-D",
-    "warnings"
+    "warnings",
+    "-A",
+    "clippy::unwrap_used"
+)
+
+# AGENTS.md Code Conventions: "no `unwrap()` in production code". Mirrors the
+# production-only gate in the Unix `just lint` recipe. The run above compiles
+# only the bin target already, so the two are the same scope here; keeping the
+# deny on its own line matches the Unix recipe and fails loudly on its own.
+Invoke-CargoWithZigCacheRecovery @(
+    "clippy",
+    "--bin",
+    "bora",
+    "--locked",
+    "--target",
+    "x86_64-pc-windows-msvc",
+    "--",
+    "-D",
+    "clippy::unwrap_used"
 )
 
 if ($Mode -eq "lint") {

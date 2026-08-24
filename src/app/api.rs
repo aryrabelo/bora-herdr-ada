@@ -1404,7 +1404,7 @@ impl App {
             }
         };
 
-        serde_json::to_string(&response).unwrap()
+        responses::encode_success(response.id, response.result)
     }
 
     fn handle_notification_show(

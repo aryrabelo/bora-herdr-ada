@@ -134,7 +134,9 @@ impl App {
             return tab_not_found(id, &target.tab_id);
         };
         self.state.switch_workspace_tab(ws_idx, tab_idx);
-        let tab = self.tab_info(ws_idx, tab_idx).unwrap();
+        let tab = self.tab_info(ws_idx, tab_idx).expect(
+            "tab_idx came from parse_tab_id above, which already confirmed workspaces[ws_idx].tabs[tab_idx] exists; switch_workspace_tab does not remove tabs",
+        );
 
         encode_success(id, ResponseResult::TabInfo { tab })
     }
@@ -168,12 +170,16 @@ impl App {
         self.emit_event(EventEnvelope {
             event: EventKind::TabRenamed,
             data: EventData::TabRenamed {
-                tab_id: self.public_tab_id(ws_idx, tab_idx).unwrap(),
+                tab_id: self.public_tab_id(ws_idx, tab_idx).expect(
+                    "tab_idx came from parse_tab_id above and the tab is still present (only its custom_name was set); a tab's public number is just its stored `number` field",
+                ),
                 workspace_id: self.public_workspace_id(ws_idx),
                 label: params.label,
             },
         });
-        let tab = self.tab_info(ws_idx, tab_idx).unwrap();
+        let tab = self.tab_info(ws_idx, tab_idx).expect(
+            "tab_idx came from parse_tab_id above and the tab is still present (only its custom_name was set); tab_info's ws/tab lookups succeed",
+        );
 
         encode_success(id, ResponseResult::TabInfo { tab })
     }

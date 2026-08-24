@@ -108,6 +108,7 @@ pub(super) fn project_view_entries(
             name,
             ws_idxs,
             true,
+            resolve_section_order(declared_section_order(project)),
             sections_of(project).0,
             sections_of(project).1,
             force_expanded,
@@ -126,7 +127,9 @@ pub(super) fn project_view_entries(
             ORPHANS_NAME.to_string(),
             orphan_idxs,
             false,
-            // An orphan group is not a declared project: it has no sections.
+            // An orphan group is not a declared project: no order, no
+            // sections.
+            ProjectSection::ALL,
             &[],
             &[],
             force_expanded,
@@ -188,6 +191,7 @@ fn push_project_group(
     name: String,
     ws_idxs: Vec<usize>,
     declared: bool,
+    section_order: [ProjectSection; 4],
     commands: &[String],
     checks: &[String],
     force_expanded: bool,
@@ -245,11 +249,16 @@ fn push_project_group(
         return;
     }
 
-    // Project-level shared memory (bora-s3y.3): between the project row and
-    // its worktrees, TODOS then NOTES.
+    // Project-level shared memory (bora-s3y.3): declared order, default
+    // TODOS then NOTES (bora-5ia).
     if let Some(slug) = slug {
-        push_todos_section(entries, app, slug, force_expanded);
-        push_notes_section(entries, app, slug, force_expanded);
+        for section in project_section_order(&section_order) {
+            if section == ProjectSection::Todos {
+                push_todos_section(entries, app, slug, force_expanded);
+            } else {
+                push_notes_section(entries, app, slug, force_expanded);
+            }
+        }
     }
 
     for checkout_key in &order {
@@ -259,6 +268,7 @@ fn push_project_group(
             checkout_key,
             &by_checkout[checkout_key],
             single_repo,
+            section_order,
             commands,
             checks,
             force_expanded,
@@ -394,6 +404,7 @@ fn push_worktree(
     checkout_key: &str,
     ws_idxs: &[usize],
     single_repo: bool,
+    section_order: [ProjectSection; 4],
     commands: &[String],
     checks: &[String],
     force_expanded: bool,
@@ -431,16 +442,22 @@ fn push_worktree(
         return;
     }
 
-    // Rule 5: a band renders only when non-empty, COMMANDS before CHECKS.
-    push_commands_section(
-        entries,
-        app,
-        checkout_key,
-        ws_idxs,
-        commands,
-        force_expanded,
-    );
-    push_checks_section(entries, app, checkout_key, first, checks, force_expanded);
+    // Rule 5: a band renders only when non-empty, in declared order,
+    // default COMMANDS before CHECKS (bora-5ia).
+    for section in worktree_section_order(&section_order) {
+        if section == ProjectSection::Commands {
+            push_commands_section(
+                entries,
+                app,
+                checkout_key,
+                ws_idxs,
+                commands,
+                force_expanded,
+            );
+        } else {
+            push_checks_section(entries, app, checkout_key, first, checks, force_expanded);
+        }
+    }
 
     for &idx in ws_idxs {
         push_workspace(entries, app, idx);
@@ -526,6 +543,89 @@ fn sections_of(project: &crate::persist::projects::Project) -> (&[String], &[Str
         sections.commands.as_deref().unwrap_or(&[]),
         sections.checks.as_deref().unwrap_or(&[]),
     )
+}
+
+/// A project's declared `sections.order:`, `None` when undeclared — the
+/// input to `resolve_section_order`.
+fn declared_section_order(project: &crate::persist::projects::Project) -> Option<&[String]> {
+    project.sections.as_ref()?.order.as_deref()
+}
+
+/// Resolves a project's declared `sections.order:` names into the four
+/// `ProjectSection` variants in render priority (bora-5ia). Contract:
+///
+/// - Names are matched case-insensitively (`ProjectSection::from_name`).
+/// - An unknown name is ignored, never an error — a future bora writing a
+///   fifth section name into `projects.yml` must not break an older
+///   binary's sidebar.
+/// - A declared-but-unlisted section still renders: it is appended after
+///   the listed ones, in `ProjectSection::ALL` order. Ordering decides
+///   sequence, never visibility.
+/// - A duplicate name is honored once, at its first position.
+/// - Absent or empty `order` resolves to exactly `ProjectSection::ALL`, so
+///   behavior is unchanged for every project that does not opt in.
+///
+/// Always returns all four variants (a permutation of `ProjectSection::ALL`)
+/// as a fixed-size array, not a `Vec` — no allocation on the per-render,
+/// per-pane, per-client path (AGENTS.md, "Multiplicative performance
+/// paths"). `push_project_group`/`push_worktree` then read the relevant
+/// pair out of it via `project_section_order`/`worktree_section_order` —
+/// project-level and worktree-level bands never interleave with each
+/// other (module doc), only reorder within their own group.
+fn resolve_section_order(order: Option<&[String]>) -> [ProjectSection; 4] {
+    let mut resolved = ProjectSection::ALL;
+    let mut len = 0usize;
+    if let Some(names) = order {
+        for name in names {
+            let Some(section) = ProjectSection::from_name(name) else {
+                continue;
+            };
+            if resolved[..len].contains(&section) {
+                continue;
+            }
+            resolved[len] = section;
+            len += 1;
+        }
+    }
+    for section in ProjectSection::ALL {
+        if len == resolved.len() {
+            break;
+        }
+        if resolved[..len].contains(&section) {
+            continue;
+        }
+        resolved[len] = section;
+        len += 1;
+    }
+    resolved
+}
+
+/// Filters a resolved order down to the worktree-level pair (COMMANDS,
+/// CHECKS), preserving their relative sequence.
+fn worktree_section_order(resolved: &[ProjectSection; 4]) -> [ProjectSection; 2] {
+    let mut out = [ProjectSection::Commands, ProjectSection::Checks];
+    let mut i = 0;
+    for &section in resolved {
+        if matches!(section, ProjectSection::Commands | ProjectSection::Checks) {
+            out[i] = section;
+            i += 1;
+        }
+    }
+    out
+}
+
+/// Filters a resolved order down to the project-level pair (TODOS, NOTES),
+/// preserving their relative sequence. See `worktree_section_order`.
+fn project_section_order(resolved: &[ProjectSection; 4]) -> [ProjectSection; 2] {
+    let mut out = [ProjectSection::Todos, ProjectSection::Notes];
+    let mut i = 0;
+    for &section in resolved {
+        if matches!(section, ProjectSection::Todos | ProjectSection::Notes) {
+            out[i] = section;
+            i += 1;
+        }
+    }
+    out
 }
 
 /// Push the CHECKS band for one worktree, from the representative workspace's
@@ -808,6 +908,7 @@ mod tests {
         project.sections = Some(Sections {
             checks: Some(vec!["gh".to_string()]),
             commands: None,
+            order: None,
         });
         project
     }
@@ -1481,6 +1582,7 @@ mod tests {
         project.sections = Some(Sections {
             checks: None,
             commands: Some(names.iter().map(ToString::to_string).collect()),
+            order: None,
         });
         project
     }
@@ -2220,5 +2322,294 @@ mod tests {
         );
 
         std::fs::remove_dir_all(&member_checkout).unwrap();
+    }
+
+    // ── bora-5ia: declarable `sections.order:` ────────────────────────────
+
+    /// The `SectionHeader` kinds an entries slice carries, in render order.
+    fn section_header_kinds(entries: &[WorkspaceListEntry]) -> Vec<ProjectSection> {
+        entries
+            .iter()
+            .filter_map(|e| match e {
+                WorkspaceListEntry::SectionHeader { kind, .. } => Some(*kind),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A project with all four bands declared (COMMANDS `dev`, CHECKS `gh`)
+    /// plus an optional `sections.order:`.
+    fn project_with_all_sections(members: Vec<Member>, order: Option<&[&str]>) -> Project {
+        let mut project = project(members);
+        project.sections = Some(Sections {
+            checks: Some(vec!["gh".to_string()]),
+            commands: Some(vec!["dev".to_string()]),
+            order: order.map(|names| names.iter().map(ToString::to_string).collect()),
+        });
+        project
+    }
+
+    /// One workspace with every band's eligibility satisfied: a live
+    /// pane-mode `dev` command, a failing check, plus project-level todos
+    /// and notes seeded on `app` — so all four `SectionHeader`s render and
+    /// order is the only thing left to observe.
+    fn app_with_full_bands(
+        repo: &std::path::Path,
+        order: Option<&[&str]>,
+    ) -> (IsolatedDirs, AppState) {
+        let mut file = ProjectsFile::default();
+        file.projects.insert(
+            "proj".to_string(),
+            project_with_all_sections(vec![member(repo)], order),
+        );
+        let (isolated, store) = store_with(file);
+        let mut app = AppState::test_new();
+        app.projects = store;
+
+        let mut ws = ws_at(repo);
+        ws.cached_commands = Some(vec![bora_cmd(
+            "dev",
+            crate::bora_config::BoraCommandMode::Pane,
+        )]);
+        ws.cached_check_status = Some(checks_status(
+            Some(1),
+            vec![check_run("build", "COMPLETED", Some("FAILURE"))],
+            None,
+        ));
+        app.workspaces = vec![ws];
+        app.project_todos
+            .insert("proj".to_string(), todos_summary(0, 1, &["ship it"]));
+        app.project_notes
+            .insert("proj".to_string(), vec!["notes".to_string()]);
+
+        (isolated, app)
+    }
+
+    #[test]
+    fn section_order_resolve_absent_matches_fixed_order() {
+        assert_eq!(
+            resolve_section_order(None),
+            ProjectSection::ALL,
+            "no declared order must resolve to today's fixed sequence"
+        );
+        assert_eq!(
+            resolve_section_order(Some(&[])),
+            ProjectSection::ALL,
+            "an empty order: must resolve the same as an absent one"
+        );
+    }
+
+    #[test]
+    fn section_order_resolve_full_declaration_matches_declared_sequence() {
+        let names = [
+            "notes".to_string(),
+            "todos".to_string(),
+            "checks".to_string(),
+            "commands".to_string(),
+        ];
+        assert_eq!(
+            resolve_section_order(Some(&names)),
+            [
+                ProjectSection::Notes,
+                ProjectSection::Todos,
+                ProjectSection::Checks,
+                ProjectSection::Commands,
+            ],
+            "a full order must be honored exactly"
+        );
+    }
+
+    #[test]
+    fn section_order_resolve_partial_declaration_appends_unlisted_in_fixed_order() {
+        let names = ["checks".to_string()];
+        assert_eq!(
+            resolve_section_order(Some(&names)),
+            [
+                ProjectSection::Checks,
+                ProjectSection::Commands,
+                ProjectSection::Todos,
+                ProjectSection::Notes,
+            ],
+            "the listed section leads, the other three follow in \
+             ProjectSection::ALL order — nothing declared-but-unlisted is lost"
+        );
+    }
+
+    #[test]
+    fn section_order_resolve_unknown_name_ignored() {
+        let names = [
+            "checks".to_string(),
+            "banana".to_string(),
+            "notes".to_string(),
+        ];
+        assert_eq!(
+            resolve_section_order(Some(&names)),
+            [
+                ProjectSection::Checks,
+                ProjectSection::Notes,
+                ProjectSection::Commands,
+                ProjectSection::Todos,
+            ],
+            "an unrecognized name is ignored, never an error, and never \
+             consumes a slot"
+        );
+    }
+
+    #[test]
+    fn section_order_resolve_duplicate_name_honored_once_at_first_position() {
+        let names = [
+            "checks".to_string(),
+            "checks".to_string(),
+            "commands".to_string(),
+        ];
+        assert_eq!(
+            resolve_section_order(Some(&names)),
+            [
+                ProjectSection::Checks,
+                ProjectSection::Commands,
+                ProjectSection::Todos,
+                ProjectSection::Notes,
+            ],
+            "a repeated name counts once, at its first position"
+        );
+    }
+
+    #[test]
+    fn section_order_wiring_reorders_rendered_bands() {
+        let repo = temp_test_dir("section-order-full");
+        init_fake_git_repo(&repo, None);
+
+        let order = ["notes", "todos", "checks", "commands"];
+        let (_isolated, app) = app_with_full_bands(&repo, Some(&order));
+
+        let entries = project_view_entries(&app, false);
+        assert_eq!(
+            section_header_kinds(&entries),
+            vec![
+                ProjectSection::Notes,
+                ProjectSection::Todos,
+                ProjectSection::Checks,
+                ProjectSection::Commands,
+            ],
+            "declared order threads through both the project-level (TODOS/\
+             NOTES) and worktree-level (COMMANDS/CHECKS) bands: {entries:?}"
+        );
+
+        std::fs::remove_dir_all(&repo).unwrap();
+    }
+
+    #[test]
+    fn section_order_absent_matches_todays_default_rendered_sequence() {
+        let repo = temp_test_dir("section-order-default");
+        init_fake_git_repo(&repo, None);
+
+        let (_isolated, app) = app_with_full_bands(&repo, None);
+
+        let entries = project_view_entries(&app, false);
+        assert_eq!(
+            section_header_kinds(&entries),
+            vec![
+                ProjectSection::Todos,
+                ProjectSection::Notes,
+                ProjectSection::Commands,
+                ProjectSection::Checks,
+            ],
+            "an undeclared order must render exactly today's fixed \
+             sequence: {entries:?}"
+        );
+
+        std::fs::remove_dir_all(&repo).unwrap();
+    }
+
+    #[test]
+    fn section_order_listing_first_does_not_render_an_undeclared_section() {
+        let repo = temp_test_dir("section-order-visibility");
+        init_fake_git_repo(&repo, None);
+
+        // The project declares only COMMANDS — CHECKS is undeclared — yet
+        // `order:` lists CHECKS first, and the workspace carries real check
+        // data that WOULD render a CHECKS band if eligibility were ever
+        // bypassed.
+        let mut file = ProjectsFile::default();
+        let mut proj = project(vec![member(&repo)]);
+        proj.sections = Some(Sections {
+            checks: None,
+            commands: Some(vec!["dev".to_string()]),
+            order: Some(vec![
+                "checks".to_string(),
+                "commands".to_string(),
+                "todos".to_string(),
+                "notes".to_string(),
+            ]),
+        });
+        file.projects.insert("proj".to_string(), proj);
+        let (_isolated, store) = store_with(file);
+        let mut app = AppState::test_new();
+        app.projects = store;
+
+        let mut ws = ws_at(&repo);
+        ws.cached_commands = Some(vec![bora_cmd(
+            "dev",
+            crate::bora_config::BoraCommandMode::Pane,
+        )]);
+        ws.cached_check_status = Some(checks_status(
+            Some(1),
+            vec![check_run("build", "COMPLETED", Some("FAILURE"))],
+            None,
+        ));
+        app.workspaces = vec![ws];
+
+        let entries = project_view_entries(&app, false);
+        assert_eq!(
+            section_header_kinds(&entries),
+            vec![ProjectSection::Commands],
+            "CHECKS listed first must still render nothing — it was never \
+             declared, and ordering decides sequence, never visibility: \
+             {entries:?}"
+        );
+
+        std::fs::remove_dir_all(&repo).unwrap();
+    }
+
+    #[test]
+    fn section_order_to_yaml_round_trip_omits_absent_order() {
+        let mut file = ProjectsFile::default();
+        file.projects.insert(
+            "alpha".to_string(),
+            project_with_checks(vec![member(std::path::Path::new("/tmp/alpha"))]),
+        );
+        file.projects.insert(
+            "zeta".to_string(),
+            project_with_all_sections(
+                vec![member(std::path::Path::new("/tmp/zeta"))],
+                Some(&["checks", "notes"]),
+            ),
+        );
+
+        let yaml = crate::persist::projects::to_yaml(&file).expect("serializes");
+        let alpha_doc = yaml
+            .split("zeta:")
+            .next()
+            .expect("alpha project serializes before zeta");
+        assert!(
+            !alpha_doc.contains("order:"),
+            "a project without a declared order must round-trip without an \
+             `order:` key: {yaml}"
+        );
+        assert!(
+            yaml.contains("order:"),
+            "a project WITH a declared order must serialize the key: {yaml}"
+        );
+
+        let reparsed = crate::persist::projects::parse_projects_yaml(&yaml).expect("reparses");
+        assert_eq!(
+            reparsed
+                .projects
+                .get("zeta")
+                .and_then(|p| p.sections.as_ref())
+                .and_then(|s| s.order.as_deref()),
+            Some(&["checks".to_string(), "notes".to_string()][..]),
+            "the declared order round-trips through YAML unchanged"
+        );
     }
 }

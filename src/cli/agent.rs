@@ -137,8 +137,7 @@ fn agent_explain(args: &[String]) -> std::io::Result<i32> {
             method: Method::AgentExplain(AgentTarget { target }),
         })?;
         if response.get("error").is_some() {
-            eprintln!("{}", serde_json::to_string(&response).unwrap());
-            return Ok(1);
+            return super::print_response(&response);
         }
         response["result"]["explain"].clone()
     };
@@ -474,8 +473,7 @@ fn agent_attach(args: &[String]) -> std::io::Result<i32> {
 
     let response = resolve_agent_target(&target, "cli:agent:attach:resolve")?;
     if response.get("error").is_some() {
-        eprintln!("{}", serde_json::to_string(&response).unwrap());
-        return Ok(1);
+        return super::print_response(&response);
     }
     let Some(terminal_id) = response["result"]["agent"]["terminal_id"].as_str() else {
         eprintln!("agent attach failed: response did not include terminal_id");
