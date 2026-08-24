@@ -57,6 +57,17 @@
 sync.remote: "git+ssh://git@github.com/aryrabelo/bora-herdr-ada.git"
 dolt.host: dolt.bugtoprompt.com
 dolt.port: 3307
+# Keep .beads/issues.jsonl fresh automatically. This file is the ONLY
+# off-machine copy of the backlog: `bd dolt push` is denied by the central
+# server for user bd_ops, so refs/dolt/* cannot be seeded from a client (see
+# "Beads durability in this repo" in AGENTS.md). A snapshot that silently goes
+# stale is worse than no snapshot — it was 2 days behind once and reported 5
+# closed epics as open. git-add stays false: staging is a human decision.
+export:
+    auto: true
+    path: issues.jsonl
+    interval: 60s
+    git-add: false
 repos:
     primary: "."
     additional:
