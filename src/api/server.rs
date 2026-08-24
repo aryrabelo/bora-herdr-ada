@@ -526,6 +526,12 @@ fn api_method_name(method: &Method) -> &'static str {
         Method::ProjectUpdate(_) => "project.update",
         Method::ProjectMemberAdd(_) => "project.member_add",
         Method::ProjectMemberRemove(_) => "project.member_remove",
+        Method::TodoCreate(_) => "todo.create",
+        Method::TodoComplete(_) => "todo.complete",
+        Method::TodoList(_) => "todo.list",
+        Method::ScratchpadWrite(_) => "scratchpad.write",
+        Method::ScratchpadAppendSection(_) => "scratchpad.append_section",
+        Method::ScratchpadFind(_) => "scratchpad.find",
     }
 }
 

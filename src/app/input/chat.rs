@@ -1207,7 +1207,6 @@ mod tests {
             Mode::RenameTab,
             Mode::RenamePane,
             Mode::SetWorkspaceGroup,
-            Mode::LaunchProgramPrompt,
             Mode::NewLinkedWorktree,
             Mode::OpenExistingWorktree,
             Mode::ConfirmRemoveWorktree,

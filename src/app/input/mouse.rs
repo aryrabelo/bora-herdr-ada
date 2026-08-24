@@ -28,10 +28,6 @@ use super::{
 
 pub(super) enum MouseAction {
     NewWorkspace,
-    LaunchProgram {
-        command_idx: usize,
-    },
-    LaunchProgramPrompt,
     Settings(SettingsAction),
     FocusWorkspace {
         ws_idx: usize,
@@ -506,7 +502,6 @@ impl AppState {
                         | Mode::RenameTab
                         | Mode::RenamePane
                         | Mode::SetWorkspaceGroup
-                        | Mode::LaunchProgramPrompt
                 ) {
                     let action = self
                         .rename_modal_inner()
@@ -760,23 +755,6 @@ impl AppState {
                         && mouse.column < new_button.x + new_button.width;
                     if on_new_button {
                         return Some(MouseAction::NewWorkspace);
-                    }
-
-                    let programs_rect = self.sidebar_programs_rect();
-                    if mouse.row >= programs_rect.y
-                        && mouse.row < programs_rect.y + programs_rect.height
-                        && mouse.column >= programs_rect.x
-                        && mouse.column < programs_rect.x + programs_rect.width
-                    {
-                        let row_idx = (mouse.row - programs_rect.y) as usize;
-                        let command_count = self.sidebar_program_commands().len();
-                        return Some(if row_idx < command_count {
-                            MouseAction::LaunchProgram {
-                                command_idx: row_idx,
-                            }
-                        } else {
-                            MouseAction::LaunchProgramPrompt
-                        });
                     }
 
                     if self.on_view_mode_toggle(mouse.column, mouse.row) {
@@ -2398,11 +2376,21 @@ impl AppState {
                 self.mode = Mode::Terminal;
                 Some(MouseAction::FocusPane { ws_idx, pane_id })
             }
-            // ponytail: no COMMANDS/CHECKS provider exists yet (bora-55c,
-            // bora-i1r own that data model), so `project_view_entries`
-            // never emits a `SectionItem` today — this arm has nothing to
-            // run. Wire the actual run/open dispatch once a provider lands.
-            ProjectRowTarget::SectionItem { .. } => None,
+            // COMMANDS rows launch into the worktree's representative
+            // workspace (bora-55c.3), resolved from the tick-refreshed
+            // command cache. CHECKS/TODOS/NOTES rows have no action yet.
+            ProjectRowTarget::SectionItem {
+                kind,
+                label,
+                ws_idx,
+            } => {
+                if kind == crate::ui::ProjectSection::Commands {
+                    if let Some(ws_idx) = ws_idx {
+                        self.pending_bora_command = self.section_command_launch(ws_idx, &label);
+                    }
+                }
+                None
+            }
         }
     }
 
@@ -6039,111 +6027,57 @@ mod tests {
         app.state.assert_invariants_for_test();
     }
 
-    fn temp_repo_with_bora_toml(name: &str, toml: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "bora-sidebar-programs-test-{name}-{}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join(".bora.toml"), toml).unwrap();
-        dir
-    }
-
-    fn app_with_pane_commands(
-        test_name: &str,
-        toml: &str,
-    ) -> (crate::app::App, std::path::PathBuf) {
+    #[test]
+    fn commands_section_item_click_launches_tagged_command() {
         let mut app = app_for_mouse_test();
-        let repo_root = temp_repo_with_bora_toml(test_name, toml);
         let mut ws = Workspace::test_new("one");
-        ws.worktree_space = Some(crate::workspace::WorktreeSpaceMembership {
-            key: "one".into(),
-            label: "one".into(),
-            repo_root: repo_root.clone(),
-            checkout_path: repo_root.clone(),
-            is_linked_worktree: false,
-        });
+        ws.cached_commands = Some(vec![crate::bora_config::BoraCommand {
+            label: "dev".into(),
+            command: "htop".into(),
+            mode: crate::bora_config::BoraCommandMode::Pane,
+            branch: None,
+        }]);
         app.state.workspaces = vec![ws];
         app.state.active = Some(0);
-        app.state.selected = 0;
-        app.state.mode = Mode::Terminal;
-        app.state.ensure_test_terminals();
-        (app, repo_root)
-    }
 
-    #[test]
-    fn sidebar_programs_click_resolves_command_index() {
-        let (mut app, repo_root) = app_with_pane_commands(
-            "n_commands",
-            r#"
-[[commands]]
-label = "htop"
-command = "htop"
-mode = "pane"
-
-[[commands]]
-label = "logs"
-command = "tail -f log.txt"
-mode = "pane"
-
-[[commands]]
-label = "background"
-command = "echo hi"
-mode = "shell"
-"#,
-        );
-
-        assert_eq!(app.state.sidebar_program_commands().len(), 2);
-        let programs_rect = app.state.sidebar_programs_rect();
-        assert_eq!(programs_rect.height, 3); // 2 pane commands + prompt row
-
-        // Row 0 -> "htop" (command_idx 0).
-        app.handle_mouse(mouse(
-            MouseEventKind::Down(MouseButton::Left),
-            programs_rect.x + 1,
-            programs_rect.y,
-        ));
-        let launched = app.state.pending_bora_command.take().unwrap();
+        // A COMMANDS row click resolves through the tick-refreshed cache and
+        // dispatches the launch into the row's workspace (bora-55c.3).
+        assert!(app
+            .state
+            .handle_project_row_click(crate::app::state::ProjectRowTarget::SectionItem {
+                kind: crate::ui::ProjectSection::Commands,
+                label: "dev".to_string(),
+                ws_idx: Some(0),
+            })
+            .is_none());
+        let launched = app
+            .state
+            .pending_bora_command
+            .take()
+            .expect("a COMMANDS row click must dispatch the launch");
         assert_eq!(launched.command, "htop");
+        assert_eq!(launched.label.as_deref(), Some("dev"));
+        assert_eq!(launched.ws_idx, 0);
 
-        // Row 1 -> "logs" (command_idx 1).
-        app.handle_mouse(mouse(
-            MouseEventKind::Down(MouseButton::Left),
-            programs_rect.x + 1,
-            programs_rect.y + 1,
-        ));
-        let launched = app.state.pending_bora_command.take().unwrap();
-        assert_eq!(launched.command, "tail -f log.txt");
-
-        // Row 2 (last row) -> "+ run command…" prompt, not a launch.
-        app.handle_mouse(mouse(
-            MouseEventKind::Down(MouseButton::Left),
-            programs_rect.x + 1,
-            programs_rect.y + 2,
-        ));
+        // A non-COMMANDS row (and a label the cache does not declare) never
+        // launches.
+        assert!(app
+            .state
+            .handle_project_row_click(crate::app::state::ProjectRowTarget::SectionItem {
+                kind: crate::ui::ProjectSection::Todos,
+                label: "dev".to_string(),
+                ws_idx: None,
+            })
+            .is_none());
+        assert!(app
+            .state
+            .handle_project_row_click(crate::app::state::ProjectRowTarget::SectionItem {
+                kind: crate::ui::ProjectSection::Commands,
+                label: "not-declared".to_string(),
+                ws_idx: Some(0),
+            })
+            .is_none());
         assert!(app.state.pending_bora_command.is_none());
-        assert_eq!(app.state.mode, Mode::LaunchProgramPrompt);
-
-        let _ = std::fs::remove_dir_all(&repo_root);
-    }
-
-    #[test]
-    fn sidebar_programs_empty_shows_only_prompt_row() {
-        let (mut app, repo_root) = app_with_pane_commands("empty", "");
-
-        assert!(app.state.sidebar_program_commands().is_empty());
-        let programs_rect = app.state.sidebar_programs_rect();
-        assert_eq!(programs_rect.height, 1); // only the prompt row.
-
-        app.handle_mouse(mouse(
-            MouseEventKind::Down(MouseButton::Left),
-            programs_rect.x + 1,
-            programs_rect.y,
-        ));
-        assert!(app.state.pending_bora_command.is_none());
-        assert_eq!(app.state.mode, Mode::LaunchProgramPrompt);
-
-        let _ = std::fs::remove_dir_all(&repo_root);
     }
 
     fn dagr_test_plugin(enabled: bool) -> crate::api::schema::InstalledPluginInfo {

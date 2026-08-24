@@ -2805,6 +2805,83 @@ command = ["sh", "-c", "printf '%s' \"$HERDR_PLUGIN_CONTEXT_JSON\" > {}"]
         );
     }
 
+    #[test]
+    fn todo_and_scratchpad_event_context_resolves_the_project_channel_workspace() {
+        // Project = channel: a todo/scratchpad event's hooks run with the
+        // project's `#<slug>` channel workspace as context — a REAL
+        // workspace resolution, not `empty_plugin_context`.
+        let mut app = test_app();
+        app.state.workspaces = vec![crate::workspace::Workspace::test_new("project-events")];
+        app.state.ensure_test_terminals();
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.workspaces[0].custom_name = Some("#cnb".into());
+        let workspace_id = app.public_workspace_id(0);
+
+        let todo_context = app.plugin_context_for_event(
+            &crate::api::schema::EventEnvelope {
+                event: crate::api::schema::EventKind::TodoChanged,
+                data: crate::api::schema::EventData::TodoChanged {
+                    project: "cnb".into(),
+                    todo: crate::api::schema::TodoInfo {
+                        id: 1,
+                        seq: 1,
+                        title: "hook me".into(),
+                        state: crate::api::schema::TodoStateInfo::Open,
+                        blockers: Vec::new(),
+                        assignee: None,
+                        origin: "test".into(),
+                    },
+                },
+            },
+            "todo.changed",
+        );
+        assert_eq!(
+            todo_context.workspace_id.as_deref(),
+            Some(workspace_id.as_str()),
+            "todo.changed must resolve the project's channel workspace"
+        );
+
+        let scratchpad_context = app.plugin_context_for_event(
+            &crate::api::schema::EventEnvelope {
+                event: crate::api::schema::EventKind::ScratchpadChanged,
+                data: crate::api::schema::EventData::ScratchpadChanged {
+                    project: "cnb".into(),
+                    doc: "plan".into(),
+                    seq: 1,
+                },
+            },
+            "scratchpad.changed",
+        );
+        assert_eq!(
+            scratchpad_context.workspace_id.as_deref(),
+            Some(workspace_id.as_str()),
+            "scratchpad.changed must resolve the project's channel workspace"
+        );
+
+        // A project with no open channel workspace falls back to an empty
+        // context rather than resolving the WRONG workspace.
+        let other_context = app.plugin_context_for_event(
+            &crate::api::schema::EventEnvelope {
+                event: crate::api::schema::EventKind::TodoChanged,
+                data: crate::api::schema::EventData::TodoChanged {
+                    project: "elsewhere".into(),
+                    todo: crate::api::schema::TodoInfo {
+                        id: 1,
+                        seq: 1,
+                        title: "no home".into(),
+                        state: crate::api::schema::TodoStateInfo::Open,
+                        blockers: Vec::new(),
+                        assignee: None,
+                        origin: "test".into(),
+                    },
+                },
+            },
+            "todo.changed",
+        );
+        assert_eq!(other_context.workspace_id, None);
+    }
+
     #[cfg(unix)]
     #[test]
     fn plugin_link_handler_invokes_action_with_clicked_url_context() {

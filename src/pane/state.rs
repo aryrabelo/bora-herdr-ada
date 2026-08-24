@@ -10,6 +10,10 @@ pub struct PaneState {
     pub seen: bool,
     /// Whether unmodified right-click gestures should be forwarded to the pane application.
     pub right_click_passthrough: bool,
+    /// Label of the bora command that launched this pane (Pane-mode command
+    /// runs only). None for panes opened by hand, custom commands, or restored
+    /// sessions. Only a command run tags its pane.
+    pub command_label: Option<String>,
 }
 
 impl PaneState {
@@ -18,6 +22,7 @@ impl PaneState {
             attached_terminal_id,
             seen: true,
             right_click_passthrough: false,
+            command_label: None,
         }
     }
 }

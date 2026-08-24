@@ -302,19 +302,19 @@ mod tests {
         assert!(!app.view.split_borders.is_empty());
         assert!(frame.cursor.is_some());
         assert_eq!(frame.hyperlinks, vec![uri.to_owned()]);
-        // Golden updated for bora-49p.6, and attributed rather than bumped:
-        // the rendered sidebar was dumped column-by-column and shows exactly
-        // the retirement and nothing else. The workspace list now runs from
-        // row 2 to row 17 (it used to stop around row 10), there is no
-        // horizontal section divider and no agent-panel content anywhere, and
-        // on the footer row `menu` ends at column 23 with the collapse toggle
-        // `«` free at column 24 — the launcher no longer covers it. Every
-        // other assertion in this test still holds (geometry, pane count,
-        // cursor, hyperlinks), and the mobile characterization below is
-        // unchanged, as expected for a desktop-sidebar-only change.
+        // Golden updated for bora-55c.3, attributed rather than bumped: the
+        // rendered sidebar was dumped column-by-column again and the only
+        // change against the 49p.6 frame is the Programs band's removal —
+        // the "+ run command…" launcher row that sat directly above the
+        // footer is gone and the workspace list body extends one row
+        // further down. Header row, the workspace row at row 2, and the
+        // footer geometry (`menu` ending at column 23, `«` free at 24) are
+        // byte-identical to the previous frame. Every other assertion in
+        // this test still holds, and the mobile characterization below is
+        // unchanged (Repo-view-only band).
         assert_eq!(
             frame_digest(&frame),
-            "a0e0ef1c0184bedf6826c28f7fa1749d0562774cbf668c0b4934845d44f7e3c1"
+            "ea14507b2e79af171b5e8224959d8a436ec2ee5a8bad80d13d6676139b8e3949"
         );
     }
 

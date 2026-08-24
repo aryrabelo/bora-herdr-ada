@@ -387,14 +387,6 @@ pub(super) fn open_rename_workspace(
     state.mode = Mode::RenameWorkspace;
 }
 
-pub(super) fn open_launch_program_prompt(state: &mut AppState) {
-    state.pending_workspace_create_cwd = None;
-    state.rename_pane_target = None;
-    state.name_input = String::new();
-    state.name_input_replace_on_type = false;
-    state.mode = Mode::LaunchProgramPrompt;
-}
-
 pub(super) fn open_set_workspace_group(state: &mut AppState, ws_idx: usize) {
     state.selected = ws_idx;
     state.rename_pane_target = None;
@@ -1164,6 +1156,7 @@ pub(super) fn apply_context_menu_action(
                 ws_idx,
                 command: cmd.command.clone(),
                 mode: cmd.mode.clone(),
+                label: Some(cmd.label.clone()),
                 port: bora_port,
             });
             leave_modal(state);
@@ -1336,17 +1329,6 @@ impl App {
                     self.state.workspaces[selected].visual_group = Some(new_name);
                 }
                 self.state.mark_session_dirty();
-            }
-            Mode::LaunchProgramPrompt if !new_name.is_empty() => {
-                if let Err(err) = self.spawn_pane_command(&new_name, vec![]) {
-                    self.state.toast = Some(crate::app::state::ToastNotification {
-                        kind: crate::app::state::ToastKind::NeedsAttention,
-                        title: "bora command failed".to_string(),
-                        context: err.to_string(),
-                        position: None,
-                        target: None,
-                    });
-                }
             }
             _ => {}
         }
@@ -1820,6 +1802,7 @@ impl App {
                     ws_idx,
                     command: cmd.command.clone(),
                     mode: cmd.mode.clone(),
+                    label: Some(cmd.label.clone()),
                     port: bora_port,
                 });
                 leave_modal(&mut self.state);

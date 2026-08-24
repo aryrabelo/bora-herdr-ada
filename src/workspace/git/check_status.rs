@@ -1,5 +1,7 @@
 use std::path::Path;
 
+use super::check_provider::{CheckProvider, ProviderOutcome};
+
 // ── Types ────────────────────────────────────────────────────────────────────
 
 /// PR summary and CI check status for a workspace branch.
@@ -8,6 +10,23 @@ pub struct WorkspaceCheckStatus {
     pub pr: Option<PrSummary>,
     pub checks: Vec<CheckRun>,
     pub error: Option<String>,
+}
+
+/// The `error` value `legacy_check_status` uses for
+/// `ProviderOutcome::NotApplicable`, preserved verbatim from the pre-provider
+/// `fetch_check_status` so existing consumers keep their behavior. Consumers
+/// that must distinguish "the provider does not apply here" from a real
+/// failure compare against this sentinel (see
+/// `WorkspaceCheckStatus::is_not_applicable`).
+pub(crate) const NOT_APPLICABLE_ERROR: &str = "no PR for this branch";
+
+impl WorkspaceCheckStatus {
+    /// True when the provider reported not-applicable (no PR for this branch)
+    /// rather than a failure — the legacy mapping carries that outcome as the
+    /// `NOT_APPLICABLE_ERROR` sentinel error.
+    pub fn is_not_applicable(&self) -> bool {
+        self.error.as_deref() == Some(NOT_APPLICABLE_ERROR)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,6 +45,27 @@ pub struct CheckRun {
     pub conclusion: Option<String>,
 }
 
+impl CheckRun {
+    /// True when the run's conclusion is a hard failure — the same set
+    /// `checks_rollup` treats as failing.
+    pub fn is_failing(&self) -> bool {
+        is_failing_conclusion(self.conclusion.as_deref())
+    }
+}
+
+/// The `conclusion` values that mean a check run hard-failed. Shared by
+/// `checks_rollup` (one failing run fails the rollup), `checks_counts`, and
+/// the sidebar CHECKS rows (one row per failing run) so the three can never
+/// drift apart.
+fn is_failing_conclusion(conclusion: Option<&str>) -> bool {
+    matches!(
+        conclusion,
+        Some(
+            "FAILURE" | "ERROR" | "TIMED_OUT" | "CANCELLED" | "ACTION_REQUIRED" | "STARTUP_FAILURE"
+        )
+    )
+}
+
 /// Aggregate state of a PR's checks, mirroring the statusline rollup rules.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChecksRollup {
@@ -39,25 +79,26 @@ pub fn checks_rollup(checks: &[CheckRun]) -> Option<ChecksRollup> {
     if checks.is_empty() {
         return None;
     }
-    if checks.iter().any(|c| {
-        matches!(
-            c.conclusion.as_deref(),
-            Some(
-                "FAILURE"
-                    | "ERROR"
-                    | "TIMED_OUT"
-                    | "CANCELLED"
-                    | "ACTION_REQUIRED"
-                    | "STARTUP_FAILURE"
-            )
-        )
-    }) {
+    if checks.iter().any(CheckRun::is_failing) {
         return Some(ChecksRollup::Failing);
     }
     if checks.iter().any(|c| c.status != "COMPLETED") {
         return Some(ChecksRollup::Pending);
     }
     Some(ChecksRollup::Passing)
+}
+
+/// `(passing, total)` over check runs, following `checks_rollup`'s rules: a
+/// run passes when it is `COMPLETED` and its conclusion is not a hard failure
+/// (`NEUTRAL`/`SKIPPED` count as passing, still-running checks do not).
+/// `passing == total` exactly when `checks_rollup` returns `Passing`, so the
+/// sidebar's `n/m` and its rollup glyph always agree.
+pub fn checks_counts(checks: &[CheckRun]) -> (usize, usize) {
+    let passing = checks
+        .iter()
+        .filter(|run| run.status == "COMPLETED" && !run.is_failing())
+        .count();
+    (passing, checks.len())
 }
 
 // ── JSON parsing ─────────────────────────────────────────────────────────────
@@ -174,71 +215,38 @@ pub(super) fn parse_gh_pr_json(json_str: &str) -> Result<WorkspaceCheckStatus, S
 
 // ── Acquisition ──────────────────────────────────────────────────────────────
 
-/// Fetch PR + check status for the given branch by running `gh pr view`.
+/// Fetch PR + check status for the given branch via the built-in `gh` provider
+/// (see `check_provider.rs` for the provider contract).
 ///
 /// Returns a `WorkspaceCheckStatus` that always has a value — errors are
 /// captured in the `error` field rather than propagated.
 #[allow(dead_code)] // called by App::start_checks_fetch (slice 4 trigger)
 pub fn fetch_check_status(cwd: &Path, branch: &str) -> WorkspaceCheckStatus {
-    let output = match std::process::Command::new("gh")
-        .current_dir(cwd)
-        .args([
-            "pr",
-            "view",
-            branch,
-            "--json",
-            "number,title,state,url,statusCheckRollup,mergeable",
-        ])
-        .output()
-    {
-        Ok(output) => output,
-        Err(e) => {
-            // gh not installed or not executable
-            let msg = if e.kind() == std::io::ErrorKind::NotFound {
-                "gh CLI not found".to_string()
-            } else {
-                format!("failed to run gh: {e}")
-            };
-            tracing::debug!("check_status: {msg}");
-            return WorkspaceCheckStatus {
-                pr: None,
-                checks: Vec::new(),
-                error: Some(msg),
-            };
-        }
-    };
+    legacy_check_status(CheckProvider::gh().run(cwd, branch))
+}
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        // Common cases: no PR exists, not authenticated, not a GitHub remote
-        let msg = if stderr.contains("no pull requests found") {
-            "no PR for this branch".to_string()
-        } else if stderr.contains("authentication") || stderr.contains("auth") {
-            "gh not authenticated".to_string()
-        } else if stderr.is_empty() {
-            "gh pr view failed".to_string()
-        } else {
-            stderr
-        };
-        tracing::debug!("check_status: gh failed for branch {branch:?}: {msg}");
-        return WorkspaceCheckStatus {
+/// Map a provider outcome onto the legacy `WorkspaceCheckStatus` shape today's
+/// callers consume. `NotApplicable` keeps the historical "no PR for this
+/// branch" error string so existing behavior is unchanged; E2 consumers
+/// (bora-i1r.2) use `ProviderOutcome` directly, where not-applicable carries
+/// neither rows nor error.
+fn legacy_check_status(outcome: ProviderOutcome) -> WorkspaceCheckStatus {
+    match outcome {
+        ProviderOutcome::Rows { pr, checks } => WorkspaceCheckStatus {
+            pr,
+            checks,
+            error: None,
+        },
+        ProviderOutcome::NotApplicable => WorkspaceCheckStatus {
+            pr: None,
+            checks: Vec::new(),
+            error: Some(NOT_APPLICABLE_ERROR.to_string()),
+        },
+        ProviderOutcome::Error(msg) => WorkspaceCheckStatus {
             pr: None,
             checks: Vec::new(),
             error: Some(msg),
-        };
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    match parse_gh_pr_json(&stdout) {
-        Ok(status) => status,
-        Err(e) => {
-            tracing::warn!("check_status: failed to parse gh output: {e}");
-            WorkspaceCheckStatus {
-                pr: None,
-                checks: Vec::new(),
-                error: Some(e),
-            }
-        }
+        },
     }
 }
 
@@ -428,6 +436,39 @@ mod tests {
     }
 
     #[test]
+    fn legacy_status_maps_rows_without_error() {
+        let outcome = ProviderOutcome::Rows {
+            pr: None,
+            checks: vec![CheckRun {
+                name: "ci".into(),
+                status: "COMPLETED".into(),
+                conclusion: Some("SUCCESS".into()),
+            }],
+        };
+        let status = legacy_check_status(outcome);
+        assert_eq!(status.checks.len(), 1);
+        assert!(status.error.is_none());
+    }
+
+    #[test]
+    fn legacy_status_maps_not_applicable_to_historical_no_pr_error() {
+        // Pre-provider behavior surfaced "no PR" as an error string; the
+        // legacy mapping preserves it so callers see no behavior change.
+        let status = legacy_check_status(ProviderOutcome::NotApplicable);
+        assert!(status.pr.is_none());
+        assert!(status.checks.is_empty());
+        assert_eq!(status.error.as_deref(), Some("no PR for this branch"));
+    }
+
+    #[test]
+    fn legacy_status_maps_error_to_error_field_never_empty() {
+        let status = legacy_check_status(ProviderOutcome::Error("boom".to_string()));
+        assert!(status.pr.is_none());
+        assert!(status.checks.is_empty());
+        assert_eq!(status.error.as_deref(), Some("boom"));
+    }
+
+    #[test]
     fn parse_missing_number_returns_error() {
         let json = r#"{"title": "no number", "state": "OPEN"}"#;
         let result = parse_gh_pr_json(json);
@@ -469,5 +510,103 @@ mod tests {
         let pr = status.pr.unwrap();
         assert_eq!(pr.state, "CLOSED");
         assert_eq!(status.checks[0].conclusion.as_deref(), Some("NEUTRAL"));
+    }
+
+    #[test]
+    fn counts_empty_is_zero_zero() {
+        assert_eq!(checks_counts(&[]), (0, 0));
+    }
+
+    #[test]
+    fn counts_mixed_conclusions() {
+        let checks = [
+            run("COMPLETED", Some("SUCCESS")),
+            run("COMPLETED", Some("FAILURE")),
+            run("IN_PROGRESS", None),
+            run("COMPLETED", Some("NEUTRAL")),
+            run("COMPLETED", Some("SKIPPED")),
+        ];
+        // 3 passing (SUCCESS, NEUTRAL, SKIPPED) out of 5; the failing and the
+        // still-running check are not passing.
+        assert_eq!(checks_counts(&checks), (3, 5));
+    }
+
+    #[test]
+    fn counts_pending_runs_are_not_passing() {
+        let checks = [run("COMPLETED", Some("SUCCESS")), run("QUEUED", None)];
+        assert_eq!(checks_counts(&checks), (1, 2));
+    }
+
+    #[test]
+    fn counts_hard_fail_conclusions_are_not_passing() {
+        for c in [
+            "FAILURE",
+            "ERROR",
+            "TIMED_OUT",
+            "CANCELLED",
+            "ACTION_REQUIRED",
+            "STARTUP_FAILURE",
+        ] {
+            assert_eq!(checks_counts(&[run("COMPLETED", Some(c))]), (0, 1), "{c}");
+        }
+    }
+
+    #[test]
+    fn counts_legacy_status_context_shapes() {
+        // External CI arrives as StatusContext items, which the parser maps to
+        // COMPLETED + conclusion (or IN_PROGRESS + None while pending).
+        let json = r#"{
+            "number": 7,
+            "title": "t",
+            "state": "OPEN",
+            "url": "https://github.com/o/r/pull/7",
+            "statusCheckRollup": [
+                {"__typename": "StatusContext", "context": "ci/circleci: build", "state": "SUCCESS"},
+                {"__typename": "StatusContext", "context": "ci/circleci: deploy", "state": "PENDING"},
+                {"__typename": "StatusContext", "context": "ci/circleci: lint", "state": "FAILURE"}
+            ]
+        }"#;
+        let status = parse_gh_pr_json(json).unwrap();
+        assert_eq!(checks_counts(&status.checks), (1, 3));
+    }
+
+    #[test]
+    fn counts_agree_with_rollup_passing_iff_all_pass() {
+        // The sidebar shows `n/m` and the rollup glyph side by side; they must
+        // never disagree about "all green".
+        let cases: Vec<Vec<CheckRun>> = vec![
+            vec![],
+            vec![run("COMPLETED", Some("SUCCESS"))],
+            vec![
+                run("COMPLETED", Some("SUCCESS")),
+                run("COMPLETED", Some("FAILURE")),
+            ],
+            vec![run("COMPLETED", Some("SUCCESS")), run("IN_PROGRESS", None)],
+            vec![
+                run("COMPLETED", Some("NEUTRAL")),
+                run("COMPLETED", Some("SKIPPED")),
+            ],
+        ];
+        for checks in cases {
+            let (passing, total) = checks_counts(&checks);
+            assert_eq!(
+                checks_rollup(&checks) == Some(ChecksRollup::Passing),
+                passing == total && total > 0,
+                "{checks:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn not_applicable_sentinel_distinguishes_no_pr_from_real_errors() {
+        let not_applicable = legacy_check_status(ProviderOutcome::NotApplicable);
+        assert!(not_applicable.is_not_applicable());
+        let error = legacy_check_status(ProviderOutcome::Error("boom".to_string()));
+        assert!(!error.is_not_applicable());
+        let rows = legacy_check_status(ProviderOutcome::Rows {
+            pr: None,
+            checks: Vec::new(),
+        });
+        assert!(!rows.is_not_applicable());
     }
 }

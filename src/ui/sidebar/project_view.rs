@@ -65,10 +65,11 @@ const ORPHANS_COLLAPSE_KEY: &str = "proj:__orphans__";
 ///   `ProjectRow` with `declared: false`.
 ///
 /// Not built here (deliberately out of scope, see the task report): COMMANDS
-/// / CHECKS section rows (no provider exists yet — rule 5 means they would
-/// never render anyway) and `unopened: true` worktree rows (no inventory
-/// source exists yet on `AppState`; wiring one is future work, never a
-/// disk/git call from this pure builder).
+/// section rows (bora-55c.2 owns that band's content) and `unopened: true`
+/// worktree rows (no inventory source exists yet on `AppState`; wiring one is
+/// future work, never a disk/git call from this pure builder). The CHECKS
+/// band IS built here, from the representative workspace's
+/// `cached_check_status` (see `push_checks_section`).
 pub(super) fn project_view_entries(
     app: &AppState,
     force_expanded: bool,
@@ -99,6 +100,7 @@ pub(super) fn project_view_entries(
             &mut entries,
             app,
             &format!("proj:{slug}"),
+            Some(slug),
             name,
             ws_idxs,
             true,
@@ -116,6 +118,7 @@ pub(super) fn project_view_entries(
             &mut entries,
             app,
             ORPHANS_COLLAPSE_KEY,
+            None,
             ORPHANS_NAME.to_string(),
             orphan_idxs,
             false,
@@ -158,6 +161,10 @@ fn push_project_group(
     entries: &mut Vec<WorkspaceListEntry>,
     app: &AppState,
     collapse_key: &str,
+    // The projects.yml key when this is a declared project (`proj:{slug}`),
+    // `None` for the orphans group — only declared projects carry the
+    // project-level TODOS/NOTES bands (bora-s3y.3).
+    slug: Option<&str>,
     name: String,
     ws_idxs: Vec<usize>,
     declared: bool,
@@ -209,6 +216,13 @@ fn push_project_group(
         return;
     }
 
+    // Project-level shared memory (bora-s3y.3): between the project row and
+    // its worktrees, TODOS then NOTES.
+    if let Some(slug) = slug {
+        push_todos_section(entries, app, slug, force_expanded);
+        push_notes_section(entries, app, slug, force_expanded);
+    }
+
     for checkout_key in &order {
         push_worktree(
             entries,
@@ -234,7 +248,8 @@ fn checkout_group_key(ws: &Workspace) -> String {
 }
 
 /// Push one `WorktreeRow` and, unless it is collapsed, its section bands
-/// (none exist yet, see module doc) and its `Workspace`/`PaneRow` children.
+/// (COMMANDS from the declaration, CHECKS from the cached provider outcome)
+/// and its `Workspace`/`PaneRow` children.
 fn push_worktree(
     entries: &mut Vec<WorkspaceListEntry>,
     app: &AppState,
@@ -278,29 +293,91 @@ fn push_worktree(
         return;
     }
 
-    // Rule 5: a band renders only when non-empty, COMMANDS before CHECKS. The
-    // names come from the project's declared `sections:` in `projects.yml` —
-    // the one source that exists today and is already resolved off the tick.
-    // `done` is 0 on both: nothing executes commands or collects check runs
-    // yet (design section 5/6 is a later bead), and rule 6 defines COMMANDS as
-    // running/declared, so `0/2` is the honest count, not a placeholder.
-    push_section(
+    // Rule 5: a band renders only when non-empty, COMMANDS before CHECKS.
+    push_commands_section(
         entries,
         app,
-        ProjectSection::Commands,
+        checkout_key,
+        ws_idxs,
         commands,
         force_expanded,
     );
-    push_section(entries, app, ProjectSection::Checks, checks, force_expanded);
+    push_checks_section(entries, app, checkout_key, first, checks, force_expanded);
 
     for &idx in ws_idxs {
         push_workspace(entries, app, idx);
     }
 }
 
-/// Push one declared band and its items. Empty or absent -> nothing at all
-/// (rule 5), which is why a project with no `sections:` renders exactly the
-/// tree it renders today.
+/// Push the live COMMANDS band for one worktree (bora-55c.3). Items are the
+/// repo-declared pane-mode commands the project selects
+/// (`sections.commands`); the header's `n/m` counts distinct selected
+/// commands with at least one live tagged pane (bora-55c.2's
+/// `PaneState.command_label`) over the selected total — the mockup's
+/// running/declared. Shell-mode commands never appear (fire-and-forget is
+/// unobservable by construction). Reads `Workspace.cached_commands`
+/// (refreshed on the runtime tick) and pane tags only — the loader never
+/// runs here. The collapse key is namespaced per worktree
+/// (`sec:commands:{checkout_key}`), and item rows carry the representative
+/// workspace (the same one CHECKS reads) so a click launches there.
+fn push_commands_section(
+    entries: &mut Vec<WorkspaceListEntry>,
+    app: &AppState,
+    checkout_key: &str,
+    ws_idxs: &[usize],
+    selection: &[String],
+    force_expanded: bool,
+) {
+    if selection.is_empty() {
+        return;
+    }
+    let Some(&first) = ws_idxs.first() else {
+        return;
+    };
+    let declared: Vec<&crate::bora_config::BoraCommand> = app.workspaces[first]
+        .cached_commands
+        .as_deref()
+        .unwrap_or(&[])
+        .iter()
+        .filter(|cmd| {
+            cmd.mode == crate::bora_config::BoraCommandMode::Pane && selection.contains(&cmd.label)
+        })
+        .collect();
+    if declared.is_empty() {
+        return;
+    }
+    let is_running = |label: &str| {
+        ws_idxs.iter().any(|&idx| {
+            app.workspaces[idx]
+                .panes
+                .values()
+                .any(|pane| pane.command_label.as_deref() == Some(label))
+        })
+    };
+    let collapse_key = format!("sec:commands:{checkout_key}");
+    entries.push(WorkspaceListEntry::SectionHeader {
+        kind: ProjectSection::Commands,
+        collapse_key: collapse_key.clone(),
+        done: declared.iter().filter(|cmd| is_running(&cmd.label)).count(),
+        total: declared.len(),
+    });
+    if !force_expanded && app.collapsed_space_keys.contains(&collapse_key) {
+        return;
+    }
+    for cmd in declared {
+        entries.push(WorkspaceListEntry::SectionItem {
+            kind: ProjectSection::Commands,
+            label: cmd.label.clone(),
+            // ponytail: port badge (wt port block) deferred — resolve_port
+            // runs per click already; a render-time badge wants a
+            // tick-refreshed port cache nobody needs yet.
+            detail: None,
+            running: is_running(&cmd.label),
+            ws_idx: Some(first),
+        });
+    }
+}
+
 /// A project's declared band names. Absent `sections:` is an empty slice, so
 /// rule 5 keeps both bands unemitted.
 fn sections_of(project: &crate::persist::projects::Project) -> (&[String], &[String]) {
@@ -313,26 +390,144 @@ fn sections_of(project: &crate::persist::projects::Project) -> (&[String], &[Str
     )
 }
 
-fn push_section(
+/// Push the CHECKS band for one worktree, from the representative workspace's
+/// `cached_check_status` (the same workspace the WorktreeRow's PR badge reads
+/// — one fetch covers every workspace on the branch). Eligibility mirrors the
+/// provider contract (`ProviderOutcome`):
+///
+/// - The project must declare the section (`sections.checks` non-empty) —
+///   the declaration is the design's "toggle CHECKS" knob. Undeclared renders
+///   nothing, exactly like today.
+/// - Not-applicable (the `WorkspaceCheckStatus::is_not_applicable` sentinel,
+///   e.g. no PR for this branch) renders nothing at all.
+/// - No cached outcome yet (first fetch still in flight) renders nothing —
+///   rule 5, the band would be empty.
+/// - A provider error renders the header plus one error row: a failure is
+///   never silently empty.
+/// - Rows render the header with `n/m` = `checks_counts` (passing/total) and
+///   one item per failing check; passing/pending checks have no row. A PR
+///   with zero check runs renders no band (rule 5).
+///
+/// The collapse key is namespaced per worktree (`sec:checks:{checkout_key}`)
+/// so two worktrees' bands never share collapse state.
+fn push_checks_section(
     entries: &mut Vec<WorkspaceListEntry>,
     app: &AppState,
-    kind: ProjectSection,
-    names: &[String],
+    checkout_key: &str,
+    ws: &Workspace,
+    declared: &[String],
     force_expanded: bool,
 ) {
+    if declared.is_empty() {
+        return;
+    }
+    let Some(status) = ws.cached_check_status.as_ref() else {
+        return;
+    };
+    if status.is_not_applicable() {
+        return;
+    }
+    let collapse_key = format!("sec:checks:{checkout_key}");
+    if let Some(error) = status.error.as_deref() {
+        entries.push(WorkspaceListEntry::SectionHeader {
+            kind: ProjectSection::Checks,
+            collapse_key: collapse_key.clone(),
+            done: 0,
+            total: 0,
+        });
+        if !force_expanded && app.collapsed_space_keys.contains(&collapse_key) {
+            return;
+        }
+        entries.push(WorkspaceListEntry::SectionItem {
+            kind: ProjectSection::Checks,
+            label: error.to_string(),
+            detail: None,
+            running: false,
+            ws_idx: None,
+        });
+        return;
+    }
+    let (passing, total) = crate::workspace::checks_counts(&status.checks);
+    if total == 0 {
+        return;
+    }
+    entries.push(WorkspaceListEntry::SectionHeader {
+        kind: ProjectSection::Checks,
+        collapse_key: collapse_key.clone(),
+        done: passing,
+        total,
+    });
+    if !force_expanded && app.collapsed_space_keys.contains(&collapse_key) {
+        return;
+    }
+    for run in status.checks.iter().filter(|run| run.is_failing()) {
+        entries.push(WorkspaceListEntry::SectionItem {
+            kind: ProjectSection::Checks,
+            label: run.name.clone(),
+            detail: None,
+            running: false,
+            ws_idx: None,
+        });
+    }
+}
+
+/// Push the project-level TODOS band (bora-s3y.3): header `n/m` = done/total
+/// and one row per ACTIONABLE open todo (blocked todos get no row — the
+/// section is the swarm's "what can I pick up next" list). Reads the
+/// AppState snapshot the verb handlers refresh; never the stores. Renders
+/// only when the project has todos at all (rule 5). Collapse key is
+/// namespaced per project (`sec:todos:{slug}`).
+fn push_todos_section(
+    entries: &mut Vec<WorkspaceListEntry>,
+    app: &AppState,
+    slug: &str,
+    force_expanded: bool,
+) {
+    let Some(summary) = app.project_todos.get(slug) else {
+        return;
+    };
+    if summary.total == 0 {
+        return;
+    }
+    let collapse_key = format!("sec:todos:{slug}");
+    entries.push(WorkspaceListEntry::SectionHeader {
+        kind: ProjectSection::Todos,
+        collapse_key: collapse_key.clone(),
+        done: summary.done,
+        total: summary.total,
+    });
+    if !force_expanded && app.collapsed_space_keys.contains(&collapse_key) {
+        return;
+    }
+    for title in &summary.actionable {
+        entries.push(WorkspaceListEntry::SectionItem {
+            kind: ProjectSection::Todos,
+            label: title.clone(),
+            detail: None,
+            running: false,
+            ws_idx: None,
+        });
+    }
+}
+
+/// Push the project-level NOTES band (bora-s3y.3): one row per scratchpad
+/// doc name, from the same refresh discipline as TODOS. Renders only when
+/// the project has docs.
+fn push_notes_section(
+    entries: &mut Vec<WorkspaceListEntry>,
+    app: &AppState,
+    slug: &str,
+    force_expanded: bool,
+) {
+    let Some(names) = app.project_notes.get(slug) else {
+        return;
+    };
     if names.is_empty() {
         return;
     }
-    let collapse_key = format!(
-        "sec:{}:{}",
-        match kind {
-            ProjectSection::Commands => "commands",
-            ProjectSection::Checks => "checks",
-        },
-        names.len()
-    );
+    let collapse_key = format!("sec:notes:{slug}");
     entries.push(WorkspaceListEntry::SectionHeader {
-        kind,
+        kind: ProjectSection::Notes,
         collapse_key: collapse_key.clone(),
         done: 0,
         total: names.len(),
@@ -342,10 +537,11 @@ fn push_section(
     }
     for name in names {
         entries.push(WorkspaceListEntry::SectionItem {
-            kind,
+            kind: ProjectSection::Notes,
             label: name.clone(),
             detail: None,
             running: false,
+            ws_idx: None,
         });
     }
 }
@@ -416,7 +612,9 @@ mod tests {
     use ratatui::layout::Direction;
 
     use crate::config::IsolatedDirs;
-    use crate::persist::projects::{Member, Project, ProjectsFile, ProjectsStore, WorktreesScope};
+    use crate::persist::projects::{
+        Member, Project, ProjectsFile, ProjectsStore, Sections, WorktreesScope,
+    };
 
     fn temp_test_dir(name: &str) -> std::path::PathBuf {
         let nanos = std::time::SystemTime::now()
@@ -463,6 +661,71 @@ mod tests {
             sections: None,
             auto_join: true,
         }
+    }
+
+    /// Same as `project` but with the CHECKS band declared — the design's
+    /// "toggle CHECKS" knob (`sections.checks` selects the providers).
+    fn project_with_checks(members: Vec<Member>) -> Project {
+        let mut project = project(members);
+        project.sections = Some(Sections {
+            checks: Some(vec!["gh".to_string()]),
+            commands: None,
+        });
+        project
+    }
+
+    fn check_run(name: &str, status: &str, conclusion: Option<&str>) -> crate::workspace::CheckRun {
+        crate::workspace::CheckRun {
+            name: name.to_string(),
+            status: status.to_string(),
+            conclusion: conclusion.map(str::to_string),
+        }
+    }
+
+    fn checks_status(
+        pr_number: Option<u64>,
+        checks: Vec<crate::workspace::CheckRun>,
+        error: Option<&str>,
+    ) -> crate::workspace::WorkspaceCheckStatus {
+        crate::workspace::WorkspaceCheckStatus {
+            pr: pr_number.map(|number| crate::workspace::PrSummary {
+                number,
+                title: "t".to_string(),
+                state: "OPEN".to_string(),
+                url: String::new(),
+                mergeable: None,
+            }),
+            checks,
+            error: error.map(str::to_string),
+        }
+    }
+
+    /// The `(done, total)` of the worktree's CHECKS band header, if emitted.
+    fn checks_band(entries: &[WorkspaceListEntry]) -> Option<(usize, usize)> {
+        entries.iter().find_map(|e| match e {
+            WorkspaceListEntry::SectionHeader {
+                kind: ProjectSection::Checks,
+                done,
+                total,
+                ..
+            } => Some((*done, *total)),
+            _ => None,
+        })
+    }
+
+    /// The labels of the CHECKS band's item rows, in order.
+    fn checks_items(entries: &[WorkspaceListEntry]) -> Vec<String> {
+        entries
+            .iter()
+            .filter_map(|e| match e {
+                WorkspaceListEntry::SectionItem {
+                    kind: ProjectSection::Checks,
+                    label,
+                    ..
+                } => Some(label.clone()),
+                _ => None,
+            })
+            .collect()
     }
 
     /// Writes `file` into an isolated `XDG_CONFIG_HOME` and loads it back
@@ -817,6 +1080,686 @@ mod tests {
     }
 
     #[test]
+    fn checks_section_counts_passing_over_total_and_lists_failing_rows() {
+        let repo = temp_test_dir("checks-mixed");
+        init_fake_git_repo(&repo, None);
+
+        let mut file = ProjectsFile::default();
+        file.projects
+            .insert("proj".to_string(), project_with_checks(vec![member(&repo)]));
+        let (_isolated, store) = store_with(file);
+        let mut app = AppState::test_new();
+        app.projects = store;
+
+        let mut ws = ws_at(&repo);
+        ws.cached_check_status = Some(checks_status(
+            Some(42),
+            vec![
+                check_run("build", "COMPLETED", Some("SUCCESS")),
+                check_run("clippy", "COMPLETED", Some("FAILURE")),
+                check_run("test", "IN_PROGRESS", None),
+                check_run("docs", "COMPLETED", Some("SKIPPED")),
+                check_run("lint", "COMPLETED", Some("ERROR")),
+            ],
+            None,
+        ));
+        app.workspaces = vec![ws];
+
+        let entries = project_view_entries(&app, false);
+        // n/m = passing/total: build, docs pass; clippy, lint fail; test runs.
+        assert_eq!(
+            checks_band(&entries),
+            Some((2, 5)),
+            "header must carry checks_counts: {entries:?}"
+        );
+        assert_eq!(
+            checks_items(&entries),
+            vec!["clippy".to_string(), "lint".to_string()],
+            "only failing checks get rows, in provider order: {entries:?}"
+        );
+
+        std::fs::remove_dir_all(&repo).unwrap();
+    }
+
+    #[test]
+    fn checks_row_pr_number_lands_on_the_worktree_row() {
+        let repo = temp_test_dir("checks-pr");
+        init_fake_git_repo(&repo, None);
+
+        let mut file = ProjectsFile::default();
+        file.projects
+            .insert("proj".to_string(), project_with_checks(vec![member(&repo)]));
+        let (_isolated, store) = store_with(file);
+        let mut app = AppState::test_new();
+        app.projects = store;
+
+        let mut ws = ws_at(&repo);
+        ws.cached_check_status = Some(checks_status(
+            Some(128),
+            vec![check_run("build", "COMPLETED", Some("SUCCESS"))],
+            None,
+        ));
+        app.workspaces = vec![ws];
+
+        let entries = project_view_entries(&app, false);
+        let pr = entries.iter().find_map(|e| match e {
+            WorkspaceListEntry::WorktreeRow { pr, .. } => Some(*pr),
+            _ => None,
+        });
+        assert_eq!(
+            pr,
+            Some(Some(128)),
+            "the worktree row must carry the PR number: {entries:?}"
+        );
+
+        std::fs::remove_dir_all(&repo).unwrap();
+    }
+
+    #[test]
+    fn checks_section_renders_provider_error_as_a_row() {
+        let repo = temp_test_dir("checks-error");
+        init_fake_git_repo(&repo, None);
+
+        let mut file = ProjectsFile::default();
+        file.projects
+            .insert("proj".to_string(), project_with_checks(vec![member(&repo)]));
+        let (_isolated, store) = store_with(file);
+        let mut app = AppState::test_new();
+        app.projects = store;
+
+        let mut ws = ws_at(&repo);
+        ws.cached_check_status = Some(checks_status(None, Vec::new(), Some("gh: boom")));
+        app.workspaces = vec![ws];
+
+        let entries = project_view_entries(&app, false);
+        assert_eq!(
+            checks_band(&entries),
+            Some((0, 0)),
+            "an errored band still renders its header: {entries:?}"
+        );
+        assert_eq!(
+            checks_items(&entries),
+            vec!["gh: boom".to_string()],
+            "a provider error is a visible row, never silently empty: {entries:?}"
+        );
+
+        std::fs::remove_dir_all(&repo).unwrap();
+    }
+
+    #[test]
+    fn checks_section_not_applicable_renders_no_section() {
+        let repo = temp_test_dir("checks-na");
+        init_fake_git_repo(&repo, None);
+
+        let mut file = ProjectsFile::default();
+        file.projects
+            .insert("proj".to_string(), project_with_checks(vec![member(&repo)]));
+        let (_isolated, store) = store_with(file);
+        let mut app = AppState::test_new();
+        app.projects = store;
+
+        let mut ws = ws_at(&repo);
+        // NotApplicable arrives on the legacy shape as the sentinel error.
+        ws.cached_check_status = Some(checks_status(
+            None,
+            Vec::new(),
+            Some(crate::workspace::NOT_APPLICABLE_ERROR),
+        ));
+        app.workspaces = vec![ws];
+
+        let entries = project_view_entries(&app, false);
+        assert_eq!(checks_band(&entries), None, "{entries:?}");
+        assert!(checks_items(&entries).is_empty(), "{entries:?}");
+
+        std::fs::remove_dir_all(&repo).unwrap();
+    }
+
+    #[test]
+    fn checks_section_absent_without_declaration_or_before_first_fetch() {
+        let repo = temp_test_dir("checks-gating");
+        init_fake_git_repo(&repo, None);
+
+        // Each half is scoped: `IsolatedDirs` holds a non-reentrant lock, so
+        // the first guard must drop before the second `store_with` runs.
+        {
+            // (a) Data present but the project declares no CHECKS band ->
+            // nothing.
+            let mut file = ProjectsFile::default();
+            file.projects
+                .insert("proj".to_string(), project(vec![member(&repo)]));
+            let (_isolated, store) = store_with(file);
+            let mut app = AppState::test_new();
+            app.projects = store;
+
+            let mut ws = ws_at(&repo);
+            ws.cached_check_status = Some(checks_status(
+                Some(1),
+                vec![check_run("clippy", "COMPLETED", Some("FAILURE"))],
+                None,
+            ));
+            app.workspaces = vec![ws];
+
+            let entries = project_view_entries(&app, false);
+            assert_eq!(
+                checks_band(&entries),
+                None,
+                "an undeclared band must not render: {entries:?}"
+            );
+        }
+
+        {
+            // (b) Declared but the first fetch has not landed yet -> nothing
+            // (rule 5: bands render only when non-empty).
+            let mut file = ProjectsFile::default();
+            file.projects
+                .insert("proj".to_string(), project_with_checks(vec![member(&repo)]));
+            let (_isolated, store) = store_with(file);
+            let mut app = AppState::test_new();
+            app.projects = store;
+            app.workspaces = vec![ws_at(&repo)];
+
+            let entries = project_view_entries(&app, false);
+            assert_eq!(
+                checks_band(&entries),
+                None,
+                "no cached outcome means no band: {entries:?}"
+            );
+        }
+
+        std::fs::remove_dir_all(&repo).unwrap();
+    }
+
+    #[test]
+    fn checks_section_absent_when_pr_has_zero_check_runs() {
+        let repo = temp_test_dir("checks-empty");
+        init_fake_git_repo(&repo, None);
+
+        let mut file = ProjectsFile::default();
+        file.projects
+            .insert("proj".to_string(), project_with_checks(vec![member(&repo)]));
+        let (_isolated, store) = store_with(file);
+        let mut app = AppState::test_new();
+        app.projects = store;
+
+        let mut ws = ws_at(&repo);
+        ws.cached_check_status = Some(checks_status(Some(9), Vec::new(), None));
+        app.workspaces = vec![ws];
+
+        let entries = project_view_entries(&app, false);
+        assert_eq!(
+            checks_band(&entries),
+            None,
+            "a 0/0 band is empty and must not render (rule 5): {entries:?}"
+        );
+
+        std::fs::remove_dir_all(&repo).unwrap();
+    }
+
+    #[test]
+    fn checks_section_collapse_hides_rows_keeps_header() {
+        let repo = temp_test_dir("checks-collapse");
+        init_fake_git_repo(&repo, None);
+
+        let mut file = ProjectsFile::default();
+        file.projects
+            .insert("proj".to_string(), project_with_checks(vec![member(&repo)]));
+        let (_isolated, store) = store_with(file);
+        let mut app = AppState::test_new();
+        app.projects = store;
+
+        let mut ws = ws_at(&repo);
+        ws.cached_check_status = Some(checks_status(
+            None,
+            vec![check_run("clippy", "COMPLETED", Some("FAILURE"))],
+            None,
+        ));
+        app.workspaces = vec![ws];
+
+        // The band's collapse key is namespaced per worktree.
+        let checkout_key = crate::workspace::git_space_metadata(&repo)
+            .expect("fixture must resolve")
+            .checkout_key;
+        app.collapsed_space_keys
+            .insert(format!("sec:checks:{checkout_key}"));
+
+        let entries = project_view_entries(&app, false);
+        assert_eq!(
+            checks_band(&entries),
+            Some((0, 1)),
+            "a collapsed band keeps its header: {entries:?}"
+        );
+        assert!(
+            checks_items(&entries).is_empty(),
+            "a collapsed band hides its rows: {entries:?}"
+        );
+
+        std::fs::remove_dir_all(&repo).unwrap();
+    }
+
+    // ── bora-55c.3: live worktree COMMANDS band ──────────────────────────
+
+    fn project_with_commands(members: Vec<Member>, names: &[&str]) -> Project {
+        let mut project = project(members);
+        project.sections = Some(Sections {
+            checks: None,
+            commands: Some(names.iter().map(ToString::to_string).collect()),
+        });
+        project
+    }
+
+    fn bora_cmd(
+        label: &str,
+        mode: crate::bora_config::BoraCommandMode,
+    ) -> crate::bora_config::BoraCommand {
+        crate::bora_config::BoraCommand {
+            label: label.to_string(),
+            command: format!("run {label}"),
+            mode,
+            branch: None,
+        }
+    }
+
+    /// The `(label, running, ws_idx)` of every COMMANDS item row, in order.
+    fn commands_items(entries: &[WorkspaceListEntry]) -> Vec<(String, bool, Option<usize>)> {
+        entries
+            .iter()
+            .filter_map(|e| match e {
+                WorkspaceListEntry::SectionItem {
+                    kind: ProjectSection::Commands,
+                    label,
+                    running,
+                    ws_idx,
+                    ..
+                } => Some((label.clone(), *running, *ws_idx)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn commands_section_counts_running_over_selected_and_marks_running_rows() {
+        let repo = temp_test_dir("commands-live");
+        init_fake_git_repo(&repo, None);
+
+        let mut file = ProjectsFile::default();
+        file.projects.insert(
+            "proj".to_string(),
+            project_with_commands(vec![member(&repo)], &["dev", "test", "deploy"]),
+        );
+        let (_isolated, store) = store_with(file);
+        let mut app = AppState::test_new();
+        app.projects = store;
+
+        let mut ws = ws_at(&repo);
+        ws.cached_commands = Some(vec![
+            bora_cmd("dev", crate::bora_config::BoraCommandMode::Pane),
+            bora_cmd("test", crate::bora_config::BoraCommandMode::Pane),
+            // Shell-mode is fire-and-forget: declared but never counted.
+            bora_cmd("deploy", crate::bora_config::BoraCommandMode::Shell),
+            // Declared but NOT selected by the project: narrowed out.
+            bora_cmd("extra", crate::bora_config::BoraCommandMode::Pane),
+        ]);
+        let pane = ws
+            .focused_pane_id()
+            .expect("test workspace has a root pane");
+        ws.pane_state_mut(pane)
+            .expect("root pane state")
+            .command_label = Some("dev".to_string());
+        app.workspaces = vec![ws];
+
+        let entries = project_view_entries(&app, false);
+        assert_eq!(
+            section_band(&entries, ProjectSection::Commands),
+            Some((1, 2)),
+            "n/m = selected commands with a live tagged pane / selected \
+             pane-mode declared (shell-mode and unselected excluded): {entries:?}"
+        );
+        assert_eq!(
+            commands_items(&entries),
+            vec![
+                ("dev".to_string(), true, Some(0)),
+                ("test".to_string(), false, Some(0)),
+            ],
+            "running row marked, idle row unmarked, both launchable into the \
+             representative workspace: {entries:?}"
+        );
+
+        std::fs::remove_dir_all(&repo).unwrap();
+    }
+
+    #[test]
+    fn commands_section_absent_without_selection_or_matching_declared() {
+        let repo = temp_test_dir("commands-gating");
+        init_fake_git_repo(&repo, None);
+
+        // (a)+(b) share one projects file, hence one guard. The guard MUST
+        // drop before (c)'s `store_with` — `IsolatedDirs` holds the
+        // process-global, non-reentrant config-env lock and a second guard
+        // deadlocks the test (AGENTS.md, learned 2026-08-22).
+        {
+            // (a) Selection exists but the tick has not refreshed any
+            // declared commands -> no band (rule 5), no loader call from
+            // render.
+            let mut file = ProjectsFile::default();
+            file.projects.insert(
+                "proj".to_string(),
+                project_with_commands(vec![member(&repo)], &["dev"]),
+            );
+            let (_isolated, store) = store_with(file);
+            let mut app = AppState::test_new();
+            app.projects = store;
+            app.workspaces = vec![ws_at(&repo)];
+            let entries = project_view_entries(&app, false);
+            assert_eq!(
+                section_band(&entries, ProjectSection::Commands),
+                None,
+                "no refreshed declarations -> no band: {entries:?}"
+            );
+
+            // (b) Declarations exist but none match the selection -> no
+            // band.
+            app.workspaces[0].cached_commands = Some(vec![bora_cmd(
+                "other",
+                crate::bora_config::BoraCommandMode::Pane,
+            )]);
+            let entries = project_view_entries(&app, false);
+            assert_eq!(
+                section_band(&entries, ProjectSection::Commands),
+                None,
+                "selection matches nothing declared -> no band: {entries:?}"
+            );
+        }
+
+        // (c) Declarations match but the project never selects commands ->
+        // no band.
+        {
+            let mut file = ProjectsFile::default();
+            file.projects
+                .insert("proj".to_string(), project(vec![member(&repo)]));
+            let (_isolated, store) = store_with(file);
+            let mut app = AppState::test_new();
+            app.projects = store;
+            let mut ws = ws_at(&repo);
+            ws.cached_commands = Some(vec![bora_cmd(
+                "dev",
+                crate::bora_config::BoraCommandMode::Pane,
+            )]);
+            app.workspaces = vec![ws];
+            let entries = project_view_entries(&app, false);
+            assert_eq!(
+                section_band(&entries, ProjectSection::Commands),
+                None,
+                "project without sections.commands -> no band: {entries:?}"
+            );
+        }
+
+        std::fs::remove_dir_all(&repo).unwrap();
+    }
+
+    // ── bora-s3y.3: project-level TODOS/NOTES bands ──────────────────────
+
+    fn todos_summary(
+        done: usize,
+        total: usize,
+        actionable: &[&str],
+    ) -> crate::persist::todos::TodosSummary {
+        crate::persist::todos::TodosSummary {
+            done,
+            total,
+            actionable: actionable.iter().map(ToString::to_string).collect(),
+        }
+    }
+
+    fn section_band(
+        entries: &[WorkspaceListEntry],
+        want: ProjectSection,
+    ) -> Option<(usize, usize)> {
+        entries.iter().find_map(|e| match e {
+            WorkspaceListEntry::SectionHeader {
+                kind, done, total, ..
+            } if *kind == want => Some((*done, *total)),
+            _ => None,
+        })
+    }
+
+    fn section_items(entries: &[WorkspaceListEntry], want: ProjectSection) -> Vec<String> {
+        entries
+            .iter()
+            .filter_map(|e| match e {
+                WorkspaceListEntry::SectionItem { kind, label, .. } if *kind == want => {
+                    Some(label.clone())
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn position_of(
+        entries: &[WorkspaceListEntry],
+        pred: impl Fn(&WorkspaceListEntry) -> bool,
+    ) -> usize {
+        entries
+            .iter()
+            .position(pred)
+            .unwrap_or_else(|| panic!("entry not found: {entries:?}"))
+    }
+
+    #[test]
+    fn todos_notes_render_between_project_row_and_worktrees_with_counts() {
+        let repo = temp_test_dir("todos-notes");
+        init_fake_git_repo(&repo, None);
+
+        let mut file = ProjectsFile::default();
+        file.projects
+            .insert("proj".to_string(), project(vec![member(&repo)]));
+        let (_isolated, store) = store_with(file);
+        let mut app = AppState::test_new();
+        app.projects = store;
+        app.workspaces = vec![ws_at(&repo)];
+        app.project_todos.insert(
+            "proj".to_string(),
+            todos_summary(1, 3, &["ship sidebar", "close epic"]),
+        );
+        app.project_notes.insert(
+            "proj".to_string(),
+            vec!["decisions".to_string(), "plan".to_string()],
+        );
+
+        let entries = project_view_entries(&app, false);
+        assert_eq!(
+            section_band(&entries, ProjectSection::Todos),
+            Some((1, 3)),
+            "TODOS header n/m = done/total: {entries:?}"
+        );
+        assert_eq!(
+            section_items(&entries, ProjectSection::Todos),
+            vec!["ship sidebar".to_string(), "close epic".to_string()],
+            "one row per actionable open todo: {entries:?}"
+        );
+        assert_eq!(
+            section_band(&entries, ProjectSection::Notes),
+            Some((0, 2)),
+            "NOTES header carries the doc count: {entries:?}"
+        );
+        assert_eq!(
+            section_items(&entries, ProjectSection::Notes),
+            vec!["decisions".to_string(), "plan".to_string()],
+            "one row per scratchpad doc: {entries:?}"
+        );
+
+        let project_pos = position_of(&entries, |e| {
+            matches!(e, WorkspaceListEntry::ProjectRow { declared: true, .. })
+        });
+        let todos_pos = position_of(&entries, |e| {
+            matches!(
+                e,
+                WorkspaceListEntry::SectionHeader {
+                    kind: ProjectSection::Todos,
+                    ..
+                }
+            )
+        });
+        let notes_pos = position_of(&entries, |e| {
+            matches!(
+                e,
+                WorkspaceListEntry::SectionHeader {
+                    kind: ProjectSection::Notes,
+                    ..
+                }
+            )
+        });
+        let worktree_pos = position_of(&entries, |e| {
+            matches!(e, WorkspaceListEntry::WorktreeRow { .. })
+        });
+        assert!(
+            project_pos < todos_pos && todos_pos < notes_pos && notes_pos < worktree_pos,
+            "sections sit between the project row and its worktrees, TODOS then NOTES: {entries:?}"
+        );
+
+        std::fs::remove_dir_all(&repo).unwrap();
+    }
+
+    #[test]
+    fn todos_section_renders_only_actionable_rows() {
+        let repo = temp_test_dir("todos-actionable");
+        init_fake_git_repo(&repo, None);
+
+        let mut file = ProjectsFile::default();
+        file.projects
+            .insert("proj".to_string(), project(vec![member(&repo)]));
+        let (_isolated, store) = store_with(file);
+        let mut app = AppState::test_new();
+        app.projects = store;
+        app.workspaces = vec![ws_at(&repo)];
+        // Two open todos in the totals, but only one is actionable — the
+        // blocked one has no row (blocking itself is pinned by
+        // persist::todos' TodosSummary tests).
+        app.project_todos
+            .insert("proj".to_string(), todos_summary(0, 2, &["free task"]));
+
+        let entries = project_view_entries(&app, false);
+        assert_eq!(section_band(&entries, ProjectSection::Todos), Some((0, 2)));
+        assert_eq!(
+            section_items(&entries, ProjectSection::Todos),
+            vec!["free task".to_string()],
+            "blocked todos are excluded from the section's actionable rows: {entries:?}"
+        );
+
+        std::fs::remove_dir_all(&repo).unwrap();
+    }
+
+    #[test]
+    fn todos_notes_collapse_hides_rows_keeps_headers() {
+        let repo = temp_test_dir("todos-collapse");
+        init_fake_git_repo(&repo, None);
+
+        let mut file = ProjectsFile::default();
+        file.projects
+            .insert("proj".to_string(), project(vec![member(&repo)]));
+        let (_isolated, store) = store_with(file);
+        let mut app = AppState::test_new();
+        app.projects = store;
+        app.workspaces = vec![ws_at(&repo)];
+        app.project_todos
+            .insert("proj".to_string(), todos_summary(0, 1, &["task"]));
+        app.project_notes
+            .insert("proj".to_string(), vec!["plan".to_string()]);
+        app.collapsed_space_keys
+            .insert("sec:todos:proj".to_string());
+        app.collapsed_space_keys
+            .insert("sec:notes:proj".to_string());
+
+        let entries = project_view_entries(&app, false);
+        assert_eq!(section_band(&entries, ProjectSection::Todos), Some((0, 1)));
+        assert_eq!(section_band(&entries, ProjectSection::Notes), Some((0, 1)));
+        assert!(section_items(&entries, ProjectSection::Todos).is_empty());
+        assert!(section_items(&entries, ProjectSection::Notes).is_empty());
+
+        std::fs::remove_dir_all(&repo).unwrap();
+    }
+
+    #[test]
+    fn todos_notes_absent_without_data_and_for_orphans() {
+        let repo = temp_test_dir("todos-empty");
+        init_fake_git_repo(&repo, None);
+        let orphan = temp_test_dir("todos-orphan");
+        init_fake_git_repo(&orphan, None);
+
+        let mut file = ProjectsFile::default();
+        file.projects
+            .insert("proj".to_string(), project(vec![member(&repo)]));
+        let (_isolated, store) = store_with(file);
+        let mut app = AppState::test_new();
+        app.projects = store;
+        // One declared member (no todos/notes seeded) and one orphan
+        // workspace no project claims.
+        app.workspaces = vec![ws_at(&repo), ws_at(&orphan)];
+
+        let entries = project_view_entries(&app, false);
+        assert_eq!(
+            section_band(&entries, ProjectSection::Todos),
+            None,
+            "no snapshot -> no band (rule 5): {entries:?}"
+        );
+        assert_eq!(section_band(&entries, ProjectSection::Notes), None);
+        assert!(
+            entries.iter().any(|e| matches!(
+                e,
+                WorkspaceListEntry::ProjectRow {
+                    declared: false,
+                    ..
+                }
+            )),
+            "the orphan workspace still groups under the undeclared row, which \
+             must NOT grow project-level sections: {entries:?}"
+        );
+
+        std::fs::remove_dir_all(&repo).unwrap();
+        std::fs::remove_dir_all(&orphan).unwrap();
+    }
+
+    #[test]
+    fn checks_section_lockstep_rows_stay_height_one() {
+        // G4: the new CHECKS rows are ordinary entries — every lockstep pass
+        // derives their height from `entry_row_height`, which must return 1.
+        let repo = temp_test_dir("checks-lockstep");
+        init_fake_git_repo(&repo, None);
+
+        let mut file = ProjectsFile::default();
+        file.projects
+            .insert("proj".to_string(), project_with_checks(vec![member(&repo)]));
+        let (_isolated, store) = store_with(file);
+        let mut app = AppState::test_new();
+        app.projects = store;
+
+        let mut ws = ws_at(&repo);
+        ws.cached_check_status = Some(checks_status(
+            Some(3),
+            vec![
+                check_run("build", "COMPLETED", Some("SUCCESS")),
+                check_run("clippy", "COMPLETED", Some("FAILURE")),
+            ],
+            None,
+        ));
+        app.workspaces = vec![ws];
+
+        let entries = project_view_entries(&app, false);
+        assert!(
+            checks_band(&entries).is_some() && !checks_items(&entries).is_empty(),
+            "fixture must actually emit a CHECKS band: {entries:?}"
+        );
+        for (idx, entry) in entries.iter().enumerate() {
+            assert_eq!(
+                crate::ui::sidebar::entry_row_height(entry, &entries, idx),
+                1,
+                "entry {idx}: {entry:?}"
+            );
+        }
+
+        std::fs::remove_dir_all(&repo).unwrap();
+    }
+
+    #[test]
     fn every_emitted_entry_has_row_height_one() {
         let checkout_a = temp_test_dir("height-a");
         let checkout_b = temp_test_dir("height-b");
@@ -824,14 +1767,23 @@ mod tests {
         init_fake_git_repo(&checkout_b, None);
 
         let mut file = ProjectsFile::default();
-        file.projects
-            .insert("proj".to_string(), project(vec![member(&checkout_a)]));
+        file.projects.insert(
+            "proj".to_string(),
+            project_with_checks(vec![member(&checkout_a)]),
+        );
         let (_isolated, store) = store_with(file);
         let mut app = AppState::test_new();
         app.projects = store;
 
         let mut multi_pane = ws_at(&checkout_a);
         multi_pane.test_split(Direction::Horizontal);
+        // A CHECKS band too, so SectionHeader/SectionItem are among the
+        // variants this guard covers.
+        multi_pane.cached_check_status = Some(checks_status(
+            Some(1),
+            vec![check_run("clippy", "COMPLETED", Some("FAILURE"))],
+            None,
+        ));
         // Include an orphan (unmatched) workspace too, so every variant this
         // module can emit is present in one pass.
         app.workspaces = vec![multi_pane, ws_at(&checkout_b)];

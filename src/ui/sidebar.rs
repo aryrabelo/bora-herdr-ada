@@ -662,12 +662,19 @@ pub(crate) struct ProjectHeaderBranch {
     pub behind: usize,
 }
 
-/// The two section bands a worktree can carry in the Project view. Ordering is
-/// fixed (COMMANDS then CHECKS) so the tree never reshuffles under the cursor.
+/// Section bands in the Project view: `Commands`/`Checks` hang off a worktree
+/// (fixed order, COMMANDS then CHECKS), `Todos`/`Notes` off the project row
+/// (bora-s3y.3, TODOS then NOTES) — fixed orders so the tree never reshuffles
+/// under the cursor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ProjectSection {
     Commands,
     Checks,
+    /// Project-level (not worktree-level): the swarm's shared todos
+    /// (bora-s3y.3), rendered between the project row and its worktrees.
+    Todos,
+    /// Project-level named scratchpad docs (bora-s3y.3).
+    Notes,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -746,6 +753,8 @@ pub(crate) enum WorkspaceListEntry {
     /// Third level: a `COMMANDS` or `CHECKS` band hanging off a worktree,
     /// with a right-aligned `done/total`. Emitted only when non-empty, always
     /// COMMANDS before CHECKS.
+    /// `TODOS`/`NOTES` use the same shape one level up, hanging off the
+    /// project row (bora-s3y.3).
     SectionHeader {
         kind: ProjectSection,
         collapse_key: String,
@@ -758,6 +767,10 @@ pub(crate) enum WorkspaceListEntry {
         label: String,
         detail: Option<String>,
         running: bool,
+        /// The workspace a COMMANDS row launches into (the worktree's
+        /// representative workspace, bora-55c.3). `None` for bands whose
+        /// rows are not launchable (CHECKS/TODOS/NOTES).
+        ws_idx: Option<usize>,
     },
     /// A pane of a workspace that has 2+ panes. A single-pane workspace stays
     /// one plain `Workspace` row and emits no `PaneRow` at all, so the common
@@ -978,8 +991,15 @@ pub(crate) fn section_header_line(
     let (glyph, name) = match kind {
         ProjectSection::Commands => ("≡", "COMMANDS"),
         ProjectSection::Checks => ("✓", "CHECKS"),
+        ProjectSection::Todos => ("☐", "TODOS"),
+        ProjectSection::Notes => ("✎", "NOTES"),
     };
-    let counter = format!(" {done}/{total}");
+    // NOTES is a plain list, not a progress bar: show the doc count, not a
+    // meaningless `0/N`.
+    let counter = match kind {
+        ProjectSection::Notes => format!(" {total}"),
+        _ => format!(" {done}/{total}"),
+    };
     let spans = vec![
         Span::styled("    ", Style::default()),
         Span::styled(glyph, Style::default().fg(p.overlay1)),
@@ -1000,17 +1020,21 @@ pub(crate) fn section_header_line(
 
 /// Fourth-level Project-view row: a single COMMANDS/CHECKS entry — a state
 /// bullet, its label, and an optional right-aligned detail (e.g. a port).
+/// The bullet is kind-aware: COMMANDS marks running entries (`●`), CHECKS
+/// rows exist only to flag failures (a provider error row included), so an
+/// idle CHECKS row gets the red `✗` from the design mockup, not the dim dot.
 pub(crate) fn section_item_line(
+    kind: ProjectSection,
     label: &str,
     detail: Option<&str>,
     running: bool,
     p: &Palette,
     width: u16,
 ) -> Line<'static> {
-    let (bullet, bullet_style) = if running {
-        ("●", Style::default().fg(p.green))
-    } else {
-        ("·", Style::default().fg(p.overlay0))
+    let (bullet, bullet_style) = match (kind, running) {
+        (ProjectSection::Checks, false) => ("✗", Style::default().fg(p.red)),
+        (_, true) => ("●", Style::default().fg(p.green)),
+        (_, false) => ("·", Style::default().fg(p.overlay0)),
     };
     let mut spans = vec![
         Span::styled("      ", Style::default()),
@@ -1732,37 +1756,13 @@ pub(crate) fn workspace_list_rect(area: Rect, split_ratio: f32) -> Rect {
     ws_area
 }
 
-/// Rows the sidebar Programs launcher band occupies: one per pane-mode
-/// `.bora.toml` command for the active workspace, plus the fixed
-/// "+ run command…" row.
-pub(crate) fn sidebar_program_row_count(app: &AppState) -> u16 {
-    app.sidebar_program_commands().len() as u16 + 1
-}
-
-/// Hit/render area for the sidebar Programs launcher band: sits directly
-/// above the workspace list's "new"/"menu" footer row, within `ws_area`
-/// (the first section returned by `expanded_sidebar_sections`). Reserving
-/// this band is `workspace_list_body_rect`'s job too — both MUST agree on
-/// `sidebar_program_row_count`, or scrolling and hit-testing will disagree
-/// about where the workspace list body ends.
-pub(crate) fn sidebar_programs_band_rect(app: &AppState, ws_area: Rect) -> Rect {
-    if ws_area.height == 0 {
-        return Rect::default();
-    }
-    let footer_rows = 1u16;
-    let rows = sidebar_program_row_count(app).min(ws_area.height.saturating_sub(footer_rows));
-    let y = ws_area.y + ws_area.height - footer_rows - rows;
-    Rect::new(ws_area.x, y, ws_area.width, rows)
-}
-
-pub(crate) fn workspace_list_body_rect(app: &AppState, area: Rect, has_scrollbar: bool) -> Rect {
+pub(crate) fn workspace_list_body_rect(_app: &AppState, area: Rect, has_scrollbar: bool) -> Rect {
     if area.width == 0 || area.height <= WORKSPACE_SECTION_HEADER_ROWS {
         return Rect::default();
     }
 
-    let programs_rows = sidebar_programs_band_rect(app, area).height;
     let body_y = area.y.saturating_add(WORKSPACE_SECTION_HEADER_ROWS);
-    let footer_y = (area.y + area.height).saturating_sub(1 + programs_rows);
+    let footer_y = (area.y + area.height).saturating_sub(1);
     let body_height = footer_y.saturating_sub(body_y);
     let body_width = area.width.saturating_sub(u16::from(has_scrollbar));
     Rect::new(area.x, body_y, body_width, body_height)
@@ -2041,11 +2041,18 @@ fn workspace_list_areas_for_entries(
                     },
                 });
             }
-            WorkspaceListEntry::SectionItem { label, .. } => {
+            WorkspaceListEntry::SectionItem {
+                kind,
+                label,
+                ws_idx,
+                ..
+            } => {
                 project_rows.push(ProjectRowHitArea {
                     rect: Rect::new(body.x, row_y, body.width, 1),
                     target: ProjectRowTarget::SectionItem {
+                        kind: *kind,
                         label: label.clone(),
+                        ws_idx: *ws_idx,
                     },
                 });
             }
@@ -2361,46 +2368,10 @@ pub(super) fn render_sidebar(
     let (ws_area, detail_area) = expanded_sidebar_sections(area, app.sidebar_section_split);
 
     render_workspace_list(app, terminal_runtimes, frame, ws_area, is_navigating);
-    render_programs_section(app, frame, sidebar_programs_band_rect(app, ws_area));
     render_agent_detail(app, terminal_runtimes, frame, detail_area);
     render_sidebar_toggle(app, frame, area, false, p);
 }
 
-/// Sidebar "Programs" launcher band: one row per pane-mode `.bora.toml`
-/// command for the active workspace, plus a fixed "+ run command…" row.
-/// Row count/geometry MUST match `sidebar_programs_band_rect` exactly.
-fn render_programs_section(app: &AppState, frame: &mut Frame, area: Rect) {
-    if area.width == 0 || area.height == 0 {
-        return;
-    }
-    let p = &app.palette;
-    let commands = app.sidebar_program_commands();
-    let mut row_y = area.y;
-    let bottom = area.y + area.height;
-    for cmd in &commands {
-        if row_y >= bottom {
-            return;
-        }
-        let label = truncate_end(&cmd.label, (area.width as usize).saturating_sub(1));
-        frame.render_widget(
-            Paragraph::new(Span::styled(
-                format!(" {label}"),
-                Style::default().fg(p.text),
-            )),
-            Rect::new(area.x, row_y, area.width, 1),
-        );
-        row_y = row_y.saturating_add(1);
-    }
-    if row_y < bottom {
-        frame.render_widget(
-            Paragraph::new(Span::styled(
-                " + run command…",
-                Style::default().fg(p.overlay0),
-            )),
-            Rect::new(area.x, row_y, area.width, 1),
-        );
-    }
-}
 /// Navigate-mode cursor background for a workspace row. Ported from upstream
 /// herdr (#2987): when a theme leaves `selection_bg` unset, painting the
 /// cursor row with it erases the active row's own fill, so the active Space
@@ -2859,6 +2830,7 @@ fn render_workspace_list(
                 }
             }
             WorkspaceListEntry::SectionItem {
+                kind,
                 label,
                 detail,
                 running,
@@ -2867,6 +2839,7 @@ fn render_workspace_list(
                 if row_y < list_bottom {
                     frame.render_widget(
                         Paragraph::new(section_item_line(
+                            *kind,
                             label,
                             detail.as_deref(),
                             *running,
@@ -6679,11 +6652,11 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
 
         // Visible-count pass agrees: a body exactly `total_height` rows tall
         // shows every entry; one row less drops exactly the last (1-row)
-        // entry. Section area height = body + header rows + footer row +
-        // the always-on "+ run command…" programs row.
-        let exact = Rect::new(0, 0, 30, total_height + WORKSPACE_SECTION_HEADER_ROWS + 2);
+        // entry. Section area height = body + header rows + footer row
+        // (the Programs band reservation is gone since bora-55c.3).
+        let exact = Rect::new(0, 0, 30, total_height + WORKSPACE_SECTION_HEADER_ROWS + 1);
         assert_eq!(workspace_list_visible_count(&app, exact, 0), entries.len());
-        let short = Rect::new(0, 0, 30, total_height + WORKSPACE_SECTION_HEADER_ROWS + 1);
+        let short = Rect::new(0, 0, 30, total_height + WORKSPACE_SECTION_HEADER_ROWS);
         assert_eq!(
             workspace_list_visible_count(&app, short, 0),
             entries.len() - 1
@@ -6947,21 +6920,18 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
         // row less drops exactly the last entry (every current variant is 1
         // row tall, so "one row" is "one entry" -- if a future change makes
         // any variant taller without updating `entry_row_height`, either
-        // this or pass 3/4 below catches the drift). ---
+        // this or pass 3/4 below catches the drift). The body reserves only
+        // the one footer row below the list since bora-55c.3 removed the
+        // Programs band reservation, so exact-fit slack is 1, not 2. ---
         let width = 60;
         let exact = Rect::new(
             0,
             0,
             width,
-            total_height + WORKSPACE_SECTION_HEADER_ROWS + 2,
-        );
-        assert_eq!(workspace_list_visible_count(&app, exact, 0), entries.len());
-        let short = Rect::new(
-            0,
-            0,
-            width,
             total_height + WORKSPACE_SECTION_HEADER_ROWS + 1,
         );
+        assert_eq!(workspace_list_visible_count(&app, exact, 0), entries.len());
+        let short = Rect::new(0, 0, width, total_height + WORKSPACE_SECTION_HEADER_ROWS);
         assert_eq!(
             workspace_list_visible_count(&app, short, 0),
             entries.len() - 1
@@ -7246,6 +7216,24 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
         assert!(checks.contains("CHECKS"));
         assert_ne!(commands.chars().nth(4), checks.chars().nth(4));
     }
+    #[test]
+    fn section_header_notes_shows_plain_count_not_a_progress_ratio() {
+        let p = Palette::catppuccin();
+        let notes = line_text(&section_header_line(ProjectSection::Notes, 0, 2, &p, 30));
+        let todos = line_text(&section_header_line(ProjectSection::Todos, 1, 3, &p, 30));
+
+        assert!(notes.contains("NOTES"));
+        assert!(
+            notes.trim_end().ends_with(" 2"),
+            "doc count, no slash: {notes:?}"
+        );
+        assert!(
+            !notes.contains("0/2"),
+            "NOTES is not a progress bar: {notes:?}"
+        );
+        assert!(todos.contains("TODOS"));
+        assert!(todos.trim_end().ends_with("1/3"));
+    }
 
     #[test]
     fn worktree_row_omits_repo_name_when_single_repo_project() {
@@ -7336,12 +7324,45 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
     #[test]
     fn section_item_line_shows_bullet_label_and_right_aligned_detail() {
         let p = Palette::catppuccin();
-        let running = line_text(&section_item_line("dev", Some(":5173"), true, &p, 40));
-        let idle = line_text(&section_item_line("test", None, false, &p, 40));
+        let running = line_text(&section_item_line(
+            ProjectSection::Commands,
+            "dev",
+            Some(":5173"),
+            true,
+            &p,
+            40,
+        ));
+        let idle = line_text(&section_item_line(
+            ProjectSection::Commands,
+            "test",
+            None,
+            false,
+            &p,
+            40,
+        ));
 
         assert!(running.trim_start().starts_with('●'));
         assert!(running.trim_end().ends_with(":5173"));
         assert!(idle.trim_start().starts_with('·'));
+    }
+
+    #[test]
+    fn checks_row_line_marks_failures_with_a_red_cross() {
+        let p = Palette::catppuccin();
+        let failing = section_item_line(ProjectSection::Checks, "clippy", None, false, &p, 40);
+        let text = line_text(&failing);
+
+        assert!(
+            text.trim_start().starts_with('✗'),
+            "a failing CHECKS row must read as a failure, got {text:?}"
+        );
+        assert!(text.contains("clippy"));
+        let bullet = failing
+            .spans
+            .iter()
+            .find(|s| s.content.as_ref() == "✗")
+            .expect("checks row has a ✗ bullet");
+        assert_eq!(bullet.style.fg, Some(p.red));
     }
 
     #[test]
@@ -7386,6 +7407,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
                 label: "dev".into(),
                 detail: Some(":5173".into()),
                 running: true,
+                ws_idx: Some(0),
             },
             WorkspaceListEntry::PaneRow {
                 ws_idx: 0,
@@ -7435,7 +7457,9 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
         assert_eq!(
             project_rows[3].target,
             ProjectRowTarget::SectionItem {
-                label: "dev".into()
+                kind: ProjectSection::Commands,
+                label: "dev".into(),
+                ws_idx: Some(0),
             }
         );
         assert_eq!(

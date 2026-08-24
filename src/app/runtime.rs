@@ -5,8 +5,7 @@ use crossterm::terminal;
 
 use super::{
     background_update_check_enabled, App, ANIMATION_INTERVAL, AUTO_UPDATE_CHECK_INTERVAL,
-    CHECKS_REFRESH_INTERVAL, MIN_RENDER_INTERVAL, RESIZE_POLL_INTERVAL,
-    SELECTION_AUTOSCROLL_INTERVAL,
+    MIN_RENDER_INTERVAL, RESIZE_POLL_INTERVAL, SELECTION_AUTOSCROLL_INTERVAL,
 };
 fn retain_detached_process_after_wait(
     pid: u32,
@@ -275,6 +274,23 @@ impl App {
         changed
     }
 
+    /// Refresh every declared project's TODOS/NOTES sidebar snapshots from
+    /// the stores (bora-s3y.3). Runs on projects.yml reload and once at
+    /// startup — never per frame.
+    fn refresh_all_project_todos_notes(&mut self) {
+        let slugs: Vec<String> = self
+            .state
+            .projects
+            .current()
+            .projects
+            .keys()
+            .cloned()
+            .collect();
+        for slug in slugs {
+            self.state.refresh_project_todos_notes(&slug);
+        }
+    }
+
     fn handle_resize_poll(&mut self) -> bool {
         let Ok(size) = terminal::size() else {
             return false;
@@ -393,11 +409,42 @@ impl App {
         // `reload_if_changed` is cheap on the unchanged path — one `stat`,
         // no allocation — so it runs unconditionally every scheduled tick.
         match self.state.projects.reload_if_changed() {
-            Ok(true) => changed = true,
-            Ok(false) => {}
+            Ok(true) => {
+                self.refresh_all_project_todos_notes();
+                changed = true;
+            }
+            Ok(false) => {
+                // Startup seed (bora-s3y.3): populate the TODOS/NOTES
+                // snapshots once so a fresh server shows pre-existing
+                // stores before any verb mutation. The maps gain an entry
+                // per project even when a store is empty, so this fires
+                // exactly once per slug set.
+                if self.state.project_todos.is_empty() {
+                    self.refresh_all_project_todos_notes();
+                }
+            }
             Err(err) => {
                 tracing::warn!(err = %err, "failed to reload projects.yml");
             }
+        }
+
+        // bora-55c.3: refresh each workspace's declared-command cache so the
+        // COMMANDS band reads pure state. Gated to 1s — the loader's own
+        // probe-throttle window, so tighter polling buys nothing; on a hit
+        // this is one Mutex lock + fingerprint compare per repo.
+        if self
+            .last_commands_refresh
+            .is_none_or(|last| now >= last + std::time::Duration::from_secs(1))
+        {
+            for ws in &mut self.state.workspaces {
+                let commands = crate::bora_config::workspace_commands(ws);
+                ws.cached_commands = if commands.is_empty() {
+                    None
+                } else {
+                    Some(commands)
+                };
+            }
+            self.last_commands_refresh = Some(now);
         }
 
         if self
@@ -807,9 +854,10 @@ impl App {
 
     /// Periodically fetch PR/CI check status for every branched workspace so the
     /// sidebar can show a PR badge without the user opening the Checks tab.
-    /// Throttled to `CHECKS_REFRESH_INTERVAL`; one background thread fetches all.
+    /// Throttled to the configured `[checks] refresh_interval_secs`; one
+    /// background thread fetches all.
     pub(crate) fn start_checks_refresh_if_due(&mut self, now: Instant) {
-        if now.duration_since(self.last_checks_refresh) < CHECKS_REFRESH_INTERVAL {
+        if now.duration_since(self.last_checks_refresh) < self.checks_refresh_interval {
             return;
         }
         self.last_checks_refresh = now;

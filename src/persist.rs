@@ -12,7 +12,9 @@ pub mod pending_prompts;
 pub mod plugin_registry;
 pub mod projects;
 mod restore;
+pub mod scratchpads;
 mod snapshot;
+pub mod todos;
 
 pub use self::io::{clear, clear_history, load, load_history, save};
 pub use self::restore::restore;

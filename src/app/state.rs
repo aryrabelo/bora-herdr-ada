@@ -685,7 +685,13 @@ pub enum ProjectRowTarget {
     /// Toggle a COMMANDS/CHECKS band.
     Section { collapse_key: String },
     /// Activate a row inside a band (run a command, open a check).
-    SectionItem { label: String },
+    /// Activate a row inside a band: run a command (COMMANDS rows carry
+    /// the workspace to launch into), open a check/todo/doc (not wired).
+    SectionItem {
+        kind: crate::ui::ProjectSection,
+        label: String,
+        ws_idx: Option<usize>,
+    },
     /// Focus one pane of a multi-pane workspace.
     Pane { ws_idx: usize, pane_id: String },
 }
@@ -951,7 +957,6 @@ pub enum Mode {
     SetWorkspaceGroup,
     /// User is typing an arbitrary shell command from the sidebar Programs
     /// launcher's "+ run command…" row.
-    LaunchProgramPrompt,
     NewLinkedWorktree,
     OpenExistingWorktree,
     ConfirmRemoveWorktree,
@@ -1718,6 +1723,9 @@ pub struct PendingBoraCommand {
     pub command: String,
     pub mode: crate::bora_config::BoraCommandMode,
     pub port: Option<u16>,
+    /// Label of the originating bora command, so the Pane arm can tag the
+    /// spawned pane. None for shell-mode runs (fire-and-forget, uncounted).
+    pub label: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2026,6 +2034,14 @@ pub struct AppState {
     /// The sidebar is its only reader; right-click, the editor, and MCP are
     /// the writers.
     pub projects: crate::persist::projects::ProjectsStore,
+    /// Sidebar TODOS snapshot per project slug (bora-s3y.3), refreshed by
+    /// `refresh_project_todos_notes` — called from the todo/scratchpad verb
+    /// handlers after every mutation and when projects (re)load. Render only
+    /// reads it: the stores are never touched on the render path.
+    pub project_todos: std::collections::HashMap<String, crate::persist::todos::TodosSummary>,
+    /// Sidebar NOTES snapshot per project slug: scratchpad doc names, same
+    /// refresh discipline as `project_todos`.
+    pub project_notes: std::collections::HashMap<String, Vec<String>>,
     pub right_panel_collapsed: bool,
     pub right_panel_width: u16,
     pub right_panel_min_width: u16,
@@ -2195,6 +2211,19 @@ impl AppState {
 
     pub(crate) fn request_full_repaint(&mut self) {
         self.force_full_repaint = true;
+    }
+    /// Reload the sidebar's TODOS/NOTES snapshots for `slug` from the stores
+    /// (bora-s3y.3). Callers: the six todo/scratchpad verb handlers
+    /// (post-mutation) and the projects reload path — never render, so the
+    /// two store reads stay off the multiplicative path.
+    pub(crate) fn refresh_project_todos_notes(&mut self, slug: &str) {
+        let todos = crate::persist::todos::read_todos(slug).unwrap_or_default();
+        self.project_todos.insert(
+            slug.to_string(),
+            crate::persist::todos::TodosSummary::from_todos(&todos),
+        );
+        let notes = crate::persist::scratchpads::list_docs(slug).unwrap_or_default();
+        self.project_notes.insert(slug.to_string(), notes);
     }
 
     /// Sidebar hide key for a single workspace (non-persisted presentation state).
@@ -2553,6 +2582,8 @@ impl AppState {
             projects: crate::persist::projects::ProjectsStore::load(),
             #[cfg(test)]
             projects: crate::persist::projects::ProjectsStore::empty(),
+            project_todos: std::collections::HashMap::new(),
+            project_notes: std::collections::HashMap::new(),
             right_panel_collapsed: true,
             right_panel_width: 30,
             right_panel_min_width: 20,

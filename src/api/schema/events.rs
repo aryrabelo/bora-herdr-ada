@@ -91,6 +91,10 @@ pub enum Subscription {
     GithubPrOpened {},
     #[serde(rename = "github.issues_refreshed")]
     GithubIssuesRefreshed {},
+    #[serde(rename = "todo.changed")]
+    TodoChanged {},
+    #[serde(rename = "scratchpad.changed")]
+    ScratchpadChanged {},
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct EventsWaitParams {
@@ -240,6 +244,8 @@ pub enum EventKind {
     QueuedPromptDelivered,
     QueuedPromptDropped,
     ChannelMessage,
+    TodoChanged,
+    ScratchpadChanged,
 }
 
 impl EventKind {
@@ -279,6 +285,8 @@ impl EventKind {
             EventKind::QueuedPromptDelivered => "agent_prompt.delivered",
             EventKind::QueuedPromptDropped => "agent_prompt.dropped",
             EventKind::ChannelMessage => "channel.message",
+            EventKind::TodoChanged => "todo.changed",
+            EventKind::ScratchpadChanged => "scratchpad.changed",
         }
     }
 }
@@ -319,6 +327,8 @@ pub const KNOWN_EVENT_KINDS: &[EventKind] = &[
     EventKind::QueuedPromptDelivered,
     EventKind::QueuedPromptDropped,
     EventKind::ChannelMessage,
+    EventKind::TodoChanged,
+    EventKind::ScratchpadChanged,
 ];
 
 pub const PLUGIN_HOOK_EVENT_KINDS: &[EventKind] = &[
@@ -350,6 +360,8 @@ pub const PLUGIN_HOOK_EVENT_KINDS: &[EventKind] = &[
     EventKind::ChannelMessage,
     EventKind::GithubPrOpened,
     EventKind::AgentPrompted,
+    EventKind::TodoChanged,
+    EventKind::ScratchpadChanged,
 ];
 
 #[cfg(test)]
@@ -405,6 +417,27 @@ mod known_event_name_tests {
     fn github_pr_opened_is_a_plugin_hook_event() {
         assert!(PLUGIN_HOOK_EVENT_KINDS.contains(&EventKind::GithubPrOpened));
         assert_eq!(EventKind::GithubPrOpened.dot_name(), "github.pr_opened");
+    }
+
+    #[test]
+    fn todo_and_scratchpad_changed_are_plugin_hook_events() {
+        // Membership asserted directly, per kind: a new EventKind that
+        // lands in `EventKind` but not `PLUGIN_HOOK_EVENT_KINDS` is a
+        // silent plugin-hook no-op (AGENTS.md two-lists rule).
+        for (kind, name) in [
+            (EventKind::TodoChanged, "todo.changed"),
+            (EventKind::ScratchpadChanged, "scratchpad.changed"),
+        ] {
+            assert!(
+                PLUGIN_HOOK_EVENT_KINDS.contains(&kind),
+                "{name} missing from PLUGIN_HOOK_EVENT_KINDS"
+            );
+            assert!(
+                KNOWN_EVENT_KINDS.contains(&kind),
+                "{name} missing from KNOWN_EVENT_KINDS"
+            );
+            assert_eq!(kind.dot_name(), name);
+        }
     }
 }
 
@@ -685,6 +718,25 @@ pub enum EventData {
         text: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         to_pane: Option<String>,
+    },
+    /// A todo was created or flipped to done in a project's shared todo
+    /// log (`todo.create` / `todo.complete`), emitted right after the
+    /// durable append. `todo` is the full appended snapshot — one line of
+    /// the JSONL log — so a follower needs no re-read. A no-op complete
+    /// (already done) appends nothing and emits nothing.
+    TodoChanged {
+        project: String,
+        todo: super::todos::TodoInfo,
+    },
+    /// A scratchpad doc changed (`scratchpad.write` replace or
+    /// `scratchpad.append_section`), emitted right after the durable
+    /// write. `seq` is the doc's new tip — the appended section's seq, or
+    /// the replace's new tip — the cursor a follower resumes from via
+    /// `persist::scratchpads::read_since`.
+    ScratchpadChanged {
+        project: String,
+        doc: String,
+        seq: u64,
     },
 }
 

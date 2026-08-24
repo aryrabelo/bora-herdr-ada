@@ -21,14 +21,18 @@ mod git;
 mod tab;
 
 pub(crate) use self::git::fetch_check_status;
+// Test-only re-export: production code reads the sentinel through
+// `WorkspaceCheckStatus::is_not_applicable`.
 #[cfg(test)]
 use self::git::git_ahead_behind;
 use self::git::git_status_cache_key_for_space;
 #[cfg(test)]
 pub(crate) use self::git::PrSummary;
+#[cfg(test)]
+pub(crate) use self::git::NOT_APPLICABLE_ERROR;
 pub use self::{
     git::{
-        checks_rollup, derive_label_from_cwd, fallback_label_from_cwd, git_branch,
+        checks_counts, checks_rollup, derive_label_from_cwd, fallback_label_from_cwd, git_branch,
         git_space_metadata, git_status_cache_key, ChangeSectionKind, ChangeStatus, CheckRun,
         ChecksRollup, GitSpaceMetadata, GitStatusCacheEntry, GitStatusRefreshDemand, RepoBranches,
         RepoIssues, RepoOpenPrs, WorkspaceChangeSet, WorkspaceCheckStatus,
@@ -236,6 +240,12 @@ pub struct Workspace {
     pub(crate) cached_change_set: Option<WorkspaceChangeSet>,
     /// Cached PR + CI check status for the workspace branch.
     pub(crate) cached_check_status: Option<WorkspaceCheckStatus>,
+    /// Declared repo commands (`wt [scripts.run.*]` + deprecated
+    /// `.bora.toml [[commands]]`), branch-filtered, refreshed on the runtime
+    /// tick (bora-55c.3). The sidebar COMMANDS band reads ONLY this — the
+    /// throttled loader never runs from render. `None` = not refreshed yet
+    /// or nothing declared.
+    pub(crate) cached_commands: Option<Vec<crate::bora_config::BoraCommand>>,
     /// `#`-channels this workspace has a pane explicitly joined into (not
     /// counting the channel's own home workspace, whose name already shows
     /// it). Refreshed periodically alongside git status, never in render.
@@ -321,6 +331,7 @@ impl Workspace {
             cached_git_space,
             cached_change_set: None,
             cached_check_status: None,
+            cached_commands: None,
             cached_channels: Vec::new(),
             cached_collectible: None,
             worktree_space,
@@ -529,6 +540,7 @@ impl Workspace {
                 cached_git_space,
                 cached_change_set: None,
                 cached_check_status: None,
+                cached_commands: None,
                 cached_channels: Vec::new(),
                 cached_collectible: None,
                 worktree_space,
@@ -1383,6 +1395,7 @@ impl Workspace {
             cached_git_space: None,
             cached_change_set: None,
             cached_check_status: None,
+            cached_commands: None,
             cached_channels: Vec::new(),
             cached_collectible: None,
             worktree_space: None,

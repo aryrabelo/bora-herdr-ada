@@ -11,8 +11,10 @@ mod panes;
 pub(crate) mod plugins;
 mod projects;
 mod responses;
+mod scratchpads;
 mod session;
 mod tabs;
+mod todos;
 mod workspaces;
 mod worktrees;
 
@@ -1359,6 +1361,20 @@ impl App {
             }
             Method::ProjectMemberRemove(params) => {
                 return self.handle_project_member_remove(request.id, params);
+            }
+            Method::TodoCreate(params) => return self.handle_todo_create(request.id, params),
+            Method::TodoComplete(params) => {
+                return self.handle_todo_complete(request.id, params);
+            }
+            Method::TodoList(params) => return self.handle_todo_list(request.id, params),
+            Method::ScratchpadWrite(params) => {
+                return self.handle_scratchpad_write(request.id, params);
+            }
+            Method::ScratchpadAppendSection(params) => {
+                return self.handle_scratchpad_append_section(request.id, params);
+            }
+            Method::ScratchpadFind(params) => {
+                return self.handle_scratchpad_find(request.id, params);
             }
             _ => {
                 return responses::encode_error(

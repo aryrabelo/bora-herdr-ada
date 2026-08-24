@@ -23,42 +23,22 @@ impl AppState {
         detail_area
     }
 
-    /// Hit area for the sidebar Programs launcher band (pane-mode
-    /// `.bora.toml` commands for the active workspace, plus the
-    /// "+ run command…" row). Sits directly above the workspace list's
-    /// "new"/"menu" footer row; MUST derive from `sidebar_programs_band_rect`
-    /// so rendering and hit-testing agree.
-    pub(super) fn sidebar_programs_rect(&self) -> Rect {
-        let ws_area = self.workspace_list_rect();
-        crate::ui::sidebar_programs_band_rect(self, ws_area)
-    }
-
-    /// Pane-mode `.bora.toml` commands for the active workspace, in display
-    /// order. Loaded fresh (no cache) — mirrors the workspace context menu's
-    /// on-demand `.bora.toml` read.
-    pub(crate) fn sidebar_program_commands(&self) -> Vec<crate::bora_config::BoraCommand> {
-        let Some(ws_idx) = self.active else {
-            return Vec::new();
-        };
-        let Some(ws) = self.workspaces.get(ws_idx) else {
-            return Vec::new();
-        };
-        crate::bora_config::workspace_commands(ws)
-            .into_iter()
-            .filter(|c| c.mode == crate::bora_config::BoraCommandMode::Pane)
-            .collect()
-    }
-
-    /// Resolve the sidebar Programs entry at `idx` (0-based, in
-    /// `sidebar_program_commands` order) into a dispatchable
-    /// `PendingBoraCommand`, including `$BORA_PORT` resolution.
-    pub(crate) fn sidebar_program_launch(
+    /// Resolve a COMMANDS band row (bora-55c.3) into a dispatchable
+    /// `PendingBoraCommand` from the tick-refreshed command cache,
+    /// including `$BORA_PORT` resolution — fresh at click time, which is an
+    /// action, not render.
+    pub(crate) fn section_command_launch(
         &self,
-        idx: usize,
+        ws_idx: usize,
+        label: &str,
     ) -> Option<crate::app::state::PendingBoraCommand> {
-        let ws_idx = self.active?;
         let ws = self.workspaces.get(ws_idx)?;
-        let cmd = self.sidebar_program_commands().into_iter().nth(idx)?;
+        let cmd = ws
+            .cached_commands
+            .as_deref()?
+            .iter()
+            .find(|c| c.label == label)?
+            .clone();
         let branch = ws.cached_git_branch.as_deref();
         let checkout_path = ws
             .worktree_space()
@@ -77,6 +57,7 @@ impl AppState {
             ws_idx,
             command: cmd.command,
             mode: cmd.mode,
+            label: Some(cmd.label),
             port,
         })
     }
@@ -1118,11 +1099,14 @@ mod tests {
         // affordance (a detail row, a scrolled detail row, the sort toggle, an
         // all-workspaces row, and the post-filter scroll clamp). Retired, none
         // of those clicks can land, so five variants of "nothing happens" are
-        // one fact: no click anywhere in the sidebar touches panel state.
+        // one fact: no click anywhere in the sidebar touches panel state. The
+        // sweep stops above the footer row: the launcher ("new") is workspace
+        // territory, not panel territory — before bora-55c.3 the Programs
+        // band's prompt row happened to open a modal that swallowed it.
         let sort_before = app.state.agent_panel_sort;
         let active_before = app.state.active;
         let tab_before = app.state.workspaces[0].active_tab;
-        for row in sidebar.y..sidebar.y + sidebar.height {
+        for row in sidebar.y..sidebar.y + sidebar.height - 1 {
             app.handle_mouse(mouse(
                 MouseEventKind::Down(MouseButton::Left),
                 sidebar.x + 1,
@@ -2079,7 +2063,10 @@ mod tests {
 
         let before = app.state.sidebar_section_split;
         let sidebar = app.state.view.sidebar_rect;
-        for row in sidebar.y..sidebar.y + sidebar.height {
+        // The sweep stops above the footer row: the "new" launcher would
+        // create a workspace mid-drag — footer territory, not the retired
+        // divider's (see the retired-panel test for the same boundary).
+        for row in sidebar.y..sidebar.y + sidebar.height - 1 {
             app.handle_mouse(mouse(
                 MouseEventKind::Down(MouseButton::Left),
                 sidebar.x + 1,

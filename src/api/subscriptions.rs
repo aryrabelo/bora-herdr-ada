@@ -309,6 +309,14 @@ impl ActiveSubscription {
                 event_kind: crate::api::schema::EventKind::GithubIssuesRefreshed,
                 last_sequence: 0,
             })),
+            Subscription::TodoChanged {} => Ok(Self::Event(ActiveEventSubscription {
+                event_kind: crate::api::schema::EventKind::TodoChanged,
+                last_sequence: 0,
+            })),
+            Subscription::ScratchpadChanged {} => Ok(Self::Event(ActiveEventSubscription {
+                event_kind: crate::api::schema::EventKind::ScratchpadChanged,
+                last_sequence: 0,
+            })),
         }
     }
 

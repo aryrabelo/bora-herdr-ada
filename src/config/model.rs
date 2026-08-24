@@ -78,6 +78,23 @@ impl Default for GithubConfig {
     }
 }
 
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(default)]
+pub struct ChecksConfig {
+    /// Seconds between periodic background PR/CI check-status refreshes
+    /// (sidebar CHECKS section, PR badges). Default: 30. `0` falls back to
+    /// the default interval.
+    pub refresh_interval_secs: u64,
+}
+
+impl Default for ChecksConfig {
+    fn default() -> Self {
+        Self {
+            refresh_interval_secs: 30,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct FlowConfig {
@@ -430,6 +447,7 @@ pub struct Config {
     pub server: ServerConfig,
     pub update: UpdateConfig,
     pub github: GithubConfig,
+    pub checks: ChecksConfig,
     pub flow: FlowConfig,
     pub keys: KeysConfig,
     pub ui: UiConfig,
@@ -1561,6 +1579,23 @@ refresh_interval_secs = 60
         let config: Config = toml::from_str(toml).unwrap();
         assert!(config.github.enabled);
         assert_eq!(config.github.refresh_interval_secs, 60);
+    }
+
+    #[test]
+    fn checks_config_refresh_interval_defaults_and_overrides() {
+        let default_config = Config::default();
+        assert_eq!(default_config.checks.refresh_interval_secs, 30);
+
+        let toml = r#"
+[checks]
+refresh_interval_secs = 90
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert_eq!(config.checks.refresh_interval_secs, 90);
+
+        // `0` parses through; the app layer maps it back to the default.
+        let config: Config = toml::from_str("[checks]\nrefresh_interval_secs = 0\n").unwrap();
+        assert_eq!(config.checks.refresh_interval_secs, 0);
     }
 
     #[test]

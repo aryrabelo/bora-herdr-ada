@@ -10,9 +10,11 @@ pub mod panes;
 pub mod plugins;
 pub mod projects;
 pub mod response;
+pub mod scratchpads;
 pub mod server;
 pub mod session;
 pub mod tabs;
+pub mod todos;
 pub mod workspaces;
 pub mod worktrees;
 
@@ -26,9 +28,11 @@ pub use panes::*;
 pub use plugins::*;
 pub use projects::*;
 pub use response::*;
+pub use scratchpads::*;
 pub use server::*;
 pub use session::*;
 pub use tabs::*;
+pub use todos::*;
 pub use workspaces::*;
 pub use worktrees::*;
 
@@ -286,6 +290,18 @@ pub enum Method {
     ProjectMemberAdd(ProjectMemberAddParams),
     #[serde(rename = "project.member_remove")]
     ProjectMemberRemove(ProjectMemberRemoveParams),
+    #[serde(rename = "todo.create")]
+    TodoCreate(TodoCreateParams),
+    #[serde(rename = "todo.complete")]
+    TodoComplete(TodoCompleteParams),
+    #[serde(rename = "todo.list")]
+    TodoList(TodoListParams),
+    #[serde(rename = "scratchpad.write")]
+    ScratchpadWrite(ScratchpadWriteParams),
+    #[serde(rename = "scratchpad.append_section")]
+    ScratchpadAppendSection(ScratchpadAppendSectionParams),
+    #[serde(rename = "scratchpad.find")]
+    ScratchpadFind(ScratchpadFindParams),
 }
 
 #[cfg(test)]

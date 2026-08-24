@@ -96,6 +96,8 @@ const GIT_REMOTE_STATUS_REFRESH_INTERVAL: Duration = Duration::from_millis(1500)
 /// refresh pipeline's threading, but still off the render path.
 const CHANNEL_MEMBERSHIP_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
 const GIT_REPO_DISCOVERY_REFRESH_INTERVAL: Duration = Duration::from_secs(5 * 60);
+/// Default period between background PR/CI check-status refreshes;
+/// overridable via `[checks] refresh_interval_secs`.
 const CHECKS_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 /// Default period between background open-PR refreshes; overridable via
 /// `[github] refresh_interval_secs`.
@@ -220,6 +222,9 @@ pub struct App {
     pub(crate) no_session: bool,
     pub(crate) input_rx: Option<mpsc::Receiver<crate::raw_input::RawInputEvent>>,
     pub(crate) last_terminal_size: Option<(u16, u16)>,
+    /// Last time workspace declared-command caches were refreshed from the
+    /// throttled loader (bora-55c.3); gates the tick to once per second.
+    pub(crate) last_commands_refresh: Option<Instant>,
     pub(crate) config_diagnostic_deadline: Option<Instant>,
     pub(crate) toast_deadline: Option<Instant>,
     pub(crate) copy_feedback_deadline: Option<Instant>,
@@ -267,6 +272,8 @@ pub struct App {
     pub(crate) github_fetch_enabled: bool,
     /// `[github] refresh_interval_secs` as a Duration.
     pub(crate) github_refresh_interval: Duration,
+    /// `[checks] refresh_interval_secs` as a Duration.
+    pub(crate) checks_refresh_interval: Duration,
     pub(crate) git_refresh_in_flight: bool,
     pub(crate) git_refresh_due_after_in_flight: bool,
     pub(crate) git_identity_refresh_requested: bool,
@@ -398,6 +405,16 @@ fn github_refresh_interval_from_config(config: &Config) -> Duration {
         OPEN_PRS_REFRESH_INTERVAL
     } else {
         Duration::from_secs(config.github.refresh_interval_secs)
+    }
+}
+
+/// `[checks] refresh_interval_secs` as a Duration; `0` falls back to the
+/// default so a misconfigured value cannot schedule gh on every git tick.
+fn checks_refresh_interval_from_config(config: &Config) -> Duration {
+    if config.checks.refresh_interval_secs == 0 {
+        CHECKS_REFRESH_INTERVAL
+    } else {
+        Duration::from_secs(config.checks.refresh_interval_secs)
     }
 }
 
@@ -705,6 +722,8 @@ impl App {
             projects: crate::persist::projects::ProjectsStore::load(),
             #[cfg(test)]
             projects: crate::persist::projects::ProjectsStore::empty(),
+            project_todos: std::collections::HashMap::new(),
+            project_notes: std::collections::HashMap::new(),
             terminals: std::collections::HashMap::new(),
             direct_attach_resize_locks: std::collections::HashSet::new(),
             pane_id_aliases: std::collections::HashMap::new(),
@@ -960,6 +979,7 @@ impl App {
                 .and_then(|ws| ws.focused_pane_id().map(|pane_id| (idx, pane_id)))
         });
         let github_refresh_interval = github_refresh_interval_from_config(config);
+        let checks_refresh_interval = checks_refresh_interval_from_config(config);
 
         let mut app = Self {
             config_diagnostic_deadline: None,
@@ -982,7 +1002,11 @@ impl App {
             last_git_remote_status_refresh: Instant::now() - GIT_REMOTE_STATUS_REFRESH_INTERVAL,
             last_channel_membership_refresh: Instant::now() - CHANNEL_MEMBERSHIP_REFRESH_INTERVAL,
             last_git_repo_discovery_refresh: Instant::now(),
-            last_checks_refresh: Instant::now() - CHECKS_REFRESH_INTERVAL,
+            // checked_sub: the interval is user-configurable and subtracting a
+            // huge Duration from Instant::now() would panic.
+            last_checks_refresh: Instant::now()
+                .checked_sub(checks_refresh_interval)
+                .unwrap_or_else(Instant::now),
             // checked_sub: the interval is user-configurable and subtracting a
             // huge Duration from Instant::now() would panic.
             last_open_prs_refresh: Instant::now()
@@ -992,6 +1016,7 @@ impl App {
             open_prs_refresh_results_pending: 0,
             github_fetch_enabled: config.github.enabled,
             github_refresh_interval,
+            checks_refresh_interval,
             git_refresh_in_flight: false,
             git_refresh_due_after_in_flight: false,
             git_identity_refresh_requested: false,
@@ -1037,6 +1062,7 @@ impl App {
             no_session,
             input_rx: None,
             last_terminal_size: terminal::size().ok(),
+            last_commands_refresh: None,
             render_notify,
             render_dirty,
             full_redraw_pending: false,
@@ -2372,6 +2398,12 @@ impl App {
             self.github_refresh_interval = github_refresh_interval_from_config(config);
         }
 
+        if !invalid_section("checks") {
+            // Same last+interval throttle as the open-PR refresh: the new
+            // value applies to the next due check.
+            self.checks_refresh_interval = checks_refresh_interval_from_config(config);
+        }
+
         if !invalid_section("flow") {
             self.state.flow_command_template = config.flow.command.clone();
         }
@@ -2560,9 +2592,29 @@ impl App {
                         position: None,
                         target: None,
                     });
+                } else {
+                    self.tag_launched_command_pane_label(cmd.label);
                 }
                 self.state.bora_port_override = None;
             }
+        }
+    }
+
+    fn tag_launched_command_pane_label(&mut self, label: Option<String>) {
+        let Some(label) = label else {
+            return;
+        };
+        let Some(ws_idx) = self.state.active else {
+            return;
+        };
+        let Some(ws) = self.state.workspaces.get_mut(ws_idx) else {
+            return;
+        };
+        let Some(pane_id) = ws.focused_pane_id() else {
+            return;
+        };
+        if let Some(pane) = ws.pane_state_mut(pane_id) {
+            pane.command_label = Some(label);
         }
     }
 }
@@ -2829,8 +2881,7 @@ impl App {
             Mode::RenameWorkspace
             | Mode::RenameTab
             | Mode::RenamePane
-            | Mode::SetWorkspaceGroup
-            | Mode::LaunchProgramPrompt => {
+            | Mode::SetWorkspaceGroup => {
                 self.handle_rename_key_via_api(key_event);
             }
             Mode::NewLinkedWorktree => {
@@ -4277,6 +4328,49 @@ mod tests {
         assert_eq!(report.status, crate::config::ConfigReloadStatus::Applied);
         assert!(!app.github_fetch_enabled);
         assert_eq!(app.github_refresh_interval, Duration::from_secs(300));
+
+        std::env::remove_var(crate::config::CONFIG_PATH_ENV_VAR);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn checks_refresh_interval_zero_falls_back_to_default() {
+        let config = Config::default();
+        assert_eq!(
+            checks_refresh_interval_from_config(&config),
+            CHECKS_REFRESH_INTERVAL
+        );
+
+        let config: Config =
+            toml::from_str("[checks]\nrefresh_interval_secs = 0\n").expect("valid config");
+        assert_eq!(
+            checks_refresh_interval_from_config(&config),
+            CHECKS_REFRESH_INTERVAL
+        );
+
+        let config: Config =
+            toml::from_str("[checks]\nrefresh_interval_secs = 90\n").expect("valid config");
+        assert_eq!(
+            checks_refresh_interval_from_config(&config),
+            Duration::from_secs(90)
+        );
+    }
+
+    #[test]
+    fn reload_config_updates_checks_refresh_interval() {
+        let _guard = config_env_lock().lock();
+        let path = temp_config_path("reload-config-checks");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "[checks]\nrefresh_interval_secs = 90\n").unwrap();
+        std::env::set_var(crate::config::CONFIG_PATH_ENV_VAR, &path);
+
+        let mut app = test_app();
+        assert_eq!(app.checks_refresh_interval, CHECKS_REFRESH_INTERVAL);
+
+        let report = app.reload_config();
+
+        assert_eq!(report.status, crate::config::ConfigReloadStatus::Applied);
+        assert_eq!(app.checks_refresh_interval, Duration::from_secs(90));
 
         std::env::remove_var(crate::config::CONFIG_PATH_ENV_VAR);
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
@@ -7962,5 +8056,65 @@ last_pane = "prefix+tab"
             .check_agent_prompt_rate_limit("w1:p9", "w1:p8", later)
             .is_ok());
         assert_eq!(app.agent_prompt_rate_limits.len(), 1);
+    }
+
+    #[test]
+    fn pane_command_label_tags_the_launched_pane() {
+        let mut app = test_app();
+        let mut workspace = Workspace::test_new("test");
+        workspace.test_split(ratatui::layout::Direction::Horizontal);
+        let focused_pane = workspace.focused_pane_id().unwrap();
+        app.state.workspaces = vec![workspace];
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.mode = Mode::Terminal;
+
+        // A fresh pane is untagged until a command launches it.
+        assert!(app.state.workspaces[0]
+            .pane_state(focused_pane)
+            .unwrap()
+            .command_label
+            .is_none());
+
+        // execute_bora_command's Pane arm calls this right after the spawn.
+        app.tag_launched_command_pane_label(Some("run-web".to_string()));
+
+        assert_eq!(
+            app.state.workspaces[0]
+                .pane_state(focused_pane)
+                .unwrap()
+                .command_label
+                .clone(),
+            Some("run-web".to_string())
+        );
+    }
+
+    #[test]
+    fn fire_and_forget_shell_commands_spawn_no_tagged_pane() {
+        let mut app = test_app();
+        let workspace = Workspace::test_new("test");
+        let existing_pane = workspace.focused_pane_id().unwrap();
+        app.state.workspaces = vec![workspace];
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.mode = Mode::Terminal;
+
+        app.execute_bora_command(crate::app::state::PendingBoraCommand {
+            ws_idx: 0,
+            command: "true".to_string(),
+            mode: crate::bora_config::BoraCommandMode::Shell,
+            port: None,
+            label: None,
+        });
+
+        // Shell is fire-and-forget: no pane was spawned, so neither the
+        // pre-existing pane nor any new pane carries the command's tag.
+        let ws = &app.state.workspaces[0];
+        assert_eq!(ws.panes.len(), 1);
+        assert!(ws
+            .pane_state(existing_pane)
+            .unwrap()
+            .command_label
+            .is_none());
     }
 }

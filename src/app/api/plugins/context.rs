@@ -260,6 +260,21 @@ impl App {
                 })
                 .map(|ws_idx| self.plugin_context_for_workspace(ws_idx, correlation_id))
                 .unwrap_or_else(|| empty_plugin_context(correlation_id)),
+            // Project = channel: a project slug's default channel is
+            // `#<slug>`, so the project's hooks run with that channel
+            // workspace as context — the same resolution as
+            // `ChannelMessage` above, keyed off the event's project slug.
+            EventData::TodoChanged { project, .. }
+            | EventData::ScratchpadChanged { project, .. } => self
+                .state
+                .workspaces
+                .iter()
+                .position(|ws| {
+                    ws.visual_group.is_none()
+                        && ws.custom_name.as_deref() == Some(format!("#{project}").as_str())
+                })
+                .map(|ws_idx| self.plugin_context_for_workspace(ws_idx, correlation_id))
+                .unwrap_or_else(|| empty_plugin_context(correlation_id)),
         }
     }
 

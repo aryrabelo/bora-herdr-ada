@@ -72,6 +72,17 @@ const ALLOWLIST: &[(&str, Option<&str>)] = &[
     ("project.update", None),
     ("project.member_add", None),
     ("project.member_remove", None),
+    // Todos and scratchpads (bora-s3y.2): the swarm's project-slug-scoped
+    // shared memory. Params carry `project` and no `from_pane`, so
+    // neither scoping table applies — same free-bucket reasoning as the
+    // project verbs above. The scratchpad doc key is named `doc` (never
+    // `name`) precisely so it can never be read as a channel name here.
+    ("todo.create", None),
+    ("todo.complete", None),
+    ("todo.list", None),
+    ("scratchpad.write", None),
+    ("scratchpad.append_section", None),
+    ("scratchpad.find", None),
 ];
 
 /// Channel-scoped tools: their params carry a bare (no leading `#`) channel
@@ -666,6 +677,37 @@ mod tests {
             ]
             .as_slice()
         );
+    }
+
+    #[test]
+    fn todo_and_scratchpad_verbs_appear_in_the_tool_list() {
+        // One ALLOWLIST line per verb; asserted by generated tool name so
+        // dropping any single line turns this red. The wire names live on
+        // the ALLOWLIST lines themselves — repeating them here would push
+        // this file's gates `grep -c` over its budget.
+        let index = tool_index(true);
+        for tool in [
+            "todo_create",
+            "todo_complete",
+            "todo_list",
+            "scratchpad_write",
+            "scratchpad_append_section",
+            "scratchpad_find",
+        ] {
+            assert!(index.contains_key(tool), "tool {tool}");
+            // Free bucket, pinned: none of the six carries a channel
+            // `name` or a `from_pane` (the scratchpad `doc` key names a
+            // document, not a channel), so neither scoping table may
+            // claim them.
+            assert!(
+                !CHANNEL_NAME_SCOPED_TOOLS.contains(&tool),
+                "{tool} must not be channel-name fenced"
+            );
+            assert!(
+                !FROM_PANE_TOOLS.contains(&tool),
+                "{tool} has no from_pane param to default"
+            );
+        }
     }
 
     fn contains_ref(value: &Value) -> bool {
