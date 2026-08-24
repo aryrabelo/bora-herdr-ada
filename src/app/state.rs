@@ -1381,8 +1381,13 @@ pub enum ContextMenuKind {
         has_manual_label: bool,
         right_click_passthrough: bool,
     },
-    /// An open PR row in the sidebar. `ws_idx` is a representative workspace
-    /// of the repo group, resolved at click time.
+    /// An open PR row in the right panel's `PullRequests` tab — not the
+    /// sidebar; the sidebar has no PR row variant. Built at exactly one site
+    /// (`src/app/input/mouse.rs`, the `RightPanelTab::PullRequests` arm), so
+    /// `ws_idx` is whatever workspace is active at click time, which is only
+    /// coincidentally a workspace of the PR's repo. `request_open_pr_worktree`
+    /// consumes the pair, and "Open in worktree" is therefore already a
+    /// working right-click PR action.
     RepoPr {
         ws_idx: usize,
         number: u64,
