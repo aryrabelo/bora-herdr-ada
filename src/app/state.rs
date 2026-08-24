@@ -25,6 +25,36 @@ pub(crate) struct PopupPaneState {
     pub height: Option<crate::popup_size::PopupSize>,
 }
 
+/// One on-disk worktree, canonicalized ONCE at refresh time (bora-qdi).
+/// `checkout_key` is computed the same way a `Workspace`'s own
+/// `GitSpaceMetadata.checkout_key` is (`workspace::git::discovery`'s
+/// derivation: canonicalize the checkout path, stringify it) —
+/// on the background thread that lists it
+/// (`App::start_worktree_inventory_refresh_if_due`, `src/app/runtime.rs`),
+/// never on the render path, so `ui::sidebar::project_view` (which must stay
+/// I/O-free — "Multiplicative performance paths", AGENTS.md) compares it as
+/// a plain string against `Workspace.git_space().checkout_key` with no
+/// filesystem call of its own and no chance of drifting from the real key.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct InventoryWorktree {
+    pub checkout_key: String,
+    pub branch: Option<String>,
+    pub is_bare: bool,
+    pub is_prunable: bool,
+}
+
+/// Background `git worktree list` result for one repo (bora-qdi). Mirrors
+/// `crate::workspace::RepoOpenPrs`'s shape: the worktrees found on disk plus
+/// an `error` so a failed listing renders as a visible failure rather than
+/// silently no unopened rows. Written by
+/// `App::start_worktree_inventory_refresh_if_due` (`src/app/runtime.rs`);
+/// read by `ui::sidebar::project_view` from `AppState::worktree_inventory`.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub(crate) struct RepoWorktreeInventory {
+    pub worktrees: Vec<InventoryWorktree>,
+    pub error: Option<String>,
+}
+
 // ---------------------------------------------------------------------------
 // Selection autoscroll types
 // ---------------------------------------------------------------------------
@@ -2175,6 +2205,15 @@ pub struct AppState {
     /// (`GitSpaceMetadata.repo_identity`). Written by the periodic background
     /// refresh; read by UI/API surfaces in later phases.
     pub repo_open_prs: std::collections::HashMap<String, crate::workspace::RepoOpenPrs>,
+    /// Cached `git worktree list` result per repo identity
+    /// (`GitSpaceMetadata.repo_identity`), for the Project view's unopened
+    /// worktree rows (bora-qdi). Written by
+    /// `App::start_worktree_inventory_refresh_if_due`'s throttled background
+    /// thread (`src/app/runtime.rs`), once per repo that some declared
+    /// project member resolves to with `WorktreesScope::All`. Read only by
+    /// `ui::sidebar::project_view::push_project_group`, which performs no
+    /// I/O of its own on the render path.
+    pub(crate) worktree_inventory: std::collections::HashMap<String, RepoWorktreeInventory>,
     /// Cached open issues relevant to the current user, keyed by repo identity
     /// (`GitSpaceMetadata.repo_identity`). Written by on-demand background
     /// fetches; read by UI/API surfaces in later phases.
@@ -2682,6 +2721,7 @@ impl AppState {
             host_mouse_pixels: None,
             session_dirty: false,
             repo_open_prs: std::collections::HashMap::new(),
+            worktree_inventory: std::collections::HashMap::new(),
             repo_issues: std::collections::HashMap::new(),
             issues_fetch_in_flight: std::collections::HashSet::new(),
             prs_fetch_in_flight: std::collections::HashSet::new(),

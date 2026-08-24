@@ -216,6 +216,19 @@ Run `just check` before committing unless Can explicitly accepts narrower valida
 
 **`just check`/`just lint` only lint the host target you run them on and cannot compile target-gated Rust from a macOS box; only CI's `ubuntu-latest` leg lints that code.** Two separate gating shapes hide code from a macOS run, and the second one is easy to miss: whole-file `#![cfg(not(target_os = "macos"))]` test files (`tests/auto_detect.rs`, `tests/cli.rs`), and platform modules excluded by an **outer** `#[cfg(target_os = ...)]` on their `mod` declaration in `src/platform/mod.rs` (`src/platform/linux.rs`, `src/platform/windows.rs`) — including their `#[cfg(test)] mod tests`. A green `just check` on macOS is not proof any of it is clean; `lint` prints a reminder naming all four files, and that reminder is a to-verify list, not noise. (learned 2026-08-13, binding: clippy failures in Linux-only-gated test files reached CI invisibly from a macOS `just check` this way. Reasserted 2026-08-22, binding: it happened again, and worse — `9a2db191` left `std::sync::{Mutex, OnceLock}` unused in `src/platform/linux.rs`'s test module and CI stayed red across three commits, because the reminder only grepped for the whole-file inner attribute and never mentioned the platform modules at all. The `lint` recipe now lists them explicitly. Cross-compiling to verify locally does not work on this machine: the vendored libghostty-vt build script needs zig 0.15.2 and mise resolves 0.16.0, so CI is the only verifier — push the fix and watch the run.)
 
+**A stale `target/` cache can pin an absolute path to a checkout that no longer
+exists, and it fails at LINK time, so `cargo check` stays green and lies.**
+Measured 2026-08-24: this checkout moved from `~/Sites/bora` to
+`~/Sites/oss-team/bora`, and every test binary then failed with
+`clang: error: no such file or directory: '/Users/aryrabelo/Sites/bora/prebuilt/libghostty-vt-aarch64-macos.a'`
+while `cargo check --all-targets` reported zero errors, because `check` never
+links. `build.rs` emits the prebuilt libghostty-vt path once and re-runs only
+on `cargo:rerun-if-changed=prebuilt`, so nothing in a source edit invalidates
+it. Fix: `touch prebuilt` and rebuild (or `cargo clean -p bora`). Read the
+error's path, not the error's wording — the giveaway is a directory that is not
+this checkout. (learned 2026-08-24, binding: a green `cargo check` is not
+evidence the tree builds; only a command that links is.)
+
 Unit tests live next to the code (`#[cfg(test)] mod tests`). New `AppState` or `Workspace` behavior should be testable with `AppState::test_new()` and `Workspace::test_new()` without PTYs.
 
 For broad refactors or release-risk regressions, classify the risk before editing. Treat changes as refactor-risk when they touch two or more core surfaces, persisted state, protocol/API IDs, workspace/tab/pane identity, restore/handoff, agent detection authority, or UI/input state projection. Before moving code, identify the protected behavior and add or name characterization tests. Identity/state refactors should use the test-only invariants `AppState::assert_invariants_for_test()` or `Workspace::assert_invariants_for_test()` with adversarial state from `AppState::test_with_adversarial_identity_state()` or `Workspace::test_adversarial_identity_state()`. Run a roundtable for broad refactors and release-risk regressions, not for routine local fixes.
@@ -463,6 +476,44 @@ Rules:
 - If graphify-out/wiki/index.md exists, use it for broad navigation instead of raw source browsing.
 - Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context.
 - After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).
+
+## Beads durability in this repo — read before trusting the backlog
+
+This repo's `bd` runs in `dolt_mode: server` against the shared central server
+`dolt.bugtoprompt.com:3307` as user `bd_ops`. Two facts that a healthy-looking
+`bd ready` does not tell you, both measured 2026-08-24:
+
+- **There is no off-machine database backup, and the two supported routes are
+  both blocked from here.** `bd dolt push` returns
+  `Error 1105 (HY000): command denied to user 'bd_ops'@'%'` — `refs/dolt/*` does
+  not exist on `origin` and cannot be seeded from a client, because the push
+  would run server-side and that user has no push grant (nor would the VPS hold
+  this machine's GitHub credentials). `bd backup init <local dir>` does not
+  substitute: the server writes to *its* filesystem, which is exactly what bd's
+  own `auto-backup skipped — server filesystem differs from client` line on
+  every command is reporting. The unblocking action needs a credential only the
+  owner can supply: a DoltHub remote (`bd backup init
+  https://doltremoteapi.dolthub.com/<user>/<repo>` plus `DOLT_REMOTE_USER` /
+  `DOLT_REMOTE_PASSWORD`), or a push grant for `bd_ops` on the server.
+- **The only off-machine copy is the tracked `.beads/issues.jsonl`, and it is
+  issue-level, not a database.** It carries labels, dependencies and comments
+  per issue; it carries no Dolt branches, no commit history, no working-set
+  state. It is also *only as fresh as the last `bd export`* — it sat 2 days
+  stale at one point, showing all 36 issues as `open` while the live DB had
+  closed 5 epics, so an agent reading the file instead of the DB concludes the
+  opposite of the truth. Re-export before trusting it, and never read it as
+  current state. `.beads/interactions.jsonl` (untracked by the deliberate
+  decision in `f3032554`) is the local audit trail and is the thing to read when
+  the server is unreachable — it records every status change with its reason.
+
+Also: `.beads/dolt/` is the default data-dir. If a database root ever appears
+*there* (a `.dolt`/`.doltcfg` pair directly under it rather than under
+`.beads/dolt/<db>/`), it is inert while the mode is `server` but becomes a
+silent time machine the moment anyone sets `dolt.mode: embedded` — bd serves
+that empty database and reports healthy. One was found and moved out on
+2026-08-24; its `config.yaml` also carried `listener.port: 3307`, the central
+server's port on loopback, which is level 3 of bd's port-resolution chain.
+(learned 2026-08-24, binding.)
 
 <!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:970c3bf2 -->
 ## Beads Issue Tracker

@@ -1267,6 +1267,18 @@
       ]
     },
     {
+      "id": "checks",
+      "title": "Checks",
+      "keys": [
+        {
+          "key": "checks.refresh_interval_secs",
+          "type": "integer",
+          "default": "30",
+          "description": "Seconds between periodic background PR/CI check-status refreshes, feeding the sidebar CHECKS section and the PR badges. 0 falls back to the default interval."
+        }
+      ]
+    },
+    {
       "id": "flow",
       "title": "Flow",
       "keys": [

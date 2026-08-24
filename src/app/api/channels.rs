@@ -381,7 +381,7 @@ impl App {
             .iter()
             .enumerate()
             .filter_map(|(idx, ws)| {
-                workspace_channel_name(ws)
+                ws.channel_home_name()
                     .map(|name| self.channel_summary(idx, name, params.from_pane.as_deref()))
             })
             .collect();
@@ -1115,7 +1115,7 @@ impl App {
         self.state
             .workspaces
             .iter()
-            .position(|ws| workspace_channel_name(ws) == Some(name))
+            .position(|ws| ws.channel_home_name() == Some(name))
     }
 
     /// Resolves `from_pane` to a channel member and advances that member's
@@ -1243,7 +1243,7 @@ impl App {
                 })
             })
             .collect();
-        let Some(name) = workspace_channel_name(ws) else {
+        let Some(name) = ws.channel_home_name() else {
             return members;
         };
         for stored in self.joined_channel_members(name) {
@@ -1532,15 +1532,6 @@ fn agent_status_key(status: AgentStatus) -> &'static str {
         AgentStatus::Done => "done",
         AgentStatus::Unknown => "unknown",
     }
-}
-
-fn workspace_channel_name(ws: &crate::workspace::Workspace) -> Option<&str> {
-    if ws.visual_group.is_some() {
-        return None;
-    }
-    ws.custom_name
-        .as_deref()
-        .and_then(|name| name.strip_prefix('#'))
 }
 
 /// Classifies a `handle_agent_prompt` response into a `ChannelDelivery`

@@ -1122,16 +1122,6 @@ pub(crate) fn grouped_child_display_label(
         .to_string()
 }
 
-/// A workspace auto-filed as a channel: `#`-labelled and not placed in a group
-/// by hand.
-fn is_auto_channel(ws: &crate::workspace::Workspace) -> bool {
-    ws.visual_group.is_none()
-        && ws
-            .custom_name
-            .as_deref()
-            .is_some_and(|name| name.starts_with('#'))
-}
-
 /// Group a workspace belongs to for sidebar purposes. An explicit group set by
 /// the user always wins, so a channel can still be filed somewhere else.
 ///
@@ -1145,7 +1135,7 @@ fn effective_visual_group<'a>(
     if let Some(group) = ws.visual_group.as_deref() {
         return Some(group);
     }
-    is_auto_channel(ws).then_some(channel_group)
+    ws.channel_home_name().is_some().then_some(channel_group)
 }
 
 /// Git space a workspace contributes to repo grouping, which for a channel is
@@ -1159,7 +1149,7 @@ fn effective_visual_group<'a>(
 fn grouping_git_space(
     ws: &crate::workspace::Workspace,
 ) -> Option<&crate::workspace::GitSpaceMetadata> {
-    if is_auto_channel(ws) {
+    if ws.channel_home_name().is_some() {
         return None;
     }
     ws.git_space()
@@ -1292,7 +1282,7 @@ fn workspace_list_entries_inner(app: &AppState, force_expanded: bool) -> Vec<Wor
     // kinds, so they get two separate blocks. The sort is stable, so the repo
     // groups keep their relative order exactly as before.
     let mut emission_order: Vec<usize> = (0..app.workspaces.len()).collect();
-    emission_order.sort_by_key(|&idx| !is_auto_channel(&app.workspaces[idx]));
+    emission_order.sort_by_key(|&idx| app.workspaces[idx].channel_home_name().is_none());
 
     for ws_idx in emission_order {
         let ws = &app.workspaces[ws_idx];
@@ -1364,7 +1354,7 @@ fn workspace_list_entries_inner(app: &AppState, force_expanded: bool) -> Vec<Wor
                         let last_member = vg_members.len().saturating_sub(1);
                         for (position, &member_idx) in vg_members.iter().enumerate() {
                             let member_ws = &app.workspaces[member_idx];
-                            if is_auto_channel(member_ws) {
+                            if member_ws.channel_home_name().is_some() {
                                 // A channel row is just the channel: no repo header
                                 // and no branch bracket, because the checkout that
                                 // hosts it is not what the row is about. The rail

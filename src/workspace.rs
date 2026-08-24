@@ -1255,6 +1255,21 @@ impl Workspace {
         self.cached_git_space.as_ref()
     }
 
+    /// `#`-labelled home name for a `#`-channel workspace, or `None` for
+    /// anything else. The rule keys off the `#` label on `custom_name` and
+    /// never off the configured channel-group display string, so renaming
+    /// the group cannot change which workspaces land in it. A workspace
+    /// placed in a visual group by hand is never a channel home, regardless
+    /// of its name.
+    pub(crate) fn channel_home_name(&self) -> Option<&str> {
+        if self.visual_group.is_some() {
+            return None;
+        }
+        self.custom_name
+            .as_deref()
+            .and_then(|name| name.strip_prefix('#'))
+    }
+
     pub fn worktree_space(&self) -> Option<&WorktreeSpaceMembership> {
         self.worktree_space.as_ref()
     }
@@ -1982,5 +1997,21 @@ mod tests {
         assert_eq!(ws.tabs[2].root_pane, moved_root);
         assert_eq!(ws.tabs[ws.active_tab].root_pane, active_root);
         ws.assert_invariants_for_test();
+    }
+
+    #[test]
+    fn workspace_channel_home_name_covers_hash_label_and_visual_group() {
+        let mut ws = Workspace::test_new("#general");
+        assert_eq!(ws.channel_home_name(), Some("general"));
+
+        ws.visual_group = Some("pinned".to_string());
+        assert_eq!(ws.channel_home_name(), None);
+        ws.visual_group = None;
+
+        ws.custom_name = Some("general".to_string());
+        assert_eq!(ws.channel_home_name(), None);
+
+        ws.custom_name = None;
+        assert_eq!(ws.channel_home_name(), None);
     }
 }

@@ -205,6 +205,25 @@ impl App {
             return Vec::new();
         }
 
+        if let AppEvent::RepoWorktreesRefreshed {
+            repo_identity,
+            result,
+        } = ev
+        {
+            if self.worktree_inventory_refresh_in_flight {
+                self.worktree_inventory_refresh_results_pending = self
+                    .worktree_inventory_refresh_results_pending
+                    .saturating_sub(1);
+                if self.worktree_inventory_refresh_results_pending == 0 {
+                    self.worktree_inventory_refresh_in_flight = false;
+                }
+            }
+            self.state.worktree_inventory.insert(repo_identity, result);
+            self.render_dirty.request_generic();
+            self.render_notify.notify_one();
+            return Vec::new();
+        }
+
         if let AppEvent::RepoIssuesRefreshed {
             repo_identity,
             result,

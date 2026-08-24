@@ -212,4 +212,9 @@ pub enum AppEvent {
         repo_identity: String,
         result: RepoBranches,
     },
+    /// Background `git worktree list` for a repo completed (bora-qdi).
+    RepoWorktreesRefreshed {
+        repo_identity: String,
+        result: crate::app::state::RepoWorktreeInventory,
+    },
 }

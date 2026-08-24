@@ -6,18 +6,6 @@ use std::time::Instant;
 
 use super::{App, CHANNEL_MEMBERSHIP_REFRESH_INTERVAL};
 
-/// `#`-labelled workspace name a `#`-channel workspace is hosted at, or
-/// `None` for anything else (mirrors `app::api::channels::workspace_channel_name`,
-/// which is private to that module).
-fn channel_home_name(ws: &crate::workspace::Workspace) -> Option<&str> {
-    if ws.visual_group.is_some() {
-        return None;
-    }
-    ws.custom_name
-        .as_deref()
-        .and_then(|name| name.strip_prefix('#'))
-}
-
 impl App {
     /// Refresh `Workspace::cached_channels` for every workspace: the
     /// `#`-channels it has a pane explicitly joined into (not counting a
@@ -37,7 +25,7 @@ impl App {
             .state
             .workspaces
             .iter()
-            .filter_map(channel_home_name)
+            .filter_map(crate::workspace::Workspace::channel_home_name)
             .map(str::to_string)
             .collect();
 

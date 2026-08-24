@@ -30,7 +30,7 @@ use std::collections::{HashMap, HashSet};
 use super::{BranchRail, ProjectSection, WorkspaceListEntry};
 use crate::app::state::AppState;
 use crate::layout::PaneId;
-use crate::persist::projects::ResolvedMember;
+use crate::persist::projects::{ResolvedMember, WorktreesScope};
 use crate::terminal::{TerminalId, TerminalState};
 use crate::workspace::Workspace;
 
@@ -64,12 +64,16 @@ const ORPHANS_COLLAPSE_KEY: &str = "proj:__orphans__";
 /// - Workspaces matching no declared member land in one trailing implicit
 ///   `ProjectRow` with `declared: false`.
 ///
-/// Not built here (deliberately out of scope, see the task report): COMMANDS
-/// section rows (bora-55c.2 owns that band's content) and `unopened: true`
-/// worktree rows (no inventory source exists yet on `AppState`; wiring one is
-/// future work, never a disk/git call from this pure builder). The CHECKS
-/// band IS built here, from the representative workspace's
-/// `cached_check_status` (see `push_checks_section`).
+/// `unopened: true` worktree rows are built here too (bora-qdi): a declared
+/// project's `WorktreesScope::All` members each contribute every
+/// `AppState.worktree_inventory` entry for their `repo_identity` that has no
+/// matching open `WorktreeRow` in this project, appended after the
+/// project's open worktrees (`push_project_group`'s
+/// `unopened_worktrees_for_project` call). `ProjectRow.total` counts open +
+/// unopened; `.live` stays the open count — there is still no "dead but
+/// tracked" *workspace* in this data model, only a worktree with none open
+/// on it. The CHECKS band IS built here too, from the representative
+/// workspace's `cached_check_status` (see `push_checks_section`).
 pub(super) fn project_view_entries(
     app: &AppState,
     force_expanded: bool,
@@ -141,11 +145,27 @@ pub(super) fn project_view_entries(
 /// that function resolves the *workspace* side too via disk I/O, which is
 /// forbidden here — `ws.git_space()`/`ws.identity_cwd` are already cached on
 /// `AppState`, so this reads zero bytes from disk).
+///
+/// `member.worktrees` (bora-qdi) decides how strict the checkout compare
+/// is: `This` keeps today's behavior exactly — `repo_identity` AND
+/// `checkout_key` must both match the declared checkout. `All` compares
+/// `repo_identity` only, so every checkout of that repo (the main one plus
+/// every linked worktree) qualifies; `ws_subdir` is still computed relative
+/// to `ws`'s OWN `repo_root` (never the member's), so a member declared at
+/// `<checkout>/packages/landing` keeps matching that same relative subdir
+/// inside any worktree of the repo. That generalization — one `members:`
+/// entry covering every worktree of a repo — is deliberate, not a
+/// loosened bug: it is what lets `push_project_group` attach an
+/// `unopened: true` row for a worktree the project never explicitly
+/// declared a member for.
 fn workspace_matches_member(ws: &Workspace, member: &ResolvedMember) -> bool {
     let Some(space) = ws.git_space() else {
         return false;
     };
-    if space.repo_identity != member.repo_identity || space.checkout_key != member.checkout_key {
+    if space.repo_identity != member.repo_identity {
+        return false;
+    }
+    if member.worktrees == WorktreesScope::This && space.checkout_key != member.checkout_key {
         return false;
     }
     let ws_subdir = ws
@@ -198,11 +218,20 @@ fn push_project_group(
         .collect();
     let single_repo = repo_names.len() <= 1;
 
-    // Rule 7: live/total. There is no "dead but tracked" workspace in this
-    // data model yet — every matched workspace is, by definition, open — so
-    // both sides are the matched count until an unopened-worktree inventory
-    // (out of scope here) can widen `total`.
-    let total = ws_idxs.len();
+    // bora-qdi: worktrees on disk for this project's `WorktreesScope::All`
+    // members with no open workspace. Empty for the orphans group
+    // (`slug: None`) — an "unopened worktree" is defined relative to a
+    // declared member's repo, and the orphans group declares none.
+    let already_open: HashSet<&str> = order.iter().map(String::as_str).collect();
+    let unopened = slug
+        .map(|slug| unopened_worktrees_for_project(app, slug, &already_open))
+        .unwrap_or_default();
+
+    // Rule 7: live/total. `live` stays the open workspace count — there is
+    // still no "dead but tracked" *workspace* in this data model, only a
+    // worktree with none open on it. `total` now widens by the unopened
+    // count (bora-qdi).
+    let total = ws_idxs.len() + unopened.len();
     let live = ws_idxs.len();
 
     entries.push(WorkspaceListEntry::ProjectRow {
@@ -235,6 +264,115 @@ fn push_project_group(
             force_expanded,
         );
     }
+
+    // bora-qdi: unopened rows go after the project's live worktrees, no
+    // section bands, no children — `sidebar.rs`'s
+    // `worktree_row_unopened_renders_dimmed_branch` /
+    // `project_view_geometry_unopened_worktree_targets_open_worktree` own
+    // their rendering and hit-testing; this builder only decides which ones
+    // exist and in what order (sorted deterministically inside
+    // `unopened_worktrees_for_project`, so this loop stays stable).
+    for entry in &unopened {
+        entries.push(WorkspaceListEntry::WorktreeRow {
+            checkout_key: entry.checkout_key.clone(),
+            // ponytail: reuses the same `single_repo` flag the open
+            // worktrees use above rather than widening it with unopened
+            // repos' names too, so a project with ZERO open workspaces
+            // spanning 2+ repos briefly shows a collapsed repo column
+            // until one checkout opens. Fold `repo_name_for_identity`'s
+            // lookups into the `single_repo` computation if that edge case
+            // matters.
+            repo: if single_repo {
+                None
+            } else {
+                repo_name_for_identity(app, &entry.repo_identity)
+            },
+            branch: entry.branch.clone(),
+            ahead: 0,
+            behind: 0,
+            pr: None,
+            collapse_key: format!("wt:{}", entry.checkout_key),
+            unopened: true,
+        });
+    }
+}
+
+/// One inventory worktree eligible to render as an `unopened: true` row for
+/// a project (bora-qdi).
+struct UnopenedWorktree {
+    checkout_key: String,
+    branch: String,
+    repo_identity: String,
+}
+
+/// Worktrees on disk for `slug`'s `WorktreesScope::All` members with no
+/// currently-open workspace, sorted by branch then checkout key so render
+/// order is stable across ticks (rule 8). `already_open` is the project's
+/// own worktree-row keys (`push_project_group`'s `order`, built from
+/// `checkout_group_key`) — an inventory entry whose canonicalized
+/// `checkout_key` is already one of those is a live `WorktreeRow` already
+/// and must not double up. Skips bare and prunable entries
+/// (`InventoryWorktree.is_bare`/`.is_prunable`) — neither is a worktree a
+/// user would "open". `WorktreesScope::This` members are excluded: a `This`
+/// member owns exactly one checkout by definition and can never contribute
+/// an unopened peer. Zero I/O: reads only `app.projects.resolved_members`
+/// (resolved off the tick) and `app.worktree_inventory` (refreshed off the
+/// tick, already canonicalized there — see `InventoryWorktree`'s doc).
+fn unopened_worktrees_for_project(
+    app: &AppState,
+    slug: &str,
+    already_open: &HashSet<&str>,
+) -> Vec<UnopenedWorktree> {
+    let mut seen_repo_identities: HashSet<&str> = HashSet::new();
+    let mut rows = Vec::new();
+    for member in app.projects.resolved_members(slug) {
+        if member.worktrees != WorktreesScope::All {
+            continue;
+        }
+        if !seen_repo_identities.insert(member.repo_identity.as_str()) {
+            // Already covered by an earlier `All`-scope member on the same
+            // repo in this project — eligibility only needs one match.
+            continue;
+        }
+        let Some(inventory) = app.worktree_inventory.get(&member.repo_identity) else {
+            continue;
+        };
+        for entry in &inventory.worktrees {
+            if entry.is_bare || entry.is_prunable {
+                continue;
+            }
+            if already_open.contains(entry.checkout_key.as_str()) {
+                continue;
+            }
+            rows.push(UnopenedWorktree {
+                checkout_key: entry.checkout_key.clone(),
+                branch: entry.branch.clone().unwrap_or_default(),
+                repo_identity: member.repo_identity.clone(),
+            });
+        }
+    }
+    rows.sort_by(|a, b| {
+        a.branch
+            .cmp(&b.branch)
+            .then_with(|| a.checkout_key.cmp(&b.checkout_key))
+    });
+    rows
+}
+
+/// Best-effort repo display name for `repo_identity`, read from ANY
+/// currently-open workspace sharing that identity anywhere in the app (not
+/// just the current project) — the only zero-I/O source available on the
+/// render path. `None` when no open workspace anywhere shares this identity
+/// yet; the `WorktreeRow` then renders with `repo: None`, same treatment a
+/// project whose repo column has nothing to disambiguate already gets.
+fn repo_name_for_identity(app: &AppState, repo_identity: &str) -> Option<String> {
+    app.workspaces
+        .iter()
+        .find_map(|ws| {
+            ws.git_space()
+                .filter(|space| space.repo_identity == repo_identity)
+        })
+        .map(|space| space.repo_name.clone())
 }
 
 /// Grouping key for a workspace's worktree row: its real `checkout_key` when
@@ -1803,5 +1941,284 @@ mod tests {
 
         std::fs::remove_dir_all(&checkout_a).unwrap();
         std::fs::remove_dir_all(&checkout_b).unwrap();
+    }
+
+    #[test]
+    fn worktrees_scope_all_matches_other_checkouts_this_requires_exact_checkout() {
+        let member_checkout = temp_test_dir("scope-member");
+        let other_checkout = temp_test_dir("scope-other");
+        let origin = "git@github.com:owner/scope-repo.git";
+        init_fake_git_repo(&member_checkout, Some(origin));
+        init_fake_git_repo(&other_checkout, Some(origin));
+
+        // `WorktreesScope::All`: a workspace on a DIFFERENT checkout of the
+        // same `repo_identity` lands under the declared project.
+        let mut file = ProjectsFile::default();
+        file.projects.insert(
+            "proj".to_string(),
+            project(vec![Member {
+                dir: member_checkout.display().to_string(),
+                worktrees: WorktreesScope::All,
+                template: None,
+            }]),
+        );
+        let (_isolated, store) = store_with(file);
+        let mut app = AppState::test_new();
+        app.projects = store;
+        app.workspaces = vec![ws_at(&other_checkout)];
+
+        let entries = project_view_entries(&app, false);
+        let proj_total = entries.iter().find_map(|e| match e {
+            WorkspaceListEntry::ProjectRow {
+                name,
+                total,
+                declared: true,
+                ..
+            } if name == "proj" => Some(*total),
+            _ => None,
+        });
+        assert_eq!(
+            proj_total,
+            Some(1),
+            "All scope must match a workspace on a different checkout of the \
+             same repo_identity: {entries:?}"
+        );
+        let has_orphans = entries.iter().any(|e| {
+            matches!(
+                e,
+                WorkspaceListEntry::ProjectRow {
+                    declared: false,
+                    ..
+                }
+            )
+        });
+        assert!(
+            !has_orphans,
+            "the workspace must not ALSO fall into Ungrouped: {entries:?}"
+        );
+
+        // `WorktreesScope::This`: the same workspace now lands in
+        // Ungrouped instead — the blocking defect this bead fixes.
+        let mut file2 = ProjectsFile::default();
+        file2.projects.insert(
+            "proj".to_string(),
+            project(vec![Member {
+                dir: member_checkout.display().to_string(),
+                worktrees: WorktreesScope::This,
+                template: None,
+            }]),
+        );
+        drop(_isolated);
+        let (_isolated2, store2) = store_with(file2);
+        let mut app2 = AppState::test_new();
+        app2.projects = store2;
+        app2.workspaces = vec![ws_at(&other_checkout)];
+
+        let entries2 = project_view_entries(&app2, false);
+        let proj_total2 = entries2.iter().find_map(|e| match e {
+            WorkspaceListEntry::ProjectRow {
+                name,
+                total,
+                declared: true,
+                ..
+            } if name == "proj" => Some(*total),
+            _ => None,
+        });
+        assert_eq!(
+            proj_total2,
+            Some(0),
+            "This scope must not match a different checkout: {entries2:?}"
+        );
+        let orphans_total2 = entries2.iter().find_map(|e| match e {
+            WorkspaceListEntry::ProjectRow {
+                total,
+                declared: false,
+                ..
+            } => Some(*total),
+            _ => None,
+        });
+        assert_eq!(
+            orphans_total2,
+            Some(1),
+            "the workspace must land in Ungrouped instead: {entries2:?}"
+        );
+
+        std::fs::remove_dir_all(&member_checkout).unwrap();
+        std::fs::remove_dir_all(&other_checkout).unwrap();
+    }
+
+    #[test]
+    fn unopened_worktree_renders_dimmed_row_and_widens_total_open_one_does_not_duplicate() {
+        let member_checkout = temp_test_dir("unopened-member");
+        let sibling_worktree = temp_test_dir("unopened-sibling");
+        let origin = "git@github.com:owner/unopened-repo.git";
+        init_fake_git_repo(&member_checkout, Some(origin));
+        init_fake_git_repo(&sibling_worktree, Some(origin));
+        let sibling_key = crate::worktree::canonical_or_original(&sibling_worktree)
+            .display()
+            .to_string();
+
+        let project_file = |dir: &std::path::Path| {
+            let mut file = ProjectsFile::default();
+            file.projects.insert(
+                "proj".to_string(),
+                project(vec![Member {
+                    dir: dir.display().to_string(),
+                    worktrees: WorktreesScope::All,
+                    template: None,
+                }]),
+            );
+            file
+        };
+
+        // Only the member's own checkout is open; the sibling worktree is
+        // in the inventory with no open workspace.
+        let (_isolated, store) = store_with(project_file(&member_checkout));
+        let mut app = AppState::test_new();
+        app.projects = store;
+        app.workspaces = vec![ws_at(&member_checkout)];
+        let repo_identity = app.workspaces[0].git_space().unwrap().repo_identity.clone();
+        app.worktree_inventory.insert(
+            repo_identity.clone(),
+            crate::app::state::RepoWorktreeInventory {
+                worktrees: vec![crate::app::state::InventoryWorktree {
+                    checkout_key: sibling_key.clone(),
+                    branch: Some("feature/x".to_string()),
+                    is_bare: false,
+                    is_prunable: false,
+                }],
+                error: None,
+            },
+        );
+
+        let entries = project_view_entries(&app, false);
+        let unopened_rows: Vec<&str> = entries
+            .iter()
+            .filter_map(|e| match e {
+                WorkspaceListEntry::WorktreeRow {
+                    checkout_key,
+                    unopened: true,
+                    ..
+                } => Some(checkout_key.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            unopened_rows,
+            vec![sibling_key.as_str()],
+            "a worktree with no open workspace must render as unopened: true: {entries:?}"
+        );
+        let (live, total) = entries
+            .iter()
+            .find_map(|e| match e {
+                WorkspaceListEntry::ProjectRow {
+                    name, live, total, ..
+                } if name == "proj" => Some((*live, *total)),
+                _ => None,
+            })
+            .expect("proj row");
+        assert_eq!(live, 1, "live stays the open workspace count: {entries:?}");
+        assert_eq!(
+            total, 2,
+            "total widens by the unopened worktree, so total > live: {entries:?}"
+        );
+
+        // The sibling worktree now ALSO has an open workspace: the
+        // inventory entry must not produce a second, unopened row.
+        drop(_isolated);
+        let (_isolated2, store2) = store_with(project_file(&member_checkout));
+        let mut app2 = AppState::test_new();
+        app2.projects = store2;
+        app2.workspaces = vec![ws_at(&member_checkout), ws_at(&sibling_worktree)];
+        app2.worktree_inventory.insert(
+            repo_identity,
+            crate::app::state::RepoWorktreeInventory {
+                worktrees: vec![crate::app::state::InventoryWorktree {
+                    checkout_key: sibling_key,
+                    branch: Some("feature/x".to_string()),
+                    is_bare: false,
+                    is_prunable: false,
+                }],
+                error: None,
+            },
+        );
+        let entries2 = project_view_entries(&app2, false);
+        let unopened_rows2: Vec<&str> = entries2
+            .iter()
+            .filter_map(|e| match e {
+                WorkspaceListEntry::WorktreeRow {
+                    checkout_key,
+                    unopened: true,
+                    ..
+                } => Some(checkout_key.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            unopened_rows2.is_empty(),
+            "an inventory worktree that IS open must not also render as unopened: {entries2:?}"
+        );
+        assert_eq!(
+            worktree_rows(&entries2).len(),
+            2,
+            "both checkouts render as open rows, no duplicate: {entries2:?}"
+        );
+
+        std::fs::remove_dir_all(&member_checkout).unwrap();
+        std::fs::remove_dir_all(&sibling_worktree).unwrap();
+    }
+
+    #[test]
+    fn unopened_worktree_skips_bare_and_prunable_entries() {
+        let member_checkout = temp_test_dir("unopened-skip-member");
+        let origin = "git@github.com:owner/skip-repo.git";
+        init_fake_git_repo(&member_checkout, Some(origin));
+
+        let mut file = ProjectsFile::default();
+        file.projects.insert(
+            "proj".to_string(),
+            project(vec![Member {
+                dir: member_checkout.display().to_string(),
+                worktrees: WorktreesScope::All,
+                template: None,
+            }]),
+        );
+        let (_isolated, store) = store_with(file);
+        let mut app = AppState::test_new();
+        app.projects = store;
+        app.workspaces = vec![ws_at(&member_checkout)];
+        let repo_identity = app.workspaces[0].git_space().unwrap().repo_identity.clone();
+        app.worktree_inventory.insert(
+            repo_identity,
+            crate::app::state::RepoWorktreeInventory {
+                worktrees: vec![
+                    crate::app::state::InventoryWorktree {
+                        checkout_key: "/tmp/bora-fixture-bare.git".to_string(),
+                        branch: None,
+                        is_bare: true,
+                        is_prunable: false,
+                    },
+                    crate::app::state::InventoryWorktree {
+                        checkout_key: "/tmp/bora-fixture-prunable".to_string(),
+                        branch: Some("stale".to_string()),
+                        is_bare: false,
+                        is_prunable: true,
+                    },
+                ],
+                error: None,
+            },
+        );
+
+        let entries = project_view_entries(&app, false);
+        let unopened_count = entries
+            .iter()
+            .filter(|e| matches!(e, WorkspaceListEntry::WorktreeRow { unopened: true, .. }))
+            .count();
+        assert_eq!(
+            unopened_count, 0,
+            "bare and prunable inventory entries must not render a row: {entries:?}"
+        );
+
+        std::fs::remove_dir_all(&member_checkout).unwrap();
     }
 }

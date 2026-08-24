@@ -6,6 +6,7 @@ use crossterm::terminal;
 use super::{
     background_update_check_enabled, App, ANIMATION_INTERVAL, AUTO_UPDATE_CHECK_INTERVAL,
     MIN_RENDER_INTERVAL, RESIZE_POLL_INTERVAL, SELECTION_AUTOSCROLL_INTERVAL,
+    WORKTREE_INVENTORY_REFRESH_INTERVAL,
 };
 fn retain_detached_process_after_wait(
     pid: u32,
@@ -427,6 +428,8 @@ impl App {
                 tracing::warn!(err = %err, "failed to reload projects.yml");
             }
         }
+
+        self.start_worktree_inventory_refresh_if_due(now);
 
         // bora-55c.3: refresh each workspace's declared-command cache so the
         // COMMANDS band reads pure state. Gated to 1s — the loader's own
@@ -945,6 +948,100 @@ impl App {
             };
             seen.insert(repo_identity.clone());
             jobs.push((repo_identity, cwd));
+        }
+        jobs
+    }
+
+    /// Periodically list on-disk worktrees per repo so the Project view can
+    /// render `unopened: true` rows for a worktree with no open workspace
+    /// (bora-qdi). One `(repo_identity, cwd)` job per distinct repo,
+    /// deduplicated like `open_prs_refresh_jobs`, but sourced from
+    /// `worktree_inventory_refresh_jobs` — declared project members with
+    /// `WorktreesScope::All` — rather than open workspaces: the whole point
+    /// of an unopened-worktree row is that its repo may have no open
+    /// workspace at all, so deriving jobs from `AppState.workspaces` the way
+    /// `open_prs_refresh_jobs` does would starve exactly the projects this
+    /// feature exists for. Throttled to
+    /// `WORKTREE_INVENTORY_REFRESH_INTERVAL` (no config knob — bora-qdi
+    /// keeps this feature zero-configuration beyond `worktrees: all`); one
+    /// background thread lists all repos sequentially
+    /// (`crate::worktree::list_existing_worktrees`, a `git` subprocess call
+    /// — never on the render path) and delivers one
+    /// `AppEvent::RepoWorktreesRefreshed` per repo, exactly like
+    /// `RepoPrsRefreshed`.
+    pub(crate) fn start_worktree_inventory_refresh_if_due(&mut self, now: Instant) {
+        if self.worktree_inventory_refresh_in_flight {
+            return;
+        }
+        if now.duration_since(self.last_worktree_inventory_refresh)
+            < WORKTREE_INVENTORY_REFRESH_INTERVAL
+        {
+            return;
+        }
+        self.last_worktree_inventory_refresh = now;
+        let jobs = self.worktree_inventory_refresh_jobs();
+        if jobs.is_empty() {
+            return;
+        }
+        self.worktree_inventory_refresh_in_flight = true;
+        self.worktree_inventory_refresh_results_pending = jobs.len();
+        let event_tx = self.event_tx.clone();
+        std::thread::spawn(move || {
+            for (repo_identity, repo_root) in jobs {
+                let result = match crate::worktree::list_existing_worktrees(&repo_root) {
+                    Ok(worktrees) => crate::app::state::RepoWorktreeInventory {
+                        worktrees: worktrees
+                            .into_iter()
+                            .map(|wt| crate::app::state::InventoryWorktree {
+                                checkout_key: crate::worktree::canonical_or_original(&wt.path)
+                                    .display()
+                                    .to_string(),
+                                branch: wt.branch,
+                                is_bare: wt.is_bare,
+                                is_prunable: wt.is_prunable,
+                            })
+                            .collect(),
+                        error: None,
+                    },
+                    Err(err) => crate::app::state::RepoWorktreeInventory {
+                        worktrees: Vec::new(),
+                        error: Some(err),
+                    },
+                };
+                let _ = event_tx.blocking_send(AppEvent::RepoWorktreesRefreshed {
+                    repo_identity,
+                    result,
+                });
+            }
+        });
+    }
+
+    /// One `(repo_identity, checkout_path)` job per distinct repo across
+    /// every declared project's `WorktreesScope::All` members (bora-qdi). A
+    /// `WorktreesScope::This` member owns exactly one checkout and can never
+    /// contribute an unopened peer, mirroring the eligibility rule
+    /// `ui::sidebar::project_view::push_project_group` applies when reading
+    /// this cache back out. `member.checkout_key` is already the
+    /// canonicalized repo-root path (`workspace::git::discovery`'s
+    /// `checkout_key` derivation), and `git worktree list` run from ANY
+    /// checkout of a repo lists every worktree the whole repo family has, so
+    /// any one member's checkout is a valid representative.
+    pub(crate) fn worktree_inventory_refresh_jobs(&self) -> Vec<(String, std::path::PathBuf)> {
+        let mut seen = std::collections::HashSet::new();
+        let mut jobs: Vec<(String, std::path::PathBuf)> = Vec::new();
+        for slug in self.state.projects.current().projects.keys() {
+            for member in self.state.projects.resolved_members(slug) {
+                if member.worktrees != crate::persist::projects::WorktreesScope::All {
+                    continue;
+                }
+                if !seen.insert(member.repo_identity.clone()) {
+                    continue;
+                }
+                jobs.push((
+                    member.repo_identity.clone(),
+                    std::path::PathBuf::from(member.checkout_key.clone()),
+                ));
+            }
         }
         jobs
     }

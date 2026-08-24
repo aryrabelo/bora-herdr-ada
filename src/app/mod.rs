@@ -102,6 +102,11 @@ const CHECKS_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 /// Default period between background open-PR refreshes; overridable via
 /// `[github] refresh_interval_secs`.
 const OPEN_PRS_REFRESH_INTERVAL: Duration = Duration::from_secs(120);
+/// Cadence for `App::start_worktree_inventory_refresh_if_due` (bora-qdi): a
+/// local `git worktree list` per declared repo, not a config knob — the
+/// feature is optional (a project only opts in via `worktrees: all`), so a
+/// tunable interval nobody asked for is dead weight.
+const WORKTREE_INVENTORY_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 const AUTO_UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(30 * 60);
 const PENDING_AGENT_RESUME_THEME_WAIT: Duration = Duration::from_millis(750);
 /// How long a target must be continuously observed away from `Working`
@@ -274,6 +279,14 @@ pub struct App {
     pub(crate) github_refresh_interval: Duration,
     /// `[checks] refresh_interval_secs` as a Duration.
     pub(crate) checks_refresh_interval: Duration,
+    /// Last time a background worktree-inventory batch was started (bora-qdi).
+    pub(crate) last_worktree_inventory_refresh: Instant,
+    /// True while a background worktree-inventory refresh batch is running;
+    /// cleared when all its per-repo results have arrived (bora-qdi).
+    pub(crate) worktree_inventory_refresh_in_flight: bool,
+    /// Per-repo results still expected from the in-flight worktree-inventory
+    /// batch.
+    pub(crate) worktree_inventory_refresh_results_pending: usize,
     pub(crate) git_refresh_in_flight: bool,
     pub(crate) git_refresh_due_after_in_flight: bool,
     pub(crate) git_identity_refresh_requested: bool,
@@ -936,6 +949,7 @@ impl App {
             host_mouse_pixels: None,
             session_dirty: false,
             repo_open_prs: HashMap::new(),
+            worktree_inventory: HashMap::new(),
             repo_issues: HashMap::new(),
             issues_fetch_in_flight: std::collections::HashSet::new(),
             prs_fetch_in_flight: std::collections::HashSet::new(),
@@ -1014,6 +1028,15 @@ impl App {
                 .unwrap_or_else(Instant::now),
             open_prs_refresh_in_flight: false,
             open_prs_refresh_results_pending: 0,
+            // checked_sub: the interval is fixed (bora-qdi has no config
+            // knob), but Instant::now() at process start is always large
+            // enough for this to never underflow in practice; checked_sub
+            // stays defensive rather than assume that.
+            last_worktree_inventory_refresh: Instant::now()
+                .checked_sub(WORKTREE_INVENTORY_REFRESH_INTERVAL)
+                .unwrap_or_else(Instant::now),
+            worktree_inventory_refresh_in_flight: false,
+            worktree_inventory_refresh_results_pending: 0,
             github_fetch_enabled: config.github.enabled,
             github_refresh_interval,
             checks_refresh_interval,

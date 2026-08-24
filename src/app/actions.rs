@@ -2906,6 +2906,7 @@ impl AppState {
             AppEvent::RepoPrsRefreshed { .. } => Vec::new(),
             AppEvent::RepoIssuesRefreshed { .. } => Vec::new(),
             AppEvent::RepoBranchesRefreshed { .. } => Vec::new(),
+            AppEvent::RepoWorktreesRefreshed { .. } => Vec::new(),
             AppEvent::WorktreeAddFinished(_) => Vec::new(),
             AppEvent::WorktreeRemoveFinished(_) => Vec::new(),
             AppEvent::WorktreeMergeToMainFinished { .. } => Vec::new(),

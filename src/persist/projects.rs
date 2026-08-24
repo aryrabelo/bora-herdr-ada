@@ -344,6 +344,15 @@ pub struct ResolvedMember {
     pub checkout_key: String,
     /// Empty when the member dir *is* the checkout root.
     pub subdir: PathBuf,
+    /// The declaring `Member.worktrees` (bora-qdi). `resolve_member` has no
+    /// `Member` context — only a bare `dir: &str` — so it always sets this
+    /// to `WorktreesScope::default()`; `ProjectsStore::resolve_all` is the
+    /// one place that has the real `Member` and overwrites it there. Every
+    /// other caller of `resolve_member`/`Member::resolve()`
+    /// (`app::agents::member_covers`, `app::api::projects`) only ever reads
+    /// `repo_identity`/`checkout_key`/`subdir`, so leaving their call sites
+    /// pointed at the default is harmless.
+    pub worktrees: WorktreesScope,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -382,6 +391,7 @@ pub fn resolve_member(dir: &str) -> MemberResolution {
         repo_identity: meta.repo_identity,
         checkout_key: meta.checkout_key,
         subdir,
+        worktrees: WorktreesScope::default(),
     })
 }
 
@@ -474,7 +484,14 @@ impl ProjectsStore {
                     .members
                     .iter()
                     .filter_map(|member| match member.resolve() {
-                        MemberResolution::Resolved(resolved) => Some(resolved),
+                        MemberResolution::Resolved(mut resolved) => {
+                            // `resolve_member` only sees `dir: &str`, so it
+                            // cannot know the declaring `Member`'s scope
+                            // (bora-qdi) — attach it here, the one place that
+                            // has both the resolution and the `Member`.
+                            resolved.worktrees = member.worktrees;
+                            Some(resolved)
+                        }
                         // An unresolved member (bad path, not a checkout)
                         // contributes no matches rather than failing the whole
                         // project. Surfacing `reason` to the user is a later bead.
