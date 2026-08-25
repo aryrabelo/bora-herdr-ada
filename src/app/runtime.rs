@@ -303,6 +303,41 @@ impl App {
         false
     }
 
+    /// bora-49p.3: poll `projects.yml` for changes so the Project view
+    /// (`ui::sidebar::project_view`) always builds its tree from
+    /// already-refreshed data, never re-reading disk itself.
+    /// `reload_if_changed` is cheap on the unchanged path — one `stat`,
+    /// no allocation — so it runs unconditionally every scheduled tick.
+    /// This one helper is the ONLY owner of the reload decision: it is
+    /// called by both tick paths (standalone `handle_scheduled_tasks`
+    /// and the headless server's `handle_scheduled_tasks_headless`), so
+    /// the two cannot drift — the headless path shipped without this
+    /// poll once and runtime project writes never grouped (bora-uqv
+    /// follow-up). Returns whether the visible state changed.
+    pub(crate) fn poll_projects_store(&mut self) -> bool {
+        match self.state.projects.reload_if_changed() {
+            Ok(true) => {
+                self.refresh_all_project_todos_notes();
+                true
+            }
+            Ok(false) => {
+                // Startup seed (bora-s3y.3): populate the TODOS/NOTES
+                // snapshots once so a fresh server shows pre-existing
+                // stores before any verb mutation. The maps gain an entry
+                // per project even when a store is empty, so this fires
+                // exactly once per slug set.
+                if self.state.project_todos.is_empty() {
+                    self.refresh_all_project_todos_notes();
+                }
+                false
+            }
+            Err(err) => {
+                tracing::warn!(err = %err, "failed to reload projects.yml");
+                false
+            }
+        }
+    }
+
     pub(crate) fn handle_scheduled_tasks(&mut self, now: Instant, geometry_dirty: bool) -> bool {
         let mut changed = false;
         let mut resized = false;
@@ -404,30 +439,7 @@ impl App {
         self.start_git_status_refresh_if_due(now);
         self.refresh_channel_membership_if_due(now);
 
-        // bora-49p.3: poll `projects.yml` for changes so the Project view
-        // (`ui::sidebar::project_view`) always builds its tree from
-        // already-refreshed data, never re-reading disk itself.
-        // `reload_if_changed` is cheap on the unchanged path — one `stat`,
-        // no allocation — so it runs unconditionally every scheduled tick.
-        match self.state.projects.reload_if_changed() {
-            Ok(true) => {
-                self.refresh_all_project_todos_notes();
-                changed = true;
-            }
-            Ok(false) => {
-                // Startup seed (bora-s3y.3): populate the TODOS/NOTES
-                // snapshots once so a fresh server shows pre-existing
-                // stores before any verb mutation. The maps gain an entry
-                // per project even when a store is empty, so this fires
-                // exactly once per slug set.
-                if self.state.project_todos.is_empty() {
-                    self.refresh_all_project_todos_notes();
-                }
-            }
-            Err(err) => {
-                tracing::warn!(err = %err, "failed to reload projects.yml");
-            }
-        }
+        changed |= self.poll_projects_store();
 
         self.start_worktree_inventory_refresh_if_due(now);
 
