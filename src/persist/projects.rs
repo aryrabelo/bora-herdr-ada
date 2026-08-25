@@ -252,12 +252,12 @@ pub struct Sections {
     pub checks: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub commands: Option<Vec<String>>,
-    /// Declares the render order of the four section bands
-    /// (`commands`/`checks`/`todos`/`notes`, case-insensitive). Absent or
-    /// empty resolves to today's fixed order
-    /// (`ui::sidebar::ProjectSection::ALL`); see
+    /// Declares the render order of the registered section bands
+    /// (`commands`/`checks`/`todos`/`notes`/`pull_requests`, case-
+    /// insensitive — see `ui::sidebar::project_view::REGISTRY`). Absent or
+    /// empty resolves to registry order; see
     /// `ui::sidebar::project_view::resolve_section_order` for the full
-    /// contract (bora-5ia).
+    /// contract (bora-5ia, bora-by6).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub order: Option<Vec<String>>,
 }

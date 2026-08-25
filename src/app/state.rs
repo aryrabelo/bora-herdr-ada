@@ -718,7 +718,7 @@ pub enum ProjectRowTarget {
     /// Activate a row inside a band: run a command (COMMANDS rows carry
     /// the workspace to launch into), open a check/todo/doc (not wired).
     SectionItem {
-        kind: crate::ui::ProjectSection,
+        kind: &'static crate::ui::SectionDescriptor,
         label: String,
         ws_idx: Option<usize>,
     },

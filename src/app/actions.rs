@@ -926,7 +926,9 @@ fn tab_aggregate_state(
         let Some(terminal) = terminals.get(&pane.attached_terminal_id) else {
             continue;
         };
-        if crate::detect::display_priority(terminal.state, pane.seen) > crate::detect::display_priority(aggregate, seen) {
+        if crate::detect::display_priority(terminal.state, pane.seen)
+            > crate::detect::display_priority(aggregate, seen)
+        {
             aggregate = terminal.state;
             seen = pane.seen;
         }

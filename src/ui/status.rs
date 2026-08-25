@@ -237,7 +237,10 @@ pub(super) fn state_dot(
             Style::default().fg(idle_age_color(idle_age, p)),
         ),
         (AgentState::Idle, true) => ("○", Style::default().fg(p.overlay0)),
-        (AgentState::Blocked, _) => (blocked_glyph(indicator_style), Style::default().fg(p.red)),
+        (AgentState::Blocked, _) => (
+            blocked_glyph(indicator_style),
+            Style::default().fg(p.red).add_modifier(Modifier::BOLD),
+        ),
         (AgentState::Unknown, _) => ("◰", Style::default().fg(p.overlay0)),
     }
 }
@@ -257,7 +260,10 @@ pub(super) fn agent_icon(
             Style::default().fg(idle_age_color(idle_age, p)),
         ),
         (AgentState::Idle, true) => ("○", Style::default().fg(p.overlay0)),
-        (AgentState::Blocked, _) => (blocked_glyph(indicator_style), Style::default().fg(p.red)),
+        (AgentState::Blocked, _) => (
+            blocked_glyph(indicator_style),
+            Style::default().fg(p.red).add_modifier(Modifier::BOLD),
+        ),
         (AgentState::Unknown, _) => ("○", Style::default().fg(p.overlay0)),
     }
 }
@@ -521,5 +527,50 @@ mod tests {
             state_icon_symbol(AgentState::Unknown, true, StatusIndicatorStyle::Symbols),
             "·"
         );
+    }
+
+    #[test]
+    fn blocked_is_bold_and_distinct_from_working_in_shared_primitives() {
+        let p = Palette::catppuccin();
+
+        let (_, dot_blocked) = state_dot(
+            AgentState::Blocked,
+            false,
+            0,
+            StatusIndicatorStyle::Dots,
+            &p,
+            None,
+        );
+        let (_, dot_working) = state_dot(
+            AgentState::Working,
+            true,
+            0,
+            StatusIndicatorStyle::Dots,
+            &p,
+            None,
+        );
+        assert!(dot_blocked.add_modifier.contains(Modifier::BOLD));
+        assert!(!dot_working.add_modifier.contains(Modifier::BOLD));
+        assert_ne!(dot_blocked.fg, dot_working.fg);
+
+        let (_, icon_blocked) = agent_icon(
+            AgentState::Blocked,
+            false,
+            0,
+            StatusIndicatorStyle::Dots,
+            &p,
+            None,
+        );
+        let (_, icon_working) = agent_icon(
+            AgentState::Working,
+            true,
+            0,
+            StatusIndicatorStyle::Dots,
+            &p,
+            None,
+        );
+        assert!(icon_blocked.add_modifier.contains(Modifier::BOLD));
+        assert!(!icon_working.add_modifier.contains(Modifier::BOLD));
+        assert_ne!(icon_blocked.fg, icon_working.fg);
     }
 }

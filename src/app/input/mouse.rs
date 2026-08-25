@@ -2399,7 +2399,13 @@ impl AppState {
                 label,
                 ws_idx,
             } => {
-                if kind == crate::ui::ProjectSection::Commands {
+                // Compares by wire name rather than descriptor identity —
+                // deliberate (bora-by6 G6): click behaviour is not yet a
+                // declared field on `SectionDescriptor`, so this stays the
+                // same "COMMANDS only" wildcard the closed enum had. An
+                // `on_click` descriptor field is the natural next step once
+                // a non-COMMANDS band needs one.
+                if kind.wire_name == "commands" {
                     if let Some(ws_idx) = ws_idx {
                         self.pending_bora_command = self.section_command_launch(ws_idx, &label);
                     }
@@ -6071,7 +6077,8 @@ mod tests {
         assert!(app
             .state
             .handle_project_row_click(crate::app::state::ProjectRowTarget::SectionItem {
-                kind: crate::ui::ProjectSection::Commands,
+                kind: crate::ui::SectionDescriptor::from_wire_name("commands")
+                    .expect("registry has a commands descriptor"),
                 label: "dev".to_string(),
                 ws_idx: Some(0),
             })
@@ -6090,7 +6097,8 @@ mod tests {
         assert!(app
             .state
             .handle_project_row_click(crate::app::state::ProjectRowTarget::SectionItem {
-                kind: crate::ui::ProjectSection::Todos,
+                kind: crate::ui::SectionDescriptor::from_wire_name("todos")
+                    .expect("registry has a todos descriptor"),
                 label: "dev".to_string(),
                 ws_idx: None,
             })
@@ -6098,7 +6106,8 @@ mod tests {
         assert!(app
             .state
             .handle_project_row_click(crate::app::state::ProjectRowTarget::SectionItem {
-                kind: crate::ui::ProjectSection::Commands,
+                kind: crate::ui::SectionDescriptor::from_wire_name("commands")
+                    .expect("registry has a commands descriptor"),
                 label: "not-declared".to_string(),
                 ws_idx: Some(0),
             })

@@ -655,62 +655,90 @@ pub(crate) struct ProjectHeaderBranch {
     pub behind: usize,
 }
 
-/// Section bands in the Project view: `Commands`/`Checks` hang off a
-/// worktree, `Todos`/`Notes`/`PullRequests` off the project row (bora-s3y.3,
-/// bora-yw6.2, rendered between the project row and its worktrees). Within
-/// each of those two groups, relative order defaults to the order below but
-/// is declarable per project via `sections.order:` (bora-5ia,
-/// `project_view::resolve_section_order`) — project-level and
-/// worktree-level bands never interleave with each other, only reorder
-/// within their own group.
+/// Where a Project-view attachment band may appear in the tree: hanging off
+/// a `WorktreeRow` (today: COMMANDS, CHECKS) or off a `ProjectRow` (today:
+/// TODOS, NOTES, PULL REQUESTS). A descriptor declares its own level, and
+/// the resolver (`project_view::filter_by_level`) honours it — this is what
+/// makes placing a band where it never declared it may appear
+/// unrepresentable, rather than merely unconventional (bora-by6).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ProjectSection {
-    Commands,
-    Checks,
-    /// Project-level (not worktree-level): the swarm's shared todos
-    /// (bora-s3y.3), rendered between the project row and its worktrees.
-    Todos,
-    /// Project-level named scratchpad docs (bora-s3y.3).
-    Notes,
-    /// Project-level: open PRs authored by the user with no local worktree
-    /// (bora-yw6.2), rendered alongside Todos/Notes off the project row.
-    PullRequests,
+pub(crate) enum SectionLevel {
+    Worktree,
+    Project,
 }
 
-impl ProjectSection {
-    /// The five variants in today's fixed order — an absent or empty
-    /// `sections.order:` resolves to exactly this (bora-5ia).
-    pub(crate) const ALL: [ProjectSection; 5] = [
-        ProjectSection::Commands,
-        ProjectSection::Checks,
-        ProjectSection::Todos,
-        ProjectSection::Notes,
-        ProjectSection::PullRequests,
-    ];
+/// How a band header's right-aligned counter reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SectionCounter {
+    /// `done/total`, a progress readout (COMMANDS, CHECKS, TODOS).
+    Progress,
+    /// A plain count with no denominator — a list, not a progress bar
+    /// (NOTES, PULL REQUESTS).
+    Count,
+}
 
-    /// The wire name a `sections.order:` entry uses. Exhaustive without a
-    /// wildcard arm: adding a sixth variant fails to compile here until it
-    /// is given a name — the same trick
-    /// `workspace_list_lockstep_passes_agree_for_every_entry_variant` relies
-    /// on elsewhere in this crate.
-    const fn wire_name(self) -> &'static str {
-        match self {
-            ProjectSection::Commands => "commands",
-            ProjectSection::Checks => "checks",
-            ProjectSection::Todos => "todos",
-            ProjectSection::Notes => "notes",
-            ProjectSection::PullRequests => "pull_requests",
-        }
+/// How a band's item bullet reacts to `running`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SectionBullet {
+    /// `●` running / `·` idle — the default.
+    Standard,
+    /// Idle renders as a red `✗` failure marker instead of a dim dot: CHECKS
+    /// rows exist only to flag failures, so an idle row IS the problem.
+    FlagIdleAsError,
+}
+
+/// Registry entry for one Project-view attachment band (bora-by6). This
+/// replaces the closed `ProjectSection` enum: placement (`level`),
+/// presentation (`glyph`/`label`/`counter`/`bullet`), and behavior (`push`)
+/// for a band all live on its descriptor instead of being scattered across
+/// per-variant match arms, so a new band costs one `const` registry entry
+/// (`project_view::REGISTRY`) plus one push function — not a match arm in
+/// every site that used to enumerate the closed set. A row band is referred
+/// to by `&'static` reference to a descriptor, never by enum variant.
+#[derive(Debug)]
+pub(crate) struct SectionDescriptor {
+    /// The name a `sections.order:` entry uses (case-insensitive lookup via
+    /// `from_wire_name`).
+    pub(crate) wire_name: &'static str,
+    pub(crate) glyph: &'static str,
+    pub(crate) label: &'static str,
+    pub(crate) level: SectionLevel,
+    pub(crate) counter: SectionCounter,
+    pub(crate) bullet: SectionBullet,
+    /// Pushes this band's header/items onto `entries`, or nothing when the
+    /// band's data source is empty/absent (rule 5) — and an explicit error
+    /// row, never a silently empty band, when the data source errored. The
+    /// seven pre-registry push functions had non-uniform signatures
+    /// (`&[String]` selection, `&Workspace`, a bare `slug`, an added
+    /// `local_branches`); `project_view::SectionPushCtx` normalizes them
+    /// onto one borrowed-context type so one function-pointer type fits
+    /// every band.
+    pub(crate) push: fn(&mut Vec<WorkspaceListEntry>, &project_view::SectionPushCtx<'_>),
+}
+
+// `wire_name` is the unique key by design (one registry entry per name,
+// checked in `#[test] fn registry_wire_names_are_unique`), so equality
+// compares it alone. A derived `PartialEq` would also compare `push`, and
+// comparing function pointers for equality is unreliable across codegen
+// units (rustc's `unpredictable_function_pointer_comparisons` lint) — this
+// impl sidesteps that entirely rather than silencing the lint.
+impl PartialEq for SectionDescriptor {
+    fn eq(&self, other: &Self) -> bool {
+        self.wire_name == other.wire_name
     }
+}
+impl Eq for SectionDescriptor {}
 
-    /// Case-insensitive lookup of a `sections.order:` entry. `None` for an
+impl SectionDescriptor {
+    /// Case-insensitive `sections.order:` lookup. `None` for an
     /// unrecognized name — the resolver ignores it rather than erroring, so
-    /// a future bora writing a sixth section name into `projects.yml`
+    /// a future bora writing an unknown section name into `projects.yml`
     /// cannot break an older binary's sidebar.
-    pub(crate) fn from_name(name: &str) -> Option<ProjectSection> {
-        Self::ALL
-            .into_iter()
-            .find(|section| section.wire_name().eq_ignore_ascii_case(name))
+    pub(crate) fn from_wire_name(name: &str) -> Option<&'static SectionDescriptor> {
+        project_view::REGISTRY
+            .iter()
+            .copied()
+            .find(|section| section.wire_name.eq_ignore_ascii_case(name))
     }
 }
 
@@ -794,14 +822,14 @@ pub(crate) enum WorkspaceListEntry {
     /// `TODOS`/`NOTES` use the same shape one level up, hanging off the
     /// project row (bora-s3y.3), also declarable, default TODOS then NOTES.
     SectionHeader {
-        kind: ProjectSection,
+        kind: &'static SectionDescriptor,
         collapse_key: String,
         done: usize,
         total: usize,
     },
     /// A row inside a `SectionHeader` band.
     SectionItem {
-        kind: ProjectSection,
+        kind: &'static SectionDescriptor,
         label: String,
         detail: Option<String>,
         running: bool,
@@ -1046,31 +1074,25 @@ pub(crate) fn worktree_row_line(
 /// right-aligned `done/total`. The ruler is load-bearing: without it the row
 /// reads as a plain label instead of a section.
 pub(crate) fn section_header_line(
-    kind: ProjectSection,
+    kind: &'static SectionDescriptor,
     done: usize,
     total: usize,
     p: &Palette,
     width: u16,
 ) -> Line<'static> {
-    let (glyph, name) = match kind {
-        ProjectSection::Commands => ("≡", "COMMANDS"),
-        ProjectSection::Checks => ("✓", "CHECKS"),
-        ProjectSection::Todos => ("☐", "TODOS"),
-        ProjectSection::Notes => ("✎", "NOTES"),
-        ProjectSection::PullRequests => ("⇄", "PULL REQUESTS"),
-    };
     // NOTES/PULL REQUESTS are plain lists, not a progress bar: show the
-    // count, not a meaningless `0/N`.
-    let counter = match kind {
-        ProjectSection::Notes | ProjectSection::PullRequests => format!(" {total}"),
-        _ => format!(" {done}/{total}"),
+    // count, not a meaningless `0/N` — a declared field on the descriptor
+    // (`SectionCounter`) now, not a wildcard match (bora-by6 G6).
+    let counter = match kind.counter {
+        SectionCounter::Count => format!(" {total}"),
+        SectionCounter::Progress => format!(" {done}/{total}"),
     };
     let spans = vec![
         Span::styled("    ", Style::default()),
-        Span::styled(glyph, Style::default().fg(p.overlay1)),
+        Span::styled(kind.glyph, Style::default().fg(p.overlay1)),
         Span::styled(" ", Style::default()),
         Span::styled(
-            name,
+            kind.label,
             Style::default().fg(p.overlay0).add_modifier(Modifier::BOLD),
         ),
         Span::styled(" ", Style::default()),
@@ -1089,15 +1111,17 @@ pub(crate) fn section_header_line(
 /// rows exist only to flag failures (a provider error row included), so an
 /// idle CHECKS row gets the red `✗` from the design mockup, not the dim dot.
 pub(crate) fn section_item_line(
-    kind: ProjectSection,
+    kind: &'static SectionDescriptor,
     label: &str,
     detail: Option<&str>,
     running: bool,
     p: &Palette,
     width: u16,
 ) -> Line<'static> {
-    let (bullet, bullet_style) = match (kind, running) {
-        (ProjectSection::Checks, false) => ("✗", Style::default().fg(p.red)),
+    // Bullet style is a declared field on the descriptor (`SectionBullet`)
+    // now, not a wildcard match on the kind (bora-by6 G6).
+    let (bullet, bullet_style) = match (kind.bullet, running) {
+        (SectionBullet::FlagIdleAsError, false) => ("✗", Style::default().fg(p.red)),
         (_, true) => ("●", Style::default().fg(p.green)),
         (_, false) => ("·", Style::default().fg(p.overlay0)),
     };
@@ -2168,7 +2192,7 @@ fn workspace_list_areas_for_entries(
                 project_rows.push(ProjectRowHitArea {
                     rect: Rect::new(body.x, row_y, body.width, 1),
                     target: ProjectRowTarget::SectionItem {
-                        kind: *kind,
+                        kind,
                         label: label.clone(),
                         ws_idx: *ws_idx,
                     },
@@ -2960,7 +2984,7 @@ fn render_workspace_list(
             } => {
                 if row_y < list_bottom {
                     frame.render_widget(
-                        Paragraph::new(section_header_line(*kind, *done, *total, p, body.width)),
+                        Paragraph::new(section_header_line(kind, *done, *total, p, body.width)),
                         Rect::new(body.x, row_y, body.width, 1),
                     );
                 }
@@ -2975,7 +2999,7 @@ fn render_workspace_list(
                 if row_y < list_bottom {
                     frame.render_widget(
                         Paragraph::new(section_item_line(
-                            *kind,
+                            kind,
                             label,
                             detail.as_deref(),
                             *running,
@@ -3491,7 +3515,15 @@ fn render_agent_detail(
         } else {
             Style::default().fg(p.subtext0).add_modifier(Modifier::BOLD)
         };
-        let status_style = if is_active {
+        // DIM is how this list says "background". A row that wants the user is
+        // precisely what must not read as background, so an inactive Blocked or
+        // finished-but-unseen agent keeps its full-strength label colour. Ranked
+        // against `Working` through the single owner in `crate::detect` rather
+        // than by listing states here, so this cannot drift away from the
+        // ordering every other surface uses.
+        let wants_attention = crate::detect::attention_priority(detail.state, detail.seen)
+            > crate::detect::attention_priority(crate::detect::AgentState::Working, true);
+        let status_style = if is_active || wants_attention {
             Style::default().fg(label_color)
         } else {
             Style::default().fg(label_color).add_modifier(Modifier::DIM)
@@ -3585,6 +3617,7 @@ fn render_sidebar_toggle(
 
 #[cfg(test)]
 mod tests {
+    use super::project_view::{CHECKS, COMMANDS, NOTES, PULL_REQUESTS, TODOS};
     use super::*;
     use crate::{detect::Agent, layout::PaneId, workspace::Workspace};
     use ratatui::{backend::TestBackend, layout::Direction, Terminal};
@@ -3805,6 +3838,90 @@ rows = [[{ token = "workspace", bold = false }, { token = "agent", dim = false }
         assert!(!workspace.add_modifier.contains(Modifier::BOLD));
         assert_eq!(agent.fg, Some(app.palette.overlay0));
         assert!(!agent.add_modifier.contains(Modifier::DIM));
+    }
+
+    /// Renders the agent panel with one pane in `state` and NOTHING active, then
+    /// returns the style of that row's state label.
+    fn inactive_state_label_style(state: AgentState, seen: bool) -> ratatui::style::Style {
+        let config: crate::config::Config = toml::from_str(
+            r##"
+[ui.sidebar.agents]
+rows = [[{ token = "state_text" }]]
+"##,
+        )
+        .expect("fixture config parses");
+        let mut app = crate::app::state::AppState::test_new();
+        app.sidebar_agents = config.ui.sidebar.agents;
+        let workspace = Workspace::test_new("one");
+        let pane_id = workspace.tabs[0].root_pane;
+        app.workspaces = vec![workspace];
+        app.ensure_test_terminals();
+        // `is_active_pane` returns false for every pane when nothing is active,
+        // which is the branch under test.
+        app.active = None;
+        let terminal_id = app.workspaces[0].tabs[0].panes[&pane_id]
+            .attached_terminal_id
+            .clone();
+        let terminal = app
+            .terminals
+            .get_mut(&terminal_id)
+            .expect("ensure_test_terminals created this terminal");
+        terminal.state = state;
+        terminal.detected_agent = Some(Agent::Pi);
+        app.workspaces[0].tabs[0]
+            .panes
+            .get_mut(&pane_id)
+            .expect("root pane exists")
+            .seen = seen;
+
+        let area = Rect::new(0, 0, 40, 10);
+        let mut terminal = Terminal::new(TestBackend::new(40, 10)).expect("test backend");
+        terminal
+            .draw(|frame| render_agent_detail(&app, &TerminalRuntimeRegistry::new(), frame, area))
+            .expect("draw succeeds");
+        let body = agent_panel_body_rect(area, false);
+        let buffer = terminal.backend().buffer();
+        let label = crate::ui::status::state_label(state, seen);
+        let text = row_text(buffer, body.y, body.width);
+        let x = text
+            .find(label)
+            .unwrap_or_else(|| panic!("label {label:?} missing from row {text:?}"));
+        buffer[(u16::try_from(x).expect("label offset fits a u16"), body.y)].style()
+    }
+
+    /// DIM is how this panel says "background", so a row that wants the user must
+    /// not be dimmed merely for not being the active one. Before this, `DIM` was
+    /// applied to every inactive row's label unconditionally, which muted the red
+    /// `blocked` label — defeating the one thing the sidebar most needs to say.
+    ///
+    /// Two-sided on purpose: `working` and `idle` are still dimmed, so this fails
+    /// both if the DIM comes back for attention rows and if it is dropped
+    /// wholesale.
+    #[test]
+    fn inactive_rows_are_dimmed_except_the_ones_that_want_you() {
+        let blocked = inactive_state_label_style(AgentState::Blocked, true);
+        assert!(
+            !blocked.add_modifier.contains(Modifier::DIM),
+            "a blocked agent's label must not be dimmed just because its row is inactive"
+        );
+
+        let done = inactive_state_label_style(AgentState::Idle, false);
+        assert!(
+            !done.add_modifier.contains(Modifier::DIM),
+            "an agent that finished while you were away still wants you"
+        );
+
+        let working = inactive_state_label_style(AgentState::Working, true);
+        assert!(
+            working.add_modifier.contains(Modifier::DIM),
+            "a working agent does not want you, so its inactive row stays dimmed"
+        );
+
+        let idle = inactive_state_label_style(AgentState::Idle, true);
+        assert!(
+            idle.add_modifier.contains(Modifier::DIM),
+            "a seen-idle agent does not want you either"
+        );
     }
 
     #[test]
@@ -7340,13 +7457,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
     fn section_header_ruler_fills_exact_width_to_the_counter_column() {
         let p = Palette::catppuccin();
         let width = 40;
-        let text = line_text(&section_header_line(
-            ProjectSection::Commands,
-            1,
-            3,
-            &p,
-            width,
-        ));
+        let text = line_text(&section_header_line(&COMMANDS, 1, 3, &p, width));
 
         // Row is loaded exactly to `width`, not merely "wide enough" — a
         // ruler/counter budget mismatch shows up as drift here.
@@ -7366,8 +7477,8 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
     #[test]
     fn section_header_checks_glyph_differs_from_commands() {
         let p = Palette::catppuccin();
-        let commands = line_text(&section_header_line(ProjectSection::Commands, 0, 2, &p, 30));
-        let checks = line_text(&section_header_line(ProjectSection::Checks, 2, 2, &p, 30));
+        let commands = line_text(&section_header_line(&COMMANDS, 0, 2, &p, 30));
+        let checks = line_text(&section_header_line(&CHECKS, 2, 2, &p, 30));
 
         assert!(commands.contains("COMMANDS"));
         assert!(checks.contains("CHECKS"));
@@ -7376,8 +7487,8 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
     #[test]
     fn section_header_notes_shows_plain_count_not_a_progress_ratio() {
         let p = Palette::catppuccin();
-        let notes = line_text(&section_header_line(ProjectSection::Notes, 0, 2, &p, 30));
-        let todos = line_text(&section_header_line(ProjectSection::Todos, 1, 3, &p, 30));
+        let notes = line_text(&section_header_line(&NOTES, 0, 2, &p, 30));
+        let todos = line_text(&section_header_line(&TODOS, 1, 3, &p, 30));
 
         assert!(notes.contains("NOTES"));
         assert!(
@@ -7482,21 +7593,14 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
     fn section_item_line_shows_bullet_label_and_right_aligned_detail() {
         let p = Palette::catppuccin();
         let running = line_text(&section_item_line(
-            ProjectSection::Commands,
+            &COMMANDS,
             "dev",
             Some(":5173"),
             true,
             &p,
             40,
         ));
-        let idle = line_text(&section_item_line(
-            ProjectSection::Commands,
-            "test",
-            None,
-            false,
-            &p,
-            40,
-        ));
+        let idle = line_text(&section_item_line(&COMMANDS, "test", None, false, &p, 40));
 
         assert!(running.trim_start().starts_with('●'));
         assert!(running.trim_end().ends_with(":5173"));
@@ -7506,7 +7610,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
     #[test]
     fn checks_row_line_marks_failures_with_a_red_cross() {
         let p = Palette::catppuccin();
-        let failing = section_item_line(ProjectSection::Checks, "clippy", None, false, &p, 40);
+        let failing = section_item_line(&CHECKS, "clippy", None, false, &p, 40);
         let text = line_text(&failing);
 
         assert!(
@@ -7554,13 +7658,13 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
                 unopened: false,
             },
             WorkspaceListEntry::SectionHeader {
-                kind: ProjectSection::Commands,
+                kind: &COMMANDS,
                 collapse_key: "sec:1".into(),
                 done: 1,
                 total: 3,
             },
             WorkspaceListEntry::SectionItem {
-                kind: ProjectSection::Commands,
+                kind: &COMMANDS,
                 label: "dev".into(),
                 detail: Some(":5173".into()),
                 running: true,
@@ -7614,7 +7718,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
         assert_eq!(
             project_rows[3].target,
             ProjectRowTarget::SectionItem {
-                kind: ProjectSection::Commands,
+                kind: &COMMANDS,
                 label: "dev".into(),
                 ws_idx: Some(0),
             }
@@ -7722,7 +7826,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
         // the worktree's repo. Either way its row_y span still counts.
         let entries = vec![
             WorkspaceListEntry::SectionHeader {
-                kind: ProjectSection::PullRequests,
+                kind: &PULL_REQUESTS,
                 collapse_key: "sec:prs:proj".into(),
                 done: 0,
                 total: 1,

@@ -77,6 +77,26 @@ impl Tab {
             })
             .collect()
     }
+
+    /// Aggregate this tab's own panes into a single (state, seen) pair via
+    /// `crate::detect::attention_priority`, mirroring
+    /// [`Workspace::aggregate_state`] but scoped to this tab only. Drives the
+    /// tab bar's per-tab attention indicator: which tab wants the user, not
+    /// just that something somewhere does.
+    pub fn aggregate_state(
+        &self,
+        terminals: &HashMap<TerminalId, TerminalState>,
+    ) -> (AgentState, bool) {
+        self.panes
+            .values()
+            .filter_map(|pane| {
+                terminals
+                    .get(&pane.attached_terminal_id)
+                    .map(|terminal| (terminal.state, pane.seen))
+            })
+            .max_by_key(|(state, seen)| crate::detect::attention_sort_key(*state, *seen))
+            .unwrap_or((AgentState::Unknown, true))
+    }
 }
 
 impl Workspace {
@@ -92,7 +112,7 @@ impl Workspace {
                     .get(&pane.attached_terminal_id)
                     .map(|terminal| (terminal.state, pane.seen))
             })
-            .max_by_key(|(state, seen)| crate::detect::attention_priority(*state, *seen))
+            .max_by_key(|(state, seen)| crate::detect::attention_sort_key(*state, *seen))
             .unwrap_or((AgentState::Unknown, true))
     }
 
@@ -111,7 +131,7 @@ impl Workspace {
                     .get(&pane.attached_terminal_id)
                     .map(|terminal| (terminal.state, pane.seen))
             })
-            .max_by_key(|(state, seen)| crate::detect::display_priority(*state, *seen))
+            .max_by_key(|(state, seen)| crate::detect::display_sort_key(*state, *seen))
             .unwrap_or((AgentState::Unknown, true))
     }
 
@@ -273,6 +293,57 @@ mod tests {
         root.seen = false;
 
         let (state, seen) = ws.aggregate_state(&terminals);
+
+        assert_eq!(state, AgentState::Idle);
+        assert!(!seen);
+    }
+
+    #[test]
+    fn tab_aggregate_state_scoped_to_its_own_panes() {
+        let mut ws = Workspace::test_new("test");
+        let second_tab = ws.test_add_tab(Some("second"));
+        let first_root = ws.tabs[0].root_pane;
+        let second_root = ws.tabs[second_tab].root_pane;
+
+        let mut terminals = HashMap::new();
+        let mut first_terminal = terminal_for_pane(&ws, first_root);
+        first_terminal.state = AgentState::Working;
+        terminals.insert(first_terminal.id.clone(), first_terminal);
+        let mut second_terminal = terminal_for_pane(&ws, second_root);
+        second_terminal.state = AgentState::Blocked;
+        terminals.insert(second_terminal.id.clone(), second_terminal);
+
+        // Tab 0 sees only its own Working pane, not tab 1's Blocked pane —
+        // routing means the OTHER tab, not this one, must read as urgent.
+        let (state, seen) = ws.tabs[0].aggregate_state(&terminals);
+        assert_eq!(state, AgentState::Working);
+        assert!(seen);
+
+        let (state, seen) = ws.tabs[second_tab].aggregate_state(&terminals);
+        assert_eq!(state, AgentState::Blocked);
+        assert!(seen);
+    }
+
+    #[test]
+    fn tab_aggregate_state_unseen_idle_beats_working_within_one_tab() {
+        let mut ws = Workspace::test_new("test");
+        let id2 = ws.test_split(Direction::Horizontal);
+        let root_id = ws.tabs[0]
+            .panes
+            .keys()
+            .find(|id| **id != id2)
+            .copied()
+            .unwrap();
+        let mut terminals = HashMap::new();
+        let mut root_terminal = terminal_for_pane(&ws, root_id);
+        root_terminal.state = AgentState::Idle;
+        terminals.insert(root_terminal.id.clone(), root_terminal);
+        let mut second_terminal = terminal_for_pane(&ws, id2);
+        second_terminal.state = AgentState::Working;
+        terminals.insert(second_terminal.id.clone(), second_terminal);
+        ws.tabs[0].panes.get_mut(&root_id).unwrap().seen = false;
+
+        let (state, seen) = ws.tabs[0].aggregate_state(&terminals);
 
         assert_eq!(state, AgentState::Idle);
         assert!(!seen);

@@ -27,7 +27,9 @@
 
 use std::collections::{HashMap, HashSet};
 
-use super::{BranchRail, ProjectSection, WorkspaceListEntry};
+use super::{
+    BranchRail, SectionBullet, SectionCounter, SectionDescriptor, SectionLevel, WorkspaceListEntry,
+};
 use crate::app::state::AppState;
 use crate::layout::PaneId;
 use crate::persist::projects::{ResolvedMember, WorktreesScope};
@@ -128,8 +130,9 @@ pub(super) fn project_view_entries(
             orphan_idxs,
             false,
             // An orphan group is not a declared project: no order, no
-            // sections.
-            ProjectSection::ALL,
+            // sections. `resolve_section_order(None)` is the default
+            // registry order.
+            resolve_section_order(None),
             &[],
             &[],
             force_expanded,
@@ -191,7 +194,7 @@ fn push_project_group(
     name: String,
     ws_idxs: Vec<usize>,
     declared: bool,
-    section_order: [ProjectSection; 5],
+    section_order: [&'static SectionDescriptor; SECTION_COUNT],
     commands: &[String],
     checks: &[String],
     force_expanded: bool,
@@ -263,17 +266,14 @@ fn push_project_group(
             .map(|&idx| app.workspaces[idx].branch().unwrap_or_default())
             .chain(unopened.iter().map(|u| u.branch.clone()))
             .collect();
-        for section in project_section_order(&section_order) {
-            match section {
-                ProjectSection::Todos => push_todos_section(entries, app, slug, force_expanded),
-                ProjectSection::Notes => push_notes_section(entries, app, slug, force_expanded),
-                ProjectSection::PullRequests => {
-                    push_pull_requests_section(entries, app, slug, &local_branches, force_expanded)
-                }
-                ProjectSection::Commands | ProjectSection::Checks => {
-                    unreachable!("project_section_order only returns project-level sections")
-                }
-            }
+        for section in filter_by_level(&section_order, SectionLevel::Project) {
+            let ctx = SectionPushCtx::Project {
+                app,
+                slug,
+                local_branches: &local_branches,
+                force_expanded,
+            };
+            (section.push)(entries, &ctx);
         }
     }
 
@@ -442,7 +442,7 @@ fn push_worktree(
     checkout_key: &str,
     ws_idxs: &[usize],
     single_repo: bool,
-    section_order: [ProjectSection; 5],
+    section_order: [&'static SectionDescriptor; SECTION_COUNT],
     commands: &[String],
     checks: &[String],
     force_expanded: bool,
@@ -481,25 +481,137 @@ fn push_worktree(
     }
 
     // Rule 5: a band renders only when non-empty, in declared order,
-    // default COMMANDS before CHECKS (bora-5ia).
-    for section in worktree_section_order(&section_order) {
-        if section == ProjectSection::Commands {
-            push_commands_section(
-                entries,
-                app,
-                checkout_key,
-                ws_idxs,
-                commands,
-                force_expanded,
-            );
-        } else {
-            push_checks_section(entries, app, checkout_key, first, checks, force_expanded);
-        }
+    // default COMMANDS before CHECKS (bora-5ia). CHECKS now derives its own
+    // representative workspace from `ws_idxs` inside `push_checks_section`
+    // rather than taking `first` directly, via the same normalized context
+    // every band reads (bora-by6's `SectionPushCtx`).
+    for section in filter_by_level(&section_order, SectionLevel::Worktree) {
+        let ctx = SectionPushCtx::Worktree {
+            app,
+            checkout_key,
+            ws_idxs,
+            commands,
+            checks,
+            force_expanded,
+        };
+        (section.push)(entries, &ctx);
     }
 
     for &idx in ws_idxs {
         push_workspace(entries, app, idx);
     }
+}
+
+/// Normalized borrowed context for a band's push function (bora-by6). The
+/// seven pre-registry push functions had non-uniform signatures — a
+/// `selection: &[String]` here, a `ws: &Workspace` there, a bare `slug`
+/// elsewhere, `local_branches` tacked on for one — which is exactly what
+/// made a function-pointer table impossible before this type existed. Two
+/// variants, one per `SectionLevel`, rather than one struct of all-optional
+/// fields: a worktree-level push function destructures `Worktree` and
+/// never sees a `slug`-shaped hole it has to ignore, and vice versa. Each
+/// variant borrows only — no `String`/`Vec` owned here, no allocation.
+#[derive(Clone, Copy)]
+pub(crate) enum SectionPushCtx<'a> {
+    Worktree {
+        app: &'a AppState,
+        checkout_key: &'a str,
+        ws_idxs: &'a [usize],
+        /// The project's `sections.commands` declaration (COMMANDS'
+        /// selection).
+        commands: &'a [String],
+        /// The project's `sections.checks` declaration (CHECKS' toggle).
+        checks: &'a [String],
+        force_expanded: bool,
+    },
+    Project {
+        app: &'a AppState,
+        slug: &'a str,
+        local_branches: &'a HashSet<String>,
+        force_expanded: bool,
+    },
+}
+
+/// The registry (bora-by6): every attachment band bora knows about, in
+/// default render order. Growing this by one entry, plus writing its push
+/// function, is the entire cost of a sixth band that reuses the generic
+/// `SectionHeader`/`SectionItem` rows (G2) — no enum variant, no match arm
+/// anywhere else. `&[&SectionDescriptor]` carries no explicit length in its
+/// type, so appending an entry to the array literal below is the only edit;
+/// `SECTION_COUNT` and every `[&SectionDescriptor; SECTION_COUNT]` derived
+/// from it recompute at compile time.
+pub(super) const REGISTRY: &[&SectionDescriptor] =
+    &[&COMMANDS, &CHECKS, &TODOS, &NOTES, &PULL_REQUESTS];
+
+/// `REGISTRY.len()`, computed once at compile time — never hand-updated
+/// when the registry grows (see `REGISTRY`'s doc).
+pub(super) const SECTION_COUNT: usize = REGISTRY.len();
+
+pub(super) static COMMANDS: SectionDescriptor = SectionDescriptor {
+    wire_name: "commands",
+    glyph: "≡",
+    label: "COMMANDS",
+    level: SectionLevel::Worktree,
+    counter: SectionCounter::Progress,
+    bullet: SectionBullet::Standard,
+    push: push_commands_section,
+};
+
+pub(super) static CHECKS: SectionDescriptor = SectionDescriptor {
+    wire_name: "checks",
+    glyph: "✓",
+    label: "CHECKS",
+    level: SectionLevel::Worktree,
+    counter: SectionCounter::Progress,
+    // CHECKS rows exist only to flag failures, so an idle row IS the
+    // problem — the red `✗` instead of the dim `·` every other band's idle
+    // rows get.
+    bullet: SectionBullet::FlagIdleAsError,
+    push: push_checks_section,
+};
+
+pub(super) static TODOS: SectionDescriptor = SectionDescriptor {
+    wire_name: "todos",
+    glyph: "☐",
+    label: "TODOS",
+    level: SectionLevel::Project,
+    counter: SectionCounter::Progress,
+    bullet: SectionBullet::Standard,
+    push: push_todos_section,
+};
+
+pub(super) static NOTES: SectionDescriptor = SectionDescriptor {
+    wire_name: "notes",
+    glyph: "✎",
+    label: "NOTES",
+    level: SectionLevel::Project,
+    counter: SectionCounter::Count,
+    bullet: SectionBullet::Standard,
+    push: push_notes_section,
+};
+
+pub(super) static PULL_REQUESTS: SectionDescriptor = SectionDescriptor {
+    wire_name: "pull_requests",
+    glyph: "⇄",
+    label: "PULL REQUESTS",
+    level: SectionLevel::Project,
+    counter: SectionCounter::Count,
+    bullet: SectionBullet::Standard,
+    push: push_pull_requests_section,
+};
+
+/// Filters a resolved order (`resolve_section_order`'s return) down to one
+/// level, preserving relative sequence — an alloc-free iterator over the
+/// caller's own fixed-size array, replacing `worktree_section_order` and
+/// `project_section_order`. This is what makes placing a band outside its
+/// declared level unrepresentable rather than merely unconventional: a
+/// descriptor's `level` decides which loop ever sees it, so there is no
+/// dispatch match left to grow an `unreachable!()` arm in (bora-by6 G4).
+fn filter_by_level<'a>(
+    resolved: &'a [&'static SectionDescriptor; SECTION_COUNT],
+    level: SectionLevel,
+) -> impl Iterator<Item = &'static SectionDescriptor> + 'a {
+    resolved.iter().copied().filter(move |d| d.level == level)
 }
 
 /// Push the live COMMANDS band for one worktree (bora-55c.3). Items are the
@@ -513,14 +625,19 @@ fn push_worktree(
 /// runs here. The collapse key is namespaced per worktree
 /// (`sec:commands:{checkout_key}`), and item rows carry the representative
 /// workspace (the same one CHECKS reads) so a click launches there.
-fn push_commands_section(
-    entries: &mut Vec<WorkspaceListEntry>,
-    app: &AppState,
-    checkout_key: &str,
-    ws_idxs: &[usize],
-    selection: &[String],
-    force_expanded: bool,
-) {
+fn push_commands_section(entries: &mut Vec<WorkspaceListEntry>, ctx: &SectionPushCtx) {
+    let SectionPushCtx::Worktree {
+        app,
+        checkout_key,
+        ws_idxs,
+        commands: selection,
+        force_expanded,
+        ..
+    } = *ctx
+    else {
+        debug_assert!(false, "COMMANDS is a worktree-level band");
+        return;
+    };
     if selection.is_empty() {
         return;
     }
@@ -549,7 +666,7 @@ fn push_commands_section(
     };
     let collapse_key = format!("sec:commands:{checkout_key}");
     entries.push(WorkspaceListEntry::SectionHeader {
-        kind: ProjectSection::Commands,
+        kind: &COMMANDS,
         collapse_key: collapse_key.clone(),
         done: declared.iter().filter(|cmd| is_running(&cmd.label)).count(),
         total: declared.len(),
@@ -559,7 +676,7 @@ fn push_commands_section(
     }
     for cmd in declared {
         entries.push(WorkspaceListEntry::SectionItem {
-            kind: ProjectSection::Commands,
+            kind: &COMMANDS,
             label: cmd.label.clone(),
             // ponytail: port badge (wt port block) deferred — resolve_port
             // runs per click already; a render-time badge wants a
@@ -589,34 +706,36 @@ fn declared_section_order(project: &crate::persist::projects::Project) -> Option
     project.sections.as_ref()?.order.as_deref()
 }
 
-/// Resolves a project's declared `sections.order:` names into the five
-/// `ProjectSection` variants in render priority (bora-5ia, bora-yw6.2).
-/// Contract:
+/// Resolves a project's declared `sections.order:` names into every
+/// registered `SectionDescriptor` in render priority (bora-5ia, bora-yw6.2,
+/// bora-by6). Contract:
 ///
-/// - Names are matched case-insensitively (`ProjectSection::from_name`).
-/// - An unknown name is ignored, never an error — a future bora writing a
-///   sixth section name into `projects.yml` must not break an older
+/// - Names are matched case-insensitively (`SectionDescriptor::from_wire_name`).
+/// - An unknown name is ignored, never an error — a future bora writing an
+///   unregistered section name into `projects.yml` must not break an older
 ///   binary's sidebar.
 /// - A declared-but-unlisted section still renders: it is appended after
-///   the listed ones, in `ProjectSection::ALL` order. Ordering decides
-///   sequence, never visibility.
+///   the listed ones, in registry order. Ordering decides sequence, never
+///   visibility.
 /// - A duplicate name is honored once, at its first position.
-/// - Absent or empty `order` resolves to exactly `ProjectSection::ALL`, so
+/// - Absent or empty `order` resolves to exactly registry order, so
 ///   behavior is unchanged for every project that does not opt in.
 ///
-/// Always returns all five variants (a permutation of `ProjectSection::ALL`)
-/// as a fixed-size array, not a `Vec` — no allocation on the per-render,
-/// per-pane, per-client path (AGENTS.md, "Multiplicative performance
-/// paths"). `push_project_group`/`push_worktree` then read the relevant
-/// group out of it via `project_section_order`/`worktree_section_order` —
-/// project-level and worktree-level bands never interleave with each
-/// other (module doc), only reorder within their own group.
-fn resolve_section_order(order: Option<&[String]>) -> [ProjectSection; 5] {
-    let mut resolved = ProjectSection::ALL;
+/// Always returns every registered descriptor (a permutation of
+/// `REGISTRY`) as a fixed-size array sized by `SECTION_COUNT`, not a `Vec`
+/// — no allocation on the per-render, per-pane, per-client path (AGENTS.md,
+/// "Multiplicative performance paths"). `push_project_group`/`push_worktree`
+/// then read the relevant group out of it via `filter_by_level` — project-
+/// level and worktree-level bands never interleave with each other (module
+/// doc), only reorder within their own group. `SECTION_COUNT` derives from
+/// `REGISTRY.len()` (`REGISTRY`'s doc), so a REGISTRY entry added for a
+/// sixth band needs no edit here.
+fn resolve_section_order(order: Option<&[String]>) -> [&'static SectionDescriptor; SECTION_COUNT] {
+    let mut resolved = [REGISTRY[0]; SECTION_COUNT];
     let mut len = 0usize;
     if let Some(names) = order {
         for name in names {
-            let Some(section) = ProjectSection::from_name(name) else {
+            let Some(section) = SectionDescriptor::from_wire_name(name) else {
                 continue;
             };
             if resolved[..len].contains(&section) {
@@ -626,7 +745,7 @@ fn resolve_section_order(order: Option<&[String]>) -> [ProjectSection; 5] {
             len += 1;
         }
     }
-    for section in ProjectSection::ALL {
+    for &section in REGISTRY {
         if len == resolved.len() {
             break;
         }
@@ -637,44 +756,6 @@ fn resolve_section_order(order: Option<&[String]>) -> [ProjectSection; 5] {
         len += 1;
     }
     resolved
-}
-
-/// Filters a resolved order down to the worktree-level pair (COMMANDS,
-/// CHECKS), preserving their relative sequence.
-fn worktree_section_order(resolved: &[ProjectSection; 5]) -> [ProjectSection; 2] {
-    let mut out = [ProjectSection::Commands, ProjectSection::Checks];
-    let mut i = 0;
-    for &section in resolved {
-        if matches!(section, ProjectSection::Commands | ProjectSection::Checks) {
-            out[i] = section;
-            i += 1;
-        }
-    }
-    out
-}
-
-/// Filters a resolved order down to the project-level pair (TODOS, NOTES),
-/// preserving their relative sequence. See `worktree_section_order`.
-/// Filters a resolved order down to the project-level trio (TODOS, NOTES,
-/// PULL REQUESTS), preserving their relative sequence. See
-/// `worktree_section_order`.
-fn project_section_order(resolved: &[ProjectSection; 5]) -> [ProjectSection; 3] {
-    let mut out = [
-        ProjectSection::Todos,
-        ProjectSection::Notes,
-        ProjectSection::PullRequests,
-    ];
-    let mut i = 0;
-    for &section in resolved {
-        if matches!(
-            section,
-            ProjectSection::Todos | ProjectSection::Notes | ProjectSection::PullRequests
-        ) {
-            out[i] = section;
-            i += 1;
-        }
-    }
-    out
 }
 
 /// Push the CHECKS band for one worktree, from the representative workspace's
@@ -690,24 +771,37 @@ fn project_section_order(resolved: &[ProjectSection; 5]) -> [ProjectSection; 3] 
 /// - No cached outcome yet (first fetch still in flight) renders nothing —
 ///   rule 5, the band would be empty.
 /// - A provider error renders the header plus one error row: a failure is
-///   never silently empty.
+///   never silently empty (G8).
 /// - Rows render the header with `n/m` = `checks_counts` (passing/total) and
 ///   one item per failing check; passing/pending checks have no row. A PR
 ///   with zero check runs renders no band (rule 5).
 ///
 /// The collapse key is namespaced per worktree (`sec:checks:{checkout_key}`)
 /// so two worktrees' bands never share collapse state.
-fn push_checks_section(
-    entries: &mut Vec<WorkspaceListEntry>,
-    app: &AppState,
-    checkout_key: &str,
-    ws: &Workspace,
-    declared: &[String],
-    force_expanded: bool,
-) {
+fn push_checks_section(entries: &mut Vec<WorkspaceListEntry>, ctx: &SectionPushCtx) {
+    let SectionPushCtx::Worktree {
+        app,
+        checkout_key,
+        ws_idxs,
+        checks: declared,
+        force_expanded,
+        ..
+    } = *ctx
+    else {
+        debug_assert!(false, "CHECKS is a worktree-level band");
+        return;
+    };
     if declared.is_empty() {
         return;
     }
+    // The representative workspace CHECKS reads — the same one the
+    // `WorktreeRow`'s own PR badge reads (doc above). Derived from
+    // `ws_idxs` here rather than taking `&Workspace` directly, so every
+    // band's push function shares the one `SectionPushCtx` shape (bora-by6).
+    let Some(&first_idx) = ws_idxs.first() else {
+        return;
+    };
+    let ws = &app.workspaces[first_idx];
     let Some(status) = ws.cached_check_status.as_ref() else {
         return;
     };
@@ -717,7 +811,7 @@ fn push_checks_section(
     let collapse_key = format!("sec:checks:{checkout_key}");
     if let Some(error) = status.error.as_deref() {
         entries.push(WorkspaceListEntry::SectionHeader {
-            kind: ProjectSection::Checks,
+            kind: &CHECKS,
             collapse_key: collapse_key.clone(),
             done: 0,
             total: 0,
@@ -726,7 +820,7 @@ fn push_checks_section(
             return;
         }
         entries.push(WorkspaceListEntry::SectionItem {
-            kind: ProjectSection::Checks,
+            kind: &CHECKS,
             label: error.to_string(),
             detail: None,
             running: false,
@@ -739,7 +833,7 @@ fn push_checks_section(
         return;
     }
     entries.push(WorkspaceListEntry::SectionHeader {
-        kind: ProjectSection::Checks,
+        kind: &CHECKS,
         collapse_key: collapse_key.clone(),
         done: passing,
         total,
@@ -749,7 +843,7 @@ fn push_checks_section(
     }
     for run in status.checks.iter().filter(|run| run.is_failing()) {
         entries.push(WorkspaceListEntry::SectionItem {
-            kind: ProjectSection::Checks,
+            kind: &CHECKS,
             label: run.name.clone(),
             detail: None,
             running: false,
@@ -764,12 +858,17 @@ fn push_checks_section(
 /// AppState snapshot the verb handlers refresh; never the stores. Renders
 /// only when the project has todos at all (rule 5). Collapse key is
 /// namespaced per project (`sec:todos:{slug}`).
-fn push_todos_section(
-    entries: &mut Vec<WorkspaceListEntry>,
-    app: &AppState,
-    slug: &str,
-    force_expanded: bool,
-) {
+fn push_todos_section(entries: &mut Vec<WorkspaceListEntry>, ctx: &SectionPushCtx) {
+    let SectionPushCtx::Project {
+        app,
+        slug,
+        force_expanded,
+        ..
+    } = *ctx
+    else {
+        debug_assert!(false, "TODOS is a project-level band");
+        return;
+    };
     let Some(summary) = app.project_todos.get(slug) else {
         return;
     };
@@ -778,7 +877,7 @@ fn push_todos_section(
     }
     let collapse_key = format!("sec:todos:{slug}");
     entries.push(WorkspaceListEntry::SectionHeader {
-        kind: ProjectSection::Todos,
+        kind: &TODOS,
         collapse_key: collapse_key.clone(),
         done: summary.done,
         total: summary.total,
@@ -788,7 +887,7 @@ fn push_todos_section(
     }
     for title in &summary.actionable {
         entries.push(WorkspaceListEntry::SectionItem {
-            kind: ProjectSection::Todos,
+            kind: &TODOS,
             label: title.clone(),
             detail: None,
             running: false,
@@ -800,12 +899,17 @@ fn push_todos_section(
 /// Push the project-level NOTES band (bora-s3y.3): one row per scratchpad
 /// doc name, from the same refresh discipline as TODOS. Renders only when
 /// the project has docs.
-fn push_notes_section(
-    entries: &mut Vec<WorkspaceListEntry>,
-    app: &AppState,
-    slug: &str,
-    force_expanded: bool,
-) {
+fn push_notes_section(entries: &mut Vec<WorkspaceListEntry>, ctx: &SectionPushCtx) {
+    let SectionPushCtx::Project {
+        app,
+        slug,
+        force_expanded,
+        ..
+    } = *ctx
+    else {
+        debug_assert!(false, "NOTES is a project-level band");
+        return;
+    };
     let Some(names) = app.project_notes.get(slug) else {
         return;
     };
@@ -814,7 +918,7 @@ fn push_notes_section(
     }
     let collapse_key = format!("sec:notes:{slug}");
     entries.push(WorkspaceListEntry::SectionHeader {
-        kind: ProjectSection::Notes,
+        kind: &NOTES,
         collapse_key: collapse_key.clone(),
         done: 0,
         total: names.len(),
@@ -824,7 +928,7 @@ fn push_notes_section(
     }
     for name in names {
         entries.push(WorkspaceListEntry::SectionItem {
-            kind: ProjectSection::Notes,
+            kind: &NOTES,
             label: name.clone(),
             detail: None,
             running: false,
@@ -846,19 +950,23 @@ fn push_notes_section(
 ///   with zero check runs renders no band").
 /// - A relevant repo's cache carries a fetch error -> header plus one error
 ///   row (the same shape CHECKS uses for a provider error): a failure is
-///   never silently empty. The first errored repo wins if more than one is
-///   in scope — one band, one error line.
+///   never silently empty (G8). The first errored repo wins if more than
+///   one is in scope — one band, one error line.
 /// - Otherwise one row per PR whose head branch is not in `local_branches`,
 ///   sorted by PR number for stable render order (rule 8).
 ///
 /// Collapse key is namespaced per project (`sec:prs:{slug}`).
-fn push_pull_requests_section(
-    entries: &mut Vec<WorkspaceListEntry>,
-    app: &AppState,
-    slug: &str,
-    local_branches: &HashSet<String>,
-    force_expanded: bool,
-) {
+fn push_pull_requests_section(entries: &mut Vec<WorkspaceListEntry>, ctx: &SectionPushCtx) {
+    let SectionPushCtx::Project {
+        app,
+        slug,
+        local_branches,
+        force_expanded,
+    } = *ctx
+    else {
+        debug_assert!(false, "PULL REQUESTS is a project-level band");
+        return;
+    };
     let mut seen_repo_identities: HashSet<&str> = HashSet::new();
     let mut error: Option<&str> = None;
     // Each row carries a representative `ws_idx` for ITS OWN repo, resolved
@@ -894,7 +1002,7 @@ fn push_pull_requests_section(
     let collapse_key = format!("sec:prs:{slug}");
     if let Some(error) = error {
         entries.push(WorkspaceListEntry::SectionHeader {
-            kind: ProjectSection::PullRequests,
+            kind: &PULL_REQUESTS,
             collapse_key: collapse_key.clone(),
             done: 0,
             total: 0,
@@ -903,7 +1011,7 @@ fn push_pull_requests_section(
             return;
         }
         entries.push(WorkspaceListEntry::SectionItem {
-            kind: ProjectSection::PullRequests,
+            kind: &PULL_REQUESTS,
             label: error.to_string(),
             detail: None,
             running: false,
@@ -916,7 +1024,7 @@ fn push_pull_requests_section(
     }
     rows.sort_by_key(|(pr, _)| pr.number);
     entries.push(WorkspaceListEntry::SectionHeader {
-        kind: ProjectSection::PullRequests,
+        kind: &PULL_REQUESTS,
         collapse_key: collapse_key.clone(),
         done: 0,
         total: rows.len(),
@@ -1096,11 +1204,8 @@ mod tests {
     fn checks_band(entries: &[WorkspaceListEntry]) -> Option<(usize, usize)> {
         entries.iter().find_map(|e| match e {
             WorkspaceListEntry::SectionHeader {
-                kind: ProjectSection::Checks,
-                done,
-                total,
-                ..
-            } => Some((*done, *total)),
+                kind, done, total, ..
+            } if kind.wire_name == "checks" => Some((*done, *total)),
             _ => None,
         })
     }
@@ -1110,11 +1215,11 @@ mod tests {
         entries
             .iter()
             .filter_map(|e| match e {
-                WorkspaceListEntry::SectionItem {
-                    kind: ProjectSection::Checks,
-                    label,
-                    ..
-                } => Some(label.clone()),
+                WorkspaceListEntry::SectionItem { kind, label, .. }
+                    if kind.wire_name == "checks" =>
+                {
+                    Some(label.clone())
+                }
                 _ => None,
             })
             .collect()
@@ -1758,12 +1863,12 @@ mod tests {
             .iter()
             .filter_map(|e| match e {
                 WorkspaceListEntry::SectionItem {
-                    kind: ProjectSection::Commands,
+                    kind,
                     label,
                     running,
                     ws_idx,
                     ..
-                } => Some((label.clone(), *running, *ws_idx)),
+                } if kind.wire_name == "commands" => Some((label.clone(), *running, *ws_idx)),
                 _ => None,
             })
             .collect()
@@ -1802,7 +1907,7 @@ mod tests {
 
         let entries = project_view_entries(&app, false);
         assert_eq!(
-            section_band(&entries, ProjectSection::Commands),
+            section_band(&entries, &COMMANDS),
             Some((1, 2)),
             "n/m = selected commands with a live tagged pane / selected \
              pane-mode declared (shell-mode and unselected excluded): {entries:?}"
@@ -1844,7 +1949,7 @@ mod tests {
             app.workspaces = vec![ws_at(&repo)];
             let entries = project_view_entries(&app, false);
             assert_eq!(
-                section_band(&entries, ProjectSection::Commands),
+                section_band(&entries, &COMMANDS),
                 None,
                 "no refreshed declarations -> no band: {entries:?}"
             );
@@ -1857,7 +1962,7 @@ mod tests {
             )]);
             let entries = project_view_entries(&app, false);
             assert_eq!(
-                section_band(&entries, ProjectSection::Commands),
+                section_band(&entries, &COMMANDS),
                 None,
                 "selection matches nothing declared -> no band: {entries:?}"
             );
@@ -1880,7 +1985,7 @@ mod tests {
             app.workspaces = vec![ws];
             let entries = project_view_entries(&app, false);
             assert_eq!(
-                section_band(&entries, ProjectSection::Commands),
+                section_band(&entries, &COMMANDS),
                 None,
                 "project without sections.commands -> no band: {entries:?}"
             );
@@ -1905,7 +2010,7 @@ mod tests {
 
     fn section_band(
         entries: &[WorkspaceListEntry],
-        want: ProjectSection,
+        want: &'static SectionDescriptor,
     ) -> Option<(usize, usize)> {
         entries.iter().find_map(|e| match e {
             WorkspaceListEntry::SectionHeader {
@@ -1915,7 +2020,10 @@ mod tests {
         })
     }
 
-    fn section_items(entries: &[WorkspaceListEntry], want: ProjectSection) -> Vec<String> {
+    fn section_items(
+        entries: &[WorkspaceListEntry],
+        want: &'static SectionDescriptor,
+    ) -> Vec<String> {
         entries
             .iter()
             .filter_map(|e| match e {
@@ -1960,22 +2068,22 @@ mod tests {
 
         let entries = project_view_entries(&app, false);
         assert_eq!(
-            section_band(&entries, ProjectSection::Todos),
+            section_band(&entries, &TODOS),
             Some((1, 3)),
             "TODOS header n/m = done/total: {entries:?}"
         );
         assert_eq!(
-            section_items(&entries, ProjectSection::Todos),
+            section_items(&entries, &TODOS),
             vec!["ship sidebar".to_string(), "close epic".to_string()],
             "one row per actionable open todo: {entries:?}"
         );
         assert_eq!(
-            section_band(&entries, ProjectSection::Notes),
+            section_band(&entries, &NOTES),
             Some((0, 2)),
             "NOTES header carries the doc count: {entries:?}"
         );
         assert_eq!(
-            section_items(&entries, ProjectSection::Notes),
+            section_items(&entries, &NOTES),
             vec!["decisions".to_string(), "plan".to_string()],
             "one row per scratchpad doc: {entries:?}"
         );
@@ -1986,19 +2094,13 @@ mod tests {
         let todos_pos = position_of(&entries, |e| {
             matches!(
                 e,
-                WorkspaceListEntry::SectionHeader {
-                    kind: ProjectSection::Todos,
-                    ..
-                }
+                WorkspaceListEntry::SectionHeader { kind, .. } if kind.wire_name == "todos"
             )
         });
         let notes_pos = position_of(&entries, |e| {
             matches!(
                 e,
-                WorkspaceListEntry::SectionHeader {
-                    kind: ProjectSection::Notes,
-                    ..
-                }
+                WorkspaceListEntry::SectionHeader { kind, .. } if kind.wire_name == "notes"
             )
         });
         let worktree_pos = position_of(&entries, |e| {
@@ -2031,9 +2133,9 @@ mod tests {
             .insert("proj".to_string(), todos_summary(0, 2, &["free task"]));
 
         let entries = project_view_entries(&app, false);
-        assert_eq!(section_band(&entries, ProjectSection::Todos), Some((0, 2)));
+        assert_eq!(section_band(&entries, &TODOS), Some((0, 2)));
         assert_eq!(
-            section_items(&entries, ProjectSection::Todos),
+            section_items(&entries, &TODOS),
             vec!["free task".to_string()],
             "blocked todos are excluded from the section's actionable rows: {entries:?}"
         );
@@ -2063,10 +2165,10 @@ mod tests {
             .insert("sec:notes:proj".to_string());
 
         let entries = project_view_entries(&app, false);
-        assert_eq!(section_band(&entries, ProjectSection::Todos), Some((0, 1)));
-        assert_eq!(section_band(&entries, ProjectSection::Notes), Some((0, 1)));
-        assert!(section_items(&entries, ProjectSection::Todos).is_empty());
-        assert!(section_items(&entries, ProjectSection::Notes).is_empty());
+        assert_eq!(section_band(&entries, &TODOS), Some((0, 1)));
+        assert_eq!(section_band(&entries, &NOTES), Some((0, 1)));
+        assert!(section_items(&entries, &TODOS).is_empty());
+        assert!(section_items(&entries, &NOTES).is_empty());
 
         std::fs::remove_dir_all(&repo).unwrap();
     }
@@ -2090,11 +2192,11 @@ mod tests {
 
         let entries = project_view_entries(&app, false);
         assert_eq!(
-            section_band(&entries, ProjectSection::Todos),
+            section_band(&entries, &TODOS),
             None,
             "no snapshot -> no band (rule 5): {entries:?}"
         );
-        assert_eq!(section_band(&entries, ProjectSection::Notes), None);
+        assert_eq!(section_band(&entries, &NOTES), None);
         assert!(
             entries.iter().any(|e| matches!(
                 e,
@@ -2480,7 +2582,7 @@ mod tests {
     // ── bora-5ia: declarable `sections.order:` ────────────────────────────
 
     /// The `SectionHeader` kinds an entries slice carries, in render order.
-    fn section_header_kinds(entries: &[WorkspaceListEntry]) -> Vec<ProjectSection> {
+    fn section_header_kinds(entries: &[WorkspaceListEntry]) -> Vec<&'static SectionDescriptor> {
         entries
             .iter()
             .filter_map(|e| match e {
@@ -2542,12 +2644,12 @@ mod tests {
     fn section_order_resolve_absent_matches_fixed_order() {
         assert_eq!(
             resolve_section_order(None),
-            ProjectSection::ALL,
+            [&COMMANDS, &CHECKS, &TODOS, &NOTES, &PULL_REQUESTS],
             "no declared order must resolve to today's fixed sequence"
         );
         assert_eq!(
             resolve_section_order(Some(&[])),
-            ProjectSection::ALL,
+            [&COMMANDS, &CHECKS, &TODOS, &NOTES, &PULL_REQUESTS],
             "an empty order: must resolve the same as an absent one"
         );
     }
@@ -2563,13 +2665,7 @@ mod tests {
         ];
         assert_eq!(
             resolve_section_order(Some(&names)),
-            [
-                ProjectSection::Notes,
-                ProjectSection::PullRequests,
-                ProjectSection::Todos,
-                ProjectSection::Checks,
-                ProjectSection::Commands,
-            ],
+            [&NOTES, &PULL_REQUESTS, &TODOS, &CHECKS, &COMMANDS],
             "a full order (including the pull_requests wire name) must be honored exactly"
         );
     }
@@ -2579,15 +2675,9 @@ mod tests {
         let names = ["checks".to_string()];
         assert_eq!(
             resolve_section_order(Some(&names)),
-            [
-                ProjectSection::Checks,
-                ProjectSection::Commands,
-                ProjectSection::Todos,
-                ProjectSection::Notes,
-                ProjectSection::PullRequests,
-            ],
+            [&CHECKS, &COMMANDS, &TODOS, &NOTES, &PULL_REQUESTS],
             "the listed section leads, the other four follow in \
-             ProjectSection::ALL order — nothing declared-but-unlisted is lost"
+             registry order — nothing declared-but-unlisted is lost"
         );
     }
 
@@ -2600,13 +2690,7 @@ mod tests {
         ];
         assert_eq!(
             resolve_section_order(Some(&names)),
-            [
-                ProjectSection::Checks,
-                ProjectSection::Notes,
-                ProjectSection::Commands,
-                ProjectSection::Todos,
-                ProjectSection::PullRequests,
-            ],
+            [&CHECKS, &NOTES, &COMMANDS, &TODOS, &PULL_REQUESTS],
             "an unrecognized name is ignored, never an error, and never \
              consumes a slot"
         );
@@ -2621,13 +2705,7 @@ mod tests {
         ];
         assert_eq!(
             resolve_section_order(Some(&names)),
-            [
-                ProjectSection::Checks,
-                ProjectSection::Commands,
-                ProjectSection::Todos,
-                ProjectSection::Notes,
-                ProjectSection::PullRequests,
-            ],
+            [&CHECKS, &COMMANDS, &TODOS, &NOTES, &PULL_REQUESTS],
             "a repeated name counts once, at its first position"
         );
     }
@@ -2643,12 +2721,7 @@ mod tests {
         let entries = project_view_entries(&app, false);
         assert_eq!(
             section_header_kinds(&entries),
-            vec![
-                ProjectSection::Notes,
-                ProjectSection::Todos,
-                ProjectSection::Checks,
-                ProjectSection::Commands,
-            ],
+            vec![&NOTES, &TODOS, &CHECKS, &COMMANDS],
             "declared order threads through both the project-level (TODOS/\
              NOTES) and worktree-level (COMMANDS/CHECKS) bands: {entries:?}"
         );
@@ -2666,12 +2739,7 @@ mod tests {
         let entries = project_view_entries(&app, false);
         assert_eq!(
             section_header_kinds(&entries),
-            vec![
-                ProjectSection::Todos,
-                ProjectSection::Notes,
-                ProjectSection::Commands,
-                ProjectSection::Checks,
-            ],
+            vec![&TODOS, &NOTES, &COMMANDS, &CHECKS],
             "an undeclared order must render exactly today's fixed \
              sequence: {entries:?}"
         );
@@ -2720,7 +2788,7 @@ mod tests {
         let entries = project_view_entries(&app, false);
         assert_eq!(
             section_header_kinds(&entries),
-            vec![ProjectSection::Commands],
+            vec![&COMMANDS],
             "CHECKS listed first must still render nothing — it was never \
              declared, and ordering decides sequence, never visibility: \
              {entries:?}"
@@ -2822,7 +2890,7 @@ mod tests {
 
         let entries = project_view_entries(&app, false);
         assert_eq!(
-            section_band(&entries, ProjectSection::PullRequests),
+            section_band(&entries, &PULL_REQUESTS),
             None,
             "no cached repo_open_prs data at all -> no band (rule 5): {entries:?}"
         );
@@ -2913,12 +2981,12 @@ mod tests {
 
         let entries = project_view_entries(&app, false);
         assert_eq!(
-            section_band(&entries, ProjectSection::PullRequests),
+            section_band(&entries, &PULL_REQUESTS),
             Some((0, 0)),
             "an errored band still renders its header: {entries:?}"
         );
         assert_eq!(
-            section_items(&entries, ProjectSection::PullRequests),
+            section_items(&entries, &PULL_REQUESTS),
             vec!["gh: not logged in".to_string()],
             "a provider error is a visible row, never silently empty: {entries:?}"
         );
@@ -2951,7 +3019,7 @@ mod tests {
 
         let entries = project_view_entries(&app, false);
         assert_eq!(
-            section_band(&entries, ProjectSection::PullRequests),
+            section_band(&entries, &PULL_REQUESTS),
             None,
             "every cached PR has a local worktree -> zero rows -> no band (rule 5): {entries:?}"
         );
@@ -2982,13 +3050,7 @@ mod tests {
         let entries = project_view_entries(&app, false);
         assert_eq!(
             section_header_kinds(&entries),
-            vec![
-                ProjectSection::PullRequests,
-                ProjectSection::Notes,
-                ProjectSection::Todos,
-                ProjectSection::Checks,
-                ProjectSection::Commands,
-            ],
+            vec![&PULL_REQUESTS, &NOTES, &TODOS, &CHECKS, &COMMANDS,],
             "declared order threads PULL REQUESTS through the project-level group too: {entries:?}"
         );
 
@@ -3144,5 +3206,107 @@ mod tests {
         );
 
         std::fs::remove_dir_all(&repo).unwrap();
+    }
+
+    // ── bora-by6 G2: the two-site cost of a sixth band ────────────────────
+
+    /// Proves G2's claim by doing it: a descriptor and a push function that
+    /// were never added to `REGISTRY`, exercised through the exact same
+    /// `SectionPushCtx`/`(descriptor.push)(...)` mechanism
+    /// `push_project_group`/`push_worktree` use for every real band. If
+    /// this compiles and renders identically to a registered band while
+    /// `REGISTRY` never grew, the two-edit-site claim is not a description
+    /// of the design, it is a property of it.
+    #[test]
+    fn a_sixth_descriptor_renders_through_the_generic_rows_without_touching_the_registry() {
+        fn push_throwaway_section(entries: &mut Vec<WorkspaceListEntry>, ctx: &SectionPushCtx) {
+            let SectionPushCtx::Project { force_expanded, .. } = *ctx else {
+                return;
+            };
+            entries.push(WorkspaceListEntry::SectionHeader {
+                kind: &THROWAWAY,
+                collapse_key: "sec:throwaway:proj".to_string(),
+                done: 1,
+                total: 2,
+            });
+            if !force_expanded {
+                return;
+            }
+            entries.push(WorkspaceListEntry::SectionItem {
+                kind: &THROWAWAY,
+                label: "a throwaway row".to_string(),
+                detail: None,
+                running: false,
+                ws_idx: None,
+            });
+        }
+
+        static THROWAWAY: SectionDescriptor = SectionDescriptor {
+            wire_name: "throwaway",
+            glyph: "?",
+            label: "THROWAWAY",
+            level: SectionLevel::Project,
+            counter: SectionCounter::Progress,
+            bullet: SectionBullet::Standard,
+            push: push_throwaway_section,
+        };
+
+        let before = REGISTRY.len();
+        assert!(
+            SectionDescriptor::from_wire_name("throwaway").is_none(),
+            "the throwaway descriptor must be unreachable through the production \
+             registry — this test's whole point is that it never joined it"
+        );
+
+        let app = AppState::test_new();
+        let ctx = SectionPushCtx::Project {
+            app: &app,
+            slug: "proj",
+            local_branches: &HashSet::new(),
+            force_expanded: true,
+        };
+        let mut entries = Vec::new();
+        (THROWAWAY.push)(&mut entries, &ctx);
+
+        assert_eq!(
+            entries.len(),
+            2,
+            "header + one item row through the exact generic \
+             SectionHeader/SectionItem rows every real band uses: {entries:?}"
+        );
+        assert!(matches!(
+            entries[0],
+            WorkspaceListEntry::SectionHeader { kind, done: 1, total: 2, .. }
+                if kind.wire_name == "throwaway"
+        ));
+        match &entries[1] {
+            WorkspaceListEntry::SectionItem { kind, label, .. } => {
+                assert_eq!(kind.wire_name, "throwaway");
+                assert_eq!(label, "a throwaway row");
+            }
+            other => panic!("expected a SectionItem row: {other:?}"),
+        }
+
+        assert_eq!(
+            REGISTRY.len(),
+            before,
+            "the production registry must not have gained an entry"
+        );
+    }
+
+    /// Backs the manual `PartialEq`/`Eq` impl on `SectionDescriptor`
+    /// (`sidebar.rs`): it compares `wire_name` alone, which is only sound
+    /// while every registry entry's wire name is unique.
+    #[test]
+    fn registry_wire_names_are_unique() {
+        let mut seen = HashSet::new();
+        for section in REGISTRY {
+            assert!(
+                seen.insert(section.wire_name),
+                "duplicate wire_name {:?} in REGISTRY: {:?}",
+                section.wire_name,
+                REGISTRY.iter().map(|d| d.wire_name).collect::<Vec<_>>()
+            );
+        }
     }
 }

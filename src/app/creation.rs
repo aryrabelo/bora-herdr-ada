@@ -4,10 +4,7 @@ use crate::api::schema::{EventData, EventEnvelope, EventKind};
 #[cfg(test)]
 use tracing::error;
 
-use super::{
-    api_helpers::pane_agent_status,
-    App, Mode,
-};
+use super::{api_helpers::pane_agent_status, App, Mode};
 use crate::{config::NewTerminalCwdConfig, workspace::Workspace};
 
 pub(crate) fn resolve_new_terminal_cwd(

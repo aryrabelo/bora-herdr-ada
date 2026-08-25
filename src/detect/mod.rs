@@ -62,6 +62,30 @@ pub(crate) fn display_priority(state: AgentState, seen: bool) -> u8 {
     }
 }
 
+/// Total sort keys for folding many panes down to one aggregate state.
+///
+/// [`attention_priority`] alone is NOT a safe key for that fold. It maps several
+/// distinct `(state, seen)` pairs onto the same number — `Blocked` and
+/// `Working` and `Unknown` each rank identically whether or not the user has
+/// seen them — so `max_by_key` over a `HashMap` of panes resolves the tie by
+/// returning whichever tied pane iteration order happened to reach last. That is
+/// stable within one process and arbitrary across two, which makes the aggregate
+/// glyph a function of hash seeding rather than of state.
+///
+/// Appending `!seen` breaks every tie in the same direction and makes the key
+/// injective over the whole `(state, seen)` space, so the fold's result no
+/// longer depends on iteration order at all. The direction is deliberate:
+/// between two otherwise-equal panes, the one the user has NOT seen is the one
+/// worth surfacing.
+pub(crate) fn attention_sort_key(state: AgentState, seen: bool) -> (u8, bool) {
+    (attention_priority(state, seen), !seen)
+}
+
+/// Display-order sibling of [`attention_sort_key`].
+pub(crate) fn display_sort_key(state: AgentState, seen: bool) -> (u8, bool) {
+    (display_priority(state, seen), !seen)
+}
+
 /// Screen-derived agent state plus confidence metadata used for source arbitration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AgentDetection {
@@ -772,8 +796,8 @@ mod tests {
         let mut differences = 0usize;
         for left in EVERY_CASE {
             for right in EVERY_CASE {
-                let attention = attention_priority(left.0, left.1)
-                    .cmp(&attention_priority(right.0, right.1));
+                let attention =
+                    attention_priority(left.0, left.1).cmp(&attention_priority(right.0, right.1));
                 let display =
                     display_priority(left.0, left.1).cmp(&display_priority(right.0, right.1));
                 if attention == display {
@@ -815,6 +839,37 @@ mod tests {
                 "display: Blocked must outrank {state:?}"
             );
         }
+    }
+
+    /// The fold keys must be INJECTIVE over the whole `(state, seen)` space.
+    /// This is the property that makes `max_by_key` over a `HashMap` of panes
+    /// order-independent, and it is the whole reason these keys exist rather
+    /// than the bare priorities: with the priorities alone, `Blocked`,
+    /// `Working` and `Unknown` each collide across `seen`, and the aggregate
+    /// glyph becomes a function of hash iteration order.
+    ///
+    /// Asserted as distinctness over the cross product rather than by listing
+    /// the eight expected keys, so this stays true if a state is added.
+    #[test]
+    fn fold_keys_are_injective_so_the_aggregate_cannot_depend_on_iteration_order() {
+        fn assert_injective(name: &str, key: fn(AgentState, bool) -> (u8, bool)) {
+            for left in EVERY_CASE {
+                for right in EVERY_CASE {
+                    if left == right {
+                        continue;
+                    }
+                    assert_ne!(
+                        key(left.0, left.1),
+                        key(right.0, right.1),
+                        "{name}: {left:?} and {right:?} share a fold key, so a tie \
+                         between them resolves by HashMap iteration order"
+                    );
+                }
+            }
+        }
+
+        assert_injective("attention", attention_sort_key);
+        assert_injective("display", display_sort_key);
     }
 
     fn foreground_process(

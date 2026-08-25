@@ -67,10 +67,7 @@ pub(crate) fn apply_agent_view(app: &AppState, entries: &mut Vec<AgentPanelEntry
     ) {
         entries.sort_by_key(|entry| {
             (
-                std::cmp::Reverse(crate::detect::attention_priority(
-                    entry.state,
-                    entry.seen,
-                )),
+                std::cmp::Reverse(crate::detect::attention_priority(entry.state, entry.seen)),
                 std::cmp::Reverse(entry.last_agent_state_change_seq),
             )
         });

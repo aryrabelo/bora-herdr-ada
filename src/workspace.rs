@@ -1375,6 +1375,21 @@ pub(crate) struct TakenPane {
 
 #[cfg(test)]
 impl Workspace {
+    /// Builds a `Workspace` for tests with no PTYs and no channels.
+    ///
+    /// **`id` is NOT deterministic across test runs.** It comes from
+    /// `generate_workspace_id`, a process-lifetime `AtomicU64`, so its value
+    /// depends on how many workspaces earlier tests in the same binary happened
+    /// to build — and test execution order is not fixed. That value REACHES
+    /// RENDERED TEXT through the `@w<id>p<n>` pane badge, so any test that
+    /// asserts on rendered sidebar output, or that snapshots a rendering to
+    /// compare against another commit, must overwrite `id` with a fixed value
+    /// after construction. `ui::sidebar::capture` does exactly that; copy it.
+    ///
+    /// The counter is not being made deterministic because production needs ids
+    /// unique for the life of a session, which is the whole point of a global
+    /// counter. The hazard is real but it belongs to fixtures, so it is
+    /// documented here where a fixture author is already reading.
     pub(crate) fn test_new(name: &str) -> Self {
         let (events, _) = mpsc::channel(64);
         let render_notify = Arc::new(Notify::new());

@@ -1,13 +1,16 @@
 use ratatui::{
     layout::Rect,
     style::{Modifier, Style},
+    text::{Line, Span},
     widgets::Paragraph,
     Frame,
 };
 
+use super::status::state_dot;
 use super::text::display_width_u16;
 use super::widgets::panel_contrast_fg;
 use crate::app::AppState;
+use crate::detect::AgentState;
 
 const MIN_TAB_WIDTH: u16 = 8;
 const NEW_TAB_WIDTH: u16 = 3;
@@ -407,15 +410,45 @@ pub(super) fn render_tab_bar(app: &AppState, frame: &mut Frame, area: Rect) {
         };
         let width = rect.width as usize;
         let name = tab_chrome_label(ws, idx);
+        // Route attention: which tab wants the user, not just that some tab
+        // does. Skip the indicator for a plain/unrecognized shell (Unknown)
+        // and for an idle tab the user has already seen — nothing to say.
+        // `attention_priority` (via `Tab::aggregate_state`) is the single
+        // ranking owner; never re-derive it here.
+        let (agg_state, agg_seen) = tab.aggregate_state(&app.terminals);
+        let show_attention =
+            agg_state != AgentState::Unknown && !(agg_state == AgentState::Idle && agg_seen);
+        let attention_icon = show_attention.then(|| {
+            state_dot(
+                agg_state,
+                agg_seen,
+                app.spinner_tick,
+                app.status_indicators,
+                p,
+                None,
+            )
+        });
+        let icon_width = attention_icon
+            .map(|(glyph, _)| display_width_u16(glyph) as usize + 1)
+            .unwrap_or(0);
+        let name_width = display_width_u16(&name) as usize;
         // Pad by terminal columns, not chars, so wide glyphs stay centered.
-        let padding = width.saturating_sub(display_width_u16(&name) as usize);
+        let padding = width.saturating_sub(name_width + icon_width);
         let left = padding / 2;
-        let text = format!(
-            "{empty:left$}{name}{empty:right$}",
-            empty = "",
-            right = padding - left
-        );
-        frame.render_widget(Paragraph::new(text).style(style), rect);
+        let right = padding - left;
+        let mut spans: Vec<Span> = Vec::with_capacity(4);
+        if left > 0 {
+            spans.push(Span::styled(" ".repeat(left), style));
+        }
+        if let Some((glyph, glyph_style)) = attention_icon {
+            spans.push(Span::styled(glyph, glyph_style));
+            spans.push(Span::styled(" ", style));
+        }
+        spans.push(Span::styled(name, style));
+        if right > 0 {
+            spans.push(Span::styled(" ".repeat(right), style));
+        }
+        frame.render_widget(Paragraph::new(Line::from(spans)), rect);
     }
 
     if let Some(crate::app::state::DragState {
@@ -505,6 +538,7 @@ pub(super) fn render_tab_bar(app: &AppState, frame: &mut Frame, area: Rect) {
 mod tests {
     use super::*;
     use crate::app::state::AppState;
+    use crate::terminal::TerminalState;
     use crate::workspace::Workspace;
     use ratatui::{backend::TestBackend, Terminal};
 
@@ -784,5 +818,139 @@ mod tests {
 
         let row = buffer_row_text(terminal.backend().buffer(), app.view.tab_bar_rect, 0);
         assert!(row.contains('馈'), "tab row: {row:?}");
+    }
+
+    #[test]
+    fn tab_bar_shows_blocked_indicator_on_non_active_tab() {
+        let mut app = AppState::test_new();
+        let mut ws = Workspace::test_new("test");
+        let second_tab = ws.test_add_tab(Some("second"));
+        let second_root = ws.tabs[second_tab].root_pane;
+
+        // Non-active tab's pane is Blocked: waiting on the user, unmistakable.
+        let mut second_terminal =
+            TerminalState::new(ws.terminal_id(second_root).unwrap().clone(), "/tmp".into());
+        second_terminal.state = AgentState::Blocked;
+        app.terminals
+            .insert(second_terminal.id.clone(), second_terminal);
+
+        app.workspaces = vec![ws];
+        app.active = Some(0);
+        app.view.tab_bar_rect = Rect::new(0, 0, 40, 1);
+        let view = compute_tab_bar_view(&app.workspaces[0], app.view.tab_bar_rect, 0, true, false);
+        app.view.tab_hit_areas = view.tab_hit_areas;
+
+        let backend = TestBackend::new(40, 1);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| render_tab_bar(&app, frame, app.view.tab_bar_rect))
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let active_rect = app.view.tab_hit_areas[0];
+        let second_rect = app.view.tab_hit_areas[1];
+        let active_row = buffer_row_text(buffer, active_rect, active_rect.y);
+        let second_row = buffer_row_text(buffer, second_rect, second_rect.y);
+
+        // The active tab has no agent (Unknown): unaffected, no glyph.
+        assert!(!active_row.contains('◆'), "active row: {active_row:?}");
+
+        // The non-active tab is blocked: glyph present and bold red.
+        assert!(second_row.contains('◆'), "second row: {second_row:?}");
+        let blocked_x = (second_rect.x..second_rect.x + second_rect.width)
+            .find(|&x| buffer[(x, second_rect.y)].symbol() == "◆")
+            .expect("blocked glyph cell");
+        let blocked_style = buffer[(blocked_x, second_rect.y)].style();
+        assert_eq!(blocked_style.fg, Some(app.palette.red));
+        assert!(blocked_style.add_modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn tab_bar_distinguishes_unseen_idle_from_blocked() {
+        let mut app = AppState::test_new();
+        let mut ws = Workspace::test_new("test");
+        let second_tab = ws.test_add_tab(Some("second"));
+        let second_root = ws.tabs[second_tab].root_pane;
+
+        // Finished while the user was elsewhere: Idle + unseen, not Blocked.
+        let mut second_terminal =
+            TerminalState::new(ws.terminal_id(second_root).unwrap().clone(), "/tmp".into());
+        second_terminal.state = AgentState::Idle;
+        app.terminals
+            .insert(second_terminal.id.clone(), second_terminal);
+        ws.tabs[second_tab]
+            .panes
+            .get_mut(&second_root)
+            .unwrap()
+            .seen = false;
+
+        app.workspaces = vec![ws];
+        app.active = Some(0);
+        app.view.tab_bar_rect = Rect::new(0, 0, 40, 1);
+        let view = compute_tab_bar_view(&app.workspaces[0], app.view.tab_bar_rect, 0, true, false);
+        app.view.tab_hit_areas = view.tab_hit_areas;
+
+        let backend = TestBackend::new(40, 1);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| render_tab_bar(&app, frame, app.view.tab_bar_rect))
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let second_rect = app.view.tab_hit_areas[1];
+        let second_row = buffer_row_text(buffer, second_rect, second_rect.y);
+
+        // Never the blocked glyph, and never bold: "done, unseen" reads
+        // differently from "waiting on an answer" even though both are
+        // non-active-tab attention signals.
+        assert!(!second_row.contains('◆'), "second row: {second_row:?}");
+        let sand_glyph = super::super::sand_frame(0);
+        assert!(
+            second_row.contains(sand_glyph),
+            "second row: {second_row:?}"
+        );
+        let sand_x = (second_rect.x..second_rect.x + second_rect.width)
+            .find(|&x| buffer[(x, second_rect.y)].symbol() == sand_glyph)
+            .expect("sand glyph cell");
+        let sand_style = buffer[(sand_x, second_rect.y)].style();
+        assert!(!sand_style.add_modifier.contains(Modifier::BOLD));
+        assert_ne!(sand_style.fg, Some(app.palette.red));
+    }
+
+    #[test]
+    fn tab_bar_skips_indicator_for_a_seen_idle_tab() {
+        let mut app = AppState::test_new();
+        let mut ws = Workspace::test_new("test");
+        let second_tab = ws.test_add_tab(Some("second"));
+        let second_root = ws.tabs[second_tab].root_pane;
+
+        // Caught-up tab: Idle and already seen. Nothing to route attention to.
+        let mut second_terminal =
+            TerminalState::new(ws.terminal_id(second_root).unwrap().clone(), "/tmp".into());
+        second_terminal.state = AgentState::Idle;
+        app.terminals
+            .insert(second_terminal.id.clone(), second_terminal);
+
+        app.workspaces = vec![ws];
+        app.active = Some(0);
+        app.view.tab_bar_rect = Rect::new(0, 0, 40, 1);
+        let view = compute_tab_bar_view(&app.workspaces[0], app.view.tab_bar_rect, 0, true, false);
+        app.view.tab_hit_areas = view.tab_hit_areas;
+
+        let backend = TestBackend::new(40, 1);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| render_tab_bar(&app, frame, app.view.tab_bar_rect))
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let second_rect = app.view.tab_hit_areas[1];
+        let second_row = buffer_row_text(buffer, second_rect, second_rect.y);
+        assert!(!second_row.contains('◆'), "second row: {second_row:?}");
+        assert!(
+            !second_row.contains(super::super::sand_frame(0)),
+            "second row: {second_row:?}"
+        );
+        assert_eq!(second_row.trim(), "second");
     }
 }
