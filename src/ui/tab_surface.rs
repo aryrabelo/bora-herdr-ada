@@ -302,29 +302,37 @@ mod tests {
         assert!(!app.view.split_borders.is_empty());
         assert!(frame.cursor.is_some());
         assert_eq!(frame.hyperlinks, vec![uri.to_owned()]);
-        // Golden updated for the sidebar chrome round, attributed rather than
-        // bumped: the rendered sidebar was dumped column-by-column against the
-        // pre-round build of `ui/sidebar.rs` (same probe, same fixture, only
-        // that one file swapped) and the ONLY difference across all 20 rows is
-        // the new active-row marker taking column 0, which shifts that row's
-        // content right by one column:
+        // Golden updated 2026-08-25 for the removal of the sidebar's section
+        // header (" spaces" + the clickable view-mode label), attributed rather
+        // than bumped: the sidebar was dumped row-by-row against the pre-change
+        // build with only `ui/sidebar.rs` swapped to HEAD (same probe, same
+        // fixture). The ONLY difference across all 20 rows is that the two-word
+        // header line is gone and every row below shifts up by exactly one,
+        // byte-identical:
         //
-        //   before  |◰ ◰ characterization     │|
-        //   after   |▎◰ ◰ characterization    │|
+        //   before  row 00 | spaces              repo│|
+        //   before  row 01 |                         │|
+        //   before  row 02 |▎◰ ◰ characterization    │|
+        //   after   row 00 |                         │|
+        //   after   row 01 |▎◰ ◰ characterization    │|
         //
-        // Nothing is truncated — the row loses one trailing space, not a
-        // character. The doubled `◰` is pre-existing and not part of this
-        // change: it is the workspace-type glyph followed by the agent glyph.
-        // The header row 00 and the footer row 19 are byte-identical, so
-        // `menu` still ends at column 23 with `«` free at 24. This fixture sets
-        // `selected = 0`, so the row is SELECTED as well as active and keeps its
-        // background fill; the round's change to stop painting the background
-        // for merely-active rows is therefore not visible here, which is why the
-        // marker is the whole diff. Every other assertion in this test still
-        // holds and the mobile characterization below is unchanged.
+        // Row 00 stays blank on purpose: it is not a header but the row the
+        // drag-reorder "drop above the first card" indicator draws and is
+        // hit-tested on (every other insert slot renders at `card.y - 1`; see
+        // `WORKSPACE_LIST_TOP_MARGIN_ROWS`). Footer row 19
+        // (`new                menu«│`) is byte-identical, so `menu` still ends
+        // at column 23 with `«` free at 24. (The doubled `◰` on the workspace
+        // row predates both rounds: workspace-type glyph followed by agent
+        // glyph.) View-mode cycling survives through the `cycle_view_mode`
+        // keybind and the settings dialog; only the click affordance and the
+        // two words left the chrome. This fixture runs in Repo view, so the
+        // shift also characterizes the non-Project states. Every other
+        // assertion in this test still holds and the mobile characterization
+        // below is unchanged — the mobile switcher keeps its own "spaces"
+        // title in `ui/mobile.rs`.
         assert_eq!(
             frame_digest(&frame),
-            "3f9d1f86466afd18affe1812e133081304640e1587ffd1dacb2b31c201f496b6"
+            "dd3136e481d6c68c610bd1c812b8db018ad488e8245163f76f8e6a4987d1135c"
         );
     }
 

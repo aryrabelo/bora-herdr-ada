@@ -703,23 +703,6 @@ impl AppState {
             && row < rect.y + rect.height
     }
 
-    pub(super) fn on_view_mode_toggle(&self, col: u16, row: u16) -> bool {
-        if self.sidebar_collapsed {
-            return false;
-        }
-
-        let (ws_area, _) = crate::ui::expanded_sidebar_sections(
-            self.view.sidebar_rect,
-            self.sidebar_section_split,
-        );
-        let rect = crate::ui::view_mode_toggle_rect(ws_area, self.view_mode);
-        rect.width > 0
-            && col >= rect.x
-            && col < rect.x + rect.width
-            && row >= rect.y
-            && row < rect.y + rect.height
-    }
-
     pub(super) fn agent_detail_target_at(
         &self,
         row: u16,
@@ -1885,7 +1868,7 @@ mod tests {
 
         assert_eq!(app.state.workspace_drop_index_at_row(0), Some(0));
         assert_eq!(app.state.workspace_drop_index_at_row(1), Some(0));
-        assert_eq!(app.state.workspace_drop_index_at_row(2), Some(0));
+        assert_eq!(app.state.workspace_drop_index_at_row(2), Some(1));
         assert_eq!(app.state.workspace_drop_index_at_row(3), Some(1));
 
         let _ = fs::remove_dir_all(first_repo);

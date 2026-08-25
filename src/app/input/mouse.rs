@@ -767,14 +767,6 @@ impl AppState {
                         return Some(MouseAction::NewWorkspace);
                     }
 
-                    if self.on_view_mode_toggle(mouse.column, mouse.row) {
-                        self.view_mode = self.view_mode.cycle();
-                        self.workspace_scroll = 0;
-                        self.mark_session_dirty();
-                        self.request_full_repaint();
-                        return None;
-                    }
-
                     if !self.view.project_row_areas.is_empty() {
                         if let Some(target) = project_row_target_at(
                             &self.view.project_row_areas,

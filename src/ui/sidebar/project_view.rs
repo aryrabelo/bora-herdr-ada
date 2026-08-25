@@ -3123,7 +3123,7 @@ mod tests {
             0,
             0,
             width,
-            total_height + crate::ui::sidebar::WORKSPACE_SECTION_HEADER_ROWS + 1,
+            total_height + crate::ui::sidebar::WORKSPACE_LIST_TOP_MARGIN_ROWS + 1,
         );
         assert_eq!(
             crate::ui::sidebar::workspace_list_visible_count(&app, exact, 0),
@@ -3139,7 +3139,7 @@ mod tests {
             0,
             0,
             width,
-            total_height + crate::ui::sidebar::WORKSPACE_SECTION_HEADER_ROWS + 20,
+            total_height + crate::ui::sidebar::WORKSPACE_LIST_TOP_MARGIN_ROWS + 20,
         );
         let (_, _, project_rows) =
             crate::ui::sidebar::compute_workspace_list_areas_all(&app, sidebar_area);
@@ -3198,7 +3198,7 @@ mod tests {
                 .map(|col| terminal.backend().buffer()[(col, row)].symbol().to_string())
                 .collect()
         };
-        let render_y = crate::ui::sidebar::WORKSPACE_SECTION_HEADER_ROWS + pr_row_idx as u16;
+        let render_y = crate::ui::sidebar::WORKSPACE_LIST_TOP_MARGIN_ROWS + pr_row_idx as u16;
         let text = row_text(render_y);
         assert!(
             text.contains('7') && text.contains("pr 7"),

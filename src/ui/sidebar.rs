@@ -24,8 +24,13 @@ use crate::app::{AppState, Mode};
 use crate::detect::AgentState;
 use crate::terminal::TerminalRuntimeRegistry;
 
-const WORKSPACE_SECTION_HEADER_ROWS: u16 = 2;
 const AGENT_PANEL_HEADER_ROWS: u16 = 3;
+/// Blank row reserved above the first workspace-list entry. Not a header: the
+/// drag-reorder "drop above the first card" indicator needs a terminal row of
+/// its own (every other insert slot renders at `card.y - 1`; without this row
+/// the first card would sit at y=0 and that slot would have nowhere to draw
+/// or be hit-tested). Doubles as the list's top margin.
+const WORKSPACE_LIST_TOP_MARGIN_ROWS: u16 = 1;
 
 /// Glyph + style for a resolved `ChecksRollup` value, shared by
 /// `checks_badge` (worktree/branch PR badges) and `pr_checks_glyph`
@@ -151,16 +156,6 @@ fn agent_panel_header_label_rect(area: Rect, label: &str) -> Rect {
         width,
         1,
     )
-}
-
-pub(crate) fn view_mode_toggle_rect(area: Rect, mode: crate::config::ViewMode) -> Rect {
-    if area.width == 0 || area.height == 0 {
-        return Rect::default();
-    }
-
-    let label = mode.as_str();
-    let width = display_width_u16(label).min(area.width);
-    Rect::new(area.x + area.width.saturating_sub(width), area.y, width, 1)
 }
 
 fn active_agent_view_label(app: &AppState) -> Option<&str> {
@@ -1910,11 +1905,11 @@ pub(crate) fn workspace_list_rect(area: Rect, split_ratio: f32) -> Rect {
 }
 
 pub(crate) fn workspace_list_body_rect(_app: &AppState, area: Rect, has_scrollbar: bool) -> Rect {
-    if area.width == 0 || area.height <= WORKSPACE_SECTION_HEADER_ROWS {
+    if area.width == 0 || area.height <= WORKSPACE_LIST_TOP_MARGIN_ROWS + 1 {
         return Rect::default();
     }
 
-    let body_y = area.y.saturating_add(WORKSPACE_SECTION_HEADER_ROWS);
+    let body_y = area.y.saturating_add(WORKSPACE_LIST_TOP_MARGIN_ROWS);
     let footer_y = (area.y + area.height).saturating_sub(1);
     let body_height = footer_y.saturating_sub(body_y);
     let body_width = area.width.saturating_sub(u16::from(has_scrollbar));
@@ -2579,28 +2574,6 @@ fn render_workspace_list(
     };
 
     let list_bottom = area.y + area.height.saturating_sub(1);
-    if area.height > 0 {
-        let header_line = Line::from(vec![Span::styled(
-            " spaces",
-            Style::default().fg(p.overlay0).add_modifier(Modifier::BOLD),
-        )]);
-        frame.render_widget(
-            Paragraph::new(header_line),
-            Rect::new(area.x, area.y, area.width, 1),
-        );
-        let toggle_rect = view_mode_toggle_rect(area, app.view_mode);
-        if toggle_rect != Rect::default() {
-            frame.render_widget(
-                Paragraph::new(Span::styled(
-                    app.view_mode.as_str(),
-                    Style::default().fg(p.overlay0).add_modifier(Modifier::BOLD),
-                ))
-                .alignment(Alignment::Right),
-                toggle_rect,
-            );
-        }
-    }
-
     let metrics = workspace_list_scroll_metrics(app, area);
     let scrollbar_rect = workspace_list_scrollbar_rect(app, area);
 
@@ -4897,7 +4870,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
                 })
                 .expect("workspace list should render");
             assert_eq!(
-                row_text(terminal.backend().buffer(), 2, width),
+                row_text(terminal.backend().buffer(), 1, width),
                 expected,
                 "project header row at {width} cols"
             );
@@ -4939,7 +4912,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
                 })
                 .expect("workspace list should render");
             assert_eq!(
-                row_text(terminal.backend().buffer(), 4, width),
+                row_text(terminal.backend().buffer(), 3, width),
                 expected,
                 "branch header row at {width} cols"
             );
@@ -4999,15 +4972,15 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
         let buffer = terminal.backend().buffer();
         // Project header with the first branch folded in, then its child:
         // the branch is already printed above, so the row is badge-only.
-        assert_eq!(row_text(buffer, 2, 30).trim_end(), "╭─herdr [first]");
+        assert_eq!(row_text(buffer, 1, 30).trim_end(), "╭─herdr [first]");
         assert_eq!(
-            row_text(buffer, 3, 30).trim_end(),
+            row_text(buffer, 2, 30).trim_end(),
             format!(" │   ◰  @{}p1", ids.0)
         );
         // Branch sub-header for the remaining branch, then its two children.
-        assert_eq!(row_text(buffer, 4, 30).trim_end(), "├── main");
-        let row5 = row_text(buffer, 5, 30);
-        let row6 = row_text(buffer, 6, 30);
+        assert_eq!(row_text(buffer, 3, 30).trim_end(), "├── main");
+        let row5 = row_text(buffer, 4, 30);
+        let row6 = row_text(buffer, 5, 30);
         assert_eq!(row5.trim_end(), format!(" │   ◰  @{}p1", ids.1));
         assert_eq!(row6.trim_end(), format!(" ╰── ◰  @{}p1", ids.2));
         assert_ne!(row5, row6, "same-branch siblings must render distinct rows");
@@ -5045,13 +5018,13 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
             .expect("workspace list should render");
 
         let buffer = terminal.backend().buffer();
-        assert_eq!(row_text(buffer, 2, 30).trim_end(), "╭─herdr [main]");
+        assert_eq!(row_text(buffer, 1, 30).trim_end(), "╭─herdr [main]");
         assert_eq!(
-            row_text(buffer, 3, 30).trim_end(),
+            row_text(buffer, 2, 30).trim_end(),
             format!(" │   ◰  @{}p1", auto_id)
         );
         assert_eq!(
-            row_text(buffer, 4, 30).trim_end(),
+            row_text(buffer, 3, 30).trim_end(),
             format!(" ╰── ◰ release-hotfix @{named_id}p1")
         );
     }
@@ -5088,10 +5061,10 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
 
         let buffer = terminal.backend().buffer();
         // Collapsed header: no `[main]`, just the aggregate dot.
-        assert_eq!(row_text(buffer, 2, 30).trim_end(), "╭─herdr ◰");
+        assert_eq!(row_text(buffer, 1, 30).trim_end(), "╭─herdr ◰");
         // Active child: branch shown because the header above omitted it.
         assert_eq!(
-            row_text(buffer, 3, 30).trim_end(),
+            row_text(buffer, 2, 30).trim_end(),
             format!("▎ ◰ main @{active_id}p1")
         );
     }
@@ -5132,9 +5105,9 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
 
         let buffer = terminal.backend().buffer();
         // Badge-less children fall back to the cwd-derived display name.
-        assert_eq!(row_text(buffer, 3, 30).trim_end(), " │   ◰ first");
-        assert_eq!(row_text(buffer, 5, 30).trim_end(), " │   ◰ second");
-        assert_eq!(row_text(buffer, 6, 30).trim_end(), " ╰── ◰ third");
+        assert_eq!(row_text(buffer, 2, 30).trim_end(), " │   ◰ first");
+        assert_eq!(row_text(buffer, 4, 30).trim_end(), " │   ◰ second");
+        assert_eq!(row_text(buffer, 5, 30).trim_end(), " ╰── ◰ third");
     }
 
     fn workspace_with_worktree_space(
@@ -6630,7 +6603,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
                 .map(|col| terminal.backend().buffer()[(col, row)].symbol().to_string())
                 .collect()
         };
-        let body_y = WORKSPACE_SECTION_HEADER_ROWS;
+        let body_y = WORKSPACE_LIST_TOP_MARGIN_ROWS;
         assert!(
             row_text(body_y).starts_with("╭─") && row_text(body_y).contains("feat/a"),
             "header opens bracket with folded branch: {:?}",
@@ -6996,9 +6969,9 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
         // shows every entry; one row less drops exactly the last (1-row)
         // entry. Section area height = body + header rows + footer row
         // (the Programs band reservation is gone since bora-55c.3).
-        let exact = Rect::new(0, 0, 30, total_height + WORKSPACE_SECTION_HEADER_ROWS + 1);
+        let exact = Rect::new(0, 0, 30, total_height + WORKSPACE_LIST_TOP_MARGIN_ROWS + 1);
         assert_eq!(workspace_list_visible_count(&app, exact, 0), entries.len());
-        let short = Rect::new(0, 0, 30, total_height + WORKSPACE_SECTION_HEADER_ROWS);
+        let short = Rect::new(0, 0, 30, total_height + WORKSPACE_LIST_TOP_MARGIN_ROWS);
         assert_eq!(
             workspace_list_visible_count(&app, short, 0),
             entries.len() - 1
@@ -7061,7 +7034,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
                 .map(|col| terminal.backend().buffer()[(col, row)].symbol().to_string())
                 .collect()
         };
-        let body_y = WORKSPACE_SECTION_HEADER_ROWS; // exact rect starts at y = 0
+        let body_y = WORKSPACE_LIST_TOP_MARGIN_ROWS; // exact rect starts at y = 0
         assert!(
             row_text(body_y).contains("herdr"),
             "project header row: {:?}",
@@ -7272,10 +7245,10 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
             0,
             0,
             width,
-            total_height + WORKSPACE_SECTION_HEADER_ROWS + 1,
+            total_height + WORKSPACE_LIST_TOP_MARGIN_ROWS + 1,
         );
         assert_eq!(workspace_list_visible_count(&app, exact, 0), entries.len());
-        let short = Rect::new(0, 0, width, total_height + WORKSPACE_SECTION_HEADER_ROWS);
+        let short = Rect::new(0, 0, width, total_height + WORKSPACE_LIST_TOP_MARGIN_ROWS);
         assert_eq!(
             workspace_list_visible_count(&app, short, 0),
             entries.len() - 1
@@ -7291,7 +7264,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
             0,
             0,
             width,
-            total_height + WORKSPACE_SECTION_HEADER_ROWS + 20,
+            total_height + WORKSPACE_LIST_TOP_MARGIN_ROWS + 20,
         );
         let (cards, headers) = compute_workspace_list_areas(&app, sidebar);
         let ws_area = workspace_list_rect(sidebar, app.sidebar_section_split);
@@ -7349,7 +7322,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
         terminal
             .draw(|frame| render_workspace_list(&app, &runtimes, frame, exact, false))
             .expect("workspace list should render");
-        let body_y = WORKSPACE_SECTION_HEADER_ROWS; // exact rect starts at y = 0
+        let body_y = WORKSPACE_LIST_TOP_MARGIN_ROWS; // exact rect starts at y = 0
         let mut y = body_y;
         for (idx, entry) in entries.iter().enumerate() {
             let expected_substr: String = match entry {
