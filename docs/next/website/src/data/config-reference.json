@@ -1375,6 +1375,12 @@
       "title": "Agents",
       "keys": [
         {
+          "key": "agents.default",
+          "type": "string",
+          "default": "\"omp\"",
+          "description": "Agent kind `bora agent --new` starts when the caller passes no `--kind`, keyed by canonical agent id. Must be a valid canonical agent label; an unknown id fails config load with the same error shape as an invalid `agents.commands` entry."
+        },
+        {
           "key": "agents.commands",
           "type": "table of strings",
           "default": "{}",

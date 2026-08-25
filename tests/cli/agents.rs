@@ -458,6 +458,118 @@ fn agent_start_command_works() {
 }
 
 #[test]
+fn agent_new_and_named_prompt_get_or_create() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let base = unique_test_dir();
+    let config_home = base.join("config");
+    let runtime_dir = base.join("runtime");
+    let socket_path = runtime_dir.join("herdr.sock");
+    let bin = base.join("bin");
+    let captured_prompts = base.join("pi-prompts");
+    fs::create_dir_all(&bin).unwrap();
+    let fake_pi = bin.join("pi");
+    fs::write(
+        &fake_pi,
+        format!(
+            "#!/bin/sh\nexport HERDR_AGENT=pi\n'{}' pane report-agent \"$HERDR_PANE_ID\" --source custom:fake-pi --agent pi --state idle >/dev/null\nwhile IFS= read -r prompt; do\n  '{}' pane report-agent \"$HERDR_PANE_ID\" --source custom:fake-pi --agent pi --state working >/dev/null\n  '{}' pane report-agent \"$HERDR_PANE_ID\" --source custom:fake-pi --agent pi --state idle >/dev/null\n  printf '%s\\n' \"$prompt\" >> '{}'\ndone\n",
+            env!("CARGO_BIN_EXE_bora"),
+            env!("CARGO_BIN_EXE_bora"),
+            env!("CARGO_BIN_EXE_bora"),
+            captured_prompts.display(),
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&fake_pi, fs::Permissions::from_mode(0o755)).unwrap();
+
+    // `[agents] default = "pi"` in the shared config home: the `--new` calls
+    // below pass no `--kind`, so this is also the end-to-end proof that the
+    // new config key resolves the kind (fallback "omp" has no binary here).
+    let herdr = spawn_herdr_with_config(
+        &config_home,
+        &runtime_dir,
+        &socket_path,
+        Some(&bin),
+        "onboarding = false\n[agents]\ndefault = \"pi\"\n",
+    );
+    wait_for_socket(&socket_path, Duration::from_secs(5));
+
+    // The CLI reads the same isolated config home as the server — the
+    // harness helpers deliberately do not set it, so do it per command.
+    let run_new = |args: &[&str]| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_bora"));
+        command.args(args);
+        command.current_dir(&base);
+        command.env("HERDR_SOCKET_PATH", &socket_path);
+        command.env("XDG_CONFIG_HOME", &config_home);
+        let output = command.output().unwrap();
+        assert!(
+            output.status.success(),
+            "{args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap()
+    };
+
+    // 1. `agent --new` always creates, kind from config default.
+    let created = run_new(&["agent", "--new", "hello one"]);
+    assert_eq!(created["result"]["type"], "agent_new");
+    assert_eq!(created["result"]["created"], true);
+    assert_eq!(created["result"]["prompt_delivered"], true);
+    assert!(created["result"]["workspace"]["workspace_id"].is_string());
+    assert!(created["result"]["pane"]["pane_id"].is_string());
+    assert_eq!(created["result"]["agent"]["cwd"], base.to_str().unwrap());
+    assert!(wait_until(
+        Duration::from_secs(5),
+        Duration::from_millis(25),
+        || {
+            captured_prompts.exists()
+                && fs::read_to_string(&captured_prompts)
+                    .unwrap()
+                    .contains("hello one")
+        }
+    ));
+
+    // 2. `agent <name> prompt` on a missing key creates with exactly that name.
+    let first = run_new(&["agent", "dispatch-key", "prompt", "first"]);
+    assert_eq!(first["result"]["created"], true);
+    assert_eq!(first["result"]["agent"]["name"], "dispatch-key");
+
+    // 3. Same key again: same agent, no second workspace, created: false.
+    let second = run_new(&["agent", "dispatch-key", "prompt", "second"]);
+    assert_eq!(second["result"]["created"], false);
+    assert_eq!(second["result"]["agent"]["name"], "dispatch-key");
+    assert_eq!(second["result"]["prompt_delivered"], true);
+
+    let agents = run_cli_json(&socket_path, &["agent", "list"]);
+    let named: Vec<_> = agents["result"]["agents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|agent| agent["name"] == "dispatch-key")
+        .collect();
+    assert_eq!(named.len(), 1, "the key must stay idempotent: {agents:?}");
+
+    let workspaces = run_cli_json(&socket_path, &["workspace", "list"]);
+    assert_eq!(
+        workspaces["result"]["workspaces"].as_array().unwrap().len(),
+        2,
+        "one workspace from --new, one from the key's creation — no third"
+    );
+
+    assert!(wait_until(
+        Duration::from_secs(5),
+        Duration::from_millis(25),
+        || {
+            let prompts = fs::read_to_string(&captured_prompts).unwrap_or_default();
+            prompts.contains("first") && prompts.contains("second")
+        }
+    ));
+
+    cleanup_spawned_herdr(herdr, base);
+}
+
+#[test]
 fn agent_start_rejects_a_shell_replaced_by_a_foreground_program() {
     let base = unique_test_dir();
     let config_home = base.join("config");

@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 use crate::api::schema::{
     AgentPromptParams, AgentPromptWaitOptions, AgentReadParams, AgentRenameParams,
     AgentSendKeysParams, AgentStartParams, AgentTarget, AgentWaitParams, EmptyParams, Method,
-    PaneProcessInfoParams, PaneTarget, ReadFormat, ReadSource, Request,
+    PaneProcessInfoParams, PaneTarget, ReadFormat, ReadSource, Request, WorkspaceCreateParams,
 };
 
 const AGENT_START_POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -26,10 +26,16 @@ pub(super) fn run_agent_command(args: &[String]) -> std::io::Result<i32> {
         "wait" => agent_wait(&args[1..]),
         "attach" => agent_attach(&args[1..]),
         "start" => agent_start(&args[1..]),
+        "--new" => agent_new(&args[1..]),
         "explain" => agent_explain(&args[1..]),
         "help" | "--help" | "-h" => {
             print_agent_help();
             Ok(0)
+        }
+        // `bora agent <name> prompt <text>` — get-or-create, name is the
+        // idempotency key. Must come before the catch-all usage arm.
+        _ if args.get(1).map(String::as_str) == Some("prompt") => {
+            agent_named_prompt(subcommand, &args[2..])
         }
         _ => {
             print_agent_help();
@@ -323,39 +329,61 @@ fn agent_start(args: &[String]) -> std::io::Result<i32> {
         eprintln!("missing required --pane");
         return Ok(2);
     };
-    let Some(expected_kind) = crate::detect::parse_agent_label(&kind) else {
+    let Some(_) = crate::detect::parse_agent_label(&kind) else {
         eprintln!("unsupported interactive agent kind: {kind}");
         return Ok(2);
     };
-    let expected_kind = crate::detect::agent_label(expected_kind).to_string();
     let agent_args = if separator < args.len() {
         args[separator + 1..].to_vec()
     } else {
         Vec::new()
     };
+    match start_agent_core(name, &kind, &pane_id, agent_args, timeout_ms) {
+        Ok(response) => super::print_response(&response),
+        Err(err) => {
+            print_agent_transport_error(err, "cli:agent:start", "agent_start_transport_failed")
+        }
+    }
+}
+
+/// The start-and-wait core of `agent start`, factored so `agent --new` /
+/// `agent <name> prompt` can drive the same retry loop on a pane they just
+/// created. Returns the final wire response verbatim — success or error
+/// JSON — and lets each caller decide what an error code means (a race on
+/// `agent_name_taken` is a hard error for `start`, a resolved idempotency
+/// hit for the get-or-create path).
+fn start_agent_core(
+    name: &str,
+    kind: &str,
+    pane_id: &str,
+    agent_args: Vec<String>,
+    timeout_ms: Option<u64>,
+) -> std::io::Result<serde_json::Value> {
+    let expected_kind = crate::detect::parse_agent_label(kind)
+        .map(|agent| crate::detect::agent_label(agent).to_string());
     let timeout = Duration::from_millis(timeout_ms.unwrap_or(30_000));
     let retryable_timeout = timeout > crate::app::AGENT_START_SETTLE_DELAY
         && timeout <= crate::app::MAX_AGENT_START_TIMEOUT;
-    let pinned_terminal_id = pane_terminal_id(&pane_id)?;
+    let pinned_terminal_id = pane_terminal_id(pane_id)?;
     let mut retry_deadline = None;
-    let mut previous_busy_response = None;
+    let mut previous_busy_response: Option<serde_json::Value> = None;
     let mut response = loop {
         if let Some(previous_busy_response) = previous_busy_response.as_ref() {
             let retry_expired = retry_deadline.is_some_and(|deadline| Instant::now() >= deadline);
             if retry_expired
-                || pane_terminal_id(&pane_id)? != pinned_terminal_id
-                || !pane_shell_is_initializing(&pane_id)?
+                || pane_terminal_id(pane_id)? != pinned_terminal_id
+                || !pane_shell_is_initializing(pane_id)?
             {
-                return super::print_response(previous_busy_response);
+                return Ok(previous_busy_response.clone());
             }
         }
 
         let response = super::send_request(&Request {
             id: "cli:agent:start".into(),
             method: Method::AgentStart(AgentStartParams {
-                name: name.clone(),
-                kind: kind.clone(),
-                pane_id: pane_id.clone(),
+                name: name.to_owned(),
+                kind: kind.to_owned(),
+                pane_id: pane_id.to_owned(),
                 args: agent_args.clone(),
                 timeout_ms,
             }),
@@ -366,10 +394,10 @@ fn agent_start(args: &[String]) -> std::io::Result<i32> {
         if response["error"]["code"].as_str() != Some("agent_pane_busy")
             || !retryable_timeout
             || pinned_terminal_id.is_none()
-            || pane_terminal_id(&pane_id)? != pinned_terminal_id
-            || !pane_shell_is_initializing(&pane_id)?
+            || pane_terminal_id(pane_id)? != pinned_terminal_id
+            || !pane_shell_is_initializing(pane_id)?
         {
-            return super::print_response(&response);
+            return Ok(response);
         }
 
         let deadline = *retry_deadline
@@ -378,14 +406,14 @@ fn agent_start(args: &[String]) -> std::io::Result<i32> {
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
             if let Some(previous_busy_response) = previous_busy_response.as_ref() {
-                return super::print_response(previous_busy_response);
+                return Ok(previous_busy_response.clone());
             }
         }
         std::thread::sleep(AGENT_START_POLL_INTERVAL.min(remaining));
     };
 
     let Some(expected_terminal_id) = response["result"]["agent"]["terminal_id"].as_str() else {
-        return super::print_response(&cli_agent_error(
+        return Ok(cli_agent_error(
             "cli:agent:start",
             "agent_start_failed",
             "agent start response did not include terminal_id",
@@ -395,25 +423,299 @@ fn agent_start(args: &[String]) -> std::io::Result<i32> {
         .as_deref()
         .is_some_and(|pinned| pinned != expected_terminal_id)
     {
-        return super::print_response(&agent_name_lost_error("cli:agent:start", name));
+        return Ok(agent_name_lost_error("cli:agent:start", name));
     }
-    let waited = wait_for_named_agent(
-        name,
-        &pane_id,
-        timeout,
-        &expected_kind,
-        expected_terminal_id,
-    );
+    let Some(expected_kind) = expected_kind else {
+        return Ok(cli_agent_error(
+            "cli:agent:start",
+            "agent_kind_mismatch",
+            format!("unsupported interactive agent kind: {kind}"),
+        ));
+    };
+    let waited = wait_for_named_agent(name, pane_id, timeout, &expected_kind, expected_terminal_id);
     match waited {
         Ok(Ok(agent)) => {
             response["result"]["agent"] = agent;
-            super::print_response(&response)
+            Ok(response)
         }
-        Ok(Err(error)) => super::print_response(&error),
-        Err(err) => {
-            print_agent_transport_error(err, "cli:agent:start", "agent_start_transport_failed")
+        Ok(Err(error)) => Ok(error),
+        Err(err) => Err(err),
+    }
+}
+
+/// `bora agent --new "<prompt>" [--kind KIND] [--name NAME]` — one command
+/// from "I want an agent working here" to a live session: create a workspace
+/// on the caller's cwd, start the resolved agent on its root pane, inject the
+/// prompt, print one JSON. Always creates: two runs give two agents.
+fn agent_new(args: &[String]) -> std::io::Result<i32> {
+    let Some(prompt) = args.first() else {
+        eprintln!("usage: bora agent --new <prompt> [--kind KIND] [--name NAME]");
+        return Ok(2);
+    };
+    let mut kind = None;
+    let mut name = None;
+    let mut index = 1;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--kind" => {
+                let Some(value) = args.get(index + 1) else {
+                    eprintln!("missing value for --kind");
+                    return Ok(2);
+                };
+                kind = Some(value.clone());
+                index += 2;
+            }
+            "--name" => {
+                let Some(value) = args.get(index + 1) else {
+                    eprintln!("missing value for --name");
+                    return Ok(2);
+                };
+                name = Some(value.clone());
+                index += 2;
+            }
+            other => {
+                eprintln!("unknown option: {other}");
+                return Ok(2);
+            }
         }
     }
+    agent_new_core(name, kind, prompt, false)
+}
+
+/// `bora agent <name> prompt "<text>" [--kind KIND]` — get-or-create: the
+/// name is the idempotency key. An existing agent just gets the prompt; a
+/// missing one is created (workspace on cwd + start + prompt) with exactly
+/// that name. A creation race (`agent_name_taken`) resolves to the winner.
+fn agent_named_prompt(name: &str, args: &[String]) -> std::io::Result<i32> {
+    let Some(text) = args.first() else {
+        eprintln!("usage: bora agent <name> prompt <text> [--kind KIND]");
+        return Ok(2);
+    };
+    let mut kind = None;
+    let mut index = 1;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--kind" => {
+                let Some(value) = args.get(index + 1) else {
+                    eprintln!("missing value for --kind");
+                    return Ok(2);
+                };
+                kind = Some(value.clone());
+                index += 2;
+            }
+            other => {
+                eprintln!("unknown option: {other}");
+                return Ok(2);
+            }
+        }
+    }
+    let probe = resolve_agent_target_unchecked(name, "cli:agent:new:probe")?;
+    if probe.get("error").is_none() {
+        return prompt_existing_agent(name, text, probe["result"]["agent"].clone());
+    }
+    if probe["error"]["code"].as_str() != Some("agent_not_found") {
+        return super::print_response(&probe);
+    }
+    agent_new_core(Some(name.to_owned()), kind, text, true)
+}
+
+/// The shared composition behind `--new` and `<name> prompt`:
+/// `workspace.create` (caller's cwd, no focus steal) → `agent.start` →
+/// `agent.prompt`, entirely client-side over existing verbs. `idempotent`
+/// marks the get-or-create form: a creation race on the exact name prompts
+/// the winner instead of failing. The always-create form treats
+/// `agent_name_taken` on an explicit `--name` as a hard error and suffixes
+/// derived names (`-2`, `-3`…) instead.
+fn agent_new_core(
+    name: Option<String>,
+    kind_flag: Option<String>,
+    prompt: &str,
+    idempotent: bool,
+) -> std::io::Result<i32> {
+    let config = crate::config::Config::load().config;
+    let kind = resolve_new_kind(kind_flag.as_deref(), &config.agents);
+    let Some(parsed_kind) = crate::detect::parse_agent_label(&kind) else {
+        eprintln!("unsupported interactive agent kind: {kind}");
+        return Ok(2);
+    };
+    let kind = crate::detect::agent_label(parsed_kind).to_string();
+
+    let cwd = std::env::current_dir()?;
+    let workspace = super::send_request(&Request {
+        id: "cli:agent:new:workspace".into(),
+        method: Method::WorkspaceCreate(WorkspaceCreateParams {
+            cwd: Some(cwd.to_string_lossy().into_owned()),
+            focus: false,
+            label: None,
+            env: std::collections::HashMap::new(),
+            group: None,
+        }),
+    })?;
+    if workspace.get("error").is_some() {
+        return super::print_response(&workspace);
+    }
+    let Some(pane_id) = workspace["result"]["root_pane"]["pane_id"]
+        .as_str()
+        .map(str::to_owned)
+    else {
+        return super::print_response(&cli_agent_error(
+            "cli:agent:new",
+            "agent_new_failed",
+            "workspace create response did not include root_pane.pane_id",
+        ));
+    };
+
+    let explicit_name = name.is_some();
+    let base = name.unwrap_or_else(|| sanitize_agent_name(&cwd));
+    for attempt in 0..10u32 {
+        let candidate = if attempt == 0 {
+            base.clone()
+        } else {
+            format!("{base}-{}", attempt + 1)
+        };
+        let started = match start_agent_core(&candidate, &kind, &pane_id, Vec::new(), None) {
+            Ok(response) => response,
+            Err(err) => {
+                return print_agent_transport_error(
+                    err,
+                    "cli:agent:new",
+                    "agent_start_transport_failed",
+                );
+            }
+        };
+        if started.get("error").is_none() {
+            let prompted = send_new_agent_prompt(&candidate, prompt)?;
+            if prompted.get("error").is_some() {
+                return super::print_response(&prompted);
+            }
+            return super::print_response(&serde_json::json!({
+                "id": "cli:agent:new",
+                "result": {
+                    "type": "agent_new",
+                    "created": true,
+                    "prompt_delivered": true,
+                    "workspace": workspace["result"]["workspace"],
+                    "pane": workspace["result"]["root_pane"],
+                    "agent": started["result"]["agent"],
+                    "prompt": prompted["result"],
+                }
+            }));
+        }
+        if started["error"]["code"].as_str() == Some("agent_name_taken") {
+            if idempotent {
+                // A concurrent dispatcher created this key first: the name
+                // uniqueness invariant makes THAT agent the right target —
+                // prompt it. The creation, not the prompt text, is what the
+                // key deduplicates.
+                let winner = resolve_agent_target_unchecked(&candidate, "cli:agent:new:winner")?;
+                if winner.get("error").is_none() {
+                    return prompt_existing_agent(
+                        &candidate,
+                        prompt,
+                        winner["result"]["agent"].clone(),
+                    );
+                }
+                return super::print_response(&winner);
+            }
+            if explicit_name {
+                return super::print_response(&started);
+            }
+            continue;
+        }
+        return super::print_response(&cli_agent_error(
+            "cli:agent:new",
+            "agent_new_failed",
+            format!(
+                "{} (orphan pane: {pane_id})",
+                started["error"]["message"]
+                    .as_str()
+                    .unwrap_or("agent start failed")
+            ),
+        ));
+    }
+    super::print_response(&cli_agent_error(
+        "cli:agent:new",
+        "agent_new_failed",
+        format!("no free agent name based on `{base}` (orphan pane: {pane_id})"),
+    ))
+}
+
+/// Get-or-create hit (or race resolution): the agent already existed, so
+/// only the prompt is new. `created: false` is what tells an idempotent
+/// re-dispatch apart from a fresh one.
+fn prompt_existing_agent(
+    name: &str,
+    prompt: &str,
+    agent: serde_json::Value,
+) -> std::io::Result<i32> {
+    let prompted = send_new_agent_prompt(name, prompt)?;
+    if prompted.get("error").is_some() {
+        return super::print_response(&prompted);
+    }
+    super::print_response(&serde_json::json!({
+        "id": "cli:agent:new",
+        "result": {
+            "type": "agent_new",
+            "created": false,
+            "prompt_delivered": true,
+            "agent": agent,
+            "prompt": prompted["result"],
+        }
+    }))
+}
+
+fn send_new_agent_prompt(target: &str, text: &str) -> std::io::Result<serde_json::Value> {
+    let from_pane = std::env::var("HERDR_PANE_ID")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| super::normalize_pane_id(&value));
+    super::send_request(&Request {
+        id: "cli:agent:prompt".into(),
+        method: Method::AgentPrompt(AgentPromptParams {
+            target: target.to_owned(),
+            text: text.to_owned(),
+            wait: None,
+            from_pane,
+            when_idle: None,
+            when_idle_timeout_ms: None,
+            peer_pid: None,
+            origin_channel: None,
+        }),
+    })
+}
+
+/// Default agent name for `agent --new`: the cwd's basename reduced to a
+/// pane-friendly token (`My Proj!` → `my-proj`), `agent` when nothing
+/// survives. Collision suffixes are the caller's loop.
+fn sanitize_agent_name(cwd: &std::path::Path) -> String {
+    let base = cwd
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let mut out = String::new();
+    let mut last_dash = false;
+    for ch in base.chars().flat_map(char::to_lowercase) {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch);
+            last_dash = false;
+        } else if !last_dash && !out.is_empty() {
+            out.push('-');
+            last_dash = true;
+        }
+    }
+    let trimmed = out.trim_end_matches('-');
+    if trimmed.is_empty() {
+        "agent".to_owned()
+    } else {
+        trimmed.to_owned()
+    }
+}
+
+/// Kind for `agent --new`: `--kind` wins, then `[agents] default`, then
+/// the hardcoded `"omp"` fallback inside `default_kind`.
+fn resolve_new_kind(flag: Option<&str>, agents: &crate::config::AgentsConfig) -> String {
+    flag.map(str::to_owned)
+        .unwrap_or_else(|| agents.default_kind().to_owned())
 }
 
 fn agent_list(args: &[String]) -> std::io::Result<i32> {
@@ -985,6 +1287,8 @@ fn print_agent_help() {
     eprintln!(
         "  bora agent start <name> --kind KIND --pane ID [--timeout MS] [-- <agent-args...>]"
     );
+    eprintln!("  bora agent --new <prompt> [--kind KIND] [--name NAME]");
+    eprintln!("  bora agent <name> prompt <text> [--kind KIND]   (get-or-create: name is the idempotency key)");
     eprintln!("  bora agent explain <target> [--json|--format text|json] [--verbose]");
     eprintln!(
         "  bora agent explain --file PATH --agent LABEL [--json|--format text|json] [--verbose]"
@@ -998,4 +1302,36 @@ fn parse_timeout(value: &str) -> Result<u64, i32> {
         eprintln!("{err}");
         2
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sanitize_agent_name_reduces_basenames() {
+        assert_eq!(
+            sanitize_agent_name(std::path::Path::new("/home/ary/My Proj!")),
+            "my-proj"
+        );
+        assert_eq!(
+            sanitize_agent_name(std::path::Path::new("/home/ary/dotfiles-2026")),
+            "dotfiles-2026"
+        );
+        assert_eq!(
+            sanitize_agent_name(std::path::Path::new("/home/ary/...")),
+            "agent"
+        );
+        assert_eq!(sanitize_agent_name(std::path::Path::new("/")), "agent");
+    }
+
+    #[test]
+    fn resolve_new_kind_prefers_flag_then_config_then_omp() {
+        let mut agents = crate::config::AgentsConfig::default();
+        assert_eq!(resolve_new_kind(Some("pi"), &agents), "pi");
+        assert_eq!(resolve_new_kind(None, &agents), "omp");
+        agents.default = Some("claude".to_owned());
+        assert_eq!(resolve_new_kind(None, &agents), "claude");
+        assert_eq!(resolve_new_kind(Some("pi"), &agents), "pi");
+    }
 }

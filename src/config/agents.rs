@@ -31,6 +31,20 @@ where
     }
     Ok(commands)
 }
+fn deserialize_agent_default<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let default = Option::<String>::deserialize(deserializer)?;
+    if let Some(id) = &default {
+        if crate::detect::parse_canonical_agent_label(id).is_none() {
+            return Err(serde::de::Error::custom(format!(
+                "unknown canonical agent id `{id}` in agents.default"
+            )));
+        }
+    }
+    Ok(default)
+}
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(default)]
@@ -40,6 +54,10 @@ pub struct AgentsConfig {
     /// `detect::interactive_agent_executable` when an id has no override.
     #[serde(deserialize_with = "deserialize_agent_commands")]
     pub commands: BTreeMap<String, String>,
+    /// Agent kind `bora agent --new` starts when the caller passes no
+    /// `--kind`. Falls back to the hardcoded `"omp"` when unset.
+    #[serde(deserialize_with = "deserialize_agent_default")]
+    pub default: Option<String>,
 }
 
 impl AgentsConfig {
@@ -50,6 +68,12 @@ impl AgentsConfig {
             .get(crate::detect::agent_label(agent))
             .map(String::as_str)
             .unwrap_or_else(|| crate::detect::interactive_agent_executable(agent))
+    }
+    /// The agent kind for `bora agent --new`: the configured default, or
+    /// `"omp"`. A `--kind` CLI flag wins over both — handled at the call
+    /// site, not here.
+    pub fn default_kind(&self) -> &str {
+        self.default.as_deref().unwrap_or("omp")
     }
 }
 
@@ -119,5 +143,29 @@ omp = ""
 "#,
         );
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn parses_a_configured_default_kind() {
+        let config: AgentsConfig = toml::from_str(r#"default = "pi""#).unwrap();
+        assert_eq!(config.default.as_deref(), Some("pi"));
+        assert_eq!(config.default_kind(), "pi");
+    }
+
+    #[test]
+    fn default_kind_falls_back_to_omp_when_unset() {
+        let config = AgentsConfig::default();
+        assert_eq!(config.default, None);
+        assert_eq!(config.default_kind(), "omp");
+    }
+
+    #[test]
+    fn rejects_an_unknown_default_kind() {
+        let err = toml::from_str::<AgentsConfig>(r#"default = "bogus""#).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("unknown canonical agent id `bogus` in agents.default"),
+            "unexpected error: {err}"
+        );
     }
 }
