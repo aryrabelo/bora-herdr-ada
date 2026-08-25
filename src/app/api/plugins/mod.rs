@@ -715,23 +715,37 @@ fn manifest_actions(
         })
 }
 
-/// The action id a herdr-dagr install exposes for opening its DAG pane;
-/// the sidebar's "Open dagr" entry (bora-1le.3) invokes exactly this.
-pub(crate) const DAGR_OPEN_ACTION_ID: &str = "open-dagr";
-
-/// Registry-driven detection for the sidebar's "Open dagr" entry
-/// (bora-1le.3, sidebar-design decision #9: integrate when present, never
-/// absorb). herdr-dagr counts as installed iff an enabled plugin with an
-/// available manifest declares the [`DAGR_OPEN_ACTION_ID`] action — the
-/// plugin registry IS the install signal; never probe the filesystem for
-/// a binary.
-pub(crate) fn dagr_open_action_available(
+/// Plugin actions available to a context menu exposing `context` — reads
+/// only **enabled**, manifest-available installs (a disabled plugin
+/// contributes nothing, bora-1e9). An action matches when its declared
+/// `contexts` contains `context` directly, or contains `Global` (Global
+/// actions are visible from every menu — that is what "Global" means). An
+/// action with an empty or absent `contexts` list matches nothing: a
+/// silent skip, never a menu entry that "just always shows up". This is
+/// the general form of the old dagr-specific id-existence probe this
+/// replaces: dagr is just another plugin action once its manifest
+/// declares a matching context.
+pub(crate) fn plugin_actions_for_context(
     plugins: &crate::app::state::InstalledPluginRegistry,
-) -> bool {
-    plugins
+    context: crate::api::schema::PluginActionContext,
+) -> Vec<PluginActionInfo> {
+    let mut actions: Vec<PluginActionInfo> = plugins
         .values()
         .filter(|plugin| plugin.enabled && plugin_manifest_available(plugin))
-        .any(|plugin| plugin.actions.iter().any(|a| a.id == DAGR_OPEN_ACTION_ID))
+        .flat_map(|plugin| {
+            plugin
+                .actions
+                .iter()
+                .map(|action| manifest_action_info(&plugin.plugin_id, &plugin.platforms, action))
+        })
+        .filter(|action| {
+            action.contexts.iter().any(|declared| {
+                *declared == crate::api::schema::PluginActionContext::Global || *declared == context
+            })
+        })
+        .collect();
+    actions.sort_by_key(PluginActionInfo::qualified_id);
+    actions
 }
 
 #[cfg(test)]
@@ -3839,5 +3853,58 @@ command = ["act.exe"]
 
         let _ = std::fs::remove_dir_all(root);
         let _ = std::fs::remove_dir_all(registry_dir);
+    }
+
+    #[test]
+    fn plugin_action_context_qualified_id_resolves_via_find_plugin_action() {
+        // bora-1e9: the id `plugin_actions_for_context` hands the menu must
+        // be exactly the id `find_plugin_action` resolves at click time —
+        // that IS the "routes through the shared lookup, not a new
+        // parallel scan" contract; no separate id-matching logic may exist
+        // on the menu-selection path.
+        let mut app = test_app();
+        app.state.installed_plugins.insert(
+            "example.tool".into(),
+            crate::api::schema::InstalledPluginInfo {
+                plugin_id: "example.tool".into(),
+                name: "Example Tool".into(),
+                version: "0.1.0".into(),
+                min_herdr_version: String::new(),
+                description: None,
+                manifest_path: "/nonexistent".into(),
+                plugin_root: "/nonexistent".into(),
+                enabled: true,
+                platforms: None,
+                build: vec![],
+                startup: vec![],
+                actions: vec![PluginManifestAction {
+                    id: "run".into(),
+                    title: "Run tool".into(),
+                    description: None,
+                    contexts: vec![crate::api::schema::PluginActionContext::Workspace],
+                    platforms: None,
+                    command: vec!["true".into()],
+                }],
+                events: vec![],
+                panes: vec![],
+                link_handlers: vec![],
+                source: PluginSourceInfo::default(),
+                warnings: vec![],
+            },
+        );
+
+        let found = plugin_actions_for_context(
+            &app.state.installed_plugins,
+            crate::api::schema::PluginActionContext::Workspace,
+        );
+        assert_eq!(found.len(), 1, "one matching action: {found:?}");
+        let qualified_id = found[0].qualified_id();
+        assert_eq!(qualified_id, "example.tool.run");
+
+        let (plugin, action) = app
+            .find_plugin_action(None, &qualified_id)
+            .expect("find_plugin_action must resolve the id the menu produced");
+        assert_eq!(plugin.plugin_id, "example.tool");
+        assert_eq!(action.action_id, "run");
     }
 }

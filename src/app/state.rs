@@ -724,6 +724,19 @@ pub enum ProjectRowTarget {
     },
     /// Focus one pane of a multi-pane workspace.
     Pane { ws_idx: usize, pane_id: String },
+    /// Open a PR from the project-level PULL REQUESTS band in a new worktree.
+    ///
+    /// `ws_idx` is a representative workspace of the PR's repo, resolved once
+    /// when the band is built — NOT the active workspace. It exists only to
+    /// name which repo the worktree is created in: `start_pr_worktree_create`
+    /// turns it into the `workspace_id` of a `WorktreeCreate` call. Resolving
+    /// it per render would be a workspace scan per row per pane per client,
+    /// which the render path forbids.
+    ///
+    /// This is the same destination `ContextMenuKind::RepoPr`'s
+    /// "Open in worktree" reaches, so a sidebar PR row and a right-click on
+    /// the right panel's PR list do the same thing by construction.
+    OpenPr { ws_idx: usize, number: u64 },
 }
 
 /// Layout area for the "+" (create worktree) affordance on a repo header row
@@ -1357,17 +1370,14 @@ pub enum ContextMenuKind {
     },
     /// A sidebar group/project header row (visual group or repo group).
     /// `collapse_key` is the same key used for collapse state; `hidden` is
-    /// whether that key is currently hidden. `dagr_available` (bora-1le.3)
-    /// is resolved at menu-open time for the channels group header only:
-    /// true iff the plugin registry has an enabled install exposing the
-    /// `open-dagr` action. It gates the "Open dagr" entry — absent means
-    /// the entry is simply not built (silent skip, sidebar-design
-    /// decision #9: integrate when present, never absorb).
+    /// whether that key is currently hidden. Its plugin-action context is
+    /// `Global` (bora-1e9) — the general-purpose surface every enabled
+    /// plugin action declaring `contexts = ["global"]` appears on, resolved
+    /// at menu-build time by `build_context_menu_items`, never cached here.
     GroupHeader {
         name: String,
         collapse_key: String,
         hidden: bool,
-        dagr_available: bool,
     },
     Tab {
         ws_idx: usize,
@@ -1422,6 +1432,7 @@ pub fn build_context_menu_items(
     kind: &ContextMenuKind,
     workspaces: &[crate::workspace::Workspace],
     custom_commands: &[String],
+    installed_plugins: &InstalledPluginRegistry,
 ) -> Vec<String> {
     let groups: Vec<String> = {
         let mut set = std::collections::BTreeSet::new();
@@ -1451,7 +1462,7 @@ pub fn build_context_menu_items(
             v.push("Hide 30m".to_string());
         }
     };
-    match kind {
+    let mut v = match kind {
         ContextMenuKind::Workspace { hidden, .. } => {
             let mut v = vec![
                 "Rename".to_string(),
@@ -1575,12 +1586,8 @@ pub fn build_context_menu_items(
             push_hide(&mut v, *hidden);
             v
         }
-        ContextMenuKind::GroupHeader {
-            hidden,
-            dagr_available,
-            ..
-        } => {
-            let mut v = if *hidden {
+        ContextMenuKind::GroupHeader { hidden, .. } => {
+            if *hidden {
                 vec!["Unhide".to_string()]
             } else {
                 vec![
@@ -1589,12 +1596,7 @@ pub fn build_context_menu_items(
                     "Hide 15m".to_string(),
                     "Hide 30m".to_string(),
                 ]
-            };
-            if *dagr_available {
-                v.push(sep());
-                v.push("Open dagr".to_string());
             }
-            v
         }
         ContextMenuKind::Tab { .. } => {
             vec![
@@ -1645,7 +1647,79 @@ pub fn build_context_menu_items(
             v.push("Copy URL".to_string());
             v
         }
+    };
+    let plugin_titles = plugin_menu_titles(kind, installed_plugins);
+    if !plugin_titles.is_empty() {
+        v.push(sep());
+        v.extend(plugin_titles);
     }
+    v
+}
+
+/// Which `PluginActionContext` a menu kind exposes to plugin actions.
+/// Exhaustive over `ContextMenuKind`: a new variant must decide its context
+/// here or the match fails to compile — no default that silently exposes
+/// nothing (bora-1e9, gate G1). `Global` actions are visible from every
+/// menu regardless of this mapping (see `plugin_actions_for_context`); this
+/// only fixes each kind's *own* context.
+fn plugin_menu_context(kind: &ContextMenuKind) -> crate::api::schema::PluginActionContext {
+    use crate::api::schema::PluginActionContext as Ctx;
+    match kind {
+        ContextMenuKind::Workspace { .. } => Ctx::Workspace,
+        ContextMenuKind::GitWorkspace { .. } => Ctx::Workspace,
+        // GroupHeader is the general-purpose surface — exactly where the
+        // old dagr-only availability flag used to live on this variant.
+        // Now any enabled plugin action declaring `contexts = ["global"]`
+        // lands here through the ordinary mechanism below, dagr included.
+        ContextMenuKind::GroupHeader { .. } => Ctx::Global,
+        ContextMenuKind::Tab { .. } => Ctx::Tab,
+        ContextMenuKind::Pane { .. } => Ctx::Pane,
+        // No PluginActionContext variant models a PR/issue row (only
+        // Global | Workspace | Tab | Pane | Selection exist). RepoPr's own
+        // doc comment warns `ws_idx` is "only coincidentally" the PR's
+        // workspace, so mapping to Workspace would be misleading; Global —
+        // the same general-purpose surface GroupHeader uses — is the
+        // honest fallback: a plugin wanting a PR/issue action declares
+        // `contexts = ["global"]`.
+        ContextMenuKind::RepoPr { .. } => Ctx::Global,
+        ContextMenuKind::RepoIssue { .. } => Ctx::Global,
+    }
+}
+
+/// Plugin action titles to append to a menu of `kind`, in registry order.
+/// Delegates entirely to `plugin_actions_for_context` (app::api::plugins) —
+/// enabled-only, context-matched, Global-everywhere; a disabled plugin or a
+/// non-matching/absent context contributes nothing here.
+fn plugin_menu_titles(
+    kind: &ContextMenuKind,
+    installed_plugins: &InstalledPluginRegistry,
+) -> Vec<String> {
+    crate::app::api::plugins::plugin_actions_for_context(
+        installed_plugins,
+        plugin_menu_context(kind),
+    )
+    .into_iter()
+    .map(|action| action.title)
+    .collect()
+}
+
+/// Resolve a selected menu label back to the plugin action it names, as the
+/// fully-qualified `plugin_id.action_id` `find_plugin_action` (bora-1e9,
+/// gate G4) resolves at invoke time. Mirrors `plugin_menu_titles` exactly —
+/// same context, same registry read — so any label the menu actually shows
+/// resolves here to exactly the action that produced it.
+pub(crate) fn plugin_menu_action_id(
+    kind: &ContextMenuKind,
+    label: &str,
+    installed_plugins: &InstalledPluginRegistry,
+) -> Option<String> {
+    crate::app::api::plugins::plugin_actions_for_context(
+        installed_plugins,
+        plugin_menu_context(kind),
+    )
+    .into_iter()
+    .find(|action| action.title == label)
+    .map(|action| action.qualified_id())
 }
 
 impl ContextMenuState {
@@ -1972,9 +2046,12 @@ pub struct AppState {
     pub request_clipboard_write: Option<Vec<u8>>,
     /// Set when UI interaction asked to open a URL in the system browser.
     pub request_open_url: Option<String>,
-    /// Set when the channels group header's "Open dagr" entry (bora-1le.3)
-    /// was chosen: the App loop invokes the `open-dagr` plugin action.
-    pub request_open_dagr: bool,
+    /// Set when a context-menu selection named a plugin action
+    /// (`plugin_id.action_id`, bora-1e9): the App loop invokes it through
+    /// `find_plugin_action`/`invoke_plugin_action_from_ui`, same as every
+    /// other deferred App-owned action (dagr's old dedicated flag is gone —
+    /// dagr is just another plugin action now).
+    pub request_plugin_action: Option<String>,
     /// Set when UI interaction asked to open a PR in a new worktree:
     /// (representative workspace index of the repo group, PR number).
     pub request_open_pr_worktree: Option<(usize, u64)>,
@@ -2529,7 +2606,7 @@ impl AppState {
             request_submit_worktree_remove: false,
             request_submit_worktree_merge: false,
             request_reload_config: false,
-            request_open_dagr: false,
+            request_plugin_action: None,
             request_client_config_reload: false,
             request_clipboard_write: None,
             request_open_url: None,
@@ -3376,7 +3453,7 @@ mod tests {
             hidden: false,
         };
         let menu = ContextMenuState {
-            items: build_context_menu_items(&kind, &[], &[]),
+            items: build_context_menu_items(&kind, &[], &[], &Default::default()),
             kind,
             x: 0,
             y: 0,
@@ -3420,7 +3497,7 @@ mod tests {
             hidden: false,
         };
         let menu = ContextMenuState {
-            items: build_context_menu_items(&kind, &[], &[]),
+            items: build_context_menu_items(&kind, &[], &[], &Default::default()),
             kind,
             x: 0,
             y: 0,
@@ -3463,7 +3540,7 @@ mod tests {
             hidden: false,
         };
         let menu = ContextMenuState {
-            items: build_context_menu_items(&kind, &[], &[]),
+            items: build_context_menu_items(&kind, &[], &[], &Default::default()),
             kind,
             x: 0,
             y: 0,
@@ -3496,48 +3573,193 @@ mod tests {
         );
     }
 
-    #[test]
-    fn group_header_menu_open_dagr_entry_tracks_availability_both_ways() {
-        // bora-1le.3: "appears only when installed" is two assertions — a
-        // one-sided test would pass an implementation that always shows the
-        // entry, and an always-hidden one would never be noticed either.
-        let with_dagr = ContextMenuKind::GroupHeader {
-            name: "channels".to_string(),
-            collapse_key: "vg:channels".to_string(),
-            hidden: false,
-            dagr_available: true,
-        };
-        let items = build_context_menu_items(&with_dagr, &[], &[]);
-        assert!(
-            items.iter().any(|item| item == "Open dagr"),
-            "entry must be present when the dagr plugin is registered: {items:?}"
-        );
-        // The separator keeps the entry visually distinct from the hide
-        // actions; without it the menu reads as one list.
-        let dagr_idx = items
-            .iter()
-            .position(|item| item == "Open dagr")
-            .expect("checked present above");
-        assert_eq!(
-            items.get(dagr_idx - 1),
-            Some(&CONTEXT_MENU_SEPARATOR.to_string()),
-            "Open dagr must follow a separator"
-        );
+    fn test_plugin_action(
+        plugin_id: &str,
+        enabled: bool,
+        action_id: &str,
+        contexts: Vec<crate::api::schema::PluginActionContext>,
+    ) -> crate::api::schema::InstalledPluginInfo {
+        crate::api::schema::InstalledPluginInfo {
+            plugin_id: plugin_id.to_string(),
+            name: plugin_id.to_string(),
+            version: "0.1.0".to_string(),
+            min_herdr_version: String::new(),
+            description: None,
+            manifest_path: "/nonexistent".to_string(),
+            plugin_root: "/nonexistent".to_string(),
+            enabled,
+            platforms: None,
+            build: vec![],
+            startup: vec![],
+            actions: vec![crate::api::schema::PluginManifestAction {
+                id: action_id.to_string(),
+                title: "Do it".to_string(),
+                description: None,
+                contexts,
+                platforms: None,
+                command: vec!["true".to_string()],
+            }],
+            events: vec![],
+            panes: vec![],
+            link_handlers: vec![],
+            source: crate::api::schema::PluginSourceInfo::default(),
+            warnings: vec![],
+        }
+    }
 
-        let without_dagr = ContextMenuKind::GroupHeader {
-            name: "channels".to_string(),
-            collapse_key: "vg:channels".to_string(),
+    fn plugin_registry_with(
+        plugin: crate::api::schema::InstalledPluginInfo,
+    ) -> InstalledPluginRegistry {
+        let mut map = InstalledPluginRegistry::new();
+        map.insert(plugin.plugin_id.clone(), plugin);
+        map
+    }
+
+    #[test]
+    fn plugin_action_context_matching_action_appears_in_menu() {
+        // bora-1e9: an enabled plugin action declaring the menu's own
+        // context must appear, appended after a separator the same way
+        // `custom_commands` already does.
+        let plugins = plugin_registry_with(test_plugin_action(
+            "example.tool",
+            true,
+            "run",
+            vec![crate::api::schema::PluginActionContext::Workspace],
+        ));
+        let kind = ContextMenuKind::Workspace {
+            ws_idx: 0,
             hidden: false,
-            dagr_available: false,
         };
-        let items = build_context_menu_items(&without_dagr, &[], &[]);
+        let items = build_context_menu_items(&kind, &[], &[], &plugins);
         assert!(
-            !items.iter().any(|item| item == "Open dagr"),
-            "entry must be absent when dagr is not installed — silent skip, no greyed-out row: {items:?}"
+            items.iter().any(|item| item == "Do it"),
+            "matching-context action must appear: {items:?}"
         );
+    }
+
+    #[test]
+    fn plugin_action_context_non_matching_context_is_skipped() {
+        // bora-1e9: an action declared only for Tab must not leak into a
+        // Workspace menu.
+        let plugins = plugin_registry_with(test_plugin_action(
+            "example.tool",
+            true,
+            "run",
+            vec![crate::api::schema::PluginActionContext::Tab],
+        ));
+        let kind = ContextMenuKind::Workspace {
+            ws_idx: 0,
+            hidden: false,
+        };
+        let items = build_context_menu_items(&kind, &[], &[], &plugins);
         assert!(
-            !items.iter().any(|item| item == CONTEXT_MENU_SEPARATOR),
-            "absent entry must not leave an orphan separator"
+            !items.iter().any(|item| item == "Do it"),
+            "non-matching-context action must not appear: {items:?}"
         );
+    }
+
+    #[test]
+    fn plugin_action_context_unknown_context_is_silent_skip() {
+        // bora-1e9, gate G5: an action with no declared contexts (the
+        // manifest default) must be a silent skip — absent, never a panic,
+        // never an orphan separator with nothing after it.
+        let plugins = plugin_registry_with(test_plugin_action("example.tool", true, "run", vec![]));
+        let kind = ContextMenuKind::Workspace {
+            ws_idx: 0,
+            hidden: false,
+        };
+        let items = build_context_menu_items(&kind, &[], &[], &plugins);
+        assert!(
+            !items.iter().any(|item| item == "Do it"),
+            "empty contexts must never match: {items:?}"
+        );
+        assert_eq!(
+            items.last().map(String::as_str),
+            Some("Hide 30m"),
+            "no orphan separator/plugin section when nothing matched: {items:?}"
+        );
+    }
+
+    #[test]
+    fn plugin_action_context_disabled_plugin_contributes_nothing() {
+        // bora-1e9: only enabled installs may contribute a menu entry.
+        let plugins = plugin_registry_with(test_plugin_action(
+            "example.tool",
+            false,
+            "run",
+            vec![crate::api::schema::PluginActionContext::Workspace],
+        ));
+        let kind = ContextMenuKind::Workspace {
+            ws_idx: 0,
+            hidden: false,
+        };
+        let items = build_context_menu_items(&kind, &[], &[], &plugins);
+        assert!(
+            !items.iter().any(|item| item == "Do it"),
+            "disabled plugin must contribute nothing: {items:?}"
+        );
+    }
+
+    #[test]
+    fn plugin_action_context_global_action_appears_in_every_menu_kind() {
+        // bora-1e9: "Global actions should be available from every menu,
+        // since that is what Global means" — checked across all 7
+        // variants, including RepoPr/RepoIssue, which map to Global for
+        // lack of a dedicated context (see plugin_menu_context).
+        let plugins = plugin_registry_with(test_plugin_action(
+            "example.tool",
+            true,
+            "run",
+            vec![crate::api::schema::PluginActionContext::Global],
+        ));
+        let pane_id = PaneId::alloc();
+        let kinds = vec![
+            ContextMenuKind::Workspace {
+                ws_idx: 0,
+                hidden: false,
+            },
+            ContextMenuKind::GitWorkspace {
+                ws_idx: 0,
+                is_linked_worktree: false,
+                has_worktree_children: false,
+                collapsed: false,
+                hidden: false,
+            },
+            ContextMenuKind::GroupHeader {
+                name: "g".to_string(),
+                collapse_key: "vg:g".to_string(),
+                hidden: false,
+            },
+            ContextMenuKind::Tab {
+                ws_idx: 0,
+                tab_idx: 0,
+            },
+            ContextMenuKind::Pane {
+                ws_idx: 0,
+                tab_idx: 0,
+                pane_id,
+                source_pane_id: None,
+                has_manual_label: false,
+                right_click_passthrough: false,
+            },
+            ContextMenuKind::RepoPr {
+                ws_idx: 0,
+                number: 1,
+                url: "https://example.com/pr/1".to_string(),
+                head_ref: "feature".to_string(),
+            },
+            ContextMenuKind::RepoIssue {
+                number: 1,
+                url: "https://example.com/issues/1".to_string(),
+                flow_available: false,
+            },
+        ];
+        for kind in kinds {
+            let items = build_context_menu_items(&kind, &[], &[], &plugins);
+            assert!(
+                items.iter().any(|item| item == "Do it"),
+                "Global action must appear for {kind:?}: {items:?}"
+            );
+        }
     }
 }

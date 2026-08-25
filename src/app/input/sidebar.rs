@@ -604,6 +604,7 @@ impl AppState {
                 | crate::ui::WorkspaceListEntry::WorktreeRow { .. }
                 | crate::ui::WorkspaceListEntry::SectionHeader { .. }
                 | crate::ui::WorkspaceListEntry::SectionItem { .. }
+                | crate::ui::WorkspaceListEntry::PrRow { .. }
                 | crate::ui::WorkspaceListEntry::PaneRow { .. } => None,
             })
             .collect::<Vec<_>>();

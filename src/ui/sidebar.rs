@@ -25,17 +25,31 @@ use crate::terminal::TerminalRuntimeRegistry;
 const WORKSPACE_SECTION_HEADER_ROWS: u16 = 2;
 const AGENT_PANEL_HEADER_ROWS: u16 = 3;
 
+/// Glyph + style for a resolved `ChecksRollup` value, shared by
+/// `checks_badge` (worktree/branch PR badges) and `pr_checks_glyph`
+/// (bora-yw6.2's PULL REQUESTS band rows) so the CHECKS palette never
+/// drifts between the two surfaces.
+fn checks_rollup_glyph(
+    rollup: crate::workspace::ChecksRollup,
+    p: &Palette,
+) -> (&'static str, Style) {
+    use crate::workspace::ChecksRollup;
+    match rollup {
+        ChecksRollup::Passing => (" ✓", Style::default().fg(p.green)),
+        ChecksRollup::Failing => (" ✗", Style::default().fg(p.red)),
+        ChecksRollup::Pending => (" ●", Style::default().fg(p.yellow)),
+    }
+}
+
 /// Glyph + style for a PR's rolled-up check status, shown after the PR badge.
 fn checks_badge(
     checks: &[crate::workspace::CheckRun],
     p: &Palette,
 ) -> Option<(&'static str, Style)> {
-    use crate::workspace::ChecksRollup;
-    match crate::workspace::checks_rollup(checks)? {
-        ChecksRollup::Passing => Some((" ✓", Style::default().fg(p.green))),
-        ChecksRollup::Failing => Some((" ✗", Style::default().fg(p.red))),
-        ChecksRollup::Pending => Some((" ●", Style::default().fg(p.yellow))),
-    }
+    Some(checks_rollup_glyph(
+        crate::workspace::checks_rollup(checks)?,
+        p,
+    ))
 }
 
 pub(crate) struct AgentPanelEntry {
@@ -663,10 +677,10 @@ pub(crate) struct ProjectHeaderBranch {
 }
 
 /// Section bands in the Project view: `Commands`/`Checks` hang off a
-/// worktree, `Todos`/`Notes` off the project row (bora-s3y.3, rendered
-/// between the project row and its worktrees). Within each of those two
-/// groups, relative order defaults to the order below but is declarable per
-/// project via `sections.order:` (bora-5ia,
+/// worktree, `Todos`/`Notes`/`PullRequests` off the project row (bora-s3y.3,
+/// bora-yw6.2, rendered between the project row and its worktrees). Within
+/// each of those two groups, relative order defaults to the order below but
+/// is declarable per project via `sections.order:` (bora-5ia,
 /// `project_view::resolve_section_order`) — project-level and
 /// worktree-level bands never interleave with each other, only reorder
 /// within their own group.
@@ -679,20 +693,24 @@ pub(crate) enum ProjectSection {
     Todos,
     /// Project-level named scratchpad docs (bora-s3y.3).
     Notes,
+    /// Project-level: open PRs authored by the user with no local worktree
+    /// (bora-yw6.2), rendered alongside Todos/Notes off the project row.
+    PullRequests,
 }
 
 impl ProjectSection {
-    /// The four variants in today's fixed order — an absent or empty
+    /// The five variants in today's fixed order — an absent or empty
     /// `sections.order:` resolves to exactly this (bora-5ia).
-    pub(crate) const ALL: [ProjectSection; 4] = [
+    pub(crate) const ALL: [ProjectSection; 5] = [
         ProjectSection::Commands,
         ProjectSection::Checks,
         ProjectSection::Todos,
         ProjectSection::Notes,
+        ProjectSection::PullRequests,
     ];
 
     /// The wire name a `sections.order:` entry uses. Exhaustive without a
-    /// wildcard arm: adding a fifth variant fails to compile here until it
+    /// wildcard arm: adding a sixth variant fails to compile here until it
     /// is given a name — the same trick
     /// `workspace_list_lockstep_passes_agree_for_every_entry_variant` relies
     /// on elsewhere in this crate.
@@ -702,12 +720,13 @@ impl ProjectSection {
             ProjectSection::Checks => "checks",
             ProjectSection::Todos => "todos",
             ProjectSection::Notes => "notes",
+            ProjectSection::PullRequests => "pull_requests",
         }
     }
 
     /// Case-insensitive lookup of a `sections.order:` entry. `None` for an
     /// unrecognized name — the resolver ignores it rather than erroring, so
-    /// a future bora writing a fifth section name into `projects.yml`
+    /// a future bora writing a sixth section name into `projects.yml`
     /// cannot break an older binary's sidebar.
     pub(crate) fn from_name(name: &str) -> Option<ProjectSection> {
         Self::ALL
@@ -759,7 +778,7 @@ pub(crate) enum WorkspaceListEntry {
     HiddenHeader { count: usize },
 
     // ── Project view (`ViewMode::Project`) ────────────────────────────────
-    // These five variants are emitted ONLY by the project-view builder in
+    // These six variants are emitted ONLY by the project-view builder in
     // `sidebar::project_view`; the Flat and Repo views never produce them and
     // are untouched. Every one is height 1, like every variant above.
     /// Top level: a user-declared project from `projects.yml`. `live`/`total`
@@ -822,6 +841,31 @@ pub(crate) enum WorkspaceListEntry {
         pane_id: String,
         label: String,
     },
+    /// Project-level: one open PR authored by the user with no local
+    /// worktree, inside the `PULL REQUESTS` band (bora-yw6.2, C2). `checks`
+    /// is A1's `OpenPr.checks: Option<ChecksRollup>` (`workspace::git::open_prs`
+    /// reuses the pre-existing `check_status::ChecksRollup` rather than a
+    /// second convention — `None` means no checks reported for the head
+    /// commit), read straight off `AppState.repo_open_prs` — no fetch, no
+    /// allocation beyond the fields themselves, same as every other row
+    /// here. Height 1.
+    PrRow {
+        number: u64,
+        title: String,
+        url: String,
+        head_ref: String,
+        is_draft: bool,
+        checks: Option<crate::workspace::ChecksRollup>,
+        /// A representative workspace of this PR's repo, resolved ONCE when
+        /// the band is built, so the click can name which repo to create the
+        /// worktree in. `None` when no open workspace shares the repo
+        /// identity yet, which makes the row render normally but stay
+        /// un-clickable rather than opening a worktree in the wrong repo.
+        /// Resolved at build time and not at hit-test time on purpose: the
+        /// lookup is a scan over `app.workspaces`, and the geometry walk runs
+        /// per render x per pane x per client.
+        ws_idx: Option<usize>,
+    },
 }
 
 /// Derive the repo-header "+" (create worktree) hit areas from the sidebar
@@ -863,6 +907,7 @@ fn entry_row_height(
         WorkspaceListEntry::SectionHeader { .. } => 1,
         WorkspaceListEntry::SectionItem { .. } => 1,
         WorkspaceListEntry::PaneRow { .. } => 1,
+        WorkspaceListEntry::PrRow { .. } => 1,
     }
 }
 
@@ -1033,11 +1078,12 @@ pub(crate) fn section_header_line(
         ProjectSection::Checks => ("✓", "CHECKS"),
         ProjectSection::Todos => ("☐", "TODOS"),
         ProjectSection::Notes => ("✎", "NOTES"),
+        ProjectSection::PullRequests => ("⇄", "PULL REQUESTS"),
     };
-    // NOTES is a plain list, not a progress bar: show the doc count, not a
-    // meaningless `0/N`.
+    // NOTES/PULL REQUESTS are plain lists, not a progress bar: show the
+    // count, not a meaningless `0/N`.
     let counter = match kind {
-        ProjectSection::Notes => format!(" {total}"),
+        ProjectSection::Notes | ProjectSection::PullRequests => format!(" {total}"),
         _ => format!(" {done}/{total}"),
     };
     let spans = vec![
@@ -1126,6 +1172,67 @@ pub(crate) fn pane_row_line(
         Style::default().fg(p.overlay1),
     ));
     Line::from(spans)
+}
+
+/// Sixth-level Project-view row: one PULL REQUESTS entry — PR number,
+/// title, and a trailing checks-rollup glyph (bora-yw6.2). A draft PR dims
+/// its number and gets a hollow bullet instead of the solid state dot.
+pub(crate) fn pr_row_line(
+    number: u64,
+    title: &str,
+    is_draft: bool,
+    checks: Option<crate::workspace::ChecksRollup>,
+    p: &Palette,
+    width: u16,
+) -> Line<'static> {
+    let (bullet, bullet_style) = if is_draft {
+        ("◌", Style::default().fg(p.subtext0))
+    } else {
+        ("●", Style::default().fg(p.green))
+    };
+    let number_style = if is_draft {
+        Style::default().fg(p.subtext0)
+    } else {
+        Style::default().fg(p.overlay1)
+    };
+    let mut spans = vec![
+        Span::styled("      ", Style::default()),
+        Span::styled(bullet, bullet_style),
+        Span::styled(" ", Style::default()),
+        Span::styled(format!("#{number} "), number_style),
+    ];
+    let trailing = pr_checks_glyph(checks, p).map(|(glyph, style)| Span::styled(glyph, style));
+    let prefix_width: usize = spans
+        .iter()
+        .map(|s| display_width(s.content.as_ref()))
+        .sum();
+    let trailing_width = trailing
+        .as_ref()
+        .map(|s| display_width(s.content.as_ref()))
+        .unwrap_or(0);
+    let avail = (width as usize).saturating_sub(prefix_width + trailing_width);
+    spans.push(Span::styled(
+        truncate_end(title, avail),
+        Style::default().fg(p.overlay1),
+    ));
+    match trailing {
+        Some(trailing) => project_row_trailing(spans, trailing, None, width),
+        None => Line::from(spans),
+    }
+}
+
+/// Glyph + style for A1's `OpenPr.checks: Option<ChecksRollup>` (bora-yw6.2,
+/// contract C1) — A2 owns only this mapping; the precedence and
+/// GitHub-conclusion-string mapping that PRODUCE the rollup are A1's
+/// (`workspace::git::open_prs`). `None` means no checks reported for the
+/// head commit — no trailing glyph, exactly like `checks_badge` returning
+/// `None` for a PR with zero check runs. Delegates to `checks_rollup_glyph`
+/// so the palette never drifts from the worktree CHECKS band's own glyphs.
+fn pr_checks_glyph(
+    checks: Option<crate::workspace::ChecksRollup>,
+    p: &Palette,
+) -> Option<(&'static str, Style)> {
+    Some(checks_rollup_glyph(checks?, p))
 }
 
 pub(crate) fn normalized_workspace_scroll(app: &AppState, area: Rect, requested: usize) -> usize {
@@ -1504,6 +1611,7 @@ fn apply_hidden_filter(
         WorkspaceListEntry::WorktreeRow { .. } => 1,
         WorkspaceListEntry::SectionHeader { .. } => 2,
         WorkspaceListEntry::SectionItem { .. } => 3,
+        WorkspaceListEntry::PrRow { .. } => 3,
         // Strictly deeper than `Workspace`, whose child it is.
         WorkspaceListEntry::PaneRow { .. } => 4,
     };
@@ -1559,6 +1667,7 @@ fn apply_hidden_filter(
             | WorkspaceListEntry::SectionHeader { .. } => open.push(i),
             WorkspaceListEntry::HiddenHeader { .. }
             | WorkspaceListEntry::SectionItem { .. }
+            | WorkspaceListEntry::PrRow { .. }
             | WorkspaceListEntry::PaneRow { .. } => {}
         }
     }
@@ -1602,9 +1711,9 @@ fn apply_hidden_filter(
                     result.push(entry);
                 }
             }
-            WorkspaceListEntry::SectionHeader { .. } | WorkspaceListEntry::SectionItem { .. } => {
-                result.push(entry)
-            }
+            WorkspaceListEntry::SectionHeader { .. }
+            | WorkspaceListEntry::SectionItem { .. }
+            | WorkspaceListEntry::PrRow { .. } => result.push(entry),
         }
     }
 
@@ -2096,6 +2205,24 @@ fn workspace_list_areas_for_entries(
                         pane_id: pane_id.clone(),
                     },
                 });
+            }
+            WorkspaceListEntry::PrRow { number, ws_idx, .. } => {
+                // A row whose repo has no open workspace carries no `ws_idx`
+                // and gets no hit area: there is nothing to name as the
+                // worktree's repo, and guessing (e.g. the active workspace,
+                // which is what the right panel's menu does) would create the
+                // worktree in whatever repo happened to be focused. The row
+                // still advances `row_y` below via `entry_row_height`, so the
+                // three lockstep passes stay in agreement either way.
+                if let Some(ws_idx) = ws_idx {
+                    project_rows.push(ProjectRowHitArea {
+                        rect: Rect::new(body.x, row_y, body.width, 1),
+                        target: ProjectRowTarget::OpenPr {
+                            ws_idx: *ws_idx,
+                            number: *number,
+                        },
+                    });
+                }
             }
             WorkspaceListEntry::Workspace {
                 ws_idx, indented, ..
@@ -2926,6 +3053,22 @@ fn render_workspace_list(
                         .unwrap_or(("○", Style::default().fg(p.overlay0)));
                     frame.render_widget(
                         Paragraph::new(pane_row_line(label, dot, p, body.width)),
+                        Rect::new(body.x, row_y, body.width, 1),
+                    );
+                }
+            }
+            WorkspaceListEntry::PrRow {
+                number,
+                title,
+                is_draft,
+                checks,
+                ..
+            } => {
+                if row_y < list_bottom {
+                    frame.render_widget(
+                        Paragraph::new(pr_row_line(
+                            *number, title, *is_draft, *checks, p, body.width,
+                        )),
                         Rect::new(body.x, row_y, body.width, 1),
                     );
                 }
@@ -6662,6 +6805,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
                 | WorkspaceListEntry::WorktreeRow { .. }
                 | WorkspaceListEntry::SectionHeader { .. }
                 | WorkspaceListEntry::SectionItem { .. }
+                | WorkspaceListEntry::PrRow { .. }
                 | WorkspaceListEntry::PaneRow { .. } => {
                     panic!("repo-view fixture must never emit a project-view entry")
                 }
@@ -6712,6 +6856,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
                 | WorkspaceListEntry::WorktreeRow { .. }
                 | WorkspaceListEntry::SectionHeader { .. }
                 | WorkspaceListEntry::SectionItem { .. }
+                | WorkspaceListEntry::PrRow { .. }
                 | WorkspaceListEntry::PaneRow { .. } => {
                     panic!("repo-view fixture must never emit a project-view entry")
                 }
@@ -6909,6 +7054,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
                 | WorkspaceListEntry::WorktreeRow { .. }
                 | WorkspaceListEntry::SectionHeader { .. }
                 | WorkspaceListEntry::SectionItem { .. }
+                | WorkspaceListEntry::PrRow { .. }
                 | WorkspaceListEntry::PaneRow { .. } => {
                     panic!("repo-view fixture must never emit a project-view entry")
                 }
@@ -7003,6 +7149,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
                 | WorkspaceListEntry::WorktreeRow { .. }
                 | WorkspaceListEntry::SectionHeader { .. }
                 | WorkspaceListEntry::SectionItem { .. }
+                | WorkspaceListEntry::PrRow { .. }
                 | WorkspaceListEntry::PaneRow { .. } => {
                     panic!("repo-view fixture must never emit a project-view entry")
                 }
@@ -7050,6 +7197,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
                 | WorkspaceListEntry::WorktreeRow { .. }
                 | WorkspaceListEntry::SectionHeader { .. }
                 | WorkspaceListEntry::SectionItem { .. }
+                | WorkspaceListEntry::PrRow { .. }
                 | WorkspaceListEntry::PaneRow { .. } => {
                     panic!("repo-view fixture must never emit a project-view entry")
                 }
@@ -7521,6 +7669,157 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
             project_rows[0].target,
             ProjectRowTarget::OpenWorktree {
                 checkout_key: "checkout:2".into()
+            }
+        );
+    }
+
+    #[test]
+    fn pr_row_height_is_one() {
+        let entry = WorkspaceListEntry::PrRow {
+            number: 1,
+            title: "t".into(),
+            url: "u".into(),
+            head_ref: "h".into(),
+            is_draft: false,
+            checks: None,
+            ws_idx: None,
+        };
+        assert_eq!(entry_row_height(&entry, &[], 0), 1);
+    }
+
+    #[test]
+    fn pr_checks_glyph_matches_rollup_and_reuses_the_checks_palette() {
+        let p = Palette::catppuccin();
+        assert!(
+            pr_checks_glyph(None, &p).is_none(),
+            "None rollup shows no trailing glyph"
+        );
+        let (glyph, style) = pr_checks_glyph(Some(crate::workspace::ChecksRollup::Passing), &p)
+            .expect("Passing must show a glyph");
+        assert_eq!(glyph, " ✓");
+        assert_eq!(style.fg, Some(p.green));
+        let (glyph, style) = pr_checks_glyph(Some(crate::workspace::ChecksRollup::Failing), &p)
+            .expect("Failing must show a glyph");
+        assert_eq!(glyph, " ✗");
+        assert_eq!(style.fg, Some(p.red));
+        let (glyph, style) = pr_checks_glyph(Some(crate::workspace::ChecksRollup::Pending), &p)
+            .expect("Pending must show a glyph");
+        assert_eq!(glyph, " ●");
+        assert_eq!(style.fg, Some(p.yellow));
+    }
+
+    #[test]
+    fn pr_row_line_marks_draft_and_shows_number_title_and_checks_glyph() {
+        let p = Palette::catppuccin();
+        let draft = line_text(&pr_row_line(
+            12,
+            "wip: thing",
+            true,
+            Some(crate::workspace::ChecksRollup::Pending),
+            &p,
+            40,
+        ));
+        assert!(draft.contains("#12"), "{draft:?}");
+        assert!(draft.contains("wip: thing"), "{draft:?}");
+        let live = line_text(&pr_row_line(
+            13,
+            "ready: thing",
+            false,
+            Some(crate::workspace::ChecksRollup::Failing),
+            &p,
+            40,
+        ));
+        assert!(live.contains("#13"), "{live:?}");
+        assert!(live.contains("ready: thing"), "{live:?}");
+        assert!(live.contains('✗'), "{live:?}");
+    }
+
+    #[test]
+    fn project_view_geometry_pr_row_without_ws_idx_gets_no_hit_area_but_advances_row_y() {
+        // The PrRow must not desync the geometry pass for rows after it. A
+        // row whose repo has no open workspace carries `ws_idx: None` and
+        // stays un-clickable — originally because no `ProjectRowTarget`
+        // variant existed at all, now because there is nothing to name as
+        // the worktree's repo. Either way its row_y span still counts.
+        let entries = vec![
+            WorkspaceListEntry::SectionHeader {
+                kind: ProjectSection::PullRequests,
+                collapse_key: "sec:prs:proj".into(),
+                done: 0,
+                total: 1,
+            },
+            WorkspaceListEntry::PrRow {
+                number: 42,
+                title: "fix thing".into(),
+                url: "https://github.com/owner/repo/pull/42".into(),
+                head_ref: "fix/thing".into(),
+                is_draft: false,
+                checks: Some(crate::workspace::ChecksRollup::Passing),
+                ws_idx: None,
+            },
+            WorkspaceListEntry::WorktreeRow {
+                checkout_key: "checkout:1".into(),
+                repo: None,
+                branch: "main".into(),
+                ahead: 0,
+                behind: 0,
+                pr: None,
+                collapse_key: "wt:1".into(),
+                unopened: false,
+            },
+        ];
+        let body = Rect::new(0, 0, 30, 20);
+
+        let (cards, headers, project_rows) = workspace_list_areas_for_entries(&entries, 0, body);
+
+        assert!(cards.is_empty());
+        assert!(headers.is_empty());
+        assert_eq!(
+            project_rows.len(),
+            2,
+            "the SectionHeader and WorktreeRow get hit areas, the ws_idx-less PrRow does not: {project_rows:?}"
+        );
+        assert_eq!(project_rows[0].rect.y, body.y, "SectionHeader at row 0");
+        assert_eq!(
+            project_rows[1].rect.y,
+            body.y + 2,
+            "WorktreeRow must land 2 rows down — the PrRow's own row_y span \
+             still counted even though it produced no hit area"
+        );
+        assert_eq!(
+            project_rows[1].target,
+            ProjectRowTarget::Worktree {
+                collapse_key: "wt:1".into()
+            }
+        );
+    }
+
+    #[test]
+    fn project_view_geometry_pr_row_with_ws_idx_targets_open_pr() {
+        // The clickable half: a PR row whose repo has an open workspace gets
+        // an `OpenPr` hit area carrying that workspace and the PR number —
+        // the pair `request_open_pr_worktree` consumes. Without this the row
+        // would render and silently do nothing, which is worse than no row.
+        let entries = vec![WorkspaceListEntry::PrRow {
+            number: 42,
+            title: "fix thing".into(),
+            url: "https://github.com/owner/repo/pull/42".into(),
+            head_ref: "fix/thing".into(),
+            is_draft: false,
+            checks: None,
+            ws_idx: Some(3),
+        }];
+        let body = Rect::new(0, 0, 30, 20);
+
+        let (_, _, project_rows) = workspace_list_areas_for_entries(&entries, 0, body);
+
+        assert_eq!(project_rows.len(), 1, "{project_rows:?}");
+        assert_eq!(project_rows[0].rect.y, body.y);
+        assert_eq!(
+            project_rows[0].target,
+            ProjectRowTarget::OpenPr {
+                ws_idx: 3,
+                number: 42
             }
         );
     }

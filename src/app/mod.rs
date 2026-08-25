@@ -10,10 +10,6 @@ pub(crate) mod agent_view;
 mod agents;
 pub(crate) use agents::{AGENT_START_SETTLE_DELAY, MAX_AGENT_START_TIMEOUT};
 mod api;
-// `mod api` is private, so a `crate::app::api::…` path does not resolve from
-// outside this module; the headless server's deferred-action consumer needs
-// this id, so it is re-exported here like every other cross-module item above.
-pub(crate) use api::plugins::DAGR_OPEN_ACTION_ID;
 mod api_helpers;
 pub(crate) use api_helpers::limit_snapshot_lines;
 mod channel_membership;
@@ -766,7 +762,7 @@ impl App {
             request_client_config_reload: false,
             request_clipboard_write: None,
             request_open_url: None,
-            request_open_dagr: false,
+            request_plugin_action: None,
             request_open_pr_worktree: None,
             request_flow_run: None,
             request_open_chat: false,
@@ -1797,16 +1793,15 @@ impl App {
                 needs_render = true;
             }
 
-            if self.state.request_open_dagr {
-                self.state.request_open_dagr = false;
-                // bora-1le.3: invoke re-checks the registry, so a plugin
-                // uninstalled between menu-open and click degrades to one
-                // warn here, never a crash or a stale spawn.
-                if let Err(message) = self.invoke_plugin_action_from_ui(
-                    crate::app::api::plugins::DAGR_OPEN_ACTION_ID.to_string(),
-                    "sidebar",
-                ) {
-                    tracing::warn!(%message, "failed to open dagr");
+            if let Some(action_id) = self.state.request_plugin_action.take() {
+                // bora-1e9: deferred like every App-owned action — invoke
+                // re-checks the registry, so a plugin uninstalled/disabled
+                // between menu-open and click degrades to one warn here,
+                // never a crash or a stale spawn. Routes through
+                // find_plugin_action (app/api/plugins/mod.rs) by the
+                // qualified `plugin_id.action_id` the menu resolved.
+                if let Err(message) = self.invoke_plugin_action_from_ui(action_id, "sidebar") {
+                    tracing::warn!(%message, "failed to invoke plugin action from context menu");
                 }
                 needs_render = true;
             }
@@ -3487,6 +3482,7 @@ mod tests {
                     head_ref_name: "feat/widget".into(),
                     is_draft: false,
                     mergeable: None,
+                    checks: None,
                 }],
                 error: None,
             },
@@ -7595,7 +7591,7 @@ last_pane = "prefix+tab"
             ws_idx: 1,
             hidden: false,
         };
-        let items = state::build_context_menu_items(&kind, &[], &[]);
+        let items = state::build_context_menu_items(&kind, &[], &[], &app.state.installed_plugins);
         let close_idx = items.iter().position(|i| i == "Close").unwrap();
         app.state.context_menu = Some(state::ContextMenuState {
             items,
@@ -7637,7 +7633,7 @@ last_pane = "prefix+tab"
             ws_idx: 0,
             hidden: false,
         };
-        let items = state::build_context_menu_items(&kind, &[], &[]);
+        let items = state::build_context_menu_items(&kind, &[], &[], &app.state.installed_plugins);
         let refresh_idx = items.iter().position(|i| i == "Refresh status").unwrap();
         let menu = state::ContextMenuState {
             items,

@@ -606,7 +606,12 @@ impl AppState {
                                 flow_available,
                             };
                             self.context_menu = Some(ContextMenuState {
-                                items: build_context_menu_items(&kind, &self.workspaces, &[]),
+                                items: build_context_menu_items(
+                                    &kind,
+                                    &self.workspaces,
+                                    &[],
+                                    &self.installed_plugins,
+                                ),
                                 kind,
                                 x: mouse.column,
                                 y: mouse.row,
@@ -631,7 +636,12 @@ impl AppState {
                                 head_ref,
                             };
                             self.context_menu = Some(ContextMenuState {
-                                items: build_context_menu_items(&kind, &self.workspaces, &[]),
+                                items: build_context_menu_items(
+                                    &kind,
+                                    &self.workspaces,
+                                    &[],
+                                    &self.installed_plugins,
+                                ),
                                 kind,
                                 x: mouse.column,
                                 y: mouse.row,
@@ -1402,7 +1412,12 @@ impl AppState {
                         (vec![], vec![], None)
                     };
                     self.context_menu = Some(ContextMenuState {
-                        items: build_context_menu_items(&kind, &self.workspaces, &bora_labels),
+                        items: build_context_menu_items(
+                            &kind,
+                            &self.workspaces,
+                            &bora_labels,
+                            &self.installed_plugins,
+                        ),
                         kind,
                         x: mouse.column,
                         y: mouse.row,
@@ -1424,28 +1439,18 @@ impl AppState {
                     .cloned()
                 {
                     let hidden = self.is_hidden(&header.collapse_key);
-                    // bora-1le.3: the "Open dagr" entry belongs to the
-                    // project surface — today the channels group header
-                    // (sidebar-design decision #8: project = channel) — not
-                    // to every visual group or repo header. Availability
-                    // comes from the plugin registry state (refreshed by
-                    // every plugin verb and re-checked at invoke time),
-                    // never from probing the filesystem: absent registry
-                    // entry means the menu entry is simply not built.
-                    let is_channels_group =
-                        header.collapse_key == format!("vg:{}", self.channel_group_name);
-                    let dagr_available = is_channels_group
-                        && crate::app::api::plugins::dagr_open_action_available(
-                            &self.installed_plugins,
-                        );
                     let kind = ContextMenuKind::GroupHeader {
                         name: header.name.clone(),
                         collapse_key: header.collapse_key,
                         hidden,
-                        dagr_available,
                     };
                     self.context_menu = Some(ContextMenuState {
-                        items: build_context_menu_items(&kind, &self.workspaces, &[]),
+                        items: build_context_menu_items(
+                            &kind,
+                            &self.workspaces,
+                            &[],
+                            &self.installed_plugins,
+                        ),
                         kind,
                         x: mouse.column,
                         y: mouse.row,
@@ -1466,7 +1471,12 @@ impl AppState {
                 {
                     let kind = ContextMenuKind::Tab { ws_idx, tab_idx };
                     self.context_menu = Some(ContextMenuState {
-                        items: build_context_menu_items(&kind, &self.workspaces, &[]),
+                        items: build_context_menu_items(
+                            &kind,
+                            &self.workspaces,
+                            &[],
+                            &self.installed_plugins,
+                        ),
                         kind,
                         x: mouse.column,
                         y: mouse.row,
@@ -1510,7 +1520,12 @@ impl AppState {
                         right_click_passthrough,
                     };
                     self.context_menu = Some(ContextMenuState {
-                        items: build_context_menu_items(&kind, &self.workspaces, &[]),
+                        items: build_context_menu_items(
+                            &kind,
+                            &self.workspaces,
+                            &[],
+                            &self.installed_plugins,
+                        ),
                         kind,
                         x: mouse.column,
                         y: mouse.row,
@@ -2389,6 +2404,15 @@ impl AppState {
                         self.pending_bora_command = self.section_command_launch(ws_idx, &label);
                     }
                 }
+                None
+            }
+            // A PR row in the project-level PULL REQUESTS band opens the PR
+            // in a new worktree — the same destination
+            // `ContextMenuKind::RepoPr`'s "Open in worktree" reaches, set
+            // through the same `request_open_pr_worktree` field, so the
+            // sidebar row and the right panel's right-click cannot drift.
+            ProjectRowTarget::OpenPr { ws_idx, number } => {
+                self.request_open_pr_worktree = Some((ws_idx, number));
                 None
             }
         }
@@ -3857,7 +3881,7 @@ mod tests {
             hidden: false,
         };
         app.state.context_menu = Some(ContextMenuState {
-            items: build_context_menu_items(&kind, &[], &[]),
+            items: build_context_menu_items(&kind, &[], &[], &Default::default()),
             kind,
             x: 2,
             y: 2,
@@ -4159,7 +4183,7 @@ mod tests {
             ws_idx: 1,
             hidden: false,
         };
-        let items = build_context_menu_items(&kind, &[], &[]);
+        let items = build_context_menu_items(&kind, &[], &[], &Default::default());
         let close_idx = items.iter().position(|i| i == "Close").expect("close item");
         app.state.context_menu = Some(ContextMenuState {
             items,
@@ -4208,7 +4232,7 @@ mod tests {
             ws_idx: 1,
             hidden: false,
         };
-        let items = build_context_menu_items(&kind, &[], &[]);
+        let items = build_context_menu_items(&kind, &[], &[], &Default::default());
         let close_idx = items.iter().position(|i| i == "Close").unwrap() as u16;
         app.state.context_menu = Some(ContextMenuState {
             items,
@@ -4269,7 +4293,7 @@ mod tests {
             right_click_passthrough: false,
         };
         app.state.context_menu = Some(ContextMenuState {
-            items: build_context_menu_items(&kind, &[], &[]),
+            items: build_context_menu_items(&kind, &[], &[], &Default::default()),
             kind,
             x: 2,
             y: 2,
@@ -5728,6 +5752,7 @@ mod tests {
                         head_ref_name: "fix/first".into(),
                         is_draft: false,
                         mergeable: Some("MERGEABLE".into()),
+                        checks: None,
                     },
                     crate::workspace::OpenPr {
                         number: 12,
@@ -5736,6 +5761,7 @@ mod tests {
                         head_ref_name: "feat/second".into(),
                         is_draft: false,
                         mergeable: None,
+                        checks: None,
                     },
                 ],
                 error: None,
@@ -6080,6 +6106,24 @@ mod tests {
         assert!(app.state.pending_bora_command.is_none());
     }
 
+    #[test]
+    fn open_pr_row_click_requests_the_pr_worktree() {
+        // A PR row in the project-level PULL REQUESTS band must reach the same
+        // destination as the right panel's right-click "Open in worktree":
+        // `request_open_pr_worktree`, which `App` drains into
+        // `start_pr_worktree_create`. If the two ever diverged, the sidebar row
+        // and the menu item would claim to do the same thing and not.
+        let mut app = app_for_mouse_test();
+        assert!(app
+            .state
+            .handle_project_row_click(crate::app::state::ProjectRowTarget::OpenPr {
+                ws_idx: 2,
+                number: 42,
+            })
+            .is_none());
+        assert_eq!(app.state.request_open_pr_worktree, Some((2, 42)));
+    }
+
     fn dagr_test_plugin(enabled: bool) -> crate::api::schema::InstalledPluginInfo {
         crate::api::schema::InstalledPluginInfo {
             plugin_id: "dev.dagr".into(),
@@ -6094,10 +6138,10 @@ mod tests {
             build: vec![],
             startup: vec![],
             actions: vec![crate::api::schema::PluginManifestAction {
-                id: crate::app::api::plugins::DAGR_OPEN_ACTION_ID.into(),
+                id: "open-dagr".into(),
                 title: "Open dagr".into(),
                 description: None,
-                contexts: vec![],
+                contexts: vec![crate::api::schema::PluginActionContext::Global],
                 platforms: None,
                 command: vec!["true".into()],
             }],
@@ -6110,11 +6154,14 @@ mod tests {
     }
 
     #[test]
-    fn right_click_channels_group_header_offers_open_dagr_only_when_registered() {
-        // bora-1le.3: the entry is registry-driven and scoped to the channels
-        // group header (the project surface, decision #8) — both directions
-        // asserted, plus the not-every-group negative, so an implementation
-        // that shows it everywhere or nowhere both fail here.
+    fn plugin_action_context_dagr_via_general_mechanism_still_offers_entry() {
+        // bora-1e9: dagr's hardcoded special case (a dedicated action-id
+        // constant, an availability flag on the menu kind, the
+        // channels-only gate) is gone. Its manifest
+        // declaring `contexts = ["global"]` is now the ONLY thing that puts
+        // "Open dagr" on a group-header menu — proved through the real
+        // mouse-click handler, not build_context_menu_items directly, so
+        // this exercises the actual construction site in this file.
         let mut app = app_for_mouse_test();
         app.state.view.workspace_group_header_areas = vec![
             crate::app::state::GroupHeaderCardArea {
@@ -6134,7 +6181,9 @@ mod tests {
             app.state.mode = Mode::Terminal;
         };
 
-        // Registered and enabled: entry present on the channels group header.
+        // Registered and enabled: Global means every group header offers
+        // it, not just the channels one (that restriction was the special
+        // case being deleted).
         app.state
             .installed_plugins
             .insert("dev.dagr".into(), dagr_test_plugin(true));
@@ -6149,21 +6198,14 @@ mod tests {
             "entry must appear when the dagr plugin is registered: {:?}",
             menu.items
         );
-        assert!(matches!(
-            &menu.kind,
-            ContextMenuKind::GroupHeader {
-                dagr_available: true,
-                ..
-            }
-        ));
 
-        // Not the channels group: entry never appears, even with the plugin.
         reset(&mut app);
         app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Right), 2, 3));
         let menu = app.state.context_menu.as_ref().expect("other group menu");
         assert!(
-            !menu.items.iter().any(|item| item == "Open dagr"),
-            "the entry belongs to the project (channels) surface, not every visual group"
+            menu.items.iter().any(|item| item == "Open dagr"),
+            "Global means every group header, not just channels: {:?}",
+            menu.items
         );
 
         // Plugin disabled: registry present but not enabled reads as absent.

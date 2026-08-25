@@ -656,6 +656,7 @@ mod tests {
             head_ref_name: format!("branch-{number}"),
             is_draft,
             mergeable: mergeable.map(String::from),
+            checks: None,
         }
     }
 

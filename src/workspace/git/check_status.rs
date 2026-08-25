@@ -46,24 +46,11 @@ pub struct CheckRun {
 }
 
 impl CheckRun {
-    /// True when the run's conclusion is a hard failure — the same set
-    /// `checks_rollup` treats as failing.
+    /// True when this run hard-failed. Derived from `run_state` so the
+    /// failing set can never drift from the rollup's.
     pub fn is_failing(&self) -> bool {
-        is_failing_conclusion(self.conclusion.as_deref())
+        run_state(&self.status, self.conclusion.as_deref()) == ChecksRollup::Failing
     }
-}
-
-/// The `conclusion` values that mean a check run hard-failed. Shared by
-/// `checks_rollup` (one failing run fails the rollup), `checks_counts`, and
-/// the sidebar CHECKS rows (one row per failing run) so the three can never
-/// drift apart.
-fn is_failing_conclusion(conclusion: Option<&str>) -> bool {
-    matches!(
-        conclusion,
-        Some(
-            "FAILURE" | "ERROR" | "TIMED_OUT" | "CANCELLED" | "ACTION_REQUIRED" | "STARTUP_FAILURE"
-        )
-    )
 }
 
 /// Aggregate state of a PR's checks, mirroring the statusline rollup rules.
@@ -74,29 +61,83 @@ pub enum ChecksRollup {
     Pending,
 }
 
-/// Roll up check runs into one displayable state. `None` when there are no checks.
-pub fn checks_rollup(checks: &[CheckRun]) -> Option<ChecksRollup> {
-    if checks.is_empty() {
-        return None;
+/// The single owner of "one check's `(status, conclusion)` means this state".
+///
+/// Every consumer derives from this: `CheckRun::is_failing`, `checks_rollup`,
+/// `checks_counts`, the sidebar CHECKS rows, and `open_prs`'s
+/// `statusCheckRollup` reduction. An earlier version of this module owned only
+/// the *failing* set and let each caller infer the rest, with a doc comment
+/// promising the consumers "can never drift apart"; they drifted the moment a
+/// fourth consumer appeared, because inferring two states from one predicate
+/// is not a shared rule, it is three separate guesses.
+///
+/// `NEUTRAL` and `SKIPPED` are `Passing`: neither blocks a merge.
+///
+/// Anything unrecognised is `Pending`, never `Passing`. This is the load-bearing
+/// case and it is deliberate in two places at once:
+///
+/// - a `COMPLETED` run whose conclusion is `None`, which GitHub really does
+///   emit, previously fell through to `Passing` — a check with no result at all
+///   displayed as green;
+/// - a `COMPLETED` run carrying a conclusion string GitHub adds after this code
+///   was written did the same.
+///
+/// Green is a claim about someone else's CI; pending is an admission that we do
+/// not know. Only one of those is safe to be wrong about.
+fn run_state(status: &str, conclusion: Option<&str>) -> ChecksRollup {
+    if status != "COMPLETED" {
+        return ChecksRollup::Pending;
     }
-    if checks.iter().any(CheckRun::is_failing) {
-        return Some(ChecksRollup::Failing);
+    match conclusion {
+        Some(
+            "FAILURE" | "ERROR" | "TIMED_OUT" | "CANCELLED" | "ACTION_REQUIRED" | "STARTUP_FAILURE",
+        ) => ChecksRollup::Failing,
+        Some("SUCCESS" | "NEUTRAL" | "SKIPPED") => ChecksRollup::Passing,
+        _ => ChecksRollup::Pending,
     }
-    if checks.iter().any(|c| c.status != "COMPLETED") {
-        return Some(ChecksRollup::Pending);
-    }
-    Some(ChecksRollup::Passing)
 }
 
-/// `(passing, total)` over check runs, following `checks_rollup`'s rules: a
-/// run passes when it is `COMPLETED` and its conclusion is not a hard failure
-/// (`NEUTRAL`/`SKIPPED` count as passing, still-running checks do not).
+/// Classify one check run. Public so `open_prs` reduces `statusCheckRollup`
+/// nodes through the same rule rather than a parallel copy of it.
+pub(crate) fn check_run_state(status: &str, conclusion: Option<&str>) -> ChecksRollup {
+    run_state(status, conclusion)
+}
+
+/// Reduce per-run states with `Failing` > `Pending` > `Passing`: one failed run
+/// fails the rollup even while others are still running.
+pub(crate) fn reduce_run_states(
+    states: impl IntoIterator<Item = ChecksRollup>,
+) -> Option<ChecksRollup> {
+    let mut seen = None;
+    for state in states {
+        seen = Some(match (seen, state) {
+            (Some(ChecksRollup::Failing), _) | (_, ChecksRollup::Failing) => ChecksRollup::Failing,
+            (Some(ChecksRollup::Pending), _) | (_, ChecksRollup::Pending) => ChecksRollup::Pending,
+            _ => ChecksRollup::Passing,
+        });
+    }
+    seen
+}
+
+/// Roll up check runs into one displayable state. `None` when there are no checks.
+pub fn checks_rollup(checks: &[CheckRun]) -> Option<ChecksRollup> {
+    reduce_run_states(
+        checks
+            .iter()
+            .map(|run| run_state(&run.status, run.conclusion.as_deref())),
+    )
+}
+
+/// `(passing, total)` over check runs, following `checks_rollup`'s rules: a run
+/// passes when `run_state` calls it `Passing` (`NEUTRAL`/`SKIPPED` count,
+/// still-running and unrecognised runs do not).
 /// `passing == total` exactly when `checks_rollup` returns `Passing`, so the
-/// sidebar's `n/m` and its rollup glyph always agree.
+/// sidebar's `n/m` and its rollup glyph always agree — both now derive from
+/// `run_state`, so that invariant is structural rather than a promise.
 pub fn checks_counts(checks: &[CheckRun]) -> (usize, usize) {
     let passing = checks
         .iter()
-        .filter(|run| run.status == "COMPLETED" && !run.is_failing())
+        .filter(|run| run_state(&run.status, run.conclusion.as_deref()) == ChecksRollup::Passing)
         .count();
     (passing, checks.len())
 }
@@ -306,6 +347,108 @@ mod tests {
             run("COMPLETED", Some("SKIPPED")),
         ];
         assert_eq!(checks_rollup(&checks), Some(ChecksRollup::Passing));
+    }
+
+    // The two fallthroughs that used to read as green. Both were reachable and
+    // neither was covered: `run_state` now buckets them Pending, and these are
+    // the tests that go red if anyone widens the Passing arm back out.
+
+    #[test]
+    fn rollup_completed_with_null_conclusion_is_pending_not_passing() {
+        // GitHub really emits this. Before `run_state` it fell through to
+        // Passing: a check with no result at all displayed as a green tick.
+        assert_eq!(
+            checks_rollup(&[run("COMPLETED", None)]),
+            Some(ChecksRollup::Pending)
+        );
+    }
+
+    #[test]
+    fn rollup_unrecognised_conclusion_is_pending_not_passing() {
+        // A conclusion string added to the GitHub API after this code was
+        // written must not be silently optimistic.
+        assert_eq!(
+            checks_rollup(&[run("COMPLETED", Some("SOME_FUTURE_CONCLUSION"))]),
+            Some(ChecksRollup::Pending)
+        );
+    }
+
+    #[test]
+    fn rollup_unrecognised_status_is_pending_not_passing() {
+        assert_eq!(
+            checks_rollup(&[run("SOME_FUTURE_STATUS", Some("SUCCESS"))]),
+            Some(ChecksRollup::Pending)
+        );
+    }
+
+    #[test]
+    fn counts_unrecognised_and_null_conclusions_do_not_count_as_passing() {
+        let checks = [
+            run("COMPLETED", Some("SUCCESS")),
+            run("COMPLETED", None),
+            run("COMPLETED", Some("SOME_FUTURE_CONCLUSION")),
+        ];
+        assert_eq!(checks_counts(&checks), (1, 3));
+    }
+
+    #[test]
+    fn counts_and_rollup_agree_on_every_status_conclusion_pair() {
+        // The module doc claims `passing == total` exactly when the rollup is
+        // Passing. That was a promise in prose while the two functions computed
+        // it separately; both now derive from `run_state`, and this asserts the
+        // invariant over the whole cross product rather than trusting it.
+        let statuses = ["COMPLETED", "QUEUED", "IN_PROGRESS", "SOME_FUTURE_STATUS"];
+        let conclusions = [
+            None,
+            Some("SUCCESS"),
+            Some("NEUTRAL"),
+            Some("SKIPPED"),
+            Some("FAILURE"),
+            Some("ERROR"),
+            Some("TIMED_OUT"),
+            Some("CANCELLED"),
+            Some("ACTION_REQUIRED"),
+            Some("STARTUP_FAILURE"),
+            Some("SOME_FUTURE_CONCLUSION"),
+        ];
+        for status in statuses {
+            for conclusion in conclusions {
+                let checks = [run(status, conclusion)];
+                let (passing, total) = checks_counts(&checks);
+                let rollup = checks_rollup(&checks);
+                assert_eq!(
+                    passing == total,
+                    rollup == Some(ChecksRollup::Passing),
+                    "({status}, {conclusion:?}): counts said {passing}/{total} but rollup said {rollup:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn is_failing_matches_the_rollup_failing_set_exactly() {
+        // `CheckRun::is_failing` drives the sidebar's one-row-per-failing-check
+        // list while `checks_rollup` drives the glyph beside it. They read the
+        // same data on the same screen, so a disagreement is a visible bug.
+        for status in ["COMPLETED", "QUEUED", "IN_PROGRESS", "SOME_FUTURE_STATUS"] {
+            for conclusion in [
+                None,
+                Some("SUCCESS"),
+                Some("NEUTRAL"),
+                Some("SKIPPED"),
+                Some("FAILURE"),
+                Some("STARTUP_FAILURE"),
+                Some("SOME_FUTURE_CONCLUSION"),
+            ] {
+                let one = run(status, conclusion);
+                let failing = one.is_failing();
+                assert_eq!(
+                    failing,
+                    checks_rollup(std::slice::from_ref(&one)) == Some(ChecksRollup::Failing),
+                    "({status}, {conclusion:?})"
+                );
+            }
+        }
     }
 
     #[test]

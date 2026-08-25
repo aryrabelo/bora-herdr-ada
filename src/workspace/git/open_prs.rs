@@ -1,5 +1,8 @@
 use std::path::Path;
 
+use super::check_status::{check_run_state, reduce_run_states};
+use super::ChecksRollup;
+
 // ── Types ────────────────────────────────────────────────────────────────────
 
 /// An open PR authored by the current user in a repo.
@@ -11,6 +14,7 @@ pub struct OpenPr {
     pub head_ref_name: String,
     pub is_draft: bool,
     pub mergeable: Option<String>,
+    pub checks: Option<ChecksRollup>,
 }
 
 /// Open PRs authored by the current user for one repo.
@@ -23,11 +27,45 @@ pub struct RepoOpenPrs {
     pub error: Option<String>,
 }
 
+// ── CI check rollup ─────────────────────────────────────────────────────────
+//
+// Reuses `check_status::ChecksRollup` and its `check_run_state`/
+// `reduce_run_states` classifier rather than a second copy of the
+// conclusion-string mapping: that classifier is the single owner of "this
+// (status, conclusion) means this state" so `checks_rollup` (sidebar CHECKS
+// rows) and this `statusCheckRollup` reduction can never drift apart again.
+// What's genuinely ours is the JSON layer below: `statusCheckRollup` mixes
+// two GraphQL node shapes — CheckRun (`status`/`conclusion`) and
+// StatusContext (`state`) — and only this call site needs to tell them apart.
+
+/// Buckets one `statusCheckRollup` array element through the shared
+/// classifier. A StatusContext node's `state` is treated as a completed run's
+/// conclusion (`SUCCESS`/`ERROR`/`FAILURE` land the same as the equivalent
+/// CheckRun conclusion; anything else — `PENDING`, `EXPECTED` — falls into
+/// the classifier's `Pending` catch-all). A node with neither a `state` nor a
+/// `status` key is not a shape this code understands and contributes nothing.
+fn node_outcome(item: &serde_json::Value) -> Option<ChecksRollup> {
+    if let Some(state) = item.get("state").and_then(|v| v.as_str()) {
+        return Some(check_run_state("COMPLETED", Some(state)));
+    }
+    let status = item.get("status").and_then(|v| v.as_str())?;
+    let conclusion = item.get("conclusion").and_then(|v| v.as_str());
+    Some(check_run_state(status, conclusion))
+}
+
+/// Reduces a PR's `statusCheckRollup` array via the shared
+/// `Failing` > `Pending` > `Passing` precedence, `None` when no element
+/// contributes (absent, null, or empty `statusCheckRollup`).
+fn reduce_checks(items: &[serde_json::Value]) -> Option<ChecksRollup> {
+    reduce_run_states(items.iter().filter_map(node_outcome))
+}
+
 // ── JSON parsing ─────────────────────────────────────────────────────────────
 
 /// Parse `gh pr list --json` output into a list of `OpenPr`.
 ///
-/// Expected JSON shape (from `--json number,title,url,headRefName,isDraft,mergeable`):
+/// Expected JSON shape (from
+/// `--json number,title,url,headRefName,isDraft,mergeable,statusCheckRollup`):
 /// ```json
 /// [
 ///   {
@@ -36,7 +74,10 @@ pub struct RepoOpenPrs {
 ///     "url": "https://github.com/owner/repo/pull/42",
 ///     "headRefName": "feat/thing",
 ///     "isDraft": false,
-///     "mergeable": "MERGEABLE"
+///     "mergeable": "MERGEABLE",
+///     "statusCheckRollup": [
+///       { "__typename": "CheckRun", "status": "COMPLETED", "conclusion": "SUCCESS" }
+///     ]
 ///   },
 ///   ...
 /// ]
@@ -76,6 +117,10 @@ pub(super) fn parse_gh_pr_list_json(json_str: &str) -> Result<Vec<OpenPr>, Strin
                 .get("mergeable")
                 .and_then(|v| v.as_str())
                 .map(String::from);
+            let checks = item
+                .get("statusCheckRollup")
+                .and_then(|v| v.as_array())
+                .and_then(|arr| reduce_checks(arr));
             Some(OpenPr {
                 number,
                 title,
@@ -83,6 +128,7 @@ pub(super) fn parse_gh_pr_list_json(json_str: &str) -> Result<Vec<OpenPr>, Strin
                 head_ref_name,
                 is_draft,
                 mergeable,
+                checks,
             })
         })
         .collect())
@@ -105,7 +151,7 @@ pub fn fetch_my_open_prs(cwd: &Path) -> RepoOpenPrs {
             "--state",
             "open",
             "--json",
-            "number,title,url,headRefName,isDraft,mergeable",
+            "number,title,url,headRefName,isDraft,mergeable,statusCheckRollup",
         ])
         .output()
     {
@@ -263,5 +309,163 @@ mod tests {
         assert_eq!(prs.len(), 1);
         assert_eq!(prs[0].number, 5);
         assert_eq!(prs[0].title, "real");
+    }
+
+    #[test]
+    fn pr_checks_rollup_absent_field_is_none() {
+        let json = r#"[{"number": 1}]"#;
+        let prs = parse_gh_pr_list_json(json).unwrap();
+        assert_eq!(prs[0].checks, None);
+    }
+
+    #[test]
+    fn pr_checks_rollup_null_field_is_none() {
+        let json = r#"[{"number": 1, "statusCheckRollup": null}]"#;
+        let prs = parse_gh_pr_list_json(json).unwrap();
+        assert_eq!(prs[0].checks, None);
+    }
+
+    #[test]
+    fn pr_checks_rollup_empty_array_is_none() {
+        let json = r#"[{"number": 1, "statusCheckRollup": []}]"#;
+        let prs = parse_gh_pr_list_json(json).unwrap();
+        assert_eq!(prs[0].checks, None);
+    }
+
+    #[test]
+    fn pr_checks_rollup_all_success_variants_are_passing() {
+        let json = r#"[{"number": 1, "statusCheckRollup": [
+            {"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "SUCCESS"},
+            {"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "NEUTRAL"},
+            {"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "SKIPPED"}
+        ]}]"#;
+        let prs = parse_gh_pr_list_json(json).unwrap();
+        assert_eq!(prs[0].checks, Some(ChecksRollup::Passing));
+    }
+
+    #[test]
+    fn pr_checks_rollup_each_failing_conclusion_is_failing() {
+        for conclusion in [
+            "FAILURE",
+            "ERROR",
+            "TIMED_OUT",
+            "CANCELLED",
+            "ACTION_REQUIRED",
+            "STARTUP_FAILURE",
+        ] {
+            let json = format!(
+                r#"[{{"number": 1, "statusCheckRollup": [
+                    {{"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "{conclusion}"}}
+                ]}}]"#
+            );
+            let prs = parse_gh_pr_list_json(&json).unwrap();
+            assert_eq!(
+                prs[0].checks,
+                Some(ChecksRollup::Failing),
+                "conclusion {conclusion} should be Failing"
+            );
+        }
+    }
+
+    #[test]
+    fn pr_checks_rollup_in_progress_check_is_pending() {
+        let json = r#"[{"number": 1, "statusCheckRollup": [
+            {"__typename": "CheckRun", "status": "IN_PROGRESS", "conclusion": null}
+        ]}]"#;
+        let prs = parse_gh_pr_list_json(json).unwrap();
+        assert_eq!(prs[0].checks, Some(ChecksRollup::Pending));
+    }
+
+    #[test]
+    fn pr_checks_rollup_completed_with_null_conclusion_is_pending() {
+        let json = r#"[{"number": 1, "statusCheckRollup": [
+            {"__typename": "CheckRun", "status": "COMPLETED", "conclusion": null}
+        ]}]"#;
+        let prs = parse_gh_pr_list_json(json).unwrap();
+        assert_eq!(prs[0].checks, Some(ChecksRollup::Pending));
+    }
+
+    #[test]
+    fn pr_checks_rollup_status_context_node_success_is_passing() {
+        let json = r#"[{"number": 1, "statusCheckRollup": [
+            {"__typename": "StatusContext", "context": "ci/circleci", "state": "SUCCESS"}
+        ]}]"#;
+        let prs = parse_gh_pr_list_json(json).unwrap();
+        assert_eq!(prs[0].checks, Some(ChecksRollup::Passing));
+    }
+
+    #[test]
+    fn pr_checks_rollup_status_context_node_error_is_failing() {
+        let json = r#"[{"number": 1, "statusCheckRollup": [
+            {"__typename": "StatusContext", "context": "ci/circleci", "state": "ERROR"}
+        ]}]"#;
+        let prs = parse_gh_pr_list_json(json).unwrap();
+        assert_eq!(prs[0].checks, Some(ChecksRollup::Failing));
+    }
+
+    #[test]
+    fn pr_checks_rollup_status_context_node_pending_states_are_pending() {
+        for state in ["PENDING", "EXPECTED"] {
+            let json = format!(
+                r#"[{{"number": 1, "statusCheckRollup": [
+                    {{"__typename": "StatusContext", "context": "ci/x", "state": "{state}"}}
+                ]}}]"#
+            );
+            let prs = parse_gh_pr_list_json(&json).unwrap();
+            assert_eq!(
+                prs[0].checks,
+                Some(ChecksRollup::Pending),
+                "state {state} should be Pending"
+            );
+        }
+    }
+
+    #[test]
+    fn pr_checks_rollup_unrecognised_conclusion_is_not_passing() {
+        let json = r#"[{"number": 1, "statusCheckRollup": [
+            {"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "SOME_NEW_CONCLUSION"}
+        ]}]"#;
+        let prs = parse_gh_pr_list_json(json).unwrap();
+        assert_ne!(prs[0].checks, Some(ChecksRollup::Passing));
+        assert_eq!(prs[0].checks, Some(ChecksRollup::Pending));
+    }
+
+    #[test]
+    fn pr_checks_rollup_precedence_failing_beats_pending_and_passing() {
+        let json = r#"[{"number": 1, "statusCheckRollup": [
+            {"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "SUCCESS"},
+            {"__typename": "CheckRun", "status": "IN_PROGRESS", "conclusion": null},
+            {"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "FAILURE"}
+        ]}]"#;
+        let prs = parse_gh_pr_list_json(json).unwrap();
+        assert_eq!(prs[0].checks, Some(ChecksRollup::Failing));
+    }
+
+    #[test]
+    fn pr_checks_rollup_precedence_pending_beats_passing() {
+        let json = r#"[{"number": 1, "statusCheckRollup": [
+            {"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "SUCCESS"},
+            {"__typename": "CheckRun", "status": "QUEUED", "conclusion": null}
+        ]}]"#;
+        let prs = parse_gh_pr_list_json(json).unwrap();
+        assert_eq!(prs[0].checks, Some(ChecksRollup::Pending));
+    }
+
+    #[test]
+    fn pr_checks_rollup_field_added_to_existing_happy_path_prs() {
+        // Existing gh pr list fixtures don't include statusCheckRollup at all —
+        // parsing must still succeed and default the new field to None.
+        let json = r#"[
+            {
+                "number": 42,
+                "title": "feat: add widget",
+                "url": "https://github.com/owner/repo/pull/42",
+                "headRefName": "feat/widget",
+                "isDraft": false,
+                "mergeable": "MERGEABLE"
+            }
+        ]"#;
+        let prs = parse_gh_pr_list_json(json).unwrap();
+        assert_eq!(prs[0].checks, None);
     }
 }

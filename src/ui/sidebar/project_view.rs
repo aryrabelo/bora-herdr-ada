@@ -191,7 +191,7 @@ fn push_project_group(
     name: String,
     ws_idxs: Vec<usize>,
     declared: bool,
-    section_order: [ProjectSection; 4],
+    section_order: [ProjectSection; 5],
     commands: &[String],
     checks: &[String],
     force_expanded: bool,
@@ -250,13 +250,29 @@ fn push_project_group(
     }
 
     // Project-level shared memory (bora-s3y.3): declared order, default
-    // TODOS then NOTES (bora-5ia).
+    // TODOS, NOTES, then PULL REQUESTS (bora-5ia, bora-yw6.2).
     if let Some(slug) = slug {
+        // Branches with a local worktree — open or on-disk-unopened — for
+        // this project's repos: C3's "no local worktree" filter for the
+        // PULL REQUESTS band below. Zero I/O: `order`/`by_checkout` are
+        // already resolved above from cached `Workspace` fields, and
+        // `unopened` from the tick-refreshed inventory (bora-qdi).
+        let local_branches: HashSet<String> = order
+            .iter()
+            .filter_map(|key| by_checkout[key].first())
+            .map(|&idx| app.workspaces[idx].branch().unwrap_or_default())
+            .chain(unopened.iter().map(|u| u.branch.clone()))
+            .collect();
         for section in project_section_order(&section_order) {
-            if section == ProjectSection::Todos {
-                push_todos_section(entries, app, slug, force_expanded);
-            } else {
-                push_notes_section(entries, app, slug, force_expanded);
+            match section {
+                ProjectSection::Todos => push_todos_section(entries, app, slug, force_expanded),
+                ProjectSection::Notes => push_notes_section(entries, app, slug, force_expanded),
+                ProjectSection::PullRequests => {
+                    push_pull_requests_section(entries, app, slug, &local_branches, force_expanded)
+                }
+                ProjectSection::Commands | ProjectSection::Checks => {
+                    unreachable!("project_section_order only returns project-level sections")
+                }
             }
         }
     }
@@ -385,6 +401,28 @@ fn repo_name_for_identity(app: &AppState, repo_identity: &str) -> Option<String>
         .map(|space| space.repo_name.clone())
 }
 
+/// Index of any currently-open workspace sharing `repo_identity`, for naming
+/// which repo a PR's worktree should be created in. Mirrors
+/// `repo_name_for_identity`'s zero-I/O lookup and its "any open workspace
+/// anywhere" scope: every clone and worktree of one repository shares an
+/// identity, so any of them names the right repo.
+///
+/// `None` when no open workspace shares the identity yet. The PR row then
+/// renders but stays un-clickable, which is the honest outcome — the
+/// alternative, falling back to the active workspace the way the right
+/// panel's PR menu does, would create the worktree in whatever repo happened
+/// to be focused.
+///
+/// Called once per project member while building the band, never per row and
+/// never from the geometry walk: this is a scan over `app.workspaces`, and
+/// the render path is per render x per pane x per client.
+fn ws_idx_for_identity(app: &AppState, repo_identity: &str) -> Option<usize> {
+    app.workspaces.iter().position(|ws| {
+        ws.git_space()
+            .is_some_and(|space| space.repo_identity == repo_identity)
+    })
+}
+
 /// Grouping key for a workspace's worktree row: its real `checkout_key` when
 /// it has git identity, else a synthetic per-workspace key so an
 /// identity-less orphan still gets its own row rather than silently
@@ -404,7 +442,7 @@ fn push_worktree(
     checkout_key: &str,
     ws_idxs: &[usize],
     single_repo: bool,
-    section_order: [ProjectSection; 4],
+    section_order: [ProjectSection; 5],
     commands: &[String],
     checks: &[String],
     force_expanded: bool,
@@ -551,12 +589,13 @@ fn declared_section_order(project: &crate::persist::projects::Project) -> Option
     project.sections.as_ref()?.order.as_deref()
 }
 
-/// Resolves a project's declared `sections.order:` names into the four
-/// `ProjectSection` variants in render priority (bora-5ia). Contract:
+/// Resolves a project's declared `sections.order:` names into the five
+/// `ProjectSection` variants in render priority (bora-5ia, bora-yw6.2).
+/// Contract:
 ///
 /// - Names are matched case-insensitively (`ProjectSection::from_name`).
 /// - An unknown name is ignored, never an error — a future bora writing a
-///   fifth section name into `projects.yml` must not break an older
+///   sixth section name into `projects.yml` must not break an older
 ///   binary's sidebar.
 /// - A declared-but-unlisted section still renders: it is appended after
 ///   the listed ones, in `ProjectSection::ALL` order. Ordering decides
@@ -565,14 +604,14 @@ fn declared_section_order(project: &crate::persist::projects::Project) -> Option
 /// - Absent or empty `order` resolves to exactly `ProjectSection::ALL`, so
 ///   behavior is unchanged for every project that does not opt in.
 ///
-/// Always returns all four variants (a permutation of `ProjectSection::ALL`)
+/// Always returns all five variants (a permutation of `ProjectSection::ALL`)
 /// as a fixed-size array, not a `Vec` — no allocation on the per-render,
 /// per-pane, per-client path (AGENTS.md, "Multiplicative performance
 /// paths"). `push_project_group`/`push_worktree` then read the relevant
-/// pair out of it via `project_section_order`/`worktree_section_order` —
+/// group out of it via `project_section_order`/`worktree_section_order` —
 /// project-level and worktree-level bands never interleave with each
 /// other (module doc), only reorder within their own group.
-fn resolve_section_order(order: Option<&[String]>) -> [ProjectSection; 4] {
+fn resolve_section_order(order: Option<&[String]>) -> [ProjectSection; 5] {
     let mut resolved = ProjectSection::ALL;
     let mut len = 0usize;
     if let Some(names) = order {
@@ -602,7 +641,7 @@ fn resolve_section_order(order: Option<&[String]>) -> [ProjectSection; 4] {
 
 /// Filters a resolved order down to the worktree-level pair (COMMANDS,
 /// CHECKS), preserving their relative sequence.
-fn worktree_section_order(resolved: &[ProjectSection; 4]) -> [ProjectSection; 2] {
+fn worktree_section_order(resolved: &[ProjectSection; 5]) -> [ProjectSection; 2] {
     let mut out = [ProjectSection::Commands, ProjectSection::Checks];
     let mut i = 0;
     for &section in resolved {
@@ -616,11 +655,21 @@ fn worktree_section_order(resolved: &[ProjectSection; 4]) -> [ProjectSection; 2]
 
 /// Filters a resolved order down to the project-level pair (TODOS, NOTES),
 /// preserving their relative sequence. See `worktree_section_order`.
-fn project_section_order(resolved: &[ProjectSection; 4]) -> [ProjectSection; 2] {
-    let mut out = [ProjectSection::Todos, ProjectSection::Notes];
+/// Filters a resolved order down to the project-level trio (TODOS, NOTES,
+/// PULL REQUESTS), preserving their relative sequence. See
+/// `worktree_section_order`.
+fn project_section_order(resolved: &[ProjectSection; 5]) -> [ProjectSection; 3] {
+    let mut out = [
+        ProjectSection::Todos,
+        ProjectSection::Notes,
+        ProjectSection::PullRequests,
+    ];
     let mut i = 0;
     for &section in resolved {
-        if matches!(section, ProjectSection::Todos | ProjectSection::Notes) {
+        if matches!(
+            section,
+            ProjectSection::Todos | ProjectSection::Notes | ProjectSection::PullRequests
+        ) {
             out[i] = section;
             i += 1;
         }
@@ -780,6 +829,110 @@ fn push_notes_section(
             detail: None,
             running: false,
             ws_idx: None,
+        });
+    }
+}
+
+/// Push the project-level PULL REQUESTS band (bora-yw6.2): one row per open
+/// PR authored by the user, for a `WorktreesScope::All` member's repo, whose
+/// head branch has no local worktree — open or unopened-on-disk (C3, the
+/// exact analogue of the dimmed unopened-worktree row: it is what keeps a PR
+/// from appearing twice once opened). Reads `AppState.repo_open_prs` only —
+/// no fetch, no I/O, same discipline as TODOS/NOTES. Eligibility:
+///
+/// - No `WorktreesScope::All` member's repo has ANY cached `repo_open_prs`
+///   entry yet, or a relevant repo's cache has zero PRs after the
+///   local-worktree filter below -> no band at all (rule 5, mirrors "a PR
+///   with zero check runs renders no band").
+/// - A relevant repo's cache carries a fetch error -> header plus one error
+///   row (the same shape CHECKS uses for a provider error): a failure is
+///   never silently empty. The first errored repo wins if more than one is
+///   in scope — one band, one error line.
+/// - Otherwise one row per PR whose head branch is not in `local_branches`,
+///   sorted by PR number for stable render order (rule 8).
+///
+/// Collapse key is namespaced per project (`sec:prs:{slug}`).
+fn push_pull_requests_section(
+    entries: &mut Vec<WorkspaceListEntry>,
+    app: &AppState,
+    slug: &str,
+    local_branches: &HashSet<String>,
+    force_expanded: bool,
+) {
+    let mut seen_repo_identities: HashSet<&str> = HashSet::new();
+    let mut error: Option<&str> = None;
+    // Each row carries a representative `ws_idx` for ITS OWN repo, resolved
+    // once per member rather than once per PR: a project can hold members
+    // from several repos, so one project-wide index would open the worktree
+    // in the wrong one whenever the band mixes repos.
+    let mut rows: Vec<(&crate::workspace::OpenPr, Option<usize>)> = Vec::new();
+    for member in app.projects.resolved_members(slug) {
+        if member.worktrees != WorktreesScope::All {
+            continue;
+        }
+        if !seen_repo_identities.insert(member.repo_identity.as_str()) {
+            continue;
+        }
+        let Some(cache) = app.repo_open_prs.get(&member.repo_identity) else {
+            continue;
+        };
+        if let Some(err) = cache.error.as_deref() {
+            if error.is_none() {
+                error = Some(err);
+            }
+            continue;
+        }
+        let repo_ws_idx = ws_idx_for_identity(app, &member.repo_identity);
+        rows.extend(
+            cache
+                .prs
+                .iter()
+                .filter(|pr| !local_branches.contains(&pr.head_ref_name))
+                .map(|pr| (pr, repo_ws_idx)),
+        );
+    }
+    let collapse_key = format!("sec:prs:{slug}");
+    if let Some(error) = error {
+        entries.push(WorkspaceListEntry::SectionHeader {
+            kind: ProjectSection::PullRequests,
+            collapse_key: collapse_key.clone(),
+            done: 0,
+            total: 0,
+        });
+        if !force_expanded && app.collapsed_space_keys.contains(&collapse_key) {
+            return;
+        }
+        entries.push(WorkspaceListEntry::SectionItem {
+            kind: ProjectSection::PullRequests,
+            label: error.to_string(),
+            detail: None,
+            running: false,
+            ws_idx: None,
+        });
+        return;
+    }
+    if rows.is_empty() {
+        return;
+    }
+    rows.sort_by_key(|(pr, _)| pr.number);
+    entries.push(WorkspaceListEntry::SectionHeader {
+        kind: ProjectSection::PullRequests,
+        collapse_key: collapse_key.clone(),
+        done: 0,
+        total: rows.len(),
+    });
+    if !force_expanded && app.collapsed_space_keys.contains(&collapse_key) {
+        return;
+    }
+    for (pr, ws_idx) in rows {
+        entries.push(WorkspaceListEntry::PrRow {
+            number: pr.number,
+            title: pr.title.clone(),
+            url: pr.url.clone(),
+            head_ref: pr.head_ref_name.clone(),
+            is_draft: pr.is_draft,
+            checks: pr.checks,
+            ws_idx,
         });
     }
 }
@@ -2403,6 +2556,7 @@ mod tests {
     fn section_order_resolve_full_declaration_matches_declared_sequence() {
         let names = [
             "notes".to_string(),
+            "pull_requests".to_string(),
             "todos".to_string(),
             "checks".to_string(),
             "commands".to_string(),
@@ -2411,11 +2565,12 @@ mod tests {
             resolve_section_order(Some(&names)),
             [
                 ProjectSection::Notes,
+                ProjectSection::PullRequests,
                 ProjectSection::Todos,
                 ProjectSection::Checks,
                 ProjectSection::Commands,
             ],
-            "a full order must be honored exactly"
+            "a full order (including the pull_requests wire name) must be honored exactly"
         );
     }
 
@@ -2429,8 +2584,9 @@ mod tests {
                 ProjectSection::Commands,
                 ProjectSection::Todos,
                 ProjectSection::Notes,
+                ProjectSection::PullRequests,
             ],
-            "the listed section leads, the other three follow in \
+            "the listed section leads, the other four follow in \
              ProjectSection::ALL order — nothing declared-but-unlisted is lost"
         );
     }
@@ -2449,6 +2605,7 @@ mod tests {
                 ProjectSection::Notes,
                 ProjectSection::Commands,
                 ProjectSection::Todos,
+                ProjectSection::PullRequests,
             ],
             "an unrecognized name is ignored, never an error, and never \
              consumes a slot"
@@ -2469,6 +2626,7 @@ mod tests {
                 ProjectSection::Commands,
                 ProjectSection::Todos,
                 ProjectSection::Notes,
+                ProjectSection::PullRequests,
             ],
             "a repeated name counts once, at its first position"
         );
@@ -2611,5 +2769,380 @@ mod tests {
             Some(&["checks".to_string(), "notes".to_string()][..]),
             "the declared order round-trips through YAML unchanged"
         );
+    }
+
+    // ── bora-yw6.2: project-level PULL REQUESTS band ─────────────────────
+
+    fn open_pr(
+        number: u64,
+        head_ref: &str,
+        is_draft: bool,
+        checks: Option<crate::workspace::ChecksRollup>,
+    ) -> crate::workspace::OpenPr {
+        crate::workspace::OpenPr {
+            number,
+            title: format!("pr {number}"),
+            url: format!("https://github.com/owner/repo/pull/{number}"),
+            head_ref_name: head_ref.to_string(),
+            is_draft,
+            mergeable: None,
+            checks,
+        }
+    }
+
+    fn repo_open_prs(prs: Vec<crate::workspace::OpenPr>) -> crate::workspace::RepoOpenPrs {
+        crate::workspace::RepoOpenPrs { prs, error: None }
+    }
+
+    /// The `(number, head_ref)` of every `PrRow` entry, in order.
+    fn pull_requests_rows(entries: &[WorkspaceListEntry]) -> Vec<(u64, String)> {
+        entries
+            .iter()
+            .filter_map(|e| match e {
+                WorkspaceListEntry::PrRow {
+                    number, head_ref, ..
+                } => Some((*number, head_ref.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn pull_requests_section_absent_without_any_cached_repo_data() {
+        let repo = temp_test_dir("prs-absent");
+        init_fake_git_repo(&repo, None);
+
+        let mut file = ProjectsFile::default();
+        file.projects
+            .insert("proj".to_string(), project(vec![member(&repo)]));
+        let (_isolated, store) = store_with(file);
+        let mut app = AppState::test_new();
+        app.projects = store;
+        app.workspaces = vec![ws_at(&repo)];
+
+        let entries = project_view_entries(&app, false);
+        assert_eq!(
+            section_band(&entries, ProjectSection::PullRequests),
+            None,
+            "no cached repo_open_prs data at all -> no band (rule 5): {entries:?}"
+        );
+
+        std::fs::remove_dir_all(&repo).unwrap();
+    }
+
+    #[test]
+    fn pull_requests_section_lists_only_prs_without_a_local_worktree() {
+        // G5: a PR whose head branch already has a local worktree — open OR
+        // on-disk-unopened — must be omitted, tested both ways.
+        let repo = temp_test_dir("prs-local-worktree");
+        init_fake_git_repo(&repo, None);
+        let identity = crate::workspace::git_space_metadata(&repo)
+            .expect("fixture must resolve")
+            .repo_identity;
+
+        let mut file = ProjectsFile::default();
+        file.projects
+            .insert("proj".to_string(), project(vec![member(&repo)]));
+        let (_isolated, store) = store_with(file);
+        let mut app = AppState::test_new();
+        app.projects = store;
+
+        let mut ws = ws_at(&repo);
+        ws.cached_git_branch = Some("main".to_string());
+        app.workspaces = vec![ws];
+        app.worktree_inventory.insert(
+            identity.clone(),
+            crate::app::state::RepoWorktreeInventory {
+                worktrees: vec![crate::app::state::InventoryWorktree {
+                    checkout_key: "unopened-checkout".to_string(),
+                    branch: Some("feat/unopened".to_string()),
+                    is_bare: false,
+                    is_prunable: false,
+                }],
+                error: None,
+            },
+        );
+        app.repo_open_prs.insert(
+            identity,
+            repo_open_prs(vec![
+                open_pr(1, "main", false, None),
+                open_pr(
+                    2,
+                    "feat/other",
+                    false,
+                    Some(crate::workspace::ChecksRollup::Passing),
+                ),
+                open_pr(3, "feat/unopened", false, None),
+            ]),
+        );
+
+        let entries = project_view_entries(&app, false);
+        assert_eq!(
+            pull_requests_rows(&entries),
+            vec![(2, "feat/other".to_string())],
+            "PR #1 (open worktree branch) and PR #3 (unopened-on-disk worktree \
+             branch) must both be omitted; only PR #2 has no local worktree at \
+             all: {entries:?}"
+        );
+
+        std::fs::remove_dir_all(&repo).unwrap();
+    }
+
+    #[test]
+    fn pull_requests_section_renders_provider_error_as_a_row() {
+        let repo = temp_test_dir("prs-error");
+        init_fake_git_repo(&repo, None);
+        let identity = crate::workspace::git_space_metadata(&repo)
+            .expect("fixture must resolve")
+            .repo_identity;
+
+        let mut file = ProjectsFile::default();
+        file.projects
+            .insert("proj".to_string(), project(vec![member(&repo)]));
+        let (_isolated, store) = store_with(file);
+        let mut app = AppState::test_new();
+        app.projects = store;
+        app.workspaces = vec![ws_at(&repo)];
+        app.repo_open_prs.insert(
+            identity,
+            crate::workspace::RepoOpenPrs {
+                prs: Vec::new(),
+                error: Some("gh: not logged in".to_string()),
+            },
+        );
+
+        let entries = project_view_entries(&app, false);
+        assert_eq!(
+            section_band(&entries, ProjectSection::PullRequests),
+            Some((0, 0)),
+            "an errored band still renders its header: {entries:?}"
+        );
+        assert_eq!(
+            section_items(&entries, ProjectSection::PullRequests),
+            vec!["gh: not logged in".to_string()],
+            "a provider error is a visible row, never silently empty: {entries:?}"
+        );
+
+        std::fs::remove_dir_all(&repo).unwrap();
+    }
+
+    #[test]
+    fn pull_requests_section_absent_when_every_pr_has_a_local_worktree() {
+        let repo = temp_test_dir("prs-empty");
+        init_fake_git_repo(&repo, None);
+        let identity = crate::workspace::git_space_metadata(&repo)
+            .expect("fixture must resolve")
+            .repo_identity;
+
+        let mut file = ProjectsFile::default();
+        file.projects
+            .insert("proj".to_string(), project(vec![member(&repo)]));
+        let (_isolated, store) = store_with(file);
+        let mut app = AppState::test_new();
+        app.projects = store;
+
+        let mut ws = ws_at(&repo);
+        ws.cached_git_branch = Some("main".to_string());
+        app.workspaces = vec![ws];
+        app.repo_open_prs.insert(
+            identity,
+            repo_open_prs(vec![open_pr(1, "main", false, None)]),
+        );
+
+        let entries = project_view_entries(&app, false);
+        assert_eq!(
+            section_band(&entries, ProjectSection::PullRequests),
+            None,
+            "every cached PR has a local worktree -> zero rows -> no band (rule 5): {entries:?}"
+        );
+
+        std::fs::remove_dir_all(&repo).unwrap();
+    }
+
+    #[test]
+    fn section_order_wiring_reorders_pull_requests_band() {
+        let repo = temp_test_dir("prs-order");
+        init_fake_git_repo(&repo, None);
+        let identity = crate::workspace::git_space_metadata(&repo)
+            .expect("fixture must resolve")
+            .repo_identity;
+
+        let order = ["pull_requests", "notes", "todos", "checks", "commands"];
+        let (_isolated, mut app) = app_with_full_bands(&repo, Some(&order));
+        app.repo_open_prs.insert(
+            identity,
+            repo_open_prs(vec![open_pr(
+                9,
+                "feat/x",
+                false,
+                Some(crate::workspace::ChecksRollup::Failing),
+            )]),
+        );
+
+        let entries = project_view_entries(&app, false);
+        assert_eq!(
+            section_header_kinds(&entries),
+            vec![
+                ProjectSection::PullRequests,
+                ProjectSection::Notes,
+                ProjectSection::Todos,
+                ProjectSection::Checks,
+                ProjectSection::Commands,
+            ],
+            "declared order threads PULL REQUESTS through the project-level group too: {entries:?}"
+        );
+
+        std::fs::remove_dir_all(&repo).unwrap();
+    }
+
+    #[test]
+    fn workspace_list_lockstep_pull_requests_agree_across_passes() {
+        // G4: PrRow flows through the real pipeline exactly like every other
+        // row — `workspace_list_entries` (view-mode dispatch) into all three
+        // lockstep passes named at sidebar.rs's "Shared row-height" doc.
+        let repo = temp_test_dir("prs-full-lockstep");
+        init_fake_git_repo(&repo, None);
+        let identity = crate::workspace::git_space_metadata(&repo)
+            .expect("fixture must resolve")
+            .repo_identity;
+
+        let mut file = ProjectsFile::default();
+        file.projects
+            .insert("proj".to_string(), project(vec![member(&repo)]));
+        let (_isolated, store) = store_with(file);
+        let mut app = AppState::test_new();
+        app.projects = store;
+        app.view_mode = crate::config::ViewMode::Project;
+
+        let mut ws = ws_at(&repo);
+        ws.cached_git_branch = Some("main".to_string());
+        app.workspaces = vec![ws];
+        app.repo_open_prs.insert(
+            identity,
+            repo_open_prs(vec![open_pr(
+                7,
+                "feat/lockstep",
+                true,
+                Some(crate::workspace::ChecksRollup::Failing),
+            )]),
+        );
+        app.ensure_test_terminals();
+
+        let entries = crate::ui::sidebar::workspace_list_entries(&app);
+        let pr_row_idx = entries
+            .iter()
+            .position(|e| matches!(e, WorkspaceListEntry::PrRow { number: 7, .. }))
+            .expect("fixture must reach the PrRow through the real view-mode dispatch");
+        let worktree_idx = entries
+            .iter()
+            .position(|e| matches!(e, WorkspaceListEntry::WorktreeRow { .. }))
+            .expect("fixture must still emit the worktree row after the PR band");
+        assert_eq!(
+            worktree_idx,
+            pr_row_idx + 1,
+            "the WorktreeRow must land immediately after the PrRow: {entries:?}"
+        );
+
+        // Pass 1: height.
+        let total_height: u16 = entries
+            .iter()
+            .enumerate()
+            .map(|(idx, entry)| crate::ui::sidebar::entry_row_height(entry, &entries, idx))
+            .sum();
+        assert_eq!(
+            total_height as usize,
+            entries.len(),
+            "every row in this fixture is height 1"
+        );
+
+        // Pass 2: visible-count agrees with the height pass.
+        let width = 60;
+        let exact = ratatui::layout::Rect::new(
+            0,
+            0,
+            width,
+            total_height + crate::ui::sidebar::WORKSPACE_SECTION_HEADER_ROWS + 1,
+        );
+        assert_eq!(
+            crate::ui::sidebar::workspace_list_visible_count(&app, exact, 0),
+            entries.len(),
+            "visible-count pass must agree with the height pass"
+        );
+
+        // Pass 3: geometry — the WorktreeRow's hit area sits exactly one row
+        // below where the PrRow sits, which only holds if the geometry walk
+        // advanced `row_y` by the PrRow's `entry_row_height` instead of
+        // silently stalling on its row.
+        let sidebar_area = ratatui::layout::Rect::new(
+            0,
+            0,
+            width,
+            total_height + crate::ui::sidebar::WORKSPACE_SECTION_HEADER_ROWS + 20,
+        );
+        let (_, _, project_rows) =
+            crate::ui::sidebar::compute_workspace_list_areas_all(&app, sidebar_area);
+        let ws_area =
+            crate::ui::sidebar::workspace_list_rect(sidebar_area, app.sidebar_section_split);
+        let body = crate::ui::sidebar::workspace_list_body_rect(&app, ws_area, false);
+        // The PrRow is clickable: this fixture's repo has an open workspace, so
+        // the band resolved a representative `ws_idx` and the row carries an
+        // `OpenPr` target. This assertion replaces an earlier one that required
+        // NO hit area, which was correct only while the click path was
+        // deliberately unwired — asserting it still is would now pin the row to
+        // rendering and doing nothing.
+        let pr_area = project_rows
+            .iter()
+            .find(|area| area.rect.y == body.y + pr_row_idx as u16)
+            .expect("the PrRow must get a hit area now that the click path exists");
+        assert_eq!(
+            pr_area.target,
+            crate::app::state::ProjectRowTarget::OpenPr {
+                ws_idx: 0,
+                number: 7
+            },
+            "the PrRow's hit area must open PR #7 in a worktree, naming a \
+             workspace of its own repo: {project_rows:?}"
+        );
+        let worktree_area = project_rows
+            .iter()
+            .find(|area| {
+                matches!(
+                    area.target,
+                    crate::app::state::ProjectRowTarget::Worktree { .. }
+                )
+            })
+            .expect("worktree row must still get a hit area");
+        assert_eq!(
+            worktree_area.rect.y,
+            body.y + worktree_idx as u16,
+            "the WorktreeRow's hit area must be pushed down by exactly the PrRow's row height"
+        );
+
+        // Pass 4: render — the PR number and title text land at the PrRow's
+        // prefix-sum row.
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(
+            exact.width,
+            exact.height,
+        ))
+        .expect("test terminal");
+        let runtimes = crate::terminal::TerminalRuntimeRegistry::new();
+        terminal
+            .draw(|frame| {
+                crate::ui::sidebar::render_workspace_list(&app, &runtimes, frame, exact, false)
+            })
+            .expect("workspace list should render");
+        let row_text = |row: u16| -> String {
+            (0..exact.width)
+                .map(|col| terminal.backend().buffer()[(col, row)].symbol().to_string())
+                .collect()
+        };
+        let render_y = crate::ui::sidebar::WORKSPACE_SECTION_HEADER_ROWS + pr_row_idx as u16;
+        let text = row_text(render_y);
+        assert!(
+            text.contains('7') && text.contains("pr 7"),
+            "PR number and title must render at the row the height/geometry passes agree on: {text:?}"
+        );
+
+        std::fs::remove_dir_all(&repo).unwrap();
     }
 }

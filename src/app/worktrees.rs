@@ -1905,6 +1905,7 @@ mod tests {
                     head_ref_name: "fix-focus".into(),
                     is_draft: false,
                     mergeable: None,
+                    checks: None,
                 }],
                 error: None,
             },

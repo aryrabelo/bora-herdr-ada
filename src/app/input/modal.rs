@@ -1132,18 +1132,6 @@ pub(super) fn apply_context_menu_action(
             leave_modal(state);
         }
         (
-            ContextMenuKind::GroupHeader {
-                dagr_available: true,
-                ..
-            },
-            Some("Open dagr"),
-        ) => {
-            // bora-1le.3: deferred like every App-owned action — the invoke
-            // spawns a plugin command and cannot run inside state-only code.
-            state.request_open_dagr = true;
-            leave_modal(state);
-        }
-        (
             ContextMenuKind::Workspace { ws_idx, .. }
             | ContextMenuKind::GitWorkspace { ws_idx, .. },
             Some(label),
@@ -1159,6 +1147,22 @@ pub(super) fn apply_context_menu_action(
                 label: Some(cmd.label.clone()),
                 port: bora_port,
             });
+            leave_modal(state);
+        }
+        (kind, Some(label))
+            if crate::app::state::plugin_menu_action_id(&kind, label, &state.installed_plugins)
+                .is_some() =>
+        {
+            let action_id =
+                crate::app::state::plugin_menu_action_id(&kind, label, &state.installed_plugins)
+                    .expect("guard guarantees match");
+            // bora-1e9: deferred like every App-owned action — invoking a
+            // plugin command cannot run inside state-only code. Generalizes
+            // the old dagr-only deferred flag: any label the menu built via
+            // `plugin_menu_titles` resolves back to its `plugin_id.action_id`
+            // here, which the App loop hands straight to
+            // `find_plugin_action`/`invoke_plugin_action_from_ui`.
+            state.request_plugin_action = Some(action_id);
             leave_modal(state);
         }
         _ => leave_modal(state),
@@ -1777,19 +1781,6 @@ impl App {
                 leave_modal(&mut self.state);
             }
             (
-                ContextMenuKind::GroupHeader {
-                    dagr_available: true,
-                    ..
-                },
-                Some("Open dagr"),
-            ) => {
-                // bora-1le.3: same deferred-flag path as the state-only
-                // twin — the App loop performs the invoke so the headless
-                // server and the TUI share one behavior.
-                self.state.request_open_dagr = true;
-                leave_modal(&mut self.state);
-            }
-            (
                 ContextMenuKind::Workspace { ws_idx, .. }
                 | ContextMenuKind::GitWorkspace { ws_idx, .. },
                 Some(label),
@@ -1805,6 +1796,26 @@ impl App {
                     label: Some(cmd.label.clone()),
                     port: bora_port,
                 });
+                leave_modal(&mut self.state);
+            }
+            (kind, Some(label))
+                if crate::app::state::plugin_menu_action_id(
+                    &kind,
+                    label,
+                    &self.state.installed_plugins,
+                )
+                .is_some() =>
+            {
+                let action_id = crate::app::state::plugin_menu_action_id(
+                    &kind,
+                    label,
+                    &self.state.installed_plugins,
+                )
+                .expect("guard guarantees match");
+                // bora-1e9: same deferred-flag path as the state-only twin
+                // — the App loop performs the invoke so the headless
+                // server and the TUI share one behavior.
+                self.state.request_plugin_action = Some(action_id);
                 leave_modal(&mut self.state);
             }
             _ => leave_modal(&mut self.state),
@@ -3091,7 +3102,7 @@ mod tests {
             collapsed: false,
             hidden: false,
         };
-        let items = build_context_menu_items(&kind, &[], &[]);
+        let items = build_context_menu_items(&kind, &[], &[], &Default::default());
         let close_idx = items
             .iter()
             .position(|i| i == "Close workspace")
@@ -3148,7 +3159,7 @@ mod tests {
             right_click_passthrough: false,
         };
         let menu = ContextMenuState {
-            items: build_context_menu_items(&kind, &[], &[]),
+            items: build_context_menu_items(&kind, &[], &[], &Default::default()),
             kind,
             x: 0,
             y: 0,
@@ -3185,7 +3196,7 @@ mod tests {
             right_click_passthrough: false,
         };
         let menu = ContextMenuState {
-            items: build_context_menu_items(&kind, &[], &[]),
+            items: build_context_menu_items(&kind, &[], &[], &Default::default()),
             kind,
             x: 0,
             y: 0,
@@ -3237,7 +3248,7 @@ mod tests {
             right_click_passthrough: false,
         };
         let menu = ContextMenuState {
-            items: build_context_menu_items(&kind, &[], &[]),
+            items: build_context_menu_items(&kind, &[], &[], &Default::default()),
             kind,
             x: 0,
             y: 0,
@@ -3272,7 +3283,7 @@ mod tests {
             tab_idx: 0,
         };
         let menu = ContextMenuState {
-            items: build_context_menu_items(&kind, &[], &[]),
+            items: build_context_menu_items(&kind, &[], &[], &Default::default()),
             kind,
             x: 0,
             y: 0,
@@ -3311,7 +3322,7 @@ mod tests {
             right_click_passthrough: false,
         };
         let mut menu = ContextMenuState {
-            items: build_context_menu_items(&kind, &[], &[]),
+            items: build_context_menu_items(&kind, &[], &[], &Default::default()),
             kind,
             x: 0,
             y: 0,
@@ -3356,7 +3367,7 @@ mod tests {
             hidden: false,
         };
         let menu = ContextMenuState {
-            items: build_context_menu_items(&kind, &[], &[]),
+            items: build_context_menu_items(&kind, &[], &[], &Default::default()),
             kind,
             x: 0,
             y: 0,
@@ -3396,7 +3407,7 @@ mod tests {
             hidden: false,
         };
         let menu = ContextMenuState {
-            items: build_context_menu_items(&kind, &[], &[]),
+            items: build_context_menu_items(&kind, &[], &[], &Default::default()),
             kind,
             x: 0,
             y: 0,
@@ -3435,7 +3446,7 @@ mod tests {
             hidden: false,
         };
         let menu = ContextMenuState {
-            items: build_context_menu_items(&kind, &[], &[]),
+            items: build_context_menu_items(&kind, &[], &[], &Default::default()),
             kind,
             x: 0,
             y: 0,
@@ -3474,7 +3485,7 @@ mod tests {
             hidden: false,
         };
         let menu = ContextMenuState {
-            items: build_context_menu_items(&kind, &[], &[]),
+            items: build_context_menu_items(&kind, &[], &[], &Default::default()),
             kind,
             x: 0,
             y: 0,
@@ -3501,7 +3512,7 @@ mod tests {
             head_ref: "fix/focus".into(),
         };
         ContextMenuState {
-            items: build_context_menu_items(&kind, &[], &[]),
+            items: build_context_menu_items(&kind, &[], &[], &Default::default()),
             kind,
             x: 0,
             y: 0,
@@ -3576,7 +3587,7 @@ mod tests {
             flow_available,
         };
         ContextMenuState {
-            items: build_context_menu_items(&kind, &[], &[]),
+            items: build_context_menu_items(&kind, &[], &[], &Default::default()),
             kind,
             x: 0,
             y: 0,
@@ -3666,50 +3677,72 @@ mod tests {
         assert_ne!(state.mode, Mode::ContextMenu, "menu closed after action");
     }
 
-    fn group_header_menu_with_dagr(dagr_available: bool) -> ContextMenuState {
-        let kind = ContextMenuKind::GroupHeader {
-            name: "channels".into(),
-            collapse_key: "vg:channels".into(),
+    #[test]
+    fn plugin_action_context_selection_sets_request_plugin_action() {
+        // bora-1e9: selecting a plugin-contributed menu item must resolve
+        // to the exact qualified id (`plugin_id.action_id`) the menu built
+        // it from — the same id `find_plugin_action` consumes at invoke
+        // time (mod.rs/headless.rs both hand this straight to
+        // `invoke_plugin_action_from_ui`).
+        let mut state = state_with_workspaces(&["proj"]);
+        let mut plugins = crate::app::state::InstalledPluginRegistry::new();
+        plugins.insert(
+            "example.tool".to_string(),
+            crate::api::schema::InstalledPluginInfo {
+                plugin_id: "example.tool".into(),
+                name: "Example Tool".into(),
+                version: "0.1.0".into(),
+                min_herdr_version: String::new(),
+                description: None,
+                manifest_path: "/nonexistent".into(),
+                plugin_root: "/nonexistent".into(),
+                enabled: true,
+                platforms: None,
+                build: vec![],
+                startup: vec![],
+                actions: vec![crate::api::schema::PluginManifestAction {
+                    id: "run".into(),
+                    title: "Run tool".into(),
+                    description: None,
+                    contexts: vec![crate::api::schema::PluginActionContext::Workspace],
+                    platforms: None,
+                    command: vec!["true".into()],
+                }],
+                events: vec![],
+                panes: vec![],
+                link_handlers: vec![],
+                source: crate::api::schema::PluginSourceInfo::default(),
+                warnings: vec![],
+            },
+        );
+        state.installed_plugins = plugins.clone();
+
+        let kind = ContextMenuKind::Workspace {
+            ws_idx: 0,
             hidden: false,
-            dagr_available,
         };
-        ContextMenuState {
-            items: build_context_menu_items(&kind, &[], &[]),
+        let menu = ContextMenuState {
+            items: build_context_menu_items(&kind, &[], &[], &plugins),
             kind,
             x: 0,
             y: 0,
             list: MenuListState::new(0),
             bora_commands: vec![],
             bora_port: None,
-        }
-    }
-
-    #[test]
-    fn group_header_open_dagr_defers_to_app_loop_and_only_when_available() {
-        // bora-1le.3: choosing the entry defers the plugin invoke to the App
-        // loop (request flag, like every App-owned action); the entry only
-        // exists when the dagr plugin is registered.
-        let mut state = state_with_workspaces(&["proj"]);
-        let menu = group_header_menu_with_dagr(true);
+        };
         let idx = menu
-            .items
+            .items()
             .iter()
-            .position(|item| item == "Open dagr")
-            .expect("Open dagr item when dagr is available");
+            .position(|item| item == "Run tool")
+            .expect("plugin action item must be present");
         let mut terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
         apply_context_menu_action(&mut state, &mut terminal_runtimes, menu, idx);
-        assert!(
-            state.request_open_dagr,
-            "choosing Open dagr must request the deferred invoke"
+
+        assert_eq!(
+            state.request_plugin_action.as_deref(),
+            Some("example.tool.run"),
+            "selection must resolve to the qualified id find_plugin_action consumes"
         );
         assert_ne!(state.mode, Mode::ContextMenu, "menu closed after action");
-
-        // Absence is silent: no entry, so choosing its index is impossible —
-        // pin that the unavailable menu has no such item at all.
-        let unavailable = group_header_menu_with_dagr(false);
-        assert!(
-            !unavailable.items.iter().any(|item| item == "Open dagr"),
-            "no Open dagr item when dagr is not installed"
-        );
     }
 }
