@@ -60,9 +60,11 @@ pub(crate) const ORPHANS_COLLAPSE_KEY: &str = "proj:__orphans__";
 ///   header, 3 section item / workspace, 4 pane) mirrors that nesting. A new
 ///   level means updating that closure too.
 /// - The repo name appears exactly once per row-path: `ProjectRow` omits it, a
-///   `WorktreeRow` carries it, and no `Workspace` or `PaneRow` ever repeats
-///   it. When a project holds a single repo, `WorktreeRow.repo` is `None` and
-///   the column collapses.
+///   `WorktreeRow` always carries it, and no `Workspace` or `PaneRow` ever
+///   repeats it. It used to collapse away when a project held a single repo,
+///   but project names are arbitrary (`Teste`, `BILLING FIX`) and say nothing
+///   about the repo, so a collapsed column read as a bare `main` with no way
+///   to tell which repo it was without clicking (bora-b2r).
 /// - Workspaces matching no declared member land in one trailing implicit
 ///   `ProjectRow` with `declared: false`.
 ///
@@ -213,18 +215,6 @@ fn push_project_group(
         by_checkout.entry(key).or_default().push(idx);
     }
 
-    // Rule 3: the repo column collapses to `None` when every worktree in
-    // this project shares one `repo_name`. No git-backed worktree at all
-    // (an orphan with no identity) trivially collapses too — there is
-    // nothing to disambiguate.
-    let repo_names: HashSet<&str> = order
-        .iter()
-        .filter_map(|key| by_checkout[key].first())
-        .filter_map(|&idx| app.workspaces[idx].git_space())
-        .map(|space| space.repo_name.as_str())
-        .collect();
-    let single_repo = repo_names.len() <= 1;
-
     // bora-qdi: worktrees on disk for this project's `WorktreesScope::All`
     // members with no open workspace. Empty for the orphans group
     // (`slug: None`) — an "unopened worktree" is defined relative to a
@@ -283,7 +273,6 @@ fn push_project_group(
             app,
             checkout_key,
             &by_checkout[checkout_key],
-            single_repo,
             section_order,
             commands,
             checks,
@@ -301,18 +290,7 @@ fn push_project_group(
     for entry in &unopened {
         entries.push(WorkspaceListEntry::WorktreeRow {
             checkout_key: entry.checkout_key.clone(),
-            // ponytail: reuses the same `single_repo` flag the open
-            // worktrees use above rather than widening it with unopened
-            // repos' names too, so a project with ZERO open workspaces
-            // spanning 2+ repos briefly shows a collapsed repo column
-            // until one checkout opens. Fold `repo_name_for_identity`'s
-            // lookups into the `single_repo` computation if that edge case
-            // matters.
-            repo: if single_repo {
-                None
-            } else {
-                repo_name_for_identity(app, &entry.repo_identity)
-            },
+            repo: repo_name_for_identity(app, &entry.repo_identity),
             branch: entry.branch.clone(),
             ahead: 0,
             behind: 0,
@@ -441,7 +419,6 @@ fn push_worktree(
     app: &AppState,
     checkout_key: &str,
     ws_idxs: &[usize],
-    single_repo: bool,
     section_order: [&'static SectionDescriptor; SECTION_COUNT],
     commands: &[String],
     checks: &[String],
@@ -452,11 +429,7 @@ fn push_worktree(
     };
     let first = &app.workspaces[first_idx];
     let space = first.git_space();
-    let repo = if single_repo {
-        None
-    } else {
-        space.map(|s| s.repo_name.clone())
-    };
+    let repo = space.map(|s| s.repo_name.clone());
     let branch = first.branch().unwrap_or_default();
     let (ahead, behind) = first.git_ahead_behind().unwrap_or((0, 0));
     let pr = first
@@ -1332,7 +1305,7 @@ mod tests {
     }
 
     #[test]
-    fn repo_column_collapses_to_none_when_every_worktree_shares_one_repo() {
+    fn repo_column_stays_visible_when_every_worktree_shares_one_repo() {
         // `repo_name` (rule 3's actual signal) is the checkout root's own
         // basename — same leaf name, different parents, so `checkout_key`
         // still differs while `repo_name` genuinely matches, the way two
@@ -1363,10 +1336,15 @@ mod tests {
                 _ => None,
             })
             .collect();
+        assert!(
+            repos.iter().all(Option::is_some),
+            "the repo column never collapses: a bare `main` under an arbitrarily-named \
+             project says nothing about which repo it is (bora-b2r): {entries:?}"
+        );
         assert_eq!(
-            repos,
-            vec![None, None],
-            "a project whose worktrees all belong to one repo must collapse the repo column: {entries:?}"
+            repos.len(),
+            2,
+            "both worktree rows still render, each carrying the shared repo name: {entries:?}"
         );
 
         std::fs::remove_dir_all(&container).unwrap();
