@@ -1273,6 +1273,14 @@ impl Workspace {
     pub fn worktree_space(&self) -> Option<&WorktreeSpaceMembership> {
         self.worktree_space.as_ref()
     }
+    /// The dir string `projects.yml` `Member.dir` comparisons use for this
+    /// workspace: the checkout path when it lives in a linked worktree, else
+    /// the identity cwd — the same idiom the COMMANDS port resolution uses.
+    pub fn project_member_dir(&self) -> String {
+        self.worktree_space()
+            .map(|space| space.checkout_path.display().to_string())
+            .unwrap_or_else(|| self.identity_cwd.display().to_string())
+    }
 
     /// Repo root that owns this workspace's `.bora.toml`: the parent repo
     /// root for worktree-space members, else the git space's repo root.

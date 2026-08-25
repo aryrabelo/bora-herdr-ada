@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod capture;
-mod project_view;
+pub(crate) mod project_view;
 mod tokens;
 
 use std::time::Instant;

@@ -6,8 +6,8 @@ use tracing::warn;
 use crate::{
     app::state::{
         build_context_menu_items, AgentPanelSort, AppState, ContextMenuKind, ContextMenuState,
-        DragState, DragTarget, MenuListState, Mode, RightClickPassthroughGesture, TabPressState,
-        ViewLayout, WorkspacePressState,
+        DragState, DragTarget, MenuListState, Mode, ProjectRowTarget, RightClickPassthroughGesture,
+        TabPressState, ViewLayout, WorkspacePressState,
     },
     layout::{PaneInfo, SplitBorder},
     selection::Selection,
@@ -502,6 +502,7 @@ impl AppState {
                         | Mode::RenameTab
                         | Mode::RenamePane
                         | Mode::SetWorkspaceGroup
+                        | Mode::ProjectNameInput
                 ) {
                     let action = self
                         .rename_modal_inner()
@@ -609,6 +610,8 @@ impl AppState {
                                 items: build_context_menu_items(
                                     &kind,
                                     &self.workspaces,
+                                    self.view_mode,
+                                    &[],
                                     &[],
                                     &self.installed_plugins,
                                 ),
@@ -639,6 +642,8 @@ impl AppState {
                                 items: build_context_menu_items(
                                     &kind,
                                     &self.workspaces,
+                                    self.view_mode,
+                                    &[],
                                     &[],
                                     &self.installed_plugins,
                                 ),
@@ -1407,6 +1412,17 @@ impl AppState {
                         items: build_context_menu_items(
                             &kind,
                             &self.workspaces,
+                            self.view_mode,
+                            &{
+                                // bora-uqv: in Project view the row menu
+                                // splices project membership items where the
+                                // visual-group items would be.
+                                if self.view_mode == crate::config::ViewMode::Project {
+                                    super::modal::workspace_assembly_items(&self.workspaces, idx)
+                                } else {
+                                    Vec::new()
+                                }
+                            },
                             &bora_labels,
                             &self.installed_plugins,
                         ),
@@ -1440,6 +1456,8 @@ impl AppState {
                         items: build_context_menu_items(
                             &kind,
                             &self.workspaces,
+                            self.view_mode,
+                            &[],
                             &[],
                             &self.installed_plugins,
                         ),
@@ -1451,6 +1469,75 @@ impl AppState {
                         bora_port: None,
                     });
                     self.mode = Mode::ContextMenu;
+                } else if self.view_mode == crate::config::ViewMode::Project {
+                    // bora-uqv: right-click on a Project-view project header
+                    // (or the Ungrouped bucket) opens the assembly menu; on a
+                    // worktree/checkout row, the membership menu for that dir.
+                    match project_row_target_at(
+                        &self.view.project_row_areas,
+                        mouse.column,
+                        mouse.row,
+                    )
+                    .cloned()
+                    {
+                        Some(ProjectRowTarget::Project { collapse_key }) => {
+                            let slug = if collapse_key == crate::ui::ORPHANS_COLLAPSE_KEY {
+                                None
+                            } else {
+                                collapse_key.strip_prefix("proj:").map(str::to_string)
+                            };
+                            let hidden = self.is_hidden(&collapse_key);
+                            let mut items = Vec::new();
+                            if !super::modal::orphan_member_dirs(self).is_empty() {
+                                items.push("Add workspaces\u{2026}".to_string());
+                            }
+                            items.push("New project\u{2026}".to_string());
+                            if slug.is_some() {
+                                items.push("Rename project\u{2026}".to_string());
+                            }
+                            items.push(crate::app::state::CONTEXT_MENU_SEPARATOR.to_string());
+                            if hidden {
+                                items.push("Unhide".to_string());
+                            } else {
+                                items.push("Hide 5m".to_string());
+                                items.push("Hide 10m".to_string());
+                                items.push("Hide 15m".to_string());
+                                items.push("Hide 30m".to_string());
+                            }
+                            self.context_menu = Some(ContextMenuState {
+                                items,
+                                kind: ContextMenuKind::ProjectHeader {
+                                    slug,
+                                    collapse_key,
+                                    hidden,
+                                },
+                                x: mouse.column,
+                                y: mouse.row,
+                                list: MenuListState::new(0),
+                                bora_commands: vec![],
+                                bora_port: None,
+                            });
+                            self.mode = Mode::ContextMenu;
+                        }
+                        Some(ProjectRowTarget::Worktree { collapse_key }) => {
+                            if let Some(member_dir) =
+                                collapse_key.strip_prefix("wt:").map(str::to_string)
+                            {
+                                let items = super::modal::assembly_items_for_dir(&member_dir);
+                                self.context_menu = Some(ContextMenuState {
+                                    items,
+                                    kind: ContextMenuKind::ProjectMemberTargets { member_dir },
+                                    x: mouse.column,
+                                    y: mouse.row,
+                                    list: MenuListState::new(0),
+                                    bora_commands: vec![],
+                                    bora_port: None,
+                                });
+                                self.mode = Mode::ContextMenu;
+                            }
+                        }
+                        _ => {}
+                    }
                 }
             }
 
@@ -1466,6 +1553,8 @@ impl AppState {
                         items: build_context_menu_items(
                             &kind,
                             &self.workspaces,
+                            self.view_mode,
+                            &[],
                             &[],
                             &self.installed_plugins,
                         ),
@@ -1515,6 +1604,8 @@ impl AppState {
                         items: build_context_menu_items(
                             &kind,
                             &self.workspaces,
+                            self.view_mode,
+                            &[],
                             &[],
                             &self.installed_plugins,
                         ),
@@ -3879,7 +3970,14 @@ mod tests {
             hidden: false,
         };
         app.state.context_menu = Some(ContextMenuState {
-            items: build_context_menu_items(&kind, &[], &[], &Default::default()),
+            items: build_context_menu_items(
+                &kind,
+                &[],
+                crate::config::ViewMode::Repo,
+                &[],
+                &[],
+                &Default::default(),
+            ),
             kind,
             x: 2,
             y: 2,
@@ -4181,7 +4279,14 @@ mod tests {
             ws_idx: 1,
             hidden: false,
         };
-        let items = build_context_menu_items(&kind, &[], &[], &Default::default());
+        let items = build_context_menu_items(
+            &kind,
+            &[],
+            crate::config::ViewMode::Repo,
+            &[],
+            &[],
+            &Default::default(),
+        );
         let close_idx = items.iter().position(|i| i == "Close").expect("close item");
         app.state.context_menu = Some(ContextMenuState {
             items,
@@ -4230,7 +4335,14 @@ mod tests {
             ws_idx: 1,
             hidden: false,
         };
-        let items = build_context_menu_items(&kind, &[], &[], &Default::default());
+        let items = build_context_menu_items(
+            &kind,
+            &[],
+            crate::config::ViewMode::Repo,
+            &[],
+            &[],
+            &Default::default(),
+        );
         let close_idx = items.iter().position(|i| i == "Close").unwrap() as u16;
         app.state.context_menu = Some(ContextMenuState {
             items,
@@ -4291,7 +4403,14 @@ mod tests {
             right_click_passthrough: false,
         };
         app.state.context_menu = Some(ContextMenuState {
-            items: build_context_menu_items(&kind, &[], &[], &Default::default()),
+            items: build_context_menu_items(
+                &kind,
+                &[],
+                crate::config::ViewMode::Repo,
+                &[],
+                &[],
+                &Default::default(),
+            ),
             kind,
             x: 2,
             y: 2,

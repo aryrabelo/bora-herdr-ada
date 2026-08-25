@@ -1207,6 +1207,7 @@ mod tests {
             Mode::RenameTab,
             Mode::RenamePane,
             Mode::SetWorkspaceGroup,
+            Mode::ProjectNameInput,
             Mode::NewLinkedWorktree,
             Mode::OpenExistingWorktree,
             Mode::ConfirmRemoveWorktree,

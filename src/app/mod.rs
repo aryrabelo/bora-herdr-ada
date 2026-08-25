@@ -773,6 +773,7 @@ impl App {
             requested_new_tab_name: None,
             pending_workspace_create_cwd: None,
             rename_pane_target: None,
+            project_name_target: None,
             worktree_create: None,
             worktree_open: None,
             worktree_remove: None,
@@ -2899,7 +2900,8 @@ impl App {
             Mode::RenameWorkspace
             | Mode::RenameTab
             | Mode::RenamePane
-            | Mode::SetWorkspaceGroup => {
+            | Mode::SetWorkspaceGroup
+            | Mode::ProjectNameInput => {
                 self.handle_rename_key_via_api(key_event);
             }
             Mode::NewLinkedWorktree => {
@@ -7591,7 +7593,14 @@ last_pane = "prefix+tab"
             ws_idx: 1,
             hidden: false,
         };
-        let items = state::build_context_menu_items(&kind, &[], &[], &app.state.installed_plugins);
+        let items = state::build_context_menu_items(
+            &kind,
+            &[],
+            crate::config::ViewMode::Repo,
+            &[],
+            &[],
+            &app.state.installed_plugins,
+        );
         let close_idx = items.iter().position(|i| i == "Close").unwrap();
         app.state.context_menu = Some(state::ContextMenuState {
             items,
@@ -7633,7 +7642,14 @@ last_pane = "prefix+tab"
             ws_idx: 0,
             hidden: false,
         };
-        let items = state::build_context_menu_items(&kind, &[], &[], &app.state.installed_plugins);
+        let items = state::build_context_menu_items(
+            &kind,
+            &[],
+            crate::config::ViewMode::Repo,
+            &[],
+            &[],
+            &app.state.installed_plugins,
+        );
         let refresh_idx = items.iter().position(|i| i == "Refresh status").unwrap();
         let menu = state::ContextMenuState {
             items,

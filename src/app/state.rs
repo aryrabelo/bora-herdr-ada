@@ -998,6 +998,10 @@ pub enum Mode {
     RenamePane,
     /// User is typing a visual group name for a workspace.
     SetWorkspaceGroup,
+    /// User is typing a project name (creating or renaming a project in
+    /// `projects.yml`). What the name is for lives in
+    /// `AppState::project_name_target`.
+    ProjectNameInput,
     /// User is typing an arbitrary shell command from the sidebar Programs
     /// launcher's "+ run command…" row.
     NewLinkedWorktree,
@@ -1379,6 +1383,31 @@ pub enum ContextMenuKind {
         collapse_key: String,
         hidden: bool,
     },
+    /// A Project-view group header row: a declared project (`slug: Some`) or
+    /// the synthetic `Ungrouped` orphans bucket (`slug: None`). `collapse_key`
+    /// doubles as the Hide key, same as `GroupHeader`. Its plugin-action
+    /// context is `Global`, same surface as `GroupHeader`.
+    ProjectHeader {
+        slug: Option<String>,
+        collapse_key: String,
+        hidden: bool,
+    },
+    /// The orphan-workspace picker opened by "Add workspaces…" on a
+    /// ProjectHeader menu. `orphans` are the candidate member dirs, aligned
+    /// with the menu items by index; `slug` is the project to file the pick
+    /// into, or `None` when the picker came from Ungrouped and the target
+    /// project is chosen in the follow-up `ProjectMemberTargets` menu.
+    ProjectOrphanPicker {
+        slug: Option<String>,
+        orphans: Vec<String>,
+    },
+    /// The per-dir project membership menu (Add to <slug> / New project… /
+    /// Remove), opened from a Project-view worktree/checkout row or from the
+    /// orphan picker. `member_dir` is the exact string `projects.yml`
+    /// `Member.dir` comparisons use (see `ProjectAssemblyContext::for_dir`).
+    ProjectMemberTargets {
+        member_dir: String,
+    },
     Tab {
         ws_idx: usize,
         tab_idx: usize,
@@ -1427,10 +1456,21 @@ pub struct ContextMenuState {
 
 /// Menu separator: rendered as a dim line, not selectable.
 pub const CONTEXT_MENU_SEPARATOR: &str = "─";
+/// What the `ProjectNameInput` modal writes on confirm.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProjectNameTarget {
+    /// Set `name:` on the existing project `slug` in `projects.yml`.
+    Rename { slug: String },
+    /// Create a new project named as typed; `member_dir`, when present (the
+    /// row the menu was opened from), becomes its first member.
+    New { member_dir: Option<String> },
+}
 
 pub fn build_context_menu_items(
     kind: &ContextMenuKind,
     workspaces: &[crate::workspace::Workspace],
+    view_mode: crate::config::ViewMode,
+    assembly_items: &[String],
     custom_commands: &[String],
     installed_plugins: &InstalledPluginRegistry,
 ) -> Vec<String> {
@@ -1470,7 +1510,11 @@ pub fn build_context_menu_items(
                 "Refresh status".to_string(),
                 sep(),
             ];
-            push_groups(&mut v);
+            if view_mode == crate::config::ViewMode::Project {
+                v.extend(assembly_items.iter().cloned());
+            } else {
+                push_groups(&mut v);
+            }
             if !custom_commands.is_empty() {
                 v.push(sep());
                 v.extend(custom_commands.iter().cloned());
@@ -1496,7 +1540,11 @@ pub fn build_context_menu_items(
                 "Refresh status".to_string(),
                 sep(),
             ];
-            push_groups(&mut v);
+            if view_mode == crate::config::ViewMode::Project {
+                v.extend(assembly_items.iter().cloned());
+            } else {
+                push_groups(&mut v);
+            }
             if !custom_commands.is_empty() {
                 v.push(sep());
                 v.extend(custom_commands.iter().cloned());
@@ -1521,7 +1569,11 @@ pub fn build_context_menu_items(
                 "Refresh status".to_string(),
                 sep(),
             ];
-            push_groups(&mut v);
+            if view_mode == crate::config::ViewMode::Project {
+                v.extend(assembly_items.iter().cloned());
+            } else {
+                push_groups(&mut v);
+            }
             if !custom_commands.is_empty() {
                 v.push(sep());
                 v.extend(custom_commands.iter().cloned());
@@ -1549,7 +1601,11 @@ pub fn build_context_menu_items(
                 "Expand".to_string(),
                 sep(),
             ];
-            push_groups(&mut v);
+            if view_mode == crate::config::ViewMode::Project {
+                v.extend(assembly_items.iter().cloned());
+            } else {
+                push_groups(&mut v);
+            }
             if !custom_commands.is_empty() {
                 v.push(sep());
                 v.extend(custom_commands.iter().cloned());
@@ -1576,7 +1632,11 @@ pub fn build_context_menu_items(
                 "Collapse".to_string(),
                 sep(),
             ];
-            push_groups(&mut v);
+            if view_mode == crate::config::ViewMode::Project {
+                v.extend(assembly_items.iter().cloned());
+            } else {
+                push_groups(&mut v);
+            }
             if !custom_commands.is_empty() {
                 v.push(sep());
                 v.extend(custom_commands.iter().cloned());
@@ -1598,6 +1658,28 @@ pub fn build_context_menu_items(
                 ]
             }
         }
+        ContextMenuKind::ProjectHeader { hidden, .. } => {
+            // The assembly lead (Add workspaces… / New project… / Rename
+            // project…) is computed at the call site from a fresh
+            // projects.yml read; this builder owns only the shared
+            // Hide/Unhide tail, same shape as GroupHeader.
+            let mut v = assembly_items.to_vec();
+            v.push(sep());
+            if *hidden {
+                v.push("Unhide".to_string());
+            } else {
+                v.push("Hide 5m".to_string());
+                v.push("Hide 10m".to_string());
+                v.push("Hide 15m".to_string());
+                v.push("Hide 30m".to_string());
+            }
+            v
+        }
+        // Picker/follow-up kinds: every item is computed at the call site
+        // (orphan dirs, membership resolved against a fresh projects.yml
+        // read); the builder has nothing to add.
+        ContextMenuKind::ProjectOrphanPicker { .. }
+        | ContextMenuKind::ProjectMemberTargets { .. } => assembly_items.to_vec(),
         ContextMenuKind::Tab { .. } => {
             vec![
                 "New tab".to_string(),
@@ -1672,6 +1754,12 @@ fn plugin_menu_context(kind: &ContextMenuKind) -> crate::api::schema::PluginActi
         // Now any enabled plugin action declaring `contexts = ["global"]`
         // lands here through the ordinary mechanism below, dagr included.
         ContextMenuKind::GroupHeader { .. } => Ctx::Global,
+        // The project-assembly surfaces are the same general-purpose
+        // surface as GroupHeader: a project header, an orphan picker, and a
+        // membership menu are all places a global plugin action makes sense.
+        ContextMenuKind::ProjectHeader { .. } => Ctx::Global,
+        ContextMenuKind::ProjectOrphanPicker { .. } => Ctx::Global,
+        ContextMenuKind::ProjectMemberTargets { .. } => Ctx::Global,
         ContextMenuKind::Tab { .. } => Ctx::Tab,
         ContextMenuKind::Pane { .. } => Ctx::Pane,
         // No PluginActionContext variant models a PR/issue row (only
@@ -2073,6 +2161,10 @@ pub struct AppState {
     pub requested_new_tab_name: Option<String>,
     pub pending_workspace_create_cwd: Option<std::path::PathBuf>,
     pub rename_pane_target: Option<PaneId>,
+    /// What the `Mode::ProjectNameInput` modal acts on: rename of an
+    /// existing project or creation of a new one (whose first member may be
+    /// the dir the menu was opened from). `None` unless that mode is active.
+    pub project_name_target: Option<ProjectNameTarget>,
     pub worktree_create: Option<WorktreeCreateState>,
     pub worktree_open: Option<WorktreeOpenState>,
     pub chat: ChatViewState,
@@ -2619,6 +2711,7 @@ impl AppState {
             requested_new_tab_name: None,
             pending_workspace_create_cwd: None,
             rename_pane_target: None,
+            project_name_target: None,
             worktree_create: None,
             worktree_open: None,
             worktree_remove: None,
@@ -3153,6 +3246,11 @@ impl AppState {
                 ContextMenuKind::RepoIssue { .. } => {}
                 // No workspace index to check — a group header carries only keys.
                 ContextMenuKind::GroupHeader { .. } => {}
+                // No workspace index to check — the project-assembly kinds
+                // carry only slugs, keys, and dirs.
+                ContextMenuKind::ProjectHeader { .. }
+                | ContextMenuKind::ProjectOrphanPicker { .. }
+                | ContextMenuKind::ProjectMemberTargets { .. } => {}
             }
         }
     }
@@ -3453,7 +3551,14 @@ mod tests {
             hidden: false,
         };
         let menu = ContextMenuState {
-            items: build_context_menu_items(&kind, &[], &[], &Default::default()),
+            items: build_context_menu_items(
+                &kind,
+                &[],
+                crate::config::ViewMode::Repo,
+                &[],
+                &[],
+                &Default::default(),
+            ),
             kind,
             x: 0,
             y: 0,
@@ -3497,7 +3602,14 @@ mod tests {
             hidden: false,
         };
         let menu = ContextMenuState {
-            items: build_context_menu_items(&kind, &[], &[], &Default::default()),
+            items: build_context_menu_items(
+                &kind,
+                &[],
+                crate::config::ViewMode::Repo,
+                &[],
+                &[],
+                &Default::default(),
+            ),
             kind,
             x: 0,
             y: 0,
@@ -3540,7 +3652,14 @@ mod tests {
             hidden: false,
         };
         let menu = ContextMenuState {
-            items: build_context_menu_items(&kind, &[], &[], &Default::default()),
+            items: build_context_menu_items(
+                &kind,
+                &[],
+                crate::config::ViewMode::Repo,
+                &[],
+                &[],
+                &Default::default(),
+            ),
             kind,
             x: 0,
             y: 0,
@@ -3630,7 +3749,14 @@ mod tests {
             ws_idx: 0,
             hidden: false,
         };
-        let items = build_context_menu_items(&kind, &[], &[], &plugins);
+        let items = build_context_menu_items(
+            &kind,
+            &[],
+            crate::config::ViewMode::Repo,
+            &[],
+            &[],
+            &plugins,
+        );
         assert!(
             items.iter().any(|item| item == "Do it"),
             "matching-context action must appear: {items:?}"
@@ -3651,7 +3777,14 @@ mod tests {
             ws_idx: 0,
             hidden: false,
         };
-        let items = build_context_menu_items(&kind, &[], &[], &plugins);
+        let items = build_context_menu_items(
+            &kind,
+            &[],
+            crate::config::ViewMode::Repo,
+            &[],
+            &[],
+            &plugins,
+        );
         assert!(
             !items.iter().any(|item| item == "Do it"),
             "non-matching-context action must not appear: {items:?}"
@@ -3668,7 +3801,14 @@ mod tests {
             ws_idx: 0,
             hidden: false,
         };
-        let items = build_context_menu_items(&kind, &[], &[], &plugins);
+        let items = build_context_menu_items(
+            &kind,
+            &[],
+            crate::config::ViewMode::Repo,
+            &[],
+            &[],
+            &plugins,
+        );
         assert!(
             !items.iter().any(|item| item == "Do it"),
             "empty contexts must never match: {items:?}"
@@ -3693,7 +3833,14 @@ mod tests {
             ws_idx: 0,
             hidden: false,
         };
-        let items = build_context_menu_items(&kind, &[], &[], &plugins);
+        let items = build_context_menu_items(
+            &kind,
+            &[],
+            crate::config::ViewMode::Repo,
+            &[],
+            &[],
+            &plugins,
+        );
         assert!(
             !items.iter().any(|item| item == "Do it"),
             "disabled plugin must contribute nothing: {items:?}"
@@ -3755,7 +3902,14 @@ mod tests {
             },
         ];
         for kind in kinds {
-            let items = build_context_menu_items(&kind, &[], &[], &plugins);
+            let items = build_context_menu_items(
+                &kind,
+                &[],
+                crate::config::ViewMode::Repo,
+                &[],
+                &[],
+                &plugins,
+            );
             assert!(
                 items.iter().any(|item| item == "Do it"),
                 "Global action must appear for {kind:?}: {items:?}"

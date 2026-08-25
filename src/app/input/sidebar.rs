@@ -1874,6 +1874,173 @@ mod tests {
         let _ = fs::remove_dir_all(first_repo);
         let _ = fs::remove_dir_all(second_repo);
     }
+    /// bora-uqv: right-click in Project view reaches the assembly menus — a
+    /// project header (with Rename), the Ungrouped bucket (without Rename),
+    /// and a workspace row (assembly section instead of the visual-group
+    /// items, which must stay a flat/repo-only surface).
+    #[test]
+    fn project_view_right_click_reaches_header_and_row_menus() {
+        let _isolated = crate::config::IsolatedDirs::new("project-view-right-click");
+        let mut app = app_for_mouse_test();
+        let repo_a = temp_git_repo("main");
+        let repo_b = temp_git_repo("main");
+
+        let mut a = Workspace::test_new("a");
+        a.identity_cwd = repo_a.clone();
+        a.refresh_git_ahead_behind();
+        let mut b = Workspace::test_new("b");
+        b.identity_cwd = repo_b.clone();
+        b.refresh_git_ahead_behind();
+        app.state.workspaces = vec![a, b];
+        app.state.ensure_test_terminals();
+
+        // alpha claims repo_a; repo_b stays an orphan.
+        let dir_a = repo_a.display().to_string();
+        crate::persist::projects::update_projects_file::<String>(move |file| {
+            file.projects.insert(
+                "alpha".to_string(),
+                crate::persist::projects::Project {
+                    name: None,
+                    channel: None,
+                    members: vec![crate::persist::projects::Member {
+                        dir: dir_a,
+                        worktrees: crate::persist::projects::WorktreesScope::All,
+                        template: None,
+                    }],
+                    orchestrator: None,
+                    sections: None,
+                    auto_join: true,
+                },
+            );
+            Ok(())
+        })
+        .unwrap();
+        app.state.projects = crate::persist::projects::ProjectsStore::load();
+        app.state.view_mode = crate::config::ViewMode::Project;
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 20));
+
+        let project_row_rect = |app: &crate::app::App, key: &str| {
+            app.state
+                .view
+                .project_row_areas
+                .iter()
+                .find(|area| {
+                    matches!(
+                        &area.target,
+                        crate::app::state::ProjectRowTarget::Project { collapse_key }
+                            if collapse_key == key
+                    )
+                })
+                .unwrap_or_else(|| panic!("project header row for {key}"))
+                .rect
+        };
+        let reset = |app: &mut crate::app::App| {
+            app.state.context_menu = None;
+            app.state.mode = Mode::Terminal;
+        };
+
+        // 1. A declared project header offers the full assembly menu.
+        let rect = project_row_rect(&app, "proj:alpha");
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Right),
+            rect.x + 1,
+            rect.y,
+        ));
+        let menu = app
+            .state
+            .context_menu
+            .as_ref()
+            .expect("project header menu");
+        assert!(
+            matches!(&menu.kind, crate::app::state::ContextMenuKind::ProjectHeader { slug, .. } if slug.as_deref() == Some("alpha")),
+            "kind: {:?}",
+            menu.kind
+        );
+        assert!(menu
+            .items
+            .iter()
+            .any(|item| item == "Add workspaces\u{2026}"));
+        assert!(menu.items.iter().any(|item| item == "New project\u{2026}"));
+        assert!(menu
+            .items
+            .iter()
+            .any(|item| item == "Rename project\u{2026}"));
+
+        // 2. The Ungrouped bucket offers creation and the picker, never Rename.
+        reset(&mut app);
+        let rect = project_row_rect(&app, crate::ui::ORPHANS_COLLAPSE_KEY);
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Right),
+            rect.x + 1,
+            rect.y,
+        ));
+        let menu = app
+            .state
+            .context_menu
+            .as_ref()
+            .expect("orphans header menu");
+        assert!(
+            matches!(
+                &menu.kind,
+                crate::app::state::ContextMenuKind::ProjectHeader { slug: None, .. }
+            ),
+            "kind: {:?}",
+            menu.kind
+        );
+        assert!(menu
+            .items
+            .iter()
+            .any(|item| item == "Add workspaces\u{2026}"));
+        assert!(menu.items.iter().any(|item| item == "New project\u{2026}"));
+        assert!(!menu
+            .items
+            .iter()
+            .any(|item| item == "Rename project\u{2026}"));
+
+        // 3. The orphan workspace row splices "Add to alpha" — and the
+        // visual-group items are gone in Project view…
+        reset(&mut app);
+        let card = app
+            .state
+            .view
+            .workspace_card_areas
+            .iter()
+            .find(|card| card.ws_idx == 1)
+            .expect("orphan workspace card")
+            .rect;
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Right),
+            card.x + 1,
+            card.y,
+        ));
+        let menu = app.state.context_menu.as_ref().expect("row menu");
+        assert!(menu.items.iter().any(|item| item == "Add to alpha"));
+        assert!(menu.items.iter().any(|item| item == "New project\u{2026}"));
+        assert!(!menu.items.iter().any(|item| item == "New group\u{2026}"));
+
+        // …but stays available in Repo view.
+        reset(&mut app);
+        app.state.view_mode = crate::config::ViewMode::Repo;
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 20));
+        let card = app
+            .state
+            .view
+            .workspace_card_areas
+            .iter()
+            .find(|card| card.ws_idx == 1)
+            .expect("orphan workspace card in repo view")
+            .rect;
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Right),
+            card.x + 1,
+            card.y,
+        ));
+        let menu = app.state.context_menu.as_ref().expect("repo row menu");
+        assert!(menu.items.iter().any(|item| item == "New group\u{2026}"));
+
+        let _ = fs::remove_dir_all(repo_a);
+        let _ = fs::remove_dir_all(repo_b);
+    }
 
     #[test]
     fn bottom_drop_slot_stays_below_last_workspace_not_footer() {

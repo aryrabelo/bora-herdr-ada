@@ -44,7 +44,7 @@ const ORPHANS_NAME: &str = "Ungrouped";
 /// Collapse key for the orphans group. Namespaced like every other key this
 /// module emits (`proj:`, `wt:`) so it can never collide with a real project
 /// slug's `proj:<slug>` key.
-const ORPHANS_COLLAPSE_KEY: &str = "proj:__orphans__";
+pub(crate) const ORPHANS_COLLAPSE_KEY: &str = "proj:__orphans__";
 
 /// Build the Project-view entry list.
 ///

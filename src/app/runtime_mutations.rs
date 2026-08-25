@@ -100,6 +100,37 @@ impl App {
     pub(crate) fn runtime_server_reload_config(&mut self, id: &'static str) -> String {
         self.dispatch_runtime_mutation(id, Method::ServerReloadConfig(EmptyParams::default()))
     }
+    pub(crate) fn runtime_project_create(
+        &mut self,
+        id: &'static str,
+        params: crate::api::schema::ProjectCreateParams,
+    ) -> String {
+        self.dispatch_runtime_mutation(id, Method::ProjectCreate(params))
+    }
+
+    pub(crate) fn runtime_project_update(
+        &mut self,
+        id: &'static str,
+        params: crate::api::schema::ProjectUpdateParams,
+    ) -> String {
+        self.dispatch_runtime_mutation(id, Method::ProjectUpdate(params))
+    }
+
+    pub(crate) fn runtime_project_member_add(
+        &mut self,
+        id: &'static str,
+        params: crate::api::schema::ProjectMemberAddParams,
+    ) -> String {
+        self.dispatch_runtime_mutation(id, Method::ProjectMemberAdd(params))
+    }
+
+    pub(crate) fn runtime_project_member_remove(
+        &mut self,
+        id: &'static str,
+        params: crate::api::schema::ProjectMemberRemoveParams,
+    ) -> String {
+        self.dispatch_runtime_mutation(id, Method::ProjectMemberRemove(params))
+    }
 
     pub(crate) fn runtime_pane_focus(&mut self, id: &'static str, pane_id: String) -> String {
         self.dispatch_runtime_mutation(id, Method::PaneFocus(PaneTarget { pane_id }))
