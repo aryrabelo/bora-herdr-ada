@@ -105,6 +105,17 @@ build:
 build:
     cargo build --release --locked
 
+# Build release and point ~/.local/bin/bora at it. Prints the version it just
+# installed, because the failure mode this recipe exists to prevent is a stale
+# binary hiding behind a symlink that looks fine. Run `just bootstrap` once per
+# machine afterwards for the fork's default plugins and keybind.
+[unix]
+install:
+    cargo build --release --locked
+    mkdir -p ~/.local/bin
+    ln -sfn "$(pwd)/${CARGO_TARGET_DIR:-target}/release/bora" ~/.local/bin/bora
+    @echo "installed: $(~/.local/bin/bora --version)"
+
 # Non-gating full-render scaling profile for background workspaces and active panes
 bench-render-scale:
     cargo test --release --locked --bin bora render_scale_profile -- --ignored --nocapture --test-threads=1

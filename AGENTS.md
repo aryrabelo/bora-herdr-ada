@@ -215,6 +215,21 @@ just check              # formatting check + cargo nextest + maintenance script 
 
 Run `just check` before committing unless Can explicitly accepts narrower validation. Do not bypass failing checks; fix the failure or explain exactly why a narrower check is enough.
 
+**A fix is not in the operator's hands until `just install` runs, and a running
+`bora` keeps the old binary.** `~/.local/bin/bora` is a symlink to
+`target/release/bora`, so it always looks correctly installed no matter how old
+that file is — which means a stale binary is invisible from the outside and a
+report of "your change did nothing" can be true of the binary and false of the
+tree. `just install` builds release, refreshes the symlink, and prints the
+version it just installed for exactly that reason: the version string is the
+only cheap proof of what is actually on `PATH`. Because the symlink resolves to
+a file that Cargo replaces, an already-running `bora` holds the previous inode
+and keeps running the old code until it is restarted. When asking someone to
+verify a fix, ask for `bora --version` first. (learned 2026-08-25, binding: a
+repaint fix was reported as ineffective while the installed binary was ten
+minor versions behind the tree, and the same stale binary had earlier been
+suspected of *causing* a regression that shipped after it was built.)
+
 **`just check`/`just lint` only lint the host target you run them on and cannot compile target-gated Rust from a macOS box; only CI's `ubuntu-latest` leg lints that code.** Two separate gating shapes hide code from a macOS run, and the second one is easy to miss: whole-file `#![cfg(not(target_os = "macos"))]` test files (`tests/auto_detect.rs`, `tests/cli.rs`), and platform modules excluded by an **outer** `#[cfg(target_os = ...)]` on their `mod` declaration in `src/platform/mod.rs` (`src/platform/linux.rs`, `src/platform/windows.rs`) — including their `#[cfg(test)] mod tests`. A green `just check` on macOS is not proof any of it is clean; `lint` prints a reminder naming all four files, and that reminder is a to-verify list, not noise. (learned 2026-08-13, binding: clippy failures in Linux-only-gated test files reached CI invisibly from a macOS `just check` this way. Reasserted 2026-08-22, binding: it happened again, and worse — `9a2db191` left `std::sync::{Mutex, OnceLock}` unused in `src/platform/linux.rs`'s test module and CI stayed red across three commits, because the reminder only grepped for the whole-file inner attribute and never mentioned the platform modules at all. The `lint` recipe now lists them explicitly. Cross-compiling to verify locally does not work on this machine: the vendored libghostty-vt build script needs zig 0.15.2 and mise resolves 0.16.0, so CI is the only verifier — push the fix and watch the run.)
 
 **A stale `target/` cache can pin an absolute path to a checkout that no longer
