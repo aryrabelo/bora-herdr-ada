@@ -302,19 +302,29 @@ mod tests {
         assert!(!app.view.split_borders.is_empty());
         assert!(frame.cursor.is_some());
         assert_eq!(frame.hyperlinks, vec![uri.to_owned()]);
-        // Golden updated for bora-55c.3, attributed rather than bumped: the
-        // rendered sidebar was dumped column-by-column again and the only
-        // change against the 49p.6 frame is the Programs band's removal —
-        // the "+ run command…" launcher row that sat directly above the
-        // footer is gone and the workspace list body extends one row
-        // further down. Header row, the workspace row at row 2, and the
-        // footer geometry (`menu` ending at column 23, `«` free at 24) are
-        // byte-identical to the previous frame. Every other assertion in
-        // this test still holds, and the mobile characterization below is
-        // unchanged (Repo-view-only band).
+        // Golden updated for the sidebar chrome round, attributed rather than
+        // bumped: the rendered sidebar was dumped column-by-column against the
+        // pre-round build of `ui/sidebar.rs` (same probe, same fixture, only
+        // that one file swapped) and the ONLY difference across all 20 rows is
+        // the new active-row marker taking column 0, which shifts that row's
+        // content right by one column:
+        //
+        //   before  |◰ ◰ characterization     │|
+        //   after   |▎◰ ◰ characterization    │|
+        //
+        // Nothing is truncated — the row loses one trailing space, not a
+        // character. The doubled `◰` is pre-existing and not part of this
+        // change: it is the workspace-type glyph followed by the agent glyph.
+        // The header row 00 and the footer row 19 are byte-identical, so
+        // `menu` still ends at column 23 with `«` free at 24. This fixture sets
+        // `selected = 0`, so the row is SELECTED as well as active and keeps its
+        // background fill; the round's change to stop painting the background
+        // for merely-active rows is therefore not visible here, which is why the
+        // marker is the whole diff. Every other assertion in this test still
+        // holds and the mobile characterization below is unchanged.
         assert_eq!(
             frame_digest(&frame),
-            "ea14507b2e79af171b5e8224959d8a436ec2ee5a8bad80d13d6676139b8e3949"
+            "3f9d1f86466afd18affe1812e133081304640e1587ffd1dacb2b31c201f496b6"
         );
     }
 

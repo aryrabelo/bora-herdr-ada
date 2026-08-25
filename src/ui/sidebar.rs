@@ -961,6 +961,11 @@ fn project_row_trailing(
 
 /// Top-level Project-view row: chevron, `⬢` glyph, project name, `n/m`
 /// (live/total workspaces) right-aligned. See `WorkspaceListEntry::ProjectRow`.
+///
+/// Solo #11: a thin rule fills the gap before the counter, the same
+/// convention `section_header_line` already uses — a top-level project is
+/// exactly the "group" boundary Solo draws a separator under, and reusing
+/// the section rule keeps this one convention rather than a second.
 pub(crate) fn project_row_line(
     name: &str,
     collapsed: bool,
@@ -980,15 +985,16 @@ pub(crate) fn project_row_line(
         .iter()
         .map(|s| display_width(s.content.as_ref()))
         .sum();
-    let avail = (width as usize).saturating_sub(prefix_width + display_width(&counter));
+    let avail = (width as usize).saturating_sub(prefix_width + display_width(&counter) + 1);
     spans.push(Span::styled(
         truncate_end(name, avail),
         Style::default().fg(p.overlay0).add_modifier(Modifier::BOLD),
     ));
+    spans.push(Span::styled(" ", Style::default()));
     project_row_trailing(
         spans,
         Span::styled(counter, Style::default().fg(p.overlay0)),
-        None,
+        Some(('─', Style::default().fg(p.surface1))),
         width,
     )
 }
@@ -1154,6 +1160,11 @@ pub(crate) fn section_item_line(
 /// state dot and its label. Never the repo name and never a `repo` field to
 /// pass one from: the row's whole reason to exist is the pane, not the
 /// checkout it lives in.
+///
+/// Solo #7: a tree rail connects a workspace to its agent rows. The prefix
+/// stays 6 cells wide (`indent(2) + connector(4)`, same budget as the
+/// blank 6-space prefix it replaces) so nothing downstream re-truncates —
+/// only its first two cells now draw `╰──` instead of blank space.
 pub(crate) fn pane_row_line(
     label: &str,
     dot: (&str, Style),
@@ -1161,7 +1172,7 @@ pub(crate) fn pane_row_line(
     width: u16,
 ) -> Line<'static> {
     let mut spans = vec![
-        Span::styled("      ", Style::default()),
+        Span::styled("  ╰── ", Style::default().fg(p.overlay0)),
         Span::styled(dot.0.to_string(), dot.1),
         Span::styled(" ", Style::default()),
     ];
@@ -3087,16 +3098,23 @@ fn render_workspace_list(
                 let is_active = Some(i) == app.active;
                 let is_dragged = dragged_ws_idx == Some(i);
                 let highlighted = selected || is_active || is_dragged;
+                // GC3: only a real "selection" (keyboard cursor or an
+                // in-flight drag) repaints the whole row — a background
+                // tint reads as *selected*. The plain "this is the active
+                // workspace" case is a lighter statement and gets a
+                // left-edge marker instead (`show_active_marker` below),
+                // so its own state colour (GC1) stays fully legible on the
+                // active row too, instead of being overridden by it.
+                let selection_paint = selected || is_dragged;
+                let show_active_marker = is_active && !selection_paint;
 
                 // Card rect spans 1 row (name + inline dots).
                 let card_height = 1u16;
-                if highlighted {
+                if selection_paint {
                     let bg = if selected {
                         workspace_selection_background(p, is_active)
-                    } else if is_dragged {
-                        p.surface1
                     } else {
-                        p.active_row_bg
+                        p.surface1
                     };
                     let buf = frame.buffer_mut();
                     for y in row_y..row_y + card_height {
@@ -3109,15 +3127,54 @@ fn render_workspace_list(
                     }
                 }
 
-                let name_style = if highlighted {
+                // GC1: an inactive row's text colour follows its own status
+                // dot and its weight follows how urgently it wants the
+                // user — ranked through the single `attention_priority`
+                // owner, never a local table, mirroring
+                // `render_agent_detail`'s `wants_attention` (the same
+                // pattern already proven on the agent panel, applied here
+                // to the row it was missing from).
+                let (row_state, row_seen) = ws.aggregate_state(&app.terminals);
+                let idle_age = ws
+                    .oldest_unseen_idle_age(&app.terminals, now)
+                    .or_else(|| ws.oldest_idle_age(&app.terminals, now));
+                let (_, dot_style) = state_dot(
+                    row_state,
+                    row_seen,
+                    app.spinner_tick,
+                    app.status_indicators,
+                    p,
+                    idle_age,
+                );
+                let dot_color = dot_style.fg.unwrap_or(p.subtext0);
+                let attn = crate::detect::attention_priority(row_state, row_seen);
+                let working_attn =
+                    crate::detect::attention_priority(crate::detect::AgentState::Working, true);
+                let state_style = if attn > working_attn {
+                    Style::default().fg(dot_color).add_modifier(Modifier::BOLD)
+                } else if attn == working_attn {
+                    Style::default().fg(dot_color)
+                } else {
+                    Style::default().fg(dot_color).add_modifier(Modifier::DIM)
+                };
+                let name_style = if selection_paint {
                     Style::default().fg(p.text).add_modifier(Modifier::BOLD)
                 } else {
-                    Style::default().fg(p.subtext0)
+                    state_style
                 };
                 let rail_style = Style::default().fg(p.overlay0);
 
                 // --- Single row: name + inline tab dots ---
                 let mut line1 = Vec::new();
+                // GC3: a reserved 1-column lane, blank on every row but the
+                // active one, so the marker's presence never shifts
+                // anything but itself — columns line up whether or not a
+                // given row is active.
+                if show_active_marker {
+                    line1.push(Span::styled("▎", Style::default().fg(p.accent)));
+                } else {
+                    line1.push(Span::styled(" ", Style::default()));
+                }
                 let indent_prefix = if *indented { " " } else { "" };
                 match rail {
                     BranchRail::Spine => {
@@ -3198,11 +3255,8 @@ fn render_workspace_list(
                     .iter()
                     .map(|s| display_width(s.content.as_ref()))
                     .sum();
-                // Idle time follows the same age color ramp whether the idle
-                // pane was already seen or not.
-                let idle_age = ws
-                    .oldest_unseen_idle_age(&app.terminals, now)
-                    .or_else(|| ws.oldest_idle_age(&app.terminals, now));
+                // Idle time (hoisted above, GC1) follows the same age
+                // color ramp whether the idle pane was already seen or not.
                 let idle_color = idle_age_color(idle_age, p);
                 let idle_suffix = idle_age.map(|age| format!(" {}", format_idle_age(age)));
                 let idle_width = idle_suffix
@@ -3244,7 +3298,6 @@ fn render_workspace_list(
                 let token_spans: Vec<Span<'static>> = if ws.metadata_tokens.is_empty() {
                     Vec::new()
                 } else {
-                    let (row_state, row_seen) = ws.aggregate_state(&app.terminals);
                     let branch = ws.branch();
                     let token_values = ws.metadata_tokens.values();
                     let rows = tokens::space_rows(
@@ -3940,18 +3993,33 @@ rows = [[{ token = "state_text" }]]
             .unwrap();
         let buffer = terminal.backend().buffer();
 
+        // GC1: neither workspace has a detected agent, so both are the
+        // "Unknown" state and get the SAME dim overlay0 name style — a
+        // row's colour and weight now follow its own state, not "is this
+        // the active workspace" (that used to force `text`+BOLD here).
         let active = buffer[(find_symbol_x(buffer, first_row, 25, "o"), first_row)].style();
-        assert_eq!(active.fg, Some(app.palette.text));
-        assert!(active.add_modifier.contains(Modifier::BOLD));
-        assert!(!active.add_modifier.contains(Modifier::DIM));
-        assert_eq!(active.bg, Some(app.palette.active_row_bg));
+        assert_eq!(active.fg, Some(app.palette.overlay0));
+        assert!(active.add_modifier.contains(Modifier::DIM));
+        assert!(!active.add_modifier.contains(Modifier::BOLD));
+        assert_eq!(active.bg, Some(ratatui::style::Color::Reset));
 
         let inactive = buffer[(find_symbol_x(buffer, second_row, 25, "t"), second_row)].style();
-        assert_eq!(inactive.fg, Some(app.palette.subtext0));
-        assert!(!inactive
-            .add_modifier
-            .intersects(Modifier::BOLD | Modifier::DIM));
+        assert_eq!(inactive.fg, Some(app.palette.overlay0));
+        assert!(inactive.add_modifier.contains(Modifier::DIM));
+        assert!(!inactive.add_modifier.contains(Modifier::BOLD));
         assert_eq!(inactive.bg, Some(ratatui::style::Color::Reset));
+
+        // GC3: the active row is still marked, but by the left-edge
+        // marker rather than a background repaint.
+        let marker_x = find_symbol_x(buffer, first_row, 25, "▎");
+        assert_eq!(
+            buffer[(marker_x, first_row)].style().fg,
+            Some(app.palette.accent)
+        );
+        assert!(
+            !row_text(buffer, second_row, 25).contains('▎'),
+            "the inactive row must not draw the active marker"
+        );
     }
 
     #[test]
@@ -3973,8 +4041,8 @@ rows = [[{ token = "state_text" }]]
 
         assert_eq!(
             buffer[(0, active_row)].bg,
-            app.palette.active_row_bg,
-            "active workspace should keep its dedicated background"
+            ratatui::style::Color::Reset,
+            "active-but-not-selected workspace must not repaint its background (GC3)"
         );
         assert_eq!(
             buffer[(0, selected_row)].bg,
@@ -4011,7 +4079,8 @@ rows = [[{ token = "state_text" }]]
             .unwrap();
         assert_eq!(
             terminal.backend().buffer()[(0, active_row)].bg,
-            app.palette.active_row_bg
+            ratatui::style::Color::Reset,
+            "active-but-not-selected workspace must not repaint its background (GC3)"
         );
         assert_eq!(
             terminal.backend().buffer()[(0, inactive_row)].bg,
@@ -4109,12 +4178,13 @@ rows = [[{ token = "$hype", fg = "#abcdef", bold = true, dim = false }, "workspa
             assert_eq!(style.fg, Some(ratatui::style::Color::Rgb(0xab, 0xcd, 0xef)));
             assert!(style.add_modifier.contains(Modifier::BOLD));
             assert!(!style.add_modifier.contains(Modifier::DIM));
-            assert_eq!(style.bg, Some(app.palette.active_row_bg));
+            // GC3: active-but-not-selected no longer repaints the background.
+            assert_eq!(style.bg, Some(ratatui::style::Color::Reset));
         }
         assert_eq!(separator.fg, Some(app.palette.overlay0));
         assert!(separator.add_modifier.contains(Modifier::DIM));
         assert!(!separator.add_modifier.contains(Modifier::BOLD));
-        assert_eq!(separator.bg, Some(app.palette.active_row_bg));
+        assert_eq!(separator.bg, Some(ratatui::style::Color::Reset));
     }
 
     #[test]
@@ -4932,14 +5002,14 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
         assert_eq!(row_text(buffer, 2, 30).trim_end(), "╭─herdr [first]");
         assert_eq!(
             row_text(buffer, 3, 30).trim_end(),
-            format!("│   ◰  @{}p1", ids.0)
+            format!(" │   ◰  @{}p1", ids.0)
         );
         // Branch sub-header for the remaining branch, then its two children.
         assert_eq!(row_text(buffer, 4, 30).trim_end(), "├── main");
         let row5 = row_text(buffer, 5, 30);
         let row6 = row_text(buffer, 6, 30);
-        assert_eq!(row5.trim_end(), format!("│   ◰  @{}p1", ids.1));
-        assert_eq!(row6.trim_end(), format!("╰── ◰  @{}p1", ids.2));
+        assert_eq!(row5.trim_end(), format!(" │   ◰  @{}p1", ids.1));
+        assert_eq!(row6.trim_end(), format!(" ╰── ◰  @{}p1", ids.2));
         assert_ne!(row5, row6, "same-branch siblings must render distinct rows");
     }
 
@@ -4978,11 +5048,11 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
         assert_eq!(row_text(buffer, 2, 30).trim_end(), "╭─herdr [main]");
         assert_eq!(
             row_text(buffer, 3, 30).trim_end(),
-            format!("│   ◰  @{}p1", auto_id)
+            format!(" │   ◰  @{}p1", auto_id)
         );
         assert_eq!(
             row_text(buffer, 4, 30).trim_end(),
-            format!("╰── ◰ release-hotfix @{named_id}p1")
+            format!(" ╰── ◰ release-hotfix @{named_id}p1")
         );
     }
 
@@ -5022,7 +5092,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
         // Active child: branch shown because the header above omitted it.
         assert_eq!(
             row_text(buffer, 3, 30).trim_end(),
-            format!(" ◰ main @{active_id}p1")
+            format!("▎ ◰ main @{active_id}p1")
         );
     }
 
@@ -5062,9 +5132,9 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
 
         let buffer = terminal.backend().buffer();
         // Badge-less children fall back to the cwd-derived display name.
-        assert_eq!(row_text(buffer, 3, 30).trim_end(), "│   ◰ first");
-        assert_eq!(row_text(buffer, 5, 30).trim_end(), "│   ◰ second");
-        assert_eq!(row_text(buffer, 6, 30).trim_end(), "╰── ◰ third");
+        assert_eq!(row_text(buffer, 3, 30).trim_end(), " │   ◰ first");
+        assert_eq!(row_text(buffer, 5, 30).trim_end(), " │   ◰ second");
+        assert_eq!(row_text(buffer, 6, 30).trim_end(), " ╰── ◰ third");
     }
 
     fn workspace_with_worktree_space(
@@ -5982,14 +6052,16 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
             "the repo block still renders after the channel block: {rows:?}"
         );
 
-        // The channel group holds both channels, and its rail closes on the last.
+        // The channel group holds both channels, and its rail closes on the
+        // last. Column 0 is the active-row marker lane (blank here, since
+        // nothing is active) — the rail itself now starts at column 1.
         let channel_rows = &rows[group_at + 1..group_at + 3];
         assert!(
-            channel_rows[0].starts_with('│') && channel_rows[0].contains("#canal-ary"),
+            channel_rows[0].starts_with(" │") && channel_rows[0].contains("#canal-ary"),
             "first channel rides the spine: {channel_rows:?}"
         );
         assert!(
-            channel_rows[1].starts_with("╰── ") && channel_rows[1].contains("#part3-model-status"),
+            channel_rows[1].starts_with(" ╰── ") && channel_rows[1].contains("#part3-model-status"),
             "last channel closes the rail at the bottom of the group: {channel_rows:?}"
         );
     }
@@ -6565,12 +6637,12 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
             row_text(body_y)
         );
         assert!(
-            row_text(body_y + 1).starts_with('│'),
+            row_text(body_y + 1).starts_with(" │"),
             "folded member on spine: {:?}",
             row_text(body_y + 1)
         );
         assert!(
-            row_text(body_y + 2).starts_with('│'),
+            row_text(body_y + 2).starts_with(" │"),
             "loose no-branch member stays on the spine: {:?}",
             row_text(body_y + 2)
         );
@@ -7444,6 +7516,27 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
     }
 
     #[test]
+    fn project_row_line_draws_a_separator_rule_before_the_counter() {
+        // Solo #11: a thin rule separates top-level groups. `project_row_line`
+        // is the top-level Project-view row, so its own trailing gap fills
+        // with a rule instead of blank space — the same convention
+        // `section_header_line` already uses, cross-checked independently of
+        // the implementation's own arithmetic (mirrors
+        // `section_header_ruler_fills_exact_width_to_the_counter_column`).
+        let p = Palette::catppuccin();
+        let width = 30;
+        let text = line_text(&project_row_line("CNB", false, 1, 4, &p, width));
+
+        assert_eq!(display_width(&text), width as usize, "row: {text:?}");
+        let dash_run = text.chars().filter(|&c| c == '─').count();
+        assert!(dash_run > 0, "separator rule must exist: {text:?}");
+        let prefix = "▾ ⬢ CNB ";
+        let counter = " 1/4";
+        let expected_dashes = width as usize - display_width(prefix) - display_width(counter);
+        assert_eq!(dash_run, expected_dashes, "row: {text:?}");
+    }
+
+    #[test]
     fn project_row_line_uses_open_chevron_when_collapsed() {
         let p = Palette::catppuccin();
         let collapsed = line_text(&project_row_line("CNB", true, 1, 4, &p, 30));
@@ -7632,7 +7725,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
         let dot = ("○", Style::default().fg(p.overlay0));
         let text = line_text(&pane_row_line("agent-x", dot, &p, 40));
 
-        assert_eq!(text, "      ○ agent-x");
+        assert_eq!(text, "  ╰── ○ agent-x");
         assert!(!text.contains("cnb_landing_page"));
         assert!(!text.contains("bora"));
     }
