@@ -926,22 +926,12 @@ fn tab_aggregate_state(
         let Some(terminal) = terminals.get(&pane.attached_terminal_id) else {
             continue;
         };
-        if state_priority(terminal.state, pane.seen) > state_priority(aggregate, seen) {
+        if crate::detect::display_priority(terminal.state, pane.seen) > crate::detect::display_priority(aggregate, seen) {
             aggregate = terminal.state;
             seen = pane.seen;
         }
     }
     (aggregate, seen)
-}
-
-fn state_priority(state: AgentState, seen: bool) -> u8 {
-    match (state, seen) {
-        (AgentState::Blocked, _) => 5,
-        (AgentState::Working, _) => 4,
-        (AgentState::Idle, false) => 3,
-        (AgentState::Idle, true) => 2,
-        (AgentState::Unknown, _) => 1,
-    }
 }
 
 fn tab_activity_summary(

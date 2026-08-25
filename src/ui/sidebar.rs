@@ -1,3 +1,5 @@
+#[cfg(test)]
+mod capture;
 mod project_view;
 mod tokens;
 
@@ -252,7 +254,7 @@ fn collect_agent_panel_entries_with_runtimes(
     if matches!(app.agent_panel_sort, AgentPanelSort::Priority) {
         entries.sort_by_key(|entry| {
             (
-                std::cmp::Reverse(workspace_attention_priority(entry.state, entry.seen)),
+                std::cmp::Reverse(crate::detect::attention_priority(entry.state, entry.seen)),
                 // Oldest state change first: the agent waiting the longest
                 // tops its tier; panes without a recorded change sort last.
                 entry.last_agent_state_change_seq.unwrap_or(u64::MAX),
@@ -506,7 +508,7 @@ fn tab_dot_states(
                 .iter()
                 .filter(|d| d.tab_idx == t)
                 .map(|d| (d.state, d.seen))
-                .max_by_key(|(s, seen)| workspace_display_priority(*s, *seen))
+                .max_by_key(|(s, seen)| crate::detect::display_priority(*s, *seen))
                 .unwrap_or((AgentState::Unknown, true))
         })
         .collect()
@@ -586,29 +588,6 @@ fn indented_child_label(ws: &crate::workspace::Workspace, parent_branch: Option<
     }
 }
 
-fn workspace_attention_priority(state: AgentState, seen: bool) -> u8 {
-    match (state, seen) {
-        (AgentState::Blocked, _) => 4,
-        (AgentState::Idle, false) => 3,
-        (AgentState::Working, _) => 2,
-        (AgentState::Idle, true) => 1,
-        (AgentState::Unknown, _) => 0,
-    }
-}
-
-/// Display-only priority for a space's aggregate dot: prefers `Working` over a
-/// just-finished `Done` (Idle-unseen). Mirrors `workspace_attention_priority`
-/// but does not affect sort order.
-fn workspace_display_priority(state: AgentState, seen: bool) -> u8 {
-    match (state, seen) {
-        (AgentState::Blocked, _) => 4,
-        (AgentState::Working, _) => 3,
-        (AgentState::Idle, false) => 2,
-        (AgentState::Idle, true) => 1,
-        (AgentState::Unknown, _) => 0,
-    }
-}
-
 fn space_aggregate_display_state(app: &AppState, key: &str) -> (AgentState, bool) {
     app.workspaces
         .iter()
@@ -617,7 +596,7 @@ fn space_aggregate_display_state(app: &AppState, key: &str) -> (AgentState, bool
                 .is_some_and(|space| space.repo_identity == key)
         })
         .map(|ws| ws.aggregate_display_state(&app.terminals))
-        .max_by_key(|(state, seen)| workspace_display_priority(*state, *seen))
+        .max_by_key(|(state, seen)| crate::detect::display_priority(*state, *seen))
         .unwrap_or((AgentState::Unknown, true))
 }
 

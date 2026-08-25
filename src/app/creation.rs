@@ -5,7 +5,7 @@ use crate::api::schema::{EventData, EventEnvelope, EventKind};
 use tracing::error;
 
 use super::{
-    api_helpers::{pane_agent_status, tab_attention_priority},
+    api_helpers::pane_agent_status,
     App, Mode,
 };
 use crate::{config::NewTerminalCwdConfig, workspace::Workspace};
@@ -330,7 +330,7 @@ impl App {
                     .get(&pane.attached_terminal_id)
                     .map(|terminal| (terminal.state, pane.seen))
             })
-            .max_by_key(|(state, seen)| tab_attention_priority(*state, *seen))
+            .max_by_key(|(state, seen)| crate::detect::attention_priority(*state, *seen))
             .unwrap_or((crate::detect::AgentState::Unknown, true));
         Some(crate::api::schema::TabInfo {
             tab_id: self.public_tab_id(ws_idx, tab_idx)?,

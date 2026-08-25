@@ -19,6 +19,49 @@ pub enum AgentState {
     Unknown,
 }
 
+/// How urgently a pane, tab, or workspace in this state wants the user.
+///
+/// Two orderings exist, they differ in exactly one place, and they live here
+/// together for that reason: the difference is the whole point and it is not
+/// visible when each surface re-derives its own copy. Before this was one
+/// owner there were six copies across `ui/sidebar.rs`, `workspace/aggregate.rs`,
+/// `app/api_helpers.rs` and `app/actions.rs` — three of the attention ordering,
+/// two of the display ordering, and one that was the display ordering under a
+/// neutral name (`state_priority`) with a gratuitous `+1` offset. They agreed,
+/// but nothing made them agree.
+///
+/// - [`attention_priority`] ranks a **finished but unseen** agent above a
+///   working one, because a finished agent is waiting on you and a working one
+///   is not. Use it for sort order and for "where should I look next".
+/// - [`display_priority`] prefers `Working`, because an aggregate glyph should
+///   report what is *happening* rather than what is *pending*.
+///
+/// Both rank `Blocked` first: an agent asking you a question is the most urgent
+/// thing this UI can say. Only the relative order is meaningful — every caller
+/// compares these values (`max_by_key`, `Reverse`, `>`) and none stores or
+/// serializes them, so the absolute numbers carry no contract.
+pub(crate) fn attention_priority(state: AgentState, seen: bool) -> u8 {
+    match (state, seen) {
+        (AgentState::Blocked, _) => 4,
+        (AgentState::Idle, false) => 3,
+        (AgentState::Working, _) => 2,
+        (AgentState::Idle, true) => 1,
+        (AgentState::Unknown, _) => 0,
+    }
+}
+
+/// Display-order sibling of [`attention_priority`]; see that doc comment for
+/// the single difference between them.
+pub(crate) fn display_priority(state: AgentState, seen: bool) -> u8 {
+    match (state, seen) {
+        (AgentState::Blocked, _) => 4,
+        (AgentState::Working, _) => 3,
+        (AgentState::Idle, false) => 2,
+        (AgentState::Idle, true) => 1,
+        (AgentState::Unknown, _) => 0,
+    }
+}
+
 /// Screen-derived agent state plus confidence metadata used for source arbitration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AgentDetection {
@@ -699,6 +742,80 @@ fn is_python_runtime(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const EVERY_CASE: [(AgentState, bool); 8] = [
+        (AgentState::Idle, false),
+        (AgentState::Idle, true),
+        (AgentState::Working, false),
+        (AgentState::Working, true),
+        (AgentState::Blocked, false),
+        (AgentState::Blocked, true),
+        (AgentState::Unknown, false),
+        (AgentState::Unknown, true),
+    ];
+
+    /// The two orderings may disagree ONLY about whether a finished-but-unseen
+    /// agent outranks a working one. A disagreement anywhere else means one was
+    /// edited without the other, which is the drift the single owner exists to
+    /// prevent.
+    ///
+    /// Stated as a rule over the whole cross product rather than as a list of
+    /// the expected differences. An earlier draft enumerated the instances and
+    /// was wrong: `Working` has two `seen` values that rank identically, so
+    /// every difference shows up twice and the enumeration silently encoded
+    /// that accident. The rule does not care how many times it holds, only that
+    /// nothing else ever differs — and the emptiness guard keeps it from passing
+    /// vacuously if someone makes the two functions identical.
+    #[test]
+    fn attention_and_display_orderings_differ_only_on_finished_versus_working() {
+        let finished_unseen = (AgentState::Idle, false);
+        let mut differences = 0usize;
+        for left in EVERY_CASE {
+            for right in EVERY_CASE {
+                let attention = attention_priority(left.0, left.1)
+                    .cmp(&attention_priority(right.0, right.1));
+                let display =
+                    display_priority(left.0, left.1).cmp(&display_priority(right.0, right.1));
+                if attention == display {
+                    continue;
+                }
+                differences += 1;
+                let finished_versus_working = (left == finished_unseen
+                    && right.0 == AgentState::Working)
+                    || (right == finished_unseen && left.0 == AgentState::Working);
+                assert!(
+                    finished_versus_working,
+                    "the orderings disagree on {left:?} vs {right:?}, which is not \
+                     finished-unseen versus working"
+                );
+            }
+        }
+        assert!(
+            differences > 0,
+            "the two orderings are identical, so one of them is redundant"
+        );
+    }
+
+    /// `Blocked` outranks everything in both orderings. This is the product
+    /// claim the sidebar rests on — an agent waiting on you is the most urgent
+    /// row — so it gets its own assertion rather than being implied by the
+    /// numbers.
+    #[test]
+    fn blocked_outranks_every_other_state_in_both_orderings() {
+        for (state, seen) in EVERY_CASE {
+            if state == AgentState::Blocked {
+                continue;
+            }
+            assert!(
+                attention_priority(AgentState::Blocked, seen) > attention_priority(state, seen),
+                "attention: Blocked must outrank {state:?}"
+            );
+            assert!(
+                display_priority(AgentState::Blocked, seen) > display_priority(state, seen),
+                "display: Blocked must outrank {state:?}"
+            );
+        }
+    }
 
     fn foreground_process(
         pid: u32,
