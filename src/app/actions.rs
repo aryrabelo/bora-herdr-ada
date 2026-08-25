@@ -1124,8 +1124,23 @@ impl AppState {
     pub fn switch_workspace(&mut self, idx: usize) {
         if idx < self.workspaces.len() {
             let previous_focus = self.current_pane_focus_target();
+            // Swapping which workspace owns the terminal area reflows every
+            // pane in it without changing the outer terminal's (cols, rows).
+            // Both transport encoders decide full-vs-diff repaint purely from
+            // whether those dimensions changed, so without this the diff path
+            // runs against already-reflowed content and the physical terminal
+            // stays showing the PREVIOUS workspace until some unrelated full
+            // redraw happens to fire. The user-visible symptom is having to
+            // click a workspace two to five times: every click succeeds, state
+            // changes, `workspace.focus` is logged each time, and the screen
+            // does not move. Gated on an actual change so re-clicking the
+            // active workspace stays free.
+            let workspace_changed = self.active != Some(idx);
             self.active = Some(idx);
             self.selected = idx;
+            if workspace_changed {
+                self.request_full_repaint();
+            }
             let workspace_id = self.workspaces[idx].id.clone();
             crate::logging::workspace_focused(&workspace_id);
             self.mark_session_dirty();
@@ -1160,8 +1175,18 @@ impl AppState {
 
         let previous_focus = self.current_pane_focus_target();
         let workspace_changed = self.active != Some(ws_idx);
+        // A tab change reflows the terminal area for the same reason a
+        // workspace change does — a different set of panes fills it — and the
+        // outer dimensions are just as unchanged. See `switch_workspace`.
+        let tab_changed = self
+            .workspaces
+            .get(ws_idx)
+            .is_some_and(|ws| ws.active_tab != tab_idx);
         self.active = Some(ws_idx);
         self.selected = ws_idx;
+        if workspace_changed || tab_changed {
+            self.request_full_repaint();
+        }
         let workspace_id = self.workspaces[ws_idx].id.clone();
         if workspace_changed {
             crate::logging::workspace_focused(&workspace_id);
@@ -3397,6 +3422,62 @@ mod tests {
             state.mode = Mode::Terminal;
         }
         state
+    }
+
+    /// Switching workspace swaps every pane filling the terminal area without
+    /// changing the outer terminal's `(cols, rows)`, and both transport
+    /// encoders decide full-vs-diff repaint purely from whether those
+    /// dimensions changed. Without an explicit request the diff path runs
+    /// against already-reflowed content and the screen keeps showing the
+    /// PREVIOUS workspace until an unrelated redraw fires — which is why this
+    /// shipped as "I have to click a workspace two to five times": every click
+    /// succeeded, `workspace.focus` was logged every time, and nothing moved.
+    ///
+    /// Two-sided deliberately. Repainting on every call would also be wrong:
+    /// clicking the workspace you are already in reflows nothing, and a gate
+    /// that fires unconditionally is indistinguishable from having no gate.
+    #[test]
+    fn switching_workspace_requests_a_full_repaint_only_when_it_actually_changes() {
+        let mut state = app_with_workspaces(&["one", "two"]);
+        state.switch_workspace(0);
+        state.force_full_repaint = false;
+
+        state.switch_workspace(1);
+        assert!(
+            state.force_full_repaint,
+            "moving to a different workspace reflows the terminal area"
+        );
+
+        state.force_full_repaint = false;
+        state.switch_workspace(1);
+        assert!(
+            !state.force_full_repaint,
+            "re-selecting the workspace already active reflows nothing"
+        );
+    }
+
+    /// Same reflow, same reason, via the tab-click entry point: a different tab
+    /// puts a different set of panes in the terminal area.
+    #[test]
+    fn switching_tab_requests_a_full_repaint_only_when_it_actually_changes() {
+        let mut state = app_with_workspaces(&["one"]);
+        state.workspaces[0].test_add_tab(Some("second"));
+        state.ensure_test_terminals();
+        state.switch_workspace(0);
+        state.force_full_repaint = false;
+
+        assert!(state.switch_workspace_tab(0, 1));
+        assert!(
+            state.force_full_repaint,
+            "a different tab fills the terminal area with different panes"
+        );
+
+        state.force_full_repaint = false;
+        assert!(state.switch_workspace_tab(0, 1));
+        assert!(
+            !state.force_full_repaint,
+            "re-selecting the tab already active reflows nothing"
+        );
     }
 
     fn mark_linked_worktree(state: &mut AppState, ws_idx: usize) {
