@@ -811,6 +811,51 @@ impl AppState {
                                         start_row: mouse.row,
                                     },
                                 );
+
+                                // Split the row by column (owner's ask: "eu
+                                // clico no nome da workspace e ele
+                                // retrai" — clicking anywhere used to
+                                // collapse). `section_row_line`
+                                // (src/ui/sidebar.rs) always renders the
+                                // `▾`/`▸` chevron as the row's very first
+                                // glyph, and the geometry pass gives that
+                                // row's `ProjectRowHitArea.rect` the same
+                                // `x` the render used — so the chevron's
+                                // hit column is exactly that rect's own
+                                // left edge, read back here rather than a
+                                // hardcoded literal. Only a click on that
+                                // one column collapses.
+                                let on_caret = self
+                                    .view
+                                    .project_row_areas
+                                    .iter()
+                                    .find(|area| {
+                                        mouse.column >= area.rect.x
+                                            && mouse.column < area.rect.x + area.rect.width
+                                            && mouse.row >= area.rect.y
+                                            && mouse.row < area.rect.y + area.rect.height
+                                    })
+                                    // The caret glyph plus its separating
+                                    // space, i.e. the row's first TWO cells.
+                                    // One cell is a hostile mouse target in
+                                    // a mouse-first TUI, and the second cell
+                                    // is the chevron's own trailing space —
+                                    // it belongs to the caret visually, so
+                                    // spending it here costs no reachable
+                                    // part of the name.
+                                    .is_some_and(|area| mouse.column < area.rect.x + 2);
+                                if !on_caret {
+                                    // Anywhere else on the row selects the
+                                    // workspace instead: the press just
+                                    // recorded above is enough on its own —
+                                    // mouse-up's `chrome_press_action`
+                                    // already turns any pending
+                                    // `WorkspacePressState` into
+                                    // `MouseAction::FocusWorkspace` once it
+                                    // sees the press never became a drag,
+                                    // so nothing further is needed here.
+                                    return None;
+                                }
                             }
                             return self.handle_project_row_click(target);
                         }
@@ -6604,6 +6649,71 @@ mod tests {
             app.state.active,
             Some(1),
             "a click on a Project-view workspace row must focus it, same as a Flat/Repo card"
+        );
+    }
+
+    #[test]
+    fn project_view_section_row_caret_collapses_rest_of_row_focuses_without_collapsing() {
+        // Owner's ask (verbatim): "eu clico no nome da workspace e ele
+        // retrai" — clicking anywhere on the row used to collapse it,
+        // which made a plain click unable to mean "select this
+        // workspace". Approved split: only the caret `▾`/`▸` collapses;
+        // the rest of the row selects. `section_row_line`
+        // (src/ui/sidebar.rs) always renders the chevron as the row's
+        // very first glyph, so the caret's hit column is exactly the
+        // `ProjectRowHitArea.rect.x` used below — this is what the fix
+        // under test reads back, not a hardcoded column.
+        let mut app = app_for_mouse_test();
+        app.state.view_mode = crate::config::ViewMode::Project;
+        app.state.workspaces = vec![Workspace::test_new("a"), Workspace::test_new("b")];
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        let row_rect = Rect::new(0, 5, 20, 1);
+        let collapse_key = "wsec:1".to_string();
+        app.state.view.project_row_areas = vec![ProjectRowHitArea {
+            rect: row_rect,
+            target: ProjectRowTarget::Section {
+                ws_idx: 1,
+                checkout_key: "/repo/checkout-b".into(),
+                collapse_key: collapse_key.clone(),
+            },
+        }];
+
+        // Click away from the caret column: selects, does not collapse.
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            row_rect.x + 5,
+            row_rect.y,
+        ));
+        app.handle_mouse(mouse(
+            MouseEventKind::Up(MouseButton::Left),
+            row_rect.x + 5,
+            row_rect.y,
+        ));
+        assert_eq!(
+            app.state.active,
+            Some(1),
+            "a click away from the caret must still select the workspace"
+        );
+        assert!(
+            !app.state.collapsed_space_keys.contains(&collapse_key),
+            "a click away from the caret must not collapse the row"
+        );
+
+        // Click on the caret column: collapses.
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            row_rect.x,
+            row_rect.y,
+        ));
+        app.handle_mouse(mouse(
+            MouseEventKind::Up(MouseButton::Left),
+            row_rect.x,
+            row_rect.y,
+        ));
+        assert!(
+            app.state.collapsed_space_keys.contains(&collapse_key),
+            "a click on the caret must collapse the row"
         );
     }
 

@@ -1347,20 +1347,24 @@ impl AppState {
                 crate::ui::WorkspaceListEntry::GroupHeader { .. }
                 | crate::ui::WorkspaceListEntry::ProjectHeader { .. }
                 | crate::ui::WorkspaceListEntry::HiddenHeader { .. } => None,
-                // Project view. A `PaneRow` deliberately yields nothing: its
-                // `ws_idx` is already in the order via the workspace row above
-                // it, and returning it again would make cycling visit the same
-                // workspace once per pane. Focusing an individual pane from the
-                // keyboard is bora-49p.5, not this order.
+                // Project view. A `PaneDotsRow` deliberately yields nothing:
+                // its `ws_idx` is already in the order via the `SectionRow`
+                // above it, and returning it again would make cycling visit
+                // the same workspace twice. It replaced the per-pane
+                // `PaneRow`, which yielded nothing for the same reason — once
+                // per PANE, which was worse. Focusing an individual pane from
+                // the keyboard is bora-49p.5, not this order; from the mouse
+                // it is the per-dot hit area on this very row.
                 crate::ui::WorkspaceListEntry::ProjectRow { .. }
                 | crate::ui::WorkspaceListEntry::WorktreeRow { .. }
                 | crate::ui::WorkspaceListEntry::SectionHeader { .. }
                 | crate::ui::WorkspaceListEntry::SectionItem { .. }
                 | crate::ui::WorkspaceListEntry::PrRow { .. }
-                | crate::ui::WorkspaceListEntry::PaneRow { .. } => None,
+                | crate::ui::WorkspaceListEntry::PaneDotsRow { .. } => None,
                 // Project view's merged per-workspace row: it IS the workspace
                 // row now, so cycling and numbered switching must visit it.
-                // Its `PaneRow` children still yield nothing (see above).
+                // Its `PaneDotsRow` (the former per-pane `PaneRow`'s
+                // replacement) still yields nothing (see above).
                 crate::ui::WorkspaceListEntry::SectionRow { ws_idx, .. } => Some(ws_idx),
             })
             .collect::<Vec<_>>();

@@ -612,12 +612,17 @@ impl AppState {
                 // section per workspace, so dragging one reorders it
                 // exactly like a Flat-view workspace card.
                 crate::ui::WorkspaceListEntry::SectionRow { ws_idx, .. } => Some(ws_idx),
+                // A `PaneDotsRow` is not a drag root: the workspace it
+                // belongs to is already one via its `SectionRow` above, and
+                // the row itself is a strip of per-pane click targets rather
+                // than an identity that can be reordered. Same reason its
+                // predecessor `PaneRow` yielded nothing.
                 crate::ui::WorkspaceListEntry::ProjectRow { .. }
                 | crate::ui::WorkspaceListEntry::WorktreeRow { .. }
                 | crate::ui::WorkspaceListEntry::SectionHeader { .. }
                 | crate::ui::WorkspaceListEntry::SectionItem { .. }
                 | crate::ui::WorkspaceListEntry::PrRow { .. }
-                | crate::ui::WorkspaceListEntry::PaneRow { .. } => None,
+                | crate::ui::WorkspaceListEntry::PaneDotsRow { .. } => None,
             })
             .collect::<Vec<_>>();
         let source_pos = roots.iter().position(|ws_idx| *ws_idx == source_ws_idx)?;

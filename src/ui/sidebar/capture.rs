@@ -523,13 +523,38 @@ mod tests {
         );
     }
 
+    /// Attribution — this test asserted `FEATURE-X` and `HOTFIX` appeared
+    /// UPPERCASE on their own section rows. A3 (`SectionRow.repo_shown`)
+    /// changed that on purpose: every workspace in this fixture is a
+    /// worktree of the SAME repo, so only the FIRST prints the repo name and
+    /// the siblings render a `───────` rule in its place. Captured before /
+    /// after, same fixture:
+    ///
+    ///   before  row 09 |▾ FEATURE-X ⎇ feature/x                  |
+    ///                  |  ╰ w1p2                                 |
+    ///   after   row 09 |▾ ─────── ⎇ feature/x                     |
+    ///                  |  feature-x  ⠁                           |
+    ///
+    /// So the identity moved from an uppercase repo name on line 1 to the
+    /// workspace's own unique name on line 2 — which is the whole point of
+    /// the round: line 1 stops repeating what did not change. The uppercase
+    /// assertion survives, aimed at the one row that still carries a name.
     #[test]
-    fn v3_section_row_shows_uppercase_name_dim_branch_and_worktree_marker() {
+    fn v3_first_row_of_a_repo_names_it_siblings_get_the_a3_rule() {
         let (_isolated, _checkout, app) = multi_workspace_fixture();
         let text = capture_sidebar(&app, FIXTURE_WIDTH, FIXTURE_HEIGHT);
         assert!(
-            text.contains("FEATURE-X"),
-            "G2: section row name renders UPPERCASE: {text}"
+            text.contains("MAIN"),
+            "G2: the first row of the repo still renders its name UPPERCASE: {text}"
+        );
+        assert!(
+            text.contains("▾ ───────"),
+            "A3: a sibling worktree of the same repo renders the rule instead \
+             of repeating the name: {text}"
+        );
+        assert!(
+            text.contains("feature-x"),
+            "the workspace's own unique name now lives on its dots row: {text}"
         );
         assert!(
             text.contains("feature/x"),
@@ -540,12 +565,12 @@ mod tests {
             "G4: a worktree checkout gets the ⌗ marker: {text}"
         );
         assert!(
-            text.contains("HOTFIX"),
-            "G4: the linked-worktree fixture renders its own full section: {text}"
-        );
-        assert!(
             !text.contains("##"),
             "G4: the old condensed ## worktree row must be gone from Project view: {text}"
+        );
+        assert!(
+            !text.contains('╰'),
+            "the pane-row connector (the owner's \"rabinho\") is gone: {text}"
         );
     }
 
