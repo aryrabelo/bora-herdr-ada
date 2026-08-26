@@ -128,6 +128,10 @@ pub struct TerminalState {
     pub agent_metadata: HashMap<String, AgentMetadata>,
     pub metadata_tokens: crate::metadata_tokens::MetadataTokens,
     pub persisted_agent_session: Option<crate::agent_resume::PersistedAgentSession>,
+    /// Durable agent identity. Always present, minted at birth, restored
+    /// verbatim from the snapshot — see [`crate::terminal::id::AgentId`] for
+    /// why none of the existing ids could play this role.
+    pub agent_id: crate::terminal::id::AgentId,
     pub terminal_title: Option<String>,
     pub manual_label: Option<String>,
     pub agent_name: Option<String>,
@@ -163,6 +167,7 @@ impl TerminalState {
             agent_metadata: HashMap::new(),
             metadata_tokens: crate::metadata_tokens::MetadataTokens::default(),
             persisted_agent_session: None,
+            agent_id: crate::terminal::id::AgentId::alloc(),
             terminal_title: None,
             manual_label: None,
             agent_name: None,
@@ -1368,6 +1373,16 @@ impl TerminalState {
         session: crate::agent_resume::PersistedAgentSession,
     ) {
         self.persisted_agent_session = Some(session);
+    }
+
+    /// Replaces the birth-minted id with the one read back from a snapshot.
+    ///
+    /// Called unconditionally by restore whenever the snapshot carries an id,
+    /// mirroring [`Self::set_persisted_agent_session`] and deliberately *not*
+    /// mirroring `restore_managed_agent`, whose extra condition is exactly how
+    /// `agent_name` gets dropped on cold restore.
+    pub fn restore_agent_id(&mut self, agent_id: crate::terminal::id::AgentId) {
+        self.agent_id = agent_id;
     }
 
     pub fn set_agent_session_ref(

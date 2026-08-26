@@ -117,6 +117,11 @@ pub struct PaneSnapshot {
     pub agent_session: Option<PaneAgentSessionSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub launch_argv: Option<Vec<String>>,
+    /// Durable agent identity, keyed on by the channel registries. `Option`
+    /// only so snapshots written before this field existed still load; a
+    /// missing id means "mint a fresh one", never "fail the restore".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -386,6 +391,10 @@ fn capture_tab(
                     value: session.session_ref.value.clone(),
                 })
         });
+        // Captured unconditionally, unlike `agent_name` above: a terminal
+        // always has an id, and dropping it here would orphan every channel
+        // registry entry that names it.
+        let agent_id = terminal.map(|terminal| terminal.agent_id.to_string());
         panes.insert(
             id.raw(),
             PaneSnapshot {
@@ -395,6 +404,7 @@ fn capture_tab(
                 managed_agent_kind,
                 agent_session,
                 launch_argv,
+                agent_id,
             },
         );
     }
