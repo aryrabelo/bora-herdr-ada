@@ -196,14 +196,29 @@ impl Palette {
             sidebar_bg: Color::Reset,
             active_row_bg: Color::DarkGray,
             selection_bg: Color::Reset,
-            surface0: Color::Reset,
+            // Was `Reset`, i.e. identical to `sidebar_bg` — so any row using
+            // `surface0` as a "slightly lighter" fill got no fill at all.
+            // That became load-bearing when the Project-view header row
+            // dropped BOLD in favour of exactly that background. `DarkGray`
+            // duplicates `surface1`, which is the least-bad option in a
+            // 16-color palette: the two are never asked to distinguish
+            // themselves on the same row (`surface1` is the drag-preview
+            // fill), whereas a fill that equals the background is always
+            // wrong.
+            surface0: Color::DarkGray,
             surface1: Color::DarkGray,
             surface_dim: Color::DarkGray,
             overlay0: Color::Gray,
             overlay1: Color::White,
             text: Color::Reset,
             subtext0: Color::Gray,
-            mauve: Color::Gray,
+            // Was `Color::Gray`, identical to `overlay0` above, so every
+            // mauve accent — the Project-view header name, the worktree
+            // glyph, the merged-PR chip — rendered as ordinary muted text on
+            // this theme. `Magenta` is the ANSI purple slot and is otherwise
+            // unclaimed here, matching how every neighbour maps to its own
+            // slot (green→Green, yellow→Yellow, teal→Cyan).
+            mauve: Color::Magenta,
             green: Color::Green,
             yellow: Color::Yellow,
             red: Color::LightRed,
@@ -708,12 +723,21 @@ pub struct ProjectRowHitArea {
 pub enum ProjectRowTarget {
     /// Toggle the project's collapse state.
     Project { collapse_key: String },
-    /// Toggle a checkout's collapse state.
-    Worktree { collapse_key: String },
     /// Open an on-disk worktree that has no workspace yet.
     OpenWorktree { checkout_key: String },
-    /// Toggle a COMMANDS/CHECKS band.
-    Section { collapse_key: String },
+    /// Toggle a COMMANDS/CHECKS band header (`WorkspaceListEntry::SectionHeader`).
+    Band { collapse_key: String },
+    /// Toggle a workspace's own section — one full section per workspace,
+    /// main checkout or worktree alike (bora-c1h, `WorkspaceListEntry::SectionRow`).
+    /// `checkout_key` names the git checkout for the bora-uqv
+    /// `ProjectMemberTargets` right-click menu (resolved directly, no more
+    /// `wt:`-prefix stripping); `ws_idx` is the workspace this section is
+    /// for; `collapse_key` (`wsec:{ws_idx}`) toggles only its own panes.
+    Section {
+        ws_idx: usize,
+        checkout_key: String,
+        collapse_key: String,
+    },
     /// Activate a row inside a band (run a command, open a check).
     /// Activate a row inside a band: run a command (COMMANDS rows carry
     /// the workspace to launch into), open a check/todo/doc (not wired).
@@ -1710,6 +1734,11 @@ pub fn build_context_menu_items(
             } else {
                 "Send right-clicks to pane".to_string()
             });
+            // The sidebar no longer prints the `@<id>` badge on a pane row
+            // (Ary's call: the id is reference material, not something you
+            // read every frame), so this is where you get it when you do
+            // need it — the same shape as RepoPr's "Copy URL".
+            v.push("Copy pane ID".to_string());
             v.push("Close pane".to_string());
             v
         }
@@ -2267,6 +2296,8 @@ pub struct AppState {
     pub agent_view_override: Option<crate::api::schema::AgentViewSetParams>,
     pub sidebar_agents: crate::config::AgentsSidebarConfig,
     pub sidebar_spaces: crate::config::SpacesSidebarConfig,
+    /// Project-view row_gap + glyph style (bora-c1h), mirrors sidebar_agents/sidebar_spaces.
+    pub sidebar_project: crate::config::ProjectSidebarConfig,
     pub next_agent_state_change_seq: u64,
     /// Capture mouse input for Herdr's own mouse UI. When false, Herdr only
     /// captures mouse while the focused pane app requests mouse reporting.
@@ -2814,6 +2845,7 @@ impl AppState {
             agent_view_override: None,
             sidebar_agents: crate::config::AgentsSidebarConfig::default(),
             sidebar_spaces: crate::config::SpacesSidebarConfig::default(),
+            sidebar_project: crate::config::ProjectSidebarConfig::default(),
             next_agent_state_change_seq: 0,
             mouse_capture: true,
             copy_on_select: true,

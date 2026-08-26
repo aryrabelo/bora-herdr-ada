@@ -4,7 +4,7 @@ mod agents;
 mod io;
 mod keybinds;
 mod model;
-mod sidebar;
+pub mod sidebar;
 mod sound;
 mod tab_bar;
 mod theme;
@@ -29,7 +29,10 @@ pub use self::{
         ToastClipboardPosition, ToastConfig, ToastDelivery, ToastHerdrPosition,
         UpdateChannelConfig, ViewMode, MAX_TOAST_DELAY_SECONDS,
     },
-    sidebar::{AgentSidebarToken, AgentsSidebarConfig, SidebarConfig, SpacesSidebarConfig},
+    sidebar::{
+        project_glyphs, AgentSidebarToken, AgentsSidebarConfig, ProjectGlyphs,
+        ProjectSidebarConfig, SidebarConfig, SpacesSidebarConfig,
+    },
     sound::SoundConfig,
     tab_bar::TabBarRightEntryConfig,
     theme::{parse_color, CustomThemeColors, ThemeConfig, THEME_NAMES},

@@ -151,4 +151,26 @@ once after merge.
   of promised in prose.
 - 2026-08-24 — six `OpenPr {` literal sites broke on the new field; five patched by the lead,
   `mouse.rs` deferred to B1's release. Process lesson, per gauntlet-orchestration: enumerate unowned
-  files BEFORE dispatching. A leaf caught this for me, which is luck, not method.
+  files BEFORE dispatching. A leaf caught this for me, which is luck, not method.- 2026-08-26 — bora-c1h closed at 13/14 gates. The two defects that mattered were found by
+  reading the approved mock's CSS, not by looking at it and not by the blind critic: the state
+  cluster was inline where `.sec .st { float: right }` pins it to the row edge, and the behind
+  arrow was red where `.behind` is yellow and red is `.fail`'s alone. Both survived a green
+  `just check` and a won critic round, because a screenshot cannot show either at sidebar width
+  and the critic judged a lossy text extract. Promoted to a dated binding rule in AGENTS.md.
+  The right-edge fix is mutation-verified (deleting the pad block reddens exactly its test).
+  G13 (live handoff) is handed to the operator: this agent runs inside a pane of the server the
+  handoff replaces.
+- 2026-08-26 — P0 do dono: dois projetos no mesmo diretório colapsavam num só grupo. Causa não era
+  render, era modelo: o projeto de um workspace era DERIVADO do path, e `claimed` dava a posse ao
+  primeiro slug em ordem alfabética. Com `worktrees: all` em todo member (o yml real do dono), um
+  member reivindica todo worktree do repo. Corrigido em 3 slices paralelas com binding explícito
+  vencendo a derivação, fallback em binding órfão, e desempate por especificidade do member. Promovido
+  a regra datada em AGENTS.md. Dois achados que valem mais que o patch: o site de literal em
+  restore.rs (sem ele o binding evapora no restart — pior forma do bug) foi achado por um subagente
+  DEPOIS de o lead concluir "zero sites" de um grep de 239 hits ruidosos; e `visual_group` foi
+  auditado e NÃO é o mesmo conceito, então não houve consolidação errada.
+- 2026-08-26 — gauntlet da sidebar: barra reconstruída como `bar/mock-capture.txt` (mock no MESMO
+  formato do capture harness, 56 col) + `bar/gap-table.md` + `PROMPT.md`. Medição que reenquadra tudo:
+  o HTML do mock contém UM glifo NF (e725, 23x); os outros dez que a legenda documenta estão ausentes
+  byte-a-byte, então `.dirty/.ok/.run/.fail` são spans vazios. A forma aprovada é mais SILENCIOSA que
+  a implementação — o problema é ruído a mais, não detalhe a menos.

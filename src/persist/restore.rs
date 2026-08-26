@@ -414,6 +414,7 @@ fn restore_workspace(
     (
         Some(Workspace {
             id: workspace_id,
+            project: snap.project.clone(),
             custom_name: snap.custom_name.clone(),
             identity_cwd: snap.identity_cwd.clone(),
             cached_identity_cwd: snap.identity_cwd.clone(),
@@ -1218,6 +1219,7 @@ mod tests {
                 }],
                 active_tab: 0,
                 visual_group: None,
+                project: None,
             }],
             active: Some(0),
             selected: 0,
@@ -1315,6 +1317,7 @@ mod tests {
                 }],
                 active_tab: 0,
                 visual_group: None,
+                project: None,
             }],
             active: Some(0),
             selected: 0,
@@ -1426,6 +1429,7 @@ mod tests {
                 ],
                 active_tab: 3,
                 visual_group: None,
+                project: None,
             }],
             active: Some(0),
             selected: 0,
@@ -1492,6 +1496,7 @@ mod tests {
             }],
             active_tab: 0,
             visual_group: None,
+            project: None,
         };
         let mut next_public_pane_number = 1;
 
@@ -1542,6 +1547,7 @@ mod tests {
                 }],
                 active_tab: 0,
                 visual_group: None,
+                project: None,
             }],
             active: Some(0),
             selected: 0,
@@ -1687,6 +1693,76 @@ mod tests {
         let _ = runtime.try_send_bytes(bytes::Bytes::from_static(b"exit\n"));
     }
 
+    #[tokio::test]
+    async fn restore_carries_workspace_project_binding() {
+        let cwd = std::env::current_dir().unwrap();
+        let snapshot = SessionSnapshot {
+            version: super::super::snapshot::SNAPSHOT_VERSION,
+            workspaces: vec![WorkspaceSnapshot {
+                id: Some("wbeta".into()),
+                custom_name: None,
+                identity_cwd: cwd.clone(),
+                worktree_space: None,
+                public_pane_numbers: HashMap::new(),
+                next_public_pane_number: 0,
+                public_tab_numbers: Vec::new(),
+                next_public_tab_number: 0,
+                tabs: vec![TabSnapshot {
+                    custom_name: None,
+                    layout: LayoutSnapshot::Pane(0),
+                    panes: HashMap::from([(
+                        0,
+                        super::super::snapshot::PaneSnapshot {
+                            cwd,
+                            label: None,
+                            agent_name: None,
+                            managed_agent_kind: None,
+                            agent_session: None,
+                            launch_argv: None,
+                        },
+                    )]),
+                    zoomed: false,
+                    focused: Some(0),
+                    root_pane: Some(0),
+                }],
+                active_tab: 0,
+                visual_group: None,
+                project: Some("beta".into()),
+            }],
+            active: Some(0),
+            selected: 0,
+            sidebar_width: None,
+            sidebar_section_split: None,
+            collapsed_space_keys: Default::default(),
+            right_panel_width: None,
+            right_panel_collapsed: None,
+            view_mode: Default::default(),
+        };
+        let (events, _event_rx) = mpsc::channel(4);
+
+        let (workspaces, _terminals, _runtimes) = restore(
+            &snapshot,
+            None,
+            24,
+            80,
+            0,
+            test_restore_shell(),
+            crate::config::ShellModeConfig::NonLogin,
+            false,
+            events,
+            Arc::new(Notify::new()),
+            Arc::new(RenderSignal::new()),
+        );
+
+        let workspace = workspaces.first().expect("workspace should restore");
+        assert_eq!(
+            workspace.project(),
+            Some("beta"),
+            "the project binding in the snapshot must survive restore_workspace's rebuild of \
+             Workspace, not just the WorkspaceSnapshot DTO round trip"
+        );
+    }
+
     fn snapshot_with_saved_pane_history() -> (SessionSnapshot, SessionHistorySnapshot) {
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
         let mut panes = HashMap::new();
@@ -1740,6 +1816,7 @@ mod tests {
                 }],
                 active_tab: 0,
                 visual_group: None,
+                project: None,
             }],
             active: Some(0),
             selected: 0,

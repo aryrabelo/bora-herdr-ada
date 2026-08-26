@@ -579,9 +579,17 @@ impl AppState {
         insert_idx: usize,
     ) -> Option<crate::api::schema::WorkspaceMoveBlockParams> {
         let source = self.workspaces.get(source_ws_idx)?;
-        if source
-            .worktree_space()
-            .is_some_and(|space| space.is_linked_worktree)
+        // A linked worktree is not a drag root in Flat/Repo view: it renders
+        // as an indented child under its main checkout, so reordering it
+        // alone is meaningless. Project view inverts that — every workspace
+        // gets its own top-level `SectionRow`, which the `roots` filter below
+        // already treats as a root (see its comment). Applying this guard
+        // there let the drag OPEN and then silently swallowed the drop, since
+        // `None` here means "nothing to move".
+        if self.view_mode != crate::config::ViewMode::Project
+            && source
+                .worktree_space()
+                .is_some_and(|space| space.is_linked_worktree)
         {
             return None;
         }
@@ -599,7 +607,11 @@ impl AppState {
                 | crate::ui::WorkspaceListEntry::ProjectHeader { .. }
                 | crate::ui::WorkspaceListEntry::BranchHeader { .. }
                 | crate::ui::WorkspaceListEntry::HiddenHeader { .. } => None,
-                // Project view: no project-view row is a top-level root here.
+                // Project view (bora-c1h): every workspace's own
+                // `SectionRow` IS a top-level drag root now — one full
+                // section per workspace, so dragging one reorders it
+                // exactly like a Flat-view workspace card.
+                crate::ui::WorkspaceListEntry::SectionRow { ws_idx, .. } => Some(ws_idx),
                 crate::ui::WorkspaceListEntry::ProjectRow { .. }
                 | crate::ui::WorkspaceListEntry::WorktreeRow { .. }
                 | crate::ui::WorkspaceListEntry::SectionHeader { .. }
@@ -684,6 +696,31 @@ impl AppState {
             workspace_ids,
             before_workspace_id,
         })
+    }
+
+    /// Hit test for the sidebar's view-mode cycle target: the current view's
+    /// name, right-aligned on the workspace list's first row.
+    ///
+    /// Removed in 7bb8133b together with the ` spaces` title it shared that
+    /// row with, and restored on its own: the owner wanted the title gone,
+    /// not the only mouse affordance for cycling Flat/Repo/Project. The rect
+    /// claims just the trailing `label.len()` cells, so the rest of the row
+    /// still serves the drag "drop above the first card" indicator.
+    pub(super) fn on_view_mode_toggle(&self, col: u16, row: u16) -> bool {
+        if self.sidebar_collapsed {
+            return false;
+        }
+
+        let (ws_area, _) = crate::ui::expanded_sidebar_sections(
+            self.view.sidebar_rect,
+            self.sidebar_section_split,
+        );
+        let rect = crate::ui::view_mode_toggle_rect(ws_area, self.view_mode);
+        rect.width > 0
+            && col >= rect.x
+            && col < rect.x + rect.width
+            && row >= rect.y
+            && row < rect.y + rect.height
     }
 
     pub(super) fn on_agent_panel_sort_toggle(&self, col: u16, row: u16) -> bool {
@@ -796,13 +833,15 @@ mod tests {
             },
             ProjectRowHitArea {
                 rect: Rect::new(2, 8, 20, 1),
-                target: ProjectRowTarget::Worktree {
-                    collapse_key: "worktree:cnb:main".into(),
+                target: ProjectRowTarget::Section {
+                    ws_idx: 7,
+                    checkout_key: "cnb-main".into(),
+                    collapse_key: "wsec:7".into(),
                 },
             },
             ProjectRowHitArea {
                 rect: Rect::new(2, 12, 20, 3),
-                target: ProjectRowTarget::Section {
+                target: ProjectRowTarget::Band {
                     collapse_key: "section:cnb:main:checks".into(),
                 },
             },
@@ -816,21 +855,23 @@ mod tests {
         );
         assert_eq!(
             super::project_row_target_at(&areas, 5, 8),
-            Some(&ProjectRowTarget::Worktree {
-                collapse_key: "worktree:cnb:main".into()
+            Some(&ProjectRowTarget::Section {
+                ws_idx: 7,
+                checkout_key: "cnb-main".into(),
+                collapse_key: "wsec:7".into(),
             }),
         );
         // First and last row of the taller (height-3) rect both resolve to
         // the same target, not just its top row.
         assert_eq!(
             super::project_row_target_at(&areas, 5, 12),
-            Some(&ProjectRowTarget::Section {
+            Some(&ProjectRowTarget::Band {
                 collapse_key: "section:cnb:main:checks".into()
             }),
         );
         assert_eq!(
             super::project_row_target_at(&areas, 5, 14),
-            Some(&ProjectRowTarget::Section {
+            Some(&ProjectRowTarget::Band {
                 collapse_key: "section:cnb:main:checks".into()
             }),
         );
@@ -1997,16 +2038,34 @@ mod tests {
             .iter()
             .any(|item| item == "Rename project\u{2026}"));
 
-        // 3. The orphan workspace row splices "Add to alpha" — and the
-        // visual-group items are gone in Project view…
+        // 3. The orphan workspace's SectionRow splices "Add to alpha" — and
+        // the visual-group items are gone in Project view…
+        //
+        // Attribution: this assertion read `ProjectMemberTargets` until the
+        // right-click regression was fixed. A Project-view `SectionRow`
+        // emitted no `WorkspaceCardArea`, so `workspace_at_row` missed it and
+        // right-click fell through to the narrow `ProjectRowTarget::Section`
+        // arm, whose menu is ONLY the project-membership items — the owner
+        // reported it as "right-click shows one option, everything that used
+        // to be there is gone". `SectionRow` now emits a card, so the row
+        // reaches the full workspace menu (`GitWorkspace`), which already
+        // splices the same membership items in Project view. Both item
+        // assertions below are unchanged and still pass, which is the proof
+        // that nothing was traded away to get the full menu back: the kind
+        // widened, the membership items stayed.
         reset(&mut app);
         let card = app
             .state
             .view
-            .workspace_card_areas
+            .project_row_areas
             .iter()
-            .find(|card| card.ws_idx == 1)
-            .expect("orphan workspace card")
+            .find(|area| {
+                matches!(
+                    &area.target,
+                    crate::app::state::ProjectRowTarget::Section { ws_idx, .. } if *ws_idx == 1
+                )
+            })
+            .expect("orphan section row")
             .rect;
         app.handle_mouse(mouse(
             MouseEventKind::Down(MouseButton::Right),
@@ -2014,6 +2073,17 @@ mod tests {
             card.y,
         ));
         let menu = app.state.context_menu.as_ref().expect("row menu");
+        assert!(
+            matches!(
+                &menu.kind,
+                crate::app::state::ContextMenuKind::GitWorkspace { ws_idx: 1, .. }
+            ),
+            "kind: {:?}",
+            menu.kind
+        );
+        // The workspace-scoped items the owner lost are back alongside the
+        // membership ones.
+        assert!(menu.items.iter().any(|item| item == "Rename"));
         assert!(menu.items.iter().any(|item| item == "Add to alpha"));
         assert!(menu.items.iter().any(|item| item == "New project\u{2026}"));
         assert!(!menu.items.iter().any(|item| item == "New group\u{2026}"));

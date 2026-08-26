@@ -5366,6 +5366,23 @@
           ],
           "type": "object"
         },
+        "WorkspaceSetProjectParams": {
+          "properties": {
+            "project": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "workspace_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "workspace_id"
+          ],
+          "type": "object"
+        },
         "WorkspaceTarget": {
           "properties": {
             "workspace_id": {
@@ -5839,6 +5856,22 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/WorkspaceSetGroupParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "workspace.set_project",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/WorkspaceSetProjectParams"
             }
           },
           "required": [

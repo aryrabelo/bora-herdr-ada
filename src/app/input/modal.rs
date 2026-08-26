@@ -475,6 +475,40 @@ pub(super) fn leave_modal(state: &mut AppState) {
     }
 }
 
+/// The pane's addressable id, in the exact `wNpN` (no-colon) form the
+/// sidebar prints (`ui::sidebar::project_view::pane_address`) — deliberately
+/// NOT `workspace::public_pane_id_for_number`'s colon form, which is a
+/// different, equally "public" representation of the same pane. Reusing the
+/// sidebar's own formatter means the string this copies to the clipboard is
+/// exactly what the user has already seen printed on screen.
+///
+/// Known layering residual (flagged in review, not fixed here): this reaches
+/// from the input layer into a UI-module formatter for what is really a
+/// plain data format. The real fix is hoisting `pane_address` to sit next to
+/// `workspace::public_pane_id_for_number` in the workspace layer, so the
+/// sidebar and this menu both call one shared function instead of one
+/// reaching into the other's module.
+///
+/// This also leans on the pane-id resolver accepting the colonless form
+/// interchangeably with the colon form (verified against a live server:
+/// `bora agent read w6Jp1` and `w6J:p1` both resolve today). If that
+/// resolver ever becomes colon-strict, this silently starts copying a
+/// string that no longer works —
+/// `context_menu_copy_pane_id_resolves_via_public_pane_id_parsing` is the
+/// regression test that would catch it.
+///
+/// `None` when the workspace can no longer be resolved (e.g. closed since
+/// the menu opened): the caller writes nothing rather than a placeholder.
+fn pane_public_address(
+    workspaces: &[crate::workspace::Workspace],
+    ws_idx: usize,
+    pane_id: crate::layout::PaneId,
+) -> Option<String> {
+    let ws = workspaces.get(ws_idx)?;
+    let number = ws.public_pane_number(pane_id)?;
+    Some(crate::ui::sidebar::project_view::pane_address(ws, number))
+}
+
 /// Minutes for a "Hide Nm" context-menu label.
 fn hide_minutes(label: &str) -> u64 {
     match label {
@@ -1182,6 +1216,17 @@ pub(super) fn apply_context_menu_action(
             state.focus_pane_in_workspace(ws_idx, pane_id);
             state.toggle_zoom();
             state.mode = Mode::Terminal;
+        }
+        (
+            ContextMenuKind::Pane {
+                ws_idx, pane_id, ..
+            },
+            Some("Copy pane ID"),
+        ) => {
+            if let Some(address) = pane_public_address(&state.workspaces, ws_idx, pane_id) {
+                state.request_clipboard_write = Some(address.into_bytes());
+            }
+            leave_modal(state);
         }
         (
             ContextMenuKind::Pane {
@@ -2043,6 +2088,18 @@ impl App {
                 self.focus_pane_internal_via_api(ws_idx, pane_id);
                 self.zoom_focused_pane_via_api();
                 self.state.mode = Mode::Terminal;
+            }
+            (
+                ContextMenuKind::Pane {
+                    ws_idx, pane_id, ..
+                },
+                Some("Copy pane ID"),
+            ) => {
+                if let Some(address) = pane_public_address(&self.state.workspaces, ws_idx, pane_id)
+                {
+                    self.state.request_clipboard_write = Some(address.into_bytes());
+                }
+                leave_modal(&mut self.state);
             }
             (
                 ContextMenuKind::Pane {
@@ -3927,6 +3984,147 @@ mod tests {
         assert_ne!(state.mode, Mode::ConfirmClose);
         assert_eq!(state.workspaces.len(), 1);
         assert_eq!(state.workspaces[0].display_name(), "issue");
+    }
+
+    fn pane_menu(
+        ws_idx: usize,
+        tab_idx: usize,
+        pane_id: crate::layout::PaneId,
+    ) -> ContextMenuState {
+        let kind = ContextMenuKind::Pane {
+            ws_idx,
+            tab_idx,
+            pane_id,
+            source_pane_id: None,
+            has_manual_label: false,
+            right_click_passthrough: false,
+        };
+        ContextMenuState {
+            items: build_context_menu_items(
+                &kind,
+                &[],
+                crate::config::ViewMode::Repo,
+                &[],
+                &[],
+                &Default::default(),
+            ),
+            kind,
+            x: 0,
+            y: 0,
+            list: MenuListState::new(0),
+            bora_commands: vec![],
+            bora_port: None,
+        }
+    }
+
+    fn copy_pane_id_idx(menu: &ContextMenuState) -> usize {
+        menu.items()
+            .iter()
+            .position(|item| item.as_str() == "Copy pane ID")
+            .expect("copy pane id item")
+    }
+
+    #[test]
+    fn context_menu_copy_pane_id_writes_sidebar_public_address_direct_path() {
+        // Single-path coverage: exercises only `apply_context_menu_action`
+        // (the state-only/keyboard dispatch). Stays green if the API-path
+        // arm is ever removed — that divergence from the "both paths" test
+        // below is what proves the two dispatch sites are independently
+        // covered.
+        let mut state = state_with_workspaces(&["main"]);
+        let pane_id = state.workspaces[0].tabs[0].root_pane;
+        let expected = crate::ui::sidebar::project_view::pane_address(
+            &state.workspaces[0],
+            state.workspaces[0].public_pane_number(pane_id).unwrap(),
+        );
+        let menu = pane_menu(0, 0, pane_id);
+        let idx = copy_pane_id_idx(&menu);
+        let mut terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
+
+        apply_context_menu_action(&mut state, &mut terminal_runtimes, menu, idx);
+
+        assert_eq!(
+            state.request_clipboard_write.as_deref(),
+            Some(expected.as_bytes())
+        );
+        assert_ne!(state.mode, Mode::ContextMenu, "menu closed after action");
+    }
+
+    #[test]
+    fn context_menu_copy_pane_id_unresolvable_workspace_writes_nothing() {
+        let mut state = state_with_workspaces(&["main"]);
+        let pane_id = state.workspaces[0].tabs[0].root_pane;
+        // ws_idx 5 does not exist in a one-workspace state: the item must
+        // degrade to a no-op rather than copy a placeholder.
+        let menu = pane_menu(5, 0, pane_id);
+        let idx = copy_pane_id_idx(&menu);
+        let mut terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
+
+        apply_context_menu_action(&mut state, &mut terminal_runtimes, menu, idx);
+
+        assert_eq!(state.request_clipboard_write, None);
+    }
+
+    #[test]
+    fn context_menu_copy_pane_id_resolves_via_public_pane_id_parsing() {
+        // Pins the dependency `pane_public_address`'s doc comment names: the
+        // pane-id resolver accepts the colonless `wNpN` form exactly like
+        // the colon `wN:pN` form. If that resolver is ever made
+        // colon-strict, this copied string stops resolving and this test is
+        // what would notice.
+        let mut app = app_with_test_workspaces(&["main"]);
+        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        let menu = pane_menu(0, 0, pane_id);
+        let idx = copy_pane_id_idx(&menu);
+
+        app.apply_context_menu_action_via_api(menu, idx);
+
+        let copied = app
+            .state
+            .request_clipboard_write
+            .clone()
+            .expect("clipboard write");
+        let copied = String::from_utf8(copied).expect("utf8 pane id");
+        assert_eq!(app.parse_pane_id(&copied), Some((0, pane_id)));
+    }
+
+    #[test]
+    fn context_menu_copy_pane_id_reachable_from_both_dispatch_paths() {
+        // "Copy URL"-style items are wired at two independent call sites
+        // (`apply_context_menu_action` for the state-only/keyboard path,
+        // `apply_context_menu_action_via_api` for the App-owned live path
+        // that real mouse/keyboard input actually drives). Asserting both
+        // here means this test reddens if EITHER dispatch arm goes
+        // missing — a menu item wired into only one path is a working
+        // keyboard action with a dead mouse click, or vice versa, and a
+        // single-path test would not show it.
+        let mut state = state_with_workspaces(&["main"]);
+        let direct_pane_id = state.workspaces[0].tabs[0].root_pane;
+        let expected = crate::ui::sidebar::project_view::pane_address(
+            &state.workspaces[0],
+            state.workspaces[0]
+                .public_pane_number(direct_pane_id)
+                .unwrap(),
+        );
+        let mut terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
+        let direct_menu = pane_menu(0, 0, direct_pane_id);
+        let direct_idx = copy_pane_id_idx(&direct_menu);
+        apply_context_menu_action(&mut state, &mut terminal_runtimes, direct_menu, direct_idx);
+        assert_eq!(
+            state.request_clipboard_write.as_deref(),
+            Some(expected.as_bytes()),
+            "direct dispatch path must copy the pane id"
+        );
+
+        let mut app = app_with_test_workspaces(&["main"]);
+        let api_pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        let api_menu = pane_menu(0, 0, api_pane_id);
+        let api_idx = copy_pane_id_idx(&api_menu);
+        app.apply_context_menu_action_via_api(api_menu, api_idx);
+        assert!(
+            app.state.request_clipboard_write.is_some(),
+            "api dispatch path must copy the pane id"
+        );
     }
     #[test]
     fn api_context_menu_close_last_tab_of_parent_closes_only_it() {

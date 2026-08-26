@@ -27,9 +27,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use super::{
-    BranchRail, SectionBullet, SectionCounter, SectionDescriptor, SectionLevel, WorkspaceListEntry,
-};
+use super::{SectionBullet, SectionCounter, SectionDescriptor, SectionLevel, WorkspaceListEntry};
 use crate::app::state::AppState;
 use crate::layout::PaneId;
 use crate::persist::projects::{ResolvedMember, WorktreesScope};
@@ -50,21 +48,26 @@ pub(crate) const ORPHANS_COLLAPSE_KEY: &str = "proj:__orphans__";
 ///
 /// Contract with the row painters in `super`:
 ///
-/// - Every entry is height 1. `entry_row_height` already returns 1 for all
-///   five variants and MUST keep doing so; a taller row silently desyncs the
-///   three lockstep passes (`sidebar.rs` "Shared row-height").
-/// - Order is depth-first and stable: `ProjectRow`, then its `WorktreeRow`s,
-///   and under each worktree the COMMANDS band, the CHECKS band, then its
-///   `Workspace` rows, each followed by its `PaneRow`s when it has 2+ panes.
-/// - `apply_hidden_filter`'s depth ladder (0 project, 1 worktree, 2 section
-///   header, 3 section item / workspace, 4 pane) mirrors that nesting. A new
-///   level means updating that closure too.
-/// - The repo name appears exactly once per row-path: `ProjectRow` omits it, a
-///   `WorktreeRow` always carries it, and no `Workspace` or `PaneRow` ever
-///   repeats it. It used to collapse away when a project held a single repo,
-///   but project names are arbitrary (`Teste`, `BILLING FIX`) and say nothing
-///   about the repo, so a collapsed column read as a bare `main` with no way
-///   to tell which repo it was without clicking (bora-b2r).
+/// - Every variant's OWN content is height 1; `entry_row_height` may add a
+///   trailing row_gap after the last `PaneRow` of a workspace block
+///   (bora-c1h G7) — that gap is a property of ADJACENCY between two
+///   entries, computed identically by all three lockstep passes
+///   (`sidebar.rs` "Shared row-height"), never a per-variant constant, so it
+///   can never silently desync them.
+/// - Order is depth-first and stable: `ProjectRow`, then per checkout one
+///   `SectionRow` per workspace on it (bora-c1h) — the COMMANDS/CHECKS bands
+///   anchor under the checkout's FIRST workspace's `SectionRow` only, one
+///   fetch covering every sibling workspace on the branch — each followed
+///   by ALL of its `PaneRow`s (always at least one now, even a single-pane
+///   workspace: the `Workspace` variant this used to be is Flat/Repo-only
+///   in this view).
+/// - `apply_hidden_filter`'s depth ladder (0 project, 1 section, 2 band
+///   header, 3 band item, 4 pane) mirrors that nesting. A new level means
+///   updating that closure too.
+/// - Each `SectionRow` carries its own workspace's display name — there is
+///   no shared "repo name shown once per checkout" field anymore (that was
+///   `WorktreeRow.repo`, bora-b2r); every row is independently identifying
+///   now, so the old collapse-when-single-repo concern no longer applies.
 /// - Workspaces matching no declared member land in one trailing implicit
 ///   `ProjectRow` with `declared: false`.
 ///
@@ -86,23 +89,76 @@ pub(super) fn project_view_entries(
     let mut entries = Vec::new();
     let mut claimed: HashSet<usize> = HashSet::new();
 
+    // Pass 1 (C2, the actual P0 fix): a workspace explicitly bound
+    // (`Workspace::project()`) to a slug still declared in `projects.yml`
+    // claims that project outright, before any directory matching runs.
+    // This is the only way the data model can express "workspace W
+    // belongs to project B" when project A ALSO declares B's directory as
+    // a member — directory alone can never answer that question once two
+    // projects share it. A binding naming a slug that no longer exists is
+    // never trusted blindly: it is looked up against `file.projects` here
+    // and, on a miss, simply left unclaimed so pass 2 derives it like any
+    // other workspace instead of orphaning it or panicking.
+    let mut assigned: HashMap<&str, Vec<usize>> = HashMap::new();
+    for idx in 0..app.workspaces.len() {
+        if let Some(slug) = app.workspaces[idx].project() {
+            if let Some((canonical_slug, _)) = file.projects.get_key_value(slug) {
+                assigned
+                    .entry(canonical_slug.as_str())
+                    .or_default()
+                    .push(idx);
+                claimed.insert(idx);
+            }
+        }
+    }
+
+    // Pass 2: today's directory-derived membership, for every workspace
+    // pass 1 left unclaimed. `best[idx]` tracks the single best-matching
+    // project found so far for workspace `idx` as one
+    // `((specificity), slug)` pair, in a `Vec` sized once up front (never
+    // a per-(project, workspace) allocation). Projects are visited in
+    // `file.projects`'s BTreeMap (slug-alphabetical) order, and a
+    // candidate only overwrites the recorded best on a STRICTLY higher
+    // `member_specificity` score, so the first slug encountered keeps any
+    // tie — exactly the C2 tiebreak: most specific member first, slug
+    // order last.
+    let mut best: Vec<Option<((u8, usize), &str)>> = vec![None; app.workspaces.len()];
+    for slug in file.projects.keys() {
+        // Already resolved off the tick: no disk touched on this path.
+        // Called exactly once per project, never per workspace.
+        let members = app.projects.resolved_members(slug);
+        for (idx, slot) in best.iter_mut().enumerate() {
+            if claimed.contains(&idx) {
+                continue;
+            }
+            let ws = &app.workspaces[idx];
+            let candidate = members
+                .iter()
+                .filter(|member| workspace_matches_member(ws, member))
+                .map(member_specificity)
+                .max();
+            let Some(score) = candidate else { continue };
+            let better = match slot {
+                Some((current, _)) => score > *current,
+                None => true,
+            };
+            if better {
+                *slot = Some((score, slug.as_str()));
+            }
+        }
+    }
+    for (idx, slot) in best.iter().enumerate() {
+        if let Some((_, slug)) = slot {
+            assigned.entry(*slug).or_default().push(idx);
+            claimed.insert(idx);
+        }
+    }
+
     // `ProjectsFile::projects` is a `BTreeMap`, so iterating it already
     // yields a stable, deterministic (slug-alphabetical) order across
     // renders — exactly what rule 8 requires for sibling project rows.
     for (slug, project) in &file.projects {
-        // Already resolved off the tick: no disk touched on this path.
-        let members = app.projects.resolved_members(slug);
-        let ws_idxs: Vec<usize> = (0..app.workspaces.len())
-            .filter(|idx| !claimed.contains(idx))
-            .filter(|idx| {
-                members
-                    .iter()
-                    .any(|member| workspace_matches_member(&app.workspaces[*idx], member))
-            })
-            .collect();
-        for &idx in &ws_idxs {
-            claimed.insert(idx);
-        }
+        let ws_idxs = assigned.remove(slug.as_str()).unwrap_or_default();
         let name = project.name.clone().unwrap_or_else(|| slug.clone());
         push_project_group(
             &mut entries,
@@ -141,7 +197,148 @@ pub(super) fn project_view_entries(
         );
     }
 
+    // bora-b2r parity for the merged row (bora-c1h): two `SectionRow`s that
+    // would render IDENTICAL (same repo name) each get a hint so they never
+    // collapse into one indistinguishable row on screen. The branch text
+    // next to the name used to be trusted to tell two same-named rows
+    // apart on its own, but that text renders dim/de-emphasised, so a name
+    // collision is still ambiguous to the eye even when the branches
+    // differ (owner report) — the branch is now the FIRST hint tried
+    // (shortest, already-meaningful token), falling back to a parent-dir
+    // hint only when the branch doesn't separate the group either. Scoped
+    // per project group: two workspaces of the same name in two DIFFERENT
+    // groups are not ambiguous, since their own project headers already
+    // tell them apart.
+    disambiguate_identical_section_rows(app, &mut entries);
+
     entries
+}
+
+/// Sets `SectionRow.name_hint` for every group of rows, WITHIN one project
+/// group, that would RENDER identical — same display name (as far as
+/// emission can tell without the runtime registry: custom name, else the
+/// cached auto label, else the repo name). A shared branch no longer
+/// exempts a group from needing a hint (owner report: the branch text is
+/// dim enough on screen that an identical name is still ambiguous) — the
+/// branch is instead the first hint tried, since it's the shortest token
+/// that is both meaningful and already computed: when every row in the
+/// colliding group has a distinct branch, `name_hint` becomes that branch
+/// directly (`"name (main)"` / `"name (feat/x)"`). Only when branches
+/// don't fully separate the group (the bora-b2r case: same repo, same
+/// branch, two worktrees) does this fall back to the member dir's
+/// basename, or its parent's when the basename IS the repo name (linked
+/// worktree checkouts like `worktree-a/myrepo`), so identical rows become
+/// "name (worktree-a)" / "name (worktree-b)".
+fn disambiguate_identical_section_rows(app: &AppState, entries: &mut [WorkspaceListEntry]) {
+    let name_of = |ws: &crate::workspace::Workspace| {
+        ws.custom_name.clone().unwrap_or_else(|| {
+            if ws.cached_auto_label.is_empty() {
+                ws.cached_git_space
+                    .as_ref()
+                    .map(|space| space.repo_name.clone())
+                    .unwrap_or_default()
+            } else {
+                ws.cached_auto_label.clone()
+            }
+        })
+    };
+    // `group_id` increments at every `ProjectRow`, so the collision key
+    // below (`(group_id, name)`) never merges two same-named workspaces
+    // that live under two DIFFERENT project headers — those are already
+    // told apart by the header itself, and hinting them would be noise
+    // (module doc, "only disambiguate rows that actually collide").
+    let mut group_id = 0usize;
+    let mut groups: HashMap<(usize, String), Vec<usize>> = HashMap::new();
+    for (pos, entry) in entries.iter().enumerate() {
+        if matches!(entry, WorkspaceListEntry::ProjectRow { .. }) {
+            group_id += 1;
+        }
+        let WorkspaceListEntry::SectionRow { ws_idx, .. } = entry else {
+            continue;
+        };
+        let Some(ws) = app.workspaces.get(*ws_idx) else {
+            continue;
+        };
+        groups.entry((group_id, name_of(ws))).or_default().push(pos);
+    }
+    for positions in groups.values().filter(|positions| positions.len() > 1) {
+        // First disambiguator: the branch itself, when it alone separates
+        // every row in the group — already rendered next to the name
+        // (module doc, G5), so it costs nothing extra to read once it's
+        // the hint too.
+        let branches: Vec<Option<String>> = positions
+            .iter()
+            .map(|&pos| {
+                let WorkspaceListEntry::SectionRow { ws_idx, .. } = &entries[pos] else {
+                    return None;
+                };
+                app.workspaces.get(*ws_idx).and_then(Workspace::branch)
+            })
+            .collect();
+        let mut seen_branches = HashSet::new();
+        let branches_distinct = branches.iter().all(Option::is_some)
+            && branches.iter().all(|branch| seen_branches.insert(branch));
+        if branches_distinct {
+            for (&pos, branch) in positions.iter().zip(branches) {
+                let WorkspaceListEntry::SectionRow { name_hint, .. } = &mut entries[pos] else {
+                    continue;
+                };
+                *name_hint = branch;
+            }
+            continue;
+        }
+
+        let dirs: Vec<String> = positions
+            .iter()
+            .map(|&pos| {
+                let WorkspaceListEntry::SectionRow { ws_idx, .. } = &entries[pos] else {
+                    return String::new();
+                };
+                app.workspaces
+                    .get(*ws_idx)
+                    .map(crate::workspace::Workspace::project_member_dir)
+                    .unwrap_or_default()
+            })
+            .collect();
+        // Walk up from the basename until every row in the group differs:
+        // depth 0 handles `multi-repo-x` vs `multi-repo-y`, depth 1 handles
+        // `worktree-a/myrepo` vs `worktree-b/myrepo`.
+        for depth in 0..4 {
+            let candidates: Vec<Option<String>> = dirs
+                .iter()
+                .map(|dir| {
+                    std::path::Path::new(dir)
+                        .components()
+                        .rev()
+                        .nth(depth)
+                        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+                })
+                .collect();
+            let mut seen = HashSet::new();
+            let distinct =
+                candidates.iter().all(Option::is_some) && candidates.iter().all(|c| seen.insert(c));
+            if !distinct {
+                continue;
+            }
+            for (&pos, hint) in positions.iter().zip(candidates) {
+                let WorkspaceListEntry::SectionRow { name_hint, .. } = &mut entries[pos] else {
+                    continue;
+                };
+                *name_hint = hint;
+            }
+            break;
+        }
+    }
+}
+
+/// Grouping key for a workspace's per-workspace collapse state
+/// (`WorkspaceListEntry::SectionRow.collapse_key`, bora-c1h). Session-stable
+/// and namespaced (`wsec:`) so it can never collide with a project's
+/// `proj:` key or a band's `sec:` key. Replaces the old checkout-scoped
+/// `wt:{checkout_key}` — collapse is per WORKSPACE now, not per checkout,
+/// since a checkout with 2+ open workspaces gets 2+ independent `SectionRow`s.
+fn section_collapse_key(ws_idx: usize) -> String {
+    format!("wsec:{ws_idx}")
 }
 
 /// Whether `ws`'s cached git identity falls under `member`'s resolved
@@ -181,6 +378,34 @@ fn workspace_matches_member(ws: &Workspace, member: &ResolvedMember) -> bool {
         .strip_prefix(&space.repo_root)
         .unwrap_or(ws.identity_cwd.as_path());
     ws_subdir.starts_with(&member.subdir)
+}
+
+/// Ranks how specific `member`'s match is, for `project_view_entries`'s
+/// pass-2 same-directory tiebreak (C2): when two or more declared
+/// projects' members resolve to the same checkout and neither claiming
+/// workspace carries an explicit `Workspace::project()` binding, the most
+/// specific matching member decides which project wins, not iteration
+/// order. Compared via Rust's derived tuple ordering — the first
+/// component decides, the second only breaks a tie within it:
+///
+/// - `WorktreesScope::This` (pinned to exactly one checkout) always
+///   outranks `All` (every worktree of the repo): a member that named
+///   this exact checkout is a stronger signal than one that only covers
+///   it as a side effect of covering the whole repo.
+/// - Within the same scope, a deeper `subdir` (more path components) beats
+///   a shallower one: the member that named the more specific slice of
+///   the checkout wins.
+///
+/// Kept separate from `workspace_matches_member`'s boolean rather than
+/// folded into it: that predicate answers "does this match" and every
+/// existing caller of it wants exactly that, not a secretly-ranked bool a
+/// future reader has to reverse-engineer.
+fn member_specificity(member: &ResolvedMember) -> (u8, usize) {
+    let scope_rank = match member.worktrees {
+        WorktreesScope::This => 1,
+        WorktreesScope::All => 0,
+    };
+    (scope_rank, member.subdir.components().count())
 }
 
 /// Push one `ProjectRow` (declared project or the trailing orphans group)
@@ -295,7 +520,7 @@ fn push_project_group(
             ahead: 0,
             behind: 0,
             pr: None,
-            collapse_key: format!("wt:{}", entry.checkout_key),
+            collapse_key: format!("unopened:{}", entry.checkout_key),
             unopened: true,
         });
     }
@@ -411,9 +636,11 @@ fn checkout_group_key(ws: &Workspace) -> String {
         .unwrap_or_else(|| format!("ws-no-space:{}", ws.id))
 }
 
-/// Push one `WorktreeRow` and, unless it is collapsed, its section bands
-/// (COMMANDS from the declaration, CHECKS from the cached provider outcome)
-/// and its `Workspace`/`PaneRow` children.
+/// Push one `SectionRow` per workspace on this checkout (bora-c1h), plus —
+/// under the checkout's FIRST workspace only — its COMMANDS/CHECKS bands
+/// (one fetch already covers every sibling workspace on the branch, same
+/// representative-workspace rule `push_checks_section` already applied to
+/// the old `WorktreeRow`), then that workspace's pane rows.
 fn push_worktree(
     entries: &mut Vec<WorkspaceListEntry>,
     app: &AppState,
@@ -424,54 +651,39 @@ fn push_worktree(
     checks: &[String],
     force_expanded: bool,
 ) {
-    let Some(&first_idx) = ws_idxs.first() else {
-        return;
-    };
-    let first = &app.workspaces[first_idx];
-    let space = first.git_space();
-    let repo = space.map(|s| s.repo_name.clone());
-    let branch = first.branch().unwrap_or_default();
-    let (ahead, behind) = first.git_ahead_behind().unwrap_or((0, 0));
-    let pr = first
-        .cached_check_status
-        .as_ref()
-        .and_then(|status| status.pr.as_ref())
-        .map(|pr| pr.number);
-    let collapse_key = format!("wt:{checkout_key}");
+    for (position, &ws_idx) in ws_idxs.iter().enumerate() {
+        let collapse_key = section_collapse_key(ws_idx);
+        entries.push(WorkspaceListEntry::SectionRow {
+            ws_idx,
+            checkout_key: checkout_key.to_string(),
+            collapse_key: collapse_key.clone(),
+            name_hint: None,
+        });
+        if !force_expanded && app.collapsed_space_keys.contains(&collapse_key) {
+            continue;
+        }
 
-    entries.push(WorkspaceListEntry::WorktreeRow {
-        checkout_key: checkout_key.to_string(),
-        repo,
-        branch,
-        ahead,
-        behind,
-        pr,
-        collapse_key: collapse_key.clone(),
-        unopened: false,
-    });
-    if !force_expanded && app.collapsed_space_keys.contains(&collapse_key) {
-        return;
-    }
+        // Rule 5: a band renders only when non-empty, in declared order,
+        // default COMMANDS before CHECKS (bora-5ia). CHECKS derives its own
+        // representative workspace from `ws_idxs` inside `push_checks_section`
+        // via the same normalized context every band reads (bora-by6's
+        // `SectionPushCtx`) — anchored under the first workspace's section
+        // only, so a checkout with 2+ open workspaces never repeats the band.
+        if position == 0 {
+            for section in filter_by_level(&section_order, SectionLevel::Worktree) {
+                let ctx = SectionPushCtx::Worktree {
+                    app,
+                    checkout_key,
+                    ws_idxs,
+                    commands,
+                    checks,
+                    force_expanded,
+                };
+                (section.push)(entries, &ctx);
+            }
+        }
 
-    // Rule 5: a band renders only when non-empty, in declared order,
-    // default COMMANDS before CHECKS (bora-5ia). CHECKS now derives its own
-    // representative workspace from `ws_idxs` inside `push_checks_section`
-    // rather than taking `first` directly, via the same normalized context
-    // every band reads (bora-by6's `SectionPushCtx`).
-    for section in filter_by_level(&section_order, SectionLevel::Worktree) {
-        let ctx = SectionPushCtx::Worktree {
-            app,
-            checkout_key,
-            ws_idxs,
-            commands,
-            checks,
-            force_expanded,
-        };
-        (section.push)(entries, &ctx);
-    }
-
-    for &idx in ws_idxs {
-        push_workspace(entries, app, idx);
+        push_workspace_panes(entries, app, ws_idx);
     }
 }
 
@@ -1018,21 +1230,13 @@ fn push_pull_requests_section(entries: &mut Vec<WorkspaceListEntry>, ctx: &Secti
     }
 }
 
-/// Push one `Workspace` row and — only when it has 2+ live panes — one
-/// `PaneRow` per pane, in ascending public-pane-number order (rule 6,
-/// `PaneRow` doc). A single-pane workspace stays exactly the shape it has
-/// today: one `Workspace` row, no `PaneRow` at all.
-fn push_workspace(entries: &mut Vec<WorkspaceListEntry>, app: &AppState, ws_idx: usize) {
-    entries.push(WorkspaceListEntry::Workspace {
-        ws_idx,
-        indented: true,
-        rail: BranchRail::None,
-    });
-
+/// Push every pane row for one workspace's section (bora-c1h G4): ALWAYS at
+/// least one `PaneRow`, even for a single-pane workspace — the workspace's
+/// own identity now lives entirely on its `SectionRow` (pushed by the
+/// caller). The `Workspace` variant this replaces is Flat/Repo-view only in
+/// this view now.
+fn push_workspace_panes(entries: &mut Vec<WorkspaceListEntry>, app: &AppState, ws_idx: usize) {
     let ws = &app.workspaces[ws_idx];
-    if ws.public_pane_numbers.len() < 2 {
-        return;
-    }
     let mut panes: Vec<(PaneId, usize)> = ws
         .public_pane_numbers
         .iter()
@@ -1051,7 +1255,7 @@ fn push_workspace(entries: &mut Vec<WorkspaceListEntry>, app: &AppState, ws_idx:
 /// The stable, addressable pane id — the same `wNpN` form
 /// `bora agent prompt` / `orc channel send` accept (`workspace_agent_label`'s
 /// doc comment).
-fn pane_address(ws: &Workspace, number: usize) -> String {
+pub(crate) fn pane_address(ws: &Workspace, number: usize) -> String {
     format!(
         "{}p{}",
         ws.id,
@@ -1220,36 +1424,63 @@ mod tests {
         ws
     }
 
+    /// `checkout_key` of every `SectionRow` in emission order — one entry
+    /// per WORKSPACE now (bora-c1h), not deduped per checkout: two
+    /// workspaces sharing one checkout get two entries carrying the same key.
     fn worktree_rows(entries: &[WorkspaceListEntry]) -> Vec<&str> {
         entries
             .iter()
             .filter_map(|e| match e {
-                WorkspaceListEntry::WorktreeRow { checkout_key, .. } => Some(checkout_key.as_str()),
+                WorkspaceListEntry::SectionRow { checkout_key, .. } => Some(checkout_key.as_str()),
                 _ => None,
             })
             .collect()
     }
 
-    /// The `ws_idx` of every `Workspace` row directly under the `WorktreeRow`
-    /// at `worktree_pos` (up to the next container row).
-    fn workspace_children(entries: &[WorkspaceListEntry], worktree_pos: usize) -> Vec<usize> {
-        entries[worktree_pos + 1..]
+    /// Every `ws_idx` whose `SectionRow` carries `checkout_key`.
+    fn section_row_ws_idxs_for_checkout(
+        entries: &[WorkspaceListEntry],
+        checkout_key: &str,
+    ) -> Vec<usize> {
+        entries
             .iter()
-            .take_while(|e| {
-                matches!(
-                    e,
-                    WorkspaceListEntry::Workspace { .. } | WorkspaceListEntry::PaneRow { .. }
-                )
-            })
             .filter_map(|e| match e {
-                WorkspaceListEntry::Workspace { ws_idx, .. } => Some(*ws_idx),
+                WorkspaceListEntry::SectionRow {
+                    ws_idx,
+                    checkout_key: k,
+                    ..
+                } if k == checkout_key => Some(*ws_idx),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Every `ws_idx` under the `ProjectRow` (declared or the orphans
+    /// group) whose `collapse_key` is `collapse_key` — everything between
+    /// it and the next `ProjectRow` (or the end of the list). One
+    /// `SectionRow` per workspace (bora-c1h) is exactly that project's
+    /// membership, in emission order, so this doubles as the P0
+    /// regression's assertion surface: no `ws_idx` may ever appear under
+    /// two different `collapse_key`s.
+    fn project_ws_idxs(entries: &[WorkspaceListEntry], collapse_key: &str) -> Vec<usize> {
+        let start = entries.iter().position(|e| {
+            matches!(e, WorkspaceListEntry::ProjectRow { collapse_key: k, .. } if k == collapse_key)
+        });
+        let Some(start) = start else {
+            return Vec::new();
+        };
+        entries[start + 1..]
+            .iter()
+            .take_while(|e| !matches!(e, WorkspaceListEntry::ProjectRow { .. }))
+            .filter_map(|e| match e {
+                WorkspaceListEntry::SectionRow { ws_idx, .. } => Some(*ws_idx),
                 _ => None,
             })
             .collect()
     }
 
     #[test]
-    fn same_checkout_shares_one_worktree_row_distinct_checkouts_of_one_repo_split() {
+    fn same_checkout_gets_one_section_row_per_workspace_distinct_checkouts_split() {
         let checkout_a = temp_test_dir("dual-checkout-a");
         let checkout_b = temp_test_dir("dual-checkout-b");
         let origin = "git@github.com:owner/repo.git";
@@ -1273,31 +1504,31 @@ mod tests {
         let keys = worktree_rows(&entries);
         assert_eq!(
             keys.len(),
+            3,
+            "one SectionRow per WORKSPACE now (bora-c1h), even when two share a checkout: {entries:?}"
+        );
+        let unique: std::collections::HashSet<&str> = keys.iter().copied().collect();
+        assert_eq!(
+            unique.len(),
             2,
-            "two distinct checkouts of the same repo must not collapse into one \
-             WorktreeRow just because they share repo_identity — that's exactly what \
-             the Repo view already does and this level exists to not do: {entries:?}"
+            "two distinct checkouts of the same repo must still keep distinct checkout_key values \
+             — that's exactly what the Repo view already collapses and this level exists to not do: \
+             {entries:?}"
         );
 
-        let checkout_a_pos = entries
-            .iter()
-            .position(|e| matches!(e, WorkspaceListEntry::WorktreeRow { checkout_key, .. } if checkout_key == keys[0]))
-            .unwrap();
-        let checkout_b_pos = entries
-            .iter()
-            .position(|e| matches!(e, WorkspaceListEntry::WorktreeRow { checkout_key, .. } if checkout_key == keys[1]))
-            .unwrap();
-        let mut a_children = workspace_children(&entries, checkout_a_pos);
-        a_children.sort_unstable();
+        let checkout_a_key = app.workspaces[0].git_space().unwrap().checkout_key.clone();
+        let checkout_b_key = app.workspaces[2].git_space().unwrap().checkout_key.clone();
+        let mut a_idxs = section_row_ws_idxs_for_checkout(&entries, &checkout_a_key);
+        a_idxs.sort_unstable();
         assert_eq!(
-            a_children,
+            a_idxs,
             vec![0, 1],
-            "both workspaces on checkout_a must land under checkout_a's single WorktreeRow"
+            "both workspaces on checkout_a each get their own SectionRow: {entries:?}"
         );
         assert_eq!(
-            workspace_children(&entries, checkout_b_pos),
+            section_row_ws_idxs_for_checkout(&entries, &checkout_b_key),
             vec![2],
-            "checkout_b's workspace must land under its own separate WorktreeRow"
+            "checkout_b's workspace gets its own SectionRow: {entries:?}"
         );
 
         std::fs::remove_dir_all(&checkout_a).unwrap();
@@ -1305,11 +1536,12 @@ mod tests {
     }
 
     #[test]
-    fn repo_column_stays_visible_when_every_worktree_shares_one_repo() {
-        // `repo_name` (rule 3's actual signal) is the checkout root's own
-        // basename — same leaf name, different parents, so `checkout_key`
-        // still differs while `repo_name` genuinely matches, the way two
-        // real worktrees of one repo would.
+    fn worktree_sections_stay_distinct_when_every_worktree_shares_one_repo() {
+        // bora-b2r parity on the merged row (bora-c1h): two worktrees of
+        // one repo whose workspaces share a display name ("t" here) MUST
+        // NOT collapse into two indistinguishable rows — each gets a dim
+        // parent-dir hint, the SectionRow analogue of the old
+        // `WorktreeRow.repo` column never collapsing.
         let container = temp_test_dir("single-repo-container");
         let checkout_a = container.join("worktree-a").join("myrepo");
         let checkout_b = container.join("worktree-b").join("myrepo");
@@ -1329,29 +1561,37 @@ mod tests {
         app.workspaces = vec![ws_at(&checkout_a), ws_at(&checkout_b)];
 
         let entries = project_view_entries(&app, false);
-        let repos: Vec<Option<String>> = entries
+        let rows: Vec<(usize, &Option<String>)> = entries
             .iter()
             .filter_map(|e| match e {
-                WorkspaceListEntry::WorktreeRow { repo, .. } => Some(repo.clone()),
+                WorkspaceListEntry::SectionRow {
+                    ws_idx, name_hint, ..
+                } => Some((*ws_idx, name_hint)),
                 _ => None,
             })
             .collect();
-        assert!(
-            repos.iter().all(Option::is_some),
-            "the repo column never collapses: a bare `main` under an arbitrarily-named \
-             project says nothing about which repo it is (bora-b2r): {entries:?}"
+        assert_eq!(rows.len(), 2, "both worktrees render: {entries:?}");
+        assert_eq!(rows[0].0, 0);
+        assert_eq!(rows[1].0, 1);
+        assert_eq!(
+            rows[0].1.as_deref(),
+            Some("worktree-a"),
+            "first myrepo checkout disambiguated by its parent dir: {rows:?}"
         );
         assert_eq!(
-            repos.len(),
-            2,
-            "both worktree rows still render, each carrying the shared repo name: {entries:?}"
+            rows[1].1.as_deref(),
+            Some("worktree-b"),
+            "second myrepo checkout disambiguated by its parent dir: {rows:?}"
         );
 
         std::fs::remove_dir_all(&container).unwrap();
     }
 
     #[test]
-    fn repo_column_shows_the_repo_name_when_a_project_spans_two_repos() {
+    fn worktree_sections_stay_distinct_when_a_project_spans_two_repos() {
+        // Same bora-b2r parity across repos: both fixture workspaces are
+        // named "t", so the rows would render identical without a hint —
+        // each must carry one, and the two hints must differ.
         let repo_x = temp_test_dir("multi-repo-x");
         let repo_y = temp_test_dir("multi-repo-y");
         init_fake_git_repo(&repo_x, None);
@@ -1368,22 +1608,31 @@ mod tests {
         app.workspaces = vec![ws_at(&repo_x), ws_at(&repo_y)];
 
         let entries = project_view_entries(&app, false);
-        let repos: Vec<Option<String>> = entries
+        let hints: Vec<Option<String>> = entries
             .iter()
             .filter_map(|e| match e {
-                WorkspaceListEntry::WorktreeRow { repo, .. } => Some(repo.clone()),
+                WorkspaceListEntry::SectionRow { name_hint, .. } => Some(name_hint.clone()),
                 _ => None,
             })
             .collect();
-        assert_eq!(repos.len(), 2);
+        assert_eq!(hints.len(), 2, "both repos render: {entries:?}");
         assert!(
-            repos.iter().all(Option::is_some),
-            "a project spanning two distinct repos must show the repo column: {entries:?}"
+            hints[0].is_some() && hints[1].is_some(),
+            "identical display names force hints: {hints:?}"
         );
-        assert_ne!(
-            repos[0], repos[1],
-            "the two repo names must actually distinguish the worktrees, not both fall back \
-             to the same value: {entries:?}"
+        assert_ne!(hints[0], hints[1], "hints must disambiguate: {hints:?}");
+
+        let ws_idxs: Vec<usize> = entries
+            .iter()
+            .filter_map(|e| match e {
+                WorkspaceListEntry::SectionRow { ws_idx, .. } => Some(*ws_idx),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            ws_idxs,
+            vec![0, 1],
+            "a project spanning two distinct repos still renders one SectionRow per workspace: {entries:?}"
         );
 
         std::fs::remove_dir_all(&repo_x).unwrap();
@@ -1391,7 +1640,75 @@ mod tests {
     }
 
     #[test]
-    fn two_pane_workspace_emits_two_pane_rows_one_pane_emits_zero() {
+    fn identical_names_with_different_branches_now_get_a_branch_hint() {
+        // Before this change, two same-named rows were left un-hinted the
+        // moment their branches differed — the branch text next to the
+        // name was trusted to tell them apart on its own. It renders too
+        // dim for that (owner report), so the NAME itself now has to be
+        // unique; the branch is the shortest available token, so it is
+        // used as the hint directly rather than falling back to a
+        // (nonexistent, here — both share `identity_cwd`) parent-dir hint.
+        let mut app = AppState::test_new();
+        let mut ws_a = Workspace::test_new("a");
+        ws_a.custom_name = Some("svc".to_string());
+        ws_a.cached_git_branch = Some("main".to_string());
+        let mut ws_b = Workspace::test_new("b");
+        ws_b.custom_name = Some("svc".to_string());
+        ws_b.cached_git_branch = Some("feat/x".to_string());
+        app.workspaces = vec![ws_a, ws_b];
+
+        let entries = project_view_entries(&app, false);
+        let hints: Vec<Option<String>> = entries
+            .iter()
+            .filter_map(|e| match e {
+                WorkspaceListEntry::SectionRow { name_hint, .. } => Some(name_hint.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            hints,
+            vec![Some("main".to_string()), Some("feat/x".to_string())],
+            "identical names must be disambiguated by branch, not silently left \
+             identical because the branch already differs: {entries:?}"
+        );
+    }
+
+    #[test]
+    fn same_name_across_different_project_groups_is_not_hinted() {
+        // Two different project headers already tell same-named rows apart
+        // visually — hinting across group boundaries would be noise, not
+        // signal (module doc, "only disambiguate rows that actually collide").
+        let mut file = ProjectsFile::default();
+        file.projects.insert("alpha".to_string(), project(vec![]));
+        file.projects.insert("beta".to_string(), project(vec![]));
+        let (_isolated, store) = store_with(file);
+        let mut app = AppState::test_new();
+        app.projects = store;
+
+        let mut ws_a = Workspace::test_new("a");
+        ws_a.custom_name = Some("svc".to_string());
+        ws_a.set_project(Some("alpha".to_string()));
+        let mut ws_b = Workspace::test_new("b");
+        ws_b.custom_name = Some("svc".to_string());
+        ws_b.set_project(Some("beta".to_string()));
+        app.workspaces = vec![ws_a, ws_b];
+
+        let entries = project_view_entries(&app, false);
+        let hints: Vec<Option<String>> = entries
+            .iter()
+            .filter_map(|e| match e {
+                WorkspaceListEntry::SectionRow { name_hint, .. } => Some(name_hint.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            hints,
+            vec![None, None],
+            "two different project groups already disambiguate visually via their own header: {entries:?}"
+        );
+    }
+    #[test]
+    fn every_workspace_emits_at_least_one_pane_row_multi_pane_emits_one_per_pane() {
         let repo = temp_test_dir("panes");
         init_fake_git_repo(&repo, None);
 
@@ -1416,8 +1733,8 @@ mod tests {
         };
         assert_eq!(
             pane_rows_for(0),
-            0,
-            "a single-pane workspace must emit zero PaneRow entries: {entries:?}"
+            1,
+            "a single-pane workspace still emits exactly one PaneRow now (bora-c1h G4): {entries:?}"
         );
         assert_eq!(
             pane_rows_for(1),
@@ -1597,7 +1914,15 @@ mod tests {
     }
 
     #[test]
-    fn checks_row_pr_number_lands_on_the_worktree_row() {
+    fn checks_row_reaches_the_pr_workspace_section() {
+        // RESIDUAL (bora-c1h): PR number/ahead/behind/checks no longer live
+        // as fields on the entry (`SectionRow` carries only
+        // `ws_idx`/`checkout_key`/`collapse_key`) — they're read straight
+        // off `AppState.workspaces[ws_idx].cached_check_status` at RENDER
+        // time (`sidebar::section_row_line`'s call site). This test now
+        // only pins that the entry pipeline still reaches the right
+        // workspace; the PR number actually rendering is
+        // `sidebar.rs`'s `section_row_line_shows_pr_and_checks_cluster`.
         let repo = temp_test_dir("checks-pr");
         init_fake_git_repo(&repo, None);
 
@@ -1617,14 +1942,22 @@ mod tests {
         app.workspaces = vec![ws];
 
         let entries = project_view_entries(&app, false);
-        let pr = entries.iter().find_map(|e| match e {
-            WorkspaceListEntry::WorktreeRow { pr, .. } => Some(*pr),
+        let ws_idx = entries.iter().find_map(|e| match e {
+            WorkspaceListEntry::SectionRow { ws_idx, .. } => Some(*ws_idx),
             _ => None,
         });
         assert_eq!(
-            pr,
-            Some(Some(128)),
-            "the worktree row must carry the PR number: {entries:?}"
+            ws_idx,
+            Some(0),
+            "the section row must point at the PR's workspace: {entries:?}"
+        );
+        assert_eq!(
+            app.workspaces[0]
+                .cached_check_status
+                .as_ref()
+                .and_then(|s| s.pr.as_ref())
+                .map(|pr| pr.number),
+            Some(128),
         );
 
         std::fs::remove_dir_all(&repo).unwrap();
@@ -2082,7 +2415,7 @@ mod tests {
             )
         });
         let worktree_pos = position_of(&entries, |e| {
-            matches!(e, WorkspaceListEntry::WorktreeRow { .. })
+            matches!(e, WorkspaceListEntry::SectionRow { .. })
         });
         assert!(
             project_pos < todos_pos && todos_pos < notes_pos && notes_pos < worktree_pos,
@@ -2223,7 +2556,7 @@ mod tests {
         );
         for (idx, entry) in entries.iter().enumerate() {
             assert_eq!(
-                crate::ui::sidebar::entry_row_height(entry, &entries, idx),
+                crate::ui::sidebar::entry_row_height(entry, &entries, idx, 0),
                 1,
                 "entry {idx}: {entry:?}"
             );
@@ -2268,7 +2601,7 @@ mod tests {
         );
         for (idx, entry) in entries.iter().enumerate() {
             assert_eq!(
-                crate::ui::sidebar::entry_row_height(entry, &entries, idx),
+                crate::ui::sidebar::entry_row_height(entry, &entries, idx, 0),
                 1,
                 "every Project-view row must stay height 1, entry {idx}: {entry:?}"
             );
@@ -3075,8 +3408,8 @@ mod tests {
             .expect("fixture must reach the PrRow through the real view-mode dispatch");
         let worktree_idx = entries
             .iter()
-            .position(|e| matches!(e, WorkspaceListEntry::WorktreeRow { .. }))
-            .expect("fixture must still emit the worktree row after the PR band");
+            .position(|e| matches!(e, WorkspaceListEntry::SectionRow { .. }))
+            .expect("fixture must still emit the section row after the PR band");
         assert_eq!(
             worktree_idx,
             pr_row_idx + 1,
@@ -3087,7 +3420,7 @@ mod tests {
         let total_height: u16 = entries
             .iter()
             .enumerate()
-            .map(|(idx, entry)| crate::ui::sidebar::entry_row_height(entry, &entries, idx))
+            .map(|(idx, entry)| crate::ui::sidebar::entry_row_height(entry, &entries, idx, 0))
             .sum();
         assert_eq!(
             total_height as usize,
@@ -3148,7 +3481,7 @@ mod tests {
             .find(|area| {
                 matches!(
                     area.target,
-                    crate::app::state::ProjectRowTarget::Worktree { .. }
+                    crate::app::state::ProjectRowTarget::Section { .. }
                 )
             })
             .expect("worktree row must still get a hit area");
@@ -3270,6 +3603,185 @@ mod tests {
             before,
             "the production registry must not have gained an entry"
         );
+    }
+
+    #[test]
+    fn two_projects_on_the_same_directory_keep_their_own_explicitly_bound_workspaces() {
+        // The P0 this fixes: two declared projects whose members resolve
+        // to the SAME checkout. Under the old single-pass `claimed`
+        // logic, slug-alphabetical iteration hands BOTH workspaces to
+        // whichever project sorts first ("alpha") and the other project
+        // ("beta") renders empty — even though each workspace was created
+        // under its own project. C2 pass 1 fixes this: a workspace's own
+        // `project()` binding wins outright, regardless of directory or
+        // slug order.
+        let checkout = temp_test_dir("same-dir-two-projects");
+        init_fake_git_repo(&checkout, None);
+
+        let mut file = ProjectsFile::default();
+        file.projects
+            .insert("alpha".to_string(), project(vec![member(&checkout)]));
+        file.projects
+            .insert("beta".to_string(), project(vec![member(&checkout)]));
+        let (_isolated, store) = store_with(file);
+        let mut app = AppState::test_new();
+        app.projects = store;
+
+        let mut ws_bound_to_beta = ws_at(&checkout);
+        ws_bound_to_beta.set_project(Some("beta".to_string()));
+        let mut ws_bound_to_alpha = ws_at(&checkout);
+        ws_bound_to_alpha.set_project(Some("alpha".to_string()));
+        // ws0 is explicitly bound to "beta" even though "alpha" sorts
+        // first alphabetically and both projects declare the same
+        // directory.
+        app.workspaces = vec![ws_bound_to_beta, ws_bound_to_alpha];
+
+        let entries = project_view_entries(&app, false);
+
+        assert_eq!(
+            project_ws_idxs(&entries, "proj:beta"),
+            vec![0],
+            "ws0 (bound to beta) must land under beta, not alpha, even though alpha \
+             sorts first and both declare the same directory: {entries:?}"
+        );
+        assert_eq!(
+            project_ws_idxs(&entries, "proj:alpha"),
+            vec![1],
+            "ws1 (bound to alpha) must land under alpha, and only alpha — neither \
+             group may double-count the other's workspace: {entries:?}"
+        );
+
+        std::fs::remove_dir_all(&checkout).unwrap();
+    }
+
+    #[test]
+    fn workspace_bound_to_unknown_project_slug_falls_through_to_directory_derivation() {
+        // A binding naming a slug no longer in `projects.yml` must never
+        // orphan the workspace and must never panic (C2) — it falls
+        // through to pass 2's directory derivation exactly like an
+        // unbound workspace.
+        let checkout = temp_test_dir("unknown-slug-fallback");
+        init_fake_git_repo(&checkout, None);
+
+        let mut file = ProjectsFile::default();
+        file.projects
+            .insert("real".to_string(), project(vec![member(&checkout)]));
+        let (_isolated, store) = store_with(file);
+        let mut app = AppState::test_new();
+        app.projects = store;
+
+        let mut ws = ws_at(&checkout);
+        ws.set_project(Some("ghost".to_string()));
+        app.workspaces = vec![ws];
+
+        let entries = project_view_entries(&app, false);
+        assert_eq!(
+            project_ws_idxs(&entries, "proj:real"),
+            vec![0],
+            "a binding to a nonexistent slug must fall through to directory \
+             derivation and land under the real project matching its dir: {entries:?}"
+        );
+        assert!(
+            !entries.iter().any(|e| matches!(
+                e,
+                WorkspaceListEntry::ProjectRow {
+                    declared: false,
+                    ..
+                }
+            )),
+            "the workspace must never be orphaned when directory derivation succeeds: {entries:?}"
+        );
+
+        std::fs::remove_dir_all(&checkout).unwrap();
+    }
+
+    #[test]
+    fn unbound_workspace_on_a_directory_claimed_by_two_projects_picks_the_more_specific_member() {
+        // No explicit binding on either side: pass 2's tiebreak must pick
+        // the more specific matching member (`member_specificity`, C2),
+        // not just whichever project sorts first. "aaa_broad" sorts
+        // BEFORE "zzz_specific" alphabetically — if the tiebreak were
+        // still "first slug wins" this would (wrongly) pick aaa_broad. It
+        // must pick zzz_specific instead, because `WorktreesScope::This`
+        // outranks `All`.
+        let checkout = temp_test_dir("tiebreak-specificity");
+        init_fake_git_repo(&checkout, None);
+
+        let broad_member = member(&checkout); // WorktreesScope::All (default)
+        let specific_member = Member {
+            dir: checkout.display().to_string(),
+            worktrees: WorktreesScope::This,
+            template: None,
+        };
+
+        let mut file = ProjectsFile::default();
+        file.projects
+            .insert("aaa_broad".to_string(), project(vec![broad_member]));
+        file.projects
+            .insert("zzz_specific".to_string(), project(vec![specific_member]));
+        let (_isolated, store) = store_with(file);
+        let mut app = AppState::test_new();
+        app.projects = store;
+        app.workspaces = vec![ws_at(&checkout)];
+
+        let entries = project_view_entries(&app, false);
+        assert_eq!(
+            project_ws_idxs(&entries, "proj:zzz_specific"),
+            vec![0],
+            "the more specific (This) member must win over the broader (All) one, \
+             even though its project sorts LAST alphabetically: {entries:?}"
+        );
+        assert!(
+            project_ws_idxs(&entries, "proj:aaa_broad").is_empty(),
+            "the broader match must not also claim the same workspace: {entries:?}"
+        );
+
+        std::fs::remove_dir_all(&checkout).unwrap();
+    }
+
+    #[test]
+    fn project_view_entries_is_deterministic_across_repeated_renders() {
+        // Two-pass resolution must never leak `HashMap`/`HashSet`
+        // iteration order into the emitted entries (C2): the same
+        // `AppState`, rendered twice, must produce identical entries. Mixes
+        // an explicit binding, an ambiguous (two-project) derived match,
+        // an unambiguous derived match, and a fully unmatched workspace so
+        // every branch of the resolution runs.
+        let checkout_a = temp_test_dir("determinism-a");
+        let checkout_b = temp_test_dir("determinism-b");
+        init_fake_git_repo(&checkout_a, None);
+        init_fake_git_repo(&checkout_b, None);
+
+        let mut file = ProjectsFile::default();
+        file.projects
+            .insert("one".to_string(), project(vec![member(&checkout_a)]));
+        file.projects.insert(
+            "two".to_string(),
+            project(vec![member(&checkout_a), member(&checkout_b)]),
+        );
+        let (_isolated, store) = store_with(file);
+        let mut app = AppState::test_new();
+        app.projects = store;
+
+        let mut ws_explicit = ws_at(&checkout_a);
+        ws_explicit.set_project(Some("two".to_string()));
+        app.workspaces = vec![
+            ws_explicit,
+            ws_at(&checkout_a),
+            ws_at(&checkout_b),
+            Workspace::test_new("unmatched"),
+        ];
+
+        let first = project_view_entries(&app, false);
+        let second = project_view_entries(&app, false);
+        assert_eq!(
+            first, second,
+            "rendering the same AppState twice must produce identical entries: \
+             first={first:?} second={second:?}"
+        );
+
+        std::fs::remove_dir_all(&checkout_a).unwrap();
+        std::fs::remove_dir_all(&checkout_b).unwrap();
     }
 
     /// Backs the manual `PartialEq`/`Eq` impl on `SectionDescriptor`

@@ -150,6 +150,33 @@ class CollectKeysTests(unittest.TestCase):
         )
         self.assertNotIn("values", entries["keys.zoom"])
 
+    def test_enum_variant_serde_rename_wins_over_rename_all(self) -> None:
+        # Regression: a per-variant #[serde(rename = "…")] used to be
+        # invisible to the parser, which then demanded the rename_all form
+        # ("nerdfont") in the reference doc instead of the real wire value.
+        model = Model()
+        parse_file(
+            """
+#[derive(Debug, Deserialize)]
+pub struct Config {
+    /// Glyph set.
+    pub glyph_style: GlyphStyle,
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum GlyphStyle {
+    #[default]
+    Unicode,
+    #[serde(rename = "nerd_font")]
+    NerdFont,
+}
+""",
+            model,
+        )
+        entries = {entry["key"]: entry for entry in collect_entries(model)}
+        self.assertEqual(entries["glyph_style"]["values"], ["unicode", "nerd_font"])
+
 
 class CheckTests(unittest.TestCase):
     def run_check(

@@ -4,6 +4,24 @@ Bora is a fork of [herdr](https://github.com/ogulcancelik/herdr). This changelog
 
 ## Unreleased
 
+### Added
+
+- Project view sidebar redesign: group headers lose the hexagon and gain an underline; one section row per workspace (collapse chevron, bright uppercase name, dim branch) with a right-aligned git/PR state cluster (ahead/behind, uncommitted/staged markers, PR number + checks rollup, unknown never green); worktree workspaces render as full workspace sections marked ⌗; every pane gets its own ○ row; a blank row now separates workspace blocks (`ui.sidebar.project.row_gap`, default 1); state icons ship in plain unicode by default with an opt-in Nerd Font set (`ui.sidebar.project.glyph_style = "nerd_font"`).
+
+### Fixed
+
+- Two projects that declare the same directory no longer collapse into one group in the Project view. A workspace's project was derived purely from its path — repo identity plus subdir — so a directory declared by more than one project had no way to say which one owned a given workspace, and the first project in slug-alphabetical order silently claimed all of them. With `worktrees: all` on a member, which is the common case, that meant every worktree of a repo landed in the same group no matter which project you created it under. A workspace now remembers the project it was created under and that binding wins over the path derivation; a binding pointing at a project that no longer exists falls back to the old behaviour instead of orphaning the workspace. The derivation itself also got a tiebreak, so even an unbound workspace on a contested directory now goes to the project whose member is more specific (`worktrees: this` before `all`, deeper subdir before shallower) rather than to whichever slug sorts first. `bora workspace set-project` rebinds a workspace that is already grouped wrong, and the binding survives a restart — it is written into the session snapshot and read back on restore.
+- Project view rows answer the mouse again. A workspace row in the Project view emitted no workspace hit area, so everything workspace-scoped silently missed it: clicking a row painted no selection or active highlight, right-click offered only the project-membership items instead of the full workspace menu, and drag-to-reorder could not even start because no press was ever recorded. One missing hit area caused all three. Rows now emit it, so selection and active backgrounds paint, right-click opens the full workspace menu with the membership items still spliced in, and a row can be dragged to reorder — including a linked worktree, which in this view is its own top-level row rather than an indented child.
+- Dragging a workspace onto another project's header moves it into that project.
+- The sidebar's view-mode toggle is back. Cycling Flat/Repo/Project by mouse was removed together with the `spaces` title it shared a row with; only the title was meant to go, which left the keybind and the settings dialog as the only ways to change view. The current view's name is clickable again, right-aligned on the workspace list's first row; the title stays gone.
+- Renaming a workspace to an empty string no longer leaves it permanently nameless. `bora workspace rename <id> ""` stored the empty label, and a custom label wins over the automatic one, so the row rendered blank in every view and in the tab bar. A blank rename now clears the label and the automatic name takes over.
+- Two workspaces with the same name inside one project group are told apart, by branch where the branch differs and by parent directory otherwise. Previously a differing branch exempted them from disambiguation entirely, which left two visually identical rows on screen.
+- On the 16-colour `terminal` theme, `mauve` was the same grey as ordinary muted text, so every mauve accent — the Project view header name, the worktree marker, the merged-PR chip — disappeared into the surrounding text; it now maps to the unclaimed ANSI purple slot. `surface0` was likewise identical to the sidebar background, so rows asking for a slightly lighter fill got none.
+
+### Changed
+
+- Project view: the group header carries a slightly lighter background and shows its caret only when collapsed, and its name is italic rather than bold — the background supplies the emphasis, and italic leaves the header on a font channel of its own so a display face can be aimed at it without repainting every branch label. Repo and branch on a workspace row are dimmer, letting the name and the state cluster lead.
+
 ## [0.45.5] - 2026-08-25
 
 ### Added

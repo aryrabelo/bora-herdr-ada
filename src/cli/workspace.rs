@@ -4,7 +4,7 @@ use std::process::Command;
 
 use crate::api::schema::{
     Method, Request, WorkspaceCreateParams, WorkspaceRenameParams, WorkspaceReportMetadataParams,
-    WorkspaceSetGroupParams,
+    WorkspaceSetGroupParams, WorkspaceSetProjectParams,
 };
 
 pub(super) fn run_workspace_command(args: &[String]) -> std::io::Result<i32> {
@@ -21,6 +21,7 @@ pub(super) fn run_workspace_command(args: &[String]) -> std::io::Result<i32> {
         "rename" => workspace_rename(&args[1..]),
         "report-metadata" => workspace_report_metadata(&args[1..]),
         "set-group" => workspace_set_group(&args[1..]),
+        "set-project" => workspace_set_project(&args[1..]),
         "close" => workspace_close(&args[1..]),
         "run" => workspace_run(&args[1..]),
         "help" | "--help" | "-h" => {
@@ -265,6 +266,40 @@ fn workspace_set_group(args: &[String]) -> std::io::Result<i32> {
     })?)
 }
 
+/// Rebinds a workspace to a `projects.yml` project, or clears the binding so
+/// the Project view falls back to deriving the project from the workspace's
+/// directory. This is the escape hatch for a workspace that is already
+/// grouped wrong: every workspace created before the binding existed carries
+/// `None`, and a directory declared by two projects cannot be disambiguated
+/// by the derivation alone — that is the whole point of the binding.
+fn workspace_set_project(args: &[String]) -> std::io::Result<i32> {
+    let Some(raw_workspace_id) = args.first() else {
+        eprintln!("usage: bora workspace set-project <workspace_id> [project_slug]");
+        return Ok(2);
+    };
+    if args.len() > 2 {
+        eprintln!("usage: bora workspace set-project <workspace_id> [project_slug]");
+        return Ok(2);
+    }
+    // A slug is a single `projects.yml` key, never a sentence — unlike
+    // `set-group`, whose free-text label deliberately joins its remaining
+    // args. An empty slug clears the binding, matching `set-group`'s
+    // omit-to-clear shape.
+    let project = args
+        .get(1)
+        .map(|slug| slug.trim())
+        .filter(|slug| !slug.is_empty())
+        .map(std::string::ToString::to_string);
+
+    super::print_response(&super::send_request(&Request {
+        id: "cli:workspace:set-project".into(),
+        method: Method::WorkspaceSetProject(WorkspaceSetProjectParams {
+            workspace_id: super::normalize_workspace_id(raw_workspace_id),
+            project,
+        }),
+    })?)
+}
+
 fn workspace_close(args: &[String]) -> std::io::Result<i32> {
     let Some(raw_workspace_id) = args.first() else {
         eprintln!("usage: bora workspace close <workspace_id>");
@@ -287,6 +322,7 @@ fn print_workspace_help() {
     eprintln!("  bora workspace rename <workspace_id> <label>");
     eprintln!("  bora workspace report-metadata <workspace_id> --source ID [--token NAME=VALUE] [--clear-token NAME] [--seq N] [--ttl-ms N]");
     eprintln!("  bora workspace set-group <workspace_id> [name]   (omit name to ungroup)");
+    eprintln!("  bora workspace set-project <workspace_id> [project_slug]   (omit slug to unbind)");
     eprintln!("  bora workspace close <workspace_id>");
     eprintln!("  bora workspace run [--cwd PATH]   (execute .bora/settings.toml run script)");
 }

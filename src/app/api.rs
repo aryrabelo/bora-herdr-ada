@@ -1160,6 +1160,9 @@ impl App {
             Method::WorkspaceSetGroup(params) => {
                 return self.handle_workspace_set_group(request.id, params);
             }
+            Method::WorkspaceSetProject(params) => {
+                return self.handle_workspace_set_project(request.id, params);
+            }
             Method::WorkspaceClose(target) => {
                 return self.handle_workspace_close(request.id, target)
             }

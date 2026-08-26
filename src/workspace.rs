@@ -220,6 +220,12 @@ pub(crate) fn reserve_workspace_ids(workspaces: &[Workspace]) {
 pub struct Workspace {
     /// Stable public workspace identity, independent of display order.
     pub id: String,
+    /// The `projects.yml` slug this workspace was created under, when it was
+    /// created from a project context. `None` means "derive my project from my
+    /// directory", which is the pre-existing behaviour and stays the default —
+    /// a directory can be declared by several projects, so a derivation alone
+    /// cannot answer which one owns this workspace.
+    pub project: Option<String>,
     /// User-provided override. If set, auto-derived identity stops updating.
     pub custom_name: Option<String>,
     /// Fallback workspace identity source for tests, old snapshots, or missing runtimes.
@@ -321,6 +327,7 @@ impl Workspace {
             .map(|space| worktree_space_from_git_space(space, &identity_cwd));
         Self {
             id,
+            project: None,
             custom_name: label,
             identity_cwd: identity_cwd.clone(),
             cached_identity_cwd: identity_cwd.clone(),
@@ -530,6 +537,7 @@ impl Workspace {
         Ok((
             Self {
                 id,
+                project: None,
                 custom_name: None,
                 identity_cwd: initial_cwd.clone(),
                 cached_identity_cwd: initial_cwd.clone(),
@@ -1174,8 +1182,47 @@ impl Workspace {
         self.public_tab_number(tab_idx)
     }
 
+    /// Set the user-facing label, or clear it when `name` is blank.
+    ///
+    /// Every rename path funnels through here — the TUI rename modal, the
+    /// `workspace.rename` socket verb, `bora workspace rename`, channel and
+    /// creation code, plugins — and only the modal used to guard against an
+    /// empty string. `WorkspaceRenameParams.label` is a bare required
+    /// `String` with no length validation, so `bora workspace rename w1 ""`
+    /// stored `Some("")`, and `display_name_from` returns `custom_name`
+    /// FIRST, before any auto-label fallback: the row then rendered blank
+    /// forever, in every view and in the tab bar. Normalising at this one
+    /// choke point fixes all callers at once and restores the auto-label,
+    /// rather than adding the same guard to each call site.
     pub fn set_custom_name(&mut self, name: String) {
-        self.custom_name = Some(name);
+        self.custom_name = if name.trim().is_empty() {
+            None
+        } else {
+            Some(name)
+        };
+    }
+
+    /// The `projects.yml` slug this workspace is explicitly bound to, or
+    /// `None` when the project should be derived from the workspace's
+    /// directory (`project_view_entries`'s fallback pass).
+    pub fn project(&self) -> Option<&str> {
+        self.project.as_deref()
+    }
+
+    /// Bind (or clear, with `None`) the explicit `projects.yml` slug this
+    /// workspace belongs to. Logged at the same level/shape as
+    /// `logging::workspace_renamed` so a rebinding is visible in the server
+    /// log — the primary tool for debugging misgrouped workspaces.
+    pub fn set_project(&mut self, project: Option<String>) {
+        self.project = project;
+        tracing::info!(
+            event = "workspace.project",
+            subsystem = "workspace",
+            outcome = "ok",
+            workspace_id = self.id.as_str(),
+            project = self.project.as_deref().unwrap_or("<none>"),
+            "workspace project binding changed"
+        );
     }
 
     #[cfg(test)]
@@ -1423,6 +1470,7 @@ impl Workspace {
         public_pane_numbers.insert(tab.root_pane, 1);
         Self {
             id: generate_workspace_id(),
+            project: None,
             custom_name: Some(name.to_string()),
             identity_cwd: identity_cwd.clone(),
             cached_identity_cwd: identity_cwd.clone(),
@@ -1665,6 +1713,30 @@ impl Workspace {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `bora workspace rename w1 ""` used to store `Some("")`, and
+    /// `display_name_from_terminals` returns `custom_name` before any
+    /// auto-label fallback — so the row rendered blank in every view and in
+    /// the tab bar, permanently. Blank input must clear the label instead,
+    /// letting the auto-label take over; a name with real content is stored
+    /// verbatim, including its interior spacing.
+    #[test]
+    fn a_blank_rename_clears_the_label_instead_of_storing_an_empty_name() {
+        let mut ws = Workspace::test_new("fixture");
+
+        ws.set_custom_name("api".into());
+        assert_eq!(ws.custom_name.as_deref(), Some("api"));
+
+        ws.set_custom_name(String::new());
+        assert_eq!(ws.custom_name, None);
+
+        ws.set_custom_name("api".into());
+        ws.set_custom_name("   \t ".into());
+        assert_eq!(ws.custom_name, None);
+
+        ws.set_custom_name("two words".into());
+        assert_eq!(ws.custom_name.as_deref(), Some("two words"));
+    }
 
     #[test]
     fn generated_workspace_ids_are_unique_base32_handles() {

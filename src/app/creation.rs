@@ -93,6 +93,24 @@ impl App {
         })
     }
 
+    /// The `projects.yml` slug the creation-source workspace is explicitly
+    /// bound to (`Workspace::project`), if any. Only `workspace.create`
+    /// consumes this (`handle_workspace_create`) — a brand-new blank
+    /// workspace inherits the project you were looking at when you asked
+    /// for it, so "new workspace" from inside a project's section lands
+    /// back in that project instead of falling through to
+    /// `project_view_entries`'s directory-derived fallback, which cannot
+    /// pick a project when several declare the same directory. Worktree
+    /// creation deliberately does NOT call this: its workspace already has
+    /// a real directory to derive membership from, and forcing today's
+    /// selection onto it could bind it to the WRONG project outright
+    /// (explicit binding wins over derivation — contract C2 pass 1).
+    pub(super) fn workspace_creation_source_project(&self) -> Option<String> {
+        self.workspace_creation_source()
+            .and_then(|ws_idx| self.state.workspaces.get(ws_idx))
+            .and_then(|ws| ws.project().map(str::to_string))
+    }
+
     pub(super) fn begin_tui_workspace_create(&mut self, request_id: &'static str) {
         if self.state.prompt_new_workspace_name {
             let follow_cwd = self.workspace_creation_source().and_then(|ws_idx| {

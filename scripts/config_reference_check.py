@@ -119,6 +119,17 @@ def find_rename_all(attrs: list[str]) -> str | None:
     return None
 
 
+def find_rename(attrs: list[str]) -> str | None:
+    """Per-variant #[serde(rename = "...")] override (wins over rename_all)."""
+    for attr in attrs:
+        if not attr.startswith("#[serde"):
+            continue
+        match = RENAME_RE.search(attr)
+        if match:
+            return match.group(1)
+    return None
+
+
 def parse_struct_body(
     lines: list[str], start: int, name: str, rename_all: str | None, model: Model
 ) -> int:
@@ -185,6 +196,7 @@ def parse_enum_body(
     variants: list[str] = []
     index = start
     depth = 0
+    pending_attrs: list[str] = []
 
     while index < len(lines):
         stripped = lines[index].strip()
@@ -192,10 +204,18 @@ def parse_enum_body(
             index += 1
             break
 
-        if depth == 0 and not stripped.startswith(("#[", "///")):
+        if depth == 0 and stripped.startswith(("#[", "///")):
+            # Variant-level attributes (e.g. #[serde(rename = "nerd_font")])
+            # apply to the NEXT variant line.
+            pending_attrs.append(stripped)
+        elif depth == 0:
             match = VARIANT_RE.match(stripped)
             if match:
-                variants.append(apply_rename_all(match.group(1), rename_all or "lowercase"))
+                rename = find_rename(pending_attrs)
+                variants.append(
+                    rename if rename else apply_rename_all(match.group(1), rename_all or "lowercase")
+                )
+            pending_attrs = []
         depth += stripped.count("{") - stripped.count("}")
         index += 1
 

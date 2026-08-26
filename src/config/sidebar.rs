@@ -424,11 +424,78 @@ impl Default for SpacesSidebarConfig {
     }
 }
 
+/// Glyph set used by the Project sidebar view's state cluster (branch/PR/git
+/// icons). `Unicode` renders on any terminal; `NerdFont` uses private-use-area
+/// glyphs that need a patched font (Ghostty ships one built-in).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum SidebarGlyphStyle {
+    #[default]
+    Unicode,
+    #[serde(rename = "nerd_font")]
+    NerdFont,
+}
+
+/// Project sidebar view layout knobs: blank-row spacing between workspace
+/// blocks and the glyph set for the state cluster.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct ProjectSidebarConfig {
+    pub row_gap: u16,
+    pub glyph_style: SidebarGlyphStyle,
+}
+
+impl Default for ProjectSidebarConfig {
+    fn default() -> Self {
+        Self {
+            row_gap: 1,
+            glyph_style: SidebarGlyphStyle::Unicode,
+        }
+    }
+}
+
+/// Resolved glyphs for the Project sidebar view's per-workspace state
+/// cluster. Checks glyphs are NOT included here — they come from
+/// `checks_rollup_glyph` (src/ui/sidebar.rs), the single owner of check
+/// conclusions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProjectGlyphs {
+    pub branch: &'static str,
+    pub ahead: &'static str,
+    pub behind: &'static str,
+    pub dirty: &'static str,
+    pub staged: &'static str,
+    pub pr: &'static str,
+}
+
+/// Resolve the Project sidebar glyph table for the configured style.
+pub fn project_glyphs(style: SidebarGlyphStyle) -> ProjectGlyphs {
+    match style {
+        SidebarGlyphStyle::NerdFont => ProjectGlyphs {
+            branch: "\u{e725}",
+            ahead: "\u{f062}",
+            behind: "\u{f063}",
+            dirty: "\u{ec6c}",
+            staged: "\u{ec6d}",
+            pr: "\u{f407}",
+        },
+        SidebarGlyphStyle::Unicode => ProjectGlyphs {
+            branch: "\u{2387}",
+            ahead: "↑",
+            behind: "↓",
+            dirty: "✱",
+            staged: "±",
+            pr: "PR",
+        },
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(default)]
 pub struct SidebarConfig {
     pub agents: AgentsSidebarConfig,
     pub spaces: SpacesSidebarConfig,
+    pub project: ProjectSidebarConfig,
 }
 
 #[cfg(test)]
@@ -459,6 +526,56 @@ mod tests {
             ]
         );
         assert_eq!(config.spaces.row_gap, 0);
+    }
+
+    #[test]
+    fn project_sidebar_defaults_to_row_gap_one_and_unicode_glyphs() {
+        let config = SidebarConfig::default();
+        assert_eq!(config.project.row_gap, 1);
+        assert_eq!(config.project.glyph_style, SidebarGlyphStyle::Unicode);
+
+        let parsed: crate::config::Config = toml::from_str("").expect("empty config");
+        assert_eq!(parsed.ui.sidebar.project.row_gap, 1);
+        assert_eq!(
+            parsed.ui.sidebar.project.glyph_style,
+            SidebarGlyphStyle::Unicode
+        );
+    }
+
+    #[test]
+    fn parses_explicit_project_sidebar_nerd_font_style() {
+        let config: crate::config::Config = toml::from_str(
+            r#"
+[ui.sidebar.project]
+row_gap = 0
+glyph_style = "nerd_font"
+"#,
+        )
+        .expect("project sidebar config");
+        assert_eq!(config.ui.sidebar.project.row_gap, 0);
+        assert_eq!(
+            config.ui.sidebar.project.glyph_style,
+            SidebarGlyphStyle::NerdFont
+        );
+    }
+
+    #[test]
+    fn project_glyph_tables_return_the_pinned_glyphs() {
+        let unicode = project_glyphs(SidebarGlyphStyle::Unicode);
+        assert_eq!(unicode.branch, "\u{2387}");
+        assert_eq!(unicode.ahead, "↑");
+        assert_eq!(unicode.behind, "↓");
+        assert_eq!(unicode.dirty, "✱");
+        assert_eq!(unicode.staged, "±");
+        assert_eq!(unicode.pr, "PR");
+
+        let nerd_font = project_glyphs(SidebarGlyphStyle::NerdFont);
+        assert_eq!(nerd_font.branch, "\u{e725}");
+        assert_eq!(nerd_font.ahead, "\u{f062}");
+        assert_eq!(nerd_font.behind, "\u{f063}");
+        assert_eq!(nerd_font.dirty, "\u{ec6c}");
+        assert_eq!(nerd_font.staged, "\u{ec6d}");
+        assert_eq!(nerd_font.pr, "\u{f407}");
     }
 
     #[test]

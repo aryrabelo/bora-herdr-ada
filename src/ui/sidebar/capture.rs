@@ -233,18 +233,24 @@ impl Drop for FakeGitCheckout {
     }
 }
 
-fn fixture_git_space(checkout: &str) -> GitSpaceMetadata {
+fn fixture_git_space(checkout: &str, is_linked_worktree: bool) -> GitSpaceMetadata {
     GitSpaceMetadata {
         key: format!("fake-key-{checkout}"),
         repo_identity: FIXTURE_REPO_IDENTITY.to_string(),
         checkout_key: format!("fake-checkout-{checkout}"),
         repo_name: FIXTURE_REPO_NAME.to_string(),
         repo_root: PathBuf::from(format!("/fake/{FIXTURE_REPO_NAME}/{checkout}")),
-        is_linked_worktree: false,
+        is_linked_worktree,
     }
 }
 
-fn fixture_workspace(name: &str, id: &str, branch: &str, checkout: &str) -> Workspace {
+fn fixture_workspace(
+    name: &str,
+    id: &str,
+    branch: &str,
+    checkout: &str,
+    is_linked_worktree: bool,
+) -> Workspace {
     let mut ws = Workspace::test_new(name);
     // Overrides the process-global-counter id `Workspace::test_new` assigns
     // — see the module doc's determinism section for why that default is
@@ -253,7 +259,18 @@ fn fixture_workspace(name: &str, id: &str, branch: &str, checkout: &str) -> Work
     // `Workspace::test_new` defaults this to the real `current_dir()`.
     ws.identity_cwd = PathBuf::from(format!("/fake/cwd/{checkout}"));
     ws.cached_git_branch = Some(branch.to_string());
-    ws.cached_git_space = Some(fixture_git_space(checkout));
+    ws.cached_git_space = Some(fixture_git_space(checkout, is_linked_worktree));
+    if is_linked_worktree {
+        // The SectionRow ⌗ marker reads `worktree_space()` (the membership
+        // field), not `cached_git_space` — a linked checkout needs both.
+        ws.worktree_space = Some(crate::workspace::WorktreeSpaceMembership {
+            key: format!("fake-key-{checkout}"),
+            label: FIXTURE_REPO_NAME.to_string(),
+            repo_root: PathBuf::from(format!("/fake/{FIXTURE_REPO_NAME}")),
+            checkout_path: PathBuf::from(format!("/fake/{FIXTURE_REPO_NAME}/{checkout}")),
+            is_linked_worktree: true,
+        });
+    }
     ws
 }
 
@@ -283,10 +300,11 @@ fn set_pane_agent(
 }
 
 /// Builds the multi-workspace, multi-band Project-view fixture G5 requires:
-/// five workspaces under one declared project (so each gets its own
-/// `WorktreeRow`), one workspace carrying a non-empty COMMANDS and CHECKS
-/// band, and one agent in each of the four `AgentState` variants (plus the
-/// `Idle` seen/unseen split `attention_priority` treats differently).
+/// six workspaces under one declared project (so each gets its own
+/// `SectionRow`, one of them a linked worktree for the ⌗ marker), one
+/// workspace carrying a non-empty COMMANDS and CHECKS band, and one agent in
+/// each of the four `AgentState` variants (plus the `Idle` seen/unseen split
+/// `attention_priority` treats differently).
 ///
 /// Declaring a real *project* (as opposed to leaving every workspace an
 /// orphan) is required to reach a band at all: `project_view`'s COMMANDS and
@@ -335,7 +353,7 @@ fn multi_workspace_fixture() -> (IsolatedDirs, FakeGitCheckout, AppState) {
     app.mode = Mode::Terminal;
     app.projects = ProjectsStore::load();
 
-    let mut main = fixture_workspace("main", "wfix1", "main", "main");
+    let mut main = fixture_workspace("main", "wfix1", "main", "main", false);
     main.cached_commands = Some(vec![BoraCommand {
         label: "dev".to_string(),
         command: "npm run dev".to_string(),
@@ -365,12 +383,17 @@ fn multi_workspace_fixture() -> (IsolatedDirs, FakeGitCheckout, AppState) {
         error: None,
     });
 
-    let feature_x = fixture_workspace("feature-x", "wfix2", "feature/x", "feature-x");
-    let feature_y = fixture_workspace("feature-y", "wfix3", "feature/y", "feature-y");
-    let cleanup = fixture_workspace("cleanup", "wfix4", "cleanup", "cleanup");
-    let scratch = fixture_workspace("scratch", "wfix5", "scratch", "scratch");
+    let feature_x = fixture_workspace("feature-x", "wfix2", "feature/x", "feature-x", false);
+    let feature_y = fixture_workspace("feature-y", "wfix3", "feature/y", "feature-y", false);
+    let cleanup = fixture_workspace("cleanup", "wfix4", "cleanup", "cleanup", false);
+    let scratch = fixture_workspace("scratch", "wfix5", "scratch", "scratch", false);
+    // bora-c1h G4: a linked-worktree workspace, so the capture exercises the
+    // ⌗ marker and a non-zero ahead/behind cluster (main's fixture above
+    // only carries a PR + checks, never ahead/behind).
+    let mut hotfix = fixture_workspace("hotfix", "wfix6", "hotfix/urgent", "hotfix", true);
+    hotfix.cached_git_ahead_behind = Some((2, 1));
 
-    app.workspaces = vec![main, feature_x, feature_y, cleanup, scratch];
+    app.workspaces = vec![main, feature_x, feature_y, cleanup, scratch, hotfix];
     app.active = Some(0);
     app.ensure_test_terminals();
 
@@ -459,10 +482,17 @@ mod tests {
         let (_isolated, _checkout, app) = multi_workspace_fixture();
         let text = capture_sidebar(&app, FIXTURE_WIDTH, FIXTURE_HEIGHT);
 
-        for branch in ["main", "feature/x", "feature/y", "cleanup", "scratch"] {
+        for branch in [
+            "main",
+            "feature/x",
+            "feature/y",
+            "cleanup",
+            "scratch",
+            "hotfix/urgent",
+        ] {
             assert!(
                 text.contains(branch),
-                "worktree row for {branch:?} must render: {text}"
+                "section row for {branch:?} must render: {text}"
             );
         }
         // The declared project's name, and both bands' declared items.
@@ -471,6 +501,92 @@ mod tests {
         assert!(
             text.contains("clippy"),
             "failing CHECKS item must render: {text}"
+        );
+    }
+
+    // ── bora-c1h: v3 layout gates (G1/G2/G4/G5/G7) ──────────────────────────
+
+    #[test]
+    fn v3_group_header_row_is_underlined_with_no_hexagon() {
+        let (_isolated, _checkout, app) = multi_workspace_fixture();
+        let text = capture_sidebar(&app, FIXTURE_WIDTH, FIXTURE_HEIGHT);
+        assert!(!text.contains('⬢'), "G1: no hexagon glyph anywhere: {text}");
+        let lines: Vec<&str> = text.lines().collect();
+        let bora_text_idx = lines
+            .iter()
+            .position(|l| l.starts_with("row ") && l.contains("text") && l.contains("Bora"))
+            .expect("project row with 'Bora' must render");
+        let style_line = lines[bora_text_idx + 1];
+        assert!(
+            style_line.contains("UNDERLINED"),
+            "G1: the project row's name must be underlined: {style_line}"
+        );
+    }
+
+    #[test]
+    fn v3_section_row_shows_uppercase_name_dim_branch_and_worktree_marker() {
+        let (_isolated, _checkout, app) = multi_workspace_fixture();
+        let text = capture_sidebar(&app, FIXTURE_WIDTH, FIXTURE_HEIGHT);
+        assert!(
+            text.contains("FEATURE-X"),
+            "G2: section row name renders UPPERCASE: {text}"
+        );
+        assert!(
+            text.contains("feature/x"),
+            "G2/G3: branch stays lowercase (dim): {text}"
+        );
+        assert!(
+            text.contains('⌗'),
+            "G4: a worktree checkout gets the ⌗ marker: {text}"
+        );
+        assert!(
+            text.contains("HOTFIX"),
+            "G4: the linked-worktree fixture renders its own full section: {text}"
+        );
+        assert!(
+            !text.contains("##"),
+            "G4: the old condensed ## worktree row must be gone from Project view: {text}"
+        );
+    }
+
+    #[test]
+    fn v3_state_cluster_shows_pr_checks_and_ahead_behind() {
+        let (_isolated, _checkout, app) = multi_workspace_fixture();
+        let text = capture_sidebar(&app, FIXTURE_WIDTH, FIXTURE_HEIGHT);
+        assert!(text.contains("PR42"), "G5: main's PR badge renders: {text}");
+        assert!(
+            text.contains('✗'),
+            "G5: main's failing check renders the checks-rollup glyph: {text}"
+        );
+        assert!(
+            text.contains("↑2"),
+            "G5: hotfix's ahead count renders: {text}"
+        );
+        assert!(
+            text.contains("↓1"),
+            "G5: hotfix's behind count renders: {text}"
+        );
+    }
+
+    #[test]
+    fn v3_row_gap_produces_blank_rows_between_workspace_blocks() {
+        let (_isolated, _checkout, app) = multi_workspace_fixture();
+        let text = capture_sidebar(&app, FIXTURE_WIDTH, FIXTURE_HEIGHT);
+        let row_texts: Vec<&str> = text
+            .lines()
+            .filter(|l| l.starts_with("row ") && l.contains("text"))
+            .map(|l| {
+                let start = l.find('|').unwrap() + 1;
+                let end = l.rfind('|').unwrap();
+                &l[start..end]
+            })
+            .collect();
+        let has_gap = row_texts
+            .windows(3)
+            .any(|w| !w[0].trim().is_empty() && w[1].trim().is_empty() && !w[2].trim().is_empty());
+        assert!(
+            has_gap,
+            "G7: at least one blank row must separate two workspace blocks: {row_texts:?}"
         );
     }
 

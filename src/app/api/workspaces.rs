@@ -3,7 +3,8 @@ use std::path::PathBuf;
 use crate::api::schema::{
     EventData, EventEnvelope, EventKind, ResponseResult, WorkspaceCreateParams,
     WorkspaceMoveBlockParams, WorkspaceMoveParams, WorkspaceRenameParams,
-    WorkspaceReportMetadataParams, WorkspaceSetGroupParams, WorkspaceTarget,
+    WorkspaceReportMetadataParams, WorkspaceSetGroupParams, WorkspaceSetProjectParams,
+    WorkspaceTarget,
 };
 use crate::app::App;
 
@@ -41,6 +42,7 @@ impl App {
         id: String,
         params: WorkspaceCreateParams,
     ) -> String {
+        let source_project = self.workspace_creation_source_project();
         let cwd = params.cwd.map(PathBuf::from).unwrap_or_else(|| {
             let follow_cwd = self.workspace_creation_source().and_then(|ws_idx| {
                 self.focused_pane_cwd_in_workspace(ws_idx)
@@ -66,6 +68,9 @@ impl App {
                     }
                     if let Some(group) = group {
                         workspace.visual_group = Some(group);
+                    }
+                    if let Some(project) = source_project {
+                        workspace.set_project(Some(project));
                     }
                 }
                 if group_set {
@@ -331,6 +336,51 @@ impl App {
         )
     }
 
+    /// `workspace.set_project`: bind (or clear, with `project: null`) the
+    /// explicit `projects.yml` slug this workspace belongs to — the escape
+    /// hatch for workspaces mis-grouped before this verb existed, and how a
+    /// UI action can say "this one is definitely project X" when directory
+    /// matching alone cannot decide (bora P0: two projects declaring the
+    /// same directory). Validated against the CURRENT on-disk
+    /// `projects.yml` before anything is written, same rule
+    /// `app::api::projects` writers use, so a slug that does not exist
+    /// errors instead of silently creating a dangling binding — and the
+    /// workspace's prior binding is left untouched on that error.
+    pub(super) fn handle_workspace_set_project(
+        &mut self,
+        id: String,
+        params: WorkspaceSetProjectParams,
+    ) -> String {
+        let Some(index) = self.parse_workspace_id(&params.workspace_id) else {
+            return workspace_not_found(id, &params.workspace_id);
+        };
+        if let Some(slug) = params.project.as_deref() {
+            let file = match crate::persist::projects::load_projects_file_fresh() {
+                Ok(file) => file,
+                Err(err) => return encode_error(id, "workspace_set_project_failed", err),
+            };
+            if !file.projects.contains_key(slug) {
+                return encode_error(
+                    id,
+                    "project_not_found",
+                    format!("project {slug:?} not found"),
+                );
+            }
+        }
+        let Some(ws) = self.state.workspaces.get_mut(index) else {
+            return workspace_not_found(id, &params.workspace_id);
+        };
+        ws.set_project(params.project);
+        self.schedule_session_save();
+
+        encode_success(
+            id,
+            ResponseResult::WorkspaceInfo {
+                workspace: self.workspace_info(index),
+            },
+        )
+    }
+
     pub(super) fn handle_workspace_close(&mut self, id: String, target: WorkspaceTarget) -> String {
         let Some(index) = self.parse_workspace_id(&target.workspace_id) else {
             return workspace_not_found(id, &target.workspace_id);
@@ -387,7 +437,11 @@ fn workspace_not_found(id: String, workspace_id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{api::schema::SuccessResponse, config::Config, workspace::Workspace};
+    use crate::{
+        api::schema::SuccessResponse,
+        config::{Config, IsolatedDirs},
+        workspace::Workspace,
+    };
 
     // `new_cwd = follow` must anchor on the focused pane for every creation
     // surface. Splits and tabs already do; a new workspace must follow the
@@ -891,5 +945,202 @@ mod tests {
             },
         );
         assert!(err.contains("workspace_not_found"));
+    }
+
+    fn projects_file_with_slug(slug: &str) -> crate::persist::projects::ProjectsFile {
+        let mut file = crate::persist::projects::ProjectsFile::default();
+        file.projects.insert(
+            slug.to_string(),
+            crate::persist::projects::Project {
+                name: None,
+                channel: None,
+                members: Vec::new(),
+                orchestrator: None,
+                sections: None,
+                auto_join: true,
+            },
+        );
+        file
+    }
+
+    #[test]
+    fn handle_workspace_set_project_sets_and_clears_binding() {
+        let _isolated = IsolatedDirs::new("workspace-set-project-basic");
+        crate::persist::projects::write_projects_file(&projects_file_with_slug("alpha")).unwrap();
+
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(
+            &Config::default(),
+            true,
+            None,
+            api_rx,
+            crate::api::EventHub::default(),
+        );
+        app.state.workspaces = vec![Workspace::test_new("one")];
+        let workspace_id = app.state.workspaces[0].id.clone();
+
+        let resp = app.handle_workspace_set_project(
+            "r1".into(),
+            WorkspaceSetProjectParams {
+                workspace_id: workspace_id.clone(),
+                project: Some("alpha".into()),
+            },
+        );
+        let _: SuccessResponse = serde_json::from_str(&resp).unwrap();
+        assert_eq!(app.state.workspaces[0].project(), Some("alpha"));
+
+        let resp = app.handle_workspace_set_project(
+            "r2".into(),
+            WorkspaceSetProjectParams {
+                workspace_id,
+                project: None,
+            },
+        );
+        let _: SuccessResponse = serde_json::from_str(&resp).unwrap();
+        assert_eq!(app.state.workspaces[0].project(), None);
+    }
+
+    #[test]
+    fn handle_workspace_set_project_rejects_unknown_slug_and_leaves_binding_unchanged() {
+        let _isolated = IsolatedDirs::new("workspace-set-project-unknown-slug");
+        crate::persist::projects::write_projects_file(&projects_file_with_slug("alpha")).unwrap();
+
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(
+            &Config::default(),
+            true,
+            None,
+            api_rx,
+            crate::api::EventHub::default(),
+        );
+        app.state.workspaces = vec![Workspace::test_new("one")];
+        app.state.workspaces[0].set_project(Some("alpha".into()));
+        let workspace_id = app.state.workspaces[0].id.clone();
+
+        let resp = app.handle_workspace_set_project(
+            "r1".into(),
+            WorkspaceSetProjectParams {
+                workspace_id,
+                project: Some("ghost".into()),
+            },
+        );
+        let value: serde_json::Value = serde_json::from_str(&resp).unwrap();
+        assert_eq!(value["error"]["code"], "project_not_found");
+        // A rejected write must never half-apply: the prior binding stands.
+        assert_eq!(app.state.workspaces[0].project(), Some("alpha"));
+    }
+
+    // `handle_api_request` is the in-process dispatch entry point — same one
+    // every other verb's test in this file uses (see
+    // `workspace_metadata_tokens_patch_clear_and_emit_snapshot` above) — so
+    // this never opens the API socket. It exists specifically to catch a
+    // verb that compiles (params struct, Method variant, server.rs name
+    // mapping all present) but was never wired into `app::api`'s dispatch
+    // match, which falls through to the silent `not_implemented` catch-all
+    // instead of failing to compile.
+    #[test]
+    fn api_workspace_set_project_dispatches_through_handle_api_request() {
+        let _isolated = IsolatedDirs::new("workspace-set-project-dispatch");
+        crate::persist::projects::write_projects_file(&projects_file_with_slug("alpha")).unwrap();
+
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(
+            &Config::default(),
+            true,
+            None,
+            api_rx,
+            crate::api::EventHub::default(),
+        );
+        app.state.workspaces = vec![Workspace::test_new("one")];
+        let workspace_id = app.state.workspaces[0].id.clone();
+
+        let response = app.handle_api_request(crate::api::schema::Request {
+            id: "req".into(),
+            method: crate::api::schema::Method::WorkspaceSetProject(WorkspaceSetProjectParams {
+                workspace_id,
+                project: Some("alpha".into()),
+            }),
+        });
+        let value: serde_json::Value = serde_json::from_str(&response).unwrap();
+        assert_ne!(
+            value["error"]["code"], "not_implemented",
+            "workspace.set_project must reach handle_workspace_set_project, not the dispatch catch-all: {response}"
+        );
+        assert_eq!(app.state.workspaces[0].project(), Some("alpha"));
+    }
+
+    #[tokio::test]
+    async fn api_workspace_create_inherits_project_from_creation_source() {
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(
+            &Config::default(),
+            true,
+            None,
+            api_rx,
+            crate::api::EventHub::default(),
+        );
+        app.state.workspaces = vec![Workspace::test_new("source")];
+        app.state.workspaces[0].set_project(Some("alpha".into()));
+        app.state.active = Some(0);
+        app.state.selected = 0;
+
+        let response = app.handle_workspace_create(
+            "req".into(),
+            WorkspaceCreateParams {
+                cwd: Some(std::env::temp_dir().display().to_string()),
+                focus: false,
+                label: None,
+                group: None,
+                env: Default::default(),
+            },
+        );
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        assert!(matches!(
+            success.result,
+            ResponseResult::WorkspaceCreated { .. }
+        ));
+        let idx = app.state.workspaces.len() - 1;
+        assert_eq!(app.state.workspaces[idx].project(), Some("alpha"));
+
+        for (_, runtime) in app.terminal_runtimes.drain() {
+            runtime.shutdown();
+        }
+    }
+
+    #[tokio::test]
+    async fn api_workspace_create_without_project_context_records_none() {
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(
+            &Config::default(),
+            true,
+            None,
+            api_rx,
+            crate::api::EventHub::default(),
+        );
+        app.state.workspaces = vec![Workspace::test_new("source")];
+        app.state.active = Some(0);
+        app.state.selected = 0;
+
+        let response = app.handle_workspace_create(
+            "req".into(),
+            WorkspaceCreateParams {
+                cwd: Some(std::env::temp_dir().display().to_string()),
+                focus: false,
+                label: None,
+                group: None,
+                env: Default::default(),
+            },
+        );
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        assert!(matches!(
+            success.result,
+            ResponseResult::WorkspaceCreated { .. }
+        ));
+        let idx = app.state.workspaces.len() - 1;
+        assert_eq!(app.state.workspaces[idx].project(), None);
+
+        for (_, runtime) in app.terminal_runtimes.drain() {
+            runtime.shutdown();
+        }
     }
 }

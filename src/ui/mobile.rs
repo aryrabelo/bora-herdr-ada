@@ -128,7 +128,12 @@ fn mobile_agents_block_height(app: &AppState) -> usize {
 fn mobile_space_entries(app: &AppState) -> Vec<WorkspaceListEntry> {
     workspace_list_entries_expanded(app)
         .into_iter()
-        .filter(|entry| matches!(entry, WorkspaceListEntry::Workspace { .. }))
+        .filter(|entry| {
+            matches!(
+                entry,
+                WorkspaceListEntry::Workspace { .. } | WorkspaceListEntry::SectionRow { .. }
+            )
+        })
         .collect()
 }
 
@@ -140,9 +145,14 @@ pub(crate) fn mobile_switcher_workspace_doc_range(
     // in the entry list, not its raw array index.
     let pos = mobile_space_entries(app)
         .iter()
-        .position(
-            |entry| matches!(entry, WorkspaceListEntry::Workspace { ws_idx, .. } if *ws_idx == idx),
-        )
+        .position(|entry| {
+            matches!(
+                entry,
+                WorkspaceListEntry::Workspace { ws_idx, .. }
+                    | WorkspaceListEntry::SectionRow { ws_idx, .. }
+                    if *ws_idx == idx
+            )
+        })
         .unwrap_or(idx);
     // spaces sit after the agents block, then a title + "new workspace" row.
     let start = mobile_agents_block_height(app) + 2 + pos * 2;
@@ -206,7 +216,8 @@ pub(crate) fn mobile_switcher_target_at(
     if doc_row >= cursor && doc_row < spaces_end {
         let entry_idx = (doc_row - cursor) / 2;
         return space_entries.get(entry_idx).and_then(|entry| match entry {
-            WorkspaceListEntry::Workspace { ws_idx, .. } => {
+            WorkspaceListEntry::Workspace { ws_idx, .. }
+            | WorkspaceListEntry::SectionRow { ws_idx, .. } => {
                 Some(MobileSwitcherTarget::Workspace(*ws_idx))
             }
             // Headers are filtered out of mobile_space_entries; be tolerant of
@@ -672,17 +683,21 @@ fn render_mobile_switcher_content(
     doc_y += 1;
     let space_entries = mobile_space_entries(app);
     for (entry_idx, entry) in space_entries.iter().enumerate() {
-        let WorkspaceListEntry::Workspace {
-            ws_idx, indented, ..
-        } = entry
-        else {
+        let (ws_idx, indented) = match entry {
+            WorkspaceListEntry::Workspace {
+                ws_idx, indented, ..
+            } => (*ws_idx, *indented),
+            // bora-c1h: every Project-view workspace is now its own full
+            // section (no more nested "indented worktree" shape), so it
+            // renders flat, the same as a top-level Flat-view workspace.
+            WorkspaceListEntry::SectionRow { ws_idx, .. } => (*ws_idx, false),
+            _ => continue,
+        };
+        let Some(ws) = app.workspaces.get(ws_idx) else {
             continue;
         };
-        let Some(ws) = app.workspaces.get(*ws_idx) else {
-            continue;
-        };
-        let active = Some(*ws_idx) == app.active;
-        let selected = *ws_idx == app.selected;
+        let active = Some(ws_idx) == app.active;
+        let selected = ws_idx == app.selected;
         let bg = mobile_item_bg(selected, active, p);
         let (state, seen) = ws.aggregate_state(&app.terminals);
         let (dot, dot_style) = state_dot(
@@ -698,7 +713,7 @@ fn render_mobile_switcher_content(
         // Worktrees of the same space render as branches off their parent, so a
         // child gets an L/T connector on its name row and a matching vertical
         // continuation on its detail row.
-        let detail_prefix = if *indented {
+        let detail_prefix = if indented {
             let last_child = !next_entry_is_indented_workspace(&space_entries, entry_idx);
             title_spans.push(Span::styled(
                 if last_child { "└─ " } else { "├─ " },
@@ -716,7 +731,7 @@ fn render_mobile_switcher_content(
         title_spans.push(Span::styled(dot, dot_style.bg(bg)));
         title_spans.push(Span::styled(" ", Style::default().bg(bg)));
         let raw_label = ws.display_name_from(&app.terminals, terminal_runtimes);
-        let name = if *indented {
+        let name = if indented {
             grouped_child_display_label(
                 &raw_label,
                 ws.branch().as_deref(),
@@ -725,7 +740,7 @@ fn render_mobile_switcher_content(
         } else {
             raw_label
         };
-        let name_budget = content.width.saturating_sub(if *indented { 8 } else { 5 }) as usize;
+        let name_budget = content.width.saturating_sub(if indented { 8 } else { 5 }) as usize;
         title_spans.push(Span::styled(
             truncate_end(&name, name_budget),
             Style::default()

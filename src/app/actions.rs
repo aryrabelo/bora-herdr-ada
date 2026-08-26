@@ -1358,6 +1358,10 @@ impl AppState {
                 | crate::ui::WorkspaceListEntry::SectionItem { .. }
                 | crate::ui::WorkspaceListEntry::PrRow { .. }
                 | crate::ui::WorkspaceListEntry::PaneRow { .. } => None,
+                // Project view's merged per-workspace row: it IS the workspace
+                // row now, so cycling and numbered switching must visit it.
+                // Its `PaneRow` children still yield nothing (see above).
+                crate::ui::WorkspaceListEntry::SectionRow { ws_idx, .. } => Some(ws_idx),
             })
             .collect::<Vec<_>>();
         if order.is_empty() {
