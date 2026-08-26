@@ -71,6 +71,21 @@ run your agents, split panes, walk away. `ctrl+b q` detaches, `bora` reattaches.
 
 we run bora inside [Ghostty](https://ghostty.org/). Ghostty eats several of bora's keybindings by default (Option-as-Alt, tab/window chords) unless configured — see [`examples/README.md`](examples/README.md) for the full worked Ghostty + bora + omp setup.
 
+## agent dispatch
+
+two fork-only commands turn "run an agent on this" into one shot:
+
+```bash
+bora agent --new "review the plan and list the risks"
+# creates a workspace on the current directory, starts the default agent
+# on its root pane, injects the prompt, and prints one json result.
+
+bora agent my-key prompt "first task"   # creates agent "my-key"
+bora agent my-key prompt "second task"  # same agent, new prompt
+```
+
+`--new` always creates; `agent <name> prompt` is get-or-create — the name is the idempotency key, so re-running the same dispatch prompts the existing agent instead of duplicating it. the kind resolves `--kind` over `[agents] default` in config.toml over a hardcoded `omp` fallback. see `bora agent help` for the full surface.
+
 ## docs
 
 bora shares its core with upstream herdr, so the docs live on herdr's site and describe behavior common to both: [herdr.dev/docs](https://herdr.dev/docs/): [quick start](https://herdr.dev/docs/quick-start/) · [concepts](https://herdr.dev/docs/concepts/) · [supported agents](https://herdr.dev/docs/agents/) · [keyboard](https://herdr.dev/docs/keyboard/) · [configuration](https://herdr.dev/docs/configuration/) · [session state](https://herdr.dev/docs/session-state/) · [remote](https://herdr.dev/docs/persistence-remote/) · [integrations](https://herdr.dev/docs/integrations/) · [plugins](https://herdr.dev/docs/plugins/) · [socket api](https://herdr.dev/docs/socket-api/)
