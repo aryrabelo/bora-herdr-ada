@@ -1120,8 +1120,20 @@ impl App {
         let mut highest_queue_id = 0;
         for record in records {
             highest_queue_id = highest_queue_id.max(record.queue_id);
+            // Identity first: the pane id in the record was minted by the
+            // previous process and may now belong to a different agent, so
+            // delivering by it would hand somebody else's deferred prompt to
+            // whoever inherited the number. An identity that no longer
+            // resolves keeps its stored pane, which
+            // `drain_pending_agent_prompts` then drops with an event — the
+            // honest outcome, and the one the sender is already told about.
+            let target = record
+                .agent
+                .as_deref()
+                .and_then(|agent| self.public_pane_id_for_agent(agent))
+                .unwrap_or(record.target);
             self.pending_agent_prompts
-                .entry(record.target)
+                .entry(target)
                 .or_default()
                 .push_back(PendingAgentPrompt {
                     queue_id: record.queue_id,
@@ -1149,8 +1161,10 @@ impl App {
             .pending_agent_prompts
             .iter()
             .flat_map(|(target, queue)| {
+                let agent = self.agent_id_for_public_pane(target);
                 queue.iter().map(move |pending| {
                     crate::persist::pending_prompts::PendingPromptRecord {
+                        agent: agent.clone(),
                         target: target.clone(),
                         queue_id: pending.queue_id,
                         params: pending.params.clone(),

@@ -13,11 +13,14 @@
 //! file stays small and a full rewrite avoids needing compaction or tombstones
 //! for the far more frequent *removal* (drain, evict, pane close).
 //!
-//! Keyed by public pane id, like `channels`' roster and scope registries, with
-//! the same known limitation: a pane id is minted at runtime and can be
-//! reallocated on restore, so a queue entry can outlive the pane it named.
-//! `App::drain_pending_agent_prompts` already treats an unresolvable target as
-//! a terminal drop with an event, which is the honest outcome here too.
+//! The live map is keyed by public pane id, which is correct in memory: a
+//! pane id is valid for as long as the process that minted it. The *record*
+//! carries the target's durable `agent_id` as well, because a pane id is
+//! reallocated on restore — an entry keyed only by pane could be delivered
+//! to whoever inherited the number, which is worse than dropping it. On
+//! load the target is resolved through the identity, and only a record
+//! written before this field existed (`agent: None`) still falls back to
+//! its stored pane id.
 
 use std::fs;
 use std::io::{self, Write};
@@ -44,7 +47,13 @@ pub fn pending_prompts_file_path() -> PathBuf {
 /// when this process began watching the target, not before the restart.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PendingPromptRecord {
-    /// Public pane id of the delivery target.
+    /// Durable identity of the delivery target. `None` marks a record
+    /// written before the queue carried identities; it is honoured through
+    /// `target` alone and never given an invented one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+    /// Public pane id the target occupied when the prompt was deferred.
+    /// Only an address: resolve `agent` first when it is present.
     pub target: String,
     pub queue_id: u64,
     pub params: AgentPromptParams,
@@ -107,6 +116,7 @@ mod tests {
 
     fn record(target: &str, queue_id: u64, text: &str) -> PendingPromptRecord {
         PendingPromptRecord {
+            agent: None,
             target: target.to_string(),
             queue_id,
             params: AgentPromptParams {
@@ -130,6 +140,42 @@ mod tests {
             record("w1:p1", 2, "second"),
             record("w2:p1", 3, "other target"),
         ];
+        write_pending_prompts(&records).unwrap();
+        assert_eq!(read_pending_prompts(), records);
+    }
+
+    /// A record written before the queue carried identities must keep
+    /// working, with `agent` reading as `None` rather than failing the whole
+    /// parse — a corrupt-looking queue would drop every deferred prompt.
+    #[test]
+    fn legacy_record_without_an_agent_still_parses() {
+        let _isolated = IsolatedDirs::new("pending-prompts-legacy");
+        fs::create_dir_all(state_dir()).unwrap();
+        fs::write(
+            pending_prompts_file_path(),
+            br#"[{"target":"w1:p1","queue_id":4,"params":{"target":"w1:p1","text":"legado"}}]"#,
+        )
+        .unwrap();
+
+        let records = read_pending_prompts();
+        assert_eq!(records.len(), 1, "got: {records:?}");
+        assert!(
+            records[0].agent.is_none(),
+            "a legacy record must not be given an invented identity"
+        );
+        assert_eq!(records[0].target, "w1:p1");
+        assert_eq!(records[0].queue_id, 4);
+    }
+
+    /// The identity is what survives a restart, so it has to round-trip
+    /// verbatim: this is the field the loader resolves the target through.
+    #[test]
+    fn agent_identity_round_trips_verbatim() {
+        let _isolated = IsolatedDirs::new("pending-prompts-identity");
+        let records = vec![PendingPromptRecord {
+            agent: Some("agent_a1b2".into()),
+            ..record("w1:p1", 1, "first")
+        }];
         write_pending_prompts(&records).unwrap();
         assert_eq!(read_pending_prompts(), records);
     }

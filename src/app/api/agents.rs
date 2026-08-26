@@ -1149,6 +1149,87 @@ mod tests {
         crate::app::api::test_support::shutdown_test_runtimes(&mut second);
     }
 
+    /// The furo M7 closes, at the queue. The test above has to pin the
+    /// workspace id so the pane id stays the same, and its own comment says
+    /// why: keyed by pane, "the restored queue would have no pane to drain
+    /// to". Here the pane id deliberately *does* change, the way a real cold
+    /// restore reallocates it, and the prompt still finds its agent —
+    /// because the record carries the identity, not just the seat.
+    #[tokio::test]
+    async fn deferred_prompt_follows_its_agent_to_a_reallocated_pane() {
+        let _isolated = IsolatedDirs::new("pending-prompt-reallocated");
+
+        let (agent_id, first_public_pane_id) = {
+            let mut first = app_with_agent();
+            let pane_id = first.state.workspaces[0].tabs[0].root_pane;
+            let terminal_id = first.state.workspaces[0].tabs[0].panes[&pane_id]
+                .attached_terminal_id
+                .clone();
+            let terminal = first.state.terminals.get_mut(&terminal_id).unwrap();
+            terminal.set_detected_state(Some(Agent::OpenCode), AgentState::Working);
+            let agent_id = terminal.agent_id.as_str().to_string();
+            let public_pane_id = first.public_pane_id(0, pane_id).unwrap();
+
+            first.enqueue_pending_agent_prompt(
+                public_pane_id.clone(),
+                AgentPromptParams {
+                    target: public_pane_id.clone(),
+                    text: "follows the agent".into(),
+                    wait: None,
+                    from_pane: None,
+                    when_idle: Some(true),
+                    when_idle_timeout_ms: None,
+                    peer_pid: None,
+                    origin_channel: None,
+                },
+            );
+            crate::app::api::test_support::shutdown_test_runtimes(&mut first);
+            (agent_id, public_pane_id)
+        };
+
+        // The restart, with the workspace id deliberately NOT pinned, so the
+        // pane id is reallocated. Restore hands the agent back its identity
+        // (see `restore.rs`'s unconditional `restore_agent_id`), which is
+        // what this reproduces.
+        let mut second = app_with_agent();
+        let pane_id = second.state.workspaces[0].tabs[0].root_pane;
+        let terminal_id = second.state.workspaces[0].tabs[0].panes[&pane_id]
+            .attached_terminal_id
+            .clone();
+        second
+            .state
+            .terminals
+            .get_mut(&terminal_id)
+            .unwrap()
+            .restore_agent_id(crate::terminal::AgentId::from_persisted(agent_id));
+        // `App::new` already loaded the queue against a freshly minted
+        // identity. Production order is the other way round — restore builds
+        // the terminals, identities included, and only then does `App::new`
+        // load the queue — so drop that first pass and load once, the way the
+        // real boot path does.
+        second.pending_agent_prompts.clear();
+        second.load_pending_agent_prompts();
+        let public_pane_id = second.public_pane_id(0, pane_id).unwrap();
+        assert_ne!(
+            public_pane_id, first_public_pane_id,
+            "the test only proves something if the pane id really was reallocated"
+        );
+        let restored = second
+            .pending_agent_prompts
+            .get(&public_pane_id)
+            .expect("the prompt must be re-targeted onto the agent's new pane");
+        assert_eq!(restored.len(), 1);
+        assert_eq!(restored.front().unwrap().params.text, "follows the agent");
+        assert!(
+            !second
+                .pending_agent_prompts
+                .contains_key(&first_public_pane_id),
+            "nothing may stay queued against the stale seat, or a pane that \
+             inherits that id would be handed somebody else's prompt"
+        );
+        crate::app::api::test_support::shutdown_test_runtimes(&mut second);
+    }
+
     #[tokio::test]
     async fn drain_pending_agent_prompts_requeues_when_still_busy() {
         let mut app = app_with_agent();
