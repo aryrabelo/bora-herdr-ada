@@ -11,7 +11,7 @@ use crate::events::AppEvent;
 use crate::layout::{Node, PaneId, TileLayout};
 use crate::pane::{PaneLaunchEnv, PaneState};
 use crate::render_signal::RenderSignal;
-use crate::terminal::{TerminalId, TerminalRuntime, TerminalState};
+use crate::terminal::{AgentId, TerminalId, TerminalRuntime, TerminalState};
 use crate::workspace::Workspace;
 
 use super::snapshot::{
@@ -509,6 +509,9 @@ fn restore_tab(
             .and_then(crate::detect::parse_canonical_agent_label);
         let saved_launch_argv = saved_pane.and_then(|p| p.launch_argv.clone());
         let saved_agent_session = saved_pane.and_then(|p| p.agent_session.as_ref());
+        // Restaurado sem condicao: a identidade do agente sobrevive ao
+        // remapeamento de pane_id, ao contrario de agent_name.
+        let saved_agent_id = saved_pane.and_then(|p| p.agent_id.clone());
         let saved_history =
             old_id.and_then(|old_id| history.and_then(|history| history.panes.get(old_id)));
         let startup = {
@@ -554,6 +557,9 @@ fn restore_tab(
             }
             if let Some(session) = restored_agent_session {
                 terminal.set_persisted_agent_session(session);
+            }
+            if let Some(agent_id) = saved_agent_id.clone() {
+                terminal.restore_agent_id(AgentId::from_persisted(agent_id));
             }
             match (saved_agent_name, saved_managed_agent) {
                 (Some(agent_name), Some(agent)) => {
@@ -651,6 +657,9 @@ fn restore_tab(
                 }
                 if let Some(session) = restored_agent_session {
                     terminal.set_persisted_agent_session(session);
+                }
+                if let Some(agent_id) = saved_agent_id {
+                    terminal.restore_agent_id(AgentId::from_persisted(agent_id));
                 }
                 match (saved_agent_name, saved_managed_agent) {
                     (Some(agent_name), Some(agent)) if was_imported => {
@@ -1199,6 +1208,7 @@ mod tests {
                     panes: HashMap::from([(
                         0,
                         super::super::snapshot::PaneSnapshot {
+                            agent_id: None,
                             cwd,
                             label: Some("reviewer".into()),
                             agent_name: Some("reviewer".into()),
@@ -1289,6 +1299,7 @@ mod tests {
                         (
                             10,
                             super::super::snapshot::PaneSnapshot {
+                                agent_id: None,
                                 cwd: cwd.clone(),
                                 label: None,
                                 agent_name: None,
@@ -1300,6 +1311,7 @@ mod tests {
                         (
                             20,
                             super::super::snapshot::PaneSnapshot {
+                                agent_id: None,
                                 cwd,
                                 label: None,
                                 agent_name: None,
@@ -1350,6 +1362,112 @@ mod tests {
         assert_eq!(workspace.next_public_tab_number, 6);
     }
 
+    /// A identidade do agente precisa sobreviver ao remapeamento de `pane_id`.
+    /// Este e o furo que o M7 fecha: `pane_id` 10 e 20 nao voltam como 10 e 20,
+    /// e os registries de canal chaveados por eles apontariam para o pane errado.
+    #[tokio::test]
+    async fn cold_restore_preserves_agent_id_across_pane_id_remap() {
+        let cwd = std::env::current_dir().unwrap();
+        let snapshot = SessionSnapshot {
+            version: super::super::snapshot::SNAPSHOT_VERSION,
+            workspaces: vec![WorkspaceSnapshot {
+                id: Some("w1".into()),
+                custom_name: None,
+                identity_cwd: cwd.clone(),
+                worktree_space: None,
+                public_pane_numbers: HashMap::from([(10, 1), (20, 3)]),
+                next_public_pane_number: 4,
+                public_tab_numbers: vec![5],
+                next_public_tab_number: 6,
+                tabs: vec![TabSnapshot {
+                    custom_name: None,
+                    layout: LayoutSnapshot::Split {
+                        direction: super::super::snapshot::DirectionSnapshot::Horizontal,
+                        ratio: 0.5,
+                        first: Box::new(LayoutSnapshot::Pane(10)),
+                        second: Box::new(LayoutSnapshot::Pane(20)),
+                    },
+                    panes: HashMap::from([
+                        (
+                            10,
+                            super::super::snapshot::PaneSnapshot {
+                                agent_id: Some("agent_deadbeef1".into()),
+                                cwd: cwd.clone(),
+                                label: None,
+                                agent_name: None,
+                                managed_agent_kind: None,
+                                agent_session: None,
+                                launch_argv: None,
+                            },
+                        ),
+                        (
+                            20,
+                            super::super::snapshot::PaneSnapshot {
+                                agent_id: Some("agent_deadbeef2".into()),
+                                cwd,
+                                label: None,
+                                agent_name: None,
+                                managed_agent_kind: None,
+                                agent_session: None,
+                                launch_argv: None,
+                            },
+                        ),
+                    ]),
+                    zoomed: false,
+                    focused: Some(10),
+                    root_pane: Some(10),
+                }],
+                active_tab: 0,
+                visual_group: None,
+            }],
+            active: Some(0),
+            selected: 0,
+            sidebar_width: None,
+            sidebar_section_split: None,
+            collapsed_space_keys: Default::default(),
+            right_panel_width: None,
+            right_panel_collapsed: None,
+            view_mode: Default::default(),
+        };
+        let (events, _event_rx) = mpsc::channel(4);
+
+        let (workspaces, terminals, _runtimes) = restore(
+            &snapshot,
+            None,
+            24,
+            80,
+            0,
+            test_restore_shell(),
+            crate::config::ShellModeConfig::NonLogin,
+            false,
+            events,
+            Arc::new(Notify::new()),
+            Arc::new(RenderSignal::new()),
+        );
+
+        let workspace = workspaces.first().expect("workspace should restore");
+        let restored_pane_ids: Vec<u32> = workspace
+            .public_pane_numbers
+            .keys()
+            .map(|id| id.raw())
+            .collect();
+        assert!(
+            !restored_pane_ids.contains(&10) && !restored_pane_ids.contains(&20),
+            "o teste so prova algo se os pane_id forem remapeados, mas veio {restored_pane_ids:?}"
+        );
+
+        let mut restored: Vec<&str> = terminals
+            .iter()
+            .map(|(_, terminal)| terminal.agent_id.as_str())
+            .collect();
+        restored.sort_unstable();
+        assert_eq!(
+            restored,
+            vec!["agent_deadbeef1", "agent_deadbeef2"],
+            "a identidade do agente foi remintada ou perdida no restore"
+        );
+    }
+
     #[tokio::test]
     async fn cold_restore_with_gapped_public_tab_numbers_drops_unmanaged_agent_name() {
         let cwd = std::env::current_dir().unwrap();
@@ -1357,6 +1475,7 @@ mod tests {
             (
                 id.parse::<u32>().unwrap(),
                 super::super::snapshot::PaneSnapshot {
+                    agent_id: None,
                     cwd: cwd.clone(),
                     label: None,
                     agent_name: None,
@@ -1367,6 +1486,7 @@ mod tests {
             )
         };
         let final_pane = super::super::snapshot::PaneSnapshot {
+            agent_id: None,
             cwd: cwd.clone(),
             label: Some("planner".into()),
             agent_name: Some("planner".into()),
@@ -1523,6 +1643,7 @@ mod tests {
                     panes: HashMap::from([(
                         0,
                         super::super::snapshot::PaneSnapshot {
+                            agent_id: None,
                             cwd,
                             label: None,
                             agent_name: None,
@@ -1693,6 +1814,7 @@ mod tests {
         panes.insert(
             0,
             super::super::snapshot::PaneSnapshot {
+                agent_id: None,
                 cwd: cwd.clone(),
                 label: None,
                 agent_name: None,

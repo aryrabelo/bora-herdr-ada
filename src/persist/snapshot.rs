@@ -718,6 +718,7 @@ mod tests {
         panes.insert(
             0,
             PaneSnapshot {
+                agent_id: None,
                 cwd: PathBuf::from("/home/can/Projects/herdr"),
                 label: None,
                 agent_name: None,
@@ -729,6 +730,7 @@ mod tests {
         panes.insert(
             1,
             PaneSnapshot {
+                agent_id: None,
                 cwd: PathBuf::from("/home/can/Projects/website"),
                 label: Some("website".into()),
                 agent_name: None,
@@ -1281,6 +1283,7 @@ mod tests {
         panes.insert(
             0,
             PaneSnapshot {
+                agent_id: None,
                 cwd: PathBuf::from("/tmp/this-directory-does-not-exist-for-herdr-test"),
                 label: None,
                 agent_name: None,
@@ -1292,6 +1295,7 @@ mod tests {
         panes.insert(
             1,
             PaneSnapshot {
+                agent_id: None,
                 cwd: std::env::var("HOME")
                     .map(PathBuf::from)
                     .unwrap_or_else(|_| PathBuf::from("/tmp")),
