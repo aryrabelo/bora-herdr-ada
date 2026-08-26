@@ -1516,6 +1516,7 @@ mod tests {
         source: ChannelMemberSource,
     ) -> crate::api::schema::ChannelMember {
         crate::api::schema::ChannelMember {
+            agent_id: None,
             pane_id: pane_id.into(),
             name: Some(name.into()),
             agent_status: Some(crate::api::schema::AgentStatus::Idle),

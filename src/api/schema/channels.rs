@@ -222,6 +222,12 @@ pub enum ChannelMemberSource {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ChannelMember {
     pub pane_id: String,
+    /// The member's durable agent identity, when its pane resolves to one.
+    /// `pane_id` is only where it sits right now — a seat number that a
+    /// cold restore can hand to somebody else — so any caller that stores
+    /// or compares membership across restarts MUST key on this instead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
     /// The pane's display/agent name, when it hosts a detected agent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,

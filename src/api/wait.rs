@@ -1226,18 +1226,22 @@ fn advance_channel_wait_cursor(
         api_tx,
         Some(APP_RESPONSE_TIMEOUT),
     );
-    let is_member = serde_json::from_str::<serde_json::Value>(&members_response)
+    let members = serde_json::from_str::<serde_json::Value>(&members_response)
         .ok()
         .and_then(|value| value.get("result")?.get("members")?.as_array().cloned())
-        .is_some_and(|members| {
-            members
-                .iter()
-                .any(|member| member.get("pane_id").and_then(|v| v.as_str()) == Some(from_pane))
-        });
-    if !is_member {
+        .unwrap_or_default();
+    // The entry is found by pane, because a pane is all the caller gave us
+    // — but the cursor is keyed by the identity read off that entry, so it
+    // survives the pane reallocation a cold restore performs.
+    let Some(member) = members
+        .iter()
+        .find(|member| member.get("pane_id").and_then(|v| v.as_str()) == Some(from_pane))
+    else {
         return;
-    }
-    if let Err(err) = crate::persist::channels::advance_channel_cursor(name, from_pane, high_water)
+    };
+    let agent = member.get("agent_id").and_then(|value| value.as_str());
+    if let Err(err) =
+        crate::persist::channels::advance_channel_cursor(name, agent, from_pane, high_water)
     {
         tracing::warn!(
             channel = %name,

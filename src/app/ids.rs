@@ -37,6 +37,70 @@ impl App {
         ))
     }
 
+    /// The public pane id where `agent` currently lives, or `None` if no
+    /// live pane carries that identity.
+    ///
+    /// Walks every workspace on purpose: an `AgentId` is global and an
+    /// agent can be restored into a different workspace than the one it
+    /// joined a channel from, so scoping this search to one workspace would
+    /// silently lose the member.
+    pub(crate) fn public_pane_id_for_agent(&self, agent: &str) -> Option<String> {
+        self.state
+            .workspaces
+            .iter()
+            .enumerate()
+            .find_map(|(ws_idx, ws)| {
+                ws.tabs.iter().find_map(|tab| {
+                    tab.layout.pane_ids().into_iter().find_map(|pane_id| {
+                        let terminal_id = ws.terminal_id(pane_id)?;
+                        let terminal = self.state.terminals.get(terminal_id)?;
+                        (terminal.agent_id.as_str() == agent)
+                            .then(|| self.public_pane_id(ws_idx, pane_id))?
+                    })
+                })
+            })
+    }
+
+    /// Where a channel roster entry points today, or `None` if it should be
+    /// pruned. An entry with an identity is resolved through it, so the
+    /// member follows its agent across a pane reallocation. A legacy entry
+    /// has only its stored pane id to go on: it is kept while that id still
+    /// parses and dropped once it does not.
+    pub(crate) fn resolve_channel_member(
+        &self,
+        member: &crate::persist::channels::ChannelMember,
+    ) -> Option<String> {
+        match member.agent.as_deref() {
+            Some(agent) => self.public_pane_id_for_agent(agent),
+            None => self
+                .parse_pane_id(&member.pane)
+                .is_some()
+                .then(|| member.pane.clone()),
+        }
+    }
+
+    /// The durable `AgentId` of whatever occupies `public_id` right now.
+    ///
+    /// This is the inverse of [`Self::public_pane_id_for_agent`] and the
+    /// call every channel write goes through: a pane id names a seat, and
+    /// this reads off who is sitting in it at the moment of the write. It
+    /// returns `None` only when the pane does not resolve, in which case
+    /// the caller writes a legacy (identity-less) entry rather than
+    /// inventing an identity.
+    pub(crate) fn agent_id_for_public_pane(&self, public_id: &str) -> Option<String> {
+        let (ws_idx, pane_id) = self.parse_pane_id(public_id)?;
+        let ws = self.state.workspaces.get(ws_idx)?;
+        let terminal_id = ws.terminal_id(pane_id)?;
+        Some(
+            self.state
+                .terminals
+                .get(terminal_id)?
+                .agent_id
+                .as_str()
+                .to_string(),
+        )
+    }
+
     pub(super) fn pane_launch_env(
         &self,
         ws_idx: usize,

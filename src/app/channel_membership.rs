@@ -32,11 +32,11 @@ impl App {
         let mut membership: std::collections::HashMap<usize, Vec<String>> =
             std::collections::HashMap::new();
         for name in channel_names {
-            let members = crate::persist::channels::read_joined_members(&name, |pane| {
-                self.parse_pane_id(pane).is_some()
+            let members = crate::persist::channels::read_joined_members(&name, |member| {
+                self.resolve_channel_member(member)
             });
-            for pane in members {
-                if let Some((owner_ws_idx, _)) = self.parse_pane_id(&pane) {
+            for member in members {
+                if let Some((owner_ws_idx, _)) = self.parse_pane_id(&member.pane) {
                     let entry = membership.entry(owner_ws_idx).or_default();
                     if !entry.contains(&name) {
                         entry.push(name.clone());
@@ -104,7 +104,10 @@ mod tests {
             let member_pane = member_ws.tabs[0].root_pane;
             let member_public_id = crate::workspace::public_pane_id_for_number(&member_ws.id, 1);
             assert_eq!(app.parse_pane_id(&member_public_id), Some((1, member_pane)));
-            crate::persist::channels::write_joined_members("planning", &[member_public_id])
+            crate::persist::channels::write_joined_members(
+                "planning",
+                &[crate::persist::channels::ChannelMember::legacy(member_public_id)],
+            )
                 .expect("write roster");
 
             app.refresh_channel_membership_if_due(Instant::now());

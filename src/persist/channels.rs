@@ -184,13 +184,74 @@ pub struct ChannelSince {
     pub oldest_seq: Option<u64>,
 }
 
-/// Public pane ids that explicitly joined `name`, keeping only those `live`
-/// still resolves. Pruning is read-only: a pane id that stops resolving
-/// (closed pane, restarted session) simply stops being a member, and the
-/// next `write_joined_members` persists the pruned set. A missing or
-/// unparseable roster reads as no joined members — a corrupt roster must not
-/// take the channel down with it.
-pub fn read_joined_members(name: &str, live: impl Fn(&str) -> bool) -> Vec<String> {
+/// One channel member: the agent that joined, plus the pane it was last
+/// seen in. `agent` is the identity — an `AgentId`, minted once and
+/// restored verbatim; `pane` is only its *current address*, a pointer
+/// refreshed on every write. A public pane id is reallocated on cold
+/// restore, so keying membership by it hands the seat to whoever inherits
+/// the number.
+///
+/// `agent: None` marks a legacy entry, written before the roster was
+/// rekeyed. Those are still honoured by `pane` and are never silently
+/// dropped; they simply cannot survive a pane reallocation, which is the
+/// bug they predate. There is no backfill: nothing on disk records which
+/// agent owned a bare pane id, and inventing one would be worse than
+/// admitting the gap.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChannelMember {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+    pub pane: String,
+}
+
+impl ChannelMember {
+    /// A legacy roster entry: address only, no identity.
+    pub fn legacy(pane: String) -> Self {
+        Self { agent: None, pane }
+    }
+
+    /// Whether this entry is the same member as `other` — by identity when
+    /// both carry one, else by address. Two legacy entries can only be
+    /// compared by pane; an identified entry never matches a legacy one on
+    /// pane alone, or a reallocated pane id would merge two agents.
+    pub fn is_same_member(&self, other: &Self) -> bool {
+        match (&self.agent, &other.agent) {
+            (Some(mine), Some(theirs)) => mine == theirs,
+            (None, None) => self.pane == other.pane,
+            _ => false,
+        }
+    }
+
+    /// Whether this stored entry is `other`, *or* a legacy entry sitting at
+    /// `other`'s pane.
+    ///
+    /// The asymmetry is deliberate: only a *stored* entry without an
+    /// identity may be matched by pane alone. That is how a pre-rekey entry
+    /// gets retired — an agent joining or leaving absorbs the legacy row at
+    /// its own seat instead of leaving it behind forever.
+    ///
+    /// Use this only where absorbing a legacy row is the point (join
+    /// dedupe, leave, scope removal). NEVER use it to *grant* anything: a
+    /// reallocated pane id must never inherit a stranger's scope or read
+    /// cursor, which is what [`Self::is_same_member`] refuses to allow.
+    pub fn is_same_member_or_legacy_seat(&self, other: &Self) -> bool {
+        self.is_same_member(other) || (self.agent.is_none() && self.pane == other.pane)
+    }
+}
+
+/// Members that explicitly joined `name`, keeping only those `resolve`
+/// still places somewhere. `resolve` returns the member's *current* public
+/// pane id — `None` prunes it (closed pane, restarted session), `Some`
+/// refreshes the stored pointer, so the next `write_joined_members`
+/// persists both the pruned set and the new addresses.
+///
+/// A missing or unparseable roster reads as no joined members — a corrupt
+/// roster must not take the channel down with it. Entries that are bare
+/// JSON strings are legacy pane ids and parse as [`ChannelMember::legacy`].
+pub fn read_joined_members(
+    name: &str,
+    resolve: impl Fn(&ChannelMember) -> Option<String>,
+) -> Vec<ChannelMember> {
     let raw = match fs::read_to_string(channel_members_file_path(name)) {
         Ok(raw) => raw,
         Err(err) => {
@@ -200,20 +261,41 @@ pub fn read_joined_members(name: &str, live: impl Fn(&str) -> bool) -> Vec<Strin
             return Vec::new();
         }
     };
-    let stored: Vec<String> = match serde_json::from_str(&raw) {
+    let stored: Vec<serde_json::Value> = match serde_json::from_str(&raw) {
         Ok(stored) => stored,
         Err(err) => {
             tracing::warn!(channel = %name, error = %err, "channel roster malformed");
             return Vec::new();
         }
     };
-    stored.into_iter().filter(|pane_id| live(pane_id)).collect()
+    stored
+        .into_iter()
+        .filter_map(|value| match value {
+            serde_json::Value::String(pane) => Some(ChannelMember::legacy(pane)),
+            other => match serde_json::from_value::<ChannelMember>(other) {
+                Ok(member) => Some(member),
+                Err(err) => {
+                    // One unreadable entry must not evict the rest of the
+                    // roster, so it is dropped alone and loudly.
+                    tracing::warn!(channel = %name, error = %err, "channel roster entry malformed");
+                    None
+                }
+            },
+        })
+        .filter_map(|member| {
+            let pane = resolve(&member)?;
+            Some(ChannelMember {
+                agent: member.agent,
+                pane,
+            })
+        })
+        .collect()
 }
 
 /// Replace `name`'s joined roster. Writes a sibling `.tmp` and renames over
 /// the roster so a concurrent reader never observes a half-written file. An
 /// empty roster removes the file rather than leaving `[]` behind.
-pub fn write_joined_members(name: &str, members: &[String]) -> io::Result<()> {
+pub fn write_joined_members(name: &str, members: &[ChannelMember]) -> io::Result<()> {
     let path = channel_members_file_path(name);
     if members.is_empty() {
         return match fs::remove_file(&path) {
@@ -287,14 +369,23 @@ pub fn mark_protocol_sent(name: &str, pane: &str, version: u32) -> io::Result<()
     fs::rename(&tmp_path, &path)
 }
 
-/// One pane's declared write/read scope within a channel — CANAL-ESCOPO.md
+/// One agent's declared write/read scope within a channel — CANAL-ESCOPO.md
 /// Shape 2's registry, the data the harness scope gate consults at runtime.
-/// Keyed by public pane id, never `terminal_id`: minted at runtime and
-/// reallocated on restore, less durable than anything else that could
-/// address a pane. `nick` rides along only for a readable error message,
-/// never as an address.
+///
+/// Keyed by `agent` (an `AgentId`), never by `pane` and never by
+/// `terminal_id`: a public pane id is reallocated on cold restore, so a
+/// scope keyed by it would silently grant the previous occupant's write
+/// permissions to whoever inherits the number — the one failure mode a
+/// scope gate must not have. `pane` remains as the current address, and
+/// `nick` rides along only for a readable error message, never as an
+/// address.
+///
+/// `agent: None` is a legacy entry, matched by `pane` alone. It predates
+/// the rekey and is honoured, not dropped.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChannelScopeEntry {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
     pub pane: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nick: Option<String>,
@@ -302,6 +393,34 @@ pub struct ChannelScopeEntry {
     pub write: Vec<String>,
     #[serde(default)]
     pub read: Vec<String>,
+}
+
+impl ChannelScopeEntry {
+    /// Whether this entry describes the same member as `other`, by identity
+    /// when both carry one, else by address. Mirrors
+    /// [`ChannelMember::is_same_member`] so a rekeyed roster and a rekeyed
+    /// scope registry agree on who is who.
+    pub fn is_same_member(&self, other: &Self) -> bool {
+        match (&self.agent, &other.agent) {
+            (Some(mine), Some(theirs)) => mine == theirs,
+            (None, None) => self.pane == other.pane,
+            _ => false,
+        }
+    }
+
+    /// Whether this stored entry is `other`, *or* a legacy entry sitting at
+    /// `other`'s pane — the same asymmetric rule as
+    /// [`ChannelMember::is_same_member_or_legacy_seat`], and used for the
+    /// same two operations: replacing an entry on re-join and dropping one
+    /// on leave. A departed pane's declared directories must not outlive
+    /// its membership just because the row predates the rekey.
+    ///
+    /// NEVER use this to decide what a pane is *allowed* to touch. Granting
+    /// goes through [`Self::is_same_member`], which refuses to let a
+    /// reallocated pane id inherit the previous occupant's write scope.
+    pub fn is_same_member_or_legacy_seat(&self, other: &Self) -> bool {
+        self.is_same_member(other) || (self.agent.is_none() && self.pane == other.pane)
+    }
 }
 
 /// Every pane's declared scope for `name`. A missing or unparseable record
@@ -349,23 +468,42 @@ fn write_channel_scope(name: &str, entries: &[ChannelScopeEntry]) -> io::Result<
     fs::rename(&tmp_path, &path)
 }
 
-/// Replace `entry.pane`'s scope entry for `name`, dropping any prior one —
-/// a re-join with a new scope replaces wholesale rather than merging
-/// (CANAL-ESCOPO.md Shape 2: "re-join REPLACES that pane's entry").
+/// Replace `entry`'s scope for `name`, dropping any prior one for the same
+/// member — a re-join with a new scope replaces wholesale rather than
+/// merging (CANAL-ESCOPO.md Shape 2: "re-join REPLACES that pane's
+/// entry"). Identity decides who "the same member" is, so an agent that
+/// came back in a reallocated pane replaces its own entry instead of
+/// growing a second one.
 pub fn upsert_channel_scope(name: &str, entry: ChannelScopeEntry) -> io::Result<()> {
     let mut entries = read_channel_scope(name);
-    entries.retain(|existing| existing.pane != entry.pane);
+    entries.retain(|existing| !existing.is_same_member_or_legacy_seat(&entry));
     entries.push(entry);
     write_channel_scope(name, &entries)
 }
 
-/// Drop `pane`'s scope entry for `name`, if any. Returns whether an entry
-/// was actually removed. Called from `channel.leave` so a pane's declared
-/// scope does not outlive its membership.
-pub fn remove_channel_scope_entry(name: &str, pane: &str) -> io::Result<bool> {
+/// Drop a member's scope entry for `name`, if any. Returns whether an entry
+/// was actually removed. Called from `channel.leave` so a declared scope
+/// does not outlive the membership it belongs to.
+///
+/// `agent` is the identity to drop; `pane` only matches legacy entries that
+/// carry no identity. Passing `None` for `agent` therefore removes exactly
+/// the legacy entry at `pane`, never an identified agent that happens to
+/// occupy that pane id today.
+pub fn remove_channel_scope_entry(
+    name: &str,
+    agent: Option<&str>,
+    pane: &str,
+) -> io::Result<bool> {
+    let target = ChannelScopeEntry {
+        agent: agent.map(str::to_string),
+        pane: pane.to_string(),
+        nick: None,
+        write: Vec::new(),
+        read: Vec::new(),
+    };
     let mut entries = read_channel_scope(name);
     let before = entries.len();
-    entries.retain(|entry| entry.pane != pane);
+    entries.retain(|entry| !entry.is_same_member_or_legacy_seat(&target));
     let removed = entries.len() != before;
     if removed {
         write_channel_scope(name, &entries)?;
@@ -374,14 +512,31 @@ pub fn remove_channel_scope_entry(name: &str, pane: &str) -> io::Result<bool> {
 }
 
 /// One member's read cursor for a channel: the highest message `seq` they
-/// have read via `channel tail` / `channel history`. Keyed by public pane
-/// id, same identity `channel_members` reports — a stable per-pane record,
-/// never `terminal_id`. A pane with no entry has never read: everything is
-/// unread.
+/// have read via `channel tail` / `channel history`.
+///
+/// Keyed by `agent`, the same identity the roster reports, so a cursor
+/// survives the pane reallocation that a cold restore performs. Were it
+/// keyed by pane id, a restored agent would inherit a stranger's read
+/// position and silently skip its own unread backlog. `pane` stays as the
+/// current address. `agent: None` is a legacy entry, matched by pane.
+/// A member with no entry has never read: everything is unread.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChannelReadCursor {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
     pub pane: String,
     pub seq: u64,
+}
+
+impl ChannelReadCursor {
+    /// Same identity-first comparison the roster and scope registries use.
+    fn matches(&self, agent: Option<&str>, pane: &str) -> bool {
+        match (self.agent.as_deref(), agent) {
+            (Some(mine), Some(theirs)) => mine == theirs,
+            (None, None) => self.pane == pane,
+            _ => false,
+        }
+    }
 }
 
 /// Every member's read cursor for `name`. A missing or unparseable record
@@ -407,13 +562,14 @@ pub fn read_channel_cursors(name: &str) -> Vec<ChannelReadCursor> {
     }
 }
 
-/// `pane`'s stored read cursor for `name`, or `None` if it has never read
+/// A member's stored read cursor for `name`, or `None` if it has never read
 /// (including when the whole record is unreadable/corrupt — see
-/// [`read_channel_cursors`]).
-pub fn read_channel_cursor(name: &str, pane: &str) -> Option<u64> {
+/// [`read_channel_cursors`]). Matched by `agent` when given, else by the
+/// legacy `pane` key.
+pub fn read_channel_cursor(name: &str, agent: Option<&str>, pane: &str) -> Option<u64> {
     read_channel_cursors(name)
         .into_iter()
-        .find(|entry| entry.pane == pane)
+        .find(|entry| entry.matches(agent, pane))
         .map(|entry| entry.seq)
 }
 
@@ -433,18 +589,31 @@ fn write_channel_cursors(name: &str, entries: &[ChannelReadCursor]) -> io::Resul
     fs::rename(&tmp_path, &path)
 }
 
-/// Records that `pane` has read through `seq` in `name`, replacing any
-/// prior cursor for that pane — but only forward: a `seq` at or below the
+/// Records that a member has read through `seq` in `name`, replacing any
+/// prior cursor for that member — but only forward: a `seq` at or below the
 /// stored cursor (or a `seq` of 0 with no stored cursor at all) is a
 /// silent no-op, so re-reading old history, or a caller passing seq 0,
 /// can never rewind or invent a member's cursor.
-pub fn advance_channel_cursor(name: &str, pane: &str, seq: u64) -> io::Result<()> {
+///
+/// The stored `pane` is refreshed on every advance, so an agent that moved
+/// to a new pane keeps one cursor rather than accreting one per pane it has
+/// ever occupied.
+pub fn advance_channel_cursor(
+    name: &str,
+    agent: Option<&str>,
+    pane: &str,
+    seq: u64,
+) -> io::Result<()> {
     let mut entries = read_channel_cursors(name);
-    match entries.iter_mut().find(|entry| entry.pane == pane) {
+    match entries.iter_mut().find(|entry| entry.matches(agent, pane)) {
         Some(entry) if seq <= entry.seq => return Ok(()),
-        Some(entry) => entry.seq = seq,
+        Some(entry) => {
+            entry.seq = seq;
+            entry.pane = pane.to_string();
+        }
         None if seq == 0 => return Ok(()),
         None => entries.push(ChannelReadCursor {
+            agent: agent.map(str::to_string),
             pane: pane.to_string(),
             seq,
         }),
@@ -456,6 +625,12 @@ pub fn advance_channel_cursor(name: &str, pane: &str, seq: u64) -> io::Result<()
 mod tests {
     use super::*;
     use crate::api::schema::ChannelSenderKind;
+
+    /// Roster entries reduced to their pane ids, for tests that assert on
+    /// addresses rather than identities.
+    fn panes(members: Vec<ChannelMember>) -> Vec<String> {
+        members.into_iter().map(|member| member.pane).collect()
+    }
 
     fn with_isolated_state_dir<T>(name: &str, f: impl FnOnce() -> T) -> T {
         let _guard = crate::config::test_config_env_lock().lock();
@@ -726,14 +901,22 @@ mod tests {
     #[test]
     fn joined_members_roundtrip_and_prune_dead_panes() {
         with_isolated_state_dir("roster-roundtrip", || {
-            write_joined_members("#eng", &["w1A:p2".into(), "w3B:p1".into()]).unwrap();
+            write_joined_members(
+                "#eng",
+                &[
+                    ChannelMember::legacy("w1A:p2".into()),
+                    ChannelMember::legacy("w3B:p1".into()),
+                ],
+            ).unwrap();
             assert_eq!(
-                read_joined_members("eng", |_| true),
+                panes(read_joined_members("eng", |member| Some(member.pane.clone()))),
                 vec!["w1A:p2".to_string(), "w3B:p1".to_string()]
             );
             // A pane that no longer resolves is simply not a member.
             assert_eq!(
-                read_joined_members("eng", |pane| pane == "w1A:p2"),
+                panes(read_joined_members("eng", |member| {
+                    (member.pane == "w1A:p2").then(|| member.pane.clone())
+                })),
                 vec!["w1A:p2".to_string()]
             );
         });
@@ -742,24 +925,189 @@ mod tests {
     #[test]
     fn joined_members_missing_or_malformed_roster_is_empty() {
         with_isolated_state_dir("roster-absent", || {
-            assert!(read_joined_members("nope", |_| true).is_empty());
+            assert!(read_joined_members("nope", |member| Some(member.pane.clone())).is_empty());
             fs::create_dir_all(channels_dir()).unwrap();
             fs::write(channel_members_file_path("broken"), "{not json").unwrap();
-            assert!(read_joined_members("broken", |_| true).is_empty());
+            assert!(read_joined_members("broken", |member| Some(member.pane.clone())).is_empty());
+        });
+    }
+
+    /// The bug M7 closes. A pane id is reallocated on cold restore, so a
+    /// roster keyed by it hands the seat to whoever inherits the number.
+    /// Keyed by identity, the member follows its agent to the new pane.
+    #[test]
+    fn roster_member_follows_its_agent_to_a_reallocated_pane() {
+        with_isolated_state_dir("roster-rekey", || {
+            write_joined_members(
+                "eng",
+                &[ChannelMember {
+                    agent: Some("agent_a1".into()),
+                    pane: "w1A:p2".into(),
+                }],
+            )
+            .unwrap();
+
+            // After a restore the agent lives in a different pane, and
+            // `w1A:p2` now belongs to somebody else entirely.
+            let members = read_joined_members("eng", |member| {
+                assert_eq!(member.agent.as_deref(), Some("agent_a1"));
+                Some("w1A:p7".to_string())
+            });
+            assert_eq!(
+                members,
+                vec![ChannelMember {
+                    agent: Some("agent_a1".into()),
+                    pane: "w1A:p7".into(),
+                }],
+                "the member must survive with its pointer refreshed, not be pruned"
+            );
+
+            // The refreshed pointer is what gets persisted, so the stale
+            // pane id does not come back on the next read.
+            write_joined_members("eng", &members).unwrap();
+            assert_eq!(
+                panes(read_joined_members("eng", |member| Some(member.pane.clone()))),
+                vec!["w1A:p7".to_string()]
+            );
+        });
+    }
+
+    /// A roster written before the rekey is a JSON array of bare pane id
+    /// strings. It must keep working — there is no backfill, because
+    /// nothing on disk records which agent owned a bare pane id.
+    #[test]
+    fn legacy_roster_of_bare_pane_ids_still_reads() {
+        with_isolated_state_dir("roster-legacy", || {
+            fs::create_dir_all(channels_dir()).unwrap();
+            fs::write(
+                channel_members_file_path("eng"),
+                r#"["w1A:p2","w3B:p1"]"#,
+            )
+            .unwrap();
+
+            let members = read_joined_members("eng", |member| Some(member.pane.clone()));
+            assert!(
+                members.iter().all(|member| member.agent.is_none()),
+                "a legacy entry must not be given an invented identity"
+            );
+            assert_eq!(
+                panes(members),
+                vec!["w1A:p2".to_string(), "w3B:p1".to_string()]
+            );
+        });
+    }
+
+    /// A cursor must not be readable through a pane id once an identity
+    /// owns it, or a reallocated pane would inherit a stranger's read
+    /// position and silently skip its own backlog.
+    #[test]
+    fn cursor_keyed_by_identity_is_not_reachable_through_a_stale_pane() {
+        with_isolated_state_dir("cursor-rekey", || {
+            advance_channel_cursor("eng", Some("agent_a1"), "w1A:p2", 7).unwrap();
+
+            assert_eq!(
+                read_channel_cursor("eng", Some("agent_a1"), "w1A:p9"),
+                Some(7),
+                "the cursor follows the identity, not the pane"
+            );
+            assert_eq!(
+                read_channel_cursor("eng", Some("agent_other"), "w1A:p2"),
+                None,
+                "a different agent inheriting the pane must not inherit the cursor"
+            );
+
+            // Advancing refreshes the stored address instead of accreting a
+            // second cursor for the same agent.
+            advance_channel_cursor("eng", Some("agent_a1"), "w1A:p9", 9).unwrap();
+            let cursors = read_channel_cursors("eng");
+            assert_eq!(cursors.len(), 1, "got: {cursors:?}");
+            assert_eq!(cursors[0].pane, "w1A:p9");
+            assert_eq!(cursors[0].seq, 9);
+        });
+    }
+
+    /// A legacy scope row must be *absorbed* by the agent that occupies its
+    /// seat — replaced, never duplicated and never left behind — because a
+    /// row with no identity is exactly the row a reallocated pane could
+    /// later inherit. Absorption is the migration: after it, the scope is
+    /// keyed by an identity and can no longer be inherited by pane.
+    #[test]
+    fn identified_agent_absorbs_the_legacy_scope_row_at_its_seat() {
+        with_isolated_state_dir("scope-rekey", || {
+            upsert_channel_scope("eng", scope_entry("w1A:p2", &["/repo/legacy"], &[])).unwrap();
+            assert_eq!(read_channel_scope("eng").len(), 1);
+            assert!(read_channel_scope("eng")[0].agent.is_none());
+
+            upsert_channel_scope(
+                "eng",
+                ChannelScopeEntry {
+                    agent: Some("agent_a1".into()),
+                    pane: "w1A:p2".into(),
+                    nick: None,
+                    write: vec!["/repo/mine".into()],
+                    read: Vec::new(),
+                },
+            )
+            .unwrap();
+
+            let entries = read_channel_scope("eng");
+            assert_eq!(entries.len(), 1, "the legacy row must be replaced: {entries:?}");
+            assert_eq!(entries[0].agent.as_deref(), Some("agent_a1"));
+            assert_eq!(entries[0].write, vec!["/repo/mine".to_string()]);
+        });
+    }
+
+    /// Granting is the one place the pane fallback must NOT apply: an agent
+    /// that inherits a pane id must not inherit the scope declared by
+    /// whoever sat there before it.
+    #[test]
+    fn a_reallocated_pane_does_not_inherit_the_previous_occupants_scope() {
+        let legacy = scope_entry("w1A:p2", &["/repo/legacy"], &[]);
+        let newcomer = ChannelScopeEntry {
+            agent: Some("agent_new".into()),
+            pane: "w1A:p2".into(),
+            nick: None,
+            write: Vec::new(),
+            read: Vec::new(),
+        };
+        assert!(
+            !legacy.is_same_member(&newcomer),
+            "the grant path must never match a legacy row by pane alone"
+        );
+        let previous = ChannelScopeEntry {
+            agent: Some("agent_old".into()),
+            ..legacy
+        };
+        assert!(
+            !previous.is_same_member(&newcomer)
+                && !previous.is_same_member_or_legacy_seat(&newcomer),
+            "an identified row is never matched by pane, on either path"
+        );
+    }
+
+    /// Leaving retires the legacy row at the departing seat: a departed
+    /// pane's declared directories must not outlive its membership just
+    /// because the row predates the rekey.
+    #[test]
+    fn leaving_retires_the_legacy_scope_row_at_that_seat() {
+        with_isolated_state_dir("scope-legacy-leave", || {
+            upsert_channel_scope("eng", scope_entry("w1A:p2", &["/repo/legacy"], &[])).unwrap();
+            assert!(remove_channel_scope_entry("eng", Some("agent_a1"), "w1A:p2").unwrap());
+            assert!(read_channel_scope("eng").is_empty());
         });
     }
 
     #[test]
     fn writing_roster_is_atomic_and_empty_removes_it() {
         with_isolated_state_dir("roster-atomic", || {
-            write_joined_members("eng", &["w1A:p2".into()]).unwrap();
+            write_joined_members("eng", &[ChannelMember::legacy("w1A:p2".into())]).unwrap();
             let path = channel_members_file_path("eng");
             assert!(path.exists());
             assert!(!path.with_extension("json.tmp").exists());
 
             write_joined_members("eng", &[]).unwrap();
             assert!(!path.exists());
-            assert!(read_joined_members("eng", |_| true).is_empty());
+            assert!(read_joined_members("eng", |member| Some(member.pane.clone())).is_empty());
             // Removing an already-absent roster is not an error.
             write_joined_members("eng", &[]).unwrap();
         });
@@ -767,6 +1115,7 @@ mod tests {
 
     fn scope_entry(pane: &str, write: &[&str], read: &[&str]) -> ChannelScopeEntry {
         ChannelScopeEntry {
+            agent: None,
             pane: pane.to_string(),
             nick: Some(format!("{pane}-nick")),
             write: write.iter().map(std::string::ToString::to_string).collect(),
@@ -822,13 +1171,13 @@ mod tests {
             upsert_channel_scope("eng", scope_entry("w1A:p2", &["/repo/a"], &[])).unwrap();
             upsert_channel_scope("eng", scope_entry("w3B:p1", &["/repo/b"], &[])).unwrap();
 
-            assert!(remove_channel_scope_entry("eng", "w1A:p2").unwrap());
+            assert!(remove_channel_scope_entry("eng", None, "w1A:p2").unwrap());
             let entries = read_channel_scope("eng");
             assert_eq!(entries.len(), 1);
             assert_eq!(entries[0].pane, "w3B:p1");
 
             // Removing an already-absent pane is a no-op, not an error.
-            assert!(!remove_channel_scope_entry("eng", "w1A:p2").unwrap());
+            assert!(!remove_channel_scope_entry("eng", None, "w1A:p2").unwrap());
         });
     }
 
@@ -840,7 +1189,7 @@ mod tests {
             assert!(path.exists());
             assert!(!path.with_extension("json.tmp").exists());
 
-            assert!(remove_channel_scope_entry("eng", "w1A:p2").unwrap());
+            assert!(remove_channel_scope_entry("eng", None, "w1A:p2").unwrap());
             assert!(!path.exists(), "removing the last entry deletes the file");
         });
     }
@@ -848,28 +1197,28 @@ mod tests {
     #[test]
     fn cursor_has_no_entry_until_advanced() {
         with_isolated_state_dir("cursor-missing", || {
-            assert_eq!(read_channel_cursor("eng", "w1A:p2"), None);
+            assert_eq!(read_channel_cursor("eng", None, "w1A:p2"), None);
         });
     }
 
     #[test]
     fn cursor_advances_and_never_regresses() {
         with_isolated_state_dir("cursor-advance", || {
-            advance_channel_cursor("eng", "w1A:p2", 5).unwrap();
-            assert_eq!(read_channel_cursor("eng", "w1A:p2"), Some(5));
+            advance_channel_cursor("eng", None, "w1A:p2", 5).unwrap();
+            assert_eq!(read_channel_cursor("eng", None, "w1A:p2"), Some(5));
 
             // A lower or equal seq is a silent no-op — re-reading old
             // history can never rewind the stored cursor.
-            advance_channel_cursor("eng", "w1A:p2", 3).unwrap();
-            assert_eq!(read_channel_cursor("eng", "w1A:p2"), Some(5));
-            advance_channel_cursor("eng", "w1A:p2", 5).unwrap();
-            assert_eq!(read_channel_cursor("eng", "w1A:p2"), Some(5));
+            advance_channel_cursor("eng", None, "w1A:p2", 3).unwrap();
+            assert_eq!(read_channel_cursor("eng", None, "w1A:p2"), Some(5));
+            advance_channel_cursor("eng", None, "w1A:p2", 5).unwrap();
+            assert_eq!(read_channel_cursor("eng", None, "w1A:p2"), Some(5));
 
-            advance_channel_cursor("eng", "w1A:p2", 9).unwrap();
-            assert_eq!(read_channel_cursor("eng", "w1A:p2"), Some(9));
+            advance_channel_cursor("eng", None, "w1A:p2", 9).unwrap();
+            assert_eq!(read_channel_cursor("eng", None, "w1A:p2"), Some(9));
 
             // A second pane's cursor is independent.
-            assert_eq!(read_channel_cursor("eng", "w1A:p9"), None);
+            assert_eq!(read_channel_cursor("eng", None, "w1A:p9"), None);
         });
     }
 
@@ -878,7 +1227,7 @@ mod tests {
         with_isolated_state_dir("cursor-corrupt", || {
             fs::create_dir_all(channels_dir()).unwrap();
             fs::write(channel_cursors_file_path("eng"), b"not json").unwrap();
-            assert_eq!(read_channel_cursor("eng", "w1A:p2"), None);
+            assert_eq!(read_channel_cursor("eng", None, "w1A:p2"), None);
             assert!(read_channel_cursors("eng").is_empty());
         });
     }

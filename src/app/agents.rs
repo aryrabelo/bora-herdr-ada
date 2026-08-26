@@ -829,9 +829,9 @@ mod tests {
             "agent.start must succeed for this test to prove anything, got: {started}"
         );
 
-        let members = crate::persist::channels::read_joined_members("proj", |_| true);
+        let members = crate::persist::channels::read_joined_members("proj", |member| Some(member.pane.clone()));
         assert!(
-            members.contains(&pane_id),
+            members.iter().any(|member| member.pane == pane_id),
             "an agent started in a project member workspace must auto-join the \
              project's channel, got members: {members:?}"
         );
@@ -850,7 +850,7 @@ mod tests {
         let root = app.state.workspaces[ws_idx].tabs[0].root_pane;
         start_agent_ok(&mut app, &pane_id, "worker");
 
-        let members_after_first = crate::persist::channels::read_joined_members("proj", |_| true);
+        let members_after_first = crate::persist::channels::read_joined_members("proj", |member| Some(member.pane.clone()));
         assert_eq!(
             members_after_first.len(),
             1,
@@ -866,7 +866,7 @@ mod tests {
         // directly against the method under test.
         app.auto_join_project_channel(ws_idx, root, &pane_id);
 
-        let members_after_second = crate::persist::channels::read_joined_members("proj", |_| true);
+        let members_after_second = crate::persist::channels::read_joined_members("proj", |member| Some(member.pane.clone()));
         assert_eq!(
             members_after_second, members_after_first,
             "a repeat auto-join must not add a duplicate roster entry"
@@ -893,7 +893,7 @@ mod tests {
         let started = start_agent_ok(&mut app, &pane_id, "worker");
         assert_eq!(started["result"]["type"], "agent_started", "got: {started}");
 
-        let members = crate::persist::channels::read_joined_members("proj", |_| true);
+        let members = crate::persist::channels::read_joined_members("proj", |member| Some(member.pane.clone()));
         assert!(
             members.is_empty(),
             "auto_join: false must keep the agent out of the channel roster, got: {members:?}"

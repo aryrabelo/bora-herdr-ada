@@ -908,6 +908,7 @@ impl App {
                 );
             }
             let entry = channels::ChannelScopeEntry {
+                agent: self.agent_id_for_public_pane(&public_id),
                 pane: public_id.clone(),
                 nick: self.pane_display_name(&public_id),
                 write,
@@ -931,9 +932,17 @@ impl App {
                 },
             );
         }
+        let member = channels::ChannelMember {
+            agent: self.agent_id_for_public_pane(&public_id),
+            pane: public_id.clone(),
+        };
         let mut joined = self.joined_channel_members(&name);
-        if !joined.iter().any(|member| member == &public_id) {
-            joined.push(public_id.clone());
+        if !joined.iter().any(|existing| existing == &member) {
+            // Absorbs a legacy row at this seat instead of leaving it
+            // behind: the rewrite is how a pre-rekey entry gains an
+            // identity.
+            joined.retain(|existing| !existing.is_same_member_or_legacy_seat(&member));
+            joined.push(member);
             if let Err(err) = channels::write_joined_members(&name, &joined) {
                 return encode_error(id, "channel_join_failed", err.to_string());
             }
@@ -976,9 +985,14 @@ impl App {
                 format!("pane {} not found", params.pane),
             );
         };
+        let agent = self.agent_id_for_public_pane(&public_id);
+        let target = channels::ChannelMember {
+            agent: agent.clone(),
+            pane: public_id.clone(),
+        };
         let mut joined = self.joined_channel_members(&name);
         let before = joined.len();
-        joined.retain(|member| member != &public_id);
+        joined.retain(|member| !member.is_same_member_or_legacy_seat(&target));
         let removed = joined.len() != before;
         if removed {
             if let Err(err) = channels::write_joined_members(&name, &joined) {
@@ -986,7 +1000,9 @@ impl App {
             }
             tracing::info!(channel = %name, pane = %public_id, "pane left channel");
         }
-        if let Err(err) = channels::remove_channel_scope_entry(&name, &public_id) {
+        if let Err(err) =
+            channels::remove_channel_scope_entry(&name, agent.as_deref(), &public_id)
+        {
             tracing::warn!(
                 channel = %name,
                 pane = %public_id,
@@ -1105,10 +1121,11 @@ impl App {
         Some((self.public_pane_id(ws_idx, pane_id)?, ws_idx))
     }
 
-    /// Persisted joined pane ids for `name`, minus any that no longer
-    /// resolve to a live pane.
-    fn joined_channel_members(&self, name: &str) -> Vec<String> {
-        channels::read_joined_members(name, |pane| self.parse_pane_id(pane).is_some())
+    /// Persisted joined members for `name`, minus any that no longer
+    /// resolve to a live pane, each with its `pane` refreshed to where its
+    /// agent lives right now.
+    fn joined_channel_members(&self, name: &str) -> Vec<channels::ChannelMember> {
+        channels::read_joined_members(name, |member| self.resolve_channel_member(member))
     }
 
     fn find_channel_workspace(&self, name: &str) -> Option<usize> {
@@ -1151,7 +1168,10 @@ impl App {
         if !is_member {
             return;
         }
-        if let Err(err) = channels::advance_channel_cursor(name, &public_id, high_water_seq) {
+        let agent = self.agent_id_for_public_pane(&public_id);
+        if let Err(err) =
+            channels::advance_channel_cursor(name, agent.as_deref(), &public_id, high_water_seq)
+        {
             tracing::warn!(
                 channel = %name,
                 pane = %public_id,
@@ -1200,7 +1220,9 @@ impl App {
             .and_then(|pane| self.resolve_public_pane(pane))
             .filter(|(public_id, _)| members.iter().any(|member| &member.public_id == public_id))
             .map_or(0, |(public_id, _)| {
-                let cursor = channels::read_channel_cursor(name, &public_id).unwrap_or(0);
+                let agent = self.agent_id_for_public_pane(&public_id);
+                let cursor =
+                    channels::read_channel_cursor(name, agent.as_deref(), &public_id).unwrap_or(0);
                 last_message_seq.saturating_sub(cursor)
             });
         ChannelSummary {
@@ -1247,7 +1269,7 @@ impl App {
             return members;
         };
         for stored in self.joined_channel_members(name) {
-            let Some((owner_ws_idx, pane_id)) = self.parse_pane_id(&stored) else {
+            let Some((owner_ws_idx, pane_id)) = self.parse_pane_id(&stored.pane) else {
                 continue;
             };
             // Canonical form, so an alias or colon-free spelling of a pane
@@ -1291,12 +1313,22 @@ impl App {
                 let name = agent
                     .as_ref()
                     .map(|info| member_addressable_name(info, &member.public_id));
+                let agent_id = self.agent_id_for_public_pane(&member.public_id);
+                // Identity first: a cursor stored against a pane id that has
+                // since been reallocated belongs to whoever held it before,
+                // and reporting it here would hide this member's real
+                // backlog behind a stranger's read position.
                 let cursor = cursors
                     .iter()
-                    .find(|entry| entry.pane == member.public_id)
+                    .find(|entry| match (entry.agent.as_deref(), agent_id.as_deref()) {
+                        (Some(stored), Some(mine)) => stored == mine,
+                        (None, _) => entry.pane == member.public_id,
+                        _ => false,
+                    })
                     .map_or(0, |entry| entry.seq);
                 ChannelMember {
                     pane_id: member.public_id,
+                    agent_id,
                     name,
                     agent_status: agent.map(|info| info.agent_status),
                     source: member.source,
@@ -3300,7 +3332,7 @@ mod tests {
         let error = join(&mut app, "#eng", "w9Z:p9");
         assert_eq!(error["error"]["code"], serde_json::json!("pane_not_found"));
         assert!(
-            channels::read_joined_members("eng", |_| true).is_empty(),
+            channels::read_joined_members("eng", |member| Some(member.pane.clone())).is_empty(),
             "a rejected join must not record membership"
         );
         super::super::test_support::shutdown_test_runtimes(&mut app);
@@ -3320,7 +3352,7 @@ mod tests {
             "a pane in the channel's own workspace was a member all along"
         );
         assert!(
-            channels::read_joined_members("eng", |_| true).is_empty(),
+            channels::read_joined_members("eng", |member| Some(member.pane.clone())).is_empty(),
             "implicit membership must not be recorded as explicit"
         );
         assert_eq!(member_sources(&mut app).len(), 2, "no member was added");
@@ -3381,7 +3413,7 @@ mod tests {
                 .any(|d| d["pane_id"] == json_str(&outsider)),
             "leaving stops fan-out to the pane"
         );
-        assert!(channels::read_joined_members("eng", |_| true).is_empty());
+        assert!(channels::read_joined_members("eng", |member| Some(member.pane.clone())).is_empty());
         super::super::test_support::shutdown_test_runtimes(&mut app);
     }
 
@@ -3524,7 +3556,10 @@ mod tests {
         let again = join(&mut app, "#eng", &outsider);
         assert_eq!(again["result"]["source"], serde_json::json!("joined"));
         assert_eq!(
-            channels::read_joined_members("eng", |_| true),
+            channels::read_joined_members("eng", |member| Some(member.pane.clone()))
+                .into_iter()
+                .map(|member| member.pane)
+                .collect::<Vec<_>>(),
             vec![outsider.clone()],
             "membership is persisted once, on disk, so it survives a restart"
         );
@@ -3565,7 +3600,13 @@ mod tests {
 
         // A roster written by a previous session: one live pane, one whose
         // pane no longer exists.
-        channels::write_joined_members("eng", &[outsider.clone(), "w9Z:p9".into()]).unwrap();
+        channels::write_joined_members(
+            "eng",
+            &[
+                channels::ChannelMember::legacy(outsider.clone()),
+                channels::ChannelMember::legacy("w9Z:p9".into()),
+            ],
+        ).unwrap();
 
         let panes: Vec<String> = member_sources(&mut app)
             .into_iter()
@@ -3581,7 +3622,7 @@ mod tests {
         // Leaving rewrites the roster without the dead entry.
         let left = leave(&mut app, "eng", &outsider);
         assert_eq!(left["result"]["removed"], serde_json::json!(true));
-        assert!(channels::read_joined_members("eng", |_| true).is_empty());
+        assert!(channels::read_joined_members("eng", |member| Some(member.pane.clone())).is_empty());
 
         // Leaving again, and leaving a workspace-implicit member, are
         // no-op successes rather than errors.
@@ -4433,7 +4474,7 @@ mod tests {
             "pane must resolve as a member before its cursor advances"
         );
         let last_seq = channels::read_tail("eng", 1).unwrap().last().unwrap().seq;
-        channels::advance_channel_cursor("eng", &public_id, last_seq).unwrap();
+        channels::advance_channel_cursor("eng", None, &public_id, last_seq).unwrap();
 
         assert_eq!(
             member_unread(&mut app, "eng", &public_id),
@@ -4461,7 +4502,7 @@ mod tests {
             },
         );
         let last_seq = channels::read_tail("eng", 1).unwrap().last().unwrap().seq;
-        channels::advance_channel_cursor("eng", &public_id, last_seq).unwrap();
+        channels::advance_channel_cursor("eng", None, &public_id, last_seq).unwrap();
         assert_eq!(member_unread(&mut app, "eng", &public_id), 0);
 
         // A zero-injection `channel.note` still registers as mail — the

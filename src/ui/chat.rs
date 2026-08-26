@@ -1220,6 +1220,7 @@ mod tests {
         // stop matching.
         let mut state = chat_state_at(106, 20);
         state.chat.members = vec![crate::api::schema::ChannelMember {
+            agent_id: None,
             pane_id: "w1:p1".into(),
             name: Some("abcdefghijklmnopqrstuvwxyz".into()),
             agent_status: Some(AgentStatus::Idle),

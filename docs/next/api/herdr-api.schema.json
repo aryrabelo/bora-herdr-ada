@@ -7915,6 +7915,13 @@
         "ChannelMember": {
           "description": "One member pane of a channel, as reported by `channel.members` — who would\nreceive a `channel.send`.",
           "properties": {
+            "agent_id": {
+              "description": "The member's durable agent identity, when its pane resolves to one.\n`pane_id` is only where it sits right now — a seat number that a\ncold restore can hand to somebody else — so any caller that stores\nor compares membership across restarts MUST key on this instead.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "agent_status": {
               "anyOf": [
                 {
