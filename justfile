@@ -120,6 +120,13 @@ install:
 bench-render-scale:
     cargo test --release --locked --bin bora render_scale_profile -- --ignored --nocapture --test-threads=1
 
+
+# Regenerate the "hoje" block in the sidebar contract HTML (.local/prd/
+# sidebar-project-view-anatomy.html): real capture vs alvo, side by side.
+# The contract test itself is P4-A (#[ignore]d until the F8 leaf).
+sidebar-preview:
+    cargo test --locked --bin bora ui::sidebar::capture::tests::write_sidebar_preview -- --exact --ignored --nocapture
+
 # ~3-5 minute CPU comparison; downloads stable unless HERDR_PERF_BASELINE_BIN is set
 bench-release-smoke:
     cargo build --release --locked

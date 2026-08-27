@@ -417,6 +417,395 @@ fn multi_workspace_fixture() -> (IsolatedDirs, FakeGitCheckout, AppState) {
 const FIXTURE_WIDTH: u16 = 56;
 const FIXTURE_HEIGHT: u16 = 40;
 
+// ── F0 (bora-79l.1): the executable contract ───────────────────────────────
+//
+// The alvo (target) transcription below is the machine-extracted text of the
+// capture grid in `.local/prd/sidebar-project-view-anatomy.html` ("A
+// captura", 2026-08-27), normalized at extraction time: right-aligned state
+// clusters and counters pinned to column 56, PaneDotsRow l2 dot lines given
+// the single leading space the design mandates ("um espaço dentro da
+// section"), LIVRE separators blank. The HTML grid stays the human-readable
+// mock; THIS const is the contract — P4-A compares against it and the
+// generated preview renders its alvo column from it, so they can never
+// drift apart.
+
+const ALVO_CAPTURE: &str = r#"                                                 project
+ Bora                                                8/8
+ ⎇ main                                           PR42 ✗
+ ● main
+ ◆
+ ● main-review
+ ○
+
+ ⎇ feature/x
+ ● feature-x
+ ⠋
+ ● research-feature-x
+ ⠋
+
+ ⎇ feature/y
+ ● feature-y
+ ⠋
+
+ ⎇ cleanup
+ ● cleanup
+ ○
+
+ ⎇ scratch
+ ● scratch
+ ○
+
+ ⌗ ⎇ hotfix/urgent                         +916 −2 ↑2 ↓1
+ ● hotfix
+ ●
+
+ ≡ COMANDO ───────────────────────────────────────── 0/1
+      · dev
+ ✓ CHECKS ────────────────────────────────────────── 1/2
+      ✗ clippy
+
+"#;
+
+fn alvo_lines() -> Vec<&'static str> {
+    ALVO_CAPTURE.lines().collect()
+}
+
+/// Builds the fixture the alvo describes: 8 workspaces under the "Bora"
+/// project in alvo row order — main (◆ falha) + main-review (○) on `main`,
+/// feature-x + research-feature-x on `feature/x` (both ⠋), feature-y (⠋),
+/// cleanup (○), scratch (○, plain shell), and the linked hotfix worktree
+/// (↑2 ↓1, ● esperando VOCÊ). `AgentState` has no dedicated falha variant
+/// today, so falha is fixture-mapped to `Blocked` and waiting-on-you to
+/// `Idle`+unseen — the glyph convergence itself is F2's leaf, which is
+/// exactly why P4-A starts `#[ignore]`d.
+fn alvo_fixture() -> (IsolatedDirs, FakeGitCheckout, AppState) {
+    let checkout = FakeGitCheckout::create(FIXTURE_REPO_ORIGIN_URL);
+
+    let isolated = IsolatedDirs::new("capture-alvo-fixture");
+    let mut file = ProjectsFile::default();
+    file.projects.insert(
+        "bora".to_string(),
+        Project {
+            name: Some("Bora".to_string()),
+            channel: None,
+            members: vec![Member {
+                dir: checkout.dir.display().to_string(),
+                worktrees: WorktreesScope::All,
+                template: None,
+            }],
+            orchestrator: None,
+            sections: Some(Sections {
+                checks: Some(vec!["gh".to_string()]),
+                commands: Some(vec!["dev".to_string()]),
+                order: None,
+            }),
+            auto_join: true,
+        },
+    );
+    crate::persist::projects::write_projects_file(&file).expect("write fixture projects.yml");
+
+    let mut app = AppState::test_new();
+    app.view_mode = crate::config::ViewMode::Project;
+    app.mode = Mode::Terminal;
+    app.projects = ProjectsStore::load();
+
+    let mut main = fixture_workspace("main", "wfix1", "main", "main", false);
+    main.cached_commands = Some(vec![BoraCommand {
+        label: "dev".to_string(),
+        command: "npm run dev".to_string(),
+        mode: BoraCommandMode::Pane,
+        branch: None,
+    }]);
+    main.cached_check_status = Some(WorkspaceCheckStatus {
+        pr: Some(PrSummary {
+            number: 42,
+            title: "feat: sidebar capture harness".to_string(),
+            state: "OPEN".to_string(),
+            url: "https://example.invalid/pr/42".to_string(),
+            mergeable: None,
+        }),
+        checks: vec![
+            CheckRun {
+                name: "build".to_string(),
+                status: "COMPLETED".to_string(),
+                conclusion: Some("SUCCESS".to_string()),
+            },
+            CheckRun {
+                name: "clippy".to_string(),
+                status: "COMPLETED".to_string(),
+                conclusion: Some("FAILURE".to_string()),
+            },
+        ],
+        error: None,
+    });
+    let main_review = fixture_workspace("main-review", "wfix7", "main", "main-review", false);
+    let feature_x = fixture_workspace("feature-x", "wfix2", "feature/x", "feature-x", false);
+    let research = fixture_workspace(
+        "research-feature-x",
+        "wfix8",
+        "feature/x",
+        "research-feature-x",
+        false,
+    );
+    let feature_y = fixture_workspace("feature-y", "wfix3", "feature/y", "feature-y", false);
+    let cleanup = fixture_workspace("cleanup", "wfix4", "cleanup", "cleanup", false);
+    let scratch = fixture_workspace("scratch", "wfix5", "scratch", "scratch", false);
+    let mut hotfix = fixture_workspace("hotfix", "wfix6", "hotfix/urgent", "hotfix", true);
+    hotfix.cached_git_ahead_behind = Some((2, 1));
+    // The alvo pins +916 −2 on the hotfix branch header; no line-level diff
+    // field exists on `Workspace` yet — it gets wired here when the data
+    // model lands (F1/F2).
+
+    app.workspaces = vec![
+        main,
+        main_review,
+        feature_x,
+        research,
+        feature_y,
+        cleanup,
+        scratch,
+        hotfix,
+    ];
+    app.active = Some(0);
+    app.ensure_test_terminals();
+
+    // Alvo state per block, in fixture order. Semantics documented above.
+    set_pane_agent(&mut app, 0, AgentState::Blocked, true, Some(Agent::Claude));
+    set_pane_agent(&mut app, 1, AgentState::Idle, true, Some(Agent::Claude));
+    set_pane_agent(&mut app, 2, AgentState::Working, true, Some(Agent::Claude));
+    set_pane_agent(&mut app, 3, AgentState::Working, true, Some(Agent::Claude));
+    set_pane_agent(&mut app, 4, AgentState::Working, true, Some(Agent::Claude));
+    set_pane_agent(&mut app, 5, AgentState::Idle, true, Some(Agent::Claude));
+    // ws 6 "scratch" stays Unknown — plain shell pane (○ parado).
+    set_pane_agent(&mut app, 7, AgentState::Idle, false, Some(Agent::Claude));
+
+    (isolated, checkout, app)
+}
+
+// ── F0: capture → HTML "hoje" block exporter ───────────────────────────────
+
+const PREVIEW_BEGIN: &str = "<!-- sidebar-preview:begin -->";
+const PREVIEW_END: &str = "<!-- sidebar-preview:end -->";
+
+struct CapturedRow {
+    num: usize,
+    text: String,
+    style: String,
+}
+
+fn capture_rows(capture: &str) -> Vec<CapturedRow> {
+    let mut rows: Vec<CapturedRow> = Vec::new();
+    for line in capture.lines() {
+        let Some(rest) = line.strip_prefix("row ") else {
+            continue;
+        };
+        let Some((num, rest)) = rest.split_once(' ') else {
+            continue;
+        };
+        let Ok(num) = num.parse::<usize>() else {
+            continue;
+        };
+        if let Some(inner) = rest.strip_prefix("text  |") {
+            let text = inner.strip_suffix('|').unwrap_or(inner);
+            rows.push(CapturedRow {
+                num,
+                text: text.to_string(),
+                style: String::new(),
+            });
+        } else if let Some(style) = rest.strip_prefix("style ") {
+            if let Some(row) = rows.iter_mut().find(|r| r.num == num) {
+                row.style = style.to_string();
+            }
+        }
+    }
+    rows
+}
+
+fn escape_html(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
+/// Maps one serialized style segment (`default`, or the Debug render
+/// `fg:…,bg:…,mod:…`) to CSS declarations.
+fn style_attrs(seg: &str) -> Vec<String> {
+    if seg == "default" {
+        return Vec::new();
+    }
+    let mut attrs = Vec::new();
+    let mut parts = seg.splitn(2, ",mod:");
+    let colors = parts.next().unwrap_or("");
+    let mods = parts.next().unwrap_or("");
+    if let Some((fg, bg)) = colors.split_once(",bg:") {
+        if let Some(css) = color_css(fg.strip_prefix("fg:").unwrap_or(fg)) {
+            attrs.push(format!("color:{css}"));
+        }
+        if let Some(css) = color_css(bg) {
+            attrs.push(format!("background-color:{css}"));
+        }
+    }
+    for modifier in mods.split('|') {
+        match modifier {
+            "BOLD" => attrs.push("font-weight:700".to_string()),
+            "ITALIC" => attrs.push("font-style:italic".to_string()),
+            "UNDERLINED" => attrs.push("text-decoration:underline".to_string()),
+            "DIM" => attrs.push("opacity:.65".to_string()),
+            // ponytail: rare modifiers (REVERSED, …) render unstyled in the
+            // preview; add a mapping when a capture actually contains one.
+            _ => {}
+        }
+    }
+    attrs
+}
+
+// ponytail: named ANSI cells fall back to lowercase CSS color keywords; the
+// themed sidebar cells are Rgb in practice (bora-capture-harness G2).
+fn color_css(value: &str) -> Option<String> {
+    if value == "Reset" {
+        return None;
+    }
+    if let Some(inner) = value.strip_prefix("Rgb(").and_then(|s| s.strip_suffix(')')) {
+        let channels: Vec<&str> = inner.split(',').map(str::trim).collect();
+        if channels.len() == 3 {
+            return Some(format!(
+                "rgb({}, {}, {})",
+                channels[0], channels[1], channels[2]
+            ));
+        }
+    }
+    Some(value.to_lowercase())
+}
+
+fn push_span(out: &mut String, text: &str, start: usize, end: usize, attrs: &str) {
+    let chunk: String = text
+        .chars()
+        .skip(start)
+        .take(end.saturating_sub(start))
+        .collect();
+    if chunk.is_empty() {
+        return;
+    }
+    let escaped = escape_html(&chunk);
+    if attrs.is_empty() {
+        let _ = write!(out, "{escaped}");
+    } else {
+        let _ = write!(out, r#"<span style="{attrs}">{escaped}</span>"#);
+    }
+}
+
+/// Renders one captured row as HTML, walking the style line's run-length
+/// spans; uncovered ranges fall back to unstyled text.
+fn row_html(text: &str, style: &str) -> String {
+    // The style line separates spans with spaces, but the Debug render of
+    // `Color::Rgb(r, g, b)` contains spaces too — a bare split(' ') would
+    // shred spans mid-tuple. Only tokens whose `=`-left side contains `..`
+    // start a span; every other token continues the previous span.
+    let mut spans: Vec<String> = Vec::new();
+    for token in style.split(' ').filter(|s| !s.is_empty()) {
+        if token
+            .split_once('=')
+            .is_some_and(|(range, _)| range.contains(".."))
+        {
+            spans.push(token.to_string());
+        } else if let Some(last) = spans.last_mut() {
+            last.push(' ');
+            last.push_str(token);
+        }
+    }
+    let mut out = String::new();
+    let mut cursor = 0usize;
+    for span in &spans {
+        let Some((range, seg)) = span.split_once('=') else {
+            continue;
+        };
+        let Some((start, end)) = range.split_once("..") else {
+            continue;
+        };
+        let (Ok(start), Ok(end)) = (start.parse::<usize>(), end.parse::<usize>()) else {
+            continue;
+        };
+        if start > cursor {
+            push_span(&mut out, text, cursor, start, "");
+        }
+        let attrs = style_attrs(seg).join(";");
+        push_span(&mut out, text, start, end, &attrs);
+        cursor = end;
+    }
+    let len = text.chars().count();
+    if cursor < len {
+        push_span(&mut out, text, cursor, len, "");
+    }
+    out
+}
+
+/// Builds the injected region: ONE capture grid with two content columns —
+/// the real, colorized "hoje" on the left and the alvo contract on the
+/// right — so row N of the code sits on the same visual row as row N of
+/// the contract. Two separate `.cap2` grids inside the flex `.tipwrap`
+/// exceeded `main`'s 980px and wrapped the alvo BELOW the capture (the
+/// owner read that as "the alvo is missing"), which is exactly the failure
+/// this single-grid layout prevents. Both columns render from code, so the
+/// HTML pair and the P4-A comparison share one source of truth.
+fn export_preview_block(capture: &str) -> String {
+    let rows = capture_rows(capture);
+    let content_rows = rows
+        .iter()
+        .rposition(|r| !r.text.trim().is_empty())
+        .map_or(0, |i| i + 1);
+    let alvo = alvo_lines();
+    let total = content_rows.max(alvo.len());
+    let mut out = String::new();
+    out.push_str("<h2>1b. Contrato executável — hoje (código, gerado) vs alvo</h2>\n");
+    out.push_str("<p class=\"sub\">Gerado por <code>just sidebar-preview</code> · fonte: o fixture do próprio contrato (<code>ui::sidebar::capture</code>). Mesma linha = mesmo row: à esquerda o que o código produz agora (cores reais), à direita o contrato que o P4-A cobra.</p>\n");
+    // Two 56-char content columns must fit `main`'s 980px: 12.5px monospace
+    // keeps each column ~420px wide; the fixed 3-col template aligns rows.
+    out.push_str(
+        "<div class=\"cap2\" style=\"font-size:12.5px;grid-template-columns:3ch 1fr 1fr\">",
+    );
+    out.push_str(
+        "<div class=\"num\">&nbsp;</div><div><b>hoje</b> · captura real</div><div><b>alvo</b> · contrato (P4-A)</div>",
+    );
+    for i in 0..total {
+        let hoje = rows
+            .get(i)
+            .filter(|_| i < content_rows)
+            .map(|r| row_html(&r.text, &r.style))
+            .unwrap_or_default();
+        let alvo_cell = alvo.get(i).map(|l| escape_html(l)).unwrap_or_default();
+        let _ = write!(
+            out,
+            "<div class=\"num\">{i:02}</div><div>{hoje}</div><div>{alvo_cell}</div>"
+        );
+    }
+    out.push_str("</div>\n");
+    out
+}
+
+/// Replaces the region between the preview markers in the contract HTML.
+/// Errors loudly when the markers are missing — silently appending would
+/// grow the file on every run.
+fn write_preview_into(html: &str, block: &str) -> Result<String, String> {
+    let begin = html
+        .find(PREVIEW_BEGIN)
+        .ok_or("marcador sidebar-preview:begin ausente no HTML-contrato")?;
+    let end = html
+        .find(PREVIEW_END)
+        .ok_or("marcador sidebar-preview:end ausente no HTML-contrato")?;
+    if begin >= end {
+        return Err("marcadores sidebar-preview fora de ordem no HTML-contrato".to_string());
+    }
+    let mut out = String::with_capacity(html.len() + block.len() + 2);
+    out.push_str(&html[..begin]);
+    out.push_str(PREVIEW_BEGIN);
+    out.push('\n');
+    out.push_str(block);
+    out.push('\n');
+    out.push_str(PREVIEW_END);
+    out.push_str(&html[end + PREVIEW_END.len()..]);
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -658,6 +1047,153 @@ mod tests {
              {}\n---\n{}",
             before_lines[2],
             after_lines[2]
+        );
+    }
+
+    // ── F0 (bora-79l.1): exporter + P4-A contract ──────────────────────────
+
+    const EXPORTER_SAMPLE_CAPTURE: &str = "\
+        bora sidebar capture 8x2\n\
+        row 00 text  |<a & b> |\n\
+        row 00 style 0..5=fg:Rgb(243, 139, 168),bg:Reset,mod:BOLD 5..8=default\n\
+        row 01 text  |  plain  |\n\
+        row 01 style 0..8=default\n";
+
+    #[test]
+    fn exporter_block_wraps_rows_escapes_html_and_carries_the_alvo_column() {
+        let block = export_preview_block(EXPORTER_SAMPLE_CAPTURE);
+        // Entities land on separate spans (the sample text is split at
+        // column 5), so assert per entity, not one contiguous string.
+        assert!(
+            block.contains("&lt;") && block.contains("&amp;") && block.contains("&gt;"),
+            "HTML specials in captured text must be escaped: {block}"
+        );
+        assert!(
+            block.contains("rgb(243, 139, 168)") && block.contains("font-weight:700"),
+            "real capture colors and modifiers must be colorized: {block}"
+        );
+        assert!(
+            block.contains("plain"),
+            "every captured row's text must appear: {block}"
+        );
+        assert!(
+            block.contains("alvo") && block.contains("8/8") && block.contains("✗ clippy"),
+            "the alvo column must come from the same ALVO_CAPTURE const P4-A uses: {block}"
+        );
+        assert!(
+            block.contains("grid-template-columns:3ch 1fr 1fr"),
+            "hoje and alvo must share one aligned grid, not two wrapping ones: {block}"
+        );
+    }
+
+    #[test]
+    fn exporter_writer_replaces_marked_region_idempotently() {
+        let html = format!("<p>antes</p>\n{PREVIEW_BEGIN}\nvelho\n{PREVIEW_END}\n<p>depois</p>\n");
+        let once = write_preview_into(&html, "BLOCO").expect("markers present");
+        assert!(
+            once.contains("<p>antes</p>") && once.contains("BLOCO") && !once.contains("velho"),
+            "the marked region is replaced wholesale, neighbors untouched: {once}"
+        );
+        let twice = write_preview_into(&once, "BLOCO").expect("markers survive");
+        assert_eq!(
+            once, twice,
+            "re-running the writer on its own output must be byte-identical"
+        );
+        assert!(
+            write_preview_into("<p>sem marcador</p>", "BLOCO").is_err(),
+            "a marker-less contract file must fail loudly, not grow silently"
+        );
+    }
+
+    #[test]
+    fn alvo_const_shapes_the_contract() {
+        let alvo = alvo_lines();
+        assert_eq!(alvo.len(), 35, "the alvo is exactly 35 rows: {alvo:#?}");
+        assert!(alvo[0].ends_with("project"), "row 00 is the view toggle");
+        for anchor in ["Bora", "8/8", "⌗ ⎇ hotfix/urgent", "COMANDO", "✗ clippy"] {
+            assert!(
+                alvo.iter().any(|l| l.contains(anchor)),
+                "alvo must contain {anchor:?}: {alvo:#?}"
+            );
+        }
+        for line in &alvo {
+            assert!(
+                line.chars().count() <= 56,
+                "no alvo row may exceed the 56-column capture: {line:?}"
+            );
+        }
+        // Right-pinned clusters sit flush at column 56.
+        for i in [1, 2, 26, 30, 32] {
+            assert_eq!(
+                alvo[i].chars().count(),
+                56,
+                "cluster row {i:02} must end at column 56: {:?}",
+                alvo[i]
+            );
+        }
+    }
+
+    /// P4-A — the contract test the following leaves unlock. Born
+    /// `#[ignore]`d on purpose: it compares today's REAL rendering of the
+    /// alvo fixture against the ALVO_CAPTURE contract line by line, and
+    /// today they differ by design (that difference IS the backlog). Run
+    /// with:
+    /// `cargo nextest run -E 'test(p4a)' -- --ignored`
+    /// F8 removes the `#[ignore]` once the rendering converges.
+    #[test]
+    #[ignore = "P4-A: the F1..F7 leaves converge the rendering onto ALVO_CAPTURE; F8 unlocks"]
+    fn p4a_project_view_capture_matches_alvo_line_by_line() {
+        let (_isolated, _checkout, app) = alvo_fixture();
+        let capture = capture_sidebar(&app, FIXTURE_WIDTH, FIXTURE_HEIGHT);
+        let got: Vec<String> = capture
+            .lines()
+            .filter(|l| l.starts_with("row ") && l.contains(" text  |"))
+            .map(|l| {
+                let start = l.find('|').expect("text row delimiter") + 1;
+                let end = l.rfind('|').expect("text row delimiter");
+                l[start..end].trim_end().to_string()
+            })
+            .collect();
+        let want: Vec<String> = alvo_lines()
+            .iter()
+            .map(|l| l.trim_end().to_string())
+            .collect();
+        assert!(
+            got.len() >= want.len(),
+            "capture must cover every alvo row: {} rows vs {}",
+            got.len(),
+            want.len()
+        );
+        for (i, (g, w)) in got.iter().zip(want.iter()).enumerate() {
+            assert_eq!(g, w, "row {i:02} diverges from the contract");
+        }
+        let trailing_blank = got[want.len()..].iter().all(String::is_empty);
+        assert!(
+            trailing_blank,
+            "rows beyond the alvo must be blank, not layout overflow: {:?}",
+            &got[want.len()..]
+        );
+    }
+
+    /// Regenerates the "hoje" block in the contract HTML. Run via:
+    /// `just sidebar-preview`
+    /// (`cargo test --locked --bin bora ui::sidebar::capture::tests::write_sidebar_preview -- --exact --ignored --nocapture`)
+    #[test]
+    #[ignore = "writes .local/prd/sidebar-project-view-anatomy.html — a real side effect, never run by default"]
+    fn write_sidebar_preview() {
+        let (_isolated, _checkout, app) = alvo_fixture();
+        let capture = capture_sidebar(&app, FIXTURE_WIDTH, FIXTURE_HEIGHT);
+        let block = export_preview_block(&capture);
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join(".local/prd/sidebar-project-view-anatomy.html");
+        let html =
+            std::fs::read_to_string(&path).expect("contract HTML must exist (repo-local, .local/)");
+        let updated = write_preview_into(&html, &block).expect("preview markers present");
+        std::fs::write(&path, updated).expect("write preview block");
+        println!(
+            "wrote hoje block ({} rows + alvo column) to {}",
+            capture.lines().filter(|l| l.contains(" text  |")).count(),
+            path.display()
         );
     }
 }
