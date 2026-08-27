@@ -431,38 +431,39 @@ const FIXTURE_HEIGHT: u16 = 40;
 
 const ALVO_CAPTURE: &str = r#"                                                 project
  Bora                                                8/8
- ⎇ main                                           PR42 ✗
- ● main
- ◆
- ● main-review
- ○
+
+ ⎇ main ··········································PR42 ✗
+   main
+   ◆
+   main-review
+   ○
 
  ⎇ feature/x
- ● feature-x
- ⠋
- ● research-feature-x
- ⠋
+   feature-x
+   ⠋
+   research-feature-x
+   ⠋
 
  ⎇ feature/y
- ● feature-y
- ⠋
+   feature-y
+   ⠋
 
  ⎇ cleanup
- ● cleanup
- ○
+   cleanup
+   ○
 
  ⎇ scratch
- ● scratch
- ○
+   scratch
+   ○
 
- ⌗ ⎇ hotfix/urgent                         +916 −2 ↑2 ↓1
- ● hotfix
- ●
+ ⌗ ⎇ hotfix/urgent ························+916 −2 ↑2 ↓1
+   hotfix
+   ●
 
- ≡ COMANDO ───────────────────────────────────────── 0/1
-      · dev
- ✓ CHECKS ────────────────────────────────────────── 1/2
-      ✗ clippy
+ ≡ COMANDO ··········································0/1
+   · dev
+ ≡ CHECKS ···········································1/2
+   ✗ clippy
 
 "#;
 
@@ -756,7 +757,9 @@ fn export_preview_block(capture: &str) -> String {
     let alvo = alvo_lines();
     let total = content_rows.max(alvo.len());
     let mut out = String::new();
-    out.push_str("<h2>1b. Contrato executável — hoje (código, gerado) vs alvo</h2>\n");
+    out.push_str(
+        "<h2 id=\"contrato-1b\">1b. Contrato executável — hoje (código, gerado) vs alvo</h2>\n",
+    );
     out.push_str("<p class=\"sub\">Gerado por <code>just sidebar-preview</code> · fonte: o fixture do próprio contrato (<code>ui::sidebar::capture</code>). Mesma linha = mesmo row: à esquerda o que o código produz agora (cores reais), à direita o contrato que o P4-A cobra.</p>\n");
     // Two 56-char content columns must fit `main`'s 980px: 12.5px monospace
     // keeps each column ~420px wide; the fixed 3-col template aligns rows.
@@ -772,7 +775,7 @@ fn export_preview_block(capture: &str) -> String {
             .filter(|_| i < content_rows)
             .map(|r| row_html(&r.text, &r.style))
             .unwrap_or_default();
-        let alvo_cell = alvo.get(i).map(|l| escape_html(l)).unwrap_or_default();
+        let alvo_cell = alvo.get(i).map(|l| alvo_row_html(l)).unwrap_or_default();
         let _ = write!(
             out,
             "<div class=\"num\">{i:02}</div><div>{hoje}</div><div>{alvo_cell}</div>"
@@ -804,6 +807,127 @@ fn write_preview_into(html: &str, block: &str) -> Result<String, String> {
     out.push_str(PREVIEW_END);
     out.push_str(&html[end + PREVIEW_END.len()..]);
     Ok(out)
+}
+
+fn escape_span(class: &str, text: &str) -> String {
+    format!(r#"<span class="{class}">{}</span>"#, escape_html(text))
+}
+
+/// R1 color budget, one meaning per hue: green = pronto, yellow = esperando
+/// VOCÊ, red = falha real, gray = everything else; mauve belongs to the
+/// ProjectRow and blue to the selection edge — neither appears here.
+fn dot_class(dot: &str) -> Option<&'static str> {
+    match dot {
+        "◆" => Some("rd b"),
+        "●" => Some("yw b"),
+        "○" => Some("o0"),
+        "⠋" => Some("o1 b"),
+        _ => None,
+    }
+}
+
+/// Splits `head ····tail` at the dotted leader run; no leader → no split.
+fn split_leader(body: &str) -> (&str, &str, &str) {
+    let Some(i) = body.find(" ·") else {
+        return (body, "", "");
+    };
+    let head = &body[..i];
+    let rest = &body[i + 1..];
+    let dots = rest.len() - rest.trim_start_matches('·').len();
+    (head, &rest[..dots], &rest[dots..])
+}
+
+/// Branch-header head: `⌗`/`⎇` glyphs in .o1, the branch name in .o1 .b —
+/// one treatment, no bold+dim+italic stack.
+fn alvo_header_head_html(head: &str) -> String {
+    let mut out = String::new();
+    let mut rest = head;
+    loop {
+        let (glyph, after) = if let Some(a) = rest.strip_prefix("⌗") {
+            ("⌗", a)
+        } else if let Some(a) = rest.strip_prefix("⎇") {
+            ("⎇", a)
+        } else {
+            break;
+        };
+        out.push_str(&escape_span("o1", glyph));
+        match after.strip_prefix(' ') {
+            Some(next) => {
+                out.push(' ');
+                rest = next;
+            }
+            None => return out,
+        }
+    }
+    if !rest.is_empty() {
+        out.push_str(&escape_span("o1 b", rest));
+    }
+    out
+}
+
+/// Paints one alvo contract line with the design's own CSS classes.
+/// Token rules, not row-number rules, so alvo text edits don't break it.
+fn alvo_row_html(line: &str) -> String {
+    if line.trim().is_empty() {
+        return String::new();
+    }
+    let spaces = &line[..line.len() - line.trim_start().len()];
+    let body = line.trim_start();
+    let mut out = String::from(spaces);
+    if body == "project" {
+        out.push_str(&escape_span("o0 b", body));
+        return out;
+    }
+    if let Some(rest) = body.strip_prefix("Bora") {
+        out.push_str(&escape_span("mv b", "Bora"));
+        let gap_len = rest.len() - rest.trim_start().len();
+        out.push_str(&rest[..gap_len]);
+        out.push_str(&escape_span("o0", rest.trim()));
+        return out;
+    }
+    if body.starts_with("≡ ") {
+        let (head, leader, tail) = split_leader(body);
+        out.push_str(&escape_span("s1 b", head));
+        if !leader.is_empty() {
+            out.push_str(&escape_span("s1", leader));
+            out.push_str(&escape_span("s2", tail));
+        }
+        return out;
+    }
+    if body.starts_with("⎇ ") || body.starts_with("⌗ ") {
+        let (head, leader, tail) = split_leader(body);
+        out.push_str(&alvo_header_head_html(head));
+        if !leader.is_empty() {
+            out.push_str(&escape_span("s1", leader));
+            let class = if tail.contains('✗') { "rd" } else { "o1" };
+            out.push_str(&escape_span(class, tail));
+        }
+        return out;
+    }
+    if let Some(rest) = body.strip_prefix("· ") {
+        out.push_str(&escape_span("s2", "·"));
+        out.push(' ');
+        out.push_str(&escape_span("o1", rest));
+        return out;
+    }
+    if let Some(rest) = body.strip_prefix("✗ ") {
+        out.push_str(&escape_span("rd", "✗"));
+        out.push(' ');
+        out.push_str(&escape_span("o1", rest));
+        return out;
+    }
+    let dots: Vec<&str> = body.split(' ').collect();
+    if !dots.is_empty() && dots.iter().all(|d| dot_class(d).is_some()) {
+        for (i, dot) in dots.iter().enumerate() {
+            if i > 0 {
+                out.push(' ');
+            }
+            out.push_str(&escape_span(dot_class(dot).unwrap(), dot));
+        }
+        return out;
+    }
+    out.push_str(&escape_span("o1", body));
+    out
 }
 
 #[cfg(test)]
@@ -1077,8 +1201,18 @@ mod tests {
             "every captured row's text must appear: {block}"
         );
         assert!(
-            block.contains("alvo") && block.contains("8/8") && block.contains("✗ clippy"),
+            block.contains("alvo") && block.contains("8/8") && block.contains("clippy"),
             "the alvo column must come from the same ALVO_CAPTURE const P4-A uses: {block}"
+        );
+        assert!(
+            block.contains(r#"<span class="rd">PR42 ✗</span>"#)
+                && block.contains(r#"<span class="mv b">Bora</span>"#)
+                && block.contains(r#"<span class="yw b">●</span>"#),
+            "the alvo column must carry the R1 color budget, not plain text: {block}"
+        );
+        assert!(
+            block.contains(r#"<span class="s1">····"#),
+            "dotted leaders must render as .s1: {block}"
         );
         assert!(
             block.contains("grid-template-columns:3ch 1fr 1fr"),
@@ -1108,9 +1242,9 @@ mod tests {
     #[test]
     fn alvo_const_shapes_the_contract() {
         let alvo = alvo_lines();
-        assert_eq!(alvo.len(), 35, "the alvo is exactly 35 rows: {alvo:#?}");
+        assert_eq!(alvo.len(), 36, "the alvo is exactly 36 rows: {alvo:#?}");
         assert!(alvo[0].ends_with("project"), "row 00 is the view toggle");
-        for anchor in ["Bora", "8/8", "⌗ ⎇ hotfix/urgent", "COMANDO", "✗ clippy"] {
+        for anchor in ["Bora", "8/8", "hotfix/urgent", "COMANDO", "clippy"] {
             assert!(
                 alvo.iter().any(|l| l.contains(anchor)),
                 "alvo must contain {anchor:?}: {alvo:#?}"
@@ -1123,7 +1257,7 @@ mod tests {
             );
         }
         // Right-pinned clusters sit flush at column 56.
-        for i in [1, 2, 26, 30, 32] {
+        for i in [1, 3, 27, 31, 33] {
             assert_eq!(
                 alvo[i].chars().count(),
                 56,

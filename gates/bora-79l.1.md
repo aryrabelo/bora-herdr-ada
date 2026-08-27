@@ -49,3 +49,9 @@ linha — o alvo que F1..F7 destravam.
   CHECK: git status --porcelain
   EXPECT: /capture.rs/
   EVIDENCE: ?? 2026-08-27T14-40-49-589Z_01a043aa-9bb5-7539-bfc1-68b97539eb26/ | ?? gates/bora-79l.1.md
+
+REVISÃO R1 (2026-08-27, pós-advisor): as 10 sugestões visuais foram aplicadas
+ao contrato — o const agora tem 36 linhas (LIVRE após ProjectRow, filhos na
+col 3, sem ● na l1, leaders pontilhados), e a coluna alvo do preview é
+pintada com as classes do desenho. Ledger acima reflete o estado da F0 na
+época; o estado atual é o commit R1.
