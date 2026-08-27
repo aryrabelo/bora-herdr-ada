@@ -12,6 +12,7 @@ use crate::layout::{Node, PaneId, TileLayout};
 use crate::pane::{PaneLaunchEnv, PaneState};
 use crate::render_signal::RenderSignal;
 use crate::terminal::{TerminalId, TerminalRuntime, TerminalState};
+use crate::ui::sidebar::sections::{Section, SectionChild, SectionKind};
 use crate::workspace::Workspace;
 
 use super::snapshot::{
@@ -926,6 +927,51 @@ fn collect_ids_inner(node: &Node, ids: &mut Vec<PaneId>) {
     }
 }
 
+/// Reconciles a project's saved mountable layout (`persist::projects::
+/// Project::layout`) against the checkouts that are actually live in this
+/// session right now (epic bora-79l, F7 gate G3). Matching key is
+/// `SectionChild::Workspace::checkout` — a workspace whose checkout is
+/// still live keeps its section (identified by the section's pinned `id`,
+/// never by its position in the list) and its place in the saved order;
+/// its `name` is refreshed to whatever the live workspace is called today
+/// (names are user-editable, checkouts are not — see `sections`'s module
+/// doc). A child whose checkout is no longer live is dropped. Non-`Branch`
+/// sections (comando/checks/livre) pass through untouched: reconciliation
+/// only concerns workspace placement, never the declared checks/commands
+/// bands or the empty mountable slot.
+// ponytail: no production caller yet — `AppState` has nowhere to hold a
+// per-project runtime layout until a later leaf wires one in. The function
+// is real, tested (see `reconcile_section_layout_*` below), and reachable
+// from `persist::projects::Project::layout` today; the `#[allow]` only
+// covers "not called yet", not "not finished" (epic bora-79l, F7 gate G3).
+#[allow(dead_code)]
+pub fn reconcile_section_layout(
+    saved: &[Section],
+    live_checkouts: &HashMap<String, String>,
+) -> Vec<Section> {
+    saved
+        .iter()
+        .cloned()
+        .map(|mut section| {
+            if section.kind == SectionKind::Branch {
+                section.children.retain_mut(|child| match child {
+                    SectionChild::Workspace { name, checkout } => {
+                        match live_checkouts.get(checkout.as_str()) {
+                            Some(live_name) => {
+                                name.clone_from(live_name);
+                                true
+                            }
+                            None => false,
+                        }
+                    }
+                    SectionChild::Item { .. } => true,
+                });
+            }
+            section
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1020,6 +1066,91 @@ mod tests {
         };
 
         assert_eq!(restored_worktree_space_membership(Some(membership)), None);
+    }
+
+    #[test]
+    fn reconcile_section_layout_keeps_live_workspaces_in_saved_section_and_order() {
+        let saved = vec![
+            Section {
+                id: "sec-branch-a".to_string(),
+                kind: SectionKind::Branch,
+                header_on: true,
+                parts: crate::ui::sidebar::sections::SectionParts::default(),
+                children: vec![
+                    SectionChild::Workspace {
+                        name: "old-main".to_string(),
+                        checkout: "main".to_string(),
+                    },
+                    SectionChild::Workspace {
+                        name: "stale".to_string(),
+                        checkout: "gone".to_string(),
+                    },
+                ],
+            },
+            Section {
+                id: "sec-branch-b".to_string(),
+                kind: SectionKind::Branch,
+                header_on: false,
+                parts: crate::ui::sidebar::sections::SectionParts::default(),
+                children: vec![SectionChild::Workspace {
+                    name: "feature-x".to_string(),
+                    checkout: "feature-x".to_string(),
+                }],
+            },
+            Section {
+                id: "sec-checks".to_string(),
+                kind: SectionKind::Checks,
+                header_on: true,
+                parts: crate::ui::sidebar::sections::SectionParts::default(),
+                children: vec![SectionChild::Item {
+                    label: "clippy".to_string(),
+                    failing: false,
+                }],
+            },
+        ];
+        let live = HashMap::from([
+            ("main".to_string(), "main".to_string()),
+            ("feature-x".to_string(), "feature-x-renamed".to_string()),
+        ]);
+
+        let reconciled = reconcile_section_layout(&saved, &live);
+
+        assert_eq!(
+            reconciled.len(),
+            3,
+            "reconciliation never adds or removes sections"
+        );
+        assert_eq!(
+            reconciled[0].id, "sec-branch-a",
+            "section identity is the pinned id, not derived from position"
+        );
+        assert_eq!(
+            reconciled[0].children,
+            vec![SectionChild::Workspace {
+                name: "main".to_string(),
+                checkout: "main".to_string(),
+            }],
+            "the checkout no longer live is dropped; the live one keeps its slot"
+        );
+        assert_eq!(reconciled[1].id, "sec-branch-b");
+        assert_eq!(
+            reconciled[1].children,
+            vec![SectionChild::Workspace {
+                name: "feature-x-renamed".to_string(),
+                checkout: "feature-x".to_string(),
+            }],
+            "checkout is the match key; the display name refreshes to the live \
+             workspace's current name"
+        );
+        assert_eq!(
+            reconciled[2], saved[2],
+            "non-branch sections pass through untouched"
+        );
+    }
+
+    #[test]
+    fn reconcile_section_layout_of_an_empty_saved_layout_is_a_noop() {
+        assert_eq!(reconcile_section_layout(&[], &HashMap::new()), Vec::new());
     }
 
     #[test]

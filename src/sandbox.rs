@@ -299,6 +299,7 @@ mod tests {
                 run_file: run_file.to_string(),
             }),
             sections: None,
+            layout: None,
             auto_join: true,
         }
     }
@@ -590,6 +591,7 @@ mod tests {
             members: Vec::new(),
             orchestrator: None,
             sections: None,
+            layout: None,
             auto_join: true,
         };
         let members = member_dirs();

@@ -4,15 +4,19 @@
 //! [`SectionKind`]s: `branch` (children are the two-line workspace blocks),
 //! `comando`/`checks` (children are display items), and `livre` (the empty,
 //! mountable slot). Header on/off is the old HIDDEN switch; [`SectionParts`]
-//! are the right-click toggles (dots, diff). Model decisions are the owner's
-//! and recorded in the epic plan; this module owns the data and its
-//! (de)serialization — render wiring is F2/F3, projects.yml persistence is
-//! F7.
+//! are the right-click toggles (dots, diff). `id` is the section's own
+//! stable identity (plan decision on restore — epic bora-79l, F7): distinct
+//! from position in the list, so reordering/adding/removing sections
+//! elsewhere in the file never reassigns a workspace to the wrong slot.
+//! Model decisions are the owner's and recorded in the epic plan; this
+//! module owns the data and its (de)serialization — render wiring is F2/F3,
+//! projects.yml persistence is F7.
 //!
 //! YAML stub shape (serde_yaml_ng, same conventions as
 //! `persist::projects`): kind is lowercase, children are internally tagged
 //! with `type`, and every field except `kind` has a default so a
-//! hand-written stub stays terse:
+//! hand-written stub stays terse — including `id`, which gets a fresh one
+//! assigned on load when absent and round-trips verbatim after that:
 //!
 //! ```yaml
 //! - kind: branch
@@ -27,6 +31,8 @@
 //!       failing: true
 //! - kind: livre
 //! ```
+
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
 
@@ -74,6 +80,18 @@ fn default_parts() -> SectionParts {
     SectionParts::default()
 }
 
+static NEXT_SECTION_ID: AtomicU64 = AtomicU64::new(1);
+
+/// Field-level default for `Section::id`: a hand-written stub (or a
+/// section from before pinned ids landed) gets a fresh one assigned on
+/// load, exactly once — from then on the owner round-trips the same value
+/// back to disk, and F7's restore reconciliation matches "the same
+/// section" by this, never by index.
+fn generate_section_id() -> String {
+    let counter = NEXT_SECTION_ID.fetch_add(1, Ordering::Relaxed);
+    format!("sec-{counter}")
+}
+
 /// One entry inside a section. `Workspace` carries the identity the
 /// two-line block renders (F2); `Item` is a display-only band entry.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -97,6 +115,10 @@ pub enum SectionChild {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Section {
+    /// Stable identity for this section, independent of its position in
+    /// the list (see the module doc and [`generate_section_id`]).
+    #[serde(default = "generate_section_id")]
+    pub id: String,
     pub kind: SectionKind,
     /// The old HIDDEN switch: whether the section's header line renders.
     #[serde(default = "default_true")]
@@ -126,6 +148,7 @@ mod tests {
     fn sections_model_round_trip() {
         let sections = vec![
             Section {
+                id: "sec-branch-main".to_string(),
                 kind: SectionKind::Branch,
                 header_on: true,
                 parts: SectionParts {
@@ -144,6 +167,7 @@ mod tests {
                 ],
             },
             Section {
+                id: "sec-branch-feature-x".to_string(),
                 kind: SectionKind::Branch,
                 header_on: false,
                 parts: SectionParts {
@@ -156,6 +180,7 @@ mod tests {
                 }],
             },
             Section {
+                id: "sec-comando".to_string(),
                 kind: SectionKind::Comando,
                 header_on: true,
                 parts: SectionParts::default(),
@@ -165,6 +190,7 @@ mod tests {
                 }],
             },
             Section {
+                id: "sec-checks".to_string(),
                 kind: SectionKind::Checks,
                 header_on: true,
                 parts: SectionParts::default(),
@@ -174,37 +200,41 @@ mod tests {
                 }],
             },
             Section {
+                id: "sec-livre".to_string(),
                 kind: SectionKind::Livre,
                 header_on: true,
                 parts: SectionParts::default(),
                 children: vec![],
             },
         ];
-
         let yaml = sections_to_yaml(&sections).expect("serialize sections");
         let parsed = parse_sections_yaml(&yaml).expect("parse sections back");
         assert_eq!(parsed, sections, "round-trip must preserve the tree");
     }
 
     /// A hand-written stub may omit everything but `kind`: header ON, both
-    /// parts ON, no children. Terse defaults are what make the file
-    /// hand-editable, so they are contract, not convenience. This is the
-    /// test that caught the all-false field-default bug: an omitted
-    /// `parts` key must not fall through to a derived all-false default.
+    /// parts ON, no children, and a freshly assigned `id`. Terse defaults
+    /// are what make the file hand-editable, so they are contract, not
+    /// convenience. This is also the test that caught the all-false
+    /// field-default bug: an omitted `parts` key must not fall through to
+    /// a derived all-false default.
     #[test]
     fn sections_model_defaults_fill_optional_fields() {
         let parsed = parse_sections_yaml("- kind: livre\n").expect("minimal stub must parse");
+        assert_eq!(parsed.len(), 1, "one stub line, one section");
+        let section = &parsed[0];
+        assert!(
+            !section.id.is_empty(),
+            "a missing id must default to a freshly generated one, never an empty string"
+        );
         assert_eq!(
-            parsed,
-            vec![Section {
-                kind: SectionKind::Livre,
-                header_on: true,
-                parts: SectionParts {
-                    dots: true,
-                    diff: true
-                },
-                children: vec![],
-            }]
+            (
+                section.kind,
+                section.header_on,
+                section.parts,
+                section.children.as_slice(),
+            ),
+            (SectionKind::Livre, true, SectionParts { dots: true, diff: true }, &[][..]),
         );
     }
 

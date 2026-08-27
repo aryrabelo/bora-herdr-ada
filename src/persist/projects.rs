@@ -47,6 +47,8 @@ use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
 
+use crate::ui::sidebar::sections::Section;
+
 /// `~/.config/bora/projects.yml` (namespace-aware via `config_dir()`).
 pub fn projects_file_path() -> PathBuf {
     crate::config::config_dir().join("projects.yml")
@@ -139,6 +141,26 @@ pub struct Project {
     pub orchestrator: Option<Orchestrator>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sections: Option<Sections>,
+    /// The mountable per-project layout (epic bora-79l, F7): an ordered
+    /// list of [`Section`]s — kind, header/parts toggles, and which
+    /// workspace/item children sit inside each one — round-tripped via
+    /// [`crate::ui::sidebar::sections::parse_sections_yaml`]/
+    /// [`crate::ui::sidebar::sections::sections_to_yaml`]'s same shape,
+    /// each `Section` carrying its own pinned `id` so
+    /// `persist::restore::reconcile_section_layout` can match "the same
+    /// section" across a restart by that id, not by position.
+    ///
+    /// Deliberately a DIFFERENT key from `sections` above (the pre-existing
+    /// flat `checks`/`commands`/`order` declaration, epic bora-e9i) rather
+    /// than an overload of it: the two are unrelated shapes and giving them
+    /// the same key would make an untagged-enum guess do double duty as
+    /// the backward-compat contract. Instead the fallback is a plain
+    /// `Option`: a `projects.yml` written before this landed simply lacks
+    /// the `layout:` key, which parses as `None` with zero error — the
+    /// `sections:` field, its type, and every existing test that exercises
+    /// it are untouched.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layout: Option<Vec<Section>>,
     /// bora-1le.1 decision (`.local/prd/sidebar-design.md`, "Project =
     /// channel — resolved"): `false` opts every member of this project out
     /// of auto-join. An agent started in a member workspace then never
@@ -699,6 +721,88 @@ projects:
 
         let reparsed = parse_projects_yaml(&serialized).expect("serialized yaml re-parses");
         assert_eq!(parsed, reparsed, "serialize -> reparse must round-trip");
+    }
+
+    #[test]
+    fn project_layout_round_trips_with_pinned_ids_through_projects_yaml() {
+        use crate::ui::sidebar::sections::{SectionChild, SectionKind, SectionParts};
+
+        let mut file = ProjectsFile::default();
+        file.projects.insert(
+            "cnb".to_string(),
+            Project {
+                name: None,
+                channel: None,
+                members: Vec::new(),
+                orchestrator: None,
+                sections: None,
+                layout: Some(vec![
+                    Section {
+                        id: "sec-branch-main".to_string(),
+                        kind: SectionKind::Branch,
+                        header_on: true,
+                        parts: SectionParts::default(),
+                        children: vec![SectionChild::Workspace {
+                            name: "main".to_string(),
+                            checkout: "main".to_string(),
+                        }],
+                    },
+                    Section {
+                        id: "sec-livre".to_string(),
+                        kind: SectionKind::Livre,
+                        header_on: true,
+                        parts: SectionParts::default(),
+                        children: vec![],
+                    },
+                ]),
+                auto_join: true,
+            },
+        );
+
+        let yaml = to_yaml(&file).expect("serialize layout to yaml");
+        let reparsed = parse_projects_yaml(&yaml).expect("reparse layout yaml");
+
+        assert_eq!(
+            reparsed, file,
+            "the mountable layout, including pinned section ids, must round-trip byte-for-\
+             structure through projects.yml"
+        );
+        let layout = reparsed
+            .projects
+            .get("cnb")
+            .and_then(|project| project.layout.as_ref())
+            .expect("layout must survive the round trip");
+        assert_eq!(
+            layout.iter().map(|section| section.id.as_str()).collect::<Vec<_>>(),
+            vec!["sec-branch-main", "sec-livre"],
+            "pinned ids must be preserved verbatim, not regenerated"
+        );
+    }
+
+    /// G2's fallback contract: a `projects.yml` written before `layout:`
+    /// existed (the design example — old `sections:` checks/commands/order
+    /// shape, no `layout:` key at all) still loads cleanly, with `layout`
+    /// simply absent. This is the "detect by shape" fallback in practice:
+    /// no `layout:` key means nothing to migrate, not a parse error.
+    #[test]
+    fn project_layout_is_absent_not_an_error_on_a_pre_layout_projects_file() {
+        let parsed = parse_projects_yaml(EXAMPLE_YAML).expect("pre-layout example must parse");
+
+        let cnb = parsed.projects.get("cnb").expect("cnb project present");
+        assert!(
+            cnb.layout.is_none(),
+            "a file predating layout: must default the field to None, not error"
+        );
+        assert!(
+            cnb.sections.is_some(),
+            "the pre-existing sections: (checks/commands/order) field is untouched by layout:"
+        );
+
+        let serialized = to_yaml(&parsed).expect("serializes back to yaml");
+        assert!(
+            !serialized.contains("layout:"),
+            "an absent layout must stay omitted on write (skip_serializing_if), got:\n{serialized}"
+        );
     }
 
     #[test]

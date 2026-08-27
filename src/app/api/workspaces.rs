@@ -957,6 +957,7 @@ mod tests {
                 members: Vec::new(),
                 orchestrator: None,
                 sections: None,
+                layout: None,
                 auto_join: true,
             },
         );

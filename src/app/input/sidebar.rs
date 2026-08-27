@@ -1955,6 +1955,7 @@ mod tests {
                     }],
                     orchestrator: None,
                     sections: None,
+                    layout: None,
                     auto_join: true,
                 },
             );

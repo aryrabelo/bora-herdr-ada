@@ -2486,6 +2486,7 @@ pub(crate) fn create_project_with_optional_member(
                     .collect(),
                 orchestrator: None,
                 sections: None,
+                layout: None,
                 auto_join: true,
             },
         );
@@ -2628,6 +2629,7 @@ mod project_assembly_menu_tests {
                         .collect(),
                     orchestrator: None,
                     sections: None,
+                    layout: None,
                     auto_join: true,
                 },
             );

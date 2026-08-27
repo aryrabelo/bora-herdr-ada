@@ -343,6 +343,7 @@ fn multi_workspace_fixture() -> (IsolatedDirs, FakeGitCheckout, AppState) {
                 commands: Some(vec!["dev".to_string()]),
                 order: None,
             }),
+            layout: None,
             auto_join: true,
         },
     );
@@ -500,6 +501,7 @@ fn alvo_fixture() -> (IsolatedDirs, FakeGitCheckout, AppState) {
                 commands: Some(vec!["dev".to_string()]),
                 order: None,
             }),
+            layout: None,
             auto_join: true,
         },
     );
