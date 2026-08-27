@@ -1,8 +1,11 @@
 #[cfg(test)]
 mod capture;
 pub(crate) mod project_view;
-// Model-only for now: every item is dead until render wiring lands (F2/F3)
-// and projects.yml persistence lands (F7) — epic bora-79l's slice order.
+// Render wiring landed for `PaneDotsRow` (F2, bora-79l): the two-line
+// per-workspace block now reads live pane state. This module's own
+// Section/SectionKind/SectionParts types stay unconsumed until SectionRow's
+// diff/dots cluster wiring (F3) and projects.yml persistence (F7) land —
+// dead_code stays allowed until then.
 #[allow(dead_code)]
 pub(crate) mod sections;
 mod tokens;
@@ -20,7 +23,8 @@ use ratatui::{
 use self::tokens::{ResolvedToken, ResolvedTokenKind, SpaceTokenContext};
 use super::scrollbar::{render_scrollbar, should_show_scrollbar};
 use super::status::{
-    agent_icon, format_idle_age, idle_age_color, state_dot, state_label, state_label_color,
+    agent_icon, blocked_glyph, format_idle_age, idle_age_color, state_dot, state_label,
+    state_label_color,
 };
 use super::text::{display_width, display_width_u16, truncate_end};
 use crate::app::state::{AgentPanelSort, Palette, ProjectRowHitArea, ProjectRowTarget};
@@ -882,13 +886,14 @@ pub(crate) enum WorkspaceListEntry {
         /// rows are not launchable (CHECKS/TODOS/NOTES).
         ws_idx: Option<usize>,
     },
-    /// Project view's replacement for `PaneRow`: one row per OPEN
-    /// workspace, regardless of pane count, holding the workspace's own
-    /// unique name plus one state dot per pane (bora Project-view
-    /// row-shape rework — approved mock's second line of the per-workspace
-    /// pair). `name` is already disambiguated at emission (the same
-    /// unique-name resolution `SectionRow`'s sibling `Workspace` rows use
-    /// elsewhere), so this variant never re-derives it.
+    /// Project view's replacement for `PaneRow`: one 2-line BLOCK per OPEN
+    /// workspace, regardless of pane count — l1 the workspace's own
+    /// unique name (`pane_dots_name_line`), l2 one state dot per pane
+    /// (`pane_dots_dots_line`), height 2 (`entry_row_height`, bora-79l F2,
+    /// ALVO_CAPTURE rows 04-05/28-29). `name` is already disambiguated at
+    /// emission (the same unique-name resolution `SectionRow`'s sibling
+    /// `Workspace` rows use elsewhere), so this variant never re-derives
+    /// it.
     ///
     /// Pane identity AND pane state are both read from
     /// `AppState.workspaces[ws_idx]` at render/hit-test time, never
@@ -898,7 +903,7 @@ pub(crate) enum WorkspaceListEntry {
     /// (unlike every other arm there) takes an `app: &AppState` parameter:
     /// per-dot hit areas need each pane's live `pane_id` to build a
     /// `ProjectRowTarget::Pane`, and a 2-field entry has nowhere else to
-    /// get it from.
+    /// get it from. Dot hit areas land on l2 (`row_y + 1`), never l1.
     PaneDotsRow { ws_idx: usize, name: String },
     /// Project-level: one open PR authored by the user with no local
     /// worktree, inside the `PULL REQUESTS` band (bora-yw6.2, C2). `checks`
@@ -967,7 +972,9 @@ fn entry_row_height(
         WorkspaceListEntry::SectionRow { .. } => 1,
         WorkspaceListEntry::SectionHeader { .. } => 1,
         WorkspaceListEntry::SectionItem { .. } => 1,
-        WorkspaceListEntry::PaneDotsRow { .. } => 1,
+        // bora-79l F2: the block split into l1 (name) + l2 (dots) —
+        // `pane_dots_name_line`/`pane_dots_dots_line`'s own docs.
+        WorkspaceListEntry::PaneDotsRow { .. } => 2,
         WorkspaceListEntry::PrRow { .. } => 1,
     };
     base + project_view_trailing_gap(entry, entries, idx, row_gap)
@@ -1544,19 +1551,20 @@ pub(crate) fn section_item_line(
 /// `project_view::pane_address` without a second lookup or a second
 /// convention for the same string.
 ///
-/// One dot per pane, one column each, separated by a single space. The dots
-/// are this row's payload: the name shrinks first, down to zero width,
-/// before a dot is ever cut, and only past that point does the row drop
-/// trailing dots and return fewer triples than the workspace has panes.
-/// Indent of the dots row under its `SectionRow`, and the gap between the
-/// name and the first dot. Two columns each: the indent matches what the
-/// per-pane rows this replaced settled on (a deleted test called it
-/// "two columns not six"), and the gap is the smallest that still reads as
-/// separation rather than as part of the name.
-const PANE_DOTS_INDENT: u16 = 2;
-const PANE_DOTS_GAP: u16 = 2;
+/// Indent shared by BOTH lines of a `PaneDotsRow` block (bora-79l F2,
+/// ALVO_CAPTURE rows 04-05/28-29, `ui::sidebar::capture`): column 3 (3
+/// leading cells), matching the section's own base indent (`SectionRow`'s
+/// ` ⎇ ` glyph column) plus the two extra columns the approved mock gives
+/// child rows. l1 (name) and l2 (dots) each start here independently now —
+/// unlike the old single-line row, they no longer share one column budget,
+/// so there is no separate name/dots gap constant to keep in lockstep with
+/// the name's rendered width anymore.
+const PANE_DOTS_INDENT: u16 = 3;
 
-/// Ordered `(pane, public number, column)` for one workspace's dots row.
+/// Ordered `(pane, public number, column)` for one workspace's l2 dots
+/// line (bora-79l F2; replaces the old single-line row's `pane_dots_layout`,
+/// which anchored dot columns to the rendered name on the SAME line — that
+/// coupling no longer exists once the name moved to its own l1).
 ///
 /// THIRD lockstep consumer alongside `render_workspace_list` and
 /// `workspace_list_areas_for_entries` (see `entry_row_height`'s contract):
@@ -1564,20 +1572,17 @@ const PANE_DOTS_GAP: u16 = 2;
 /// each dot's hit area from them, so a disagreement here is a click that
 /// focuses the wrong pane rather than a visible error.
 ///
-/// Columns are anchored to the NAME, not to the row's right edge. An earlier
-/// version right-pinned the dots to `width`, which made every column a
-/// function of the row geometry — and the two passes reached this function
-/// with different `body` rects, so the hit areas landed on blank space past
-/// the glyphs. Anchoring to the name makes the columns a function of the
-/// ENTRY (`name`) plus the workspace, both of which the two passes share by
-/// construction, so they no longer have anything to disagree about. It also
-/// matches the approved mock, where the dots follow the name rather than
-/// floating at the sidebar's right edge.
-fn pane_dots_layout(
+/// One dot per pane, one column each, separated by a single space, starting
+/// at `PANE_DOTS_INDENT` — never right-pinned to the row's right edge
+/// (bora-c1h's "dots anchored to a shared, reproducible column" lesson:
+/// the two passes must derive the SAME columns from the SAME inputs, which
+/// `width` and the workspace's own pane count already are). Past the point
+/// where even a single dot cannot fit, this returns fewer triples than the
+/// workspace has panes rather than drawing off the row.
+fn pane_dots_columns(
     ws: &crate::workspace::Workspace,
-    name: &str,
     width: u16,
-) -> (u16, Vec<(crate::layout::PaneId, usize, u16)>) {
+) -> Vec<(crate::layout::PaneId, usize, u16)> {
     let mut panes: Vec<(crate::layout::PaneId, usize)> = ws
         .public_pane_numbers
         .iter()
@@ -1585,90 +1590,52 @@ fn pane_dots_layout(
         .collect();
     panes.sort_by_key(|(_, number)| *number);
 
-    // Width needed for `n` dots: one cell per dot, one separating space
-    // between each pair — `2n - 1` for n >= 1, 0 for n == 0.
-    let dots_width_for = |n: usize| -> u16 {
-        if n == 0 {
-            0
-        } else {
-            (2 * n - 1) as u16
-        }
+    // Largest `n` with `2n - 1 <= avail` (one cell per dot, one separating
+    // space between each pair), 0 when even a single dot does not fit.
+    let avail = width.saturating_sub(PANE_DOTS_INDENT);
+    let max_dots = if avail == 0 {
+        0
+    } else {
+        ((avail + 1) / 2) as usize
     };
+    panes.truncate(max_dots);
 
-    // The dots are this row's payload, so the NAME yields first: it is
-    // truncated to whatever is left after the indent, the gap and every dot.
-    // Only when even a zero-width name cannot fit them do trailing dots go.
-    let fixed = PANE_DOTS_INDENT.saturating_add(PANE_DOTS_GAP);
-    let mut dots_width = dots_width_for(panes.len());
-    if fixed.saturating_add(dots_width) > width {
-        let for_dots = width.saturating_sub(fixed);
-        // Largest `n` with `2n - 1 <= for_dots`.
-        let max_dots = (for_dots.saturating_add(1) / 2) as usize;
-        panes.truncate(max_dots);
-        dots_width = dots_width_for(panes.len());
-    }
-
-    let name_avail = width
-        .saturating_sub(PANE_DOTS_INDENT)
-        .saturating_sub(PANE_DOTS_GAP)
-        .saturating_sub(dots_width);
-    // The rendered name may be shorter than its budget; the dots follow the
-    // ACTUAL text, which is why the renderer must not re-derive this.
-    let name_width = display_width(&truncate_end(name, name_avail as usize)) as u16;
-    let dots_start = PANE_DOTS_INDENT
-        .saturating_add(name_width)
-        .saturating_add(PANE_DOTS_GAP);
-
-    let dots = panes
+    panes
         .into_iter()
         .enumerate()
-        .map(|(i, (pane_id, number))| (pane_id, number, dots_start + (i * 2) as u16))
-        .collect();
-    (name_avail, dots)
+        .map(|(i, (pane_id, number))| (pane_id, number, PANE_DOTS_INDENT + (i * 2) as u16))
+        .collect()
 }
 
-/// Second line of a Project-view workspace's row-pair (approved mock): the
-/// workspace's own already-disambiguated unique name, then one state dot
-/// per pane at the columns `pane_dots_layout` computed. The name is
-/// recessive (dim) — deliberately independent of `section_row_line`'s own
-/// name span, which stays full-brightness for an unrelated reason (that
-/// span is a REPO identity competing with A3's `repo_shown` rule, not a
-/// workspace name sharing a row with its own pane states): on THIS row the
-/// dots are the information, not the name, so the name gives way to them.
-///
-/// `dots` carries each dot's resolved glyph/style (from `state_dot`,
-/// pane-live at render time — never carried on the entry) alongside the
-/// SAME column `pane_dots_layout` returned; padding between the name and
-/// the first dot fills whatever gap `pane_dots_layout` left, so the row
-/// still totals exactly `width` whenever there is at least one dot,
-/// mirroring `section_row_line`'s own right-pinned cluster.
-fn pane_dots_row_line(
-    name: &str,
-    name_avail: u16,
-    dots: &[(&'static str, Style, u16)],
-    p: &Palette,
-    width: u16,
-) -> Line<'static> {
-    // `name_avail` comes from `pane_dots_layout`, which also produced the
-    // dots' columns from the SAME truncation — re-deriving it here from
-    // `dots.first()` is what let the two drift apart before.
-    let name_text = truncate_end(name, name_avail as usize);
-    let name_width = PANE_DOTS_INDENT + display_width(&name_text) as u16;
-    let mut spans = vec![
+/// L1 of a Project-view workspace's `PaneDotsRow` block (bora-79l F2,
+/// ALVO_CAPTURE rows 04/28): the workspace's own already-disambiguated
+/// unique name, indented to `PANE_DOTS_INDENT` and colored `overlay1` — the
+/// SAME color `⎇` uses on its `SectionRow` (gate G1). No state glyph lands
+/// here; every pane's state is l2's payload (`pane_dots_dots_line`).
+/// Deliberately NOT dim: the old single-line row dimmed this name because
+/// it shared a row with the (louder) dots; split onto its own line, it
+/// reads at the same weight the branch glyph does.
+fn pane_dots_name_line(name: &str, p: &Palette, width: u16) -> Line<'static> {
+    let avail = width.saturating_sub(PANE_DOTS_INDENT);
+    let name_text = truncate_end(name, avail as usize);
+    Line::from(vec![
         Span::styled(" ".repeat(PANE_DOTS_INDENT as usize), Style::default()),
-        Span::styled(
-            name_text,
-            Style::default().fg(p.overlay0).add_modifier(Modifier::DIM),
-        ),
-    ];
-    if let Some((_, _, first_col)) = dots.first() {
-        let pad = first_col.saturating_sub(name_width);
-        if pad > 0 {
-            spans.push(Span::styled(" ".repeat(pad as usize), Style::default()));
-        }
-    }
-    let mut used = name_width.max(dots.first().map(|(_, _, c)| *c).unwrap_or(name_width));
-    for (i, (glyph, style, _column)) in dots.iter().enumerate() {
+        Span::styled(name_text, Style::default().fg(p.overlay1)),
+    ])
+}
+
+/// L2 of a Project-view workspace's `PaneDotsRow` block (bora-79l F2,
+/// ALVO_CAPTURE rows 05/29): one state dot per pane, in the SAME order
+/// `pane_dots_columns` returned (so glyph `i` in `dots` is drawn at
+/// `pane_dots_columns`'s dot `i`), separated by a single space, starting at
+/// `PANE_DOTS_INDENT`.
+fn pane_dots_dots_line(dots: &[(&'static str, Style)], width: u16) -> Line<'static> {
+    let mut spans = vec![Span::styled(
+        " ".repeat(PANE_DOTS_INDENT as usize),
+        Style::default(),
+    )];
+    let mut used = PANE_DOTS_INDENT;
+    for (i, (glyph, style)) in dots.iter().enumerate() {
         if i > 0 {
             spans.push(Span::styled(" ", Style::default()));
             used = used.saturating_add(1);
@@ -1677,14 +1644,53 @@ fn pane_dots_row_line(
         used = used.saturating_add(1);
     }
     // Pad to the full row so the row totals exactly `width`, matching every
-    // other line builder here — the dots no longer sit on the right edge,
-    // so the trailing space is real and must be spelled out.
+    // other line builder here.
     if let Some(rest) = width.checked_sub(used) {
         if rest > 0 {
             spans.push(Span::styled(" ".repeat(rest as usize), Style::default()));
         }
     }
     Line::from(spans)
+}
+
+/// Live glyph + style for one `PaneDotsRow` l2 dot (bora-79l F2, "the glyph
+/// convergence itself is F2's leaf" — `capture::alvo_fixture`'s doc). A
+/// STATIC bullet per pane state, never `state_dot`'s animated sand-timer
+/// for the idle-unseen case: the design's "esperando você" dot reads as a
+/// steady yellow `●`, not a busy hourglass, so it is never mistaken for
+/// ongoing work the way `Working`'s spinner is. `Working` and `Blocked`
+/// reuse the SAME shared glyph sets `state_dot`/`agent_icon` already use
+/// elsewhere (`super::spinner_frame`, `blocked_glyph`'s dots/symbols
+/// preference) so this stays in lockstep with every other spinner/falha
+/// indicator in the app, rather than a second convention drifting from
+/// theirs.
+///
+/// `AgentState` (`detect::mod.rs`) plus `seen` gives exactly 5 distinguishable
+/// combinations, matching the design's "5 estados da 0.45.6": `Working`
+/// (girando), `Idle`+unseen (amarela, esperando você), `Idle`+seen (parado),
+/// `Blocked` (vermelho, falha), `Unknown` (parado, plain shell — reads
+/// identically to `Idle`+seen, both ○). The design names a further "verde
+/// respondeu" state; `PaneDetail` carries only `state`+`seen` (no separate
+/// "just finished vs. asking a question" signal), so today's model cannot
+/// distinguish it from `Idle`+unseen — adding that distinction needs new
+/// detection, out of this leaf's scope (render-only).
+fn pane_dots_dot_glyph(
+    state: AgentState,
+    seen: bool,
+    tick: u32,
+    indicator_style: crate::config::StatusIndicatorStyle,
+    p: &Palette,
+) -> (&'static str, Style) {
+    match (state, seen) {
+        (AgentState::Working, _) => (super::spinner_frame(tick), Style::default().fg(p.overlay0)),
+        (AgentState::Idle, false) => ("●", Style::default().fg(p.yellow)),
+        (AgentState::Idle, true) => ("○", Style::default().fg(p.overlay0)),
+        (AgentState::Blocked, _) => (
+            blocked_glyph(indicator_style),
+            Style::default().fg(p.red).add_modifier(Modifier::BOLD),
+        ),
+        (AgentState::Unknown, _) => ("○", Style::default().fg(p.overlay0)),
+    }
 }
 
 /// Sixth-level Project-view row: one PULL REQUESTS entry — PR number,
@@ -2744,13 +2750,14 @@ fn workspace_list_areas_for_entries(
             // sibling `SectionRow` above already pushed the one card their
             // shared workspace gets. One `ProjectRowHitArea` per dot, at the
             // SAME column `render_workspace_list`'s `PaneDotsRow` arm draws
-            // it — both call `pane_dots_layout`, so they cannot drift.
-            WorkspaceListEntry::PaneDotsRow { ws_idx, name } => {
+            // it — both call `pane_dots_columns`, so they cannot drift. The
+            // dots live on l2 now (bora-79l F2), one row below `row_y`.
+            WorkspaceListEntry::PaneDotsRow { ws_idx, .. } => {
                 if let Some(ws) = app.workspaces.get(*ws_idx) {
-                    let (_name_avail, dots) = pane_dots_layout(ws, name, body.width);
-                    for (_pane_id, number, column) in dots {
+                    let dots_row_y = row_y.saturating_add(1);
+                    for (_pane_id, number, column) in pane_dots_columns(ws, body.width) {
                         project_rows.push(ProjectRowHitArea {
-                            rect: Rect::new(body.x + column, row_y, 1, 1),
+                            rect: Rect::new(body.x + column, dots_row_y, 1, 1),
                             target: ProjectRowTarget::Pane {
                                 ws_idx: *ws_idx,
                                 pane_id: project_view::pane_address(ws, number),
@@ -3701,44 +3708,46 @@ fn render_workspace_list(
                 }
             }
             WorkspaceListEntry::PaneDotsRow { ws_idx, name } => {
-                if row_y < list_bottom {
-                    if let Some(ws) = app.workspaces.get(*ws_idx) {
-                        let (name_avail, layout) = pane_dots_layout(ws, name, body.width);
-                        // Live state per dot, resolved here rather than
-                        // carried on the entry (`PaneDotsRow`'s doc) — one
-                        // `pane_details` call for the whole row, not one
-                        // per dot, so this stays cheaper than the old
-                        // per-`PaneRow` render path it replaces (which
-                        // called `pane_details` once PER PANE).
+                if let Some(ws) = app.workspaces.get(*ws_idx) {
+                    // L1: the workspace name, no state glyph (bora-79l F2 —
+                    // `pane_dots_name_line`'s doc, ALVO_CAPTURE rows 04/28).
+                    if row_y < list_bottom {
+                        frame.render_widget(
+                            Paragraph::new(pane_dots_name_line(name, p, body.width)),
+                            Rect::new(body.x, row_y, body.width, 1),
+                        );
+                    }
+                    // L2: one dot per pane. Live state per dot, resolved
+                    // here rather than carried on the entry (`PaneDotsRow`'s
+                    // doc) — one `pane_details` call for the whole row, not
+                    // one per dot, so this stays cheaper than the old
+                    // per-`PaneRow` render path it replaces (which called
+                    // `pane_details` once PER PANE).
+                    let dots_row_y = row_y.saturating_add(1);
+                    if dots_row_y < list_bottom {
+                        let columns = pane_dots_columns(ws, body.width);
                         let details = ws.pane_details(&app.terminals);
-                        let dots: Vec<(&'static str, Style, u16)> = layout
+                        let dots: Vec<(&'static str, Style)> = columns
                             .iter()
-                            .map(|(pane_id, _number, column)| {
-                                let detail = details.iter().find(|d| d.pane_id == *pane_id);
-                                let (glyph, style) = detail
+                            .map(|(pane_id, _number, _column)| {
+                                details
+                                    .iter()
+                                    .find(|d| d.pane_id == *pane_id)
                                     .map(|d| {
-                                        let idle_age = (!d.seen)
-                                            .then_some(d.idle_since)
-                                            .flatten()
-                                            .map(|since| now.saturating_duration_since(since));
-                                        state_dot(
+                                        pane_dots_dot_glyph(
                                             d.state,
                                             d.seen,
                                             app.spinner_tick,
                                             app.status_indicators,
                                             p,
-                                            idle_age,
                                         )
                                     })
-                                    .unwrap_or(("○", Style::default().fg(p.overlay0)));
-                                (glyph, style, *column)
+                                    .unwrap_or(("○", Style::default().fg(p.overlay0)))
                             })
                             .collect();
                         frame.render_widget(
-                            Paragraph::new(pane_dots_row_line(
-                                name, name_avail, &dots, p, body.width,
-                            )),
-                            Rect::new(body.x, row_y, body.width, 1),
+                            Paragraph::new(pane_dots_dots_line(&dots, body.width)),
+                            Rect::new(body.x, dots_row_y, body.width, 1),
                         );
                     }
                 }
@@ -8979,9 +8988,10 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
         // the middle `PaneRow` (index 2, `w1p2`) got `+row_gap` as the
         // block's last pane, while index 1 (`w1p1`) got none. Now
         // `PaneDotsRow` replaces the whole per-workspace block with exactly
-        // ONE row (bora Project-view row-shape rework), so there is no
-        // longer a "last pane of a block" to find — every `PaneDotsRow` IS
-        // its block, and the gap applies whenever a next sibling follows.
+        // ONE 2-line block (bora Project-view row-shape rework, height 2
+        // since bora-79l F2's l1/l2 split), so there is no longer a "last
+        // pane of a block" to find — every `PaneDotsRow` IS its block, and
+        // the gap applies whenever a next sibling follows.
         let entries = vec![
             WorkspaceListEntry::SectionRow {
                 ws_idx: 0,
@@ -9014,8 +9024,9 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
         );
         assert_eq!(
             entry_row_height(&entries[1], &entries, 1, row_gap),
-            2,
-            "a PaneDotsRow followed by the next workspace's SectionRow gets +row_gap: {entries:?}"
+            3,
+            "a PaneDotsRow (base height 2) followed by the next workspace's \
+             SectionRow gets +row_gap: {entries:?}"
         );
         assert_eq!(
             entry_row_height(&entries[2], &entries, 2, row_gap),
@@ -9024,25 +9035,38 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
         );
         assert_eq!(
             entry_row_height(&entries[3], &entries, 3, row_gap),
-            1,
-            "the LAST PaneDotsRow in the list gets no trailing gap"
+            2,
+            "the LAST PaneDotsRow in the list gets no trailing gap (base height 2 only)"
         );
     }
 
     #[test]
-    fn pane_dots_row_line_renders_one_dot_per_pane_and_totals_exact_width() {
-        let p = Palette::catppuccin();
+    fn pane_dots_columns_are_one_per_pane_spaced_two_apart() {
         let mut ws = Workspace::test_new("ita-principal");
         ws.test_split(Direction::Vertical);
         ws.test_split(Direction::Vertical);
         let width = 30u16;
-        let (name_avail, layout) = pane_dots_layout(&ws, "ita-principal", width);
-        assert_eq!(layout.len(), 3, "one dot per pane: {layout:?}");
-        let dots: Vec<(&'static str, Style, u16)> = layout
-            .iter()
-            .map(|(_pane_id, _number, column)| ("○", Style::default().fg(p.overlay0), *column))
-            .collect();
-        let line = pane_dots_row_line("ita-principal", name_avail, &dots, &p, width);
+        let columns = pane_dots_columns(&ws, width);
+        assert_eq!(columns.len(), 3, "one dot per pane: {columns:?}");
+        for pair in columns.windows(2) {
+            assert_eq!(
+                pair[1].2 - pair[0].2,
+                2,
+                "dots sit 2 columns apart (dot + separating space): {columns:?}"
+            );
+        }
+        assert_eq!(
+            columns[0].2, PANE_DOTS_INDENT,
+            "the first dot starts at the shared block indent: {columns:?}"
+        );
+    }
+
+    #[test]
+    fn pane_dots_dots_line_renders_one_dot_per_pane_and_totals_exact_width() {
+        let p = Palette::catppuccin();
+        let width = 30u16;
+        let dots: Vec<(&'static str, Style)> = vec![("○", Style::default().fg(p.overlay0)); 3];
+        let line = pane_dots_dots_line(&dots, width);
         let text = line_text(&line);
         assert_eq!(
             text.matches('○').count(),
@@ -9054,26 +9078,22 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
             width as usize,
             "the row totals exactly width: {text:?}"
         );
-        // Attribution: this assertion read "dots pinned to the right edge
-        // like section_row_line's state cluster". They are not: right-pinning
-        // made every dot column a function of the row geometry, the render
-        // and hit-test passes reached `pane_dots_layout` with different
-        // `body` rects, and the hit areas landed on blank space — caught by
-        // `pane_dots_row_hit_areas_land_on_the_rendered_dots_own_columns`.
-        // The dots now follow the NAME, which is what the approved mock
-        // shows, and the row pads on the right to keep this width invariant.
+        assert!(
+            text.starts_with("   "),
+            "l2 shares l1's PANE_DOTS_INDENT (3 columns), matching ALVO_CAPTURE \
+             rows 05/29: {text:?}"
+        );
         assert!(
             text.trim_end().ends_with('○'),
-            "the last dot is the row's last non-blank cell — the dots follow \
-             the name and the row pads after them: {text:?}"
+            "the last dot is the row's last non-blank cell — the row pads \
+             after them to stay exactly `width`: {text:?}"
         );
     }
 
     #[test]
-    fn pane_dots_row_line_never_contains_a_repo_name() {
+    fn pane_dots_name_line_never_contains_a_repo_name() {
         let p = Palette::catppuccin();
-        let dots = [("○", Style::default().fg(p.overlay0), 20u16)];
-        let text = line_text(&pane_dots_row_line("agent-x", 12, &dots, &p, 40));
+        let text = line_text(&pane_dots_name_line("agent-x", &p, 40));
 
         assert!(text.contains("agent-x"));
         assert!(!text.contains("cnb_landing_page"));
@@ -9081,8 +9101,101 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
     }
 
     #[test]
+    fn pane_dots_name_line_uses_column_3_and_overlay1_no_state_glyph() {
+        // Gate G1 (bora-79l.3): l1 puts the name at column 3 (indent 3),
+        // colors it `overlay1` (the same as `⎇`), and never draws a state
+        // glyph — every pane's state is l2's payload.
+        let p = Palette::catppuccin();
+        let line = pane_dots_name_line("main", &p, 40);
+        let text = line_text(&line);
+        assert_eq!(
+            text.find('m'),
+            Some(3),
+            "the name starts at column 3: {text:?}"
+        );
+        let name_span = line
+            .spans
+            .iter()
+            .find(|s| s.content.as_ref() == "main")
+            .expect("name span");
+        assert_eq!(
+            name_span.style.fg,
+            Some(p.overlay1),
+            "l1's name uses overlay1, the same color as the branch glyph: {name_span:?}"
+        );
+        for glyph in ["⠋", "●", "◆", "○"] {
+            assert!(
+                !text.contains(glyph),
+                "l1 must carry no state glyph at all: {text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn pane_dots_row_is_a_two_line_block_name_then_dots() {
+        // G1's own "workspace vira bloco de 2 linhas": entry_row_height's
+        // base for `PaneDotsRow` is 2 now, and the render arm draws the
+        // name on l1 and the dots on l2 (row_y + 1) — never both on one
+        // line, the old single-line row's shape.
+        let mut app = AppState::test_new();
+        app.view_mode = crate::config::ViewMode::Project;
+        let mut ws = Workspace::test_new("main");
+        ws.test_split(Direction::Vertical);
+        app.workspaces = vec![ws];
+        app.ensure_test_terminals();
+        let pane = app.workspaces[0].tabs[0].root_pane;
+        let terminal_id = app.workspaces[0].tabs[0].panes[&pane]
+            .attached_terminal_id
+            .clone();
+        let terminal = app.terminals.get_mut(&terminal_id).unwrap();
+        terminal.detected_agent = Some(Agent::Claude);
+        terminal.state = AgentState::Blocked;
+
+        let entries = workspace_list_entries(&app);
+        let pane_dots_idx = entries
+            .iter()
+            .position(|e| matches!(e, WorkspaceListEntry::PaneDotsRow { .. }))
+            .expect("Project view must emit a PaneDotsRow for an open workspace");
+        assert_eq!(
+            entry_row_height(&entries[pane_dots_idx], &entries, pane_dots_idx, 0),
+            2,
+            "a PaneDotsRow's own content is 2 rows tall"
+        );
+
+        let area = Rect::new(0, 0, 30, 10);
+        let runtimes = crate::terminal::TerminalRuntimeRegistry::new();
+        let mut terminal_backend =
+            Terminal::new(TestBackend::new(area.width, area.height)).expect("test terminal");
+        terminal_backend
+            .draw(|frame| render_workspace_list(&app, &runtimes, frame, area, false))
+            .expect("workspace list should render");
+
+        let (_cards, _headers, project_rows) = compute_workspace_list_areas_all(&app, area);
+        let pane_hit = project_rows
+            .iter()
+            .find(|a| matches!(a.target, ProjectRowTarget::Pane { .. }))
+            .expect("one dot hit area for the single pane");
+        let l2_y = pane_hit.rect.y;
+        let l1_y = l2_y.saturating_sub(1);
+
+        let buffer = terminal_backend.backend().buffer();
+        let l1 = row_text(buffer, l1_y, area.width);
+        let l2 = row_text(buffer, l2_y, area.width);
+        assert!(l1.contains("main"), "l1 carries the name: {l1:?}");
+        assert!(
+            !l1.contains('◆'),
+            "l1 carries no state glyph even for a Blocked pane: {l1:?}"
+        );
+        assert!(
+            !l2.contains("main"),
+            "l2 carries no name, only dots: {l2:?}"
+        );
+        assert!(l2.contains('◆'), "l2 carries the pane's state dot: {l2:?}");
+    }
+
+    #[test]
     fn pane_dots_row_hit_areas_land_on_the_rendered_dots_own_columns() {
-        // Third lockstep consumer (`pane_dots_layout`'s doc): render and
+        // Third lockstep consumer (`pane_dots_columns`'s doc): render and
         // hit-test must derive the SAME dot columns/identities, or a click
         // would silently focus the wrong pane. This proves it end to end —
         // render the real row, then check each hit area's rect against the
@@ -9121,13 +9234,65 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
             );
         }
         // Columns are distinct and 2 cells apart (dot + separating space),
-        // matching `pane_dots_layout`'s own arithmetic — proven here
+        // matching `pane_dots_columns`'s own arithmetic — proven here
         // against the RENDER's actual output, not by re-deriving the
         // formula a second time.
         assert_eq!(
             pane_hits[1].rect.x - pane_hits[0].rect.x,
             2,
             "dots sit 2 columns apart: {pane_hits:?}"
+        );
+    }
+
+    #[test]
+    fn pane_dots_dot_glyph_covers_every_reachable_agent_state() {
+        // Gate G1 (bora-79l.3): the design names "5 estados da 0.45.6"
+        // (girando/esperando você/respondeu/falha/parado); `AgentState`
+        // (`detect::mod.rs`) + `seen` gives exactly 5 distinguishable
+        // combinations, and `pane_dots_dot_glyph`'s own doc explains why
+        // "respondeu" (green) is not one of them today — this pins the 4
+        // visually distinct outputs the current model CAN produce, plus
+        // the fifth combination (`Unknown`) reading identically to
+        // `Idle`+seen, exactly as `capture::alvo_fixture`'s "scratch"
+        // workspace (plain shell) demonstrates.
+        let p = Palette::catppuccin();
+        let dots = crate::config::StatusIndicatorStyle::Dots;
+
+        let (glyph, style) = pane_dots_dot_glyph(AgentState::Working, true, 0, dots, &p);
+        assert_eq!(glyph, "⠋", "Working animates the shared spinner: {glyph:?}");
+        assert_eq!(style.fg, Some(p.overlay0));
+
+        let (glyph, style) = pane_dots_dot_glyph(AgentState::Idle, false, 0, dots, &p);
+        assert_eq!(
+            glyph, "●",
+            "Idle+unseen (\"esperando você\") is a STATIC yellow bullet, \
+             never the animated sand-timer: {glyph:?}"
+        );
+        assert_eq!(style.fg, Some(p.yellow));
+
+        let (glyph, style) = pane_dots_dot_glyph(AgentState::Idle, true, 0, dots, &p);
+        assert_eq!(glyph, "○", "Idle+seen (\"parado\"): {glyph:?}");
+        assert_eq!(style.fg, Some(p.overlay0));
+
+        let (glyph, style) = pane_dots_dot_glyph(AgentState::Blocked, true, 0, dots, &p);
+        assert_eq!(glyph, "◆", "Blocked (\"falha\") is red: {glyph:?}");
+        assert_eq!(style.fg, Some(p.red));
+        assert!(style.add_modifier.contains(Modifier::BOLD));
+
+        let (glyph, style) = pane_dots_dot_glyph(AgentState::Unknown, true, 0, dots, &p);
+        assert_eq!(
+            glyph, "○",
+            "Unknown (plain shell) reads as \"parado\", same as Idle+seen: {glyph:?}"
+        );
+        assert_eq!(style.fg, Some(p.overlay0));
+
+        // Falha reuses the shared dots/symbols preference (`blocked_glyph`),
+        // never a second inline match.
+        let symbols = crate::config::StatusIndicatorStyle::Symbols;
+        let (glyph, _) = pane_dots_dot_glyph(AgentState::Blocked, true, 0, symbols, &p);
+        assert_eq!(
+            glyph, "×",
+            "Symbols preference changes the falha glyph too: {glyph:?}"
         );
     }
 

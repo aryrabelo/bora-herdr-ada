@@ -2814,7 +2814,10 @@ mod tests {
     #[test]
     fn checks_section_lockstep_rows_stay_height_one() {
         // G4: the new CHECKS rows are ordinary entries — every lockstep pass
-        // derives their height from `entry_row_height`, which must return 1.
+        // derives their height from `entry_row_height`, which must return 1
+        // (bora-79l F2: except `PaneDotsRow`, whose own content is 2 rows
+        // tall since it split into l1 name + l2 dots — `entry_row_height`'s
+        // own doc).
         let repo = temp_test_dir("checks-lockstep");
         init_fake_git_repo(&repo, None);
 
@@ -2842,9 +2845,14 @@ mod tests {
             "fixture must actually emit a CHECKS band: {entries:?}"
         );
         for (idx, entry) in entries.iter().enumerate() {
+            let expected = if matches!(entry, WorkspaceListEntry::PaneDotsRow { .. }) {
+                2
+            } else {
+                1
+            };
             assert_eq!(
                 crate::ui::sidebar::entry_row_height(entry, &entries, idx, 0),
-                1,
+                expected,
                 "entry {idx}: {entry:?}"
             );
         }
@@ -2853,7 +2861,7 @@ mod tests {
     }
 
     #[test]
-    fn every_emitted_entry_has_row_height_one() {
+    fn every_emitted_entry_has_row_height_one_except_pane_dots_row() {
         let checkout_a = temp_test_dir("height-a");
         let checkout_b = temp_test_dir("height-b");
         init_fake_git_repo(&checkout_a, None);
@@ -2887,10 +2895,16 @@ mod tests {
             "fixture too small to exercise every variant: {entries:?}"
         );
         for (idx, entry) in entries.iter().enumerate() {
+            let expected = if matches!(entry, WorkspaceListEntry::PaneDotsRow { .. }) {
+                2
+            } else {
+                1
+            };
             assert_eq!(
                 crate::ui::sidebar::entry_row_height(entry, &entries, idx, 0),
-                1,
-                "every Project-view row must stay height 1, entry {idx}: {entry:?}"
+                expected,
+                "every Project-view row must stay height 1 except PaneDotsRow \
+                 (bora-79l F2, height 2), entry {idx}: {entry:?}"
             );
         }
 
@@ -3709,10 +3723,20 @@ mod tests {
             .enumerate()
             .map(|(idx, entry)| crate::ui::sidebar::entry_row_height(entry, &entries, idx, 0))
             .sum();
+        let expected_total_height: u16 = entries
+            .iter()
+            .map(|e| {
+                if matches!(e, WorkspaceListEntry::PaneDotsRow { .. }) {
+                    2
+                } else {
+                    1
+                }
+            })
+            .sum();
         assert_eq!(
-            total_height as usize,
-            entries.len(),
-            "every row in this fixture is height 1"
+            total_height, expected_total_height,
+            "every row in this fixture is height 1 except PaneDotsRow \
+             (bora-79l F2, height 2): {entries:?}"
         );
 
         // Pass 2: visible-count agrees with the height pass.

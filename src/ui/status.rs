@@ -268,7 +268,11 @@ pub(super) fn agent_icon(
     }
 }
 
-fn blocked_glyph(indicator_style: StatusIndicatorStyle) -> &'static str {
+/// Falha glyph for a `Blocked` pane (dots/symbols preference). `pub(super)`
+/// (not private) so `ui::sidebar`'s `PaneDotsRow` l2 dots (bora-79l F2) can
+/// reuse the SAME configurable glyph set `state_dot`/`agent_icon` already
+/// use here, rather than a second inline match drifting from this one.
+pub(super) fn blocked_glyph(indicator_style: StatusIndicatorStyle) -> &'static str {
     match indicator_style {
         StatusIndicatorStyle::Dots => "◆",
         StatusIndicatorStyle::Symbols => "×",
