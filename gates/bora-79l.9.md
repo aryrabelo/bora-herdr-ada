@@ -76,3 +76,9 @@ Full-suite check beyond G1-G4's filters (not a named gate, extra evidence):
 `cargo nextest run --locked` → 4157 tests run: 4157 passed, 3 skipped, 0
 failed. Every existing test in the crate stays green with this leaf's
 changes applied.
+
+HANDOVER (2026-08-27, lead): o wiring de produção do
+`reconcile_section_layout` na restauração de sessão pousa com F8
+(bora-79l.10) — é lá que o AppState ganha onde guardar o layout runtime e
+o render passa a consumi-lo. Não é degradação silenciosa: registrado aqui
+e no plano.
