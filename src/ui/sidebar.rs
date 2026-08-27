@@ -1,6 +1,10 @@
 #[cfg(test)]
 mod capture;
 pub(crate) mod project_view;
+// Model-only for now: every item is dead until render wiring lands (F2/F3)
+// and projects.yml persistence lands (F7) — epic bora-79l's slice order.
+#[allow(dead_code)]
+pub(crate) mod sections;
 mod tokens;
 
 use std::time::Instant;
