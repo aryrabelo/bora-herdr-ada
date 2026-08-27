@@ -138,6 +138,9 @@ jobs:
           - target: aarch64-apple-darwin
             os: macos-latest
             name: bora-macos-aarch64
+          - target: x86_64-pc-windows-msvc
+            os: windows-2022
+            name: bora-windows-x86_64.zip
 
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
@@ -210,12 +213,14 @@ jobs:
           key: preview-${{ matrix.target }}
 
       - name: Remove Zig caches
+        shell: bash
         run: rm -rf .zig-cache vendor/libghostty-vt/.zig-cache vendor/libghostty-vt/zig-out
 
       - name: Build
         run: cargo build --release --locked --target ${{ matrix.target }}
 
       - name: Package artifact
+        if: runner.os != 'Windows'
         shell: bash
         run: |
           set -euo pipefail
@@ -245,6 +250,26 @@ jobs:
           } >> BUILD_INFO.txt
 
 
+      - name: Package artifact (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $package = Join-Path $env:RUNNER_TEMP "Microsoft.Windows.Console.ConPTY.nupkg"
+          $stage = Join-Path $env:RUNNER_TEMP "bora-windows-x86_64"
+          .\scripts\package_windows_conpty.ps1 `
+            -HerdrExe target\${{ matrix.target }}\release\bora.exe `
+            -PackagePath $package `
+            -StageDir $stage `
+            -OutputPath ${{ matrix.name }}
+          $hash = (Get-FileHash -Algorithm SHA256 "${{ matrix.name }}").Hash.ToLower()
+          "$hash  ${{ matrix.name }}" | Out-File -Encoding ascii -NoNewline "${{ matrix.name }}.sha256"
+          @"
+          commit=${{ needs.preflight.outputs.commit }}
+          build_id=${{ needs.preflight.outputs.build_id }}
+          target=${{ matrix.target }}
+          channel=preview
+          "@ | Out-File -Encoding ascii BUILD_INFO.txt
       - name: Upload artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
@@ -313,7 +338,7 @@ jobs:
           result = {}
           for path in pathlib.Path('artifacts').glob('bora-*/*.sha256'):
               digest, name = path.read_text().split()[:2]
-              target = name.removeprefix('bora-')
+              target = name.removeprefix('bora-').removesuffix('.zip')
               result[target] = digest
           pathlib.Path('preview-sha256.json').write_text(json.dumps(result, indent=2) + '\n')
           PY
@@ -345,11 +370,11 @@ jobs:
             exit 1
           fi
           expected_assets="$(jq -S '{
-            "herdr-linux-x86_64": .["linux-x86_64"],
-            "herdr-linux-aarch64": .["linux-aarch64"],
-            "herdr-macos-x86_64": .["macos-x86_64"],
-            "herdr-macos-aarch64": .["macos-aarch64"],
-            "herdr-windows-x86_64.zip": .["windows-x86_64"]
+            "bora-linux-x86_64": .["linux-x86_64"],
+            "bora-linux-aarch64": .["linux-aarch64"],
+            "bora-macos-x86_64": .["macos-x86_64"],
+            "bora-macos-aarch64": .["macos-aarch64"],
+            "bora-windows-x86_64.zip": .["windows-x86_64"]
           }' preview-sha256.json)"
           actual_assets="$(jq -S '[
             .assets[] | select(.digest | type == "string") |
@@ -379,6 +404,7 @@ jobs:
             artifacts/bora-linux-aarch64/bora-linux-aarch64
             artifacts/bora-macos-x86_64/bora-macos-x86_64
             artifacts/bora-macos-aarch64/bora-macos-aarch64
+            artifacts/bora-windows-x86_64.zip/bora-windows-x86_64.zip
 
 
       - name: Publish preview prerelease

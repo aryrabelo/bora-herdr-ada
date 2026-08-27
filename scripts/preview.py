@@ -16,8 +16,8 @@ ASSET_TARGETS = (
     "windows-x86_64",
 )
 EXPECTED_ASSET_NAMES = {
-    **{target: f"herdr-{target}" for target in ASSET_TARGETS},
-    "windows-x86_64": "herdr-windows-x86_64.zip",
+    **{target: f"bora-{target}" for target in ASSET_TARGETS},
+    "windows-x86_64": "bora-windows-x86_64.zip",
 }
 HIDDEN_SUBJECTS = (
     "docs: update website manifest",
