@@ -54,9 +54,16 @@
 # Secret keys (stored in this file but prefer env vars to avoid git exposure):
 # - linear.api_key  → use LINEAR_API_KEY env var instead
 # - github.token    → use GITHUB_TOKEN env var instead
+# beads local-first (cutover 2026-08-27, convencao ceo-oss/ideias/convencao-beads-local-first.md):
+# sem Dolt central (dolt.bugtoprompt.com, RTT ~253ms). Server-mode local porque ha >=2
+# sessoes/agentes escrevendo (worktrees). auto-push ON para a frota nao divergir; timeout
+# 120s porque o default de 30s estoura em silencio contra push real de ~30-40s (medido).
+dolt.auto-start: true
+dolt.mode: server
+dolt.auto-push: true
+dolt.auto-push-timeout: 120s
+dolt.auto-push-interval: 5m
 sync.remote: "git+ssh://git@github.com/aryrabelo/bora-herdr-ada.git"
-dolt.host: dolt.bugtoprompt.com
-dolt.port: 3307
 # Keep .beads/issues.jsonl fresh automatically. This file is the ONLY
 # off-machine copy of the backlog: `bd dolt push` is denied by the central
 # server for user bd_ops, so refs/dolt/* cannot be seeded from a client (see
@@ -71,6 +78,6 @@ export:
 repos:
     primary: "."
     additional:
-        - "/Users/aryrabelo/.beads-planning"
+        - "/Users/aryrabelo/Sites/beads-plans"
 routing:
     mode: auto
