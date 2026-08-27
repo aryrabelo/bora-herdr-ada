@@ -773,7 +773,10 @@ projects:
             .and_then(|project| project.layout.as_ref())
             .expect("layout must survive the round trip");
         assert_eq!(
-            layout.iter().map(|section| section.id.as_str()).collect::<Vec<_>>(),
+            layout
+                .iter()
+                .map(|section| section.id.as_str())
+                .collect::<Vec<_>>(),
             vec!["sec-branch-main", "sec-livre"],
             "pinned ids must be preserved verbatim, not regenerated"
         );

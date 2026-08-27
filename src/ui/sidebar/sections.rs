@@ -234,7 +234,15 @@ mod tests {
                 section.parts,
                 section.children.as_slice(),
             ),
-            (SectionKind::Livre, true, SectionParts { dots: true, diff: true }, &[][..]),
+            (
+                SectionKind::Livre,
+                true,
+                SectionParts {
+                    dots: true,
+                    diff: true
+                },
+                &[][..]
+            ),
         );
     }
 

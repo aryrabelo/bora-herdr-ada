@@ -1593,11 +1593,7 @@ fn pane_dots_columns(
     // Largest `n` with `2n - 1 <= avail` (one cell per dot, one separating
     // space between each pair), 0 when even a single dot does not fit.
     let avail = width.saturating_sub(PANE_DOTS_INDENT);
-    let max_dots = if avail == 0 {
-        0
-    } else {
-        ((avail + 1) / 2) as usize
-    };
+    let max_dots = avail.div_ceil(2) as usize;
     panes.truncate(max_dots);
 
     panes
