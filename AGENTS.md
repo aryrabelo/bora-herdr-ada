@@ -129,6 +129,12 @@ classes, and how to resolve them, so the next sync is cheap:
   the array length and any exhaustive match/array-literal sites need both variants accounted
   for — search all `match`/array-literal sites of the enum after merging, not just the ones
   the diff flags.
+- **Upstream bot identity (kangal) has no secret on this fork.** Upstream workflows use
+  `secrets.KANGAL_GITHUB_TOKEN`, git identity `kangal-bot` (user id 285672167), and a
+  matching user-id check in pr-gate.yml; none of it exists here (blamed to Ogulcan Celik,
+  2026-05/06). The fork uses `${{ github.token }}` and `github-actions[bot]` (41898282)
+  everywhere — on merges, swap any reintroduced KANGAL reference back, and keep the
+  example text in the pre-release-audit prompts free of it.
 
 Every upstream sync also updates `UPSTREAM_HERDR_VERSION`/`UPSTREAM_HERDR_COMMIT` in
 `src/build_info.rs` to the merged upstream tip, in the same commit as the merge — see

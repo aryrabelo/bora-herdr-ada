@@ -21,9 +21,9 @@ jobs:
       - name: Check pull request intake policy
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         with:
-          github-token: ${{ secrets.KANGAL_GITHUB_TOKEN }}
+          github-token: ${{ github.token }}
           script: |
-            const KANGAL_USER_ID = 285672167;
+            const GATE_BOT_USER_ID = 41898282; // github-actions[bot]
             const CI_ONLY_PR_AUTHOR_IDS = new Set([
               49699333, // dependabot[bot]
               41898282, // github-actions[bot]
@@ -141,7 +141,7 @@ jobs:
                 per_page: 100,
               });
               const existing = comments.find(comment =>
-                comment.user?.id === KANGAL_USER_ID && comment.body?.includes(COMMENT_MARKER));
+                comment.user?.id === GATE_BOT_USER_ID && comment.body?.includes(COMMENT_MARKER));
               const body = `${COMMENT_MARKER}\n${message}`;
               if (existing?.body === body) return;
               if (existing) {
