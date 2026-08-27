@@ -642,6 +642,28 @@ Worktree 事件订阅包括 `worktree.created`、`worktree.opened` 和 `worktree
 
 生命周期事件用 `events.subscribe`。支持一次性等待时,专门的等待辅助命令会单独在文档中说明。
 
+## GitHub 数据
+
+当 `[github] enabled = true`(默认)时,Herdr 会在后台按仓库定期获取当前用户的未关闭 pull request。issue 按需获取。`github.pulls.list` 和 `github.issues.list` 通过 socket API 暴露这些缓存数据。
+
+列出所有仓库中未关闭的 PR:
+
+```json
+{"id":"req_1","method":"github.pulls.list","params":{}}
+```
+
+按特定仓库标识过滤:
+
+```json
+{"id":"req_1","method":"github.pulls.list","params":{"repo_identity":"github.com/owner/repo"}}
+```
+
+每个响应返回一个 `repos` 数组。每个仓库条目包含 `repo_identity`、一个带有 `number`、`title`、`url` 的 `prs`(或 `issues`)数组,PR 还额外包含 `head_ref_name` 和 `is_draft`;若该仓库的 `gh` CLI 调用失败,则包含可选的 `error` 字段。没有缓存数据时,`repos` 为空数组。
+
+订阅 `github.prs_refreshed` 和 `github.issues_refreshed`,可以在后台刷新完成时收到通知。每个事件都包含被刷新的 `repo_identity`。
+
+`github.pr_opened` 会在 bora 成功为某个 worktree 分支打开 pull request 时触发一次。与上面基于轮询的刷新事件不同,它是在创建时立即推送的,而不是等到下一次定期刷新才被发现。该事件携带 `branch`、PR 的 `url`、`repo_identity` 以及受影响的 `workspace_ids`。`workspace_ids` 仅包含属于同一仓库的工作区;当同时打开多个仓库时,仅凭分支名不足以唯一确定一个工作区。它只覆盖 bora 自己打开的 PR;在智能体窗格中直接运行 `gh` 打开的 PR 不会触发它。
+
 ## 读取窗格
 
 除非你在编写协议客户端,否则通过 CLI 使用 `pane.read`。

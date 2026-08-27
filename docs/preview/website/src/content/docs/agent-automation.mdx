@@ -71,6 +71,31 @@ herdr agent rename w1:p2 reviewer
 
 `agent prompt` submits text plus encoded Enter and honors the terminal's live bracketed-paste mode. It can prompt an agent that is already working. If the agent is already `blocked`, it returns `agent_blocked` without sending terminal input; inspect the dialog and use `agent send-keys` for a deliberate response. Use `agent send-keys` for interactions such as `esc`, `up`, `enter`, or `ctrl+c`; `escape` is accepted as an alias for `esc`. Use the pane input commands when you deliberately want raw terminal control.
 
+`agent prompt` attributes the sender when the caller runs inside a bora pane: it fills `from_pane` from `$HERDR_PANE_ID` (override with `--from <pane>`, suppress with `--no-from`), and the server prepends `[from <pane> <name>]` to the injected text. The claim is verified against OS socket peer credentials — the server proves the calling process descends from the named pane's shell; an unverifiable claim is delivered as `[from? claimed <pane>]` instead.
+
+`agent prompt --when-idle` defers delivery while the target is working instead of injecting bytes mid-turn. A busy target's prompt is queued server-side (bounded per-target FIFO) and delivered when the agent leaves the working state; the receipt reports `outcome: deferred` with a `queue_id`, and every terminal fate of a queued prompt (delivered, dropped for capacity, pane closed, agent changed) is emitted as an API event. Rapid repeat prompts from the same sender pane to the same target are rejected with `agent_prompt_rate_limited` (2 s cooldown).
+
+Channels group agents for broadcast. A channel is a workspace named `#…`; `channel create|list|members` manage and inspect them, `channel send` posts `[#name seq=N from <pane> <name>] <text>` to every member agent pane *except the sender's own* (with when-idle deferral and per-member `delivered|deferred|failed` results) and appends the message to a bounded per-channel JSONL transcript that `channel history` replays. Every message carries a monotonic per-channel `seq` that survives log rotation, and it is printed in the delivered prefix so a receiving agent can pass it straight to `channel tail --after` or `channel send --reply-to`.
+
+An agent does not have to live in the channel's workspace to be a member. `channel join <name> [--pane ID]` adds a pane that already exists elsewhere, and `channel leave <name> [--pane ID]` removes it again; the pane defaults to `$HERDR_PANE_ID`, so an agent can join a channel it was told about without knowing its own pane id. A channel's member set is the panes in its `#name` workspace plus the panes that joined explicitly, and `channel members` labels which is which in a `source` column (`workspace` or `joined`). Joined membership is stored beside the transcript and survives a restart; a pane that no longer exists stops being a member on its own. Joining is idempotent — joining twice, or joining a pane that already lives in the channel's workspace, succeeds and reports the membership you actually have.
+
+```bash
+herdr channel join eng --pane w3B:p1              # pull an existing agent into #eng
+herdr channel members eng                         # w3B:p1  idle  brandos  joined
+herdr channel leave eng --pane w3B:p1
+```
+
+`channel tail <name> [--after SEQ] [--follow|-f] [--json]` follows that transcript by cursor instead of replaying a fixed window. Without `--after`, it starts from `0` and prints everything retained; pass the last `seq` you saw to resume from there. One-shot (no `--follow`) prints the current backlog and exits; `--follow` keeps polling and prints new messages as they arrive until interrupted. Human output is `SEQ HH:MM name: text`; `--json` prints the raw `channel.wait` response per batch. If rotation dropped messages between your cursor and the oldest retained line, `channel tail` reports that as a `#gap:` notice on stderr instead of silently resuming as if nothing were missing.
+
+```bash
+herdr channel tail eng --json                    # one-shot backlog snapshot
+herdr channel tail eng --after 42 --follow        # resume from seq 42 and keep watching
+```
+
+`channel send` addresses a single agent pane with a leading `@nick ` token in the message text: `channel send eng "@reviewer take a look"`. The nick matches a member pane's display name, assigned name, detected agent kind, or raw pane id. When it resolves to exactly one pane, only that pane receives the injected text (the transcript still appends normally); when it doesn't uniquely resolve — unknown or ambiguous — the send degrades to an ordinary broadcast to every member pane instead of erroring or dropping the message, so a typo'd nick never loses text. Write `\@` or `\#` to talk about the syntax literally; both unescape to `@`/`#` in the stored and delivered text. `channel send <name> "<text>" --to <nick>` addresses the same way but fails loudly with `channel_nick_unknown` or `channel_nick_ambiguous` instead of degrading — use it when a miss should stop the send rather than fall back to broadcast.
+
+Any pane that joins a channel, or receives its first message in one, gets a one-time briefing: a `[bora] channel protocol for #name (v3):` prompt teaching how to reply, address, and catch up in that channel. It defines the nick namespace explicitly — a member is addressable by its raw pane id (`w78:p1`), by that id with the colon dropped (`w78p1`, which stays unique even when two panes share a name or an agent kind), or by its `channel members` name — and it ends by naming the human seat (`The human on this channel is @<ui.chat_name>`), so an agent knows a human is reachable without being told out of band. It's delivered through the same `agent prompt` path as any other injected text, so it's deferred while the pane is working and — because it carries no `from_pane` — exempt from the per-sender rate limit. Delivery is recorded per `(channel, pane, version)` in `channels/<name>.protocol.json`, so a server restart never re-sends it; bumping `CHANNEL_PROTOCOL_VERSION` does.
+
 Pane input addresses the terminal regardless of its current occupant. Agent input resolves the live agent and rejects the operation if that agent no longer controls the pane.
 
 `agent prompt --wait` submits immediately unless the agent is already `blocked`, in which case it returns `agent_blocked` without starting the wait. If an accepted prompt starts from another non-working state, Herdr must observe a lifecycle change within five seconds. Otherwise, it returns `agent_prompt_stalled` instead of waiting indefinitely; a caller `--timeout` of five seconds or less returns the normal `timeout` error. After Herdr observes activity, it waits for the requested settled status. It does not track individual turns. If the agent is already working, completion of that active turn may satisfy the wait. Standalone `agent wait` observes the current agent and returns immediately if its status already matches. Both commands default to `idle`, `done`, or `blocked`. Repeat `--until` to accept several exact states, for example `--until idle --until done`; use `--until unknown` explicitly when needed. On `agent prompt`, `--until` requires `--wait`.
@@ -92,6 +117,58 @@ If a full response is still unavailable, ask the agent to write it as Markdown i
 Successful `agent start`, `agent prompt`, and `agent wait` commands return the current agent at `.result.agent`. `pane wait-output` returns `.result.pane_id`, `.result.matched_line`, and the matched snapshot at `.result.read`.
 
 Wait commands have no default timeout and can wait indefinitely. On timeout or another server error, CLI commands print a JSON error to stderr and exit with status 1; invalid CLI syntax exits with status 2.
+
+## Chat view
+
+`ui.chat_view` (default `false`) gates a native TUI chat view for `#` channels — a fork-only addition, not something upstream Herdr has. Set `ui.chat_view = true` in config, then open it with `prefix+i` (configurable via `keys.chat`) or the `chat` entry in the global menu (bottom-right `● menu` button); both stay hidden while the flag is off.
+
+The view is a three-column overlay: channels on the left, the message timeline in the center (`HH:MM sender text`, wrapped, stick-to-bottom), and channel members with live agent-status icons on the right. A composer line at the bottom is always focused. It reads and writes through the same `channel.list`/`channel.history`/`channel.members`/`channel.send` API external clients use, with new messages pushed in as they're sent rather than polled.
+
+Mouse: click a channel to switch to it, scroll the timeline with the wheel, click outside the overlay to close it. Keyboard: `Enter` sends, `Esc` closes, `Tab`/`Shift+Tab` cycle channels, `Up`/`Down` scroll a few lines and `PageUp`/`PageDown` scroll a full viewport, `Ctrl+U` clears the composer. Sending from the chat view uses the same leading `@nick` addressing as `channel send` — a targeted message shows a `›` marker next to the sender name.
+
+### Your seat in the channel
+
+You are a channel participant, not just a reader. Messages you send from the chat view are attributed to you: set `ui.chat_name` in config to pick the name, or leave it unset and Bora uses `$USER` (then `$LOGNAME`, then `you`). Your lines render bold and accented so they stand apart from agents.
+
+Agents can address you back. `@<your chat name>` resolves to your seat in every channel, case-insensitively — the message lands in the transcript marked for you and is delivered to no pane, so a question meant for a human never injects into another agent's prompt. Give yourself a name no agent shares: a collision is treated as genuine ambiguity and errors rather than guessing.
+
+Those lines carry a highlight band in the timeline, and if one arrives while the chat view is closed the view opens by itself — on the channel that mentioned you. Two guards keep that polite: it never happens while you have typed within the last 3 seconds (a focus change never eats your keystrokes), and it never opens over anything but quiet browsing (`Terminal`/`Navigate`) — onboarding, prompts, and modals are never hijacked, and any mode added later defaults to not interrupting you. When a guard suppresses the open you get the needs-attention toast instead, and `Esc` on an auto-opened view returns you exactly where you were. `ui.chat_open_on_mention = false` (default `true`) turns the auto-open off and keeps the toast; the key only has effect while `ui.chat_view` is on.
+
+Only the chat view can speak as you. It sends in-process, and the human flag is never accepted over the socket, so a client or agent cannot forge a message from you. Your sends are also exempt from the per-channel rate limit that paces agents.
+
+### Creating a channel from the view
+
+The channel column ends in a `+ new channel` row. Click it (or press `Ctrl+N`)
+and a small prompt asks for a name; a leading `#` is optional and stripped, so
+`#eng` and `eng` both make `#eng`. `Enter` creates the channel through
+`channel.create`, reloads the list, and selects the new room so you land in
+what you just made. `Esc` cancels the prompt without closing the chat view.
+
+A rejected name — one that already exists, or a workspace that could not be
+created — is reported on the status line with the server's own message, and
+the prompt stays open with your text intact so you can fix it rather than
+retype it.
+
+### Managing members from the view
+
+Membership is managed where you can see it, so recruiting an agent never means
+leaving the chat view for `bora channel join`.
+
+The members column ends in a `+ add agent` row. Click it (or press `Ctrl+A`) and
+Bora lists every running agent across all workspaces that is not already a
+member, with its live status and a shortened working directory so two agents
+with the same nick in different worktrees stay distinguishable. Type to filter
+by name or directory, `Up`/`Down` move the highlight, `Enter` joins the
+highlighted agent, and clicking a row joins it directly. `Esc` closes the
+prompt without closing the chat view. The members column refreshes on join, so
+you see the membership land rather than being told it did.
+
+Each member row carries a `×` at its right edge; clicking that removes the
+member (`channel.leave`). Clicking anywhere else on the row inserts
+`@<name> ` into the composer instead, so addressing someone is a click and a
+stray click cannot eject them. Panes that live in the channel's own `#name`
+workspace are members by construction: removing one is refused, and the status
+line says so instead of reporting a removal that did not happen.
 
 ## Recipes
 

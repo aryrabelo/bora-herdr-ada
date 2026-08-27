@@ -108,6 +108,17 @@ Git 工作区行提供 worktree 操作。`New worktree` 会创建检出：如果
 
 删除 worktree 检出需要显式操作。在归组的子工作区上使用 `Delete worktree checkout...` 来运行 `git worktree remove`。Herdr 会先请求 Git 安全删除。如果 Git 因检出中存在已修改或未跟踪的文件而拒绝，Herdr 会在强制删除前再次确认。分支不会被删除。
 
+## 右侧面板
+
+右侧面板显示活动工作区所属仓库的上下文。可以用配置的键位(默认:`prefix+shift+b`)切换,或使用终端右侧边缘的折叠状态开关。
+
+该面板有四个标签页:
+
+- **Changes** — 未暂存、已暂存和已提交的文件更改,带状态指示器和每个文件的差异计数。点击文件可在 gitui 中打开(若未安装 gitui,则使用 `git diff`)。
+- **Checks** — 活动工作区分支的 CI 检查状态,通过 `gh pr view` 按需获取。
+- **Issues** — 分配给当前用户或由当前用户创建的未关闭 issue,按需获取。点击 issue 可在浏览器中打开或复制其 URL。
+- **PRs** — 当前用户在该仓库中打开的 pull request,在打开标签页时以及后台定期刷新。每一行显示 PR 编号、标题、草稿标记,以及可合并性指示器(`✓` 绿色 = MERGEABLE,`✗` 红色 = CONFLICTING)。点击 PR 可打开其上下文菜单(Open in worktree / Open in browser / Copy URL)。
+
 ## 远程连接
 
 远程连接默认使用临时保活设置，并在支持时复用连接，以管理 SSH 连接。

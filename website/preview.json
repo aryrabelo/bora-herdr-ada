@@ -1,36 +1,66 @@
 {
   "schema_version": 1,
   "channel": "preview",
-  "base_version": "0.8.2",
-  "build_id": "2026-08-19-b5c4a0176e91",
-  "commit": "b5c4a0176e9183924df552eb8aecb94ed5f9e732",
-  "built_at": "2026-08-19T19:32:11Z",
-  "protocol": 20,
-  "notes": "Preview build 2026-08-19-b5c4a0176e91\n\nBuilt from `b5c4a0176e91` on `master`.\nBase stable: v0.8.2\nCompare: https://github.com/herdrdev/herdr/compare/v0.8.2...b5c4a0176e9183924df552eb8aecb94ed5f9e732\n\n### Changed\n- Rebuilt preview from the current master branch.",
+  "base_version": "0.45.13",
+  "build_id": "2026-08-27-fe85ca263b6a",
+  "commit": "fe85ca263b6a2c95b67ca9ccd4c31f49d8db8122",
+  "built_at": "2026-08-27T18:48:11Z",
+  "protocol": 21,
+  "notes": "Preview build 2026-08-27-fe85ca263b6a\n\nBuilt from `fe85ca263b6a` on `master`.\nBase stable: v0.45.13\nCompare: https://github.com/aryrabelo/bora-herdr-ada/compare/v0.45.5...fe85ca263b6a2c95b67ca9ccd4c31f49d8db8122\n\n### Added\n- Section data model with yaml round-trip (F1)\n- Project view panes share one dots row, and a repo names itself once\n- One-shot agent dispatch \u2014 bora agent --new and agent <name> prompt\n\n### Fixed\n- Use div_ceil in pane dots width and fmt test code (bora-79l.3, bora-79l.9)\n- Project view rows answer the mouse again, and the view-mode toggle is back\n\n### Maintenance\n- Bump version to 0.45.13\n- Mark bora-79l.3 gates complete with evidence\n- Mark gates g1-g4 complete with evidence\n- Add windows build to preview and use bora asset names\n- Bump version to 0.45.12\n- Record F1 gate evidence (bora-79l.2)\n- R1 design revision on the executable contract\n- Executable project-view contract (F0)\n- Drop commit-message alignment rule (owner request)\n- Document bora agent --new and get-or-create dispatch in readme\n\n### Other\n- Cutover local-first (server-mode local, sem Dolt central)",
   "assets": {
     "linux-x86_64": {
-      "url": "https://github.com/herdrdev/herdr/releases/download/preview-2026-08-19-b5c4a0176e91/herdr-linux-x86_64",
-      "sha256": "fe5d3009003113731bfe1e7a72b356acaf2d6e35aee952aa68ecb4fd63710d8c"
+      "url": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/preview-2026-08-27-fe85ca263b6a/bora-linux-x86_64",
+      "sha256": "ccfecca308a4a28cd331ef415d5af29c61d68f5593565327f734f5e0527d99eb"
     },
     "linux-aarch64": {
-      "url": "https://github.com/herdrdev/herdr/releases/download/preview-2026-08-19-b5c4a0176e91/herdr-linux-aarch64",
-      "sha256": "4d9175d8cd377537f5f70c96fade62b2493cce1fa097ae2edf39d5c4168d7b6e"
+      "url": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/preview-2026-08-27-fe85ca263b6a/bora-linux-aarch64",
+      "sha256": "c36789fa5349ea8b4363a1ffb9ad30eed860f06008f69ac4557c8b6ef7766dbd"
     },
     "macos-x86_64": {
-      "url": "https://github.com/herdrdev/herdr/releases/download/preview-2026-08-19-b5c4a0176e91/herdr-macos-x86_64",
-      "sha256": "7133b614f07b40979b1eca3a4607e9242ed6cd9ff988e0c17c7d8c8b5f5f05b3"
+      "url": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/preview-2026-08-27-fe85ca263b6a/bora-macos-x86_64",
+      "sha256": "c7f5e8b097b1a512e2c612bc1cdcbfcf502ce2d7da0fdbd8596deff0dc7be430"
     },
     "macos-aarch64": {
-      "url": "https://github.com/herdrdev/herdr/releases/download/preview-2026-08-19-b5c4a0176e91/herdr-macos-aarch64",
-      "sha256": "61fe8e4e2ebe82c0267ab2ecb0c996847627be2c69c41aea12a445675c7cb097"
+      "url": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/preview-2026-08-27-fe85ca263b6a/bora-macos-aarch64",
+      "sha256": "b745e2401e583020dabf320235700a6ac992f4277db15a7d5c540a0e37efcb5c"
     },
     "windows-x86_64": {
-      "url": "https://github.com/herdrdev/herdr/releases/download/preview-2026-08-19-b5c4a0176e91/herdr-windows-x86_64.zip",
-      "sha256": "01c8bc9f22be0ad447ceb8f4ed8ae18871b31694ccfd6b504b26ee31f0c6e25e",
+      "url": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/preview-2026-08-27-fe85ca263b6a/bora-windows-x86_64.zip",
+      "sha256": "e342edd122962e546b2dcd15b4ecd7b3ad2310ed0508dae971ef76179b6e2623",
       "format": "zip"
     }
   },
   "builds": {
+    "2026-08-27-fe85ca263b6a": {
+      "base_version": "0.45.13",
+      "commit": "fe85ca263b6a2c95b67ca9ccd4c31f49d8db8122",
+      "built_at": "2026-08-27T18:48:11Z",
+      "protocol": 21,
+      "tag": "preview-2026-08-27-fe85ca263b6a",
+      "assets": {
+        "linux-x86_64": {
+          "url": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/preview-2026-08-27-fe85ca263b6a/bora-linux-x86_64",
+          "sha256": "ccfecca308a4a28cd331ef415d5af29c61d68f5593565327f734f5e0527d99eb"
+        },
+        "linux-aarch64": {
+          "url": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/preview-2026-08-27-fe85ca263b6a/bora-linux-aarch64",
+          "sha256": "c36789fa5349ea8b4363a1ffb9ad30eed860f06008f69ac4557c8b6ef7766dbd"
+        },
+        "macos-x86_64": {
+          "url": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/preview-2026-08-27-fe85ca263b6a/bora-macos-x86_64",
+          "sha256": "c7f5e8b097b1a512e2c612bc1cdcbfcf502ce2d7da0fdbd8596deff0dc7be430"
+        },
+        "macos-aarch64": {
+          "url": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/preview-2026-08-27-fe85ca263b6a/bora-macos-aarch64",
+          "sha256": "b745e2401e583020dabf320235700a6ac992f4277db15a7d5c540a0e37efcb5c"
+        },
+        "windows-x86_64": {
+          "url": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/preview-2026-08-27-fe85ca263b6a/bora-windows-x86_64.zip",
+          "sha256": "e342edd122962e546b2dcd15b4ecd7b3ad2310ed0508dae971ef76179b6e2623",
+          "format": "zip"
+        }
+      }
+    },
     "2026-08-19-b5c4a0176e91": {
       "base_version": "0.8.2",
       "commit": "b5c4a0176e9183924df552eb8aecb94ed5f9e732",

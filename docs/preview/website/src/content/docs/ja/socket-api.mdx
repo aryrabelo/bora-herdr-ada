@@ -646,6 +646,28 @@ worktree のイベント購読には `worktree.created`、`worktree.opened`、`w
 
 ライフサイクルイベントには `events.subscribe` を使ってください。ワンショットの wait がサポートされる場合、専用の wait ヘルパーが別途ドキュメント化されます。
 
+## GitHub データ
+
+`[github] enabled = true`(デフォルト)のとき、Herdr はリポジトリごとに現在のユーザーの未クローズなプルリクエストをバックグラウンドで定期的に取得します。issue はオンデマンドで取得されます。`github.pulls.list` と `github.issues.list` は、このキャッシュ済みデータをソケット API 経由で公開します。
+
+すべてのリポジトリの未クローズな PR を一覧表示します:
+
+```json
+{"id":"req_1","method":"github.pulls.list","params":{}}
+```
+
+特定のリポジトリ識別子で絞り込みます:
+
+```json
+{"id":"req_1","method":"github.pulls.list","params":{"repo_identity":"github.com/owner/repo"}}
+```
+
+各レスポンスは `repos` 配列を返します。各リポジトリのエントリには `repo_identity`、`number`・`title`・`url` を持つ `prs`(または `issues`)配列、PR の場合はさらに `head_ref_name` と `is_draft` が含まれます。そのリポジトリで `gh` CLI が失敗した場合は、任意の `error` フィールドが追加されます。キャッシュされたデータがない場合、`repos` は空の配列になります。
+
+`github.prs_refreshed` と `github.issues_refreshed` を購読すると、バックグラウンド更新が完了したときに通知を受け取れます。各イベントには、更新された `repo_identity` が含まれます。
+
+`github.pr_opened` は、bora が worktree のブランチに対してプルリクエストを開くことに成功した際に一度だけ発行されます。上記のポーリング型のリフレッシュイベントとは異なり、次回の定期リフレッシュを待たず、作成時点で即座にプッシュされます。イベントには `branch`、PR の `url`、`repo_identity`、影響を受けた `workspace_ids` が含まれます。`workspace_ids` には同じリポジトリに属するワークスペースのみが含まれます。複数のリポジトリを同時に開いている場合、ブランチ名だけではワークスペースを一意に特定できないためです。これは bora 自身が開いた PR のみを対象としており、エージェントのペイン内で直接 `gh` を実行して開いた PR は対象になりません。
+
 ## ペインの読み取り
 
 プロトコルクライアントを書いているのでなければ、CLI 経由で `pane.read` を使ってください。

@@ -289,6 +289,9 @@ overlay over the active pane and restores the previous focus and zoom when it
 closes. A `plugin.pane.open` request can override the manifest placement with
 `overlay`, `popup`, `split`, `tab`, or `zoomed`.
 
+A `placement = "tab"` pane opens a new tab labeled with the manifest pane's
+`title`, so a plugin does not need to rename the tab after opening it.
+
 `placement = "popup"` opens a session-modal terminal popup without changing the
 tiled layout. It accepts optional `width` and `height` fields in the manifest or
 open request; omit them for the default half-size popup, use numbers for outer

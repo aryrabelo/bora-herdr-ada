@@ -612,6 +612,24 @@
           "type": "string",
           "default": "unset",
           "description": "Modifier combo for agent shortcuts 1-9. Unset by default."
+        },
+        {
+          "key": "keys.toggle_right_panel",
+          "type": "string",
+          "default": "unset",
+          "description": "Keybinding that toggles the right panel (Changes / Checks / Issues / PRs) open or closed."
+        },
+        {
+          "key": "keys.cycle_view_mode",
+          "type": "string",
+          "default": "unset",
+          "description": "Keybinding that cycles the sidebar view mode: flat -> repo -> project -> flat. Same thing the view-mode label on the sidebar's workspace header toggles when clicked."
+        },
+        {
+          "key": "keys.chat",
+          "type": "string",
+          "default": "\"prefix+i\"",
+          "description": "Open the chat view."
         }
       ]
     },
@@ -828,6 +846,22 @@
           "description": "Complete Agent-row overrides keyed by strict canonical agent id. Agents without an override use ui.sidebar.agents.rows."
         },
         {
+          "key": "ui.sidebar.project.glyph_style",
+          "type": "enum",
+          "default": "unicode",
+          "description": "Glyph set for the Project view state cluster (branch/ahead/behind/dirty/staged/PR icons). unicode works on any terminal; nerd_font uses private-use-area glyphs that need a patched font (Ghostty ships one built-in).",
+          "values": [
+            "unicode",
+            "nerd_font"
+          ]
+        },
+        {
+          "key": "ui.sidebar.project.row_gap",
+          "type": "integer",
+          "default": "1",
+          "description": "Blank terminal rows between workspace blocks in the Project sidebar view. Set to 0 to pack rows."
+        },
+        {
           "key": "ui.sidebar.spaces.row_gap",
           "type": "integer",
           "default": "0",
@@ -844,6 +878,59 @@
           "type": "color",
           "default": "\"cyan\"",
           "description": "Accent color for highlights, borders, and navigation UI. Accepts hex (#89b4fa), named colors (cyan, blue), or RGB (rgb(137,180,250))."
+        },
+        {
+          "key": "ui.view_mode",
+          "type": "enum",
+          "default": "\"repo\"",
+          "description": "How the sidebar groups workspaces. \"repo\" groups them by repository (the default). \"flat\" shows one flat list that can be freely drag-reordered — repo, channel, and visual groups all dissolve, and switching back regroups automatically. \"project\" groups them by declared project (projects.yml); until the project entry model lands it renders like \"repo\". Replaces the retired boolean ui.group_workspaces_by_repo, which is still accepted as an alias: false means \"flat\", true means \"repo\".",
+          "values": [
+            "flat",
+            "repo",
+            "project"
+          ]
+        },
+        {
+          "key": "ui.show_pane_ids_on_pane_borders",
+          "type": "boolean",
+          "default": "false",
+          "description": "Lead each split pane border with its public pane id (`w26:p1`) so two panes running the same agent stay distinguishable."
+        },
+        {
+          "key": "ui.channel_group_name",
+          "type": "string",
+          "default": "\"channels\"",
+          "description": "Sidebar group that collects `#`-labelled channel workspaces. The grouping rule keys off the `#` label, never off this string."
+        },
+        {
+          "key": "ui.chat_view",
+          "type": "boolean",
+          "default": "false",
+          "description": "Enable the fork-only channel chat view (prefix+i). Bora fork addition; stays off unless explicitly enabled."
+        },
+        {
+          "key": "ui.chat_name",
+          "type": "string",
+          "default": "null",
+          "description": "Human display name in the channel chat view. `null` resolves to the OS username, then \"you\"."
+        },
+        {
+          "key": "ui.chat_open_on_mention",
+          "type": "boolean",
+          "default": "true",
+          "description": "Open the chat view automatically when an agent message addresses the human seat (`@<ui.chat_name>`) while the view is closed. Suppressed while the human is typing or mid-modal, falling back to the toast. Only meaningful when `chat_view` is on."
+        },
+        {
+          "key": "ui.channel_burst_messages",
+          "type": "number",
+          "default": "8",
+          "description": "channel.send burst damper: this many sends within `ui.channel_burst_window_secs` still record and event as normal, but stop bell-ing member panes (no agent.prompt fan-out, no protocol briefing). Mirrors orc's ORC_BURST_N. 0 disables the damper."
+        },
+        {
+          "key": "ui.channel_burst_window_secs",
+          "type": "number",
+          "default": "600",
+          "description": "Sliding window (seconds) for `ui.channel_burst_messages`. Mirrors orc's ORC_BURST_MIN. 0 disables the damper."
         }
       ]
     },
@@ -1178,6 +1265,48 @@
       ]
     },
     {
+      "id": "github",
+      "title": "GitHub",
+      "keys": [
+        {
+          "key": "github.enabled",
+          "type": "boolean",
+          "default": "true",
+          "description": "Enable background GitHub data fetches (open PRs, issues) via the gh CLI."
+        },
+        {
+          "key": "github.refresh_interval_secs",
+          "type": "integer",
+          "default": "120",
+          "description": "Seconds between periodic background open-PR refreshes. 0 falls back to the default interval."
+        }
+      ]
+    },
+    {
+      "id": "checks",
+      "title": "Checks",
+      "keys": [
+        {
+          "key": "checks.refresh_interval_secs",
+          "type": "integer",
+          "default": "30",
+          "description": "Seconds between periodic background PR/CI check-status refreshes, feeding the sidebar CHECKS section and the PR badges. 0 falls back to the default interval."
+        }
+      ]
+    },
+    {
+      "id": "flow",
+      "title": "Flow",
+      "keys": [
+        {
+          "key": "flow.command",
+          "type": "string",
+          "default": "unset",
+          "description": "Shell command template used to run a flow for a GitHub issue from the Issues tab. Placeholders: {issue} = owner/repo#N, {number} = N, {url} = issue URL, {repo} = absolute repo checkout path. Unset disables the action; a repo can override via [flow] in its .bora.toml."
+        }
+      ]
+    },
+    {
       "id": "remote",
       "title": "Remote",
       "keys": [
@@ -1254,6 +1383,24 @@
           "type": "boolean",
           "default": "false",
           "description": "While prefix mode is active, temporarily switch the host input source to an ASCII-capable mode so prefix commands are read as ASCII even when an IME is active, then restore the previous input source when prefix mode exits. On macOS this selects the ASCII-capable keyboard layout; on Windows it switches the IME to English (ASCII) input. Windows support is currently limited to the Korean IME; with an IME for any other language, the input source is left unchanged. macOS and Windows only; a no-op elsewhere and a best-effort no-op if the switch fails."
+        }
+      ]
+    },
+    {
+      "id": "agents",
+      "title": "Agents",
+      "keys": [
+        {
+          "key": "agents.default",
+          "type": "string",
+          "default": "\"omp\"",
+          "description": "Agent kind `bora agent --new` starts when the caller passes no `--kind`, keyed by canonical agent id. Must be a valid canonical agent label; an unknown id fails config load with the same error shape as an invalid `agents.commands` entry."
+        },
+        {
+          "key": "agents.commands",
+          "type": "table of strings",
+          "default": "{}",
+          "description": "Per-agent-kind override for the executable `bora agent start` types into the target pane's shell, keyed by canonical agent id (e.g. `omp`). Falls back to the built-in canonical executable name for any id without an override. Each value must be a single whitespace-free token; useful when an agent's normal command name is actually a local shell function or alias (for example a sandboxing wrapper) and you want a different one, e.g. `omp = \"omp-raw\"`."
         }
       ]
     }
