@@ -1,6 +1,6 @@
 [package]
 name = "bora"
-version = "0.45.20"
+version = "0.45.21"
 edition = "2021"
 build = "build.rs"
 description = "terminal workspace manager for AI coding agents"

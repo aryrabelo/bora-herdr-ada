@@ -3440,14 +3440,9 @@ mod tests {
             "fixture must actually emit a CHECKS band: {entries:?}"
         );
         for (idx, entry) in entries.iter().enumerate() {
-            let expected = if matches!(entry, WorkspaceListEntry::PaneDotsRow { .. }) {
-                2
-            } else {
-                1
-            };
             assert_eq!(
                 crate::ui::sidebar::entry_row_height(entry, &entries, idx, 0),
-                expected,
+                crate::ui::sidebar::expected_entry_height(&entries, idx),
                 "entry {idx}: {entry:?}"
             );
         }
@@ -3490,16 +3485,12 @@ mod tests {
             "fixture too small to exercise every variant: {entries:?}"
         );
         for (idx, entry) in entries.iter().enumerate() {
-            let expected = if matches!(entry, WorkspaceListEntry::PaneDotsRow { .. }) {
-                2
-            } else {
-                1
-            };
             assert_eq!(
                 crate::ui::sidebar::entry_row_height(entry, &entries, idx, 0),
-                expected,
-                "every Project-view row must stay height 1 except PaneDotsRow \
-                 (bora-79l F2, height 2), entry {idx}: {entry:?}"
+                crate::ui::sidebar::expected_entry_height(&entries, idx),
+                "every Project-view row must match the contracted height — \
+                 1, or 2 for a PaneDotsRow (bora-79l F2), or a padded \
+                 project band (R3) — entry {idx}: {entry:?}"
             );
         }
 
@@ -4385,20 +4376,13 @@ mod tests {
             .enumerate()
             .map(|(idx, entry)| crate::ui::sidebar::entry_row_height(entry, &entries, idx, 0))
             .sum();
-        let expected_total_height: u16 = entries
-            .iter()
-            .map(|e| {
-                if matches!(e, WorkspaceListEntry::PaneDotsRow { .. }) {
-                    2
-                } else {
-                    1
-                }
-            })
+        let expected_total_height: u16 = (0..entries.len())
+            .map(|idx| crate::ui::sidebar::expected_entry_height(&entries, idx))
             .sum();
         assert_eq!(
             total_height, expected_total_height,
-            "every row in this fixture is height 1 except PaneDotsRow \
-             (bora-79l F2, height 2): {entries:?}"
+            "every row in this fixture must match its contracted height \
+             (1, PaneDotsRow 2, padded project band R3): {entries:?}"
         );
 
         // Pass 2: visible-count agrees with the height pass.
@@ -4436,9 +4420,15 @@ mod tests {
         // NO hit area, which was correct only while the click path was
         // deliberately unwired — asserting it still is would now pin the row to
         // rendering and doing nothing.
+        // R3: index is not row — the project band above is taller than one
+        // row, so sum the contracted heights of everything before it.
+        let pr_row_y = body.y
+            + (0..pr_row_idx)
+                .map(|idx| crate::ui::sidebar::expected_entry_height(&entries, idx))
+                .sum::<u16>();
         let pr_area = project_rows
             .iter()
-            .find(|area| area.rect.y == body.y + pr_row_idx as u16)
+            .find(|area| area.rect.y == pr_row_y)
             .expect("the PrRow must get a hit area now that the click path exists");
         assert_eq!(
             pr_area.target,
@@ -4460,8 +4450,12 @@ mod tests {
             .expect("worktree row must still get a hit area");
         assert_eq!(
             worktree_area.rect.y,
-            body.y + worktree_idx as u16,
-            "the WorktreeRow's hit area must be pushed down by exactly the PrRow's row height"
+            body.y
+                + (0..worktree_idx)
+                    .map(|idx| crate::ui::sidebar::expected_entry_height(&entries, idx))
+                    .sum::<u16>(),
+            "the WorktreeRow's hit area must be pushed down by exactly the \
+             preceding rows' heights — the PrRow's included"
         );
 
         // Pass 4: render — the PR number and title text land at the PrRow's
@@ -4482,7 +4476,10 @@ mod tests {
                 .map(|col| terminal.backend().buffer()[(col, row)].symbol().to_string())
                 .collect()
         };
-        let render_y = crate::ui::sidebar::WORKSPACE_LIST_TOP_MARGIN_ROWS + pr_row_idx as u16;
+        let render_y = crate::ui::sidebar::WORKSPACE_LIST_TOP_MARGIN_ROWS
+            + (0..pr_row_idx)
+                .map(|idx| crate::ui::sidebar::expected_entry_height(&entries, idx))
+                .sum::<u16>();
         let text = row_text(render_y);
         assert!(
             text.contains('7') && text.contains("pr 7"),
@@ -5092,7 +5089,14 @@ mod tests {
                 .map(|col| terminal.backend().buffer()[(col, row)].symbol().to_string())
                 .collect()
         };
-        let l1_y = crate::ui::sidebar::WORKSPACE_LIST_TOP_MARGIN_ROWS + pane_dots_idx as u16;
+        // R3: the project band above this block is taller than one row,
+        // so the block's first row is the SUM of the preceding contracted
+        // heights, never the entry index (AGENTS.md: "an entry's index is
+        // not its buffer row").
+        let l1_y = crate::ui::sidebar::WORKSPACE_LIST_TOP_MARGIN_ROWS
+            + (0..pane_dots_idx)
+                .map(|idx| crate::ui::sidebar::expected_entry_height(&entries, idx))
+                .sum::<u16>();
         assert!(
             row_text(l1_y).contains("alpha"),
             "l1 must still render the block's name: {:?}",

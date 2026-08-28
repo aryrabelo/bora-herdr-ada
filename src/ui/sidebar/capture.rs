@@ -429,8 +429,29 @@ const FIXTURE_HEIGHT: u16 = 40;
 // mock; THIS const is the contract — P4-A compares against it and the
 // generated preview renders its alvo column from it, so they can never
 // drift apart.
+//
+// R3/R4 re-attribution (owner's inventory 2026-08-28, NOT a regression):
+// the blank row moved from BELOW the project band to ABOVE it. The band
+// now owns a padding row on each side of its text (`project_band_pads`),
+// painted in the band's own `surface0` fill so it reads as part of the
+// header; the old trailing blank between the band and its first `⎇` row
+// is gone — the owner called it "espaço indesejado". Before / after, rows
+// 00-03:
+//
+//   before                         after
+//   00 `                 project`  00 `                 project`
+//   01 ` Bora        8/8`          01 `` (band pad, surface0)
+//   02 ``            (plain gap)   02 ` Bora        8/8`
+//   03 ` ⎇ main …`                 03 `` (band pad, surface0)
+//                                  04 ` ⎇ main …`
+//
+// Every other row shifts down by one and is otherwise byte-identical, so
+// each remaining line-by-line assertion still holds exactly as written.
+// The anatomy HTML's "respiro após o grupo" is superseded here by the
+// owner's direct instruction; the mock still shows the old shape.
 
 const ALVO_CAPTURE: &str = r#"                                                 project
+
  Bora                                                8/8
 
  ⎇ main ··········································PR42 ✗
@@ -1285,7 +1306,11 @@ mod tests {
     #[test]
     fn alvo_const_shapes_the_contract() {
         let alvo = alvo_lines();
-        assert_eq!(alvo.len(), 36, "the alvo is exactly 36 rows: {alvo:#?}");
+        // 36 → 37: R3 gave the project band a padding row above its text
+        // (`project_band_pads`), and R4 removed the plain gap that used to
+        // follow it — a net +1. See the re-attribution note on
+        // `ALVO_CAPTURE` for the before/after rows.
+        assert_eq!(alvo.len(), 37, "the alvo is exactly 37 rows: {alvo:#?}");
         assert!(alvo[0].ends_with("project"), "row 00 is the view toggle");
         for anchor in ["Bora", "8/8", "hotfix/urgent", "COMANDO", "clippy"] {
             assert!(
@@ -1299,8 +1324,10 @@ mod tests {
                 "no alvo row may exceed the 56-column capture: {line:?}"
             );
         }
-        // Right-pinned clusters sit flush at column 56.
-        for i in [1, 3, 27, 31, 33] {
+        // Right-pinned clusters sit flush at column 56. Indices shifted
+        // +1 from [1, 3, 27, 31, 33] when R3's top band pad pushed every
+        // row below `project` down one — same rows, same contract.
+        for i in [2, 4, 28, 32, 34] {
             assert_eq!(
                 alvo[i].chars().count(),
                 56,

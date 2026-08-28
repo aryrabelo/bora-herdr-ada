@@ -1008,7 +1008,12 @@ fn entry_row_height(
         WorkspaceListEntry::BranchHeader { .. } => 1,
         WorkspaceListEntry::Workspace { .. } => 1,
         WorkspaceListEntry::HiddenHeader { .. } => 1,
-        WorkspaceListEntry::ProjectRow { .. } => 1,
+        // R3: the filled band grows by its padding rows, which belong to
+        // the header itself — `project_band_pads`' doc.
+        WorkspaceListEntry::ProjectRow { .. } => {
+            let (top, bottom) = project_band_pads(entries, idx);
+            1 + top + bottom
+        }
         WorkspaceListEntry::WorktreeRow { .. } => 1,
         WorkspaceListEntry::SectionRow { .. } => 1,
         WorkspaceListEntry::SectionHeader { .. } => 1,
@@ -1027,6 +1032,72 @@ fn entry_row_height(
     base + project_view_trailing_gap(entry, entries, idx, row_gap)
 }
 
+/// Padding rows inside a project header's filled band (R3, owner's
+/// inventory 2026-08-28): one blank BAND-COLORED row above the first
+/// header of a run and one below the last, none between siblings.
+///
+/// Consecutive `ProjectRow`s render as ONE continuous band (the owner's
+/// screenshot: `CI-RUNNERS`/`DOTFILES` and `MUIRAQUITA`/`BORA` each read
+/// as a single block), so padding every row would slice that band into
+/// separate stripes — the padding belongs to the BAND, not to the row.
+///
+/// Returned as a pair rather than baked into either consumer because
+/// three passes need it: `entry_row_height` for the height, the renderer
+/// to place the text line, and `compute_workspace_list_areas` to size the
+/// hit rect. It is derived purely from `entries`/`idx` — data all three
+/// already hold — so they cannot disagree (AGENTS.md: "a derived column
+/// must be anchored to data both passes share").
+fn project_band_pads(entries: &[WorkspaceListEntry], idx: usize) -> (u16, u16) {
+    if !matches!(
+        entries.get(idx),
+        Some(WorkspaceListEntry::ProjectRow { .. })
+    ) {
+        return (0, 0);
+    }
+    let top = u16::from(!matches!(
+        idx.checked_sub(1).and_then(|prev| entries.get(prev)),
+        Some(WorkspaceListEntry::ProjectRow { .. })
+    ));
+    let bottom = u16::from(!matches!(
+        entries.get(idx + 1),
+        Some(WorkspaceListEntry::ProjectRow { .. })
+    ));
+    (top, bottom)
+}
+
+/// The row height a Project-view entry is CONTRACTED to have, restated
+/// independently of `entry_row_height` so the lockstep tests that call it
+/// still assert something.
+///
+/// Several tests used to hardcode "1, except `PaneDotsRow` is 2"; R3 made
+/// a third shape (the padded project band) and broke all of them at once,
+/// which is the signal that the expectation wanted one owner. Deriving it
+/// from `project_band_pads` would be a tautology — the helper under test
+/// would supply its own expected value — so the neighbour walk is spelled
+/// out again here on purpose. Two statements of one rule that must agree
+/// IS the test.
+#[cfg(test)]
+pub(crate) fn expected_entry_height(entries: &[WorkspaceListEntry], idx: usize) -> u16 {
+    match entries.get(idx) {
+        Some(WorkspaceListEntry::PaneDotsRow { dots, .. }) => {
+            if *dots {
+                2
+            } else {
+                1
+            }
+        }
+        // R3: one pad row per band EDGE — 3 alone, 2 touching one
+        // sibling, 1 between two.
+        Some(WorkspaceListEntry::ProjectRow { .. }) => {
+            let is_band =
+                |i: usize| matches!(entries.get(i), Some(WorkspaceListEntry::ProjectRow { .. }));
+            let above = idx > 0 && is_band(idx - 1);
+            3 - u16::from(above) - u16::from(is_band(idx + 1))
+        }
+        _ => 1,
+    }
+}
+
 /// Trailing blank-row discipline for Project view (bora-c1h G7, T7
 /// bora-79l divergence C, T6 6a the group shape). Two rules:
 ///
@@ -1043,12 +1114,14 @@ fn entry_row_height(
 ///   exception) suppresses the gap too: the hidden header still owns a
 ///   row and paints nothing, so that row already IS the separator — a
 ///   gap on top of it was the doubled blank the owner pointed at.
-/// - After a `ProjectRow` (6a): one blank "respiro" between the group
-///   header and its first content (ALVO_CAPTURE row 02, the anatomy's
-///   "Section · tipo LIVRE — respiro após o grupo"). Fires before a
-///   section header or a band header, never before another project,
-///   the unopened rows' boundary implied by their own separator rule,
-///   or the end of a collapsed group (nothing was pushed below).
+/// - After a `ProjectRow`: NOTHING. 6a gave the band a trailing blank
+///   "respiro" (ALVO_CAPTURE row 02, the anatomy's "Section · tipo LIVRE
+///   — respiro após o grupo"); the owner ruled it out on 2026-08-28 ("tem
+///   esse espaço aí que é espaço indesejado, eu não quero"), in the same
+///   breath as asking for R3's padding. The two are one decision: the
+///   breathing room moves INSIDE the filled band, where it reads as part
+///   of the header, instead of sitting between the band and its first
+///   row, where it read as a hole. See `project_band_pads`.
 ///
 /// Attribution: before T7 the gap fired after EVERY block; before
 /// bora-c1h G7 `PaneRow` could repeat N times per workspace, so the gap
@@ -1064,11 +1137,7 @@ fn project_view_trailing_gap(
     row_gap: u16,
 ) -> u16 {
     if matches!(entry, WorkspaceListEntry::ProjectRow { .. }) {
-        return match entries.get(idx + 1) {
-            Some(WorkspaceListEntry::SectionRow { .. })
-            | Some(WorkspaceListEntry::SectionHeader { .. }) => row_gap,
-            _ => 0,
-        };
+        return 0;
     }
     let WorkspaceListEntry::PaneDotsRow { .. } = entry else {
         return 0;
@@ -1718,11 +1787,25 @@ fn pane_dots_columns(
 /// single-line row dimmed this name because it shared a row with the
 /// (louder) dots; split onto its own line, it reads at the same weight the
 /// branch glyph does — "a parte importante não some", inclusive parado.
-fn pane_dots_name_line(name: &str, p: &Palette, width: u16) -> Line<'static> {
+///
+/// R1 (owner's inventory 2026-08-28): `waiting` paints the WHOLE name
+/// yellow+BOLD. Until 0.45.6 the name line carried this and the owner used
+/// it to find the window that wanted him; the 2026-08-27 R1 color budget
+/// stripped yellow from every git-plumbing marker to protect the one red
+/// that matters, and took this with it. It comes back in the ONE meaning
+/// the budget reserves yellow for — "esperando VOCÊ" — so it agrees with
+/// `pane_dots_dot_glyph`'s `(Blocked, false)` bullet by construction
+/// rather than by coincidence: same condition, same hue.
+fn pane_dots_name_line(name: &str, waiting: bool, p: &Palette, width: u16) -> Line<'static> {
     let avail = width.saturating_sub(PANE_DOTS_INDENT) as usize;
+    let style = if waiting {
+        Style::default().fg(p.yellow).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(p.overlay1)
+    };
     Line::from(vec![
         Span::styled(" ".repeat(PANE_DOTS_INDENT as usize), Style::default()),
-        Span::styled(truncate_end(name, avail), Style::default().fg(p.overlay1)),
+        Span::styled(truncate_end(name, avail), style),
     ])
 }
 
@@ -2812,8 +2895,12 @@ fn workspace_list_areas_for_entries(
                 });
             }
             WorkspaceListEntry::ProjectRow { collapse_key, .. } => {
+                // R3: the pad rows are part of the header, so a click on
+                // them must hit the header — the rect spans the whole
+                // band, not just its text row.
+                let (top_pad, bottom_pad) = project_band_pads(entries, entry_idx);
                 project_rows.push(ProjectRowHitArea {
-                    rect: Rect::new(body.x, row_y, body.width, 1),
+                    rect: Rect::new(body.x, row_y, body.width, 1 + top_pad + bottom_pad),
                     target: ProjectRowTarget::Project {
                         collapse_key: collapse_key.clone(),
                     },
@@ -3697,6 +3784,17 @@ fn render_workspace_list(
                 collapse_key,
                 ..
             } => {
+                // R3: the band is padded, so it spans more than this one
+                // row — fill every row it owns and draw the text below
+                // the top pad. `project_band_pads` is the shared anchor
+                // `entry_row_height` and the hit-area pass also read.
+                let (top_pad, bottom_pad) = project_band_pads(&entries, entry_idx);
+                let text_y = row_y.saturating_add(top_pad);
+                let band_end = row_y
+                    .saturating_add(1)
+                    .saturating_add(top_pad)
+                    .saturating_add(bottom_pad)
+                    .min(list_bottom);
                 if row_y < list_bottom {
                     // Slightly-lighter-than-background row fill (owner's
                     // ask, item 3c): `p.surface0` is the smallest lightness
@@ -3711,17 +3809,22 @@ fn render_workspace_list(
                     // make a plain project header look like one of those
                     // states. This background also now carries the visual
                     // weight `project_row_line`'s name span dropped BOLD
-                    // for (item 6).
+                    // for (item 6), and after R3 it is what makes the pad
+                    // rows read as part of the header rather than as a gap.
                     let buf = frame.buffer_mut();
-                    for x in body.x..body.x + body.width {
-                        buf[(x, row_y)].set_style(Style::default().bg(p.surface0));
+                    for y in row_y..band_end {
+                        for x in body.x..body.x + body.width {
+                            buf[(x, y)].set_style(Style::default().bg(p.surface0));
+                        }
                     }
+                }
+                if text_y < list_bottom {
                     let collapsed = app.collapsed_space_keys.contains(collapse_key);
                     frame.render_widget(
                         Paragraph::new(project_row_line(
                             name, *live, *total, collapsed, p, body.width,
                         )),
-                        Rect::new(body.x, row_y, body.width, 1),
+                        Rect::new(body.x, text_y, body.width, 1),
                     );
                 }
             }
@@ -3926,13 +4029,26 @@ fn render_workspace_list(
                     }
                 }
                 if let Some(ws) = app.workspaces.get(*ws_idx) {
+                    // One `pane_details` call for the whole block, read by
+                    // BOTH lines: l1's R1 attention tint and l2's dots.
+                    // Resolved here rather than carried on the entry
+                    // (`PaneDotsRow`'s doc); hoisting it above l1 keeps it
+                    // at one call per row even though two lines now need
+                    // it — this runs per render × per pane × per client.
+                    let details = ws.pane_details(&app.terminals);
+                    // R1: "esperando VOCÊ" is a pane that stopped and has
+                    // not been looked at — the exact condition
+                    // `pane_dots_dot_glyph` paints its yellow bullet for.
+                    let waiting = details
+                        .iter()
+                        .any(|d| matches!(d.state, AgentState::Blocked) && !d.seen);
                     // L1: the workspace name (bora-79l F2 —
                     // `pane_dots_name_line`'s doc, ALVO_CAPTURE rows 04/28;
                     // T7 divergence A removed the diff slot this carried).
                     // No state glyph ever lands here.
                     if row_y < list_bottom {
                         frame.render_widget(
-                            Paragraph::new(pane_dots_name_line(name, p, body.width)),
+                            Paragraph::new(pane_dots_name_line(name, waiting, p, body.width)),
                             Rect::new(body.x, row_y, body.width, 1),
                         );
                         if show_active_marker {
@@ -3947,8 +4063,9 @@ fn render_workspace_list(
                     }
                     // L2: one dot per pane. Live state per dot, resolved
                     // here rather than carried on the entry (`PaneDotsRow`'s
-                    // doc) — one `pane_details` call for the whole row, not
-                    // one per dot, so this stays cheaper than the old
+                    // doc) — one `pane_details` call for the whole block,
+                    // hoisted above l1 and shared with it, not one per dot
+                    // — so this stays cheaper than the old
                     // per-`PaneRow` render path it replaces (which called
                     // `pane_details` once PER PANE). T6 6b: skipped
                     // entirely when `dots` is off — there is no l2 row.
@@ -3956,7 +4073,6 @@ fn render_workspace_list(
                         let dots_row_y = row_y.saturating_add(1);
                         if dots_row_y < list_bottom {
                             let columns = pane_dots_columns(ws, body.width);
-                            let details = ws.pane_details(&app.terminals);
                             let dots: Vec<(&'static str, Style)> = columns
                                 .iter()
                                 .map(|(pane_id, _number, _column)| {
@@ -9555,7 +9671,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
     #[test]
     fn pane_dots_name_line_never_contains_a_repo_name() {
         let p = Palette::catppuccin();
-        let text = line_text(&pane_dots_name_line("agent-x", &p, 40));
+        let text = line_text(&pane_dots_name_line("agent-x", false, &p, 40));
 
         assert!(text.contains("agent-x"));
         assert!(!text.contains("cnb_landing_page"));
@@ -9568,7 +9684,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
         // colors it `overlay1` (the same as `⎇`), and never draws a state
         // glyph — every pane's state is l2's payload.
         let p = Palette::catppuccin();
-        let line = pane_dots_name_line("main", &p, 40);
+        let line = pane_dots_name_line("main", false, &p, 40);
         let text = line_text(&line);
         assert_eq!(
             text.find('m'),
@@ -9953,14 +10069,20 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
     }
 
     #[test]
-    fn pane_dots_name_stays_overlay1_and_undimmed_in_every_pane_state() {
+    fn pane_dots_name_is_never_dimmed_and_is_yellow_only_when_waiting() {
         // T2 contract item 1: "NUNCA esmaecido/dim — inclusive com painel
         // parado (a parte importante não some)". Renders the real block
         // under every reachable (state, seen) combo and pins the name
         // cells' fg AND the absence of DIM on the RENDERED buffer — not on
-        // a hand-built Line. Fica vermelho se qualquer estado voltar a
-        // esmaecer o nome (o comportamento da linha única antiga) ou trocar
-        // a cor do nome por outra que não o overlay1 do rótulo de branch.
+        // a hand-built Line.
+        //
+        // R3/R1 re-attribution (owner's inventory 2026-08-28): was
+        // `..._stays_overlay1_and_undimmed_in_every_pane_state`, which
+        // pinned overlay1 in EVERY state. `Blocked`+unseen — "esperando
+        // VOCÊ" — is now yellow+BOLD, the 0.45.6 behaviour the owner uses
+        // to find the window that wants him; every other state keeps
+        // overlay1. The DIM half of the contract is untouched and still
+        // asserted across all six combos, which is the half T2 was about.
         let p = Palette::catppuccin();
         for (state, seen) in [
             (AgentState::Working, true),
@@ -9993,10 +10115,16 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
             let name_len = "alvo-ws".len();
             for x in name_col..name_col + name_len {
                 let cell = &buffer[(x as u16, l1_y)];
+                let expected_fg = if matches!(state, AgentState::Blocked) && !seen {
+                    p.yellow
+                } else {
+                    p.overlay1
+                };
                 assert_eq!(
-                    cell.fg, p.overlay1,
-                    "fica vermelho se o nome deixar de ser overlay1 em \
-                     {state:?}+seen={seen} (col {x}): {l1:?}"
+                    cell.fg, expected_fg,
+                    "R1: o nome é amarelo só em Blocked+unseen (esperando \
+                     VOCÊ) e overlay1 no resto — {state:?}+seen={seen} \
+                     (col {x}): {l1:?}"
                 );
                 assert!(
                     !cell.modifier.contains(Modifier::DIM),
@@ -10058,7 +10186,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
         // voltar à l1 (a render arm voltando a passá-lo ou o builder o
         // aceitando de novo).
         let p = Palette::catppuccin();
-        let text = line_text(&pane_dots_name_line("hotfix", &p, 40));
+        let text = line_text(&pane_dots_name_line("hotfix", false, &p, 40));
         assert_eq!(
             text.trim_end(),
             "   hotfix",
@@ -10158,13 +10286,21 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
             "Project-view rows are not group headers"
         );
         assert_eq!(project_rows.len(), entries.len());
+        // R3 re-attribution: rows are no longer uniformly 1 tall, so the
+        // walk accumulates the contracted heights instead of assuming
+        // `body.y + i`. A lone project band is 3 (text plus a pad row on
+        // each side) and its hit rect covers the whole band — clicking
+        // the padding must hit the header, since the padding IS the
+        // header's fill.
+        let mut expected_y = body.y;
         for (i, area) in project_rows.iter().enumerate() {
-            assert_eq!(area.rect.height, 1, "every Project-view row is height 1");
+            let expected_height = expected_entry_height(&entries, i);
             assert_eq!(
-                area.rect.y,
-                body.y + i as u16,
-                "rows must not overlap or skip"
+                area.rect.height, expected_height,
+                "row {i} must claim exactly the rows it owns"
             );
+            assert_eq!(area.rect.y, expected_y, "rows must not overlap or skip");
+            expected_y += expected_height;
         }
         assert_eq!(
             project_rows[0].target,
