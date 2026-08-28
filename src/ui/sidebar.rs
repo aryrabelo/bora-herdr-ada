@@ -870,6 +870,14 @@ pub(crate) enum WorkspaceListEntry {
         /// T3: `SectionParts.diff` from the same model lookup — gates the
         /// `+N −M` diff numbers inside the header's state cluster.
         show_diff: bool,
+        /// T7 (bora-79l, divergence C): the branch-GROUP key
+        /// (`project_view::branch_group_key` — repo identity + branch).
+        /// `project_view_trailing_gap` compares it across consecutive
+        /// sections to place the blank separator row: blank BETWEEN branch
+        /// groups (and before a band header), never between sibling
+        /// workspaces of one branch (ALVO_CAPTURE rows 04-07 are glued,
+        /// row 08 is blank).
+        branch_group: String,
     },
     /// Third level: a `COMMANDS` or `CHECKS` band hanging off a worktree,
     /// with a right-aligned `done/total`. Emitted only when non-empty, in
@@ -988,18 +996,30 @@ fn entry_row_height(
     base + project_view_trailing_gap(entry, entries, idx, row_gap)
 }
 
-/// Trailing gap after a `PaneDotsRow` (bora-c1h G7, updated for the
-/// Project-view row-shape rework): one blank row between sibling workspace
-/// sections, never right before the next project's `ProjectRow`, never
+/// Trailing gap after a `PaneDotsRow` (bora-c1h G7, T7 bora-79l
+/// divergence C): a blank row separates the END of a branch GROUP (or the
+/// last group, before a band) from the next header — never sibling
+/// workspaces of one branch (ALVO_CAPTURE: rows 04-07 glued, row 08
+/// blank), never right before the next project's `ProjectRow`, never
 /// after the final block in the list.
 ///
-/// Attribution: before this fix `PaneRow` could repeat N times per
-/// workspace, so the gap only applied after the LAST sibling `PaneRow` of a
-/// block — found by peeking the next entry for another `PaneRow` sharing
-/// `ws_idx`. `PaneDotsRow` now replaces that whole block with exactly ONE
-/// row per open workspace, so every `PaneDotsRow` IS its own block's last
-/// (and only) row; the "is this the last pane of its block" check is gone
-/// because there is no longer a block to be last of.
+/// "Same group" is decided by `SectionRow::branch_group` (repo identity +
+/// branch): a `PaneDotsRow`'s own group is the `SectionRow` immediately
+/// above it (`push_worktree` always emits the pair adjacently — T7 moved
+/// the bands out, so nothing else can sit between), and the gap fires
+/// only when the NEXT `SectionRow` belongs to a different group, or the
+/// next entry is a band header / unopened worktree row. A next section
+/// whose header is HIDDEN (same-branch exception) suppresses the gap
+/// too: the hidden header still owns a row and paints nothing, so that
+/// row already IS the separator — a gap on top of it was the doubled
+/// blank the owner pointed at.
+///
+/// Attribution: before T7 the gap fired after EVERY block (and the hidden
+/// upper headers of same-branch siblings made it read as double blank in
+/// places); before bora-c1h G7 `PaneRow` could repeat N times per
+/// workspace, so the gap only applied after the LAST sibling `PaneRow`
+/// of a block. `PaneDotsRow` is always exactly one block per workspace,
+/// so both old "last of block" checks are gone.
 ///
 /// `entry_row_height`'s own `entries`/`idx` peek (its doc) is exactly what
 /// this needs, so the three lockstep passes stay in agreement by
@@ -1013,9 +1033,27 @@ fn project_view_trailing_gap(
     let WorkspaceListEntry::PaneDotsRow { .. } = entry else {
         return 0;
     };
+    let own_group = match entries.get(idx.wrapping_sub(1)) {
+        Some(WorkspaceListEntry::SectionRow { branch_group, .. }) => branch_group.as_str(),
+        // A PaneDotsRow with no SectionRow right above it cannot happen
+        // (the emitter's pair rule, above); treat it as its own group so
+        // the conservative outcome is a separator, never a glue.
+        _ => "",
+    };
     match entries.get(idx + 1) {
         None => 0,
         Some(WorkspaceListEntry::ProjectRow { .. }) => 0,
+        // A hidden header (same-branch exception) paints nothing — its
+        // OWNED row already IS the blank separator, so the gap would
+        // double it (T7 divergence C: "hoje há branco dobrado em alguns
+        // lugares" was exactly gap + hidden-header row).
+        Some(WorkspaceListEntry::SectionRow {
+            header_hidden: true,
+            ..
+        }) => 0,
+        Some(WorkspaceListEntry::SectionRow {
+            branch_group: next, ..
+        }) if next == own_group => 0,
         _ => row_gap,
     }
 }
@@ -1061,8 +1099,11 @@ fn project_row_trailing(
     Line::from(spans)
 }
 
-/// Top-level Project-view row: an optional chevron, project name, `n/m`
-/// (live/total workspaces) right-aligned. See `WorkspaceListEntry::ProjectRow`.
+/// Top-level Project-view row: one leading gutter column, an optional
+/// chevron, project name, `n/m` (live/total workspaces) right-aligned.
+/// See `WorkspaceListEntry::ProjectRow`. T7 (bora-79l, divergence F): the
+/// title renders ` Bora` with one leading space (ALVO_CAPTURE row 01) —
+/// the same single gutter column every other Project-view row starts with.
 ///
 /// Chevron only when CLOSED (owner's later ask, on top of ground-truth
 /// re-approval's original "no chevron at all"): an expanded group already
@@ -1087,7 +1128,8 @@ pub(crate) fn project_row_line(
     width: u16,
 ) -> Line<'static> {
     let counter = format!(" {live}/{total}");
-    let mut spans = Vec::new();
+    // T7 divergence F: the 1-column gutter every Project-view row shares.
+    let mut spans = vec![Span::styled(" ", Style::default())];
     if collapsed {
         spans.push(Span::styled(
             format!("{} ", project_chevron(true)),
@@ -1250,8 +1292,10 @@ fn capped_count(n: usize) -> String {
 }
 
 /// T3 (bora-79l): the DECLARED branch header of a sessions `Section` —
-/// `⎇ main ········································ PR42 ✗` (the
-/// ALVO_CAPTURE rows 03/09/15/19/23/27 contract). Slot order is fixed:
+/// `⎇ main ········································PR42 ✗` (the
+/// ALVO_CAPTURE rows 03/09/15/19/23/27 contract; T7 divergence B: the
+/// cluster sits FLUSH against the leader — no space after the last dot).
+/// Slot order is fixed:
 /// `[⌗ linked-worktree marker] [⎇ branch label] [dotted leader]
 /// [state cluster]` — no chevron (collapse belongs to the folder,
 /// `ProjectRow`) and no workspace/repo name slot: the name lives on the
@@ -1298,46 +1342,65 @@ pub(crate) fn section_row_line(
     // ellipsizes before the cluster ever loses a cell — never the
     // reverse.
     let mut trailing: Vec<Span<'static>> = Vec::new();
+    // T7 (bora-79l, divergence B): the cluster sits FLUSH against the
+    // dotted leader — a separator space exists only BETWEEN cluster
+    // elements, never before the first (ALVO_CAPTURE rows 03/27:
+    // `·····PR42 ✗`, `····+916 −2 ↑2 ↓1`). Nested so the push sites
+    // below cannot forget the rule.
+    fn push_cluster(trailing: &mut Vec<Span<'static>>, span: Span<'static>) {
+        if !trailing.is_empty() {
+            trailing.push(Span::styled(" ", Style::default()));
+        }
+        trailing.push(span);
+    }
     if let Some((added, removed)) = diff {
-        trailing.push(Span::styled(" ", Style::default()));
         // U+2212 MINUS SIGN, matching ALVO_CAPTURE's `+916 −2` byte for
         // byte; NOT capped like ahead/behind — the alvo itself pins +916.
-        trailing.push(Span::styled(
-            format!("+{added} −{removed}"),
-            Style::default().fg(p.overlay1),
-        ));
+        push_cluster(
+            &mut trailing,
+            Span::styled(
+                format!("+{added} −{removed}"),
+                Style::default().fg(p.overlay1),
+            ),
+        );
     }
     if ahead > 0 {
-        trailing.push(Span::styled(" ", Style::default()));
         // R1 gray, not green: in the owner's color budget green means
         // "answered/ready" (a pane state). Ahead-of-origin is git
         // plumbing, and spending a loud hue on it would bury the one red
         // that matters (a failing check).
-        trailing.push(Span::styled(
-            format!("{}{}", glyphs.ahead, capped_count(ahead)),
-            Style::default().fg(p.overlay1),
-        ));
+        push_cluster(
+            &mut trailing,
+            Span::styled(
+                format!("{}{}", glyphs.ahead, capped_count(ahead)),
+                Style::default().fg(p.overlay1),
+            ),
+        );
     }
     if behind > 0 {
-        trailing.push(Span::styled(" ", Style::default()));
         // Gray for the same R1 reason the old yellow is gone: being
         // behind origin is a nudge, not a failure, and it must not
         // compete with a real ✗.
-        trailing.push(Span::styled(
-            format!("{}{}", glyphs.behind, capped_count(behind)),
-            Style::default().fg(p.overlay1),
-        ));
+        push_cluster(
+            &mut trailing,
+            Span::styled(
+                format!("{}{}", glyphs.behind, capped_count(behind)),
+                Style::default().fg(p.overlay1),
+            ),
+        );
     }
     if let Some((pr, _tone)) = pr {
         // R1: the chip prints gray whatever its state — merged, draft,
         // closed, open. Red is reserved for a failing check (the ✗ glyph
         // after the chip), so `PR42` never shouts. The tone still rides
         // along because `show_checks` below keys on OPEN.
-        trailing.push(Span::styled(" ", Style::default()));
-        trailing.push(Span::styled(
-            format!("{}{pr}", glyphs.pr),
-            Style::default().fg(p.overlay1),
-        ));
+        push_cluster(
+            &mut trailing,
+            Span::styled(
+                format!("{}{pr}", glyphs.pr),
+                Style::default().fg(p.overlay1),
+            ),
+        );
     }
     // Checks glyph has a single owner (repo rule: `run_state` in
     // `workspace/git/check_status.rs` is the only source of a check's
@@ -1346,7 +1409,9 @@ pub(crate) fn section_row_line(
     // what counts as passing. This is the ONE place in the cluster where
     // red may appear (a real failing check). The glyph only accompanies
     // an OPEN chip (or no chip at all): for merged/closed/draft the CI
-    // state is moot and the chip already carries the state.
+    // state is moot and the chip already carries the state. The baked-in
+    // leading space is trimmed here — `push_cluster` owns all spacing
+    // (T7, divergence B).
     let show_checks = match pr {
         Some((_, tone)) => tone == PrChipTone::Open,
         None => true,
@@ -1354,7 +1419,7 @@ pub(crate) fn section_row_line(
     if show_checks {
         if let Some(rollup) = checks {
             let (glyph, style) = checks_rollup_glyph(rollup, p);
-            trailing.push(Span::styled(glyph, style));
+            push_cluster(&mut trailing, Span::styled(glyph.trim_start(), style));
         }
     }
 
@@ -1390,10 +1455,11 @@ pub(crate) fn section_row_line(
     }
     if trailing_width > 0 {
         // Dotted leader (T3 decision 3): `·` in surface1 — the same
-        // connective colour the band headers' `─` ruler uses — running
-        // from the label to the cluster. It exists ONLY when a cluster
-        // does; with no cluster there is nothing to lead to, and the row
-        // stays as short as its content.
+        // connective colour the band headers' own `·` leader uses (T7) —
+        // running from the label to the cluster and ending FLUSH against
+        // its first element. It exists ONLY when a cluster does; with no
+        // cluster there is nothing to lead to, and the row stays as short
+        // as its content.
         spans.push(Span::styled(" ", Style::default()));
         let used: usize = spans
             .iter()
@@ -1438,10 +1504,14 @@ fn workspace_diff_counts(ws: &crate::workspace::Workspace) -> Option<(u32, u32)>
     (added > 0 || removed > 0).then_some((added, removed))
 }
 
-/// Third-level Project-view row: a `COMMANDS`/`CHECKS` band header — glyph,
-/// uppercase name, a `─` ruler filling the remaining width, then a
-/// right-aligned `done/total`. The ruler is load-bearing: without it the row
-/// reads as a plain label instead of a section.
+/// Third-level Project-view row: a `COMANDO`/`CHECKS` band header — glyph,
+/// uppercase name, a `·` dotted leader filling the remaining width, then a
+/// right-aligned `done/total` sitting FLUSH against the leader's last dot
+/// (T7 bora-79l, ALVO_CAPTURE rows 31/33: ` ≡ COMANDO ·····0/1`). The
+/// leader is load-bearing: without it the row reads as a plain label
+/// instead of a section; the `·` matches the branch headers' own leader
+/// and the indent is the single gutter column every Project-view row
+/// shares.
 pub(crate) fn section_header_line(
     kind: &'static SectionDescriptor,
     done: usize,
@@ -1451,13 +1521,14 @@ pub(crate) fn section_header_line(
 ) -> Line<'static> {
     // NOTES/PULL REQUESTS are plain lists, not a progress bar: show the
     // count, not a meaningless `0/N` — a declared field on the descriptor
-    // (`SectionCounter`) now, not a wildcard match (bora-by6 G6).
+    // (`SectionCounter`) now, not a wildcard match (bora-by6 G6). No
+    // leading space either way: the counter ends the leader flush (T7).
     let counter = match kind.counter {
-        SectionCounter::Count => format!(" {total}"),
-        SectionCounter::Progress => format!(" {done}/{total}"),
+        SectionCounter::Count => format!("{total}"),
+        SectionCounter::Progress => format!("{done}/{total}"),
     };
     let spans = vec![
-        Span::styled("    ", Style::default()),
+        Span::styled(" ", Style::default()),
         Span::styled(kind.glyph, Style::default().fg(p.overlay1)),
         Span::styled(" ", Style::default()),
         Span::styled(
@@ -1469,7 +1540,7 @@ pub(crate) fn section_header_line(
     project_row_trailing(
         spans,
         Span::styled(counter, Style::default().fg(p.overlay0)),
-        Some(('─', Style::default().fg(p.surface1))),
+        Some(('·', Style::default().fg(p.surface1))),
         width,
     )
 }
@@ -1495,7 +1566,7 @@ pub(crate) fn section_item_line(
         (_, false) => ("·", Style::default().fg(p.overlay0)),
     };
     let mut spans = vec![
-        Span::styled("      ", Style::default()),
+        Span::styled("   ", Style::default()),
         Span::styled(bullet, bullet_style),
         Span::styled(" ", Style::default()),
     ];
@@ -1584,45 +1655,22 @@ fn pane_dots_columns(
 /// L1 of a Project-view workspace's `PaneDotsRow` block (bora-79l F2,
 /// ALVO_CAPTURE rows 04/28): the workspace's own already-disambiguated
 /// unique name, indented to `PANE_DOTS_INDENT` and colored `overlay1` — the
-/// SAME color `⎇` uses on its `SectionRow` (gate G1) — with the workspace's
-/// uncommitted diff beside it (`+916 −2`, T2 contract item 1). No state
-/// glyph lands here; every pane's state is l2's payload
+/// SAME color `⎇` uses on its `SectionRow` (gate G1). T7 (bora-79l,
+/// divergence A) removed the `+N −M` diff this line carried since T2: no
+/// PaneDotsRow l1 ever carries a diff — the numbers live ONLY in the
+/// header's cluster (ALVO row 28 is bare `hotfix`, row 27 carries
+/// `+916 −2`), so the diff-width reservation went with it. No state glyph
+/// lands here either; every pane's state is l2's payload
 /// (`pane_dots_dots_line`). Deliberately NOT dim in any pane state: the old
 /// single-line row dimmed this name because it shared a row with the
 /// (louder) dots; split onto its own line, it reads at the same weight the
 /// branch glyph does — "a parte importante não some", inclusive parado.
-fn pane_dots_name_line(
-    name: &str,
-    diff: Option<(u32, u32)>,
-    p: &Palette,
-    width: u16,
-) -> Line<'static> {
-    let diff_spans: Vec<Span<'static>> = match diff {
-        // U+2212 MINUS SIGN, byte for byte the same `+916 −2` the branch
-        // header's cluster and ALVO_CAPTURE pin — never an ASCII hyphen.
-        // R1 keeps diff numbers gray: they are git plumbing, not a state.
-        Some((added, removed)) => vec![
-            Span::styled("  ", Style::default()),
-            Span::styled(
-                format!("+{added} −{removed}"),
-                Style::default().fg(p.overlay1),
-            ),
-        ],
-        None => Vec::new(),
-    };
-    // The diff reserves its width FIRST (the section-row cluster's own
-    // rule): a long name ellipsizes before the numbers ever lose a cell.
-    let diff_width: usize = diff_spans
-        .iter()
-        .map(|s| display_width(s.content.as_ref()))
-        .sum();
-    let avail = (width.saturating_sub(PANE_DOTS_INDENT) as usize).saturating_sub(diff_width);
-    let mut spans = vec![
+fn pane_dots_name_line(name: &str, p: &Palette, width: u16) -> Line<'static> {
+    let avail = width.saturating_sub(PANE_DOTS_INDENT) as usize;
+    Line::from(vec![
         Span::styled(" ".repeat(PANE_DOTS_INDENT as usize), Style::default()),
         Span::styled(truncate_end(name, avail), Style::default().fg(p.overlay1)),
-    ];
-    spans.extend(diff_spans);
-    Line::from(spans)
+    ])
 }
 
 /// L2 of a Project-view workspace's `PaneDotsRow` block (bora-79l F2,
@@ -3198,11 +3246,9 @@ fn render_workspace_list(
     // printed none). Indented child rows consult this so they never repeat
     // a branch the header directly above them already shows.
     let mut parent_branch: Option<String> = None;
-    // The `parts.diff` switch of the most recently visited `SectionRow`
-    // (true = the pre-model default, matching `section_model_flags`'s
-    // no-layout fallback). The paired `PaneDotsRow` reads it so l1's diff
-    // slot and the header's cluster obey ONE flag, never two derivations.
-    let mut section_show_diff = true;
+    // (T7, divergence A: the `parts.diff` ride-along this loop tracked for
+    // l1's diff slot died with the slot — the flag now gates only the
+    // `SectionRow` header cluster, read directly in that arm.)
 
     for (entry_idx, entry) in entries.iter().enumerate().skip(scroll) {
         let needed = entry_row_height(entry, &entries, entry_idx, app.sidebar_project.row_gap);
@@ -3635,14 +3681,10 @@ fn render_workspace_list(
                 show_diff,
                 ..
             } => {
-                // The section's `parts.diff` switch rides along to the
-                // paired `PaneDotsRow` below (T2): l1's `+N −M` slot obeys
-                // the SAME flag the header's cluster does, tracked here —
-                // not re-derived — so the two rows of one section can
-                // never disagree about whether the diff part is on.
-                // Tracked even when the header itself is hidden: the
-                // switch is a PART, independent of `header_on`.
-                section_show_diff = *show_diff;
+                // (T7, divergence A: this arm no longer tracks the
+                // `parts.diff` switch for the paired `PaneDotsRow` — l1
+                // lost its diff slot; the flag is read below for the
+                // header's own cluster only.)
                 // T3 (bora-79l): the header line renders only when the
                 // model's switch is ON and the same-branch exception has
                 // not hidden it. A hidden header still OWNS its row
@@ -3734,18 +3776,13 @@ fn render_workspace_list(
                     }
                 }
                 if let Some(ws) = app.workspaces.get(*ws_idx) {
-                    // L1: the workspace name + the section's diff part
-                    // (bora-79l F2/T2 — `pane_dots_name_line`'s doc,
-                    // ALVO_CAPTURE rows 04/28 and the "nome cinza claro +
-                    // diff" mock row). No state glyph ever lands here.
+                    // L1: the workspace name (bora-79l F2 —
+                    // `pane_dots_name_line`'s doc, ALVO_CAPTURE rows 04/28;
+                    // T7 divergence A removed the diff slot this carried).
+                    // No state glyph ever lands here.
                     if row_y < list_bottom {
-                        let diff = if section_show_diff {
-                            workspace_diff_counts(ws)
-                        } else {
-                            None
-                        };
                         frame.render_widget(
-                            Paragraph::new(pane_dots_name_line(name, diff, p, body.width)),
+                            Paragraph::new(pane_dots_name_line(name, p, body.width)),
                             Rect::new(body.x, row_y, body.width, 1),
                         );
                         if show_active_marker {
@@ -8308,11 +8345,14 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
         // hold. A collapsed group now gets a chevron back (owner's ask,
         // item 3b) that eats into the name's own budget rather than
         // padding out the fixed width, so the invariant is asserted in
-        // BOTH states here.
+        // BOTH states here. T7 (bora-79l, divergence F): the title starts
+        // with the 1-column gutter (` CNB`, ALVO_CAPTURE row 01) — fica
+        // vermelho se o nome voltar à coluna 0.
         let expanded = line_text(&project_row_line("CNB", 3, 4, false, &p, width));
         assert_eq!(display_width(&expanded), width as usize);
-        // bora-c1h G1: the hexagon is gone — the group name leads, underlined.
-        assert!(expanded.starts_with("CNB"));
+        // bora-c1h G1: the hexagon is gone — the gutter, then the group
+        // name, underlined.
+        assert!(expanded.starts_with(" CNB"));
         assert!(
             !expanded.contains('⬢'),
             "no hexagon on the group header: {expanded:?}"
@@ -8326,8 +8366,8 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
             "the width invariant holds with the caret too: {collapsed:?}"
         );
         assert!(
-            collapsed.starts_with("▸ CNB"),
-            "a collapsed group gets its caret back: {collapsed:?}"
+            collapsed.starts_with(" ▸ CNB"),
+            "a collapsed group gets its caret back, after the gutter: {collapsed:?}"
         );
         assert!(collapsed.ends_with("3/4"));
     }
@@ -8358,18 +8398,19 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
         let text = line_text(&section_header_line(&COMMANDS, 1, 3, &p, width));
 
         // Row is loaded exactly to `width`, not merely "wide enough" — a
-        // ruler/counter budget mismatch shows up as drift here.
+        // leader/counter budget mismatch shows up as drift here. T7
+        // (bora-79l): the leader is the same `·` the branch headers use
+        // and the counter sits FLUSH against its last dot (ALVO_CAPTURE
+        // row 31: ` ≡ COMANDO ·····0/1`) — fica vermelho se voltar o
+        // `─` ruler, o indent de 4, ou o espaço antes do contador.
         assert_eq!(display_width(&text), width as usize, "row: {text:?}");
         assert!(text.trim_end().ends_with("1/3"));
-        let dash_run = text.chars().filter(|&c| c == '─').count();
-        assert!(dash_run > 0, "ruler must exist: {text:?}");
-        // Cross-check the ruler length independently of the implementation's
-        // own arithmetic: known prefix + " 1/3" must account for every
-        // remaining column.
-        let prefix = "    ≡ COMMANDS ";
-        let counter = " 1/3";
-        let expected_dashes = width as usize - display_width(prefix) - display_width(counter);
-        assert_eq!(dash_run, expected_dashes, "row: {text:?}");
+        let dot_run = text.chars().filter(|&c| c == '·').count();
+        assert!(dot_run > 0, "dotted leader must exist: {text:?}");
+        let prefix = " ≡ COMANDO ";
+        let counter = "1/3";
+        let expected_dots = width as usize - display_width(prefix) - display_width(counter);
+        assert_eq!(dot_run, expected_dots, "row: {text:?}");
     }
 
     #[test]
@@ -8378,11 +8419,18 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
         let commands = line_text(&section_header_line(&COMMANDS, 0, 2, &p, 30));
         let checks = line_text(&section_header_line(&CHECKS, 2, 2, &p, 30));
 
-        assert!(commands.contains("COMMANDS"));
-        assert!(checks.contains("CHECKS"));
-        assert_ne!(commands.chars().nth(4), checks.chars().nth(4));
+        // T7 (bora-79l): this pinned that the two bands' glyphs differed
+        // (≡ vs ✓). ALVO_CAPTURE rows 31/33 pin `≡` for BOTH — the ✓ was
+        // an old rollup echo — so the pin flips: fica vermelho se CHECKS
+        // voltar a um glifo próprio (ou COMANDO perder o label novo);
+        // as linhas continuam distintas pelos labels.
+        assert!(commands.starts_with(" ≡ COMANDO"));
+        assert!(checks.starts_with(" ≡ CHECKS"));
+        assert_ne!(commands, checks);
     }
     #[test]
+    // T7 (bora-79l): counter flush against the `·` leader now — fica
+    // vermelho se o contador voltar com espaço à frente (` 2`).
     fn section_header_notes_shows_plain_count_not_a_progress_ratio() {
         let p = Palette::catppuccin();
         let notes = line_text(&section_header_line(&NOTES, 0, 2, &p, 30));
@@ -8390,8 +8438,8 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
 
         assert!(notes.contains("NOTES"));
         assert!(
-            notes.trim_end().ends_with(" 2"),
-            "doc count, no slash: {notes:?}"
+            notes.trim_end().ends_with("·2"),
+            "doc count flush against the leader, no slash: {notes:?}"
         );
         assert!(
             !notes.contains("0/2"),
@@ -8795,6 +8843,9 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
     }
 
     #[test]
+    // T7 (bora-79l): the checks-glyph span is trimmed to bare `✓/✗/●`
+    // (push_cluster owns all cluster spacing now) — fica vermelho se o
+    // glifo voltar com espaço colado ao span.
     fn pr_chip_prints_gray_checks_glyph_keeps_rollup() {
         // Attribution (T3): was `pr_chip_follows_github_state_colors` —
         // merged purple / closed red / draft dim / open rollup-colored.
@@ -8826,7 +8877,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
             let has_checks_glyph = line
                 .spans
                 .iter()
-                .any(|s| matches!(s.content.as_ref(), " ✓" | " ✗" | " ●"));
+                .any(|s| matches!(s.content.as_ref(), "✓" | "✗" | "●"));
             (chip.style.fg, has_checks_glyph)
         };
         use crate::workspace::ChecksRollup::*;
@@ -9052,6 +9103,9 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
     }
 
     #[test]
+    // T7 (bora-79l): the failing glyph span is bare `✗` now (separator
+    // spaces are their own spans) — fica vermelho se voltar a carregar o
+    // espaço dentro do span.
     fn section_row_line_red_only_on_a_real_check_failure() {
         // Fica vermelho se qualquer coisa além de uma falha real de check
         // pintar de vermelho — behind, diff, ou o chip PR42 (R1).
@@ -9072,7 +9126,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
         let failing_glyph = failing
             .spans
             .iter()
-            .find(|s| s.content.as_ref() == " ✗")
+            .find(|s| s.content.as_ref() == "✗")
             .expect("failing checks glyph");
         assert_eq!(
             failing_glyph.style.fg,
@@ -9111,6 +9165,8 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
     }
 
     #[test]
+    // T7 (bora-79l): collapsed starts ` ▸` after the F gutter — fica
+    // vermelho se o caret voltar à coluna 0.
     fn project_row_line_group_header_has_no_chevron_or_ruler() {
         // Item 4 (bora-c1h) established: the approved mock's `.g` rule
         // draws neither a chevron nor a ruler when EXPANDED — the
@@ -9134,8 +9190,9 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
 
         let collapsed = line_text(&project_row_line("CNB", 1, 4, true, &p, 30));
         assert!(
-            collapsed.starts_with('▸'),
-            "a closed group header gets its caret back: {collapsed:?}"
+            collapsed.starts_with(" ▸"),
+            "a closed group header gets its caret back, after the T7 \
+             gutter column: {collapsed:?}"
         );
         assert_eq!(
             collapsed.chars().filter(|&c| c == '─').count(),
@@ -9148,15 +9205,13 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
     fn row_gap_appears_after_a_workspaces_pane_dots_row_only() {
         // Attribution: before this fix a workspace could emit N `PaneRow`s,
         // so the gap only applied after the LAST sibling `PaneRow` of a
-        // block — this test built `SectionRow{ws_idx:0}, PaneRow{w1p1},
-        // PaneRow{w1p2}, SectionRow{ws_idx:1}, PaneRow{w2p1}` and asserted
-        // the middle `PaneRow` (index 2, `w1p2`) got `+row_gap` as the
-        // block's last pane, while index 1 (`w1p1`) got none. Now
-        // `PaneDotsRow` replaces the whole per-workspace block with exactly
-        // ONE 2-line block (bora Project-view row-shape rework, height 2
-        // since bora-79l F2's l1/l2 split), so there is no longer a "last
-        // pane of a block" to find — every `PaneDotsRow` IS its block, and
-        // the gap applies whenever a next sibling follows.
+        // block. `PaneDotsRow` replaced the whole per-workspace block with
+        // exactly ONE 2-line block (bora-79l F2's l1/l2 split). T7
+        // (bora-79l, divergence C) then narrowed the gap to BRANCH GROUPS:
+        // it fires only when the next section belongs to a different
+        // `branch_group`. Fica vermelho se o gap voltar a disparar entre
+        // quaisquer dois blocos (ou deixar de disparar entre grupos
+        // diferentes): as alturas abaixo mudariam de 3/2 para 2/3.
         let entries = vec![
             WorkspaceListEntry::SectionRow {
                 ws_idx: 0,
@@ -9166,6 +9221,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
                 header_on: true,
                 header_hidden: false,
                 show_diff: true,
+                branch_group: "g1".into(),
             },
             WorkspaceListEntry::PaneDotsRow {
                 ws_idx: 0,
@@ -9179,6 +9235,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
                 header_on: true,
                 header_hidden: false,
                 show_diff: true,
+                branch_group: "g2".into(),
             },
             WorkspaceListEntry::PaneDotsRow {
                 ws_idx: 1,
@@ -9194,8 +9251,8 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
         assert_eq!(
             entry_row_height(&entries[1], &entries, 1, row_gap),
             3,
-            "a PaneDotsRow (base height 2) followed by the next workspace's \
-             SectionRow gets +row_gap: {entries:?}"
+            "a PaneDotsRow (base height 2) followed by a DIFFERENT branch \
+             group's SectionRow gets +row_gap: {entries:?}"
         );
         assert_eq!(
             entry_row_height(&entries[2], &entries, 2, row_gap),
@@ -9206,6 +9263,88 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
             entry_row_height(&entries[3], &entries, 3, row_gap),
             2,
             "the LAST PaneDotsRow in the list gets no trailing gap (base height 2 only)"
+        );
+    }
+
+    #[test]
+    fn row_gap_glues_sibling_workspaces_of_one_branch_group() {
+        // T7 (bora-79l, divergence C): dentro de uma mesma branch os blocos
+        // das workspaces irmãs são contíguos — o branco separa apenas o fim
+        // de um grupo do próximo header (ALVO_CAPTURE rows 04-07 coladas,
+        // row 08 em branco). Fica vermelho se irmãs da mesma branch ganharem
+        // uma linha em branco entre si (a l1 do par seguinte desceria uma
+        // row) ou se grupos diferentes colarem.
+        let entries = vec![
+            WorkspaceListEntry::SectionRow {
+                ws_idx: 0,
+                checkout_key: "k1".into(),
+                collapse_key: "wsec:0".into(),
+                name_hint: None,
+                header_on: true,
+                header_hidden: false,
+                show_diff: true,
+                branch_group: "same".into(),
+            },
+            WorkspaceListEntry::PaneDotsRow {
+                ws_idx: 0,
+                name: "ws0".into(),
+            },
+            WorkspaceListEntry::SectionRow {
+                ws_idx: 1,
+                checkout_key: "k2".into(),
+                collapse_key: "wsec:1".into(),
+                name_hint: None,
+                header_on: true,
+                header_hidden: false,
+                show_diff: true,
+                branch_group: "same".into(),
+            },
+            WorkspaceListEntry::PaneDotsRow {
+                ws_idx: 1,
+                name: "ws1".into(),
+            },
+            WorkspaceListEntry::SectionRow {
+                ws_idx: 2,
+                checkout_key: "k3".into(),
+                collapse_key: "wsec:2".into(),
+                name_hint: None,
+                header_on: true,
+                header_hidden: false,
+                show_diff: true,
+                branch_group: "other".into(),
+            },
+            WorkspaceListEntry::PaneDotsRow {
+                ws_idx: 2,
+                name: "ws2".into(),
+            },
+            // A third group whose upper header is HIDDEN (same-branch
+            // exception): the hidden header's own row is the separator,
+            // so the block above it gets no gap — a gap there was the
+            // double blank the owner pointed at.
+            WorkspaceListEntry::SectionRow {
+                ws_idx: 3,
+                checkout_key: "k4".into(),
+                collapse_key: "wsec:3".into(),
+                name_hint: None,
+                header_on: true,
+                header_hidden: true,
+                show_diff: true,
+                branch_group: "third".into(),
+            },
+            WorkspaceListEntry::PaneDotsRow {
+                ws_idx: 3,
+                name: "ws3".into(),
+            },
+        ];
+        let heights: Vec<u16> = (0..entries.len())
+            .map(|idx| entry_row_height(&entries[idx], &entries, idx, 1))
+            .collect();
+        assert_eq!(
+            heights,
+            vec![1, 2, 1, 3, 1, 2, 1, 2],
+            "sibling same-branch blocks glue (2), the block before a NEW \
+             group's VISIBLE header separates (3), and a HIDDEN next \
+             header's own row already separates (2): {entries:?}"
         );
     }
 
@@ -9262,7 +9401,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
     #[test]
     fn pane_dots_name_line_never_contains_a_repo_name() {
         let p = Palette::catppuccin();
-        let text = line_text(&pane_dots_name_line("agent-x", None, &p, 40));
+        let text = line_text(&pane_dots_name_line("agent-x", &p, 40));
 
         assert!(text.contains("agent-x"));
         assert!(!text.contains("cnb_landing_page"));
@@ -9275,7 +9414,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
         // colors it `overlay1` (the same as `⎇`), and never draws a state
         // glyph — every pane's state is l2's payload.
         let p = Palette::catppuccin();
-        let line = pane_dots_name_line("main", None, &p, 40);
+        let line = pane_dots_name_line("main", &p, 40);
         let text = line_text(&line);
         assert_eq!(
             text.find('m'),
@@ -9757,47 +9896,23 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
     }
 
     #[test]
-    fn pane_dots_name_line_carries_the_diff_beside_the_name() {
-        // T2 contract item 1: o diff `+916 −2` ao lado do nome na l1, com
-        // U+2212 MINUS SIGN (nunca hyphen ASCII), em cinza overlay1 (R1:
-        // diff é plumbing). Two layers: the line builder itself, then the
-        // render arm end to end off `cached_change_set` — the same source
-        // the branch header's cluster reads. Fica vermelho se o diff
-        // sumir da l1, vier com hyphen ASCII, pintar fora do cinza, ou o
-        // braço parar de passar o diff pro builder.
+    fn pane_dots_name_line_carries_no_diff_even_with_a_change_set() {
+        // T7 (bora-79l, divergence A) killed T2's contract item 1 by
+        // assignment: nenhuma PaneDotsRow l1 carrega `+N −M` — o diff vive
+        // só no cluster da header (ALVO_CAPTURE row 27 vs row 28: a header
+        // carrega `+916 −2`, a l1 é `hotfix` puro). Fica vermelho se o diff
+        // voltar à l1 (a render arm voltando a passá-lo ou o builder o
+        // aceitando de novo).
         let p = Palette::catppuccin();
-        let line = pane_dots_name_line("hotfix", Some((916, 2)), &p, 40);
-        let text = line_text(&line);
-        assert!(
-            text.contains('+') && text.contains('\u{2212}'),
-            "the diff uses U+2212 MINUS SIGN, byte for byte `+916 −2`: {text:?}"
-        );
-        assert!(
-            text.contains("+916 −2"),
-            "the diff renders beside the name: {text:?}"
-        );
-        assert!(
-            !text.contains("-2"),
-            "fica vermelho se o menos vier como hyphen ASCII: {text:?}"
-        );
-        assert!(
-            text.find("hotfix") < text.find("+916"),
-            "the name comes first, the diff beside it: {text:?}"
-        );
-        let diff_span = line
-            .spans
-            .iter()
-            .find(|s| s.content.as_ref().starts_with("+916"))
-            .expect("diff span");
+        let text = line_text(&pane_dots_name_line("hotfix", &p, 40));
         assert_eq!(
-            diff_span.style.fg,
-            Some(p.overlay1),
-            "R1: diff numbers stay gray: {diff_span:?}"
+            text.trim_end(),
+            "   hotfix",
+            "l1 is exactly the indent + the name, nothing beside it: {text:?}"
         );
 
-        // End to end: the render arm computes the diff from the workspace's
-        // cached change set (gated by the section's `parts.diff`, default
-        // ON with no layout — `section_model_flags`).
+        // End to end: a workspace WITH a cached change set still renders a
+        // bare l1 — the numbers belong to the SectionRow header's cluster.
         let mut app = pane_dots_block_fixture(AgentState::Idle, true);
         app.workspaces[0].cached_change_set = Some(crate::workspace::WorkspaceChangeSet {
             sections: vec![crate::workspace::ChangeSection {
@@ -9826,12 +9941,8 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
         let buffer = terminal.backend().buffer();
         let l1 = row_text(buffer, hit.rect.y.saturating_sub(1), area.width);
         assert!(
-            l1.contains("alvo-ws") && l1.contains("+916 −2"),
-            "fica vermelho se a l1 renderizada não carregar nome+diff: {l1:?}"
-        );
-        assert!(
-            l1.contains('\u{2212}'),
-            "the rendered minus is U+2212, not ASCII: {l1:?}"
+            l1.contains("alvo-ws") && !l1.contains("+916"),
+            "fica vermelho se a l1 renderizada carregar o diff: {l1:?}"
         );
     }
 
@@ -9853,6 +9964,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
                 header_on: true,
                 header_hidden: false,
                 show_diff: true,
+                branch_group: "g".into(),
             },
             WorkspaceListEntry::SectionHeader {
                 kind: &COMMANDS,
@@ -10033,6 +10145,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
                 header_on: true,
                 header_hidden: false,
                 show_diff: true,
+                branch_group: "g".into(),
             },
             WorkspaceListEntry::PaneDotsRow {
                 ws_idx: 5,
@@ -10191,6 +10304,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
                 header_on: true,
                 header_hidden: false,
                 show_diff: true,
+                branch_group: "g".into(),
             },
         ];
         let body = Rect::new(0, 0, 30, 20);

@@ -49,18 +49,20 @@ pub(crate) const ORPHANS_COLLAPSE_KEY: &str = "proj:__orphans__";
 ///
 /// - Every variant's OWN content is height 1; `entry_row_height` may add a
 ///   trailing row_gap after the `PaneDotsRow` of a workspace block
-///   (bora-c1h G7) — that gap is a property of ADJACENCY between two
-///   entries, computed identically by all three lockstep passes
-///   (`sidebar.rs` "Shared row-height"), never a per-variant constant, so it
-///   can never silently desync them.
+///   (bora-c1h G7, T7 bora-79l divergence C: the gap separates BRANCH
+///   GROUPS, never sibling workspaces of one branch) — that gap is a
+///   property of ADJACENCY between two entries, computed identically by
+///   all three lockstep passes (`sidebar.rs` "Shared row-height"), never
+///   a per-variant constant, so it can never silently desync them.
 /// - Order is depth-first and stable: `ProjectRow`, then per checkout one
-///   `SectionRow` per workspace on it (bora-c1h) — the COMMANDS/CHECKS bands
-///   anchor under the checkout's FIRST workspace's `SectionRow` only, one
-///   fetch covering every sibling workspace on the branch — each followed
-///   by its own `PaneDotsRow` (one dot per pane, always emitted even for a
+///   `SectionRow` per workspace on it (bora-c1h), each followed by its
+///   own `PaneDotsRow` (one dot per pane, always emitted even for a
 ///   single-pane workspace: the old per-pane `PaneRow` this replaced was
 ///   removed once Project view stopped emitting it, see
-///   `push_pane_dots_row`'s doc).
+///   `push_pane_dots_row`'s doc) — and, after EVERY checkout's sessions,
+///   the checkout's COMMANDS/CHECKS bands close the group (T7 bora-79l
+///   divergence D: `push_worktree_bands`, anchored on the first checkout
+///   only, one fetch covering every sibling workspace on the branch).
 /// - `apply_hidden_filter`'s depth ladder (0 project, 1 section, 2 band
 ///   header, 3 band item, 4 pane) mirrors that nesting. A new level means
 ///   updating that closure too.
@@ -581,13 +583,24 @@ fn push_project_group(
             app,
             checkout_key,
             &by_checkout[checkout_key],
-            section_order,
-            commands,
-            checks,
             layout,
             force_expanded,
         );
     }
+
+    // T7 (bora-79l, divergence D): the worktree bands close the group,
+    // after every checkout's sessions — the alvo's `COMANDO`/`CHECKS`
+    // rows sit below the last branch group, never above the first.
+    push_worktree_bands(
+        entries,
+        app,
+        &order,
+        &by_checkout,
+        section_order,
+        commands,
+        checks,
+        force_expanded,
+    );
 
     // T3 same-branch exception: with every section of this group on the
     // table, hide every upper header that a lower same-(repo, branch)
@@ -805,12 +818,74 @@ fn hide_upper_duplicate_branch_headers(entries: &mut [WorkspaceListEntry], app: 
     }
 }
 
-/// Push one `SectionRow` per workspace on this checkout (bora-c1h), plus —
-/// under the checkout's FIRST workspace only — its COMMANDS/CHECKS bands
-/// (one fetch already covers every sibling workspace on the branch, same
-/// representative-workspace rule `push_checks_section` already applied to
-/// the old `WorktreeRow`), then that workspace's `PaneDotsRow`
-/// (`push_pane_dots_row`, one dot per pane).
+/// T7 (bora-79l, divergence D): the worktree bands render after EVERY
+/// session of the project group, not interleaved under the first
+/// workspace's section (ALVO_CAPTURE rows 31-34: `COMANDO`/`CHECKS` follow
+/// the last branch group). Still anchored on the FIRST checkout only —
+/// one fetch covers every sibling workspace on the branch, the same
+/// representative-workspace rule `push_checks_section` always had — and
+/// still gated on that checkout's first section being expanded, the exact
+/// collapse behavior the interleaved emission had.
+fn push_worktree_bands(
+    entries: &mut Vec<WorkspaceListEntry>,
+    app: &AppState,
+    order: &[String],
+    by_checkout: &HashMap<String, Vec<usize>>,
+    section_order: [&'static SectionDescriptor; SECTION_COUNT],
+    commands: &[String],
+    checks: &[String],
+    force_expanded: bool,
+) {
+    let Some(first_checkout) = order.first() else {
+        return;
+    };
+    let Some(ws_idxs) = by_checkout.get(first_checkout) else {
+        return;
+    };
+    let Some(&first_ws) = ws_idxs.first() else {
+        return;
+    };
+    if !force_expanded
+        && app
+            .collapsed_space_keys
+            .contains(&section_collapse_key(first_ws))
+    {
+        return;
+    }
+    for section in filter_by_level(&section_order, SectionLevel::Worktree) {
+        let ctx = SectionPushCtx::Worktree {
+            app,
+            checkout_key: first_checkout,
+            ws_idxs,
+            commands,
+            checks,
+            force_expanded,
+        };
+        (section.push)(entries, &ctx);
+    }
+}
+
+/// T7 (bora-79l, divergence C): the branch-GROUP key — `(repo identity,
+/// branch)` flattened into one comparable string. The same pairing the
+/// same-branch exception keys on (`hide_upper_duplicate_branch_headers`);
+/// extracted here so "these two sections belong to one branch group" can
+/// never mean two different things in the two rules. `project_view_
+/// trailing_gap` reads it off consecutive `SectionRow`s to decide where
+/// the blank separator row goes (blank between GROUPS, never between
+/// sibling workspaces of one branch).
+fn branch_group_key(ws: &Workspace) -> String {
+    format!(
+        "{}\u{1f}{}",
+        repo_identity_key(ws),
+        ws.branch().unwrap_or_default()
+    )
+}
+
+/// Push one `SectionRow` per workspace on this checkout (bora-c1h), then
+/// that workspace's `PaneDotsRow` (`push_pane_dots_row`, one dot per
+/// pane). T7 (bora-79l, divergence D) moved the checkout's
+/// COMMANDS/CHECKS bands OUT of this loop — they are pushed by
+/// `push_worktree_bands` after every checkout of the group has rendered.
 ///
 /// T3: each row's `header_on`/`show_diff` come from the project's declared
 /// `layout:` (`section_model_flags`) — the section model consumed at
@@ -822,13 +897,10 @@ fn push_worktree(
     app: &AppState,
     checkout_key: &str,
     ws_idxs: &[usize],
-    section_order: [&'static SectionDescriptor; SECTION_COUNT],
-    commands: &[String],
-    checks: &[String],
     layout: Option<&[Section]>,
     force_expanded: bool,
 ) {
-    for (position, &ws_idx) in ws_idxs.iter().enumerate() {
+    for &ws_idx in ws_idxs {
         let collapse_key = section_collapse_key(ws_idx);
         let (header_on, show_diff) = section_model_flags(layout, &app.workspaces[ws_idx]);
         entries.push(WorkspaceListEntry::SectionRow {
@@ -839,31 +911,11 @@ fn push_worktree(
             header_on,
             header_hidden: false,
             show_diff,
+            branch_group: branch_group_key(&app.workspaces[ws_idx]),
         });
         if !force_expanded && app.collapsed_space_keys.contains(&collapse_key) {
             continue;
         }
-
-        // Rule 5: a band renders only when non-empty, in declared order,
-        // default COMMANDS before CHECKS (bora-5ia). CHECKS derives its own
-        // representative workspace from `ws_idxs` inside `push_checks_section`
-        // via the same normalized context every band reads (bora-by6's
-        // `SectionPushCtx`) — anchored under the first workspace's section
-        // only, so a checkout with 2+ open workspaces never repeats the band.
-        if position == 0 {
-            for section in filter_by_level(&section_order, SectionLevel::Worktree) {
-                let ctx = SectionPushCtx::Worktree {
-                    app,
-                    checkout_key,
-                    ws_idxs,
-                    commands,
-                    checks,
-                    force_expanded,
-                };
-                (section.push)(entries, &ctx);
-            }
-        }
-
         push_pane_dots_row(entries, ws_idx);
     }
 }
@@ -916,7 +968,10 @@ pub(super) const SECTION_COUNT: usize = REGISTRY.len();
 pub(super) static COMMANDS: SectionDescriptor = SectionDescriptor {
     wire_name: "commands",
     glyph: "≡",
-    label: "COMMANDS",
+    // T7 (bora-79l): display label only — `wire_name` ("commands") is the
+    // persisted/`sections.order:` contract and stays untouched, so old
+    // projects.yml files keep resolving (ALVO_CAPTURE row 31 pins COMANDO).
+    label: "COMANDO",
     level: SectionLevel::Worktree,
     counter: SectionCounter::Progress,
     bullet: SectionBullet::Standard,
@@ -925,7 +980,10 @@ pub(super) static COMMANDS: SectionDescriptor = SectionDescriptor {
 
 pub(super) static CHECKS: SectionDescriptor = SectionDescriptor {
     wire_name: "checks",
-    glyph: "✓",
+    // T7 (bora-79l): ALVO_CAPTURE row 33 pins `≡ CHECKS` — the same band
+    // glyph COMANDO uses; the ✓ was an old rollup echo (the counter and
+    // the ✗ items already carry the state).
+    glyph: "≡",
     label: "CHECKS",
     level: SectionLevel::Worktree,
     counter: SectionCounter::Progress,
@@ -3622,6 +3680,57 @@ mod tests {
             vec![&TODOS, &NOTES, &COMMANDS, &CHECKS],
             "an undeclared order must render exactly today's fixed \
              sequence: {entries:?}"
+        );
+
+        std::fs::remove_dir_all(&repo).unwrap();
+    }
+
+    #[test]
+    fn worktree_bands_render_after_every_session_of_the_group() {
+        // T7 (bora-79l, divergence D): COMANDO/CHECKS fecham o grupo, depois
+        // de TODAS as sessions — nunca intercaladas sob a primeira workspace
+        // (ALVO_CAPTURE rows 27-34: hotfix na row 28, bands nas rows 31-34).
+        // Fica vermelho se uma band voltar a aparecer entre o SectionRow e
+        // seu PaneDotsRow, ou antes do último bloco do grupo; e a adjacência
+        // SR→PDR é a que o trailing-gap e o name-sync assumem.
+        let repo = temp_test_dir("bands-after-sessions");
+        init_fake_git_repo(&repo, None);
+
+        let (_isolated, app) = app_with_full_bands(&repo, None);
+        let entries = project_view_entries(&app, false);
+
+        // Every SectionRow is immediately followed by its own PaneDotsRow —
+        // the pair rule T7's gap logic and `sync_pane_dots_names` rely on.
+        for (idx, entry) in entries.iter().enumerate() {
+            if matches!(entry, WorkspaceListEntry::SectionRow { .. }) {
+                let next = entries.get(idx + 1);
+                assert!(
+                    matches!(next, Some(WorkspaceListEntry::PaneDotsRow { .. })),
+                    "a SectionRow must sit directly above its own \
+                     PaneDotsRow, entry {idx}: {entries:?}"
+                );
+            }
+        }
+
+        let last_session = entries
+            .iter()
+            .rposition(|e| matches!(e, WorkspaceListEntry::PaneDotsRow { .. }))
+            .expect("fixture must emit sessions");
+        let first_worktree_band = entries
+            .iter()
+            .position(|e| {
+                matches!(
+                    e,
+                    WorkspaceListEntry::SectionHeader { kind, .. }
+                        if kind.level == SectionLevel::Worktree
+                )
+            })
+            .expect("fixture must emit the worktree bands");
+        assert!(
+            first_worktree_band > last_session,
+            "the worktree bands must come after EVERY session of the \
+             group (band at {first_worktree_band}, last session at \
+             {last_session}): {entries:?}"
         );
 
         std::fs::remove_dir_all(&repo).unwrap();
