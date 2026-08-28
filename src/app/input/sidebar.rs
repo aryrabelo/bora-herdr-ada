@@ -582,8 +582,8 @@ impl AppState {
         // A linked worktree is not a drag root in Flat/Repo view: it renders
         // as an indented child under its main checkout, so reordering it
         // alone is meaningless. Project view inverts that — every workspace
-        // gets its own top-level `SectionRow`, which the `roots` filter below
-        // already treats as a root (see its comment). Applying this guard
+        // renders its own top-level `PaneDotsRow` block (6a), which the
+        // `roots` filter below treats as a root. Applying this guard
         // there let the drag OPEN and then silently swallowed the drop, since
         // `None` here means "nothing to move".
         if self.view_mode != crate::config::ViewMode::Project
@@ -607,23 +607,22 @@ impl AppState {
                 | crate::ui::WorkspaceListEntry::ProjectHeader { .. }
                 | crate::ui::WorkspaceListEntry::BranchHeader { .. }
                 | crate::ui::WorkspaceListEntry::HiddenHeader { .. } => None,
-                // Project view (bora-c1h): every workspace's own
-                // `SectionRow` IS a top-level drag root now — one full
-                // section per workspace, so dragging one reorders it
-                // exactly like a Flat-view workspace card.
-                crate::ui::WorkspaceListEntry::SectionRow { ws_idx, .. } => Some(ws_idx),
-                // A `PaneDotsRow` is not a drag ROOT, though the drag
-                // itself now STARTS on it (P2, bora-79l T1: the block's
-                // `WorkspaceCardArea` feeds `workspace_presses`): the
-                // press resolves to the workspace's ws_idx, whose root
-                // position comes from its `SectionRow` above — the block
-                // is the affordance, not a second identity to reorder.
+                // Project view (6a): every member workspace is its own
+                // `PaneDotsRow` block, and the BLOCK is the drag root —
+                // one full section per branch GROUP now, so the group's
+                // `SectionRow` names only the representative and is a
+                // header, not a workspace identity to reorder. The drag
+                // STARTS on the block anyway (P2, bora-79l T1: the
+                // block's `WorkspaceCardArea` feeds
+                // `workspace_presses`); roots and affordance finally
+                // name the same row.
+                crate::ui::WorkspaceListEntry::PaneDotsRow { ws_idx, .. } => Some(ws_idx),
                 crate::ui::WorkspaceListEntry::ProjectRow { .. }
                 | crate::ui::WorkspaceListEntry::WorktreeRow { .. }
                 | crate::ui::WorkspaceListEntry::SectionHeader { .. }
                 | crate::ui::WorkspaceListEntry::SectionItem { .. }
                 | crate::ui::WorkspaceListEntry::PrRow { .. }
-                | crate::ui::WorkspaceListEntry::PaneDotsRow { .. } => None,
+                | crate::ui::WorkspaceListEntry::SectionRow { .. } => None,
             })
             .collect::<Vec<_>>();
         let source_pos = roots.iter().position(|ws_idx| *ws_idx == source_ws_idx)?;

@@ -1347,25 +1347,23 @@ impl AppState {
                 crate::ui::WorkspaceListEntry::GroupHeader { .. }
                 | crate::ui::WorkspaceListEntry::ProjectHeader { .. }
                 | crate::ui::WorkspaceListEntry::HiddenHeader { .. } => None,
-                // Project view. A `PaneDotsRow` deliberately yields nothing:
-                // its `ws_idx` is already in the order via the `SectionRow`
-                // above it, and returning it again would make cycling visit
-                // the same workspace twice. It replaced the per-pane
-                // `PaneRow`, which yielded nothing for the same reason — once
-                // per PANE, which was worse. Focusing an individual pane from
-                // the keyboard is bora-49p.5, not this order; from the mouse
-                // it is the per-dot hit area on this very row.
+                // Project view (6a): every member workspace is its own
+                // `PaneDotsRow` block, so the BLOCK is what cycling and
+                // numbered switching visit — the group's `SectionRow`
+                // names only the representative and would visit it
+                // twice. A collapsed section emits no blocks, so its
+                // members drop out of the cycle exactly like a
+                // collapsed project's do. Focusing an individual pane
+                // from the keyboard is bora-49p.5, not this order; from
+                // the mouse it is the per-dot hit area on this very
+                // row.
                 crate::ui::WorkspaceListEntry::ProjectRow { .. }
                 | crate::ui::WorkspaceListEntry::WorktreeRow { .. }
                 | crate::ui::WorkspaceListEntry::SectionHeader { .. }
                 | crate::ui::WorkspaceListEntry::SectionItem { .. }
                 | crate::ui::WorkspaceListEntry::PrRow { .. }
-                | crate::ui::WorkspaceListEntry::PaneDotsRow { .. } => None,
-                // Project view's merged per-workspace row: it IS the workspace
-                // row now, so cycling and numbered switching must visit it.
-                // Its `PaneDotsRow` (the former per-pane `PaneRow`'s
-                // replacement) still yields nothing (see above).
-                crate::ui::WorkspaceListEntry::SectionRow { ws_idx, .. } => Some(ws_idx),
+                | crate::ui::WorkspaceListEntry::SectionRow { .. } => None,
+                crate::ui::WorkspaceListEntry::PaneDotsRow { ws_idx, .. } => Some(ws_idx),
             })
             .collect::<Vec<_>>();
         if order.is_empty() {

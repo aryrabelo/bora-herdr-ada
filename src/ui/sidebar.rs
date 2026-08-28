@@ -833,28 +833,26 @@ pub(crate) enum WorkspaceListEntry {
         collapse_key: String,
         unopened: bool,
     },
-    /// One full section per OPEN workspace, main checkout and worktree
-    /// alike (bora-c1h G1-G5) — replaces the old `WorktreeRow` (checkout
-    /// level, `unopened: false`) + indented `Workspace` (per-workspace)
-    /// pair. `checkout_key` names the git checkout (bora-uqv's
+    /// T6 pass 6a (bora-79l.10): the GROUP row of one branch section —
+    /// ONE `SectionRow` per branch group (`branch_group`), header at the
+    /// TOP of the group, the members' `PaneDotsRow` blocks contiguous
+    /// below. Before 6a every workspace got its own `SectionRow` and the
+    /// same-branch exception pushed the one visible header BETWEEN the
+    /// blocks (the "generic-row problem" this bead exists to kill). No
+    /// new variant carries the change: this row, `PaneDotsRow` and
+    /// `SectionHeader` are the runtime.
+    ///
+    /// Per-workspace fields name the REPRESENTATIVE member (the FIRST
+    /// workspace of the group): `ws_idx` is the workspace git/PR/checks
+    /// state is read from at render time (see `section_row_line`),
+    /// `checkout_key` names its checkout (bora-uqv's
     /// `ProjectMemberTargets` right-click menu resolves `member_dir`
-    /// straight from it); `collapse_key` (`wsec:{ws_idx}`) is per WORKSPACE
-    /// — a checkout with 2+ open workspaces gets 2+ independently
-    /// collapsible `SectionRow`s, unlike the old checkout-scoped toggle.
-    /// Git/PR/checks state is read from `AppState.workspaces[ws_idx]` at
-    /// render time, not carried on the entry (see `section_row_line`).
+    /// straight from it), and `collapse_key` (`wsec:{ws_idx}`)
+    /// collapses the whole group's blocks — one toggle per section now.
     SectionRow {
         ws_idx: usize,
         checkout_key: String,
         collapse_key: String,
-        /// Disambiguator set at emission when 2+ rows would render identical
-        /// (same repo name AND branch, bora-b2r parity): a parent-dir hint
-        /// appended to the name. `None` whenever the branch already tells
-        /// the rows apart — the common same-repo case stays clean. The hint
-        /// no longer prints on THIS row (T3 removed the name slot); it lives
-        /// on the paired `PaneDotsRow` via `sync_pane_dots_names`, which is
-        /// the only reason the field survives.
-        name_hint: Option<String>,
         /// T3 (bora-79l): the section model's header switch — read from the
         /// project's `layout:` at emission (`section_model_flags`), obeyed
         /// by the renderer and the geometry pass. T6's toggle button WRITES
@@ -863,21 +861,29 @@ pub(crate) enum WorkspaceListEntry {
         /// Same-branch exception (T3 decision 5): set at emission when a
         /// LOWER `SectionRow` of the same (repo, branch) exists in this
         /// project group — the upper header stays hidden so two headers of
-        /// one branch never coexist visible. The entry itself always exists
-        /// (name sync, collapse state, `entry_row_height` lockstep); only
-        /// its painted line and hit area vanish.
+        /// one branch never coexist visible. 6a narrowed where that can
+        /// happen: emission groups by `branch_group`, so within one
+        /// project the exception only fires between STACKED runtime
+        /// sections (rare, 6b's world); in the normal one-section-per-
+        /// branch shape the header simply sits at the top.
         header_hidden: bool,
         /// T3: `SectionParts.diff` from the same model lookup — gates the
         /// `+N −M` diff numbers inside the header's state cluster.
         show_diff: bool,
         /// T7 (bora-79l, divergence C): the branch-GROUP key
-        /// (`project_view::branch_group_key` — repo identity + branch).
-        /// `project_view_trailing_gap` compares it across consecutive
-        /// sections to place the blank separator row: blank BETWEEN branch
-        /// groups (and before a band header), never between sibling
-        /// workspaces of one branch (ALVO_CAPTURE rows 04-07 are glued,
-        /// row 08 is blank).
+        /// (`project_view::branch_group_key` — repo identity + branch)
+        /// the whole container is keyed by. `project_view_trailing_gap`
+        /// compares it across consecutive sections to place the blank
+        /// separator row: blank BETWEEN branch groups (and before a band
+        /// header), never between sibling workspaces of one branch
+        /// (ALVO_CAPTURE rows 04-07 are glued, row 08 is blank).
         branch_group: String,
+        /// 6a: the group's `+N −M` cluster — the SUM of every member's
+        /// cached change set, folded once at emission (membership is
+        /// emission-time knowledge the renderer does not have); the
+        /// renderer only gates it on `show_diff`. PR/checks stay the
+        /// representative's own (`ws_idx` above).
+        diff: Option<(u32, u32)>,
     },
     /// Third level: a `COMMANDS` or `CHECKS` band hanging off a worktree,
     /// with a right-aligned `done/total`. Emitted only when non-empty, in
@@ -996,30 +1002,32 @@ fn entry_row_height(
     base + project_view_trailing_gap(entry, entries, idx, row_gap)
 }
 
-/// Trailing gap after a `PaneDotsRow` (bora-c1h G7, T7 bora-79l
-/// divergence C): a blank row separates the END of a branch GROUP (or the
-/// last group, before a band) from the next header — never sibling
-/// workspaces of one branch (ALVO_CAPTURE: rows 04-07 glued, row 08
-/// blank), never right before the next project's `ProjectRow`, never
-/// after the final block in the list.
+/// Trailing blank-row discipline for Project view (bora-c1h G7, T7
+/// bora-79l divergence C, T6 6a the group shape). Two rules:
 ///
-/// "Same group" is decided by `SectionRow::branch_group` (repo identity +
-/// branch): a `PaneDotsRow`'s own group is the `SectionRow` immediately
-/// above it (`push_worktree` always emits the pair adjacently — T7 moved
-/// the bands out, so nothing else can sit between), and the gap fires
-/// only when the NEXT `SectionRow` belongs to a different group, or the
-/// next entry is a band header / unopened worktree row. A next section
-/// whose header is HIDDEN (same-branch exception) suppresses the gap
-/// too: the hidden header still owns a row and paints nothing, so that
-/// row already IS the separator — a gap on top of it was the doubled
-/// blank the owner pointed at.
+/// - After a `PaneDotsRow`: a blank row separates the END of a branch
+///   GROUP (or the last group, before a band) from the next header —
+///   never sibling members of one branch (ALVO_CAPTURE: rows 04-07
+///   glued, row 08 blank), never right before the next project's
+///   `ProjectRow`, never after the final block in the list. "Same
+///   group" is decided by `SectionRow::branch_group` (repo identity +
+///   branch): a block's own group is the nearest `SectionRow` ABOVE it
+///   — 6a made groups hold 2+ blocks, so the walk skips sibling
+///   `PaneDotsRow`s instead of reading `entries[idx - 1]` directly. A
+///   next section whose header is HIDDEN (stacked-sections same-branch
+///   exception) suppresses the gap too: the hidden header still owns a
+///   row and paints nothing, so that row already IS the separator — a
+///   gap on top of it was the doubled blank the owner pointed at.
+/// - After a `ProjectRow` (6a): one blank "respiro" between the group
+///   header and its first content (ALVO_CAPTURE row 02, the anatomy's
+///   "Section · tipo LIVRE — respiro após o grupo"). Fires before a
+///   section header or a band header, never before another project,
+///   the unopened rows' boundary implied by their own separator rule,
+///   or the end of a collapsed group (nothing was pushed below).
 ///
-/// Attribution: before T7 the gap fired after EVERY block (and the hidden
-/// upper headers of same-branch siblings made it read as double blank in
-/// places); before bora-c1h G7 `PaneRow` could repeat N times per
-/// workspace, so the gap only applied after the LAST sibling `PaneRow`
-/// of a block. `PaneDotsRow` is always exactly one block per workspace,
-/// so both old "last of block" checks are gone.
+/// Attribution: before T7 the gap fired after EVERY block; before
+/// bora-c1h G7 `PaneRow` could repeat N times per workspace, so the gap
+/// only applied after the LAST sibling `PaneRow` of a block.
 ///
 /// `entry_row_height`'s own `entries`/`idx` peek (its doc) is exactly what
 /// this needs, so the three lockstep passes stay in agreement by
@@ -1030,23 +1038,38 @@ fn project_view_trailing_gap(
     idx: usize,
     row_gap: u16,
 ) -> u16 {
+    if matches!(entry, WorkspaceListEntry::ProjectRow { .. }) {
+        return match entries.get(idx + 1) {
+            Some(WorkspaceListEntry::SectionRow { .. })
+            | Some(WorkspaceListEntry::SectionHeader { .. }) => row_gap,
+            _ => 0,
+        };
+    }
     let WorkspaceListEntry::PaneDotsRow { .. } = entry else {
         return 0;
     };
-    let own_group = match entries.get(idx.wrapping_sub(1)) {
-        Some(WorkspaceListEntry::SectionRow { branch_group, .. }) => branch_group.as_str(),
-        // A PaneDotsRow with no SectionRow right above it cannot happen
-        // (the emitter's pair rule, above); treat it as its own group so
-        // the conservative outcome is a separator, never a glue.
-        _ => "",
-    };
+    // The owning section: the nearest `SectionRow` above this block.
+    // Emission guarantees one exists (the group header tops every
+    // group); `unwrap_or("")` keeps a hand-built orphan block
+    // conservative — a separator, never a glue.
+    let own_group = entries[..idx]
+        .iter()
+        .rev()
+        .find_map(|e| match e {
+            WorkspaceListEntry::SectionRow { branch_group, .. } => Some(branch_group.as_str()),
+            _ => None,
+        })
+        .unwrap_or("");
     match entries.get(idx + 1) {
         None => 0,
         Some(WorkspaceListEntry::ProjectRow { .. }) => 0,
-        // A hidden header (same-branch exception) paints nothing — its
-        // OWNED row already IS the blank separator, so the gap would
-        // double it (T7 divergence C: "hoje há branco dobrado em alguns
-        // lugares" was exactly gap + hidden-header row).
+        // The next member block of the SAME group: glued (6a — a group
+        // is one section, its blocks contiguous under the header).
+        Some(WorkspaceListEntry::PaneDotsRow { .. }) => 0,
+        // A hidden header (stacked-sections exception) paints nothing —
+        // its OWNED row already IS the blank separator, so the gap
+        // would double it (T7 divergence C: "hoje há branco dobrado em
+        // alguns lugares" was exactly gap + hidden-header row).
         Some(WorkspaceListEntry::SectionRow {
             header_hidden: true,
             ..
@@ -2237,8 +2260,13 @@ fn apply_hidden_filter(
             }
         }
         match entry {
+            // 6a: `PaneDotsRow` is the workspace child the hidden filter
+            // counts — every member has exactly one block. A
+            // `SectionRow` is the GROUP container now (its `ws_idx`
+            // names only the representative), so it stopped being a
+            // child and became a header below.
             WorkspaceListEntry::Workspace { ws_idx, .. }
-            | WorkspaceListEntry::SectionRow { ws_idx, .. } => {
+            | WorkspaceListEntry::PaneDotsRow { ws_idx, .. } => {
                 let hidden = ws_hidden(*ws_idx);
                 for &h in &open {
                     had_child[h] = true;
@@ -2250,11 +2278,11 @@ fn apply_hidden_filter(
             | WorkspaceListEntry::BranchHeader { .. }
             | WorkspaceListEntry::ProjectRow { .. }
             | WorkspaceListEntry::WorktreeRow { .. }
+            | WorkspaceListEntry::SectionRow { .. }
             | WorkspaceListEntry::SectionHeader { .. } => open.push(i),
             WorkspaceListEntry::HiddenHeader { .. }
             | WorkspaceListEntry::SectionItem { .. }
-            | WorkspaceListEntry::PrRow { .. }
-            | WorkspaceListEntry::PaneDotsRow { .. } => {}
+            | WorkspaceListEntry::PrRow { .. } => {}
         }
     }
 
@@ -2262,8 +2290,7 @@ fn apply_hidden_filter(
     let mut hidden_ws: Vec<usize> = Vec::new();
     for (i, entry) in raw.into_iter().enumerate() {
         match &entry {
-            WorkspaceListEntry::Workspace { ws_idx, .. }
-            | WorkspaceListEntry::SectionRow { ws_idx, .. } => {
+            WorkspaceListEntry::Workspace { ws_idx, .. } => {
                 if ws_hidden(*ws_idx) {
                     hidden_ws.push(*ws_idx);
                 } else {
@@ -2291,6 +2318,16 @@ fn apply_hidden_filter(
             // truth.
             WorkspaceListEntry::PaneDotsRow { ws_idx, .. } => {
                 if !ws_hidden(*ws_idx) {
+                    result.push(entry);
+                }
+            }
+            // 6a: the section row is the GROUP container — it drops when
+            // every member block below it hid (same all-children-hidden
+            // rule as the project row), never on its representative
+            // alone. `wsec:` collapse keys never enter the hidden set,
+            // so `is_hidden` stays false for an expanded group.
+            WorkspaceListEntry::SectionRow { .. } => {
+                if !had_child[i] || has_kept_child[i] {
                     result.push(entry);
                 }
             }
@@ -3716,6 +3753,7 @@ fn render_workspace_list(
                 header_on,
                 header_hidden,
                 show_diff,
+                diff,
                 ..
             } => {
                 // (T7, divergence A: this arm no longer tracks the
@@ -3724,12 +3762,6 @@ fn render_workspace_list(
                 // header's own cluster only.)
                 // T3 (bora-79l): the header line renders only when the
                 // model's switch is ON and the same-branch exception has
-                // not hidden it. A hidden header still OWNS its row
-                // (`entry_row_height` is untouched, so all three lockstep
-                // passes stay in agreement) but paints nothing — the
-                // section's content is the `PaneDotsRow` block below,
-                // which always renders. No selection/active/drag fill
-                // here either (P2, T1): the block carries those.
                 if *header_on && !*header_hidden && row_y < list_bottom {
                     if let Some(ws) = app.workspaces.get(*ws_idx) {
                         let is_worktree = ws
@@ -3737,14 +3769,12 @@ fn render_workspace_list(
                             .is_some_and(|space| space.is_linked_worktree);
                         let branch = ws.branch();
                         let (ahead, behind) = ws.git_ahead_behind().unwrap_or((0, 0));
-                        // The `+N −M` slot reads the same cached change
-                        // set the right panel does (`workspace_diff_counts`),
-                        // gated by the section model's `parts.diff`.
-                        let diff = if *show_diff {
-                            workspace_diff_counts(ws)
-                        } else {
-                            None
-                        };
+                        // 6a: the `+N −M` slot is the GROUP's summed
+                        // change set (folded at emission over every
+                        // member, `SectionRow::diff`'s doc), gated by the
+                        // section model's `parts.diff` — never a single
+                        // member's numbers wearing the group's header.
+                        let diff = if *show_diff { *diff } else { None };
                         let pr = ws
                             .cached_check_status
                             .as_ref()
@@ -9272,21 +9302,22 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
         // so the gap only applied after the LAST sibling `PaneRow` of a
         // block. `PaneDotsRow` replaced the whole per-workspace block with
         // exactly ONE 2-line block (bora-79l F2's l1/l2 split). T7
-        // (bora-79l, divergence C) then narrowed the gap to BRANCH GROUPS:
-        // it fires only when the next section belongs to a different
-        // `branch_group`. Fica vermelho se o gap voltar a disparar entre
-        // quaisquer dois blocos (ou deixar de disparar entre grupos
-        // diferentes): as alturas abaixo mudariam de 3/2 para 2/3.
+        // (bora-79l, divergence C) then narrowed the gap to BRANCH GROUPS.
+        // 6a keeps the rule in the group shape: the LAST member block of
+        // a group separates from the next group's header. Fica vermelho
+        // se o gap voltar a disparar entre quaisquer dois blocos (ou
+        // deixar de disparar entre grupos diferentes): as alturas abaixo
+        // mudariam de 3/2 para 2/3.
         let entries = vec![
             WorkspaceListEntry::SectionRow {
                 ws_idx: 0,
                 checkout_key: "k1".into(),
                 collapse_key: "wsec:0".into(),
-                name_hint: None,
                 header_on: true,
                 header_hidden: false,
                 show_diff: true,
                 branch_group: "g1".into(),
+                diff: None,
             },
             WorkspaceListEntry::PaneDotsRow {
                 ws_idx: 0,
@@ -9296,11 +9327,11 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
                 ws_idx: 1,
                 checkout_key: "k2".into(),
                 collapse_key: "wsec:1".into(),
-                name_hint: None,
                 header_on: true,
                 header_hidden: false,
                 show_diff: true,
                 branch_group: "g2".into(),
+                diff: None,
             },
             WorkspaceListEntry::PaneDotsRow {
                 ws_idx: 1,
@@ -9332,38 +9363,32 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
     }
 
     #[test]
-    fn row_gap_glues_sibling_workspaces_of_one_branch_group() {
-        // T7 (bora-79l, divergence C): dentro de uma mesma branch os blocos
-        // das workspaces irmãs são contíguos — o branco separa apenas o fim
-        // de um grupo do próximo header (ALVO_CAPTURE rows 04-07 coladas,
-        // row 08 em branco). Fica vermelho se irmãs da mesma branch ganharem
-        // uma linha em branco entre si (a l1 do par seguinte desceria uma
-        // row) ou se grupos diferentes colarem.
+    fn row_gap_glues_member_blocks_of_one_branch_group() {
+        // T7 (bora-79l, divergence C) + 6a: dentro de uma mesma branch os
+        // blocos das workspaces membros são contíguos DEBAIXO da header
+        // única do grupo — o branco separa apenas o fim de um grupo do
+        // próximo header (ALVO_CAPTURE rows 04-07 coladas sob a header
+        // `⎇ main`, row 08 em branco). Fica vermelho se membros do mesmo
+        // grupo ganharem uma linha em branco entre si, se grupos
+        // diferentes colarem, ou se uma header OCULTA (exceção
+        // sections-empilhadas) voltar a dobrar o branco.
         let entries = vec![
             WorkspaceListEntry::SectionRow {
                 ws_idx: 0,
                 checkout_key: "k1".into(),
                 collapse_key: "wsec:0".into(),
-                name_hint: None,
                 header_on: true,
                 header_hidden: false,
                 show_diff: true,
                 branch_group: "same".into(),
+                diff: None,
             },
             WorkspaceListEntry::PaneDotsRow {
                 ws_idx: 0,
                 name: "ws0".into(),
             },
-            WorkspaceListEntry::SectionRow {
-                ws_idx: 1,
-                checkout_key: "k2".into(),
-                collapse_key: "wsec:1".into(),
-                name_hint: None,
-                header_on: true,
-                header_hidden: false,
-                show_diff: true,
-                branch_group: "same".into(),
-            },
+            // 6a: the second member of the SAME group — no SectionRow of
+            // its own anymore, just the block glued under the header.
             WorkspaceListEntry::PaneDotsRow {
                 ws_idx: 1,
                 name: "ws1".into(),
@@ -9372,29 +9397,29 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
                 ws_idx: 2,
                 checkout_key: "k3".into(),
                 collapse_key: "wsec:2".into(),
-                name_hint: None,
                 header_on: true,
                 header_hidden: false,
                 show_diff: true,
                 branch_group: "other".into(),
+                diff: None,
             },
             WorkspaceListEntry::PaneDotsRow {
                 ws_idx: 2,
                 name: "ws2".into(),
             },
-            // A third group whose upper header is HIDDEN (same-branch
-            // exception): the hidden header's own row is the separator,
-            // so the block above it gets no gap — a gap there was the
-            // double blank the owner pointed at.
+            // A group whose header is HIDDEN (the stacked-sections
+            // same-branch exception): the hidden header's own row is the
+            // separator, so the block above it gets no gap — a gap there
+            // was the double blank the owner pointed at.
             WorkspaceListEntry::SectionRow {
                 ws_idx: 3,
                 checkout_key: "k4".into(),
                 collapse_key: "wsec:3".into(),
-                name_hint: None,
                 header_on: true,
                 header_hidden: true,
                 show_diff: true,
                 branch_group: "third".into(),
+                diff: None,
             },
             WorkspaceListEntry::PaneDotsRow {
                 ws_idx: 3,
@@ -9406,9 +9431,9 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
             .collect();
         assert_eq!(
             heights,
-            vec![1, 2, 1, 3, 1, 2, 1, 2],
-            "sibling same-branch blocks glue (2), the block before a NEW \
-             group's VISIBLE header separates (3), and a HIDDEN next \
+            vec![1, 2, 3, 1, 2, 1, 2],
+            "member blocks of one group glue (2), the LAST block before a \
+             NEW group's VISIBLE header separates (3), and a HIDDEN next \
              header's own row already separates (2): {entries:?}"
         );
     }
@@ -10025,7 +10050,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
                 ws_idx: 0,
                 checkout_key: "checkout:1".into(),
                 collapse_key: "wsec:0".into(),
-                name_hint: None,
+                diff: None,
                 header_on: true,
                 header_hidden: false,
                 show_diff: true,
@@ -10206,7 +10231,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
                 ws_idx: 5,
                 checkout_key: "checkout:5".into(),
                 collapse_key: "wsec:5".into(),
-                name_hint: None,
+                diff: None,
                 header_on: true,
                 header_hidden: false,
                 show_diff: true,
@@ -10365,7 +10390,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
                 ws_idx: 0,
                 checkout_key: "checkout:1".into(),
                 collapse_key: "wsec:0".into(),
-                name_hint: None,
+                diff: None,
                 header_on: true,
                 header_hidden: false,
                 show_diff: true,
@@ -10458,7 +10483,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
             ws_idx: 0,
             checkout_key: "checkout:1".into(),
             collapse_key: "wsec:0".into(),
-            name_hint: None,
+            diff: None,
             header_on: true,
             header_hidden: false,
             show_diff: true,
@@ -10510,7 +10535,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
             ws_idx: 0,
             checkout_key: "checkout:1".into(),
             collapse_key: "wsec:0".into(),
-            name_hint: None,
+            diff: None,
             header_on: true,
             header_hidden: true,
             show_diff: true,
@@ -10538,7 +10563,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
             ws_idx: 0,
             checkout_key: "checkout:1".into(),
             collapse_key: "wsec:0".into(),
-            name_hint: None,
+            diff: None,
             header_on: true,
             header_hidden: false,
             show_diff: true,

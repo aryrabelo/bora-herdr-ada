@@ -527,23 +527,26 @@ Rules:
 
 ## Beads durability in this repo — read before trusting the backlog
 
-This repo's `bd` runs in `dolt_mode: server` against the shared central server
-`dolt.bugtoprompt.com:3307` as user `bd_ops`. Two facts that a healthy-looking
-`bd ready` does not tell you, both measured 2026-08-24:
+This repo's `bd` runs in `dolt_mode: server` against a **local** `dolt
+sql-server` that bd auto-starts (`dolt.auto-start: true`), data-dir
+`.beads/dolt/`, database `bora`. It was cut over from the shared central server
+`dolt.bugtoprompt.com:3307` (user `bd_ops`, RTT ~253ms) on 2026-08-27; server
+mode rather than embedded because two or more agents write concurrently from
+worktrees. Facts that a healthy-looking `bd ready` does not tell you:
 
-- **There is no off-machine database backup, and the two supported routes are
-  both blocked from here.** `bd dolt push` returns
-  `Error 1105 (HY000): command denied to user 'bd_ops'@'%'` — `refs/dolt/*` does
-  not exist on `origin` and cannot be seeded from a client, because the push
-  would run server-side and that user has no push grant (nor would the VPS hold
-  this machine's GitHub credentials). `bd backup init <local dir>` does not
-  substitute: the server writes to *its* filesystem, which is exactly what bd's
-  own `auto-backup skipped — server filesystem differs from client` line on
-  every command is reporting. The unblocking action needs a credential only the
-  owner can supply: a DoltHub remote (`bd backup init
-  https://doltremoteapi.dolthub.com/<user>/<repo>` plus `DOLT_REMOTE_USER` /
-  `DOLT_REMOTE_PASSWORD`), or a push grant for `bd_ops` on the server.
-- **The only off-machine copy is the tracked `.beads/issues.jsonl`, and it is
+- **The off-machine database copy is `refs/dolt/data` on `origin`, and it exists
+  only because the server is local.** With the central server it was impossible:
+  `bd dolt push` returned `Error 1105 (HY000): command denied to user
+  'bd_ops'@'%'`, because the push ran server-side on a VPS that held neither the
+  push grant nor this machine's GitHub credentials — the same reason `bd backup
+  init <local dir>` printed `auto-backup skipped — server filesystem differs
+  from client` on every command. The local cutover fixed both: `dolt.auto-push:
+  true` pushes to `sync.remote` (`git+ssh://git@github.com/aryrabelo/bora-herdr-ada.git`)
+  every 5m, and `refs/dolt/data` is now present on `origin` — verify with
+  `git ls-remote origin 'refs/dolt/*'` and read `.beads/push-state.json` for the
+  last push. `dolt.auto-push-timeout` is 120s on purpose: the 30s default
+  overruns silently against a real ~30-40s push (measured).
+- **The second off-machine copy is the tracked `.beads/issues.jsonl`, and it is
   issue-level, not a database.** It carries labels, dependencies and comments
   per issue; it carries no Dolt branches, no commit history, no working-set
   state. It is also *only as fresh as the last `bd export`* — it sat 2 days
@@ -562,6 +565,39 @@ that empty database and reports healthy. One was found and moved out on
 2026-08-24; its `config.yaml` also carried `listener.port: 3307`, the central
 server's port on loopback, which is level 3 of bd's port-resolution chain.
 (learned 2026-08-24, binding.)
+
+- **Moving the repository directory breaks a RUNNING dolt server, and the
+  process cwd hides it.** `dolt sql-server` resolves its data-dir to an absolute
+  path once, at startup, and registers each database under that path; the path
+  is not re-resolved. Move the checkout — this one went `~/Sites/oss-team/bora`
+  → `~/Sites/personal-team/bora` when `oss-team` was folded into
+  `personal-team` — and every command fails with
+  `Error 1049 (HY000): database not found: bora`, while `bd doctor` reports
+  "Missing tables: [issues dependencies config labels events]" and tells you to
+  run `bd init`. **Do not run `bd init`.** The data is intact; only the running
+  server is pointing at a path that no longer exists. Do NOT trust `lsof -p
+  <pid> -d cwd` to diagnose it either: cwd tracks the directory *inode*, so it
+  reports the new, correct path and makes the server look properly located. The
+  fix is `bd dolt stop && bd dolt start` — one restart, no data touched. This is
+  per-repo and fleet-wide: after any directory move, sweep every repo with
+  `for d in ~/Sites/*/.beads ~/Sites/*/*/.beads; do (cd $(dirname $d) && bd ready
+  >/dev/null 2>&1) || echo "BROKEN: $d"; done` — `personal-team/arycast` had the
+  identical break and was found only by that sweep. Same family as the stale
+  `target/` cache rule under Verification: an absolute path captured at build or
+  start time, failing later in a way whose error text names the wrong culprit.
+  The reference config on this machine is `~/Sites/pp-team/ceo-pp/.beads/` and it
+  is immune by construction: `dolt.mode: embedded`, data at
+  `.beads/embeddeddolt/`, no server, no pid/port/lock files, no captured absolute
+  path — an embedded engine resolves its data-dir per invocation from cwd, so a
+  directory move cannot break it. This repo stays on server mode anyway, for the
+  reason recorded in `.beads/config.yaml`: two or more agents write concurrently
+  from worktrees, which an in-process embedded engine cannot serve. Switching
+  this repo to embedded is NOT a safe one-line config change: `.beads/dolt/`
+  holds the server's OWN dolt root (`.dolt/` with `sql-server.info`) beside the
+  real database at `.beads/dolt/bora/.dolt/`, and embedded mode would serve that
+  empty root — the silent time machine described just above, already visible as
+  `database not found: dolt` in `dolt-server.log`. Move the server root out
+  first if the mode ever changes. (learned 2026-08-28, binding.)
 
 <!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:970c3bf2 -->
 ## Beads Issue Tracker

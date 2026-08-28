@@ -124,14 +124,17 @@ fn mobile_agents_block_height(app: &AppState) -> usize {
 
 /// Mobile switcher space entries: workspaces only. The mobile switcher renders
 /// no visual-group header rows, so hit-test and row math must use the same
-/// header-free list as the render loop.
+/// header-free list as the render loop. 6a: in Project view the workspace's
+/// representation is its `PaneDotsRow` block (the `SectionRow` is the branch
+/// group's container, representative only) — the block list IS the workspace
+/// list now.
 fn mobile_space_entries(app: &AppState) -> Vec<WorkspaceListEntry> {
     workspace_list_entries_expanded(app)
         .into_iter()
         .filter(|entry| {
             matches!(
                 entry,
-                WorkspaceListEntry::Workspace { .. } | WorkspaceListEntry::SectionRow { .. }
+                WorkspaceListEntry::Workspace { .. } | WorkspaceListEntry::PaneDotsRow { .. }
             )
         })
         .collect()
@@ -149,7 +152,7 @@ pub(crate) fn mobile_switcher_workspace_doc_range(
             matches!(
                 entry,
                 WorkspaceListEntry::Workspace { ws_idx, .. }
-                    | WorkspaceListEntry::SectionRow { ws_idx, .. }
+                    | WorkspaceListEntry::PaneDotsRow { ws_idx, .. }
                     if *ws_idx == idx
             )
         })
@@ -217,7 +220,7 @@ pub(crate) fn mobile_switcher_target_at(
         let entry_idx = (doc_row - cursor) / 2;
         return space_entries.get(entry_idx).and_then(|entry| match entry {
             WorkspaceListEntry::Workspace { ws_idx, .. }
-            | WorkspaceListEntry::SectionRow { ws_idx, .. } => {
+            | WorkspaceListEntry::PaneDotsRow { ws_idx, .. } => {
                 Some(MobileSwitcherTarget::Workspace(*ws_idx))
             }
             // Headers are filtered out of mobile_space_entries; be tolerant of
@@ -687,10 +690,11 @@ fn render_mobile_switcher_content(
             WorkspaceListEntry::Workspace {
                 ws_idx, indented, ..
             } => (*ws_idx, *indented),
-            // bora-c1h: every Project-view workspace is now its own full
-            // section (no more nested "indented worktree" shape), so it
-            // renders flat, the same as a top-level Flat-view workspace.
-            WorkspaceListEntry::SectionRow { ws_idx, .. } => (*ws_idx, false),
+            // 6a: the Project-view workspace's representation is its own
+            // `PaneDotsRow` block — flat, the same as a top-level
+            // Flat-view workspace (the branch group's `SectionRow` is a
+            // container, not a card).
+            WorkspaceListEntry::PaneDotsRow { ws_idx, .. } => (*ws_idx, false),
             _ => continue,
         };
         let Some(ws) = app.workspaces.get(ws_idx) else {

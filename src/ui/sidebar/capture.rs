@@ -590,7 +590,12 @@ fn alvo_fixture() -> (IsolatedDirs, FakeGitCheckout, AppState) {
         scratch,
         hotfix,
     ];
-    app.active = Some(0);
+    // 6a: no ACTIVE workspace during the capture — the alvo pins the
+    // unfocused structure, and the `▎` active bar (T1's overlay, pinned
+    // by the T1 geometry tests in `app::input::mouse`) would otherwise
+    // overwrite the block's first indent cell on rows 04-05 and make the
+    // contract compare a transient focus state instead of the shape.
+    app.active = None;
     app.ensure_test_terminals();
 
     // Alvo state per block, in fixture order. Semantics documented above.
@@ -1305,15 +1310,17 @@ mod tests {
         }
     }
 
-    /// P4-A — the contract test the following leaves unlock. Born
-    /// `#[ignore]`d on purpose: it compares today's REAL rendering of the
-    /// alvo fixture against the ALVO_CAPTURE contract line by line, and
-    /// today they differ by design (that difference IS the backlog). Run
-    /// with:
-    /// `cargo nextest run -E 'test(p4a)' -- --ignored`
-    /// F8 removes the `#[ignore]` once the rendering converges.
+    /// P4-A — the executable contract. Born `#[ignore]`d because the
+    /// F1..F7 leaves converged the rendering onto ALVO_CAPTURE one
+    /// divergence at a time; T6 pass 6a (bora-79l.10) unlocked it: the
+    /// Section-as-container emission (ONE header per branch group at the
+    /// top, member blocks contiguous, the group's diff cluster summed)
+    /// closed the last structural divergences (rows 03-05/09-11: the
+    /// header used to fall BETWEEN the blocks of one branch). The
+    /// fixture also stopped pinning an ACTIVE workspace — the `▎` bar
+    /// is T1's transient overlay, not structure. Run with:
+    /// `cargo nextest run -E 'test(p4a)'`
     #[test]
-    #[ignore = "P4-A: the F1..F7 leaves converge the rendering onto ALVO_CAPTURE; F8 unlocks"]
     fn p4a_project_view_capture_matches_alvo_line_by_line() {
         let (_isolated, _checkout, app) = alvo_fixture();
         let capture = capture_sidebar(&app, FIXTURE_WIDTH, FIXTURE_HEIGHT);
