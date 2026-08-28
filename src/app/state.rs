@@ -738,6 +738,19 @@ pub enum ProjectRowTarget {
         checkout_key: String,
         collapse_key: String,
     },
+    /// T4 (bora-79l, P3): the SectionRow header's trailing 3-cell "+" —
+    /// create a worktree+workspace in THIS section's context. Carries the
+    /// section's `(repo_identity, branch)` — the branch_group pair, not a
+    /// `ws_idx` — so T6's same-branch section merge re-keys nothing here:
+    /// the drain resolves a live source workspace from the pair. Emitted
+    /// BEFORE the full-row `Section` area of the same row, so
+    /// `project_row_target_at`'s first-match resolves the "+" inside its
+    /// own 3 cells (the same precedence the PaneDotsRow dot cells already
+    /// use against the block card).
+    SectionNew {
+        repo_identity: String,
+        branch: String,
+    },
     /// Activate a row inside a band (run a command, open a check).
     /// Activate a row inside a band: run a command (COMMANDS rows carry
     /// the workspace to launch into), open a check/todo/doc (not wired).
@@ -2183,6 +2196,12 @@ pub struct AppState {
     /// modal for a repo (by `repo_identity`); drained by App to trigger fetches
     /// and open the modal so the mouse handler stays side-effect-light.
     pub request_open_create_worktree: Option<String>,
+    /// Set when a Project-view SectionRow's "+" was clicked (T4, bora-79l):
+    /// `(repo_identity, branch)` of the clicked section — the branch-group
+    /// pair, resolved to a source workspace only at drain time so a stale
+    /// area after a re-render degrades to a no-op instead of creating in the
+    /// wrong repo. Drained by App into `start_section_worktree_create`.
+    pub request_section_worktree_create: Option<(String, String)>,
     pub pending_bora_command: Option<PendingBoraCommand>,
     /// Transient port override consumed by custom_command_env for pane commands.
     pub bora_port_override: Option<u16>,
@@ -2736,6 +2755,7 @@ impl AppState {
             request_open_pr_worktree: None,
             request_flow_run: None,
             request_open_create_worktree: None,
+            request_section_worktree_create: None,
             pending_bora_command: None,
             bora_port_override: None,
             creating_new_tab: false,

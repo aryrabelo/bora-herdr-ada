@@ -16,6 +16,12 @@ use crate::events::{AppEvent, WorktreeAddResult, WorktreeRemoveResult};
 /// failures in.
 pub(crate) const TUI_WORKTREE_CREATE_FROM_PR_REQUEST_ID: &str = "tui.worktree.create_from_pr";
 
+/// Request id for the Project-view SectionRow "+" deferred create (T4,
+/// bora-79l); same no-modal rationale as the PR id above — the deferred
+/// error path keys a toast off it.
+pub(crate) const TUI_WORKTREE_CREATE_FROM_SECTION_REQUEST_ID: &str =
+    "tui.worktree.create_from_section";
+
 impl App {
     fn worktree_source_metadata(
         &self,
@@ -1494,6 +1500,65 @@ impl App {
                 crate::app::state::ToastKind::Finished,
                 "opening PR in worktree",
                 format!("#{number}"),
+            );
+        }
+    }
+
+    /// Create a worktree+workspace from a Project-view SectionRow's "+"
+    /// (T4, bora-79l) via the SAME deferred worktree.create path the PR
+    /// row and the create modal reach — never a second creation route.
+    /// The section's `(repo_identity, branch)` resolves the source
+    /// workspace: its checkout IS that branch's tip, so the backend's
+    /// `base = HEAD` default starts the new branch exactly there. The
+    /// branch itself is left `None` on purpose — the backend then calls
+    /// `generated_branch_slug`, the one unique-random-name generator
+    /// every other mode's + already uses (the modal's seed and this same
+    /// default), and the resulting checkout name becomes the workspace's
+    /// own name.
+    ///
+    /// No match → silent return, mirroring `start_pr_worktree_create`'s
+    /// stale-geometry handling: the window between render and click is
+    /// one frame, and the next render drops the area.
+    pub(crate) fn start_section_worktree_create(&mut self, repo_identity: &str, branch: &str) {
+        let Some(workspace_id) = self
+            .state
+            .workspaces
+            .iter()
+            .find(|ws| {
+                ws.branch().as_deref() == Some(branch)
+                    && ws
+                        .git_space()
+                        .is_some_and(|space| space.repo_identity == repo_identity)
+            })
+            .map(|ws| ws.id.clone())
+        else {
+            tracing::warn!(
+                repo_identity,
+                branch,
+                "section worktree create: no open workspace on this branch group"
+            );
+            return;
+        };
+        tracing::info!(repo_identity, branch, "starting section worktree create");
+        let immediate_response = self.dispatch_deferred_runtime_mutation(
+            TUI_WORKTREE_CREATE_FROM_SECTION_REQUEST_ID,
+            crate::api::schema::Method::WorktreeCreate(crate::api::schema::WorktreeCreateParams {
+                workspace_id: Some(workspace_id),
+                focus: true,
+                ..Default::default()
+            }),
+        );
+        if let Some(message) = immediate_api_error_message(immediate_response.as_deref()) {
+            self.show_worktree_op_toast(
+                crate::app::state::ToastKind::NeedsAttention,
+                "create workspace failed",
+                message,
+            );
+        } else {
+            self.show_worktree_op_toast(
+                crate::app::state::ToastKind::Finished,
+                "creating workspace",
+                format!("{repo_identity} {branch}"),
             );
         }
     }

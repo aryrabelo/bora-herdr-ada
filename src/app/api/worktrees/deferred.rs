@@ -407,12 +407,21 @@ impl App {
                     create.error = Some(err.clone());
                 }
             }
-            // The sidebar PR action has no modal and drops its responder after
-            // dispatch, so surface the failure as a toast.
-            if api.id == crate::app::worktrees::TUI_WORKTREE_CREATE_FROM_PR_REQUEST_ID {
+            // The sidebar actions (PR row, SectionRow "+") have no modal and
+            // drop their responder after dispatch, so surface the failure as
+            // a toast.
+            if api.id == crate::app::worktrees::TUI_WORKTREE_CREATE_FROM_PR_REQUEST_ID
+                || api.id == crate::app::worktrees::TUI_WORKTREE_CREATE_FROM_SECTION_REQUEST_ID
+            {
+                let title =
+                    if api.id == crate::app::worktrees::TUI_WORKTREE_CREATE_FROM_PR_REQUEST_ID {
+                        "open PR in worktree failed"
+                    } else {
+                        "create workspace failed"
+                    };
                 self.show_worktree_op_toast(
                     crate::app::state::ToastKind::NeedsAttention,
-                    "open PR in worktree failed",
+                    title,
                     err.clone(),
                 );
             }

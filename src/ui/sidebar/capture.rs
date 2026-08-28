@@ -510,6 +510,14 @@ fn alvo_fixture() -> (IsolatedDirs, FakeGitCheckout, AppState) {
     let mut app = AppState::test_new();
     app.view_mode = crate::config::ViewMode::Project;
     app.mode = Mode::Terminal;
+
+    // T4 (bora-79l): the SectionRow "+" renders only under mouse capture
+    // (the Flat/Repo affordance's own gate), so the alvo fixture runs
+    // capture-off to keep the P4-A contract honest — ALVO_CAPTURE predates
+    // the "+" and pins the cluster flush at column 56 with no trailing
+    // affordance. The hit-area emission is unaffected (it is not gated on
+    // capture, same as Flat/Repo); only the painted glyph is hidden here.
+    app.mouse_capture = false;
     app.projects = ProjectsStore::load();
 
     let mut main = fixture_workspace("main", "wfix1", "main", "main", false);

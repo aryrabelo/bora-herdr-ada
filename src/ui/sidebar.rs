@@ -2673,12 +2673,14 @@ pub(crate) fn agent_panel_scrollbar_rect(app: &AppState, area: Rect) -> Option<R
 /// testable with hand-built entries and `AppState::test_new()` — no
 /// dependency on the entries builder in `sidebar::project_view`.
 ///
-/// `app` exists ONLY for `PaneDotsRow`: its per-dot hit areas need each
-/// pane's live `pane_id`, which (unlike every other row here) is not
-/// carried on the entry — `PaneDotsRow`'s doc comment explains why. Reading
-/// `app.workspaces[ws_idx]` here mirrors `render_workspace_list`'s own
-/// `SectionRow` arm, which already needs the same lookup for git/PR state;
-/// this function just extends that to the pane list itself.
+/// `app` exists for `PaneDotsRow` and `SectionRow`: the dots' per-dot hit
+/// areas need each pane's live `pane_id`, which (unlike every other row
+/// here) is not carried on the entry (`PaneDotsRow`'s doc comment explains
+/// why), and the header's `SectionNew` "+" target (T4, bora-79l) carries
+/// the section's `(repo_identity, branch)` read from the live workspace at
+/// walk time — the same render-time-read rule the `SectionRow` render arm
+/// already states for git/PR state, kept off the entry so a stale branch
+/// can never outlive one frame.
 fn workspace_list_areas_for_entries(
     entries: &[WorkspaceListEntry],
     app: &AppState,
@@ -2776,6 +2778,41 @@ fn workspace_list_areas_for_entries(
                 // itself still advances `row_y` via `entry_row_height`,
                 // keeping this pass in lockstep with the renderer.
                 if *header_on && !*header_hidden {
+                    // T4 (bora-79l, P3): the header's trailing 3-cell "+"
+                    // (create worktree in THIS section's context) — the
+                    // same affordance the Flat/Repo repo headers carry
+                    // (`worktree_new_hit_areas_from_headers`). It rides
+                    // `project_rows` as its own target rather than the
+                    // shared `worktree_new_hit_areas` vec because the
+                    // dispatcher resolves `project_row_areas` FIRST, so a
+                    // full-row `Section` area would otherwise swallow the
+                    // click before the shared vec is ever consulted.
+                    // Pushed BEFORE that area: `project_row_target_at`
+                    // takes the first match, so inside the + cells the +
+                    // wins and everywhere else on the row the Section
+                    // behavior (collapse via caret, press suppression)
+                    // is exactly as before — the same precedence the
+                    // PaneDotsRow dot cells use against the block card.
+                    // The target keys on the section's (repo, branch) —
+                    // the branch_group pair, never `ws_idx` — so T6's
+                    // same-branch section merge re-keys nothing. No
+                    // emission without git identity + branch: the row
+                    // renders, but there is no repo to create in.
+                    if body.width >= 3 {
+                        if let Some((repo_identity, branch)) =
+                            app.workspaces.get(*ws_idx).and_then(|ws| {
+                                Some((ws.git_space()?.repo_identity.clone(), ws.branch()?))
+                            })
+                        {
+                            project_rows.push(ProjectRowHitArea {
+                                rect: Rect::new(body.x + body.width - 3, row_y, 3, 1),
+                                target: ProjectRowTarget::SectionNew {
+                                    repo_identity,
+                                    branch,
+                                },
+                            });
+                        }
+                    }
                     project_rows.push(ProjectRowHitArea {
                         rect: Rect::new(body.x, row_y, body.width, 1),
                         target: ProjectRowTarget::Section {
@@ -3726,6 +3763,28 @@ fn render_workspace_list(
                             .as_ref()
                             .and_then(|status| crate::workspace::checks_rollup(&status.checks));
                         let glyphs = crate::config::project_glyphs(app.sidebar_project.glyph_style);
+                        // T4 (bora-79l, P3): the header's "+" overlay —
+                        // the Flat/Repo affordance convention (3 cells,
+                        // trailing edge, overlay1, `mouse_capture`-gated).
+                        // Unlike the Flat/Repo headers, whose content
+                        // rarely reaches the edge, this row's state
+                        // cluster pins FLUSH right (T7 divergence B), so
+                        // the cluster's width budget is shrunk by the
+                        // reserve instead of letting the glyph overwrite
+                        // cluster cells — `section_row_line`'s own rule
+                        // ("the cluster never loses a cell") extended to
+                        // the +. Painted only when the hit area would be
+                        // emitted (git identity + branch resolve): a
+                        // glyph with no action is a dead affordance.
+                        let plus_w = if app.mouse_capture
+                            && body.width >= 3
+                            && ws.git_space().is_some()
+                            && ws.branch().is_some()
+                        {
+                            3
+                        } else {
+                            0
+                        };
                         frame.render_widget(
                             Paragraph::new(section_row_line(
                                 is_worktree,
@@ -3737,10 +3796,16 @@ fn render_workspace_list(
                                 checks,
                                 &glyphs,
                                 p,
-                                body.width,
+                                body.width - plus_w,
                             )),
                             Rect::new(body.x, row_y, body.width, 1),
                         );
+                        if plus_w > 0 {
+                            frame.render_widget(
+                                Paragraph::new(" + ").style(Style::default().fg(p.overlay1)),
+                                Rect::new(body.x + body.width - 3, row_y, 3, 1),
+                            );
+                        }
                     }
                 }
             }
@@ -10375,6 +10440,181 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
                 ws_idx: 3,
                 number: 42
             }
+        );
+    }
+
+    #[test]
+    fn section_row_emits_plus_area_before_the_section_area_keyed_by_branch_group() {
+        // T4 (bora-79l, P3): a visible SectionRow emits a 3-cell
+        // `SectionNew` hit area at the row's trailing edge, carrying the
+        // section's (repo_identity, branch) — the branch-group pair, never
+        // a ws_idx (T6 re-keys nothing). Fica vermelho se:
+        // - a emissão sumir (Project view fica sem +, o wiring inexistente
+        //   de novo);
+        // - a área vier DEPOIS da Section (project_row_target_at pega a
+        //   primeira — o clique no + cairia no toggle de collapse);
+        // - o par vier trocado/ausente (a criação miraria outro repo).
+        let entries = vec![WorkspaceListEntry::SectionRow {
+            ws_idx: 0,
+            checkout_key: "checkout:1".into(),
+            collapse_key: "wsec:0".into(),
+            name_hint: None,
+            header_on: true,
+            header_hidden: false,
+            show_diff: true,
+            branch_group: "g".into(),
+        }];
+        let body = Rect::new(2, 5, 30, 20);
+        let mut app = AppState::test_new();
+        app.workspaces = vec![git_space_member_on_branch("proj", "key-p", false, "main")];
+
+        let (_, _, project_rows) = workspace_list_areas_for_entries(&entries, &app, 0, body, 0);
+
+        assert_eq!(
+            project_rows.len(),
+            2,
+            "the + and the full-row Section area, nothing else: {project_rows:?}"
+        );
+        assert_eq!(
+            project_rows[0].target,
+            ProjectRowTarget::SectionNew {
+                repo_identity: "key-p".into(),
+                branch: "main".into(),
+            },
+            "the + comes FIRST so first-match hit-testing wins inside its cells"
+        );
+        assert_eq!(
+            project_rows[0].rect,
+            Rect::new(body.x + body.width - 3, body.y, 3, 1),
+            "same 3-cell trailing-edge convention as the Flat/Repo headers"
+        );
+        assert_eq!(
+            project_rows[1].target,
+            ProjectRowTarget::Section {
+                ws_idx: 0,
+                checkout_key: "checkout:1".into(),
+                collapse_key: "wsec:0".into(),
+            },
+            "the full-row Section area is still emitted — moving areas never \
+             drops one (AGENTS.md binding rule)"
+        );
+    }
+
+    #[test]
+    fn section_row_hidden_header_emits_no_plus_area() {
+        // A hidden header paints nothing (T3's same-branch exception / model
+        // switch) — a + on an invisible row would be a dead glyph AND a
+        // dead click. Fica vermelho se o + passar a pintar/emitir em rows
+        // ocultas.
+        let entries = vec![WorkspaceListEntry::SectionRow {
+            ws_idx: 0,
+            checkout_key: "checkout:1".into(),
+            collapse_key: "wsec:0".into(),
+            name_hint: None,
+            header_on: true,
+            header_hidden: true,
+            show_diff: true,
+            branch_group: "g".into(),
+        }];
+        let body = Rect::new(0, 0, 30, 20);
+        let mut app = AppState::test_new();
+        app.workspaces = vec![git_space_member_on_branch("proj", "key-p", false, "main")];
+
+        let (_, _, project_rows) = workspace_list_areas_for_entries(&entries, &app, 0, body, 0);
+
+        assert!(
+            project_rows.is_empty(),
+            "hidden header: no Section, no + — the row only advances row_y: {project_rows:?}"
+        );
+    }
+
+    #[test]
+    fn section_row_without_git_identity_emits_no_plus_area() {
+        // No git space (or no branch) → there is no repo to create a
+        // worktree in: the Section area survives untouched, the + does not
+        // render as a dead affordance. Fica vermelho se o + começar a
+        // existir pra sections sem repo.
+        let entries = vec![WorkspaceListEntry::SectionRow {
+            ws_idx: 0,
+            checkout_key: "checkout:1".into(),
+            collapse_key: "wsec:0".into(),
+            name_hint: None,
+            header_on: true,
+            header_hidden: false,
+            show_diff: true,
+            branch_group: "ws-no-space:x".into(),
+        }];
+        let body = Rect::new(0, 0, 30, 20);
+        let mut app = AppState::test_new();
+        app.workspaces = vec![Workspace::test_new("plain")];
+
+        let (_, _, project_rows) = workspace_list_areas_for_entries(&entries, &app, 0, body, 0);
+
+        assert_eq!(project_rows.len(), 1, "{project_rows:?}");
+        assert!(
+            matches!(project_rows[0].target, ProjectRowTarget::Section { .. }),
+            "Section stays; only the + is withheld"
+        );
+    }
+
+    #[test]
+    fn section_row_plus_paints_under_mouse_capture_and_reserves_cluster_budget() {
+        // T4 (bora-79l, P3): with mouse capture the SectionRow paints the
+        // Flat/Repo-convention " + " at its trailing edge; the cluster's
+        // budget shrinks by those 3 cells instead of being overwritten
+        // (T7 divergence B's flush-right cluster stays intact, just pinned
+        // 3 cells earlier). Without capture the row renders exactly as
+        // before — no glyph, full-width cluster. Fica vermelho se o +
+        // pintar sem captura, sumir com ela, ou comer o cluster.
+        let render = |mouse_capture: bool| -> String {
+            let mut app = AppState::test_new();
+            app.view_mode = crate::config::ViewMode::Project;
+            app.mouse_capture = mouse_capture;
+            app.workspaces = vec![git_space_member_on_branch("proj", "key-p", false, "main")];
+            app.active = Some(0);
+            app.mode = Mode::Terminal;
+            let runtimes = crate::terminal::TerminalRuntimeRegistry::new();
+            let mut terminal = Terminal::new(TestBackend::new(30, 8)).expect("test terminal");
+            terminal
+                .draw(|frame| {
+                    render_workspace_list(&app, &runtimes, frame, Rect::new(0, 0, 30, 8), false)
+                })
+                .expect("workspace list should render");
+            let buffer = terminal.backend().buffer();
+            (0..8)
+                .map(|y| row_text(buffer, y, 30))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+
+        let with_plus = render(true);
+        assert!(
+            with_plus.contains('\u{2387}'),
+            "the section header renders: {with_plus:?}"
+        );
+        let header_row = with_plus
+            .lines()
+            .find(|line| line.contains('\u{2387}'))
+            .expect("header row");
+        assert!(
+            header_row.trim_end().ends_with('+'),
+            "the + rides the trailing edge, Flat/Repo convention: {header_row:?}"
+        );
+
+        let without_plus = render(false);
+        assert!(
+            !without_plus.contains(" + "),
+            "no mouse capture, no glyph: {without_plus:?}"
+        );
+        let bare_header = without_plus
+            .lines()
+            .find(|line| line.contains('\u{2387}'))
+            .expect("header row");
+        assert!(
+            !bare_header.trim_end().ends_with('+'),
+            "capture-off renders the row exactly as before (the P4-A fixture \
+             shape — cluster-less rows stay as short as their content): \
+             {bare_header:?}"
         );
     }
 }

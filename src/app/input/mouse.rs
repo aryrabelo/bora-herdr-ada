@@ -2631,6 +2631,17 @@ impl AppState {
                 self.request_open_pr_worktree = Some((ws_idx, number));
                 None
             }
+            // T4 (bora-79l, P3): the SectionRow header's "+" — defer, like
+            // every App-owned action, resolving nothing here. The pair is
+            // the section's branch-group identity, re-resolved to a source
+            // workspace at drain time (`start_section_worktree_create`).
+            ProjectRowTarget::SectionNew {
+                repo_identity,
+                branch,
+            } => {
+                self.request_section_worktree_create = Some((repo_identity, branch));
+                None
+            }
         }
     }
 
@@ -2705,6 +2716,7 @@ mod tests {
 
     use super::super::{
         app_for_mouse_test, capture_snapshot, mouse, numbered_lines_bytes, root_layout_ratio,
+        unique_temp_path,
     };
     use super::*;
     use crate::app::input::modal::handle_context_menu_key;
@@ -6352,6 +6364,296 @@ mod tests {
 
         assert_eq!(app.state.request_open_create_worktree, Some(identity));
         app.state.assert_invariants_for_test();
+    }
+
+    #[test]
+    fn project_view_section_plus_click_requests_section_worktree_create() {
+        // T4 (bora-79l, P3): clicking the SectionRow header's trailing
+        // 3-cell "+" must reach `start_section_worktree_create` — not the
+        // collapse toggle of the Section area underneath. The areas here
+        // come from the REAL geometry walk (`compute_workspace_list_areas_
+        // all`), so this goes red if any of the wiring drops out: the
+        // emission, the before-Section ordering (first-match hit-test), or
+        // the click arm. It also pins that the + click does NOT collapse
+        // the section and does NOT record a workspace press.
+        let mut app = app_for_mouse_test();
+        app.state.view_mode = crate::config::ViewMode::Project;
+        let identity = "github.com/owner/proj".to_string();
+        let mut ws = Workspace::test_new("proj");
+        ws.cached_git_branch = Some("main".into());
+        ws.cached_git_space = Some(crate::workspace::GitSpaceMetadata {
+            key: "key-p".into(),
+            repo_identity: identity.clone(),
+            checkout_key: "/repo/proj".into(),
+            repo_name: "proj".into(),
+            repo_root: std::path::PathBuf::from("/repo/proj"),
+            is_linked_worktree: false,
+        });
+        app.state.workspaces = vec![ws];
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.ensure_test_terminals();
+
+        let area = app.state.view.sidebar_rect;
+        let (_cards, _headers, project_rows) =
+            crate::ui::compute_workspace_list_areas_all(&app.state, area);
+        let plus = project_rows
+            .iter()
+            .find(|row| {
+                matches!(
+                    row.target,
+                    crate::app::state::ProjectRowTarget::SectionNew { .. }
+                )
+            })
+            .expect("the SectionRow must emit a SectionNew + area");
+        let plus_rect = plus.rect;
+        assert_eq!(
+            plus.target,
+            crate::app::state::ProjectRowTarget::SectionNew {
+                repo_identity: identity.clone(),
+                branch: "main".into(),
+            }
+        );
+        assert!(
+            project_rows.iter().any(|row| matches!(
+                row.target,
+                crate::app::state::ProjectRowTarget::Section { .. }
+            )),
+            "the full-row Section area is still emitted underneath"
+        );
+
+        app.state.view.project_row_areas = project_rows;
+        app.state.handle_mouse(
+            &mut app.terminal_runtimes,
+            crate::app::LOCAL_INPUT_SOURCE,
+            mouse(
+                MouseEventKind::Down(MouseButton::Left),
+                plus_rect.x + 1,
+                plus_rect.y,
+            ),
+        );
+
+        assert_eq!(
+            app.state.request_section_worktree_create,
+            Some((identity, "main".into()))
+        );
+        assert!(
+            app.state.collapsed_space_keys.is_empty(),
+            "the + click must not toggle the section's collapse"
+        );
+        assert!(
+            app.state.workspace_presses.is_empty(),
+            "the + click must not record a workspace press (click-only, like OpenPr)"
+        );
+        app.state.assert_invariants_for_test();
+    }
+
+    /// Local git scaffolding for the T4 demo test (worktrees.rs's own
+    /// helpers are private to its test module): a committed repo on
+    /// `main`.
+    fn section_plus_demo_repo(name: &str) -> std::path::PathBuf {
+        fn git(repo: &std::path::Path, args: &[&str]) {
+            let status = std::process::Command::new("git")
+                .arg("-C")
+                .arg(repo)
+                .args(args)
+                .status()
+                .unwrap();
+            assert!(
+                status.success(),
+                "git -C {} {} failed",
+                repo.display(),
+                args.join(" ")
+            );
+        }
+        let repo = unique_temp_path(name);
+        std::fs::create_dir_all(&repo).unwrap();
+        git(&repo, &["init", "--quiet", "-b", "main"]);
+        git(&repo, &["config", "user.email", "herdr@example.invalid"]);
+        git(&repo, &["config", "user.name", "Herdr Test"]);
+        std::fs::write(repo.join("README.md"), "test\n").unwrap();
+        git(&repo, &["add", "README.md"]);
+        git(&repo, &["commit", "--quiet", "-m", "initial"]);
+        repo
+    }
+    #[tokio::test]
+    async fn section_plus_click_creates_workspace_in_section_with_clickable_block() {
+        // T4 demo (bora-79l.12, gate 2) — the whole chain against real git:
+        // the real geometry walk emits the SectionNew "+" area; a real
+        // mouse click lands in it; App's drain reaches
+        // `start_section_worktree_create`; the deferred worktree.create
+        // runs `git worktree add` on the worker thread; the finished event
+        // opens the workspace; and the new workspace renders in Project
+        // view under the same ProjectRow as the clicked section, with a
+        // clickable PaneDotsRow block (T1: the block is the card). Fica
+        // vermelho em qualquer elo: emissão, clique, drain, criação,
+        // abertura, ou o card pós-criação.
+        let repo = section_plus_demo_repo("section-plus-demo-repo");
+        let worktree_root = unique_temp_path("section-plus-demo-root");
+        let identity = "github.com/owner/demo".to_string();
+
+        let mut app = app_for_mouse_test();
+        app.state.view_mode = crate::config::ViewMode::Project;
+        app.state.worktree_directory = worktree_root.clone();
+        let mut ws = Workspace::test_new("demo");
+        ws.identity_cwd = repo.clone();
+        ws.cached_git_branch = Some("main".into());
+        ws.cached_git_space = Some(crate::workspace::GitSpaceMetadata {
+            key: "demo-key".into(),
+            repo_identity: identity.clone(),
+            checkout_key: repo.display().to_string(),
+            repo_name: "demo".into(),
+            repo_root: repo.clone(),
+            is_linked_worktree: false,
+        });
+        app.state.workspaces = vec![ws];
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.ensure_test_terminals();
+        app.state.view.sidebar_rect = ratatui::layout::Rect::new(0, 0, 40, 20);
+
+        // 1. The real geometry walk emits the "+" for the `main` section.
+        let area = app.state.view.sidebar_rect;
+        let (_cards, _headers, rows) =
+            crate::ui::compute_workspace_list_areas_all(&app.state, area);
+        let plus_rect = rows
+            .iter()
+            .find(|row| {
+                matches!(
+                    row.target,
+                    crate::app::state::ProjectRowTarget::SectionNew { .. }
+                )
+            })
+            .expect("the SectionRow must emit a SectionNew + area")
+            .rect;
+
+        // 2. A real click inside those 3 cells.
+        app.state.view.project_row_areas = rows;
+        app.state.handle_mouse(
+            &mut app.terminal_runtimes,
+            crate::app::LOCAL_INPUT_SOURCE,
+            mouse(
+                MouseEventKind::Down(MouseButton::Left),
+                plus_rect.x + 1,
+                plus_rect.y,
+            ),
+        );
+        assert_eq!(
+            app.state.request_section_worktree_create.take(),
+            Some((identity.clone(), "main".into()))
+        );
+
+        // 3. App's drain (mod.rs's one-liner — same method, same args).
+        app.start_section_worktree_create(&identity, "main");
+
+        // 4. The worker thread ran real git; pump the finished event
+        //    through the same handler App::run uses.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let event = loop {
+            if let Ok(event) = app.event_rx.try_recv() {
+                break event;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "timed out waiting for the worktree create event"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
+        match event {
+            crate::events::AppEvent::WorktreeAddFinished(result) => {
+                app.handle_worktree_add_finished(*result);
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+
+        // 5. The workspace exists, focused, on the shared generator's
+        //    namespaced branch, under the worktree directory.
+        assert_eq!(
+            app.state.workspaces.len(),
+            2,
+            "worktree + workspace created"
+        );
+        assert_eq!(app.state.active, Some(1), "focus: true switched to it");
+        let new_checkout = app.state.workspaces[1].identity_cwd.clone();
+        assert!(
+            new_checkout.starts_with(&worktree_root),
+            "checkout under the configured worktree dir: {new_checkout:?}"
+        );
+        let branch_out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&new_checkout)
+            .args(["branch", "--show-current"])
+            .output()
+            .unwrap();
+        assert!(branch_out.status.success());
+        let new_branch = String::from_utf8(branch_out.stdout)
+            .unwrap()
+            .trim()
+            .to_string();
+        assert!(
+            new_branch.starts_with("worktree/"),
+            "the branch came from generated_branch_slug — the generator the \
+             other modes' + use (its `worktree/` namespace): {new_branch:?}"
+        );
+        // "Na section certa": the new worktree belongs to the clicked
+        // section's repo (membership's repo_root is the source checkout),
+        // not to whatever workspace happened to be focused.
+        assert_eq!(
+            app.state.workspaces[1]
+                .worktree_space()
+                .map(|membership| membership.repo_root.as_path()),
+            Some(repo.as_path()),
+            "membership records the section's repo root"
+        );
+
+        // 6. Post-creation render: the new workspace's block is clickable —
+        //    a WorkspaceCardArea spanning its 2-row PaneDotsRow, resolving
+        //    through the same workspace_at_row every press/drag/switch uses
+        //    — and both sections sit under ONE ProjectRow (the project
+        //    context of the clicked +), whose header carries its own +.
+        let (cards, _headers2, rows2) =
+            crate::ui::compute_workspace_list_areas_all(&app.state, area);
+        let card_rect = cards
+            .iter()
+            .find(|card| card.ws_idx == 1)
+            .expect("the new workspace's PaneDotsRow block must carry a card")
+            .rect;
+        assert_eq!(card_rect.height, 2, "the block spans both rows (T1)");
+        app.state.view.workspace_card_areas = cards;
+        assert_eq!(
+            app.state.workspace_at_row(card_rect.y + 1),
+            Some(1),
+            "a click on the block resolves to the new workspace"
+        );
+        assert_eq!(
+            rows2
+                .iter()
+                .filter(|row| {
+                    matches!(
+                        row.target,
+                        crate::app::state::ProjectRowTarget::Project { .. }
+                    )
+                })
+                .count(),
+            1,
+            "both SectionRows render under the same ProjectRow — the \
+             clicked section's project context: {rows2:?}"
+        );
+        assert!(
+            rows2.iter().any(|row| matches!(
+                row.target,
+                crate::app::state::ProjectRowTarget::SectionNew { .. }
+            )),
+            "the new section's header carries its own + too"
+        );
+
+        for (_, runtime) in app.terminal_runtimes.drain() {
+            runtime.shutdown();
+        }
+        let remove = crate::worktree::build_worktree_remove_command(&repo, &new_checkout, false);
+        crate::worktree::run_worktree_command(&remove).unwrap();
+        let _ = std::fs::remove_dir_all(worktree_root);
+        let _ = std::fs::remove_dir_all(repo);
     }
 
     #[test]

@@ -767,6 +767,7 @@ impl App {
             request_flow_run: None,
             request_open_chat: false,
             request_open_create_worktree: None,
+            request_section_worktree_create: None,
             pending_bora_command: None,
             bora_port_override: None,
             creating_new_tab: false,
@@ -1813,6 +1814,14 @@ impl App {
                 needs_render = true;
             }
 
+            // T4 (bora-79l): a Project-view SectionRow's "+" creates a
+            // worktree+workspace scoped to that section's (repo, branch) —
+            // the same deferred worktree.create path the PR row reaches.
+            if let Some((repo_identity, branch)) = self.state.request_section_worktree_create.take()
+            {
+                self.start_section_worktree_create(&repo_identity, &branch);
+                needs_render = true;
+            }
             if let Some(request) = self.state.request_flow_run.take() {
                 self.start_flow_run(request);
                 needs_render = true;
