@@ -1,36 +1,66 @@
 {
   "schema_version": 1,
   "channel": "preview",
-  "base_version": "0.45.22",
-  "build_id": "2026-08-28-36d2f57a74e0",
-  "commit": "36d2f57a74e0f2c94c0ac0d5c49b681176728baa",
-  "built_at": "2026-08-28T17:40:31Z",
+  "base_version": "0.45.23",
+  "build_id": "2026-08-28-8bdafea4c844",
+  "commit": "8bdafea4c8443a2187a831a9dc7314ab1906dbcd",
+  "built_at": "2026-08-28T18:04:51Z",
   "protocol": 21,
-  "notes": "Preview build 2026-08-28-36d2f57a74e0\n\nBuilt from `36d2f57a74e0` on `master`.\nBase stable: v0.45.22\nCompare: https://github.com/aryrabelo/bora-herdr-ada/compare/fe85ca263b6a2c95b67ca9ccd4c31f49d8db8122...36d2f57a74e0f2c94c0ac0d5c49b681176728baa\n\n### Added\n- Pane dots follow the owner's color ruling \u2014 red stopped, yellow ready \u2014 visible working spinner, band pad above only\n- Yellow name when a pane waits, padded project band, no gap after it\n- Runtime-mountable sections \u2014 create, toggle and persist (bora-79l.10 pass 6b)\n- Section-as-container emission unlocks the p4a alvo contract (bora-79l.10 pass 6a)\n- Plus affordance creates a workspace from project view sections (bora-79l.12)\n- Pane-dots block styled to the target design with animated state dots (bora-79l.11)\n- Branch line becomes a declared section header (bora-79l.5)\n- Workspace affordances move to the pane-dots block in project view (bora-79l.6, bora-79l.7, bora-79l.8)\n\n### Fixed\n- Converge project view render onto the p4-a target (bora-79l t7)\n\n### Maintenance\n- Shared test expectations need one owner, restated independently\n- Record the owner's 0.45.6 regression inventory on T5\n- Configure engineering skills (bd tracker, triage labels, domain docs)\n- Record f7 handover and sync issue export\n- Replace upstream kangal bot with workflow token\n- Publish preview documentation",
+  "notes": "Preview build 2026-08-28-8bdafea4c844\n\nBuilt from `8bdafea4c844` on `master`.\nBase stable: v0.45.23\nCompare: https://github.com/aryrabelo/bora-herdr-ada/compare/36d2f57a74e0f2c94c0ac0d5c49b681176728baa...8bdafea4c8443a2187a831a9dc7314ab1906dbcd\n\n### Fixed\n- Spinners froze in server mode \u2014 shared App::tick_animation owns the animation tick\n\n### Maintenance\n- Publish preview documentation",
   "assets": {
     "linux-x86_64": {
-      "url": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/preview-2026-08-28-36d2f57a74e0/bora-linux-x86_64",
-      "sha256": "9c2144e41cf4bf38aa89eebf98e28f46a06cebd5beb8fea1e642abb6b974ff83"
+      "url": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/preview-2026-08-28-8bdafea4c844/bora-linux-x86_64",
+      "sha256": "6a35d1dab827397de260ad02b95d011bfbdd77d8576b0fb7edca218789998b19"
     },
     "linux-aarch64": {
-      "url": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/preview-2026-08-28-36d2f57a74e0/bora-linux-aarch64",
-      "sha256": "b0047ccc4e08e4e934748f11fb6803c7be1e96a7c3d5e35fbb8cdbc62e9746df"
+      "url": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/preview-2026-08-28-8bdafea4c844/bora-linux-aarch64",
+      "sha256": "780d32ca28932d12ad1fb61be6f12056a6f7fcea1245c28757f5a550f9793619"
     },
     "macos-x86_64": {
-      "url": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/preview-2026-08-28-36d2f57a74e0/bora-macos-x86_64",
-      "sha256": "22328d2a9a68266007fa822dd95a159f57379c4431efc8f25cdc759dce792435"
+      "url": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/preview-2026-08-28-8bdafea4c844/bora-macos-x86_64",
+      "sha256": "83e6011f23645f22669f9a39d16e306b231da6b2b104600299630536498331c4"
     },
     "macos-aarch64": {
-      "url": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/preview-2026-08-28-36d2f57a74e0/bora-macos-aarch64",
-      "sha256": "80cd7c2ca91f6dd363fc286ac64bae251b07b7dcd99451bb68322e336ded1674"
+      "url": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/preview-2026-08-28-8bdafea4c844/bora-macos-aarch64",
+      "sha256": "59eb5589eab8fe3aa1f5f75f26fd2165a8748fba87fb5035e9ee581c7f5022c3"
     },
     "windows-x86_64": {
-      "url": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/preview-2026-08-28-36d2f57a74e0/bora-windows-x86_64.zip",
-      "sha256": "e4cb5374a71ad8f551a17424ce695df2043493be06d2284c6ece3ba0cf241356",
+      "url": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/preview-2026-08-28-8bdafea4c844/bora-windows-x86_64.zip",
+      "sha256": "8a2beab4ac552abfc9a72a9e473d8eb2acbacc25bdd81e1055e867823d473d2d",
       "format": "zip"
     }
   },
   "builds": {
+    "2026-08-28-8bdafea4c844": {
+      "base_version": "0.45.23",
+      "commit": "8bdafea4c8443a2187a831a9dc7314ab1906dbcd",
+      "built_at": "2026-08-28T18:04:51Z",
+      "protocol": 21,
+      "tag": "preview-2026-08-28-8bdafea4c844",
+      "assets": {
+        "linux-x86_64": {
+          "url": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/preview-2026-08-28-8bdafea4c844/bora-linux-x86_64",
+          "sha256": "6a35d1dab827397de260ad02b95d011bfbdd77d8576b0fb7edca218789998b19"
+        },
+        "linux-aarch64": {
+          "url": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/preview-2026-08-28-8bdafea4c844/bora-linux-aarch64",
+          "sha256": "780d32ca28932d12ad1fb61be6f12056a6f7fcea1245c28757f5a550f9793619"
+        },
+        "macos-x86_64": {
+          "url": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/preview-2026-08-28-8bdafea4c844/bora-macos-x86_64",
+          "sha256": "83e6011f23645f22669f9a39d16e306b231da6b2b104600299630536498331c4"
+        },
+        "macos-aarch64": {
+          "url": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/preview-2026-08-28-8bdafea4c844/bora-macos-aarch64",
+          "sha256": "59eb5589eab8fe3aa1f5f75f26fd2165a8748fba87fb5035e9ee581c7f5022c3"
+        },
+        "windows-x86_64": {
+          "url": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/preview-2026-08-28-8bdafea4c844/bora-windows-x86_64.zip",
+          "sha256": "8a2beab4ac552abfc9a72a9e473d8eb2acbacc25bdd81e1055e867823d473d2d",
+          "format": "zip"
+        }
+      }
+    },
     "2026-08-28-36d2f57a74e0": {
       "base_version": "0.45.22",
       "commit": "36d2f57a74e0f2c94c0ac0d5c49b681176728baa",
