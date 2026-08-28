@@ -3442,7 +3442,8 @@ mod tests {
         for (idx, entry) in entries.iter().enumerate() {
             assert_eq!(
                 crate::ui::sidebar::entry_row_height(entry, &entries, idx, 0),
-                crate::ui::sidebar::expected_entry_height(&entries, idx),
+                crate::ui::sidebar::expected_entry_height(&entries, idx)
+                    + crate::ui::sidebar::project_view_trailing_gap(entry, &entries, idx, 0),
                 "entry {idx}: {entry:?}"
             );
         }
@@ -3487,10 +3488,12 @@ mod tests {
         for (idx, entry) in entries.iter().enumerate() {
             assert_eq!(
                 crate::ui::sidebar::entry_row_height(entry, &entries, idx, 0),
-                crate::ui::sidebar::expected_entry_height(&entries, idx),
+                crate::ui::sidebar::expected_entry_height(&entries, idx)
+                    + crate::ui::sidebar::project_view_trailing_gap(entry, &entries, idx, 0),
                 "every Project-view row must match the contracted height — \
                  1, or 2 for a PaneDotsRow (bora-79l F2), or a padded \
-                 project band (R3) — entry {idx}: {entry:?}"
+                 project band (R3) — plus its trailing gap row (R5: the \
+                 plain separator after a band) — entry {idx}: {entry:?}"
             );
         }
 
@@ -4377,12 +4380,16 @@ mod tests {
             .map(|(idx, entry)| crate::ui::sidebar::entry_row_height(entry, &entries, idx, 0))
             .sum();
         let expected_total_height: u16 = (0..entries.len())
-            .map(|idx| crate::ui::sidebar::expected_entry_height(&entries, idx))
+            .map(|idx| {
+                crate::ui::sidebar::expected_entry_height(&entries, idx)
+                    + crate::ui::sidebar::project_view_trailing_gap(&entries[idx], &entries, idx, 0)
+            })
             .sum();
         assert_eq!(
             total_height, expected_total_height,
             "every row in this fixture must match its contracted height \
-             (1, PaneDotsRow 2, padded project band R3): {entries:?}"
+             (1, PaneDotsRow 2, padded project band R3) plus its trailing \
+             gap row (R5): {entries:?}"
         );
 
         // Pass 2: visible-count agrees with the height pass.
@@ -4421,10 +4428,12 @@ mod tests {
         // deliberately unwired — asserting it still is would now pin the row to
         // rendering and doing nothing.
         // R3: index is not row — the project band above is taller than one
-        // row, so sum the contracted heights of everything before it.
+        // row, so sum the spans of everything before it. R5: the spans
+        // include the band's trailing gap row, so this walks
+        // `entry_row_height` — the advance the geometry pass itself uses.
         let pr_row_y = body.y
             + (0..pr_row_idx)
-                .map(|idx| crate::ui::sidebar::expected_entry_height(&entries, idx))
+                .map(|idx| crate::ui::sidebar::entry_row_height(&entries[idx], &entries, idx, 0))
                 .sum::<u16>();
         let pr_area = project_rows
             .iter()
@@ -4452,10 +4461,12 @@ mod tests {
             worktree_area.rect.y,
             body.y
                 + (0..worktree_idx)
-                    .map(|idx| crate::ui::sidebar::expected_entry_height(&entries, idx))
+                    .map(|idx| {
+                        crate::ui::sidebar::entry_row_height(&entries[idx], &entries, idx, 0)
+                    })
                     .sum::<u16>(),
             "the WorktreeRow's hit area must be pushed down by exactly the \
-             preceding rows' heights — the PrRow's included"
+             preceding rows' spans — heights plus R5's trailing gap rows"
         );
 
         // Pass 4: render — the PR number and title text land at the PrRow's
@@ -4478,7 +4489,7 @@ mod tests {
         };
         let render_y = crate::ui::sidebar::WORKSPACE_LIST_TOP_MARGIN_ROWS
             + (0..pr_row_idx)
-                .map(|idx| crate::ui::sidebar::expected_entry_height(&entries, idx))
+                .map(|idx| crate::ui::sidebar::entry_row_height(&entries[idx], &entries, idx, 0))
                 .sum::<u16>();
         let text = row_text(render_y);
         assert!(
@@ -5090,12 +5101,15 @@ mod tests {
                 .collect()
         };
         // R3: the project band above this block is taller than one row,
-        // so the block's first row is the SUM of the preceding contracted
-        // heights, never the entry index (AGENTS.md: "an entry's index is
-        // not its buffer row").
+        // so the block's first row is the SUM of the preceding row spans,
+        // never the entry index (AGENTS.md: "an entry's index is not its
+        // buffer row"). R5: the spans include the trailing gap rows (the
+        // plain separator after each band), which belong to no entry's
+        // contracted height — so this walk uses `entry_row_height`, the
+        // same advance the render and geometry passes use.
         let l1_y = crate::ui::sidebar::WORKSPACE_LIST_TOP_MARGIN_ROWS
             + (0..pane_dots_idx)
-                .map(|idx| crate::ui::sidebar::expected_entry_height(&entries, idx))
+                .map(|idx| crate::ui::sidebar::entry_row_height(&entries[idx], &entries, idx, 0))
                 .sum::<u16>();
         assert!(
             row_text(l1_y).contains("alpha"),

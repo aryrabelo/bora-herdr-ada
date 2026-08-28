@@ -1008,12 +1008,11 @@ fn entry_row_height(
         WorkspaceListEntry::BranchHeader { .. } => 1,
         WorkspaceListEntry::Workspace { .. } => 1,
         WorkspaceListEntry::HiddenHeader { .. } => 1,
-        // R3: the filled band grows by its padding rows, which belong to
-        // the header itself — `project_band_pads`' doc.
-        WorkspaceListEntry::ProjectRow { .. } => {
-            let (top, bottom) = project_band_pads(entries, idx);
-            1 + top + bottom
-        }
+        // R3, refined the same day (owner saw it rendered): the band grows
+        // by ONE pad row above its text — `project_band_top_pad`'s doc. The
+        // breathing room BELOW the band is a plain row now, not band
+        // (`project_view_trailing_gap`).
+        WorkspaceListEntry::ProjectRow { .. } => 1 + project_band_top_pad(entries, idx),
         WorkspaceListEntry::WorktreeRow { .. } => 1,
         WorkspaceListEntry::SectionRow { .. } => 1,
         WorkspaceListEntry::SectionHeader { .. } => 1,
@@ -1032,37 +1031,35 @@ fn entry_row_height(
     base + project_view_trailing_gap(entry, entries, idx, row_gap)
 }
 
-/// Padding rows inside a project header's filled band (R3, owner's
-/// inventory 2026-08-28): one blank BAND-COLORED row above the first
-/// header of a run and one below the last, none between siblings.
+/// Padding row inside a project header's filled band (R3, refined by the
+/// owner's second ruling of 2026-08-28): ONE blank BAND-COLORED row above
+/// the first header of a run, none below, none between siblings.
 ///
-/// Consecutive `ProjectRow`s render as ONE continuous band (the owner's
-/// screenshot: `CI-RUNNERS`/`DOTFILES` and `MUIRAQUITA`/`BORA` each read
-/// as a single block), so padding every row would slice that band into
-/// separate stripes — the padding belongs to the BAND, not to the row.
+/// Consecutive `ProjectRow`s still render as ONE continuous band, so the
+/// pad belongs to the BAND, not to the row. The first ruling gave the band
+/// a pad on each side; seeing it rendered, the owner called the padding
+/// "muito grande" and the band glued ("colada") to the content below, so
+/// the bottom pad came OUT of the band and the breathing room moved to
+/// `project_view_trailing_gap` as one PLAIN row after it — same total
+/// height, less purple, background where the band used to be.
 ///
-/// Returned as a pair rather than baked into either consumer because
-/// three passes need it: `entry_row_height` for the height, the renderer
+/// A single `u16` (not the old `(top, bottom)` pair — there is no bottom)
+/// read by three passes: `entry_row_height` for the height, the renderer
 /// to place the text line, and `compute_workspace_list_areas` to size the
 /// hit rect. It is derived purely from `entries`/`idx` — data all three
 /// already hold — so they cannot disagree (AGENTS.md: "a derived column
 /// must be anchored to data both passes share").
-fn project_band_pads(entries: &[WorkspaceListEntry], idx: usize) -> (u16, u16) {
+fn project_band_top_pad(entries: &[WorkspaceListEntry], idx: usize) -> u16 {
     if !matches!(
         entries.get(idx),
         Some(WorkspaceListEntry::ProjectRow { .. })
     ) {
-        return (0, 0);
+        return 0;
     }
-    let top = u16::from(!matches!(
+    u16::from(!matches!(
         idx.checked_sub(1).and_then(|prev| entries.get(prev)),
         Some(WorkspaceListEntry::ProjectRow { .. })
-    ));
-    let bottom = u16::from(!matches!(
-        entries.get(idx + 1),
-        Some(WorkspaceListEntry::ProjectRow { .. })
-    ));
-    (top, bottom)
+    ))
 }
 
 /// The row height a Project-view entry is CONTRACTED to have, restated
@@ -1086,13 +1083,14 @@ pub(crate) fn expected_entry_height(entries: &[WorkspaceListEntry], idx: usize) 
                 1
             }
         }
-        // R3: one pad row per band EDGE — 3 alone, 2 touching one
-        // sibling, 1 between two.
+        // R3, refined: the text row plus ONE top-edge pad — 2 alone, 1
+        // with a sibling above. No bottom pad (owner's second ruling,
+        // 2026-08-28): the row below the band is
+        // `project_view_trailing_gap`'s plain separator, not this entry's.
         Some(WorkspaceListEntry::ProjectRow { .. }) => {
             let is_band =
                 |i: usize| matches!(entries.get(i), Some(WorkspaceListEntry::ProjectRow { .. }));
-            let above = idx > 0 && is_band(idx - 1);
-            3 - u16::from(above) - u16::from(is_band(idx + 1))
+            2 - u16::from(idx > 0 && is_band(idx - 1))
         }
         _ => 1,
     }
@@ -1114,14 +1112,15 @@ pub(crate) fn expected_entry_height(entries: &[WorkspaceListEntry], idx: usize) 
 ///   exception) suppresses the gap too: the hidden header still owns a
 ///   row and paints nothing, so that row already IS the separator — a
 ///   gap on top of it was the doubled blank the owner pointed at.
-/// - After a `ProjectRow`: NOTHING. 6a gave the band a trailing blank
-///   "respiro" (ALVO_CAPTURE row 02, the anatomy's "Section · tipo LIVRE
-///   — respiro após o grupo"); the owner ruled it out on 2026-08-28 ("tem
-///   esse espaço aí que é espaço indesejado, eu não quero"), in the same
-///   breath as asking for R3's padding. The two are one decision: the
-///   breathing room moves INSIDE the filled band, where it reads as part
-///   of the header, instead of sitting between the band and its first
-///   row, where it read as a hole. See `project_band_pads`.
+/// - After a `ProjectRow`: ONE plain row, when anything follows. R3's
+///   first ruling moved the respiro INSIDE the band (2026-08-28, "espaço
+///   indesejado"); the owner's second ruling the same day — seeing it
+///   rendered — sent it back out: the band's bottom pad read as oversized
+///   padding and the purple sat glued ("colada", "apertadinho") to its
+///   first block. So the band keeps only its TOP pad
+///   (`project_band_top_pad`) and this gap returns as BACKGROUND, not
+///   band: same 3-row rhythm, half the purple. Nothing after the band
+///   (list end) → no gap, the same rule as the block gap below.
 ///
 /// Attribution: before T7 the gap fired after EVERY block; before
 /// bora-c1h G7 `PaneRow` could repeat N times per workspace, so the gap
@@ -1137,7 +1136,7 @@ fn project_view_trailing_gap(
     row_gap: u16,
 ) -> u16 {
     if matches!(entry, WorkspaceListEntry::ProjectRow { .. }) {
-        return 0;
+        return u16::from(entries.get(idx + 1).is_some());
     }
     let WorkspaceListEntry::PaneDotsRow { .. } = entry else {
         return 0;
@@ -1788,17 +1787,27 @@ fn pane_dots_columns(
 /// (louder) dots; split onto its own line, it reads at the same weight the
 /// branch glyph does — "a parte importante não some", inclusive parado.
 ///
-/// R1 (owner's inventory 2026-08-28): `waiting` paints the WHOLE name
-/// yellow+BOLD. Until 0.45.6 the name line carried this and the owner used
-/// it to find the window that wanted him; the 2026-08-27 R1 color budget
-/// stripped yellow from every git-plumbing marker to protect the one red
-/// that matters, and took this with it. It comes back in the ONE meaning
-/// the budget reserves yellow for — "esperando VOCÊ" — so it agrees with
-/// `pane_dots_dot_glyph`'s `(Blocked, false)` bullet by construction
-/// rather than by coincidence: same condition, same hue.
-fn pane_dots_name_line(name: &str, waiting: bool, p: &Palette, width: u16) -> Line<'static> {
+/// R5b (owner's color ruling, 2026-08-28, "super importante"): the name
+/// follows the DOT's hue whenever the dot lights. Vermelho = parado
+/// esperando você (`Blocked`+unseen — "quando tivesse bloqueado ele
+/// ficasse em vermelho... cada linha de painel, quando parava e estava
+/// esperando alguma coisa, mudava de cor"); amarelo = pronto, vem ler
+/// (`Idle`+unseen — "fica só amarelo a bolinha, tem que ficar amarela a
+/// letra também"). This replaces the 0.45.6 yellow-waiting and the R1
+/// green-pronto on THIS dot row; red keeps its falha meaning (◆ seen) and
+/// `waiting` wins the tie against `ready` — the more urgent of the two.
+/// Same condition, same hue as `pane_dots_dot_glyph` by construction.
+fn pane_dots_name_line(
+    name: &str,
+    waiting: bool,
+    ready: bool,
+    p: &Palette,
+    width: u16,
+) -> Line<'static> {
     let avail = width.saturating_sub(PANE_DOTS_INDENT) as usize;
     let style = if waiting {
+        Style::default().fg(p.red).add_modifier(Modifier::BOLD)
+    } else if ready {
         Style::default().fg(p.yellow).add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(p.overlay1)
@@ -1844,16 +1853,27 @@ fn pane_dots_dots_line(dots: &[(&'static str, Style)], width: u16) -> Line<'stat
 /// bolinha", one hue per meaning (R1), mapped onto `AgentState` + `seen` by
 /// each state's own gloss in the anatomy's "Os estados da bolinha do
 /// painel" block — with every ALVO_CAPTURE text row preserved byte for
-/// byte (◆ stays ◆, ● stays ●; only hues/bold move):
+/// byte (◆ stays ◆, ● stays ●; only hues/bold move), save ONE attributed
+/// text change below (R5: the Working glyph itself, ⠋ → ⠁):
 ///
-/// - `Working` — "trabalhando" — the shared Braille spinner
-///   (`super::spinner_frame`), overlay1+BOLD per the alvo mock's `.spin.o1.b`
-///   (cinza, R1: the spinner is plumbing, not a state hue).
-/// - `Blocked`+unseen — "esperando VOCÊ · agent parou pra perguntar" — ●
-///   amarelo: `Blocked` is literally "needs human input and is blocked on a
-///   response", and unseen means the question has not even been read yet.
-/// - `Idle`+unseen — "respondeu / pronto · terminou, vem ler" — ● verde:
-///   `Idle` is "agent finished" and unseen is "vem ler".
+/// - `Working` — "trabalhando" — the `sand` set at the working cadence
+///   (`super::working_sand_frame`), overlay1+BOLD per the alvo mock's
+///   `.spin.o1.b` (cinza, R1: the spinner is plumbing, not a state hue).
+///   Owner, 2026-08-28: the shared braille spinner is one gray cell —
+///   "não está aparecendo sinal que está mudando"; sand's fill-and-drain
+///   has the mass to read as motion. `spinner_frame` stays everywhere else.
+/// - `Blocked`+unseen — "parado, esperando VOCÊ · o agent parou pra
+///   perguntar e a pergunta não foi lida" — ● VERMELHO: the owner's R5b
+///   ruling (2026-08-28, "super importante... quando tivesse bloqueado ele
+///   ficasse em vermelho... cada linha de painel, quando parava e estava
+///   esperando alguma coisa, mudava de cor") moves the whole
+///   stopped-and-waiting state to red, joining `Blocked`+seen's ◆ — red
+///   now means "the pane stopped and needs YOU"; seen only tells ●
+///   (unanswered) from ◆ (read).
+/// - `Idle`+unseen — "respondeu / pronto · terminou, vem ler" — ● AMARELO:
+///   `Idle` is "agent finished" and unseen is "vem ler" ("fica só amarelo
+///   a bolinha, tem que ficar amarela a letra também"). Yellow owns
+///   "pronto pra ler"; green leaves this dot row entirely.
 /// - `Blocked`+seen — "falhou" — the shared `blocked_glyph` (the repo's
 ///   falha glyph, dots/symbols preference) in red BOLD, exactly the state
 ///   `capture::alvo_fixture`'s "main" (Blocked+seen) pins as ALVO row 05's
@@ -1861,11 +1881,12 @@ fn pane_dots_dots_line(dots: &[(&'static str, Style)], width: u16) -> Line<'stat
 /// - `Idle`+seen / `Unknown` — "parado" — hollow ○ overlay0, plain: a
 ///   finished-and-read agent and a plain shell both read as quiet.
 ///
-/// The bullets are STATIC, never `state_dot`'s animated sand-timer: a
-/// steady ● is never mistaken for ongoing work the way `Working`'s spinner
-/// is. `Working`/falha reuse the SAME shared glyph sets `state_dot`/
-/// `agent_icon` use elsewhere (`super::spinner_frame`, `blocked_glyph`)
-/// rather than a second convention drifting from theirs.
+/// The state bullets are STATIC: a steady ● is never mistaken for ongoing
+/// work the way `Working`'s animation is. `Working`/falha stay in the
+/// SHARED glyph families (`blocked_glyph` here, `sand`/`spinner_frame` in
+/// `ui::status`) rather than a second convention drifting from theirs —
+/// `Working` just swaps which shared set it runs, braille → sand, per the
+/// owner's visibility ruling above.
 fn pane_dots_dot_glyph(
     state: AgentState,
     seen: bool,
@@ -1875,16 +1896,15 @@ fn pane_dots_dot_glyph(
 ) -> (&'static str, Style) {
     match (state, seen) {
         (AgentState::Working, _) => (
-            super::spinner_frame(tick),
+            super::working_sand_frame(tick),
             Style::default().fg(p.overlay1).add_modifier(Modifier::BOLD),
         ),
-        (AgentState::Blocked, false) => (
-            "●",
-            Style::default().fg(p.yellow).add_modifier(Modifier::BOLD),
-        ),
+        (AgentState::Blocked, false) => {
+            ("●", Style::default().fg(p.red).add_modifier(Modifier::BOLD))
+        }
         (AgentState::Idle, false) => (
             "●",
-            Style::default().fg(p.green).add_modifier(Modifier::BOLD),
+            Style::default().fg(p.yellow).add_modifier(Modifier::BOLD),
         ),
         (AgentState::Blocked, true) => (
             blocked_glyph(indicator_style),
@@ -2895,12 +2915,13 @@ fn workspace_list_areas_for_entries(
                 });
             }
             WorkspaceListEntry::ProjectRow { collapse_key, .. } => {
-                // R3: the pad rows are part of the header, so a click on
-                // them must hit the header — the rect spans the whole
-                // band, not just its text row.
-                let (top_pad, bottom_pad) = project_band_pads(entries, entry_idx);
+                // R3, refined: the TOP pad is part of the header, so a
+                // click on it hits the header. The trailing gap row below
+                // the band is `project_view_trailing_gap`'s plain
+                // separator — background, not header — and claims no hit.
+                let top_pad = project_band_top_pad(entries, entry_idx);
                 project_rows.push(ProjectRowHitArea {
-                    rect: Rect::new(body.x, row_y, body.width, 1 + top_pad + bottom_pad),
+                    rect: Rect::new(body.x, row_y, body.width, 1 + top_pad),
                     target: ProjectRowTarget::Project {
                         collapse_key: collapse_key.clone(),
                     },
@@ -3784,16 +3805,17 @@ fn render_workspace_list(
                 collapse_key,
                 ..
             } => {
-                // R3: the band is padded, so it spans more than this one
-                // row — fill every row it owns and draw the text below
-                // the top pad. `project_band_pads` is the shared anchor
+                // R3, refined: the band is its top pad + text row — fill
+                // both and draw the text below the pad. The rows below
+                // the band belong to `project_view_trailing_gap`'s plain
+                // separator now, so `band_end` stops at the text row.
+                // `project_band_top_pad` is the shared anchor
                 // `entry_row_height` and the hit-area pass also read.
-                let (top_pad, bottom_pad) = project_band_pads(&entries, entry_idx);
+                let top_pad = project_band_top_pad(&entries, entry_idx);
                 let text_y = row_y.saturating_add(top_pad);
                 let band_end = row_y
                     .saturating_add(1)
                     .saturating_add(top_pad)
-                    .saturating_add(bottom_pad)
                     .min(list_bottom);
                 if row_y < list_bottom {
                     // Slightly-lighter-than-background row fill (owner's
@@ -4038,17 +4060,27 @@ fn render_workspace_list(
                     let details = ws.pane_details(&app.terminals);
                     // R1: "esperando VOCÊ" is a pane that stopped and has
                     // not been looked at — the exact condition
-                    // `pane_dots_dot_glyph` paints its yellow bullet for.
+                    // `pane_dots_dot_glyph` paints its red bullet for.
                     let waiting = details
                         .iter()
                         .any(|d| matches!(d.state, AgentState::Blocked) && !d.seen);
+                    // The name follows the dot (owner's R5b ruling). Red =
+                    // blocked-and-unread (parado esperando VOCÊ), yellow =
+                    // finished-and-unread (pronto, vem ler); `waiting`
+                    // wins the tie — the more urgent of the two.
+                    let ready = !waiting
+                        && details
+                            .iter()
+                            .any(|d| matches!(d.state, AgentState::Idle) && !d.seen);
                     // L1: the workspace name (bora-79l F2 —
                     // `pane_dots_name_line`'s doc, ALVO_CAPTURE rows 04/28;
                     // T7 divergence A removed the diff slot this carried).
                     // No state glyph ever lands here.
                     if row_y < list_bottom {
                         frame.render_widget(
-                            Paragraph::new(pane_dots_name_line(name, waiting, p, body.width)),
+                            Paragraph::new(pane_dots_name_line(
+                                name, waiting, ready, p, body.width,
+                            )),
                             Rect::new(body.x, row_y, body.width, 1),
                         );
                         if show_active_marker {
@@ -9671,7 +9703,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
     #[test]
     fn pane_dots_name_line_never_contains_a_repo_name() {
         let p = Palette::catppuccin();
-        let text = line_text(&pane_dots_name_line("agent-x", false, &p, 40));
+        let text = line_text(&pane_dots_name_line("agent-x", false, false, &p, 40));
 
         assert!(text.contains("agent-x"));
         assert!(!text.contains("cnb_landing_page"));
@@ -9684,7 +9716,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
         // colors it `overlay1` (the same as `⎇`), and never draws a state
         // glyph — every pane's state is l2's payload.
         let p = Palette::catppuccin();
-        let line = pane_dots_name_line("main", false, &p, 40);
+        let line = pane_dots_name_line("main", false, false, &p, 40);
         let text = line_text(&line);
         assert_eq!(
             text.find('m'),
@@ -9895,21 +9927,24 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
         // `seen` — attribution, same five combos:
         //
         //   before  Idle+unseen → ● yellow ("esperando você"); no green anywhere
-        //   after   Idle+unseen → ● GREEN ("respondeu/pronto · terminou, vem
-        //           ler"), Blocked+unseen → ● yellow ("esperando VOCÊ · agent
-        //           parou pra perguntar"), Blocked+seen keeps the capture's
-        //           `◆ falha real` (ALVO row 05's own combo), spinner moves to
-        //           overlay1+BOLD (the alvo mock's `.spin.o1.b`).
+        //   T2      Idle+unseen → ● green, Blocked+unseen → ● yellow, falha ◆ red
+        //   R5b     Blocked+unseen → ● RED ("parado, esperando VOCÊ"), Idle+unseen
+        //           → ● YELLOW ("pronto, vem ler") — the owner's color ruling;
+        //           seen only tells ● (unanswered) from ◆ (read)
         //
         // Every ALVO_CAPTURE text row survives byte for byte (◆ stays ◆,
-        // ● stays ●); only hues/bold move. Fica vermelho se qualquer estado
-        // trocar de hue (R1: um significado por cor) ou o spinner parar de
-        // usar o frame compartilhado.
+        // ● stays ●) — R5's ⠋→⠁ is the one text move, attributed above.
+        // Fica vermelho se qualquer estado trocar de hue (R1: um
+        // significado por cor) ou o spinner parar de animar o frame
+        // compartilhado (sand, na cadência do spinner_frame).
         let p = Palette::catppuccin();
         let dots = crate::config::StatusIndicatorStyle::Dots;
 
         let (glyph, style) = pane_dots_dot_glyph(AgentState::Working, true, 0, dots, &p);
-        assert_eq!(glyph, "⠋", "Working animates the shared spinner: {glyph:?}");
+        assert_eq!(
+            glyph, "⠁",
+            "Working animates the shared sand set: {glyph:?}"
+        );
         assert_eq!(
             style.fg,
             Some(p.overlay1),
@@ -9920,24 +9955,39 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
         let (glyph, style) = pane_dots_dot_glyph(AgentState::Blocked, false, 0, dots, &p);
         assert_eq!(
             glyph, "●",
-            "Blocked+unseen (\"esperando VOCÊ · agent parou pra perguntar\") is \
-             a STATIC yellow bullet, never an animated glyph: {glyph:?}"
+            "Blocked+unseen (\"parado, esperando VOCÊ\") is a STATIC bullet, \
+             never an animated glyph: {glyph:?}"
         );
-        assert_eq!(style.fg, Some(p.yellow), "R1: amarelo é só esperando VOCÊ");
+        assert_eq!(
+            style.fg,
+            Some(p.red),
+            "R5b: vermelho é o parado/esperando VOCÊ"
+        );
         assert!(style.add_modifier.contains(Modifier::BOLD));
 
         let (glyph, style) = pane_dots_dot_glyph(AgentState::Idle, false, 0, dots, &p);
         assert_eq!(
             glyph, "●",
             "Idle+unseen (\"respondeu / pronto · terminou, vem ler\") is a \
-             STATIC green bullet: {glyph:?}"
+             STATIC yellow bullet: {glyph:?}"
         );
-        assert_eq!(style.fg, Some(p.green), "R1: verde é só respondeu/pronto");
+        assert_eq!(
+            style.fg,
+            Some(p.yellow),
+            "R5b: amarelo é o pronto · vem ler"
+        );
         assert!(style.add_modifier.contains(Modifier::BOLD));
 
         let (glyph, style) = pane_dots_dot_glyph(AgentState::Blocked, true, 0, dots, &p);
-        assert_eq!(glyph, "◆", "Blocked+seen (\"falha\") is red: {glyph:?}");
-        assert_eq!(style.fg, Some(p.red), "R1: vermelho é só falha real");
+        assert_eq!(
+            glyph, "◆",
+            "Blocked+seen (\"falha\") keeps the red glyph: {glyph:?}"
+        );
+        assert_eq!(
+            style.fg,
+            Some(p.red),
+            "R5b: vermelho cobre parado+falha; o ◆ diz que a falha já foi lida"
+        );
         assert!(style.add_modifier.contains(Modifier::BOLD));
 
         let (glyph, style) = pane_dots_dot_glyph(AgentState::Idle, true, 0, dots, &p);
@@ -10069,7 +10119,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
     }
 
     #[test]
-    fn pane_dots_name_is_never_dimmed_and_is_yellow_only_when_waiting() {
+    fn pane_dots_name_is_never_dimmed_and_takes_the_dot_color_when_it_lights() {
         // T2 contract item 1: "NUNCA esmaecido/dim — inclusive com painel
         // parado (a parte importante não some)". Renders the real block
         // under every reachable (state, seen) combo and pins the name
@@ -10078,11 +10128,14 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
         //
         // R3/R1 re-attribution (owner's inventory 2026-08-28): was
         // `..._stays_overlay1_and_undimmed_in_every_pane_state`, which
-        // pinned overlay1 in EVERY state. `Blocked`+unseen — "esperando
-        // VOCÊ" — is now yellow+BOLD, the 0.45.6 behaviour the owner uses
-        // to find the window that wants him; every other state keeps
-        // overlay1. The DIM half of the contract is untouched and still
-        // asserted across all six combos, which is the half T2 was about.
+        // pinned overlay1 in EVERY state. The tint arrived in two steps the
+        // same day: yellow for `Blocked`+unseen first, then the owner's R5b
+        // color ruling settled it ("super importante... bloqueado =
+        // vermelho"; "pronto... tem que ficar amarela a letra também") —
+        // the name takes the DOT's hue whenever the dot lights: RED for
+        // Blocked+unseen (parado, esperando VOCÊ), YELLOW for Idle+unseen
+        // (pronto, vem ler), overlay1 otherwise. The DIM half of the
+        // contract is untouched and still asserted across all six combos.
         let p = Palette::catppuccin();
         for (state, seen) in [
             (AgentState::Working, true),
@@ -10116,15 +10169,18 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
             for x in name_col..name_col + name_len {
                 let cell = &buffer[(x as u16, l1_y)];
                 let expected_fg = if matches!(state, AgentState::Blocked) && !seen {
+                    p.red
+                } else if matches!(state, AgentState::Idle) && !seen {
                     p.yellow
                 } else {
                     p.overlay1
                 };
                 assert_eq!(
                     cell.fg, expected_fg,
-                    "R1: o nome é amarelo só em Blocked+unseen (esperando \
-                     VOCÊ) e overlay1 no resto — {state:?}+seen={seen} \
-                     (col {x}): {l1:?}"
+                    "R5b: o nome segue a bolinha — vermelho em Blocked+unseen \
+                     (parado, esperando VOCÊ), amarelo em Idle+unseen \
+                     (pronto, vem ler), overlay1 no resto — {state:?}+seen=\
+                     {seen} (col {x}): {l1:?}"
                 );
                 assert!(
                     !cell.modifier.contains(Modifier::DIM),
@@ -10186,7 +10242,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
         // voltar à l1 (a render arm voltando a passá-lo ou o builder o
         // aceitando de novo).
         let p = Palette::catppuccin();
-        let text = line_text(&pane_dots_name_line("hotfix", false, &p, 40));
+        let text = line_text(&pane_dots_name_line("hotfix", false, false, &p, 40));
         assert_eq!(
             text.trim_end(),
             "   hotfix",
@@ -10287,11 +10343,13 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
         );
         assert_eq!(project_rows.len(), entries.len());
         // R3 re-attribution: rows are no longer uniformly 1 tall, so the
-        // walk accumulates the contracted heights instead of assuming
-        // `body.y + i`. A lone project band is 3 (text plus a pad row on
-        // each side) and its hit rect covers the whole band — clicking
-        // the padding must hit the header, since the padding IS the
-        // header's fill.
+        // walk accumulates real row spans instead of assuming `body.y + i`.
+        // HEIGHTS stay independently restated (`expected_entry_height` —
+        // the AGENTS.md owner rule); the Y ADVANCE is the production
+        // `entry_row_height`, because trailing gap rows (after a
+        // PaneDotsRow block or after a project band) belong to no hit area,
+        // and this walk exists to catch overlap/skip — not to restate the
+        // gap rules a third time.
         let mut expected_y = body.y;
         for (i, area) in project_rows.iter().enumerate() {
             let expected_height = expected_entry_height(&entries, i);
@@ -10300,7 +10358,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
                 "row {i} must claim exactly the rows it owns"
             );
             assert_eq!(area.rect.y, expected_y, "rows must not overlap or skip");
-            expected_y += expected_height;
+            expected_y += entry_row_height(&entries[i], &entries, i, 0);
         }
         assert_eq!(
             project_rows[0].target,
@@ -10562,6 +10620,16 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
             app.palette.surface0,
             "the project header row fills with surface0: {:?}",
             buffer[(project_row.rect.x, project_row.rect.y)]
+        );
+        // R5 (owner's second ruling, 2026-08-28): the band owns top pad +
+        // text only; the row BELOW the band is the plain gap — default
+        // background, and the band fill must not reach it.
+        let gap_y = project_row.rect.y + project_row.rect.height;
+        assert_eq!(
+            buffer[(project_row.rect.x, gap_y)].bg,
+            Color::Reset,
+            "the row below the band is the plain separator, not band fill: {:?}",
+            buffer[(project_row.rect.x, gap_y)]
         );
     }
 

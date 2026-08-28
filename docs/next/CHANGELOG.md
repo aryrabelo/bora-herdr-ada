@@ -24,6 +24,7 @@ Bora is a fork of [herdr](https://github.com/ogulcancelik/herdr). This changelog
 ### Changed
 
 - Project view: the group header carries a slightly lighter background and shows its caret only when collapsed, and its name is italic rather than bold — the background supplies the emphasis, and italic leaves the header on a font channel of its own so a display face can be aimed at it without repainting every branch label. Repo and branch on a workspace row are dimmer, letting the name and the state cluster lead.
+- Project view: a pane dot's hue follows the owner's color ruling — red = the pane stopped and is waiting on you (blocked and unread, joining the read falha ◆; the diamond now only says the falha was already read), yellow = finished, come read it, gray = quiet — and the workspace's own name takes its panes' most urgent dot colour instead of staying grey, so a line that stopped or finished lights up whole rather than as a lone bullet. The working dot animates the shared `sand` fill-and-drain set at the working cadence, replacing a single-cell braille spinner whose motion did not read as motion. The project header band keeps its padding row only above its text; the breathing room below it is plain background again, because the padded band read as oversized and sat glued to its first block.
 
 ## [0.45.5] - 2026-08-25
 

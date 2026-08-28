@@ -138,6 +138,16 @@ const SAND: &[&str] = &[
 pub(super) fn sand_frame(tick: u32) -> &'static str {
     SAND[(tick as usize / 30) % SAND.len()]
 }
+
+/// Working indicator for the Project view's pane dots — the `sand` set at
+/// the working cadence (divisor 8, `spinner_frame`'s speed). The owner
+/// watched an agent run and saw nothing (2026-08-28): one braille cell of
+/// gray reads as static. Sand's fill-and-drain has real mass, so the
+/// motion shows; `spinner_frame` stays everywhere else.
+pub(super) fn working_sand_frame(tick: u32) -> &'static str {
+    SAND[(tick as usize / 8) % SAND.len()]
+}
+
 /// Compute view geometry and reconcile pane sizes.
 /// Called before render to separate mutation from drawing.
 #[cfg_attr(not(test), allow(dead_code))]

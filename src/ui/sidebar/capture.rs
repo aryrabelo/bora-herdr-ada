@@ -449,6 +449,17 @@ const FIXTURE_HEIGHT: u16 = 40;
 // each remaining line-by-line assertion still holds exactly as written.
 // The anatomy HTML's "respiro após o grupo" is superseded here by the
 // owner's direct instruction; the mock still shows the old shape.
+//
+// R5 (owner's second ruling, same day, seeing R3/R4 rendered): the padding
+// read "muito grande" and the band sat glued ("colada", "apertadinho") to
+// its first block. The bottom pad came OUT of the band
+// (`project_band_top_pad`) and the blank row returned BELOW it as PLAIN
+// background (`project_view_trailing_gap`) — same 3-row rhythm, so every
+// text row here keeps its index; only row 03's FILL changed (surface0 →
+// default). The `⠋` Working dots become `⠁` in the same round: the owner
+// could not see the braille spinner move ("não está aparecendo sinal que
+// está mudando"), so the dots row animates the `sand` set at working
+// cadence (`working_sand_frame`).
 
 const ALVO_CAPTURE: &str = r#"                                                 project
 
@@ -462,13 +473,13 @@ const ALVO_CAPTURE: &str = r#"                                                 p
 
  ⎇ feature/x
    feature-x
-   ⠋
+   ⠁
    research-feature-x
-   ⠋
+   ⠁
 
  ⎇ feature/y
    feature-y
-   ⠋
+   ⠁
 
  ⎇ cleanup
    cleanup
@@ -495,7 +506,7 @@ fn alvo_lines() -> Vec<&'static str> {
 
 /// Builds the fixture the alvo describes: 8 workspaces under the "Bora"
 /// project in alvo row order — main (◆ falha) + main-review (○) on `main`,
-/// feature-x + research-feature-x on `feature/x` (both ⠋), feature-y (⠋),
+/// feature-x + research-feature-x on `feature/x` (both ⠁), feature-y (⠁),
 /// cleanup (○), scratch (○, plain shell), and the linked hotfix worktree
 /// (↑2 ↓1, ● esperando VOCÊ). `AgentState` has no dedicated falha variant
 /// today, so falha is fixture-mapped to `Blocked` and waiting-on-you to
@@ -862,15 +873,18 @@ fn escape_span(class: &str, text: &str) -> String {
     format!(r#"<span class="{class}">{}</span>"#, escape_html(text))
 }
 
-/// R1 color budget, one meaning per hue: green = pronto, yellow = esperando
-/// VOCÊ, red = falha real, gray = everything else; mauve belongs to the
-/// ProjectRow and blue to the selection edge — neither appears here.
+/// R5b color budget (owner, 2026-08-28), one meaning per hue on the dot
+/// row: red = parado/esperando VOCÊ (+ falha real ◆), yellow = pronto ·
+/// vem ler, gray = everything else; mauve belongs to the ProjectRow and
+/// blue to the selection edge — neither appears here. `●` maps to red
+/// because the alvo's only ● is the hotfix blocked-and-unread pane; a
+/// pronto ● in a future alvo would need the row's state to disambiguate.
 fn dot_class(dot: &str) -> Option<&'static str> {
     match dot {
         "◆" => Some("rd b"),
-        "●" => Some("yw b"),
+        "●" => Some("rd b"),
         "○" => Some("o0"),
-        "⠋" => Some("o1 b"),
+        "⠁" => Some("o1 b"),
         _ => None,
     }
 }
@@ -1271,8 +1285,8 @@ mod tests {
         assert!(
             block.contains(r#"<span class="rd">PR42 ✗</span>"#)
                 && block.contains(r#"<span class="mv b">Bora</span>"#)
-                && block.contains(r#"<span class="yw b">●</span>"#),
-            "the alvo column must carry the R1 color budget, not plain text: {block}"
+                && block.contains(r#"<span class="rd b">●</span>"#),
+            "the alvo column must carry the R5b color budget, not plain text: {block}"
         );
         assert!(
             block.contains(r#"<span class="s1">····"#),
