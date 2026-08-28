@@ -642,3 +642,17 @@ bd prime                # Refresh Beads context
 
 **Architecture in one line:** issues live in a local Dolt DB; sync uses `refs/dolt/data` on your git remote; `.beads/issues.jsonl` is a passive export. See https://github.com/gastownhall/beads/blob/main/docs/SYNC_CONCEPTS.md for details and anti-patterns.
 <!-- END BEADS CODEX SETUP -->
+
+## Agent skills
+
+### Issue tracker
+
+Issues vivem no bd (beads, Dolt server), prefixo `bora`; blocking edges via `bd dep`. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Os cinco rótulos canônicos com strings padrão (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`), aplicados via `bd update --label`. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: `CONTEXT.md` + `docs/adr/` na raiz, criados preguiçosamente via `/domain-modeling`. See `docs/agents/domain.md`.
