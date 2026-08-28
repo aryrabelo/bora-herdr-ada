@@ -2706,18 +2706,14 @@ fn workspace_list_areas_for_entries(
                         collapse_key: collapse_key.clone(),
                     },
                 });
-                // Right-click, drag-reorder, and selection painting all key
-                // off `cards` (`AppState::workspace_at_row`,
-                // `workspace_presses`), same as every other workspace row —
-                // a `SectionRow` is per-workspace exactly like `Workspace`,
-                // it just lives in Project view. Without this push those
-                // affordances silently miss for every OPEN Project-view
-                // workspace (bora regression).
-                cards.push(crate::app::state::WorkspaceCardArea {
-                    ws_idx: *ws_idx,
-                    rect: Rect::new(body.x, row_y, body.width, 1),
-                    indented: true,
-                });
+                // No `WorkspaceCardArea` here (P2, bora-79l T1): the branch
+                // line is not the workspace's representation — the
+                // `PaneDotsRow` block right below carries the card now, and
+                // with it every workspace-scoped affordance (click-to-switch,
+                // right-click menu, press/drag, selection fill). Clicking
+                // this row no longer switches workspace; only its caret
+                // column still collapses the section (input dispatcher's
+                // `Section` arm).
             }
             WorkspaceListEntry::SectionHeader { collapse_key, .. } => {
                 project_rows.push(ProjectRowHitArea {
@@ -2742,13 +2738,24 @@ fn workspace_list_areas_for_entries(
                     },
                 });
             }
-            // No `WorkspaceCardArea`: this is not a workspace row, its
-            // sibling `SectionRow` above already pushed the one card their
-            // shared workspace gets. One `ProjectRowHitArea` per dot, at the
-            // SAME column `render_workspace_list`'s `PaneDotsRow` arm draws
-            // it — both call `pane_dots_columns`, so they cannot drift. The
-            // dots live on l2 now (bora-79l F2), one row below `row_y`.
+            // The block IS the workspace's card (P2, bora-79l T1): ONE
+            // `WorkspaceCardArea` spanning BOTH lines (l1 name + l2 dots),
+            // full body width — every workspace-scoped affordance
+            // (click-to-switch, right-click menu, press/drag-reorder,
+            // selection fill) keys off `cards`, so they all moved here
+            // together from the `SectionRow` above. The dots stay
+            // first-class: each keeps its own 1-cell `ProjectRowHitArea`
+            // at the SAME column `render_workspace_list`'s `PaneDotsRow`
+            // arm draws it — both call `pane_dots_columns`, so they cannot
+            // drift — and the input dispatcher resolves `project_row_areas`
+            // BEFORE `workspace_card_areas`, so inside a dot's own cell the
+            // dot wins over the block.
             WorkspaceListEntry::PaneDotsRow { ws_idx, .. } => {
+                cards.push(crate::app::state::WorkspaceCardArea {
+                    ws_idx: *ws_idx,
+                    rect: Rect::new(body.x, row_y, body.width, 2),
+                    indented: true,
+                });
                 if let Some(ws) = app.workspaces.get(*ws_idx) {
                     let dots_row_y = row_y.saturating_add(1);
                     for (_pane_id, number, column) in pane_dots_columns(ws, body.width) {
@@ -3597,31 +3604,11 @@ fn render_workspace_list(
             } => {
                 if row_y < list_bottom {
                     if let Some(ws) = app.workspaces.get(*ws_idx) {
-                        // Same three-way decision the `BranchHeader`
-                        // folded-workspace row and the Flat/Repo `Workspace`
-                        // card use (`workspace_selection_background` for the
-                        // navigate-mode cursor, `p.active_row_bg` for the
-                        // active workspace, no fill otherwise): a
-                        // Project-view `SectionRow` IS a per-workspace row,
-                        // it just never got this. That's the regression this
-                        // task fixes — Project view painted zero visual
-                        // feedback for a clicked/cursored workspace.
-                        let selected = *ws_idx == app.selected && is_navigating;
-                        let is_active = Some(*ws_idx) == app.active;
-                        let is_dragged = dragged_ws_idx == Some(*ws_idx);
-                        if selected || is_active || is_dragged {
-                            let bg = if selected {
-                                workspace_selection_background(p, is_active)
-                            } else if is_dragged {
-                                p.surface1
-                            } else {
-                                p.active_row_bg
-                            };
-                            let buf = frame.buffer_mut();
-                            for x in body.x..body.x + body.width {
-                                buf[(x, row_y)].set_style(Style::default().bg(bg));
-                            }
-                        }
+                        // No selection/active/drag fill here anymore (P2,
+                        // bora-79l T1): the branch line stopped being the
+                        // workspace's visual representation — the
+                        // `PaneDotsRow` block below now carries the
+                        // selection fill and the active bar.
                         let collapsed = app.collapsed_space_keys.contains(collapse_key);
                         let is_worktree = ws
                             .worktree_space()
@@ -3704,6 +3691,36 @@ fn render_workspace_list(
                 }
             }
             WorkspaceListEntry::PaneDotsRow { ws_idx, name } => {
+                // The block carries the workspace's visual state now (P2,
+                // bora-79l T1) — the same GC3 three-way decision the
+                // Flat/Repo `Workspace` card uses: a real selection
+                // (navigate cursor or in-flight drag) fills BOTH rows so
+                // the block changes colour as one piece, while the plain
+                // "this is the active workspace" case is a lighter
+                // statement — the blue bar at the block's left border —
+                // so the dots' own state colours stay legible on the
+                // active row too.
+                let selected = *ws_idx == app.selected && is_navigating;
+                let is_active = Some(*ws_idx) == app.active;
+                let is_dragged = dragged_ws_idx == Some(*ws_idx);
+                let selection_paint = selected || is_dragged;
+                let show_active_marker = is_active && !selection_paint;
+                if selection_paint {
+                    let bg = if selected {
+                        workspace_selection_background(p, is_active)
+                    } else {
+                        p.surface1
+                    };
+                    let buf = frame.buffer_mut();
+                    for y in row_y..row_y.saturating_add(2) {
+                        if y >= list_bottom {
+                            break;
+                        }
+                        for x in body.x..body.x + body.width {
+                            buf[(x, y)].set_style(Style::default().bg(bg));
+                        }
+                    }
+                }
                 if let Some(ws) = app.workspaces.get(*ws_idx) {
                     // L1: the workspace name, no state glyph (bora-79l F2 —
                     // `pane_dots_name_line`'s doc, ALVO_CAPTURE rows 04/28).
@@ -3712,6 +3729,15 @@ fn render_workspace_list(
                             Paragraph::new(pane_dots_name_line(name, p, body.width)),
                             Rect::new(body.x, row_y, body.width, 1),
                         );
+                        if show_active_marker {
+                            // The blue bar (contract T1 item 3), painted
+                            // AFTER the line so it lands on the indent's
+                            // blank first cell — `PANE_DOTS_INDENT` keeps
+                            // every glyph clear of column 0.
+                            let buf = frame.buffer_mut();
+                            buf[(body.x, row_y)].set_symbol("▎");
+                            buf[(body.x, row_y)].set_style(Style::default().fg(p.accent));
+                        }
                     }
                     // L2: one dot per pane. Live state per dot, resolved
                     // here rather than carried on the entry (`PaneDotsRow`'s
@@ -3745,6 +3771,11 @@ fn render_workspace_list(
                             Paragraph::new(pane_dots_dots_line(&dots, body.width)),
                             Rect::new(body.x, dots_row_y, body.width, 1),
                         );
+                        if show_active_marker {
+                            let buf = frame.buffer_mut();
+                            buf[(body.x, dots_row_y)].set_symbol("▎");
+                            buf[(body.x, dots_row_y)].set_style(Style::default().fg(p.accent));
+                        }
                     }
                 }
             }
@@ -9241,6 +9272,72 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
     }
 
     #[test]
+    fn pane_dots_row_card_rect_is_pinned_to_the_rendered_block_rows() {
+        // P2, bora-79l T1: the workspace card's rect is pinned against
+        // the RENDERED buffer (same rule as the dot-columns test above),
+        // never against re-derived arithmetic that could drift the same
+        // way twice. l1 is the row the renderer actually drew the name
+        // on, l2 the row the dot glyph lands on, the card covers exactly
+        // those two rows, and the branch line above carries no card.
+        // Goes red if the card moves off the block (wrong emitting row,
+        // height 1, or a SectionRow-card regression).
+        let mut app = AppState::test_new();
+        app.view_mode = crate::config::ViewMode::Project;
+        let mut ws = Workspace::test_new("ita-principal");
+        ws.test_split(Direction::Vertical);
+        app.workspaces = vec![ws];
+
+        let area = Rect::new(0, 0, 30, 10);
+        let runtimes = crate::terminal::TerminalRuntimeRegistry::new();
+        let mut terminal =
+            Terminal::new(TestBackend::new(area.width, area.height)).expect("test terminal");
+        terminal
+            .draw(|frame| render_workspace_list(&app, &runtimes, frame, area, false))
+            .expect("workspace list should render");
+
+        let (cards, _headers, project_rows) = compute_workspace_list_areas_all(&app, area);
+        let card = cards
+            .iter()
+            .find(|c| c.ws_idx == 0)
+            .expect("the PaneDotsRow block must be the workspace's card");
+        let dot_hit = project_rows
+            .iter()
+            .find(|a| matches!(a.target, ProjectRowTarget::Pane { .. }))
+            .expect("one dot hit area for the single pane");
+        let section_hit = project_rows
+            .iter()
+            .find(|a| matches!(a.target, ProjectRowTarget::Section { .. }))
+            .expect("the SectionRow keeps its own hit area");
+
+        let buffer = terminal.backend().buffer();
+        let l1 = (section_hit.rect.y + 1..area.y + area.height)
+            .find(|&y| row_text(buffer, y, area.width).contains("ita-principal"))
+            .expect("the name line must render below the branch line");
+        // The dot hit's own column must land on a rendered glyph (the
+        // 9224 test proves this in depth; re-proven here because this
+        // test's l2 IS that row).
+        assert_ne!(
+            buffer[(dot_hit.rect.x, dot_hit.rect.y)].symbol(),
+            " ",
+            "the dot hit must land on the rendered dot glyph"
+        );
+        assert_eq!(card.rect.y, l1, "the card starts on the name row");
+        assert_eq!(card.rect.height, 2, "the card spans BOTH rows of the block");
+        assert_eq!(
+            card.rect.y + 1,
+            dot_hit.rect.y,
+            "the card's second row is the dots row"
+        );
+        assert!(
+            section_hit.rect.y < card.rect.y,
+            "the branch line sits above the block and carries no card: \
+             section at {:?}, card at {:?}",
+            section_hit.rect,
+            card.rect
+        );
+    }
+
+    #[test]
     fn pane_dots_dot_glyph_covers_every_reachable_agent_state() {
         // Gate G1 (bora-79l.3): the design names "5 estados da 0.45.6"
         // (girando/esperando você/respondeu/falha/parado); `AgentState`
@@ -9414,20 +9511,17 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
         let (cards, headers, project_rows) =
             workspace_list_areas_for_entries(&entries, &app, 0, body, 0);
 
-        // Before this fix, EVERY Project-view row (SectionRow included)
-        // produced no `WorkspaceCardArea` at all, so this asserted
-        // `cards.is_empty()`. `SectionRow` now also pushes a card — the
-        // enabling fix for right-click/drag/selection on OPEN Project-view
-        // workspaces — at the exact same rect as its own hit area
-        // (`project_rows[1]`, the `Section` target below).
-        assert_eq!(
-            cards,
-            vec![crate::app::state::WorkspaceCardArea {
-                ws_idx: 0,
-                rect: project_rows[1].rect,
-                indented: true,
-            }],
-            "SectionRow pushes exactly one workspace card, matching its own hit-area rect"
+        // Attribution (P2, bora-79l T1): this asserted first
+        // `cards.is_empty()` (no row emitted a card), then one card on the
+        // `SectionRow`. The card's owner moved again — onto the
+        // `PaneDotsRow` block — so a `SectionRow`-only fixture is back to
+        // no cards: this fixture has no `PaneDotsRow`, and the branch line
+        // must NOT emit a card anymore. `section_row_pushes…`'s successor
+        // below pins the block-side card.
+        assert!(
+            cards.is_empty(),
+            "SectionRow must not push a workspace card — the PaneDotsRow \
+             block owns it now (P2): {cards:?}"
         );
         assert!(
             headers.is_empty(),
@@ -9558,13 +9652,15 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
     }
 
     #[test]
-    fn section_row_pushes_workspace_card_area_matching_its_hit_area() {
-        // Contract test (bora sidebar regression, SidebarGeometry/
-        // ProjectViewRows split): `SectionRow` must push BOTH a
-        // `ProjectRowHitArea` (pre-existing, Project-view band/click
-        // dispatch) AND a `WorkspaceCardArea` (right-click, drag-reorder,
-        // selection painting — every one of those keys off `cards`). This
-        // is the enabling fix the mouse-handling side depends on.
+    fn pane_dots_row_block_is_the_workspace_card_and_the_branch_line_is_not() {
+        // P2, bora-79l T1 — successor of
+        // `section_row_pushes_workspace_card_area_matching_its_hit_area`
+        // (same fixture, attribution flip): the `WorkspaceCardArea` — what
+        // right-click, drag-reorder, press and selection painting all key
+        // off — moved from the branch line to the workspace's own 2-row
+        // block. Goes red if the card is deleted from the `PaneDotsRow`
+        // arm, if its rect stops covering BOTH rows, or if the `SectionRow`
+        // arm regresses to pushing its own card again.
         let entries = vec![
             WorkspaceListEntry::SectionRow {
                 ws_idx: 5,
@@ -9584,32 +9680,31 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
         let (cards, _headers, project_rows) =
             workspace_list_areas_for_entries(&entries, &app, 0, body, 0);
 
-        assert_eq!(cards.len(), 1, "{cards:?}");
-        let hit_area = project_rows
+        let section_hit = project_rows
             .iter()
             .find(|a| matches!(&a.target, ProjectRowTarget::Section { ws_idx, .. } if *ws_idx == 5))
             .expect("SectionRow must still get its ProjectRowHitArea");
         assert_eq!(
-            cards[0],
-            crate::app::state::WorkspaceCardArea {
+            cards,
+            vec![crate::app::state::WorkspaceCardArea {
                 ws_idx: 5,
-                rect: hit_area.rect,
+                rect: Rect::new(section_hit.rect.x, section_hit.rect.y + 1, body.width, 2),
                 indented: true,
-            },
-            "the card's rect must match the hit area's rect exactly"
+            }],
+            "exactly one card, covering the PaneDotsRow's TWO rows (l1 name \
+             + l2 dots) at full body width — never the branch line above"
         );
     }
 
     #[test]
-    fn section_row_paints_selection_and_active_backgrounds() {
-        // bora regression fix, item 2: before this fix Project view
-        // painted NO visual feedback at all for a clicked/cursored
-        // workspace — the `SectionRow` render arm never filled a
-        // background, unlike the Flat/Repo `Workspace` arm and the
-        // `BranchHeader` folded-workspace arm, which both do. Same
-        // three-way decision as those: the navigate-mode cursor
-        // (`workspace_selection_background`), the active workspace
-        // (`p.active_row_bg`), or no fill.
+    fn pane_dots_row_block_paints_selection_on_both_rows_and_the_active_bar_at_the_border() {
+        // P2, bora-79l T1 — successor of
+        // `section_row_paints_selection_and_active_backgrounds` (same
+        // fixture, attribution flip): the selection fill and the active
+        // bar live on the workspace's own 2-row block now. Goes red if the
+        // `PaneDotsRow` render arm stops filling BOTH rows on selection,
+        // stops drawing the active bar, or the `SectionRow` arm regresses
+        // to painting the branch line.
         let mut app = AppState::test_new();
         app.view_mode = crate::config::ViewMode::Project;
         app.workspaces = vec![Workspace::test_new("alpha"), Workspace::test_new("beta")];
@@ -9629,22 +9724,42 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
         let active_card = cards
             .iter()
             .find(|c| c.ws_idx == 0)
-            .expect("SectionRow for the active workspace must push a card (item 1 fix)");
+            .expect("the active workspace's PaneDotsRow block must push a card");
         let selected_card = cards
             .iter()
             .find(|c| c.ws_idx == 1)
-            .expect("SectionRow for the cursored workspace must push a card (item 1 fix)");
+            .expect("the cursored workspace's PaneDotsRow block must push a card");
 
         let buffer = terminal.backend().buffer();
+        // Selection fills BOTH rows of the block — l1 and l2, no hole.
+        for y in [selected_card.rect.y, selected_card.rect.y + 1] {
+            assert_eq!(
+                buffer[(selected_card.rect.x, y)].bg,
+                workspace_selection_background(&app.palette, false),
+                "the navigate-mode cursor must fill row {y} of the block (l1 AND l2)"
+            );
+        }
+        // The active (but not cursored) workspace gets the blue bar at the
+        // block's left border on both rows instead of a fill.
+        for y in [active_card.rect.y, active_card.rect.y + 1] {
+            assert_eq!(
+                buffer[(active_card.rect.x, y)].symbol(),
+                "▎",
+                "the active block's left border carries the bar on row {y}"
+            );
+            assert_eq!(
+                buffer[(active_card.rect.x, y)].fg,
+                app.palette.accent,
+                "the bar is the accent colour on row {y}"
+            );
+        }
+        // The branch line above the cursored block stays unpainted — the
+        // workspace affordances left it (decision 7).
+        let branch_row = selected_card.rect.y.saturating_sub(1);
         assert_eq!(
-            buffer[(active_card.rect.x, active_card.rect.y)].bg,
-            app.palette.active_row_bg,
-            "the active workspace's SectionRow gets active_row_bg"
-        );
-        assert_eq!(
-            buffer[(selected_card.rect.x, selected_card.rect.y)].bg,
-            workspace_selection_background(&app.palette, false),
-            "the navigate-mode cursor's SectionRow gets the selection background"
+            buffer[(selected_card.rect.x, branch_row)].bg,
+            Color::Reset,
+            "the SectionRow branch line must not paint the workspace selection anymore"
         );
     }
 
@@ -9717,16 +9832,16 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
         let (cards, headers, project_rows) =
             workspace_list_areas_for_entries(&entries, &app, 0, body, 0);
 
-        // Before: `cards.is_empty()` — SectionRow produced no card. Now the
-        // SectionRow at ws_idx 0 pushes one, at the same rect as its own
-        // hit area (project_rows[1], 2 rows down — asserted below).
-        assert_eq!(
-            cards,
-            vec![crate::app::state::WorkspaceCardArea {
-                ws_idx: 0,
-                rect: project_rows[1].rect,
-                indented: true,
-            }]
+        // Attribution (P2, bora-79l T1): the SectionRow here used to push
+        // the one card — its ownership moved to the `PaneDotsRow` block,
+        // which this fixture doesn't emit, so cards are empty again. The
+        // point of the test is unchanged: the ws_idx-less PrRow advances
+        // `row_y` (SectionRow lands 2 rows down) without ever producing a
+        // hit area of its own.
+        assert!(
+            cards.is_empty(),
+            "no card: the PrRow has no ws_idx and the SectionRow no longer \
+             owns one (P2): {cards:?}"
         );
         assert!(headers.is_empty());
         assert_eq!(

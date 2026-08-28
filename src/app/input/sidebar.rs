@@ -612,11 +612,12 @@ impl AppState {
                 // section per workspace, so dragging one reorders it
                 // exactly like a Flat-view workspace card.
                 crate::ui::WorkspaceListEntry::SectionRow { ws_idx, .. } => Some(ws_idx),
-                // A `PaneDotsRow` is not a drag root: the workspace it
-                // belongs to is already one via its `SectionRow` above, and
-                // the row itself is a strip of per-pane click targets rather
-                // than an identity that can be reordered. Same reason its
-                // predecessor `PaneRow` yielded nothing.
+                // A `PaneDotsRow` is not a drag ROOT, though the drag
+                // itself now STARTS on it (P2, bora-79l T1: the block's
+                // `WorkspaceCardArea` feeds `workspace_presses`): the
+                // press resolves to the workspace's ws_idx, whose root
+                // position comes from its `SectionRow` above — the block
+                // is the affordance, not a second identity to reorder.
                 crate::ui::WorkspaceListEntry::ProjectRow { .. }
                 | crate::ui::WorkspaceListEntry::WorktreeRow { .. }
                 | crate::ui::WorkspaceListEntry::SectionHeader { .. }
@@ -1530,6 +1531,12 @@ mod tests {
         assert_eq!(app.state.selected, 2);
     }
 
+    // Note (P2, bora-79l T1): this characterization runs in the default
+    // Repo view, whose `Workspace` cards the card migration never touched
+    // — the Project-view owner of this behavior (drag starting on the
+    // PaneDotsRow block) is pinned in
+    // `project_view_pane_dots_block_drag_opens_workspace_reorder_for_linked_worktree`
+    // (src/app/input/mouse.rs).
     #[test]
     fn dragging_workspace_reorders_without_changing_identity() {
         let mut app = app_for_mouse_test();
@@ -2044,39 +2051,31 @@ mod tests {
             .iter()
             .any(|item| item == "Rename project\u{2026}"));
 
-        // 3. The orphan workspace's SectionRow splices "Add to alpha" — and
-        // the visual-group items are gone in Project view…
+        // 3. The orphan workspace's block splices "Add to alpha" — and the
+        // visual-group items are gone in Project view…
         //
-        // Attribution: this assertion read `ProjectMemberTargets` until the
-        // right-click regression was fixed. A Project-view `SectionRow`
-        // emitted no `WorkspaceCardArea`, so `workspace_at_row` missed it and
-        // right-click fell through to the narrow `ProjectRowTarget::Section`
-        // arm, whose menu is ONLY the project-membership items — the owner
-        // reported it as "right-click shows one option, everything that used
-        // to be there is gone". `SectionRow` now emits a card, so the row
-        // reaches the full workspace menu (`GitWorkspace`), which already
-        // splices the same membership items in Project view. Both item
-        // assertions below are unchanged and still pass, which is the proof
-        // that nothing was traded away to get the full menu back: the kind
-        // widened, the membership items stayed.
+        // Attribution (two rounds): this assertion read
+        // `ProjectMemberTargets` until the SectionRow-card fix made
+        // `workspace_at_row` resolve the row and reach the full
+        // `GitWorkspace` menu. P2 (bora-79l T1) then moved the card one
+        // row down — onto the workspace's own `PaneDotsRow` block — so
+        // the full-menu right-click now happens THERE; the branch line
+        // above keeps the narrow member-only menu. The item assertions
+        // are unchanged and still pass from the block: the kind widened,
+        // the membership items stayed.
         reset(&mut app);
-        let card = app
+        let block = app
             .state
             .view
-            .project_row_areas
+            .workspace_card_areas
             .iter()
-            .find(|area| {
-                matches!(
-                    &area.target,
-                    crate::app::state::ProjectRowTarget::Section { ws_idx, .. } if *ws_idx == 1
-                )
-            })
-            .expect("orphan section row")
+            .find(|card| card.ws_idx == 1)
+            .expect("orphan workspace's PaneDotsRow block card")
             .rect;
         app.handle_mouse(mouse(
             MouseEventKind::Down(MouseButton::Right),
-            card.x + 1,
-            card.y,
+            block.x + 1,
+            block.y,
         ));
         let menu = app.state.context_menu.as_ref().expect("row menu");
         assert!(

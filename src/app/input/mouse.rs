@@ -788,30 +788,20 @@ impl AppState {
                         )
                         .cloned()
                         {
-                            // A workspace's own Project-view section
-                            // (`ProjectRowTarget::Section`) is a real
-                            // workspace row: it must feed `workspace_presses`
-                            // exactly like a Flat/Repo-view card does, or a
-                            // `Drag` motion past `WORKSPACE_DRAG_THRESHOLD`
-                            // (below) never opens `WorkspaceReorder` and
-                            // mouse-up's `chrome_press_action` never emits
-                            // `MouseAction::FocusWorkspace` — the combined
-                            // cause of "no highlight" and "no drag" in
-                            // Project view. Every other `ProjectRowTarget`
+                            // P2, bora-79l T1: the branch line is NOT a
+                            // workspace row anymore — the workspace's own
+                            // `PaneDotsRow` block carries its card and its
+                            // press (via `workspace_at_row` below). A
+                            // `Section` target only keeps its caret
+                            // column's collapse; everywhere else on the
+                            // row records no press, so neither a click
+                            // (mouse-up's `chrome_press_action`) nor a
+                            // Drag can switch workspace from the branch
+                            // line. Every other `ProjectRowTarget`
                             // (Project, Band, SectionItem, Pane, OpenPr,
-                            // OpenWorktree) names a non-workspace row, so it
-                            // records no press and stays exactly as
-                            // click-only as before.
-                            if let ProjectRowTarget::Section { ws_idx, .. } = &target {
-                                self.workspace_presses.insert(
-                                    source_id,
-                                    WorkspacePressState {
-                                        ws_idx: *ws_idx,
-                                        start_col: mouse.column,
-                                        start_row: mouse.row,
-                                    },
-                                );
-
+                            // OpenWorktree) stays exactly as click-only
+                            // as before.
+                            if let ProjectRowTarget::Section { .. } = &target {
                                 // Split the row by column (owner's ask: "eu
                                 // clico no nome da workspace e ele
                                 // retrai" — clicking anywhere used to
@@ -845,15 +835,17 @@ impl AppState {
                                     // part of the name.
                                     .is_some_and(|area| mouse.column < area.rect.x + 2);
                                 if !on_caret {
-                                    // Anywhere else on the row selects the
-                                    // workspace instead: the press just
-                                    // recorded above is enough on its own —
-                                    // mouse-up's `chrome_press_action`
-                                    // already turns any pending
-                                    // `WorkspacePressState` into
-                                    // `MouseAction::FocusWorkspace` once it
-                                    // sees the press never became a drag,
-                                    // so nothing further is needed here.
+                                    // P2, bora-79l T1: the branch line no
+                                    // longer selects the workspace — no
+                                    // `WorkspacePressState` is recorded, so
+                                    // neither mouse-up's
+                                    // `chrome_press_action` nor a Drag past
+                                    // the threshold can act on this row.
+                                    // The workspace's own affordances now
+                                    // live one row down: its `PaneDotsRow`
+                                    // block's `WorkspaceCardArea` feeds
+                                    // `workspace_presses` via
+                                    // `workspace_at_row` below.
                                     return None;
                                 }
                             }
@@ -6494,20 +6486,23 @@ mod tests {
     }
 
     #[test]
-    fn project_view_section_row_press_records_workspace_press_only_for_section_targets() {
-        // bora regression fix: a workspace's own Project-view section is a
-        // real workspace row and must feed `workspace_presses` on press,
-        // exactly like a Flat/Repo-view card — otherwise neither
-        // drag-reorder nor mouse-up's `chrome_press_action` (selection
-        // highlight) ever fires for it. Every other `ProjectRowTarget`
-        // names a non-workspace row and must record nothing.
+    fn project_view_workspace_press_lives_on_the_pane_dots_block_not_the_branch_line() {
+        // P2, bora-79l T1 — attribution flip of
+        // `project_view_section_row_press_records_workspace_press_only_for_section_targets`:
+        // the `WorkspacePressState` (what drag-reorder and mouse-up's
+        // `chrome_press_action`/FocusWorkspace feed on) is recorded from
+        // the workspace's own 2-row block via `workspace_at_row`, never
+        // from the branch line or a band row. Goes red if the `Section`
+        // arm regresses to recording a press, or if the block's card
+        // stops feeding one.
         let mut app = app_for_mouse_test();
         app.state.view_mode = crate::config::ViewMode::Project;
-        let section_row = Rect::new(0, 5, 20, 1);
-        let band_row = Rect::new(0, 6, 20, 1);
+        let branch_row = Rect::new(0, 5, 20, 1);
+        let band_row = Rect::new(0, 8, 20, 1);
+        let block = Rect::new(0, 6, 20, 2);
         app.state.view.project_row_areas = vec![
             ProjectRowHitArea {
-                rect: section_row,
+                rect: branch_row,
                 target: ProjectRowTarget::Section {
                     ws_idx: 3,
                     checkout_key: "/repo/checkout".into(),
@@ -6521,42 +6516,63 @@ mod tests {
                 },
             },
         ];
+        app.state.view.workspace_card_areas = vec![crate::app::state::WorkspaceCardArea {
+            ws_idx: 3,
+            rect: block,
+            indented: true,
+        }];
 
+        // The branch line records nothing — decision 7.
         app.state.handle_mouse(
             &mut app.terminal_runtimes,
             1,
             mouse(MouseEventKind::Down(MouseButton::Left), 2, 5),
         );
-        let press = app
-            .state
-            .workspace_presses
-            .get(&1)
-            .expect("a Section row press must record a WorkspacePressState");
-        assert_eq!(press.ws_idx, 3);
-        assert_eq!(press.start_col, 2);
-        assert_eq!(press.start_row, 5);
+        assert!(
+            !app.state.workspace_presses.contains_key(&1),
+            "a branch-line press must not record a WorkspacePressState (P2)"
+        );
 
+        // BOTH rows of the block record the press (l1 and l2).
+        for row in [block.y, block.y + 1] {
+            app.state.handle_mouse(
+                &mut app.terminal_runtimes,
+                2,
+                mouse(MouseEventKind::Down(MouseButton::Left), 2, row),
+            );
+            let press = app
+                .state
+                .workspace_presses
+                .get(&2)
+                .expect("a block press must record a WorkspacePressState");
+            assert_eq!(press.ws_idx, 3);
+            assert_eq!(press.start_row, row);
+        }
+
+        // A band row records nothing, as ever.
         app.state.handle_mouse(
             &mut app.terminal_runtimes,
-            2,
-            mouse(MouseEventKind::Down(MouseButton::Left), 2, 6),
+            3,
+            mouse(MouseEventKind::Down(MouseButton::Left), 2, 8),
         );
         assert!(
-            !app.state.workspace_presses.contains_key(&2),
+            !app.state.workspace_presses.contains_key(&3),
             "a Band row must not record a workspace press"
         );
     }
 
     #[test]
-    fn project_view_section_row_drag_opens_workspace_reorder_for_linked_worktree() {
-        // bora regression fix: Project view is Repo-view-adjacent
-        // (`groups_workspaces()` is true for both), but every workspace
-        // gets its own top-level `SectionRow`/`WorkspaceCardArea` there —
-        // including linked worktrees, which in Repo view nest under their
-        // group and cannot reorder independently. `can_reorder` must not
-        // apply that Repo-view restriction in Project view, or virtually
-        // every Project-view row (nearly all of them ARE linked
-        // worktrees) silently refuses to drag.
+    fn project_view_pane_dots_block_drag_opens_workspace_reorder_for_linked_worktree() {
+        // P2, bora-79l T1 — attribution flip of
+        // `project_view_section_row_drag_opens_workspace_reorder_for_linked_worktree`:
+        // the drag now STARTS on the workspace's own 2-row block, and a
+        // linked worktree must still reorder there (Project view gives
+        // every workspace its own card; the Flat/Repo refusal stays
+        // pinned by `flat_mode_drag_reorders_linked_worktree`). Goes red
+        // if the block stops feeding `workspace_presses`, if the branch
+        // line regresses to starting a drag, or if the Project-view
+        // exemption in `can_reorder`/`workspace_move_block_params` is
+        // dropped.
         let mut app = app_for_mouse_test();
         app.state.view_mode = crate::config::ViewMode::Project;
         let mut ws = Workspace::test_new("linked");
@@ -6570,9 +6586,10 @@ mod tests {
         app.state.workspaces = vec![ws];
         crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 20));
         let list_area = app.state.workspace_list_rect();
-        let row_rect = Rect::new(list_area.x, list_area.y, list_area.width, 1);
+        let branch_row = Rect::new(list_area.x, list_area.y, list_area.width, 1);
+        let block = Rect::new(list_area.x, list_area.y + 1, list_area.width, 2);
         app.state.view.project_row_areas = vec![ProjectRowHitArea {
-            rect: row_rect,
+            rect: branch_row,
             target: ProjectRowTarget::Section {
                 ws_idx: 0,
                 checkout_key: "/repo/checkout".into(),
@@ -6581,19 +6598,36 @@ mod tests {
         }];
         app.state.view.workspace_card_areas = vec![crate::app::state::WorkspaceCardArea {
             ws_idx: 0,
-            rect: row_rect,
+            rect: block,
             indented: true,
         }];
 
+        // The branch line starts no drag — decision 7's drag half.
         app.handle_mouse(mouse(
             MouseEventKind::Down(MouseButton::Left),
-            row_rect.x,
-            row_rect.y,
+            branch_row.x + 2,
+            branch_row.y,
         ));
         app.handle_mouse(mouse(
             MouseEventKind::Drag(MouseButton::Left),
-            row_rect.x + 2,
-            row_rect.y,
+            branch_row.x + 4,
+            branch_row.y,
+        ));
+        assert!(
+            app.state.drag.is_none(),
+            "a drag gesture on the branch line must not open WorkspaceReorder (P2)"
+        );
+
+        // The same gesture one row down, on the block, opens the reorder.
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            block.x + 2,
+            block.y,
+        ));
+        app.handle_mouse(mouse(
+            MouseEventKind::Drag(MouseButton::Left),
+            block.x + 4,
+            block.y,
         ));
 
         assert!(
@@ -6606,63 +6640,188 @@ mod tests {
                     }
                 })
             ),
-            "expected an open WorkspaceReorder drag for the linked-worktree Project row"
+            "expected an open WorkspaceReorder drag from the linked-worktree's \
+             PaneDotsRow block"
         );
     }
 
     #[test]
-    fn project_view_section_row_click_without_drag_focuses_the_workspace() {
-        // bora regression fix, item 3: a plain click (no drag) on a
-        // Project-view workspace row must still update `active` so
-        // there's something for the sidebar to paint as selected/active.
-        // This falls out of the same press-recording fix as drag-reorder:
-        // `chrome_press_action` turns any pending `WorkspacePressState`
-        // into `MouseAction::FocusWorkspace` on mouse-up when no drag
-        // opened.
+    fn project_view_dot_cell_wins_over_the_block_inside_its_own_rect() {
+        // P2, bora-79l T1 item 6: inside a dot's own 1-cell rect the dot
+        // wins — the dispatcher resolves `project_row_areas` BEFORE
+        // `workspace_card_areas`, so a click on a dot focuses THAT pane
+        // (FocusPane on press) while the same row's non-dot cells switch
+        // workspace (FocusWorkspace on mouse-up). Goes red if the dispatch
+        // order flips or the dot hit areas stop landing inside the card's
+        // rows.
+        let mut app = app_for_mouse_test();
+        app.state.view_mode = crate::config::ViewMode::Project;
+        let mut ws = Workspace::test_new("two-panes");
+        let root_pane = ws.tabs[0].root_pane;
+        ws.test_split(Direction::Vertical);
+        app.state.workspaces = vec![ws];
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 20));
+
+        let card = app
+            .state
+            .view
+            .workspace_card_areas
+            .iter()
+            .find(|card| card.ws_idx == 0)
+            .expect("the PaneDotsRow block must be the workspace's card");
+        let card = *card;
+        let mut dot_hits: Vec<_> = app
+            .state
+            .view
+            .project_row_areas
+            .iter()
+            .filter(|area| matches!(area.target, ProjectRowTarget::Pane { .. }))
+            .cloned()
+            .collect();
+        dot_hits.sort_by_key(|area| area.rect.x);
+        assert_eq!(dot_hits.len(), 2, "one dot hit per pane: {dot_hits:?}");
+        // The dot rects live INSIDE the card's rows — the overlap is the
+        // point: the dot must win by dispatch order, not by geometry.
+        for hit in &dot_hits {
+            assert!(
+                hit.rect.y >= card.rect.y && hit.rect.y < card.rect.y + card.rect.height,
+                "the dot rect {:?} must sit inside the block card {:?}",
+                hit.rect,
+                card.rect
+            );
+        }
+
+        // Click the second dot's own cell: FocusPane for that pane.
+        let action = app.state.handle_mouse(
+            &mut app.terminal_runtimes,
+            crate::app::LOCAL_INPUT_SOURCE,
+            mouse(
+                MouseEventKind::Down(MouseButton::Left),
+                dot_hits[1].rect.x,
+                dot_hits[1].rect.y,
+            ),
+        );
+        match action {
+            Some(MouseAction::FocusPane { ws_idx, pane_id }) => {
+                assert_eq!(ws_idx, 0);
+                assert_ne!(
+                    pane_id, root_pane,
+                    "the second dot must focus the second pane, not the root"
+                );
+            }
+            _ => panic!("expected FocusPane from a dot cell"),
+        }
+
+        // One column left of the first dot — still the block's l2 row,
+        // no dot rect: the card wins, FocusWorkspace on mouse-up.
+        let non_dot_col = dot_hits[0].rect.x.saturating_sub(1);
+        let down = app.state.handle_mouse(
+            &mut app.terminal_runtimes,
+            crate::app::LOCAL_INPUT_SOURCE,
+            mouse(
+                MouseEventKind::Down(MouseButton::Left),
+                non_dot_col,
+                dot_hits[0].rect.y,
+            ),
+        );
+        assert!(
+            down.is_none(),
+            "a non-dot block cell records no action on press"
+        );
+        let up = app.state.handle_mouse(
+            &mut app.terminal_runtimes,
+            crate::app::LOCAL_INPUT_SOURCE,
+            mouse(
+                MouseEventKind::Up(MouseButton::Left),
+                non_dot_col,
+                dot_hits[0].rect.y,
+            ),
+        );
+        assert!(
+            matches!(up, Some(MouseAction::FocusWorkspace { ws_idx: 0 })),
+            "a non-dot cell on the block must switch workspace (FocusWorkspace)"
+        );
+    }
+
+    #[test]
+    fn project_view_pane_dots_block_click_focuses_the_workspace_branch_line_does_not() {
+        // P2, bora-79l T1 — attribution flip of
+        // `project_view_section_row_click_without_drag_focuses_the_workspace`:
+        // a plain click (no drag) on the workspace's own 2-row block must
+        // update `active` (the block's card feeds `workspace_presses`;
+        // mouse-up's `chrome_press_action` turns it into
+        // FocusWorkspace), while the same click on the branch line above
+        // must do NOTHING — decision 7. Goes red if either side regresses.
         let mut app = app_for_mouse_test();
         app.state.view_mode = crate::config::ViewMode::Project;
         app.state.workspaces = vec![Workspace::test_new("a"), Workspace::test_new("b")];
         app.state.active = Some(0);
         app.state.selected = 0;
-        let row_rect = Rect::new(0, 5, 20, 1);
+        let branch_row = Rect::new(0, 5, 20, 1);
+        let block = Rect::new(0, 6, 20, 2);
         app.state.view.project_row_areas = vec![ProjectRowHitArea {
-            rect: row_rect,
+            rect: branch_row,
             target: ProjectRowTarget::Section {
                 ws_idx: 1,
                 checkout_key: "/repo/checkout-b".into(),
                 collapse_key: "wsec:1".into(),
             },
         }];
+        app.state.view.workspace_card_areas = vec![crate::app::state::WorkspaceCardArea {
+            ws_idx: 1,
+            rect: block,
+            indented: true,
+        }];
 
+        // Branch line: click does not switch workspace.
         app.handle_mouse(mouse(
             MouseEventKind::Down(MouseButton::Left),
-            row_rect.x,
-            row_rect.y,
+            branch_row.x + 5,
+            branch_row.y,
         ));
         app.handle_mouse(mouse(
             MouseEventKind::Up(MouseButton::Left),
-            row_rect.x,
-            row_rect.y,
+            branch_row.x + 5,
+            branch_row.y,
         ));
-
         assert_eq!(
             app.state.active,
-            Some(1),
-            "a click on a Project-view workspace row must focus it, same as a Flat/Repo card"
+            Some(0),
+            "a click on the branch line must NOT switch workspace (P2, decision 7)"
         );
+
+        // The block one row down: the same click focuses the workspace —
+        // on BOTH of its rows.
+        for row in [block.y, block.y + 1] {
+            app.handle_mouse(mouse(
+                MouseEventKind::Down(MouseButton::Left),
+                block.x + 5,
+                row,
+            ));
+            app.handle_mouse(mouse(
+                MouseEventKind::Up(MouseButton::Left),
+                block.x + 5,
+                row,
+            ));
+            assert_eq!(
+                app.state.active,
+                Some(1),
+                "a click on the block's row {row} must focus the workspace, \
+                 same as a Flat/Repo card"
+            );
+        }
     }
 
     #[test]
-    fn project_view_section_row_caret_collapses_rest_of_row_focuses_without_collapsing() {
-        // Owner's ask (verbatim): "eu clico no nome da workspace e ele
-        // retrai" — clicking anywhere on the row used to collapse it,
-        // which made a plain click unable to mean "select this
-        // workspace". Approved split: only the caret `▾`/`▸` collapses;
-        // the rest of the row selects. `section_row_line`
-        // (src/ui/sidebar.rs) always renders the chevron as the row's
-        // very first glyph, so the caret's hit column is exactly the
-        // `ProjectRowHitArea.rect.x` used below — this is what the fix
-        // under test reads back, not a hardcoded column.
+    fn project_view_section_row_caret_still_collapses_rest_of_row_does_nothing() {
+        // P2, bora-79l T1 — attribution flip of
+        // `project_view_section_row_caret_collapses_rest_of_row_focuses_without_collapsing`:
+        // the caret split survives (only the caret `▾`/`▸` column
+        // collapses), but the "rest of the row selects" half moved one row
+        // down — clicking the branch line's non-caret region now does
+        // NOTHING (the workspace's own block carries selection). Goes red
+        // if the caret loses its collapse or the branch line regresses to
+        // selecting.
         let mut app = app_for_mouse_test();
         app.state.view_mode = crate::config::ViewMode::Project;
         app.state.workspaces = vec![Workspace::test_new("a"), Workspace::test_new("b")];
@@ -6679,7 +6838,7 @@ mod tests {
             },
         }];
 
-        // Click away from the caret column: selects, does not collapse.
+        // Click away from the caret column: no focus, no collapse.
         app.handle_mouse(mouse(
             MouseEventKind::Down(MouseButton::Left),
             row_rect.x + 5,
@@ -6692,8 +6851,8 @@ mod tests {
         ));
         assert_eq!(
             app.state.active,
-            Some(1),
-            "a click away from the caret must still select the workspace"
+            Some(0),
+            "a click away from the caret must NOT switch workspace anymore (P2)"
         );
         assert!(
             !app.state.collapsed_space_keys.contains(&collapse_key),
@@ -6718,16 +6877,17 @@ mod tests {
     }
 
     #[test]
-    fn project_view_section_row_right_click_merges_full_workspace_menu_with_project_membership() {
-        // bora regression fix, item 2: once a Project-view SectionRow has
-        // a `WorkspaceCardArea`, `workspace_at_row` resolves it and the
-        // existing `ContextMenuKind::Workspace`/`GitWorkspace` build path
-        // — which already splices `workspace_assembly_items` in Project
-        // view (bora-uqv) — produces the FULL workspace menu (Rename,
-        // Copy path, Close, ...) together with the project-membership
-        // items, instead of the narrow member-only menu the owner
-        // reported ("right-click offers ONE option instead of the full
-        // workspace menu").
+    fn project_view_pane_dots_block_right_click_opens_the_full_workspace_menu() {
+        // P2, bora-79l T1 — attribution flip of
+        // `project_view_section_row_right_click_merges_full_workspace_menu_with_project_membership`:
+        // right-click on the workspace's own 2-row block resolves the
+        // block's `WorkspaceCardArea` through `workspace_at_row` and gets
+        // the FULL menu (`ContextMenuKind::GitWorkspace`/
+        // `Workspace` + the project-membership splice). Goes red if the
+        // menu stops opening from the block (card moved away or
+        // right-click routing broken). The branch line's own narrow menu
+        // stays pinned by
+        // `section_row_right_click_opens_project_member_targets_from_checkout_key`.
         let mut app = app_for_mouse_test();
         app.state.view_mode = crate::config::ViewMode::Project;
         let mut ws = Workspace::test_new("linked");
@@ -6739,14 +6899,15 @@ mod tests {
             is_linked_worktree: true,
         });
         app.state.workspaces = vec![ws];
-        let row_rect = Rect::new(0, 5, 20, 1);
+        let branch_row = Rect::new(0, 5, 20, 1);
+        let block = Rect::new(0, 6, 20, 2);
         app.state.view.workspace_card_areas = vec![crate::app::state::WorkspaceCardArea {
             ws_idx: 0,
-            rect: row_rect,
+            rect: block,
             indented: true,
         }];
         app.state.view.project_row_areas = vec![ProjectRowHitArea {
-            rect: row_rect,
+            rect: branch_row,
             target: ProjectRowTarget::Section {
                 ws_idx: 0,
                 checkout_key: "/repo/checkout".into(),
@@ -6754,27 +6915,54 @@ mod tests {
             },
         }];
 
+        // Right-click on the branch line: NO workspace menu — the narrow
+        // membership menu for the checkout dir opens instead.
         app.state.handle_mouse(
             &mut app.terminal_runtimes,
             crate::app::LOCAL_INPUT_SOURCE,
             mouse(
                 MouseEventKind::Down(MouseButton::Right),
-                row_rect.x + 1,
-                row_rect.y,
+                branch_row.x + 1,
+                branch_row.y,
             ),
         );
+        let branch_menu = app
+            .state
+            .context_menu
+            .as_ref()
+            .expect("right-click on the branch line still opens a menu");
+        assert!(
+            matches!(
+                &branch_menu.kind,
+                crate::app::state::ContextMenuKind::ProjectMemberTargets { .. }
+            ),
+            "the branch line's menu is the member-only one now: {:?}",
+            branch_menu.kind
+        );
+        app.state.context_menu = None;
+        app.state.mode = Mode::Terminal;
 
+        // Right-click one row down, on the block: the FULL workspace menu.
+        app.state.handle_mouse(
+            &mut app.terminal_runtimes,
+            crate::app::LOCAL_INPUT_SOURCE,
+            mouse(
+                MouseEventKind::Down(MouseButton::Right),
+                block.x + 1,
+                block.y,
+            ),
+        );
         let menu = app
             .state
             .context_menu
             .as_ref()
-            .expect("right-click on a Project-view workspace row must open a context menu");
+            .expect("right-click on the workspace block must open a context menu");
         assert!(
             matches!(
                 &menu.kind,
                 crate::app::state::ContextMenuKind::GitWorkspace { ws_idx: 0, .. }
             ),
-            "expected the full workspace menu (GitWorkspace), not the narrow member-only menu"
+            "expected the full workspace menu (GitWorkspace) from the block"
         );
         assert!(
             menu.items.iter().any(|item| item == "Rename"),
