@@ -23,6 +23,7 @@ pub(crate) mod pane_graphics;
 mod popup;
 mod runtime;
 mod runtime_mutations;
+mod sections;
 mod session;
 pub mod state;
 mod tab_bar_status;

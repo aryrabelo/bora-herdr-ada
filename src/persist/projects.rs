@@ -740,6 +740,7 @@ projects:
                     Section {
                         id: "sec-branch-main".to_string(),
                         kind: SectionKind::Branch,
+                        name: None,
                         header_on: true,
                         parts: SectionParts::default(),
                         children: vec![SectionChild::Workspace {
@@ -750,6 +751,7 @@ projects:
                     Section {
                         id: "sec-livre".to_string(),
                         kind: SectionKind::Livre,
+                        name: None,
                         header_on: true,
                         parts: SectionParts::default(),
                         children: vec![],

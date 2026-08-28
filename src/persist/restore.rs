@@ -939,12 +939,12 @@ fn collect_ids_inner(node: &Node, ids: &mut Vec<PaneId>) {
 /// sections (comando/checks/livre) pass through untouched: reconciliation
 /// only concerns workspace placement, never the declared checks/commands
 /// bands or the empty mountable slot.
-// ponytail: no production caller yet — `AppState` has nowhere to hold a
-// per-project runtime layout until a later leaf wires one in. The function
-// is real, tested (see `reconcile_section_layout_*` below), and reachable
-// from `persist::projects::Project::layout` today; the `#[allow]` only
-// covers "not called yet", not "not finished" (epic bora-79l, F7 gate G3).
-#[allow(dead_code)]
+///
+/// Called at the mutation site — `app::api::projects::
+/// handle_project_section_create`/`handle_project_section_update` (epic
+/// bora-79l.10, pass 6b) — never at every render nor in the background:
+/// a stale saved section is cleaned up exactly when the user next mutates
+/// the layout, not on a schedule.
 pub fn reconcile_section_layout(
     saved: &[Section],
     live_checkouts: &HashMap<String, String>,
@@ -1074,6 +1074,7 @@ mod tests {
             Section {
                 id: "sec-branch-a".to_string(),
                 kind: SectionKind::Branch,
+                name: None,
                 header_on: true,
                 parts: crate::ui::sidebar::sections::SectionParts::default(),
                 children: vec![
@@ -1090,6 +1091,7 @@ mod tests {
             Section {
                 id: "sec-branch-b".to_string(),
                 kind: SectionKind::Branch,
+                name: None,
                 header_on: false,
                 parts: crate::ui::sidebar::sections::SectionParts::default(),
                 children: vec![SectionChild::Workspace {
@@ -1100,6 +1102,7 @@ mod tests {
             Section {
                 id: "sec-checks".to_string(),
                 kind: SectionKind::Checks,
+                name: None,
                 header_on: true,
                 parts: crate::ui::sidebar::sections::SectionParts::default(),
                 children: vec![SectionChild::Item {

@@ -4450,6 +4450,70 @@
           ],
           "type": "object"
         },
+        "ProjectSectionCreateParams": {
+          "description": "`project.section_create`: appends a new\n[`crate::ui::sidebar::sections::Section`] to `slug`'s mountable\n`layout:` (epic bora-79l, T6 pass 6b — see `app::sections::\ncreate_section`). `name` is used verbatim when given; omitted, the\nsection gets a random two-word display name rather than a bare `None`\nheader. Errors `project_not_found` when `slug` does not exist.",
+          "properties": {
+            "kind": {
+              "$ref": "#/schemas/request/$defs/SectionKind"
+            },
+            "name": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "slug": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "slug",
+            "kind"
+          ],
+          "type": "object"
+        },
+        "ProjectSectionUpdateParams": {
+          "description": "`project.section_update`: applies `header_on`/`dots`/`diff` (each\n`None` leaves that field untouched) to one section of `slug`'s\n`layout:`, addressed either by its pinned `section_id` or by\n`checkout` — see `app::sections::update_section`. Addressing by\n`checkout` MATERIALIZES a fresh Branch section carrying that checkout\nwhen `slug` declares no layout yet (or none of its sections name that\ncheckout), which is what makes the toggle work against a real\n`projects.yml` with no `layout:` today. Errors `project_not_found`\nwhen `slug` does not exist, `project_section_target_invalid` when\nneither `section_id` nor `checkout` is given, and\n`project_section_not_found` when `section_id` names a section that\ndoes not exist.",
+          "properties": {
+            "checkout": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "diff": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "dots": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "header_on": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "section_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "slug": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "slug"
+          ],
+          "type": "object"
+        },
         "ProjectUpdateParams": {
           "description": "`project.update`: replaces `name`, `channel`, and `auto_join` wholesale\nwith whatever this request carries — a full replacement of exactly\nthose fields, not a partial \"only touch what's `Some`\" patch. Omitting\n`name`/`channel` clears them back to unset; omitting `auto_join` resets\nit back to its default (`true`) — none of the three mean \"leave\nunchanged\". Never touches `members` — that is `project.member_add`/\n`project.member_remove`'s job — nor `orchestrator`/`sections`, which\nhave no verb yet in this bead. Errors `project_not_found` when `slug`\ndoes not exist.",
           "properties": {
@@ -4574,6 +4638,31 @@
             "sections"
           ],
           "type": "object"
+        },
+        "SectionKind": {
+          "description": "Derives `schemars::JsonSchema` in addition to the file-schema traits\nbecause `api::schema::projects::ProjectSectionCreateParams` (the\n`project.section_create` wire shape) reuses this type directly rather\nthan mirroring it — the same pattern `persist::projects::WorktreesScope`\nalready uses for `api::schema::projects::ProjectMemberInfo`.",
+          "oneOf": [
+            {
+              "const": "branch",
+              "description": "Session blocks: children are [`SectionChild::Workspace`] entries.",
+              "type": "string"
+            },
+            {
+              "const": "comando",
+              "description": "Declared-command band: children are [`SectionChild::Item`] entries.",
+              "type": "string"
+            },
+            {
+              "const": "checks",
+              "description": "CI-check band: children are [`SectionChild::Item`] entries.",
+              "type": "string"
+            },
+            {
+              "const": "livre",
+              "description": "The empty, mountable slot — hidden until something is dropped in.",
+              "type": "string"
+            }
+          ]
         },
         "ServerLiveHandoffParams": {
           "properties": {
@@ -7344,6 +7433,38 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/ProjectMemberRemoveParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "project.section_create",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/ProjectSectionCreateParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "project.section_update",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/ProjectSectionUpdateParams"
             }
           },
           "required": [
@@ -12509,6 +12630,23 @@
               "required": [
                 "type",
                 "project"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "`project.section_create` result, and also `project.section_update`'s\n(see `app::sections::update_section`) — both land on exactly one\nsection and hand back its id, whether freshly created, addressed by\n`section_id`, or materialized by `checkout`.",
+              "properties": {
+                "section_id": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "project_section_create",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "section_id"
               ],
               "type": "object"
             },

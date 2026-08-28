@@ -1,20 +1,23 @@
 //! Handlers for the `project.*` socket verbs — `project.list`, `.create`,
-//! `.update`, `.member_add`, `.member_remove` — the write path onto
-//! `~/.config/bora/projects.yml` that `persist::projects` (bora-e9i.1)
-//! landed as read-only. Every handler here goes through
-//! `persist::projects::load_projects_file_fresh` /
-//! `persist::projects::update_projects_file` directly, never through
+//! `.update`, `.member_add`, `.member_remove`, `.section_create`,
+//! `.section_update` — the write path onto `~/.config/bora/projects.yml`
+//! that `persist::projects` (bora-e9i.1) landed as read-only. Every
+//! handler here goes through `persist::projects::load_projects_file_fresh`
+//! / `persist::projects::update_projects_file` directly, never through
 //! `App`'s own cached state, because a socket verb must always answer from
 //! (and write on top of) the CURRENT on-disk file — see that module's doc
 //! comment for why.
 
 use crate::api::schema::{
     ChannelCreateParams, EmptyParams, ProjectCreateParams, ProjectMemberAddParams,
-    ProjectMemberInfo, ProjectMemberRemoveParams, ProjectMemberResolution, ProjectSummary,
-    ProjectUpdateParams, ResponseResult,
+    ProjectMemberInfo, ProjectMemberRemoveParams, ProjectMemberResolution,
+    ProjectSectionCreateParams, ProjectSectionUpdateParams, ProjectSummary, ProjectUpdateParams,
+    ResponseResult,
 };
+use crate::app::sections::{self, SectionTarget};
 use crate::app::App;
 use crate::persist::projects::{self, Member, MemberResolution, Project, ProjectsUpdateError};
+use crate::persist::reconcile_section_layout;
 
 use super::responses::{encode_error, encode_success};
 
@@ -367,6 +370,154 @@ impl App {
             }
         }
     }
+
+    /// `project.section_create`: appends a new section to `slug`'s
+    /// mountable `layout:` (`app::sections::create_section`). The saved
+    /// layout is reconciled against this session's live workspaces
+    /// (`persist::restore::reconcile_section_layout`) on the SAME write,
+    /// before the new section is appended — there is no background pass,
+    /// so a stale saved layout is cleaned up exactly when the user next
+    /// mutates it (epic bora-79l.10, pass 6b design note). Errors
+    /// `project_not_found` when `slug` does not exist.
+    pub(super) fn handle_project_section_create(
+        &mut self,
+        id: String,
+        params: ProjectSectionCreateParams,
+    ) -> String {
+        let slug = params.slug.trim().to_string();
+        if slug.is_empty() {
+            return encode_error(id, "project_slug_invalid", "project slug must not be empty");
+        }
+        let kind = params.kind;
+        let name = params.name;
+        let live_checkouts = self.live_section_checkouts();
+        let target_slug = slug;
+        let mut created_id = String::new();
+        let created_id_ref = &mut created_id;
+        let result = projects::update_projects_file(move |file| {
+            let Some(project) = file.projects.get_mut(&target_slug) else {
+                return Err(MutationFailure::new(
+                    "project_not_found",
+                    format!("project {target_slug:?} not found"),
+                ));
+            };
+            let saved = project.layout.take().unwrap_or_default();
+            let mut layout = reconcile_section_layout(&saved, &live_checkouts);
+            *created_id_ref = sections::create_section(&mut layout, kind, name);
+            project.layout = Some(layout);
+            Ok(())
+        });
+        match result {
+            Ok(_file) => encode_success(
+                id,
+                ResponseResult::ProjectSectionCreate {
+                    section_id: created_id,
+                },
+            ),
+            Err(ProjectsUpdateError::Mutate(failure)) => {
+                encode_error(id, failure.code, failure.message)
+            }
+            Err(ProjectsUpdateError::Load(msg)) => {
+                encode_error(id, "project_section_create_failed", msg)
+            }
+            Err(ProjectsUpdateError::Save(msg)) => {
+                encode_error(id, "project_section_create_failed", msg)
+            }
+        }
+    }
+
+    /// `project.section_update`: applies `header_on`/`dots`/`diff` (each
+    /// `None` leaves that field untouched) to one section of `slug`'s
+    /// `layout:`, addressed by `section_id` or by `checkout`
+    /// (`app::sections::update_section`) — see that function's doc for
+    /// the `checkout` materialization behavior. The saved layout is
+    /// reconciled against this session's live workspaces
+    /// (`persist::restore::reconcile_section_layout`) before the update
+    /// applies, same as `project.section_create`. Errors
+    /// `project_not_found` when `slug` does not exist,
+    /// `project_section_target_invalid` when neither `section_id` nor
+    /// `checkout` is given, and `project_section_not_found` when
+    /// `section_id` names a section that does not exist.
+    pub(super) fn handle_project_section_update(
+        &mut self,
+        id: String,
+        params: ProjectSectionUpdateParams,
+    ) -> String {
+        let slug = params.slug.trim().to_string();
+        if slug.is_empty() {
+            return encode_error(id, "project_slug_invalid", "project slug must not be empty");
+        }
+        let target = match (params.section_id, params.checkout) {
+            (Some(section_id), _) => SectionTarget::Id(section_id),
+            (None, Some(checkout)) => SectionTarget::Checkout(checkout),
+            (None, None) => {
+                return encode_error(
+                    id,
+                    "project_section_target_invalid",
+                    "either section_id or checkout must be given",
+                );
+            }
+        };
+        let header_on = params.header_on;
+        let dots = params.dots;
+        let diff = params.diff;
+        let live_checkouts = self.live_section_checkouts();
+        let target_slug = slug;
+        let mut updated_id: Option<String> = None;
+        let updated_id_ref = &mut updated_id;
+        let result = projects::update_projects_file(move |file| {
+            let Some(project) = file.projects.get_mut(&target_slug) else {
+                return Err(MutationFailure::new(
+                    "project_not_found",
+                    format!("project {target_slug:?} not found"),
+                ));
+            };
+            let saved = project.layout.take().unwrap_or_default();
+            let mut layout = reconcile_section_layout(&saved, &live_checkouts);
+            *updated_id_ref = sections::update_section(&mut layout, &target, header_on, dots, diff);
+            if updated_id_ref.is_none() {
+                return Err(MutationFailure::new(
+                    "project_section_not_found",
+                    "section_id names a section that does not exist",
+                ));
+            }
+            project.layout = Some(layout);
+            Ok(())
+        });
+        match result {
+            Ok(_file) => encode_success(
+                id,
+                ResponseResult::ProjectSectionCreate {
+                    section_id: updated_id.expect("checked Some above before returning Ok"),
+                },
+            ),
+            Err(ProjectsUpdateError::Mutate(failure)) => {
+                encode_error(id, failure.code, failure.message)
+            }
+            Err(ProjectsUpdateError::Load(msg)) => {
+                encode_error(id, "project_section_update_failed", msg)
+            }
+            Err(ProjectsUpdateError::Save(msg)) => {
+                encode_error(id, "project_section_update_failed", msg)
+            }
+        }
+    }
+
+    /// Live checkouts for the `project.section_*` verbs' reconciliation
+    /// pass (`persist::restore::reconcile_section_layout`): each open
+    /// workspace's checkout key mapped to its current display name — the
+    /// same shape that function's own tests build by hand.
+    fn live_section_checkouts(&self) -> std::collections::HashMap<String, String> {
+        self.state
+            .workspaces
+            .iter()
+            .filter_map(|ws| {
+                let checkout = ws.git_space()?.checkout_key.clone();
+                let name = ws.display_name_from(&self.state.terminals, &self.terminal_runtimes);
+                Some((checkout, name))
+            })
+            .collect()
+    }
 }
 
 #[cfg(test)]
@@ -718,6 +869,154 @@ mod tests {
             Some("CNB"),
             "the file on disk must reflect the update, proving the rename actually \
              landed the new content rather than abandoning it in the .tmp sibling"
+        );
+    }
+
+    #[tokio::test]
+    async fn section_create_persists_to_disk_and_a_fresh_read_finds_it() {
+        // Proves `project.section_create` really hits the disk: the
+        // assertion re-reads `projects.yml` from scratch rather than
+        // trusting the handler's own in-memory response.
+        let _isolated = IsolatedDirs::new("project-section-create-persists");
+        let mut app = test_app();
+        create(&mut app, "cnb");
+
+        let response = app.handle_project_section_create(
+            "req".into(),
+            ProjectSectionCreateParams {
+                slug: "cnb".into(),
+                kind: crate::ui::sidebar::sections::SectionKind::Comando,
+                name: Some("Dev".into()),
+            },
+        );
+        let response: serde_json::Value = serde_json::from_str(&response).unwrap();
+        let section_id = response["result"]["section_id"]
+            .as_str()
+            .expect("section_create must return a section_id")
+            .to_string();
+        assert!(!section_id.is_empty());
+
+        let on_disk = crate::persist::projects::parse_projects_yaml(
+            &std::fs::read_to_string(projects_file_path()).unwrap(),
+        )
+        .expect("written file must parse");
+        let project = on_disk.projects.get("cnb").expect("project on disk");
+        let layout = project.layout.as_ref().expect("layout must be written");
+        let section = layout
+            .iter()
+            .find(|section| section.id == section_id)
+            .expect("the created section must survive the write, read fresh from disk");
+        assert_eq!(
+            section.kind,
+            crate::ui::sidebar::sections::SectionKind::Comando
+        );
+        assert_eq!(section.name.as_deref(), Some("Dev"));
+    }
+
+    #[tokio::test]
+    async fn section_create_on_an_unknown_slug_errors_without_writing() {
+        let _isolated = IsolatedDirs::new("project-section-create-unknown-slug");
+        let mut app = test_app();
+
+        let response = app.handle_project_section_create(
+            "req".into(),
+            ProjectSectionCreateParams {
+                slug: "ghost".into(),
+                kind: crate::ui::sidebar::sections::SectionKind::Livre,
+                name: None,
+            },
+        );
+        let response: serde_json::Value = serde_json::from_str(&response).unwrap();
+        assert_eq!(response["error"]["code"], "project_not_found");
+    }
+
+    #[tokio::test]
+    async fn section_update_by_checkout_materializes_and_persists_a_branch_section() {
+        // The runtime-mountable-sections gate's whole point: toggling a
+        // checkout that no `layout:` declares yet must still land a real
+        // section on disk, addressed purely by checkout.
+        let _isolated = IsolatedDirs::new("project-section-update-materializes");
+        let mut app = test_app();
+        create(&mut app, "cnb");
+
+        let response = app.handle_project_section_update(
+            "req".into(),
+            ProjectSectionUpdateParams {
+                slug: "cnb".into(),
+                section_id: None,
+                checkout: Some("/repo/cnb".into()),
+                header_on: Some(false),
+                dots: None,
+                diff: None,
+            },
+        );
+        let response: serde_json::Value = serde_json::from_str(&response).unwrap();
+        let section_id = response["result"]["section_id"]
+            .as_str()
+            .expect("section_update must return the id it landed on")
+            .to_string();
+
+        let on_disk = crate::persist::projects::parse_projects_yaml(
+            &std::fs::read_to_string(projects_file_path()).unwrap(),
+        )
+        .expect("written file must parse");
+        let layout = on_disk
+            .projects
+            .get("cnb")
+            .and_then(|project| project.layout.clone())
+            .expect("materialization must write a layout");
+        assert_eq!(layout.len(), 1, "exactly one section must be materialized");
+        let section = &layout[0];
+        assert_eq!(&section.id, &section_id);
+        assert_eq!(
+            section.kind,
+            crate::ui::sidebar::sections::SectionKind::Branch
+        );
+        assert!(
+            !section.header_on,
+            "the requested field must apply to the materialized section"
+        );
+        assert_eq!(
+            section.children,
+            vec![crate::ui::sidebar::sections::SectionChild::Workspace {
+                name: "/repo/cnb".into(),
+                checkout: "/repo/cnb".into(),
+            }]
+        );
+    }
+
+    #[tokio::test]
+    async fn section_update_by_unknown_id_errors_without_writing_a_layout() {
+        let _isolated = IsolatedDirs::new("project-section-update-unknown-id");
+        let mut app = test_app();
+        create(&mut app, "cnb");
+
+        let response = app.handle_project_section_update(
+            "req".into(),
+            ProjectSectionUpdateParams {
+                slug: "cnb".into(),
+                section_id: Some("sec-ghost".into()),
+                checkout: None,
+                header_on: Some(false),
+                dots: None,
+                diff: None,
+            },
+        );
+        let response: serde_json::Value = serde_json::from_str(&response).unwrap();
+        assert_eq!(response["error"]["code"], "project_section_not_found");
+
+        let on_disk = crate::persist::projects::parse_projects_yaml(
+            &std::fs::read_to_string(projects_file_path()).unwrap(),
+        )
+        .expect("written file must parse");
+        assert!(
+            on_disk
+                .projects
+                .get("cnb")
+                .expect("project on disk")
+                .layout
+                .is_none(),
+            "a not-found target must not write a layout at all"
         );
     }
 

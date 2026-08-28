@@ -896,6 +896,15 @@ pub(crate) enum WorkspaceListEntry {
         collapse_key: String,
         done: usize,
         total: usize,
+        /// T6 6b (bora-79l.10): `Section.name`, when declared, overrides
+        /// the descriptor's static `label` at render (`section_header_
+        /// line`) — the only way a per-instance header name can reach
+        /// this row, since `kind` is a shared `&'static` descriptor and
+        /// cannot itself carry one (no `Box::leak`, plan decision).
+        /// `None` for every registry band (COMMANDS/CHECKS/TODOS/
+        /// NOTES/PULL REQUESTS): they have no per-instance name to
+        /// carry, only declared (`push_declared_sections`) sections do.
+        name: Option<String>,
     },
     /// A row inside a `SectionHeader` band.
     SectionItem {
@@ -926,7 +935,17 @@ pub(crate) enum WorkspaceListEntry {
     /// per-dot hit areas need each pane's live `pane_id` to build a
     /// `ProjectRowTarget::Pane`, and a 2-field entry has nowhere else to
     /// get it from. Dot hit areas land on l2 (`row_y + 1`), never l1.
-    PaneDotsRow { ws_idx: usize, name: String },
+    PaneDotsRow {
+        ws_idx: usize,
+        name: String,
+        /// T6 6b (bora-79l.10): the owning Branch section's
+        /// `parts.dots` flag (`project_view::section_model_flags`),
+        /// carried onto the entry so every lockstep pass reads the
+        /// l2-toggle off the row itself rather than re-deriving it from
+        /// the model a second time. OFF collapses the block to its l1
+        /// name line alone (`entry_row_height`).
+        dots: bool,
+    },
     /// Project-level: one open PR authored by the user with no local
     /// worktree, inside the `PULL REQUESTS` band (bora-yw6.2, C2). `checks`
     /// is A1's `OpenPr.checks: Option<ChecksRollup>` (`workspace::git::open_prs`
@@ -996,7 +1015,13 @@ fn entry_row_height(
         WorkspaceListEntry::SectionItem { .. } => 1,
         // bora-79l F2: the block split into l1 (name) + l2 (dots) —
         // `pane_dots_name_line`/`pane_dots_dots_line`'s own docs.
-        WorkspaceListEntry::PaneDotsRow { .. } => 2,
+        WorkspaceListEntry::PaneDotsRow { dots, .. } => {
+            if *dots {
+                2
+            } else {
+                1
+            }
+        }
         WorkspaceListEntry::PrRow { .. } => 1,
     };
     base + project_view_trailing_gap(entry, entries, idx, row_gap)
@@ -1539,6 +1564,10 @@ pub(crate) fn section_header_line(
     kind: &'static SectionDescriptor,
     done: usize,
     total: usize,
+    // T6 6b (bora-79l.10): `Section.name`, when declared, overrides the
+    // descriptor's static `label` — `kind` is a shared `&'static`
+    // descriptor and cannot carry a per-instance name itself.
+    name: Option<&str>,
     p: &Palette,
     width: u16,
 ) -> Line<'static> {
@@ -1550,12 +1579,13 @@ pub(crate) fn section_header_line(
         SectionCounter::Count => format!("{total}"),
         SectionCounter::Progress => format!("{done}/{total}"),
     };
+    let label = name.unwrap_or(kind.label).to_string();
     let spans = vec![
         Span::styled(" ", Style::default()),
         Span::styled(kind.glyph, Style::default().fg(p.overlay1)),
         Span::styled(" ", Style::default()),
         Span::styled(
-            kind.label,
+            label,
             Style::default().fg(p.overlay0).add_modifier(Modifier::BOLD),
         ),
         Span::styled(" ", Style::default()),
@@ -2900,22 +2930,28 @@ fn workspace_list_areas_for_entries(
             // drift — and the input dispatcher resolves `project_row_areas`
             // BEFORE `workspace_card_areas`, so inside a dot's own cell the
             // dot wins over the block.
-            WorkspaceListEntry::PaneDotsRow { ws_idx, .. } => {
+            WorkspaceListEntry::PaneDotsRow { ws_idx, dots, .. } => {
+                let card_height = if *dots { 2 } else { 1 };
                 cards.push(crate::app::state::WorkspaceCardArea {
                     ws_idx: *ws_idx,
-                    rect: Rect::new(body.x, row_y, body.width, 2),
+                    rect: Rect::new(body.x, row_y, body.width, card_height),
                     indented: true,
                 });
-                if let Some(ws) = app.workspaces.get(*ws_idx) {
-                    let dots_row_y = row_y.saturating_add(1);
-                    for (_pane_id, number, column) in pane_dots_columns(ws, body.width) {
-                        project_rows.push(ProjectRowHitArea {
-                            rect: Rect::new(body.x + column, dots_row_y, 1, 1),
-                            target: ProjectRowTarget::Pane {
-                                ws_idx: *ws_idx,
-                                pane_id: project_view::pane_address(ws, number),
-                            },
-                        });
+                // T6 6b: no l2 row, no per-dot hit area — there is
+                // nothing at `row_y + 1` for a dot to be hit-tested
+                // against.
+                if *dots {
+                    if let Some(ws) = app.workspaces.get(*ws_idx) {
+                        let dots_row_y = row_y.saturating_add(1);
+                        for (_pane_id, number, column) in pane_dots_columns(ws, body.width) {
+                            project_rows.push(ProjectRowHitArea {
+                                rect: Rect::new(body.x + column, dots_row_y, 1, 1),
+                                target: ProjectRowTarget::Pane {
+                                    ws_idx: *ws_idx,
+                                    pane_id: project_view::pane_address(ws, number),
+                                },
+                            });
+                        }
                     }
                 }
             }
@@ -3718,11 +3754,22 @@ fn render_workspace_list(
                 }
             }
             WorkspaceListEntry::SectionHeader {
-                kind, done, total, ..
+                kind,
+                done,
+                total,
+                name,
+                ..
             } => {
                 if row_y < list_bottom {
                     frame.render_widget(
-                        Paragraph::new(section_header_line(kind, *done, *total, p, body.width)),
+                        Paragraph::new(section_header_line(
+                            kind,
+                            *done,
+                            *total,
+                            name.as_deref(),
+                            p,
+                            body.width,
+                        )),
                         Rect::new(body.x, row_y, body.width, 1),
                     );
                 }
@@ -3839,7 +3886,11 @@ fn render_workspace_list(
                     }
                 }
             }
-            WorkspaceListEntry::PaneDotsRow { ws_idx, name } => {
+            WorkspaceListEntry::PaneDotsRow {
+                ws_idx,
+                name,
+                dots: dots_on,
+            } => {
                 // The block carries the workspace's visual state now (P2,
                 // bora-79l T1) — the same GC3 three-way decision the
                 // Flat/Repo `Workspace` card uses: a real selection
@@ -3848,7 +3899,11 @@ fn render_workspace_list(
                 // "this is the active workspace" case is a lighter
                 // statement — the blue bar at the block's left border —
                 // so the dots' own state colours stay legible on the
-                // active row too.
+                // active row too. T6 6b: `block_height` is the single
+                // source both the selection fill and the active-bar loop
+                // below read, so they can never desync from
+                // `entry_row_height` when `dots` is off (1 row, not 2).
+                let block_height: u16 = if *dots_on { 2 } else { 1 };
                 let selected = *ws_idx == app.selected && is_navigating;
                 let is_active = Some(*ws_idx) == app.active;
                 let is_dragged = dragged_ws_idx == Some(*ws_idx);
@@ -3861,7 +3916,7 @@ fn render_workspace_list(
                         p.surface1
                     };
                     let buf = frame.buffer_mut();
-                    for y in row_y..row_y.saturating_add(2) {
+                    for y in row_y..row_y.saturating_add(block_height) {
                         if y >= list_bottom {
                             break;
                         }
@@ -3895,37 +3950,40 @@ fn render_workspace_list(
                     // doc) — one `pane_details` call for the whole row, not
                     // one per dot, so this stays cheaper than the old
                     // per-`PaneRow` render path it replaces (which called
-                    // `pane_details` once PER PANE).
-                    let dots_row_y = row_y.saturating_add(1);
-                    if dots_row_y < list_bottom {
-                        let columns = pane_dots_columns(ws, body.width);
-                        let details = ws.pane_details(&app.terminals);
-                        let dots: Vec<(&'static str, Style)> = columns
-                            .iter()
-                            .map(|(pane_id, _number, _column)| {
-                                details
-                                    .iter()
-                                    .find(|d| d.pane_id == *pane_id)
-                                    .map(|d| {
-                                        pane_dots_dot_glyph(
-                                            d.state,
-                                            d.seen,
-                                            app.spinner_tick,
-                                            app.status_indicators,
-                                            p,
-                                        )
-                                    })
-                                    .unwrap_or(("○", Style::default().fg(p.overlay0)))
-                            })
-                            .collect();
-                        frame.render_widget(
-                            Paragraph::new(pane_dots_dots_line(&dots, body.width)),
-                            Rect::new(body.x, dots_row_y, body.width, 1),
-                        );
-                        if show_active_marker {
-                            let buf = frame.buffer_mut();
-                            buf[(body.x, dots_row_y)].set_symbol("▎");
-                            buf[(body.x, dots_row_y)].set_style(Style::default().fg(p.accent));
+                    // `pane_details` once PER PANE). T6 6b: skipped
+                    // entirely when `dots` is off — there is no l2 row.
+                    if *dots_on {
+                        let dots_row_y = row_y.saturating_add(1);
+                        if dots_row_y < list_bottom {
+                            let columns = pane_dots_columns(ws, body.width);
+                            let details = ws.pane_details(&app.terminals);
+                            let dots: Vec<(&'static str, Style)> = columns
+                                .iter()
+                                .map(|(pane_id, _number, _column)| {
+                                    details
+                                        .iter()
+                                        .find(|d| d.pane_id == *pane_id)
+                                        .map(|d| {
+                                            pane_dots_dot_glyph(
+                                                d.state,
+                                                d.seen,
+                                                app.spinner_tick,
+                                                app.status_indicators,
+                                                p,
+                                            )
+                                        })
+                                        .unwrap_or(("○", Style::default().fg(p.overlay0)))
+                                })
+                                .collect();
+                            frame.render_widget(
+                                Paragraph::new(pane_dots_dots_line(&dots, body.width)),
+                                Rect::new(body.x, dots_row_y, body.width, 1),
+                            );
+                            if show_active_marker {
+                                let buf = frame.buffer_mut();
+                                buf[(body.x, dots_row_y)].set_symbol("▎");
+                                buf[(body.x, dots_row_y)].set_style(Style::default().fg(p.accent));
+                            }
                         }
                     }
                 }
@@ -8490,7 +8548,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
     fn section_header_ruler_fills_exact_width_to_the_counter_column() {
         let p = Palette::catppuccin();
         let width = 40;
-        let text = line_text(&section_header_line(&COMMANDS, 1, 3, &p, width));
+        let text = line_text(&section_header_line(&COMMANDS, 1, 3, None, &p, width));
 
         // Row is loaded exactly to `width`, not merely "wide enough" — a
         // leader/counter budget mismatch shows up as drift here. T7
@@ -8511,8 +8569,8 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
     #[test]
     fn section_header_checks_glyph_differs_from_commands() {
         let p = Palette::catppuccin();
-        let commands = line_text(&section_header_line(&COMMANDS, 0, 2, &p, 30));
-        let checks = line_text(&section_header_line(&CHECKS, 2, 2, &p, 30));
+        let commands = line_text(&section_header_line(&COMMANDS, 0, 2, None, &p, 30));
+        let checks = line_text(&section_header_line(&CHECKS, 2, 2, None, &p, 30));
 
         // T7 (bora-79l): this pinned that the two bands' glyphs differed
         // (≡ vs ✓). ALVO_CAPTURE rows 31/33 pin `≡` for BOTH — the ✓ was
@@ -8528,8 +8586,8 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
     // vermelho se o contador voltar com espaço à frente (` 2`).
     fn section_header_notes_shows_plain_count_not_a_progress_ratio() {
         let p = Palette::catppuccin();
-        let notes = line_text(&section_header_line(&NOTES, 0, 2, &p, 30));
-        let todos = line_text(&section_header_line(&TODOS, 1, 3, &p, 30));
+        let notes = line_text(&section_header_line(&NOTES, 0, 2, None, &p, 30));
+        let todos = line_text(&section_header_line(&TODOS, 1, 3, None, &p, 30));
 
         assert!(notes.contains("NOTES"));
         assert!(
@@ -9320,6 +9378,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
                 diff: None,
             },
             WorkspaceListEntry::PaneDotsRow {
+                dots: true,
                 ws_idx: 0,
                 name: "ws0".into(),
             },
@@ -9334,6 +9393,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
                 diff: None,
             },
             WorkspaceListEntry::PaneDotsRow {
+                dots: true,
                 ws_idx: 1,
                 name: "ws1".into(),
             },
@@ -9384,12 +9444,14 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
                 diff: None,
             },
             WorkspaceListEntry::PaneDotsRow {
+                dots: true,
                 ws_idx: 0,
                 name: "ws0".into(),
             },
             // 6a: the second member of the SAME group — no SectionRow of
             // its own anymore, just the block glued under the header.
             WorkspaceListEntry::PaneDotsRow {
+                dots: true,
                 ws_idx: 1,
                 name: "ws1".into(),
             },
@@ -9404,6 +9466,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
                 diff: None,
             },
             WorkspaceListEntry::PaneDotsRow {
+                dots: true,
                 ws_idx: 2,
                 name: "ws2".into(),
             },
@@ -9422,6 +9485,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
                 diff: None,
             },
             WorkspaceListEntry::PaneDotsRow {
+                dots: true,
                 ws_idx: 3,
                 name: "ws3".into(),
             },
@@ -10057,6 +10121,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
                 branch_group: "g".into(),
             },
             WorkspaceListEntry::SectionHeader {
+                name: None,
                 kind: &COMMANDS,
                 collapse_key: "sec:1".into(),
                 done: 1,
@@ -10238,6 +10303,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
                 branch_group: "g".into(),
             },
             WorkspaceListEntry::PaneDotsRow {
+                dots: true,
                 ws_idx: 5,
                 name: "agent".into(),
             },
@@ -10372,6 +10438,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
         // the worktree's repo. Either way its row_y span still counts.
         let entries = vec![
             WorkspaceListEntry::SectionHeader {
+                name: None,
                 kind: &PULL_REQUESTS,
                 collapse_key: "sec:prs:proj".into(),
                 done: 0,

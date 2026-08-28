@@ -1537,24 +1537,42 @@ impl AppState {
                     } else {
                         (vec![], vec![], None)
                     };
+                    let mut items = build_context_menu_items(
+                        &kind,
+                        &self.workspaces,
+                        self.view_mode,
+                        &{
+                            // bora-uqv: in Project view the row menu
+                            // splices project membership items where the
+                            // visual-group items would be.
+                            if self.view_mode == crate::config::ViewMode::Project {
+                                super::modal::workspace_assembly_items(&self.workspaces, idx)
+                            } else {
+                                Vec::new()
+                            }
+                        },
+                        &bora_labels,
+                        &self.installed_plugins,
+                    );
+                    // bora-79l.10 T6b: the workspace's own PaneDotsRow block
+                    // is a Project-view section's row too — splice the
+                    // section controls on top of everything the block's
+                    // menu already offers, never in place of it. Bead
+                    // bora-79l.7 (F5) was supposed to land this and did not.
+                    if self.view_mode == crate::config::ViewMode::Project {
+                        if let Some(checkout_key) = self
+                            .workspaces
+                            .get(idx)
+                            .map(crate::workspace::Workspace::project_member_dir)
+                        {
+                            items.extend(super::modal::section_menu_items_for_checkout(
+                                &self.projects,
+                                &checkout_key,
+                            ));
+                        }
+                    }
                     self.context_menu = Some(ContextMenuState {
-                        items: build_context_menu_items(
-                            &kind,
-                            &self.workspaces,
-                            self.view_mode,
-                            &{
-                                // bora-uqv: in Project view the row menu
-                                // splices project membership items where the
-                                // visual-group items would be.
-                                if self.view_mode == crate::config::ViewMode::Project {
-                                    super::modal::workspace_assembly_items(&self.workspaces, idx)
-                                } else {
-                                    Vec::new()
-                                }
-                            },
-                            &bora_labels,
-                            &self.installed_plugins,
-                        ),
+                        items,
                         kind,
                         x: mouse.column,
                         y: mouse.row,
@@ -1649,7 +1667,15 @@ impl AppState {
                             self.mode = Mode::ContextMenu;
                         }
                         Some(ProjectRowTarget::Section { checkout_key, .. }) => {
-                            let items = super::modal::assembly_items_for_dir(&checkout_key);
+                            let mut items = super::modal::assembly_items_for_dir(&checkout_key);
+                            // bora-79l.10 T6b: bead bora-79l.7 (F5) was
+                            // supposed to land the section controls on this
+                            // row and did not — splice them on top of the
+                            // membership items, never in place of them.
+                            items.extend(super::modal::section_menu_items_for_checkout(
+                                &self.projects,
+                                &checkout_key,
+                            ));
                             self.context_menu = Some(ContextMenuState {
                                 items,
                                 kind: ContextMenuKind::ProjectMemberTargets {
@@ -7279,6 +7305,163 @@ mod tests {
             "project membership item missing: {:?}",
             menu.items
         );
+    }
+
+    #[test]
+    fn project_view_section_row_and_pane_dots_row_menus_gain_section_controls_bora_79l_10() {
+        // bora-79l.10 T6b: bead bora-79l.7 (F5) was supposed to land the
+        // section-control items on BOTH the branch header row (SectionRow
+        // -> ProjectMemberTargets) and the workspace's own block
+        // (PaneDotsRow -> GitWorkspace) and did not. Red on either row if
+        // the splice regresses, and red if a single item either row
+        // already offered (membership "Remove", the workspace's "Rename")
+        // drops out — proving nothing was traded away.
+        use crate::config::IsolatedDirs;
+        use crate::persist::projects::{self, Member, Project, WorktreesScope};
+
+        let _isolated = IsolatedDirs::new("section-menu-controls-both-rows");
+        let checkout = "/repo/checkout";
+        projects::update_projects_file::<String>(move |file| {
+            file.projects.insert(
+                "alpha".to_string(),
+                Project {
+                    name: None,
+                    channel: None,
+                    members: vec![Member {
+                        dir: checkout.to_string(),
+                        worktrees: WorktreesScope::All,
+                        template: None,
+                    }],
+                    orchestrator: None,
+                    sections: None,
+                    layout: None,
+                    auto_join: true,
+                },
+            );
+            Ok(())
+        })
+        .expect("seed alpha project owning the checkout");
+
+        let mut app = app_for_mouse_test();
+        app.state.projects = projects::ProjectsStore::load();
+        app.state.view_mode = crate::config::ViewMode::Project;
+        let mut ws = Workspace::test_new("linked");
+        ws.worktree_space = Some(crate::workspace::WorktreeSpaceMembership {
+            key: "grp".into(),
+            label: "grp".into(),
+            repo_root: "/repo".into(),
+            checkout_path: checkout.into(),
+            is_linked_worktree: true,
+        });
+        app.state.workspaces = vec![ws];
+
+        let branch_row = Rect::new(0, 5, 20, 1);
+        let block = Rect::new(0, 6, 20, 2);
+        app.state.view.workspace_card_areas = vec![crate::app::state::WorkspaceCardArea {
+            ws_idx: 0,
+            rect: block,
+            indented: true,
+        }];
+        app.state.view.project_row_areas = vec![ProjectRowHitArea {
+            rect: branch_row,
+            target: ProjectRowTarget::Section {
+                ws_idx: 0,
+                checkout_key: checkout.to_string(),
+                collapse_key: "wsec:0".into(),
+            },
+        }];
+
+        // The branch line: ProjectMemberTargets, keeps "Remove" AND gains
+        // the section controls.
+        app.state.handle_mouse(
+            &mut app.terminal_runtimes,
+            crate::app::LOCAL_INPUT_SOURCE,
+            mouse(
+                MouseEventKind::Down(MouseButton::Right),
+                branch_row.x + 1,
+                branch_row.y,
+            ),
+        );
+        let branch_menu = app
+            .state
+            .context_menu
+            .as_ref()
+            .expect("right-click on the branch line opens a menu");
+        assert!(
+            matches!(
+                &branch_menu.kind,
+                ContextMenuKind::ProjectMemberTargets { member_dir } if member_dir == checkout
+            ),
+            "kind: {:?}",
+            branch_menu.kind
+        );
+        assert!(
+            branch_menu.items.iter().any(|item| item == "Remove"),
+            "the pre-existing membership item must survive: {:?}",
+            branch_menu.items
+        );
+        for expected in [
+            "Header: ON",
+            "PART bolinhas: ON",
+            "PART diff: ON",
+            "Nova section: BRANCH",
+            "Nova section: COMANDO",
+            "Nova section: CHECKS",
+            "Nova section: LIVRE",
+        ] {
+            assert!(
+                branch_menu.items.iter().any(|item| item == expected),
+                "branch line menu missing {expected:?}: {:?}",
+                branch_menu.items
+            );
+        }
+        app.state.context_menu = None;
+        app.state.mode = Mode::Terminal;
+
+        // The block: GitWorkspace, keeps "Rename" AND gains the same
+        // section controls.
+        app.state.handle_mouse(
+            &mut app.terminal_runtimes,
+            crate::app::LOCAL_INPUT_SOURCE,
+            mouse(
+                MouseEventKind::Down(MouseButton::Right),
+                block.x + 1,
+                block.y,
+            ),
+        );
+        let block_menu = app
+            .state
+            .context_menu
+            .as_ref()
+            .expect("right-click on the block opens a menu");
+        assert!(
+            matches!(
+                &block_menu.kind,
+                ContextMenuKind::GitWorkspace { ws_idx: 0, .. }
+            ),
+            "kind: {:?}",
+            block_menu.kind
+        );
+        assert!(
+            block_menu.items.iter().any(|item| item == "Rename"),
+            "the pre-existing workspace item must survive: {:?}",
+            block_menu.items
+        );
+        for expected in [
+            "Header: ON",
+            "PART bolinhas: ON",
+            "PART diff: ON",
+            "Nova section: BRANCH",
+            "Nova section: COMANDO",
+            "Nova section: CHECKS",
+            "Nova section: LIVRE",
+        ] {
+            assert!(
+                block_menu.items.iter().any(|item| item == expected),
+                "block menu missing {expected:?}: {:?}",
+                block_menu.items
+            );
+        }
     }
 
     #[test]

@@ -1384,6 +1384,12 @@ impl App {
             Method::ProjectMemberRemove(params) => {
                 return self.handle_project_member_remove(request.id, params);
             }
+            Method::ProjectSectionCreate(params) => {
+                return self.handle_project_section_create(request.id, params);
+            }
+            Method::ProjectSectionUpdate(params) => {
+                return self.handle_project_section_update(request.id, params);
+            }
             Method::TodoCreate(params) => return self.handle_todo_create(request.id, params),
             Method::TodoComplete(params) => {
                 return self.handle_todo_complete(request.id, params);

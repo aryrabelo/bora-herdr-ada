@@ -292,6 +292,10 @@ pub enum Method {
     ProjectMemberAdd(ProjectMemberAddParams),
     #[serde(rename = "project.member_remove")]
     ProjectMemberRemove(ProjectMemberRemoveParams),
+    #[serde(rename = "project.section_create")]
+    ProjectSectionCreate(ProjectSectionCreateParams),
+    #[serde(rename = "project.section_update")]
+    ProjectSectionUpdate(ProjectSectionUpdateParams),
     #[serde(rename = "todo.create")]
     TodoCreate(TodoCreateParams),
     #[serde(rename = "todo.complete")]

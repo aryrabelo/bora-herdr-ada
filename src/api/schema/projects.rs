@@ -67,6 +67,47 @@ pub struct ProjectMemberRemoveParams {
     pub dir: String,
 }
 
+/// `project.section_create`: appends a new
+/// [`crate::ui::sidebar::sections::Section`] to `slug`'s mountable
+/// `layout:` (epic bora-79l, T6 pass 6b — see `app::sections::
+/// create_section`). `name` is used verbatim when given; omitted, the
+/// section gets a random two-word display name rather than a bare `None`
+/// header. Errors `project_not_found` when `slug` does not exist.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct ProjectSectionCreateParams {
+    pub slug: String,
+    pub kind: crate::ui::sidebar::sections::SectionKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+/// `project.section_update`: applies `header_on`/`dots`/`diff` (each
+/// `None` leaves that field untouched) to one section of `slug`'s
+/// `layout:`, addressed either by its pinned `section_id` or by
+/// `checkout` — see `app::sections::update_section`. Addressing by
+/// `checkout` MATERIALIZES a fresh Branch section carrying that checkout
+/// when `slug` declares no layout yet (or none of its sections name that
+/// checkout), which is what makes the toggle work against a real
+/// `projects.yml` with no `layout:` today. Errors `project_not_found`
+/// when `slug` does not exist, `project_section_target_invalid` when
+/// neither `section_id` nor `checkout` is given, and
+/// `project_section_not_found` when `section_id` names a section that
+/// does not exist.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct ProjectSectionUpdateParams {
+    pub slug: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub section_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkout: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub header_on: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dots: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diff: Option<bool>,
+}
+
 /// `project.list`'s per-project entry, and the `project` payload every
 /// other `project.*` verb returns: the parsed project plus each member's
 /// RESOLVED identity (via `persist::projects::Member::resolve`), so a

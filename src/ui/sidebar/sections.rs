@@ -36,7 +36,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// Derives `schemars::JsonSchema` in addition to the file-schema traits
+/// because `api::schema::projects::ProjectSectionCreateParams` (the
+/// `project.section_create` wire shape) reuses this type directly rather
+/// than mirroring it — the same pattern `persist::projects::WorktreesScope`
+/// already uses for `api::schema::projects::ProjectMemberInfo`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum SectionKind {
     /// Session blocks: children are [`SectionChild::Workspace`] entries.
@@ -87,7 +92,7 @@ static NEXT_SECTION_ID: AtomicU64 = AtomicU64::new(1);
 /// load, exactly once — from then on the owner round-trips the same value
 /// back to disk, and F7's restore reconciliation matches "the same
 /// section" by this, never by index.
-fn generate_section_id() -> String {
+pub(crate) fn generate_section_id() -> String {
     let counter = NEXT_SECTION_ID.fetch_add(1, Ordering::Relaxed);
     format!("sec-{counter}")
 }
@@ -120,6 +125,12 @@ pub struct Section {
     #[serde(default = "generate_section_id")]
     pub id: String,
     pub kind: SectionKind,
+    /// Display name for the header. `None` = derived: BRANCH uses the
+    /// branch's own name, COMANDO/CHECKS use the descriptor's label. Set
+    /// by `project.section_create`/`project.section_update`
+    /// (`app::sections::create_section`), never mutated by render.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     /// The old HIDDEN switch: whether the section's header line renders.
     #[serde(default = "default_true")]
     pub header_on: bool,
@@ -150,6 +161,7 @@ mod tests {
             Section {
                 id: "sec-branch-main".to_string(),
                 kind: SectionKind::Branch,
+                name: Some("Main".to_string()),
                 header_on: true,
                 parts: SectionParts {
                     dots: true,
@@ -169,6 +181,7 @@ mod tests {
             Section {
                 id: "sec-branch-feature-x".to_string(),
                 kind: SectionKind::Branch,
+                name: None,
                 header_on: false,
                 parts: SectionParts {
                     dots: true,
@@ -182,6 +195,7 @@ mod tests {
             Section {
                 id: "sec-comando".to_string(),
                 kind: SectionKind::Comando,
+                name: None,
                 header_on: true,
                 parts: SectionParts::default(),
                 children: vec![SectionChild::Item {
@@ -192,6 +206,7 @@ mod tests {
             Section {
                 id: "sec-checks".to_string(),
                 kind: SectionKind::Checks,
+                name: None,
                 header_on: true,
                 parts: SectionParts::default(),
                 children: vec![SectionChild::Item {
@@ -202,6 +217,7 @@ mod tests {
             Section {
                 id: "sec-livre".to_string(),
                 kind: SectionKind::Livre,
+                name: None,
                 header_on: true,
                 parts: SectionParts::default(),
                 children: vec![],
@@ -213,11 +229,13 @@ mod tests {
     }
 
     /// A hand-written stub may omit everything but `kind`: header ON, both
-    /// parts ON, no children, and a freshly assigned `id`. Terse defaults
-    /// are what make the file hand-editable, so they are contract, not
-    /// convenience. This is also the test that caught the all-false
-    /// field-default bug: an omitted `parts` key must not fall through to
-    /// a derived all-false default.
+    /// parts ON, no children, no `name`, and a freshly assigned `id`. Terse
+    /// defaults are what make the file hand-editable, so they are
+    /// contract, not convenience. This is also the test that caught the
+    /// all-false field-default bug: an omitted `parts` key must not fall
+    /// through to a derived all-false default, AND it tests the `name`
+    /// field's own contract: a `layout:` block written before `name`
+    /// existed (no `name:` key at all) must still parse cleanly.
     #[test]
     fn sections_model_defaults_fill_optional_fields() {
         let parsed = parse_sections_yaml("- kind: livre\n").expect("minimal stub must parse");
@@ -230,12 +248,14 @@ mod tests {
         assert_eq!(
             (
                 section.kind,
+                section.name.as_deref(),
                 section.header_on,
                 section.parts,
                 section.children.as_slice(),
             ),
             (
                 SectionKind::Livre,
+                None,
                 true,
                 SectionParts {
                     dots: true,

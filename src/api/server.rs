@@ -527,6 +527,8 @@ fn api_method_name(method: &Method) -> &'static str {
         Method::ProjectUpdate(_) => "project.update",
         Method::ProjectMemberAdd(_) => "project.member_add",
         Method::ProjectMemberRemove(_) => "project.member_remove",
+        Method::ProjectSectionCreate(_) => "project.section_create",
+        Method::ProjectSectionUpdate(_) => "project.section_update",
         Method::TodoCreate(_) => "todo.create",
         Method::TodoComplete(_) => "todo.complete",
         Method::TodoList(_) => "todo.list",

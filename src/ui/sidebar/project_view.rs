@@ -378,7 +378,7 @@ fn disambiguate_pane_dots_names(app: &AppState, entries: &mut [WorkspaceListEntr
     // The single write: every block's name is final here — base, or
     // base plus its hint. Never recomputed anywhere else.
     for (pos, entry) in entries.iter_mut().enumerate() {
-        let WorkspaceListEntry::PaneDotsRow { ws_idx, name } = entry else {
+        let WorkspaceListEntry::PaneDotsRow { ws_idx, name, .. } = entry else {
             continue;
         };
         let Some(ws) = app.workspaces.get(*ws_idx) else {
@@ -608,6 +608,16 @@ fn push_project_group(
         force_expanded,
     );
 
+    // T6 6b (bora-79l.10): every DECLARED non-Branch section from the
+    // project's `layout:`, in declaration order — project-scoped, not
+    // tied to any one checkout, so it closes the group exactly once,
+    // right after the branch groups and their worktree bands (T7
+    // divergence D's "after every group's sessions" extended to the
+    // whole project group).
+    if let Some(layout) = layout {
+        push_declared_sections(entries, layout, app, force_expanded);
+    }
+
     // T3 same-branch exception: with every section of this group on the
     // table, hide every upper header that a lower same-(repo, branch)
     // header would duplicate.
@@ -757,19 +767,25 @@ fn repo_identity_key(ws: &Workspace) -> String {
         .unwrap_or_else(|| checkout_group_key(ws))
 }
 
-/// T3: the section model's flags for one workspace, consumed at emission —
-/// `(header_on, parts.diff)` of the Branch `Section` whose children name
-/// this workspace's checkout. Matching key is
-/// `SectionChild::Workspace::checkout` against the workspace's
+/// T3/T6 6b: the section model's flags for one workspace, consumed at
+/// emission — `(header_on, parts.diff, parts.dots)` of the Branch
+/// `Section` whose children name this workspace's checkout. Matching key
+/// is `SectionChild::Workspace::checkout` against the workspace's
 /// `checkout_key`, the same key `persist::restore::
 /// reconcile_section_layout` matches saved sections by, so the runtime
 /// render and the persisted layout cannot disagree about which section a
 /// workspace belongs to. Unmatched — no `layout:` declared yet (every
 /// project today), or the workspace sits in no saved section — yields
-/// `(true, true)`: the pre-model behavior, byte for byte.
-fn section_model_flags(layout: Option<&[Section]>, ws: &Workspace) -> (bool, bool) {
+/// `(true, true, true)`: the pre-model behavior, byte for byte.
+///
+/// `parts.dots` (T6 6b) is the l2 pane-dots line toggle: OFF collapses a
+/// `PaneDotsRow` block to its name line alone. `push_pane_dots_row`
+/// carries the flag straight onto the entry, so `entry_row_height` (and
+/// the two other lockstep passes) read the toggle off the row itself
+/// rather than re-deriving it from the model a second time.
+fn section_model_flags(layout: Option<&[Section]>, ws: &Workspace) -> (bool, bool, bool) {
     let Some(sections) = layout else {
-        return (true, true);
+        return (true, true, true);
     };
     let checkout = checkout_group_key(ws);
     sections
@@ -783,8 +799,8 @@ fn section_model_flags(layout: Option<&[Section]>, ws: &Workspace) -> (bool, boo
                 )
             })
         })
-        .map(|section| (section.header_on, section.parts.diff))
-        .unwrap_or((true, true))
+        .map(|section| (section.header_on, section.parts.diff, section.parts.dots))
+        .unwrap_or((true, true, true))
 }
 
 /// T3 same-branch exception, scoped to ONE project group's entries: a
@@ -954,7 +970,7 @@ fn push_worktree(
     };
     let rep_ws = &app.workspaces[rep];
     let collapse_key = section_collapse_key(rep);
-    let (header_on, show_diff) = section_model_flags(layout, rep_ws);
+    let (header_on, show_diff, show_dots) = section_model_flags(layout, rep_ws);
     entries.push(WorkspaceListEntry::SectionRow {
         ws_idx: rep,
         checkout_key: checkout_group_key(rep_ws),
@@ -969,7 +985,98 @@ fn push_worktree(
         return;
     }
     for &ws_idx in ws_idxs {
-        push_pane_dots_row(entries, ws_idx);
+        push_pane_dots_row(entries, ws_idx, show_dots);
+    }
+}
+
+/// T6 6b (bora-79l.10): the descriptor a non-`Branch` `SectionKind` reads
+/// through — `Comando`→`COMMANDS`, `Checks`→`CHECKS`, `Livre`→`LIVRE`.
+/// `Branch` returns `None`: it never reaches here, it renders through its
+/// own `push_worktree`/`SectionRow` path.
+fn descriptor_for_kind(kind: SectionKind) -> Option<&'static SectionDescriptor> {
+    match kind {
+        SectionKind::Branch => None,
+        SectionKind::Comando => Some(&COMMANDS),
+        SectionKind::Checks => Some(&CHECKS),
+        SectionKind::Livre => Some(&LIVRE),
+    }
+}
+
+/// Collapse key for a declared (non-`Branch`) section — namespaced
+/// (`sec:layout:`) and keyed on the section's own stable `id` (never its
+/// position in `layout:`), the same id-not-index discipline every other
+/// collapse key in this module already follows: reordering sections in
+/// the file must not silently reassign a user's collapse state to a
+/// different section.
+fn declared_section_collapse_key(section_id: &str) -> String {
+    format!("sec:layout:{section_id}")
+}
+
+/// T6 6b (bora-79l.10): render every DECLARED non-`Branch` `Section` from
+/// a project's `layout:`, in declaration order, through the exact same
+/// generic `SectionHeader`/`SectionItem` rows every registry band uses —
+/// gate (1)'s "generic-row ANTES" claim
+/// (`a_sixth_descriptor_renders_through_the_generic_rows_without_touching_the_registry`)
+/// made real for a runtime-declared kind, not just a hand-written
+/// throwaway. Called once per project group (`push_project_group`),
+/// after the branch groups and their worktree bands: these sections are
+/// project-scoped, not tied to any one checkout.
+///
+/// `done`/`total` follow the same "passing/declared" reading every other
+/// band's counter uses: `done` counts children with `failing: false`,
+/// `total` is every child, regardless of kind — a declared section
+/// carries no live backing to derive a different metric from. Every
+/// child gets its own row (unlike the live CHECKS band, which hides
+/// passing checks): a user who typed a row into `projects.yml` typed it
+/// to be seen. `running` on the item is `!failing`, so a `Checks`-kind
+/// section's `FlagIdleAsError` bullet renders a failing child red and a
+/// passing one green, and a `Comando`/`Livre` section's `Standard`
+/// bullet renders the same distinction as green/dim — the only two
+/// states `SectionBullet` can express. Collapse is independent of
+/// `header_on` (same discipline `push_worktree` already applies to its
+/// own `SectionRow`/blocks pair): a hidden header can still be
+/// collapsed/expanded via its own `collapse_key`.
+fn push_declared_sections(
+    entries: &mut Vec<WorkspaceListEntry>,
+    layout: &[Section],
+    app: &AppState,
+    force_expanded: bool,
+) {
+    for section in layout {
+        let Some(kind) = descriptor_for_kind(section.kind) else {
+            continue;
+        };
+        let collapse_key = declared_section_collapse_key(&section.id);
+        let total = section.children.len();
+        let done = section
+            .children
+            .iter()
+            .filter(|child| matches!(child, SectionChild::Item { failing: false, .. }))
+            .count();
+        if section.header_on {
+            entries.push(WorkspaceListEntry::SectionHeader {
+                kind,
+                collapse_key: collapse_key.clone(),
+                done,
+                total,
+                name: section.name.clone(),
+            });
+        }
+        if !force_expanded && app.collapsed_space_keys.contains(&collapse_key) {
+            continue;
+        }
+        for child in &section.children {
+            let SectionChild::Item { label, failing } = child else {
+                continue;
+            };
+            entries.push(WorkspaceListEntry::SectionItem {
+                kind,
+                label: label.clone(),
+                detail: None,
+                running: !failing,
+                ws_idx: None,
+            });
+        }
     }
 }
 
@@ -1077,6 +1184,33 @@ pub(super) static PULL_REQUESTS: SectionDescriptor = SectionDescriptor {
     push: push_pull_requests_section,
 };
 
+/// T6 6b (bora-79l.10): the empty, mountable slot (`SectionKind::Livre`).
+/// Deliberately outside `REGISTRY` — it is not one of the five
+/// `sections.order:`-addressable attachment bands (no wire name to
+/// defend, `SECTION_COUNT`/`resolve_section_order` stay untouched — the
+/// gate (1) note in `gates/bora-79l.10.md`) — `descriptor_for_kind`
+/// looks it up directly from a project's declared `layout:`, never
+/// through `filter_by_level`/`REGISTRY`. `push` is still required by
+/// `SectionDescriptor`'s shape; it is unreachable in production (nothing
+/// ever calls `(LIVRE.push)(...)` — `push_declared_sections` pushes the
+/// generic rows itself) and exists only so the struct literal compiles.
+pub(super) static LIVRE: SectionDescriptor = SectionDescriptor {
+    wire_name: "livre",
+    glyph: "▢",
+    label: "LIVRE",
+    level: SectionLevel::Worktree,
+    counter: SectionCounter::Count,
+    bullet: SectionBullet::Standard,
+    push: push_livre_unreachable,
+};
+
+fn push_livre_unreachable(_entries: &mut Vec<WorkspaceListEntry>, _ctx: &SectionPushCtx<'_>) {
+    debug_assert!(
+        false,
+        "LIVRE is outside REGISTRY and never pushed through it"
+    );
+}
+
 /// Filters a resolved order (`resolve_section_order`'s return) down to one
 /// level, preserving relative sequence — an alloc-free iterator over the
 /// caller's own fixed-size array, replacing `worktree_section_order` and
@@ -1143,6 +1277,7 @@ fn push_commands_section(entries: &mut Vec<WorkspaceListEntry>, ctx: &SectionPus
     };
     let collapse_key = format!("sec:commands:{checkout_key}");
     entries.push(WorkspaceListEntry::SectionHeader {
+        name: None,
         kind: &COMMANDS,
         collapse_key: collapse_key.clone(),
         done: declared.iter().filter(|cmd| is_running(&cmd.label)).count(),
@@ -1288,6 +1423,7 @@ fn push_checks_section(entries: &mut Vec<WorkspaceListEntry>, ctx: &SectionPushC
     let collapse_key = format!("sec:checks:{checkout_key}");
     if let Some(error) = status.error.as_deref() {
         entries.push(WorkspaceListEntry::SectionHeader {
+            name: None,
             kind: &CHECKS,
             collapse_key: collapse_key.clone(),
             done: 0,
@@ -1310,6 +1446,7 @@ fn push_checks_section(entries: &mut Vec<WorkspaceListEntry>, ctx: &SectionPushC
         return;
     }
     entries.push(WorkspaceListEntry::SectionHeader {
+        name: None,
         kind: &CHECKS,
         collapse_key: collapse_key.clone(),
         done: passing,
@@ -1354,6 +1491,7 @@ fn push_todos_section(entries: &mut Vec<WorkspaceListEntry>, ctx: &SectionPushCt
     }
     let collapse_key = format!("sec:todos:{slug}");
     entries.push(WorkspaceListEntry::SectionHeader {
+        name: None,
         kind: &TODOS,
         collapse_key: collapse_key.clone(),
         done: summary.done,
@@ -1395,6 +1533,7 @@ fn push_notes_section(entries: &mut Vec<WorkspaceListEntry>, ctx: &SectionPushCt
     }
     let collapse_key = format!("sec:notes:{slug}");
     entries.push(WorkspaceListEntry::SectionHeader {
+        name: None,
         kind: &NOTES,
         collapse_key: collapse_key.clone(),
         done: 0,
@@ -1479,6 +1618,7 @@ fn push_pull_requests_section(entries: &mut Vec<WorkspaceListEntry>, ctx: &Secti
     let collapse_key = format!("sec:prs:{slug}");
     if let Some(error) = error {
         entries.push(WorkspaceListEntry::SectionHeader {
+            name: None,
             kind: &PULL_REQUESTS,
             collapse_key: collapse_key.clone(),
             done: 0,
@@ -1501,6 +1641,7 @@ fn push_pull_requests_section(entries: &mut Vec<WorkspaceListEntry>, ctx: &Secti
     }
     rows.sort_by_key(|(pr, _)| pr.number);
     entries.push(WorkspaceListEntry::SectionHeader {
+        name: None,
         kind: &PULL_REQUESTS,
         collapse_key: collapse_key.clone(),
         done: 0,
@@ -1531,11 +1672,16 @@ fn push_pull_requests_section(entries: &mut Vec<WorkspaceListEntry>, ctx: &Secti
 /// `AppState.workspaces[ws_idx]` at render time (module doc). `name`
 /// starts empty and is filled in exactly once, at the end of emission,
 /// by `disambiguate_pane_dots_names` — never computed here, so no two
-/// passes can drift apart on a member's name.
-fn push_pane_dots_row(entries: &mut Vec<WorkspaceListEntry>, ws_idx: usize) {
+/// passes can drift apart on a member's name. `dots` (T6 6b) is the
+/// owning section's `parts.dots` flag, carried straight onto the entry
+/// so `entry_row_height` (and the two other lockstep passes) read the
+/// l2-line toggle off the row itself instead of re-deriving it from the
+/// model a second time.
+fn push_pane_dots_row(entries: &mut Vec<WorkspaceListEntry>, ws_idx: usize, dots: bool) {
     entries.push(WorkspaceListEntry::PaneDotsRow {
         ws_idx,
         name: String::new(),
+        dots,
     });
 }
 
@@ -2067,9 +2213,9 @@ mod tests {
         for (ws_idx, hint) in [(0usize, "worktree-a"), (1usize, "worktree-b")] {
             let expected = format!("{} ({hint})", workspace_group_name(&app.workspaces[ws_idx]));
             let pane_dots_name = entries.iter().find_map(|e| match e {
-                WorkspaceListEntry::PaneDotsRow { ws_idx: idx, name } if *idx == ws_idx => {
-                    Some(name.clone())
-                }
+                WorkspaceListEntry::PaneDotsRow {
+                    ws_idx: idx, name, ..
+                } if *idx == ws_idx => Some(name.clone()),
                 _ => None,
             });
             assert_eq!(
@@ -2284,6 +2430,7 @@ mod tests {
         use crate::ui::sidebar::sections::SectionParts;
         let mut declared = project(vec![member(&checkout_a), member(&checkout_c)]);
         declared.layout = Some(vec![Section {
+            name: None,
             id: "sec-feature-x".to_string(),
             kind: SectionKind::Branch,
             header_on: false,
@@ -2353,6 +2500,7 @@ mod tests {
         use crate::ui::sidebar::sections::SectionParts;
         let mut declared = project(vec![member(&checkout_a), member(&checkout_c)]);
         declared.layout = Some(vec![Section {
+            name: None,
             id: "sec-feature-x".to_string(),
             kind: SectionKind::Branch,
             header_on: false,
@@ -4360,6 +4508,7 @@ mod tests {
                 return;
             };
             entries.push(WorkspaceListEntry::SectionHeader {
+                name: None,
                 kind: &THROWAWAY,
                 collapse_key: "sec:throwaway:proj".to_string(),
                 done: 1,
@@ -4623,5 +4772,339 @@ mod tests {
                 REGISTRY.iter().map(|d| d.wire_name).collect::<Vec<_>>()
             );
         }
+    }
+
+    #[test]
+    fn declared_comando_section_renders_header_and_its_items() {
+        // Bead 6b: a declared `SectionKind::Comando` section (not the
+        // live COMMANDS band from `sections.commands`) renders through
+        // the exact same generic `SectionHeader`/`SectionItem` rows —
+        // every child gets a row, failing or not (unlike the live CHECKS
+        // band's failing-only filter), and `Section.name` overrides the
+        // descriptor's static label.
+        let repo = temp_test_dir("layout-comando");
+        init_fake_git_repo(&repo, None);
+
+        let mut declared = project(vec![member(&repo)]);
+        declared.layout = Some(vec![Section {
+            id: "sec-comando".to_string(),
+            kind: SectionKind::Comando,
+            name: Some("Deploy".to_string()),
+            header_on: true,
+            parts: crate::ui::sidebar::sections::SectionParts::default(),
+            children: vec![
+                SectionChild::Item {
+                    label: "build".to_string(),
+                    failing: false,
+                },
+                SectionChild::Item {
+                    label: "lint".to_string(),
+                    failing: true,
+                },
+            ],
+        }]);
+        let mut file = ProjectsFile::default();
+        file.projects.insert("proj".to_string(), declared);
+        let (_isolated, store) = store_with(file);
+        let mut app = AppState::test_new();
+        app.view_mode = crate::config::ViewMode::Project;
+        app.projects = store;
+        app.workspaces = vec![ws_at(&repo)];
+
+        let entries = project_view_entries(&app, false);
+        assert_eq!(
+            section_band(&entries, &COMMANDS),
+            Some((1, 2)),
+            "declared Comando section header: done counts non-failing \
+             children, total counts every child: {entries:?}"
+        );
+        assert_eq!(
+            section_items(&entries, &COMMANDS),
+            vec!["build".to_string(), "lint".to_string()],
+            "one SectionItem per declared child, failing or not — the \
+             generic rows, never the live CHECKS band's failing-only \
+             filter: {entries:?}"
+        );
+        let header_name = entries.iter().find_map(|e| match e {
+            WorkspaceListEntry::SectionHeader { kind, name, .. }
+                if kind.wire_name == "commands" =>
+            {
+                Some(name.clone())
+            }
+            _ => None,
+        });
+        assert_eq!(
+            header_name,
+            Some(Some("Deploy".to_string())),
+            "Section.name must land on the emitted SectionHeader entry: {entries:?}"
+        );
+
+        // The rendered row must actually use the declared name, not the
+        // descriptor's static "COMANDO" label.
+        app.ensure_test_terminals();
+        let area = ratatui::layout::Rect::new(0, 0, 40, 20);
+        let runtimes = crate::terminal::TerminalRuntimeRegistry::new();
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(area.width, area.height))
+                .expect("test terminal");
+        terminal
+            .draw(|frame| {
+                crate::ui::sidebar::render_workspace_list(&app, &runtimes, frame, area, false)
+            })
+            .expect("workspace list should render");
+        // Scan every rendered row rather than deriving the header's row
+        // from its entry index: heights are not uniform (a `PaneDotsRow`
+        // is two rows tall) and the list also honours `row_gap`, so an
+        // index-derived offset lands on a neighbouring line and asserts
+        // nothing. Exactly one row must carry the declared name, and the
+        // descriptor's static label must appear nowhere.
+        let rendered: Vec<String> = (0..area.height)
+            .map(|row| {
+                (0..area.width)
+                    .map(|col| terminal.backend().buffer()[(col, row)].symbol().to_string())
+                    .collect()
+            })
+            .collect();
+        assert_eq!(
+            rendered
+                .iter()
+                .filter(|line| line.contains("Deploy"))
+                .count(),
+            1,
+            "exactly one rendered row carries the declared section name: {rendered:?}"
+        );
+        assert!(
+            !rendered.iter().any(|line| line.contains(COMMANDS.label)),
+            "the declared name replaces the descriptor's static label {:?}, \
+             it does not render beside it: {rendered:?}",
+            COMMANDS.label
+        );
+
+        std::fs::remove_dir_all(&repo).unwrap();
+    }
+
+    #[test]
+    fn declared_livre_section_with_no_children_renders_header_alone() {
+        // Bead 6b: LIVRE is "the empty, mountable slot" — a section with
+        // zero children still renders its header (that is the point of
+        // the kind) and pushes no item rows.
+        let repo = temp_test_dir("layout-livre");
+        init_fake_git_repo(&repo, None);
+
+        let mut declared = project(vec![member(&repo)]);
+        declared.layout = Some(vec![Section {
+            id: "sec-livre".to_string(),
+            kind: SectionKind::Livre,
+            name: None,
+            header_on: true,
+            parts: crate::ui::sidebar::sections::SectionParts::default(),
+            children: Vec::new(),
+        }]);
+        let mut file = ProjectsFile::default();
+        file.projects.insert("proj".to_string(), declared);
+        let (_isolated, store) = store_with(file);
+        let mut app = AppState::test_new();
+        app.projects = store;
+        app.workspaces = vec![ws_at(&repo)];
+
+        let entries = project_view_entries(&app, false);
+        assert_eq!(
+            section_band(&entries, &LIVRE),
+            Some((0, 0)),
+            "an empty Livre section still renders its header alone: {entries:?}"
+        );
+        assert!(
+            section_items(&entries, &LIVRE).is_empty(),
+            "no children -> no item rows: {entries:?}"
+        );
+
+        std::fs::remove_dir_all(&repo).unwrap();
+    }
+
+    #[test]
+    fn declared_section_header_off_suppresses_header_keeps_items() {
+        // Bead 6b: `header_on: false` on a non-Branch section suppresses
+        // only the SectionHeader row — same rule the Branch path already
+        // obeys (`header_off_from_the_model_hides_the_header_keeps_the_blocks`).
+        let repo = temp_test_dir("layout-header-off");
+        init_fake_git_repo(&repo, None);
+
+        let mut declared = project(vec![member(&repo)]);
+        declared.layout = Some(vec![Section {
+            id: "sec-checks".to_string(),
+            kind: SectionKind::Checks,
+            name: None,
+            header_on: false,
+            parts: crate::ui::sidebar::sections::SectionParts::default(),
+            children: vec![SectionChild::Item {
+                label: "clippy".to_string(),
+                failing: true,
+            }],
+        }]);
+        let mut file = ProjectsFile::default();
+        file.projects.insert("proj".to_string(), declared);
+        let (_isolated, store) = store_with(file);
+        let mut app = AppState::test_new();
+        app.projects = store;
+        app.workspaces = vec![ws_at(&repo)];
+
+        let entries = project_view_entries(&app, false);
+        assert_eq!(
+            section_band(&entries, &CHECKS),
+            None,
+            "header_on: false must suppress the SectionHeader row: {entries:?}"
+        );
+        assert_eq!(
+            section_items(&entries, &CHECKS),
+            vec!["clippy".to_string()],
+            "header OFF hides only the header, never the section's items: {entries:?}"
+        );
+
+        std::fs::remove_dir_all(&repo).unwrap();
+    }
+
+    #[test]
+    fn declared_dots_off_collapses_pane_dots_row_to_one_line_across_every_pass() {
+        // Bead 6b: `SectionParts.dots` is the l2 pane-dots line toggle.
+        // OFF must shrink a `PaneDotsRow` block from 2 rows to 1
+        // everywhere at once — height, geometry (card rect height AND no
+        // per-dot hit area), and render (no l2 text) — or the three
+        // lockstep passes desync (sidebar.rs's "Shared row-height"
+        // contract).
+        let repo = temp_test_dir("layout-dots-off");
+        init_fake_git_repo(&repo, None);
+        let checkout_key = crate::workspace::git_space_metadata(&repo)
+            .expect("fake checkout has git space")
+            .checkout_key;
+
+        let mut declared = project(vec![member(&repo)]);
+        declared.layout = Some(vec![Section {
+            id: "sec-branch".to_string(),
+            kind: SectionKind::Branch,
+            name: None,
+            header_on: true,
+            parts: crate::ui::sidebar::sections::SectionParts {
+                dots: false,
+                diff: true,
+            },
+            children: vec![SectionChild::Workspace {
+                name: "alpha".to_string(),
+                checkout: checkout_key,
+            }],
+        }]);
+        let mut file = ProjectsFile::default();
+        file.projects.insert("proj".to_string(), declared);
+        let (_isolated, store) = store_with(file);
+        let mut app = AppState::test_new();
+        app.view_mode = crate::config::ViewMode::Project;
+        app.projects = store;
+        app.sidebar_project.row_gap = 0;
+        let mut ws = ws_at(&repo);
+        ws.custom_name = Some("alpha".to_string());
+        app.workspaces = vec![ws];
+        app.ensure_test_terminals();
+
+        let entries = crate::ui::sidebar::workspace_list_entries(&app);
+        let pane_dots_idx = entries
+            .iter()
+            .position(|e| matches!(e, WorkspaceListEntry::PaneDotsRow { .. }))
+            .expect("fixture must emit a PaneDotsRow");
+        assert!(
+            matches!(
+                entries[pane_dots_idx],
+                WorkspaceListEntry::PaneDotsRow { dots: false, .. }
+            ),
+            "parts.dots: false must land on the emitted entry itself: {entries:?}"
+        );
+
+        // Pass 1: height.
+        let total_height: u16 = entries
+            .iter()
+            .enumerate()
+            .map(|(idx, entry)| crate::ui::sidebar::entry_row_height(entry, &entries, idx, 0))
+            .sum();
+        assert_eq!(
+            crate::ui::sidebar::entry_row_height(
+                &entries[pane_dots_idx],
+                &entries,
+                pane_dots_idx,
+                0
+            ),
+            1,
+            "dots off collapses the block to its l1 name line alone: {entries:?}"
+        );
+
+        // Pass 2: visible-count agrees with the height pass.
+        let width = 40;
+        let exact = ratatui::layout::Rect::new(
+            0,
+            0,
+            width,
+            total_height + crate::ui::sidebar::WORKSPACE_LIST_TOP_MARGIN_ROWS + 1,
+        );
+        assert_eq!(
+            crate::ui::sidebar::workspace_list_visible_count(&app, exact, 0),
+            entries.len(),
+            "visible-count pass must agree with the height pass"
+        );
+
+        // Pass 3: geometry — the card rect is 1 row tall and no per-dot
+        // hit area is emitted (there is no l2 row to click a dot on).
+        let sidebar_area = ratatui::layout::Rect::new(
+            0,
+            0,
+            width,
+            total_height + crate::ui::sidebar::WORKSPACE_LIST_TOP_MARGIN_ROWS + 20,
+        );
+        let (cards, _headers, project_rows) =
+            crate::ui::sidebar::compute_workspace_list_areas_all(&app, sidebar_area);
+        let card = cards
+            .iter()
+            .find(|c| c.ws_idx == 0)
+            .expect("the PaneDotsRow block must still push a card");
+        assert_eq!(
+            card.rect.height, 1,
+            "dots off shrinks the card rect to 1 row: {card:?}"
+        );
+        assert!(
+            !project_rows
+                .iter()
+                .any(|a| matches!(a.target, crate::app::state::ProjectRowTarget::Pane { .. })),
+            "no l2 row means no per-dot hit area: {project_rows:?}"
+        );
+
+        // Pass 4: render — l1 still draws the name, l2 draws nothing (this
+        // fixture's PaneDotsRow is the last entry, so its l2 row is blank
+        // terminal space, not another row's content).
+        let mut terminal = ratatui::Terminal::new(ratatui::backend::TestBackend::new(
+            exact.width,
+            exact.height,
+        ))
+        .expect("test terminal");
+        let runtimes = crate::terminal::TerminalRuntimeRegistry::new();
+        terminal
+            .draw(|frame| {
+                crate::ui::sidebar::render_workspace_list(&app, &runtimes, frame, exact, false)
+            })
+            .expect("workspace list should render");
+        let row_text = |row: u16| -> String {
+            (0..exact.width)
+                .map(|col| terminal.backend().buffer()[(col, row)].symbol().to_string())
+                .collect()
+        };
+        let l1_y = crate::ui::sidebar::WORKSPACE_LIST_TOP_MARGIN_ROWS + pane_dots_idx as u16;
+        assert!(
+            row_text(l1_y).contains("alpha"),
+            "l1 must still render the block's name: {:?}",
+            row_text(l1_y)
+        );
+        let l2_y = l1_y + 1;
+        assert!(
+            row_text(l2_y).trim().is_empty(),
+            "l2 must draw nothing when dots are off: {:?}",
+            row_text(l2_y)
+        );
+
+        std::fs::remove_dir_all(&repo).unwrap();
     }
 }

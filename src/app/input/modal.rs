@@ -1085,6 +1085,19 @@ pub(super) fn apply_context_menu_action(
             remove_membership_direct(&member_dir);
             leave_modal(state);
         }
+        // bora-79l.10 T6b: section-control items ("Header: …", "PART …",
+        // "Nova section: …") are intentionally UNHANDLED here. Unlike
+        // membership, their write path (materializing/mutating a
+        // `Project.layout` entry) is owned by the `project.section_*`
+        // API handler, not by this offline direct-write shim — duplicating
+        // that logic here would drift the moment the handler's semantics
+        // change. They fall to the `_` arm below (menu closes, no-op);
+        // the real wiring is `apply_context_menu_action_via_api`'s
+        // `dispatch_section_toggle`/`dispatch_section_create`, exercised
+        // by `mouse.rs`'s `project_view_section_row_and_pane_dots_row_menus_
+        // gain_section_controls_bora_79l_10`, and the pure decision logic
+        // (`section_toggle_update_params`/`section_create_kind`) is unit
+        // tested directly in `section_menu_tests` below.
         (
             ContextMenuKind::Workspace { ws_idx, .. }
             | ContextMenuKind::GitWorkspace { ws_idx, .. },
@@ -1961,6 +1974,49 @@ impl App {
                 }
                 leave_modal(&mut self.state);
             }
+            // ── Section controls (bora-79l.10 T6b) ───────────────────
+            (
+                ContextMenuKind::Workspace { ws_idx, .. }
+                | ContextMenuKind::GitWorkspace { ws_idx, .. },
+                Some(item_str),
+            ) if section_toggle_field(item_str).is_some() => {
+                if let Some(checkout_key) = self
+                    .state
+                    .workspaces
+                    .get(ws_idx)
+                    .map(crate::workspace::Workspace::project_member_dir)
+                {
+                    self.dispatch_section_toggle(&checkout_key, item_str);
+                }
+                leave_modal(&mut self.state);
+            }
+            (
+                ContextMenuKind::Workspace { ws_idx, .. }
+                | ContextMenuKind::GitWorkspace { ws_idx, .. },
+                Some(item_str),
+            ) if section_create_kind(item_str).is_some() => {
+                if let Some(checkout_key) = self
+                    .state
+                    .workspaces
+                    .get(ws_idx)
+                    .map(crate::workspace::Workspace::project_member_dir)
+                {
+                    self.dispatch_section_create(&checkout_key, item_str);
+                }
+                leave_modal(&mut self.state);
+            }
+            (ContextMenuKind::ProjectMemberTargets { member_dir }, Some(item_str))
+                if section_toggle_field(item_str).is_some() =>
+            {
+                self.dispatch_section_toggle(&member_dir, item_str);
+                leave_modal(&mut self.state);
+            }
+            (ContextMenuKind::ProjectMemberTargets { member_dir }, Some(item_str))
+                if section_create_kind(item_str).is_some() =>
+            {
+                self.dispatch_section_create(&member_dir, item_str);
+                leave_modal(&mut self.state);
+            }
             (
                 ContextMenuKind::Workspace { ws_idx, .. }
                 | ContextMenuKind::GitWorkspace { ws_idx, .. },
@@ -2233,6 +2289,47 @@ impl App {
             }
             _ => leave_modal(&mut self.state),
         }
+    }
+
+    /// Sends the negation of the checkout's current declared toggle state —
+    /// re-resolved fresh from `self.state.projects` here, at click time,
+    /// never trusted from whatever the menu showed when it opened. Always
+    /// addresses by `checkout` too, so the handler materializes the Branch
+    /// section when the project declares none yet (bora-79l.10 T6b).
+    fn dispatch_section_toggle(&mut self, checkout_key: &str, item: &str) {
+        let (Some(field), Some(ctx)) = (
+            section_toggle_field(item),
+            resolve_section_menu_context(&self.state.projects, checkout_key),
+        ) else {
+            return;
+        };
+        let params = section_toggle_update_params(field, &ctx, checkout_key);
+        self.dispatch_runtime_mutation(
+            "tui.project.section_update",
+            crate::api::schema::Method::ProjectSectionUpdate(params),
+        );
+    }
+
+    /// Creates a new section of the "Nova section: …" item's kind on the
+    /// checkout's owning project — `name: None` lets the handler mint the
+    /// random two-word name (bora-79l.10 T6b).
+    fn dispatch_section_create(&mut self, checkout_key: &str, item: &str) {
+        let (Some(kind), Some(ctx)) = (
+            section_create_kind(item),
+            resolve_section_menu_context(&self.state.projects, checkout_key),
+        ) else {
+            return;
+        };
+        self.dispatch_runtime_mutation(
+            "tui.project.section_create",
+            crate::api::schema::Method::ProjectSectionCreate(
+                crate::api::schema::ProjectSectionCreateParams {
+                    slug: ctx.slug,
+                    kind,
+                    name: None,
+                },
+            ),
+        );
     }
 }
 
@@ -2600,6 +2697,291 @@ pub(super) fn remove_membership_direct(member_dir: &str) {
         if let Some(slug) = ctx.current_project_slug {
             if let Err(err) = remove_member(&slug, member_dir) {
                 tracing::warn!(err = ?err, "project member_remove failed");
+            }
+        }
+    }
+}
+
+// ── Section-control menu items (bora-79l.10 pass 6b, T6b) ───────────────
+//
+// Bead bora-79l.7 (F5) was supposed to land the section controls on a
+// Project-view row's right-click menu and did not — both the branch header
+// row (`SectionRow` -> `ContextMenuKind::ProjectMemberTargets`) and the
+// workspace's own block (`PaneDotsRow` -> `Workspace`/`GitWorkspace`) stop
+// at whatever they already offer today. Unlike the membership items above,
+// this deliberately resolves against `self.projects` — the `ProjectsStore`
+// `App::poll_projects_store` keeps in sync — never a synchronous disk
+// read: the pass 6b design note names it as the runtime source of truth
+// for `Project.layout`, and there is no separate in-memory copy to drift.
+// `SectionMenuContext` is `None` for a checkout with no owning project —
+// a bare checkout has no section to control, so neither row splices
+// anything in that case.
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SectionMenuContext {
+    pub slug: String,
+    /// The checkout's DECLARED section id, when `Project.layout` already
+    /// has one. `None` means a toggle must MATERIALIZE a Branch section —
+    /// `checkout: Some(checkout_key)` on the update request is what tells
+    /// the handler to do that (bora-79l.10's binding contract).
+    pub section_id: Option<String>,
+    pub header_on: bool,
+    pub dots: bool,
+    pub diff: bool,
+}
+
+pub(crate) fn resolve_section_menu_context(
+    projects: &projects::ProjectsStore,
+    checkout_key: &str,
+) -> Option<SectionMenuContext> {
+    let slug =
+        ProjectAssemblyContext::for_dir(projects.current(), checkout_key).current_project_slug?;
+    let section =
+        crate::app::sections::declared_section_for_checkout(projects, &slug, checkout_key);
+    Some(SectionMenuContext {
+        slug,
+        section_id: section.map(|s| s.id.clone()),
+        header_on: section.is_none_or(|s| s.header_on),
+        dots: section.is_none_or(|s| s.parts.dots),
+        diff: section.is_none_or(|s| s.parts.diff),
+    })
+}
+
+fn on_off(value: bool) -> &'static str {
+    if value {
+        "ON"
+    } else {
+        "OFF"
+    }
+}
+
+/// The section-control items to splice into a Project-view row menu: three
+/// toggles reflecting the CURRENT declared state, then the four
+/// section-create items. Pure formatting — no IO, so a caller without a
+/// live `ProjectsStore` (a test) can hand it a fixture `ctx` directly.
+pub(crate) fn section_control_menu_items(ctx: &SectionMenuContext) -> Vec<String> {
+    vec![
+        crate::app::state::CONTEXT_MENU_SEPARATOR.to_string(),
+        format!("Header: {}", on_off(ctx.header_on)),
+        format!("PART bolinhas: {}", on_off(ctx.dots)),
+        format!("PART diff: {}", on_off(ctx.diff)),
+        crate::app::state::CONTEXT_MENU_SEPARATOR.to_string(),
+        "Nova section: BRANCH".to_string(),
+        "Nova section: COMANDO".to_string(),
+        "Nova section: CHECKS".to_string(),
+        "Nova section: LIVRE".to_string(),
+    ]
+}
+
+/// `section_control_menu_items`, resolved straight from `checkout_key` —
+/// the call-site convenience both of `mouse.rs`'s right-click sites use.
+/// Empty when the checkout has no owning project.
+pub(crate) fn section_menu_items_for_checkout(
+    projects: &projects::ProjectsStore,
+    checkout_key: &str,
+) -> Vec<String> {
+    resolve_section_menu_context(projects, checkout_key)
+        .map(|ctx| section_control_menu_items(&ctx))
+        .unwrap_or_default()
+}
+
+/// Which `ProjectSectionUpdateParams` field a clicked toggle item negates.
+/// Matches exactly the labels `section_control_menu_items` emits — the
+/// current ON/OFF suffix does not matter, only which toggle it names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SectionToggleField {
+    Header,
+    Dots,
+    Diff,
+}
+
+pub(crate) fn section_toggle_field(item: &str) -> Option<SectionToggleField> {
+    match item {
+        "Header: ON" | "Header: OFF" => Some(SectionToggleField::Header),
+        "PART bolinhas: ON" | "PART bolinhas: OFF" => Some(SectionToggleField::Dots),
+        "PART diff: ON" | "PART diff: OFF" => Some(SectionToggleField::Diff),
+        _ => None,
+    }
+}
+
+/// The `project.section_update` request a toggle click sends: always
+/// addressed by BOTH `section_id` (when one is already declared) and
+/// `checkout` (so the handler can MATERIALIZE the section when it is not)
+/// — never the current value, always its negation. One request, never a
+/// create-then-update chain.
+pub(crate) fn section_toggle_update_params(
+    field: SectionToggleField,
+    ctx: &SectionMenuContext,
+    checkout_key: &str,
+) -> crate::api::schema::ProjectSectionUpdateParams {
+    let mut params = crate::api::schema::ProjectSectionUpdateParams {
+        slug: ctx.slug.clone(),
+        section_id: ctx.section_id.clone(),
+        checkout: Some(checkout_key.to_string()),
+        header_on: None,
+        dots: None,
+        diff: None,
+    };
+    match field {
+        SectionToggleField::Header => params.header_on = Some(!ctx.header_on),
+        SectionToggleField::Dots => params.dots = Some(!ctx.dots),
+        SectionToggleField::Diff => params.diff = Some(!ctx.diff),
+    }
+    params
+}
+
+/// Which `SectionKind` a "Nova section: …" item creates. The four items
+/// `section_control_menu_items` emits map onto the four distinct
+/// `crate::ui::sidebar::sections::SectionKind` variants — exhaustive over
+/// the model, not just the menu.
+pub(crate) fn section_create_kind(item: &str) -> Option<crate::ui::sidebar::sections::SectionKind> {
+    use crate::ui::sidebar::sections::SectionKind;
+    match item {
+        "Nova section: BRANCH" => Some(SectionKind::Branch),
+        "Nova section: COMANDO" => Some(SectionKind::Comando),
+        "Nova section: CHECKS" => Some(SectionKind::Checks),
+        "Nova section: LIVRE" => Some(SectionKind::Livre),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod section_menu_tests {
+    use super::*;
+
+    fn ctx(header_on: bool, dots: bool, diff: bool) -> SectionMenuContext {
+        SectionMenuContext {
+            slug: "alpha".to_string(),
+            section_id: Some("sec-1".to_string()),
+            header_on,
+            dots,
+            diff,
+        }
+    }
+
+    #[test]
+    fn header_toggle_sends_the_negation_never_the_current_value() {
+        let on = ctx(true, true, true);
+        let params =
+            section_toggle_update_params(SectionToggleField::Header, &on, "/repo/checkout");
+        assert_eq!(params.slug, "alpha");
+        assert_eq!(params.section_id.as_deref(), Some("sec-1"));
+        assert_eq!(params.checkout.as_deref(), Some("/repo/checkout"));
+        assert_eq!(
+            params.header_on,
+            Some(false),
+            "must send the negation of the current ON state, not ON again"
+        );
+        assert_eq!(params.dots, None);
+        assert_eq!(params.diff, None);
+
+        let off = ctx(false, true, true);
+        let params_off =
+            section_toggle_update_params(SectionToggleField::Header, &off, "/repo/checkout");
+        assert_eq!(
+            params_off.header_on,
+            Some(true),
+            "must send the negation of the current OFF state, not OFF again"
+        );
+    }
+
+    #[test]
+    fn dots_and_diff_toggles_each_negate_only_their_own_field() {
+        let context = ctx(true, true, false);
+        let dots_params =
+            section_toggle_update_params(SectionToggleField::Dots, &context, "/repo/checkout");
+        assert_eq!(dots_params.dots, Some(false));
+        assert_eq!(dots_params.header_on, None);
+        assert_eq!(dots_params.diff, None);
+
+        let diff_params =
+            section_toggle_update_params(SectionToggleField::Diff, &context, "/repo/checkout");
+        assert_eq!(
+            diff_params.diff,
+            Some(true),
+            "diff was OFF, must negate to ON"
+        );
+        assert_eq!(diff_params.header_on, None);
+        assert_eq!(diff_params.dots, None);
+    }
+
+    #[test]
+    fn toggle_field_recognizes_both_on_and_off_label_spellings() {
+        assert_eq!(
+            section_toggle_field("Header: ON"),
+            Some(SectionToggleField::Header)
+        );
+        assert_eq!(
+            section_toggle_field("Header: OFF"),
+            Some(SectionToggleField::Header)
+        );
+        assert_eq!(
+            section_toggle_field("PART bolinhas: ON"),
+            Some(SectionToggleField::Dots)
+        );
+        assert_eq!(
+            section_toggle_field("PART diff: OFF"),
+            Some(SectionToggleField::Diff)
+        );
+        assert_eq!(section_toggle_field("Nova section: BRANCH"), None);
+        assert_eq!(section_toggle_field("Rename"), None);
+    }
+
+    #[test]
+    fn the_four_create_items_map_to_four_distinct_section_kinds() {
+        use crate::ui::sidebar::sections::SectionKind;
+        assert_eq!(
+            section_create_kind("Nova section: BRANCH"),
+            Some(SectionKind::Branch)
+        );
+        assert_eq!(
+            section_create_kind("Nova section: COMANDO"),
+            Some(SectionKind::Comando)
+        );
+        assert_eq!(
+            section_create_kind("Nova section: CHECKS"),
+            Some(SectionKind::Checks)
+        );
+        assert_eq!(
+            section_create_kind("Nova section: LIVRE"),
+            Some(SectionKind::Livre)
+        );
+        assert_eq!(section_create_kind("Nova section: NOPE"), None);
+    }
+
+    #[test]
+    fn section_control_menu_items_reflects_declared_off_state() {
+        let context = ctx(false, false, true);
+        let items = section_control_menu_items(&context);
+        assert!(items.contains(&"Header: OFF".to_string()));
+        assert!(items.contains(&"PART bolinhas: OFF".to_string()));
+        assert!(items.contains(&"PART diff: ON".to_string()));
+        assert!(items.contains(&"Nova section: BRANCH".to_string()));
+        assert!(items.contains(&"Nova section: COMANDO".to_string()));
+        assert!(items.contains(&"Nova section: CHECKS".to_string()));
+        assert!(items.contains(&"Nova section: LIVRE".to_string()));
+    }
+
+    /// The builder writes the labels and the two recognizers re-declare
+    /// them as literals — three independent lists that a typo silently
+    /// desynchronizes into a menu item that does nothing at all. Assert
+    /// the loop closes: every emitted item is claimed by exactly one
+    /// recognizer, for BOTH ON and OFF spellings of the toggles.
+    #[test]
+    fn every_emitted_item_is_claimed_by_exactly_one_recognizer() {
+        for context in [ctx(true, true, true), ctx(false, false, false)] {
+            for item in section_control_menu_items(&context) {
+                if item == crate::app::state::CONTEXT_MENU_SEPARATOR {
+                    continue;
+                }
+                let toggle = section_toggle_field(&item).is_some();
+                let create = section_create_kind(&item).is_some();
+                assert!(
+                    toggle ^ create,
+                    "menu item {item:?} must be claimed by exactly one \
+                     recognizer (toggle={toggle}, create={create}) — an \
+                     unclaimed item renders and then does nothing"
+                );
             }
         }
     }

@@ -380,6 +380,13 @@ pub enum ResponseResult {
     ProjectMemberRemoved {
         project: ProjectSummary,
     },
+    /// `project.section_create` result, and also `project.section_update`'s
+    /// (see `app::sections::update_section`) — both land on exactly one
+    /// section and hand back its id, whether freshly created, addressed by
+    /// `section_id`, or materialized by `checkout`.
+    ProjectSectionCreate {
+        section_id: String,
+    },
     /// `todo.create` result: the persisted todo — its `seq` is the cursor
     /// a follower replays from (`persist::todos::read_since`).
     TodoCreated {

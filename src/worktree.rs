@@ -18,7 +18,7 @@ pub(crate) struct ExistingWorktree {
     pub is_prunable: bool,
 }
 
-pub(crate) fn generated_branch_slug(seed: u64) -> String {
+pub(crate) fn generated_two_word_name(seed: u64) -> String {
     let adjectives = [
         "brave", "calm", "clear", "green", "lucky", "quiet", "rapid", "silver",
     ];
@@ -27,8 +27,13 @@ pub(crate) fn generated_branch_slug(seed: u64) -> String {
     ];
     let adjective = adjectives[(seed as usize) % adjectives.len()];
     let noun = nouns[((seed / adjectives.len() as u64) as usize) % nouns.len()];
+    format!("{adjective}-{noun}")
+}
+
+pub(crate) fn generated_branch_slug(seed: u64) -> String {
+    let name = generated_two_word_name(seed);
     let suffix = seed & 0xffff;
-    format!("{DEFAULT_WORKTREE_PREFIX}/{adjective}-{noun}-{suffix:04x}")
+    format!("{DEFAULT_WORKTREE_PREFIX}/{name}-{suffix:04x}")
 }
 
 pub(crate) fn branch_to_path_slug(branch: &str) -> String {
@@ -904,6 +909,16 @@ mod tests {
     fn generated_branch_slug_is_worktree_namespaced_and_stable() {
         assert_eq!(generated_branch_slug(0), "worktree/brave-river-0000");
         assert_eq!(generated_branch_slug(9), "worktree/calm-cloud-0009");
+    }
+
+    #[test]
+    fn generated_two_word_name_is_bare_and_matches_the_branch_slugs_words() {
+        assert_eq!(generated_two_word_name(0), "brave-river");
+        assert_eq!(generated_two_word_name(9), "calm-cloud");
+        assert!(
+            generated_branch_slug(0).starts_with("worktree/brave-river-"),
+            "generated_branch_slug must still carry the worktree/ prefix and reuse the same words"
+        );
     }
 
     #[test]
