@@ -555,9 +555,22 @@ fn alvo_fixture() -> (IsolatedDirs, FakeGitCheckout, AppState) {
     let scratch = fixture_workspace("scratch", "wfix5", "scratch", "scratch", false);
     let mut hotfix = fixture_workspace("hotfix", "wfix6", "hotfix/urgent", "hotfix", true);
     hotfix.cached_git_ahead_behind = Some((2, 1));
-    // The alvo pins +916 −2 on the hotfix branch header; no line-level diff
-    // field exists on `Workspace` yet — it gets wired here when the data
-    // model lands (F1/F2).
+    // The alvo pins `+916 −2` on the hotfix branch header; T3 reads the
+    // uncommitted diff straight off the cached change set (the same
+    // source the right panel's Changes tab reads), so the fixture sets
+    // the numstat it renders from.
+    hotfix.cached_change_set = Some(crate::workspace::WorkspaceChangeSet {
+        sections: vec![crate::workspace::ChangeSection {
+            kind: crate::workspace::ChangeSectionKind::Unstaged,
+            files: vec![crate::workspace::ChangedFile {
+                path: "src/sidebar.rs".to_string(),
+                added: Some(916),
+                removed: Some(2),
+                status: crate::workspace::ChangeStatus::Modified,
+            }],
+        }],
+        base_ref: None,
+    });
 
     app.workspaces = vec![
         main,
@@ -1038,46 +1051,61 @@ mod tests {
         );
     }
 
-    /// Attribution — this test asserted `FEATURE-X` and `HOTFIX` appeared
-    /// UPPERCASE on their own section rows. A3 (`SectionRow.repo_shown`)
-    /// changed that on purpose: every workspace in this fixture is a
-    /// worktree of the SAME repo, so only the FIRST prints the repo name and
-    /// the siblings render a `───────` rule in its place. Captured before /
-    /// after, same fixture:
+    /// Attribution — born asserting `FEATURE-X`/`HOTFIX` UPPERCASE on the
+    /// section rows, then re-aimed (A3) at `MAIN` + the `───────` rule.
+    /// T3 (bora-79l) removed the name slot entirely: the branch line is a
+    /// DECLARED header (`⎇ branch ····· cluster`), the workspace's name
+    /// lives only on its `PaneDotsRow` l1. Captured before / after, same
+    /// fixture:
     ///
-    ///   before  row 09 |▾ FEATURE-X ⎇ feature/x                  |
-    ///                  |  ╰ w1p2                                 |
-    ///   after   row 09 |▾ ─────── ⎇ feature/x                     |
-    ///                  |  feature-x  ⠁                           |
+    ///   before  row 09 |▾ ─────── ⎇ feature/x                     |
+    ///   after   row 09 | ⎇ feature/x                              |
     ///
-    /// So the identity moved from an uppercase repo name on line 1 to the
-    /// workspace's own unique name on line 2 — which is the whole point of
-    /// the round: line 1 stops repeating what did not change. The uppercase
-    /// assertion survives, aimed at the one row that still carries a name.
+    /// The surviving assertions: the branch label renders (lowercase),
+    /// every trace of the old identity row is gone (no UPPERCASE name,
+    /// no chevron, no A3 rule), the workspace's own name lives on the
+    /// dots row, and the ⌗ worktree marker survives the slot reorder.
     #[test]
-    fn v3_first_row_of_a_repo_names_it_siblings_get_the_a3_rule() {
+    fn v3_branch_headers_declare_the_branch_no_name_slot_no_chevron() {
         let (_isolated, _checkout, app) = multi_workspace_fixture();
         let text = capture_sidebar(&app, FIXTURE_WIDTH, FIXTURE_HEIGHT);
         assert!(
-            text.contains("MAIN"),
-            "G2: the first row of the repo still renders its name UPPERCASE: {text}"
+            !text.contains("MAIN") && !text.contains("FEATURE-X"),
+            "T3: the header has no name slot — nothing uppercase: {text}"
         );
         assert!(
-            text.contains("▾ ───────"),
-            "A3: a sibling worktree of the same repo renders the rule instead \
-             of repeating the name: {text}"
+            !text.contains('▾') && !text.contains('▸'),
+            "T3: no chevron on a branch header — collapse is the folder's: {text}"
+        );
+        // The old A3 filler (`───────` in the name slot) is gone — but band
+        // rulers legitimately run `─`, so the invariant is per-row: a branch
+        // header itself never carries a box-drawing run. (Fica vermelho se o
+        // name slot voltar a renderizar antes do glifo de branch.)
+        let header_rows: Vec<&str> = text
+            .lines()
+            .filter(|l| l.contains("text") && l.contains('\u{2387}'))
+            .collect();
+        assert!(
+            !header_rows.is_empty(),
+            "T3: at least one branch header must render: {text}"
+        );
+        for header in &header_rows {
+            assert!(
+                !header.contains('\u{2500}'),
+                "T3: a branch header carries no box-drawing run: {header}"
+            );
+        }
+        assert!(
+            text.contains("feature/x"),
+            "the branch label is the header's whole text: {text}"
         );
         assert!(
             text.contains("feature-x"),
-            "the workspace's own unique name now lives on its dots row: {text}"
-        );
-        assert!(
-            text.contains("feature/x"),
-            "G2/G3: branch stays lowercase (dim): {text}"
+            "the workspace's own unique name lives on its dots row: {text}"
         );
         assert!(
             text.contains('⌗'),
-            "G4: a worktree checkout gets the ⌗ marker: {text}"
+            "G4: a worktree checkout keeps the ⌗ marker: {text}"
         );
         assert!(
             !text.contains("##"),

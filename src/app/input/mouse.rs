@@ -805,16 +805,19 @@ impl AppState {
                                 // Split the row by column (owner's ask: "eu
                                 // clico no nome da workspace e ele
                                 // retrai" — clicking anywhere used to
-                                // collapse). `section_row_line`
-                                // (src/ui/sidebar.rs) always renders the
-                                // `▾`/`▸` chevron as the row's very first
-                                // glyph, and the geometry pass gives that
+                                // collapse). T3 (bora-79l) removed the
+                                // `▾`/`▸` chevron from the branch header
+                                // (collapse belongs to the folder), but
+                                // the geometry pass still gives this
                                 // row's `ProjectRowHitArea.rect` the same
-                                // `x` the render used — so the chevron's
-                                // hit column is exactly that rect's own
-                                // left edge, read back here rather than a
-                                // hardcoded literal. Only a click on that
-                                // one column collapses.
+                                // `x` the render used, so the row's
+                                // first TWO cells — formerly the
+                                // chevron's column, now the leading
+                                // `⌗`/`⎇` slot — remain the collapse
+                                // target, read back here rather than a
+                                // hardcoded literal. The visible
+                                // affordance for that column is T6's to
+                                // design.
                                 let on_caret = self
                                     .view
                                     .project_row_areas

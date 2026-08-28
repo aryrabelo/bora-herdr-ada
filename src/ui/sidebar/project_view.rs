@@ -27,6 +27,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use super::sections::{Section, SectionChild, SectionKind};
 use super::{SectionBullet, SectionCounter, SectionDescriptor, SectionLevel, WorkspaceListEntry};
 use crate::app::state::AppState;
 use crate::persist::projects::{ResolvedMember, WorktreesScope};
@@ -63,17 +64,16 @@ pub(crate) const ORPHANS_COLLAPSE_KEY: &str = "proj:__orphans__";
 /// - `apply_hidden_filter`'s depth ladder (0 project, 1 section, 2 band
 ///   header, 3 band item, 4 pane) mirrors that nesting. A new level means
 ///   updating that closure too.
-/// - Each `SectionRow` carries its own workspace's display name — there is
-///   no shared "repo name shown once per checkout" field anymore (that was
-///   `WorktreeRow.repo`, bora-b2r); every row is independently identifying
-///   now, so the old collapse-when-single-repo concern no longer applies.
-///   `SectionRow.repo_shown` (the pair-of-rows shape, A3) is a narrower,
-///   DIFFERENT concern: it only suppresses the printed *repo name* for a
-///   second worktree of a repo already named earlier in the SAME project
-///   group — the row, its disambiguated name, and every other field still
-///   exist and render; `repo_shown: false` just tells the painter to draw
-///   the `───────` rule instead of repeating the name (`push_worktree`'s
-///   doc decides it).
+/// - T3 (bora-79l): the branch line is a DECLARED header, not an identity
+///   row — it carries no workspace/repo name at all (the name lives on the
+///   paired `PaneDotsRow`, killing the old P1 double-print), and it obeys
+///   the section model: `header_on` and `parts.diff` are read from the
+///   project's `layout:` at emission (`section_model_flags`), defaulting
+///   ON when no layout exists yet. The same-branch exception
+///   (`hide_upper_duplicate_branch_headers`) additionally hides an upper
+///   header when a lower one of the same (repo, branch) exists in the
+///   same project group — two headers of one branch never coexist
+///   visible.
 /// - `PaneDotsRow.name` is set exactly once, after
 ///   `disambiguate_identical_section_rows` has finished, by copying the
 ///   paired `SectionRow`'s final disambiguated name (`sync_pane_dots_names`)
@@ -182,6 +182,9 @@ pub(super) fn project_view_entries(
             resolve_section_order(declared_section_order(project)),
             sections_of(project).0,
             sections_of(project).1,
+            // T3: the declared layout is the section model's source —
+            // header switches and parts toggles ride on it.
+            project.layout.as_deref(),
             force_expanded,
         );
     }
@@ -199,11 +202,12 @@ pub(super) fn project_view_entries(
             orphan_idxs,
             false,
             // An orphan group is not a declared project: no order, no
-            // sections. `resolve_section_order(None)` is the default
-            // registry order.
+            // sections, no layout. `resolve_section_order(None)` is the
+            // default registry order.
             resolve_section_order(None),
             &[],
             &[],
+            None,
             force_expanded,
         );
     }
@@ -362,8 +366,9 @@ fn disambiguate_identical_section_rows(app: &AppState, entries: &mut [WorkspaceL
 /// `name_hint` (module doc, "PaneDotsRow.name is set exactly once"). This
 /// deliberately does not re-decide whether a name needed disambiguating —
 /// it only reads the hint the `SectionRow` ended up with and reapplies the
-/// same `"{name} ({hint})"` shape `sidebar.rs`'s `section_row_line` renders,
-/// so the two rows of a pair can never disagree.
+/// `"{name} ({hint})"` shape (T3: the header no longer prints any name, so
+/// THIS row is the shape's only renderer — the hint's whole reason to
+/// exist), so the section and its block can never disagree.
 ///
 /// One linear pass, no map: a `SectionRow` is always immediately followed
 /// by its own `PaneDotsRow` (`push_worktree`), with only band rows (never
@@ -476,6 +481,10 @@ fn member_specificity(member: &ResolvedMember) -> (u8, usize) {
 
 /// Push one `ProjectRow` (declared project or the trailing orphans group)
 /// and its `WorktreeRow`/`SectionRow`/`PaneDotsRow` descendants.
+// T3 pushed this past clippy's arity cap: `layout` is the section model the
+// emission consumes and every other slot is a distinct group input — folding
+// them into a params struct would only move the list one level down.
+#[allow(clippy::too_many_arguments)]
 fn push_project_group(
     entries: &mut Vec<WorkspaceListEntry>,
     app: &AppState,
@@ -490,6 +499,10 @@ fn push_project_group(
     section_order: [&'static SectionDescriptor; SECTION_COUNT],
     commands: &[String],
     checks: &[String],
+    // T3: the project's declared `layout:` — the section model
+    // (`Section.header_on` / `SectionParts.diff`) consumed at emission.
+    // `None` (no layout yet, or the orphans group) means every default.
+    layout: Option<&[Section]>,
     force_expanded: bool,
 ) {
     // Group by `checkout_key` — the level the Repo view does not have (rule
@@ -522,6 +535,10 @@ fn push_project_group(
     let total = ws_idxs.len() + unopened.len();
     let live = ws_idxs.len();
 
+    // T3: everything this group pushes sits in `entries[group_start..]`,
+    // which is exactly the slice the same-branch exception pass below
+    // needs — per project group, never crossing into the next one.
+    let group_start = entries.len();
     entries.push(WorkspaceListEntry::ProjectRow {
         name,
         collapse_key: collapse_key.to_string(),
@@ -558,15 +575,6 @@ fn push_project_group(
         }
     }
 
-    // A3 (pair-of-rows shape): tracks which repos have already had their
-    // NAME printed within this one project group, so a second worktree of
-    // the same repo renders the `───────` rule instead of repeating it
-    // (`SectionRow.repo_shown`, decided inside `push_worktree`). A fresh
-    // `HashSet` per call to `push_project_group` — i.e. per project group —
-    // is exactly the "clear per group" the mechanism needs: the same repo
-    // showing up again in a DIFFERENT group still prints its name there.
-    let mut group_repos_seen: HashSet<String> = HashSet::new();
-
     for checkout_key in &order {
         push_worktree(
             entries,
@@ -576,10 +584,15 @@ fn push_project_group(
             section_order,
             commands,
             checks,
+            layout,
             force_expanded,
-            &mut group_repos_seen,
         );
     }
+
+    // T3 same-branch exception: with every section of this group on the
+    // table, hide every upper header that a lower same-(repo, branch)
+    // header would duplicate.
+    hide_upper_duplicate_branch_headers(&mut entries[group_start..], app);
 
     // bora-qdi: unopened rows go after the project's live worktrees, no
     // section bands, no children — `sidebar.rs`'s
@@ -712,17 +725,84 @@ fn checkout_group_key(ws: &Workspace) -> String {
         .unwrap_or_else(|| format!("ws-no-space:{}", ws.id))
 }
 
-/// The repo-level identity used by A3's `repo_shown` collision check —
-/// `repo_identity` when the workspace has git identity (shared by every
-/// clone and worktree of one repository, `GitSpaceMetadata`'s doc), else a
-/// synthetic per-workspace fallback so two identity-less workspaces never
-/// collide and wrongly suppress each other's name. Reuses
+/// The repo-level identity used by the same-branch exception's collision
+/// key (T3) — `repo_identity` when the workspace has git identity (shared
+/// by every clone and worktree of one repository, `GitSpaceMetadata`'s
+/// doc), else a synthetic per-workspace fallback so two identity-less
+/// workspaces never collide and wrongly hide each other's header. Reuses
 /// `checkout_group_key`'s existing fallback rather than inventing a second
 /// one.
 fn repo_identity_key(ws: &Workspace) -> String {
     ws.git_space()
         .map(|space| space.repo_identity.clone())
         .unwrap_or_else(|| checkout_group_key(ws))
+}
+
+/// T3: the section model's flags for one workspace, consumed at emission —
+/// `(header_on, parts.diff)` of the Branch `Section` whose children name
+/// this workspace's checkout. Matching key is
+/// `SectionChild::Workspace::checkout` against the workspace's
+/// `checkout_key`, the same key `persist::restore::
+/// reconcile_section_layout` matches saved sections by, so the runtime
+/// render and the persisted layout cannot disagree about which section a
+/// workspace belongs to. Unmatched — no `layout:` declared yet (every
+/// project today), or the workspace sits in no saved section — yields
+/// `(true, true)`: the pre-model behavior, byte for byte.
+fn section_model_flags(layout: Option<&[Section]>, ws: &Workspace) -> (bool, bool) {
+    let Some(sections) = layout else {
+        return (true, true);
+    };
+    let checkout = checkout_group_key(ws);
+    sections
+        .iter()
+        .filter(|section| section.kind == SectionKind::Branch)
+        .find(|section| {
+            section.children.iter().any(|child| {
+                matches!(
+                    child,
+                    SectionChild::Workspace { checkout: key, .. } if *key == checkout
+                )
+            })
+        })
+        .map(|section| (section.header_on, section.parts.diff))
+        .unwrap_or((true, true))
+}
+
+/// T3 same-branch exception, scoped to ONE project group's entries: a
+/// branch header hides when a LOWER header of the same (repo identity,
+/// branch) exists in the group — the lower one keeps its line, so two
+/// headers of one branch never coexist visible (the owner's rule: the
+/// header below hides the one above). Keyed on repo identity AND branch
+/// name: branch `main` of repo A and branch `main` of repo B in one group
+/// are different sections and both keep their headers. Headers the model
+/// already turned OFF (`header_on: false`) render nothing and therefore
+/// cannot hide anyone else's. Backward scan: the LAST row of a key claims
+/// it, every earlier duplicate is marked hidden.
+fn hide_upper_duplicate_branch_headers(entries: &mut [WorkspaceListEntry], app: &AppState) {
+    let mut seen_below: HashSet<(String, String)> = HashSet::new();
+    for entry in entries.iter_mut().rev() {
+        let WorkspaceListEntry::SectionRow {
+            ws_idx,
+            header_on,
+            header_hidden,
+            ..
+        } = entry
+        else {
+            continue;
+        };
+        if !*header_on {
+            continue;
+        }
+        let Some(ws) = app.workspaces.get(*ws_idx) else {
+            continue;
+        };
+        let Some(branch) = ws.branch() else {
+            continue;
+        };
+        if !seen_below.insert((repo_identity_key(ws), branch)) {
+            *header_hidden = true;
+        }
+    }
 }
 
 /// Push one `SectionRow` per workspace on this checkout (bora-c1h), plus —
@@ -732,10 +812,11 @@ fn repo_identity_key(ws: &Workspace) -> String {
 /// the old `WorktreeRow`), then that workspace's `PaneDotsRow`
 /// (`push_pane_dots_row`, one dot per pane).
 ///
-/// `SectionRow.repo_shown` (A3) is decided here, per workspace, against
-/// `group_repos_seen` — the caller's per-PROJECT-GROUP set, not a
-/// per-checkout one, since two worktrees of one repo land in two different
-/// calls to this function but must still only print the repo's name once.
+/// T3: each row's `header_on`/`show_diff` come from the project's declared
+/// `layout:` (`section_model_flags`) — the section model consumed at
+/// emission. The same-branch exception is NOT decided here (it needs the
+/// whole group in view); `push_project_group` runs it once after every
+/// checkout of the group has been pushed.
 fn push_worktree(
     entries: &mut Vec<WorkspaceListEntry>,
     app: &AppState,
@@ -744,25 +825,20 @@ fn push_worktree(
     section_order: [&'static SectionDescriptor; SECTION_COUNT],
     commands: &[String],
     checks: &[String],
+    layout: Option<&[Section]>,
     force_expanded: bool,
-    // A3: repos already named in the CURRENT project group (module doc,
-    // `push_project_group`'s `group_repos_seen`) — mutated here as each
-    // `SectionRow` is pushed, never read back by the caller.
-    group_repos_seen: &mut HashSet<String>,
 ) {
     for (position, &ws_idx) in ws_idxs.iter().enumerate() {
         let collapse_key = section_collapse_key(ws_idx);
-        // A3: the FIRST row (in emission order) to claim a given repo
-        // identity within this group prints the name; every later sibling
-        // repeats the rule instead. `insert` returning `true` means "not
-        // seen before in this group" — exactly `repo_shown`.
-        let repo_shown = group_repos_seen.insert(repo_identity_key(&app.workspaces[ws_idx]));
+        let (header_on, show_diff) = section_model_flags(layout, &app.workspaces[ws_idx]);
         entries.push(WorkspaceListEntry::SectionRow {
             ws_idx,
             checkout_key: checkout_key.to_string(),
             collapse_key: collapse_key.clone(),
             name_hint: None,
-            repo_shown,
+            header_on,
+            header_hidden: false,
+            show_diff,
         });
         if !force_expanded && app.collapsed_space_keys.contains(&collapse_key) {
             continue;
@@ -1897,62 +1973,77 @@ mod tests {
     }
 
     #[test]
-    fn repo_shown_true_once_per_repo_per_group_false_for_repeats() {
-        // A3: within ONE project group, a second worktree of an
-        // ALREADY-SEEN repo suppresses its printed name (`repo_shown:
-        // false`); a different repo always gets its own `true`, regardless
-        // of how many repos came before it.
-        let checkout_a = temp_test_dir("repo-shown-a");
-        let checkout_b = temp_test_dir("repo-shown-b");
-        let checkout_c = temp_test_dir("repo-shown-c");
+    fn same_branch_exception_hides_the_upper_header_keeps_the_lower() {
+        // Fica vermelho se duas headers da mesma branch coexistirem
+        // visíveis num grupo — a de CIMA é a que deve perder a header.
+        // Attribution: replaces `repo_shown_true_once_per_repo_per_group_
+        // false_for_repeats` — A3 suppressed the repeated NAME; T3
+        // removed the name slot entirely and replaced the concern with
+        // the owner's same-branch rule: within one project group, two
+        // branch headers of the same (repo, branch) never coexist
+        // visible, and it is the UPPER one that hides.
+        let checkout_a = temp_test_dir("same-branch-a");
+        let checkout_c = temp_test_dir("same-branch-c");
         let shared_origin = "git@github.com:owner/shared-repo.git";
         init_fake_git_repo(&checkout_a, Some(shared_origin));
-        init_fake_git_repo(&checkout_b, Some(shared_origin));
-        init_fake_git_repo(&checkout_c, None);
+        init_fake_git_repo(&checkout_c, Some(shared_origin));
 
         let mut file = ProjectsFile::default();
         file.projects.insert(
             "proj".to_string(),
-            project(vec![
-                member(&checkout_a),
-                member(&checkout_b),
-                member(&checkout_c),
-            ]),
+            project(vec![member(&checkout_a), member(&checkout_c)]),
         );
         let (_isolated, store) = store_with(file);
         let mut app = AppState::test_new();
         app.projects = store;
-        app.workspaces = vec![ws_at(&checkout_a), ws_at(&checkout_b), ws_at(&checkout_c)];
+        // ws0 and ws1 share checkout_a — same repo, same branch `main`.
+        // ws2 is another checkout of the same repo on `feature/x`.
+        let mut ws0 = ws_at(&checkout_a);
+        ws0.cached_git_branch = Some("main".to_string());
+        let mut ws1 = ws_at(&checkout_a);
+        ws1.cached_git_branch = Some("main".to_string());
+        let mut ws2 = ws_at(&checkout_c);
+        ws2.cached_git_branch = Some("feature/x".to_string());
+        app.workspaces = vec![ws0, ws1, ws2];
 
         let entries = project_view_entries(&app, false);
-        let repo_shown: Vec<(usize, bool)> = entries
+        let hidden: Vec<(usize, bool)> = entries
             .iter()
             .filter_map(|e| match e {
                 WorkspaceListEntry::SectionRow {
-                    ws_idx, repo_shown, ..
-                } => Some((*ws_idx, *repo_shown)),
+                    ws_idx,
+                    header_hidden,
+                    ..
+                } => Some((*ws_idx, *header_hidden)),
                 _ => None,
             })
             .collect();
         assert_eq!(
-            repo_shown,
-            vec![(0, true), (1, false), (2, true)],
-            "first sighting of a repo shows the name, a repeat within the \
-             group suppresses it, a different repo always shows: {entries:?}"
+            hidden,
+            vec![(0, true), (1, false), (2, false)],
+            "the upper of two same-branch headers hides; a different branch \
+             and every block below are untouched: {entries:?}"
+        );
+        assert!(
+            entries
+                .iter()
+                .any(|e| matches!(e, WorkspaceListEntry::PaneDotsRow { ws_idx: 0, .. })),
+            "the hidden-header section still emits its block: {entries:?}"
         );
 
         std::fs::remove_dir_all(&checkout_a).unwrap();
-        std::fs::remove_dir_all(&checkout_b).unwrap();
         std::fs::remove_dir_all(&checkout_c).unwrap();
     }
 
     #[test]
-    fn repo_shown_true_again_in_a_different_project_group() {
-        // A3: `group_repos_seen` is per-group (module doc) — the SAME repo
-        // showing up in a SECOND, unrelated project group is not a repeat
-        // from that group's point of view and must still show its name.
-        let checkout_a = temp_test_dir("repo-shown-group-a");
-        let checkout_b = temp_test_dir("repo-shown-group-b");
+    fn same_branch_in_a_different_group_keeps_its_header() {
+        // Fica vermelho se a exceção mesma-branch atravessar a fronteira
+        // do grupo — o mesmo repo+branch em OUTRO grupo tem header própria.
+        // Attribution: replaces `repo_shown_true_again_in_a_different_
+        // project_group` — same fixture shape, same per-group scoping
+        // question, aimed at the new rule.
+        let checkout_a = temp_test_dir("same-branch-group-a");
+        let checkout_b = temp_test_dir("same-branch-group-b");
         let shared_origin = "git@github.com:owner/cross-group-repo.git";
         init_fake_git_repo(&checkout_a, Some(shared_origin));
         init_fake_git_repo(&checkout_b, Some(shared_origin));
@@ -1965,40 +2056,217 @@ mod tests {
         let (_isolated, store) = store_with(file);
         let mut app = AppState::test_new();
         app.projects = store;
-        app.workspaces = vec![ws_at(&checkout_a), ws_at(&checkout_b)];
-        // Declaring `beta` is NOT enough to put `checkout_b` in it: both
-        // checkouts share `shared_origin`, so they share a `repo_identity`,
-        // and a member with `worktrees: all` claims EVERY worktree of that
-        // repo — the slug-alphabetically-first project (`alpha`) takes both,
-        // which is the exact behaviour AGENTS.md records under "Identity that
-        // is DERIVED cannot answer a question with two right answers". Without
-        // this line the fixture silently builds ONE group of two rows and the
-        // test measures nothing about group boundaries.
-        //
-        // The explicit per-workspace binding is the documented way to override
-        // the derivation, so using it here is also what makes the assertion
-        // exercise the real production path rather than a hypothetical one.
+        let mut ws0 = ws_at(&checkout_a);
+        ws0.cached_git_branch = Some("main".to_string());
+        let mut ws1 = ws_at(&checkout_b);
+        ws1.cached_git_branch = Some("main".to_string());
+        app.workspaces = vec![ws0, ws1];
+        // Same reason as the old A3 cross-group test: both checkouts share
+        // `shared_origin`, so without the explicit binding the
+        // slug-alphabetically-first project (`alpha`) would claim both and
+        // the fixture would measure nothing about group boundaries.
         app.workspaces[1].set_project(Some("beta".to_string()));
 
         let entries = project_view_entries(&app, false);
-        let repo_shown: Vec<(usize, bool)> = entries
+        let hidden: Vec<(usize, bool)> = entries
             .iter()
             .filter_map(|e| match e {
                 WorkspaceListEntry::SectionRow {
-                    ws_idx, repo_shown, ..
-                } => Some((*ws_idx, *repo_shown)),
+                    ws_idx,
+                    header_hidden,
+                    ..
+                } => Some((*ws_idx, *header_hidden)),
                 _ => None,
             })
             .collect();
         assert_eq!(
-            repo_shown,
-            vec![(0, true), (1, true)],
-            "the same repo in two DIFFERENT project groups shows its name in \
-             each — group_repos_seen never crosses a group boundary: {entries:?}"
+            hidden,
+            vec![(0, false), (1, false)],
+            "the same repo+branch in two DIFFERENT groups keeps both headers \
+             — the exception never crosses a group boundary: {entries:?}"
         );
 
         std::fs::remove_dir_all(&checkout_a).unwrap();
         std::fs::remove_dir_all(&checkout_b).unwrap();
+    }
+
+    #[test]
+    fn header_off_from_the_model_hides_the_header_keeps_the_blocks() {
+        // Fica vermelho se o render ignorar o campo `header_on` do modelo
+        // Section — header OFF esconde a header e mantém os blocos.
+        let checkout_a = temp_test_dir("header-off-a");
+        let checkout_c = temp_test_dir("header-off-c");
+        let shared_origin = "git@github.com:owner/header-off-repo.git";
+        init_fake_git_repo(&checkout_a, Some(shared_origin));
+        init_fake_git_repo(&checkout_c, Some(shared_origin));
+        let checkout_c_key = crate::workspace::git_space_metadata(&checkout_c)
+            .expect("fake checkout has git space")
+            .checkout_key;
+
+        use crate::ui::sidebar::sections::SectionParts;
+        let mut declared = project(vec![member(&checkout_a), member(&checkout_c)]);
+        declared.layout = Some(vec![Section {
+            id: "sec-feature-x".to_string(),
+            kind: SectionKind::Branch,
+            header_on: false,
+            parts: SectionParts {
+                dots: true,
+                diff: false,
+            },
+            children: vec![SectionChild::Workspace {
+                name: "gamma".to_string(),
+                checkout: checkout_c_key,
+            }],
+        }]);
+        let mut file = ProjectsFile::default();
+        file.projects.insert("proj".to_string(), declared);
+        let (_isolated, store) = store_with(file);
+        let mut app = AppState::test_new();
+        app.projects = store;
+        let mut ws0 = ws_at(&checkout_a);
+        ws0.cached_git_branch = Some("main".to_string());
+        let mut ws2 = ws_at(&checkout_c);
+        ws2.cached_git_branch = Some("feature/x".to_string());
+        app.workspaces = vec![ws0, ws2];
+
+        let entries = project_view_entries(&app, false);
+        let flags: Vec<(usize, bool, bool)> = entries
+            .iter()
+            .filter_map(|e| match e {
+                WorkspaceListEntry::SectionRow {
+                    ws_idx,
+                    header_on,
+                    show_diff,
+                    ..
+                } => Some((*ws_idx, *header_on, *show_diff)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            flags,
+            vec![(0, true, true), (1, false, false)],
+            "the declared section's header_on/parts.diff are consumed at \
+             emission; an unmatched workspace keeps the defaults: {entries:?}"
+        );
+        assert!(
+            entries
+                .iter()
+                .any(|e| matches!(e, WorkspaceListEntry::PaneDotsRow { ws_idx: 1, .. })),
+            "header OFF hides the header, never the section's blocks: {entries:?}"
+        );
+
+        std::fs::remove_dir_all(&checkout_a).unwrap();
+        std::fs::remove_dir_all(&checkout_c).unwrap();
+    }
+
+    #[test]
+    fn hidden_branch_headers_render_no_line_and_keep_every_block() {
+        // Fica vermelho se uma header oculta pintar qualquer célula, ou se
+        // algum bloco de baixo sumir junto — o buffer renderizado é a prova.
+        let checkout_a = temp_test_dir("hidden-render-a");
+        let checkout_c = temp_test_dir("hidden-render-c");
+        let shared_origin = "git@github.com:owner/hidden-render-repo.git";
+        init_fake_git_repo(&checkout_a, Some(shared_origin));
+        init_fake_git_repo(&checkout_c, Some(shared_origin));
+        let checkout_c_key = crate::workspace::git_space_metadata(&checkout_c)
+            .expect("fake checkout has git space")
+            .checkout_key;
+
+        use crate::ui::sidebar::sections::SectionParts;
+        let mut declared = project(vec![member(&checkout_a), member(&checkout_c)]);
+        declared.layout = Some(vec![Section {
+            id: "sec-feature-x".to_string(),
+            kind: SectionKind::Branch,
+            header_on: false,
+            parts: SectionParts::default(),
+            children: vec![SectionChild::Workspace {
+                name: "gamma".to_string(),
+                checkout: checkout_c_key,
+            }],
+        }]);
+        let mut file = ProjectsFile::default();
+        file.projects.insert("proj".to_string(), declared);
+        let (_isolated, store) = store_with(file);
+        let mut app = AppState::test_new();
+        app.view_mode = crate::config::ViewMode::Project;
+        app.projects = store;
+        // ws0 (hidden by the same-branch exception: ws1 below shares
+        // repo+branch), ws1 (the one visible header), ws2 (model OFF).
+        let mut ws0 = ws_at(&checkout_a);
+        ws0.custom_name = Some("alpha".to_string());
+        ws0.cached_git_branch = Some("main".to_string());
+        let mut ws1 = ws_at(&checkout_a);
+        ws1.custom_name = Some("beta".to_string());
+        ws1.cached_git_branch = Some("main".to_string());
+        let mut ws2 = ws_at(&checkout_c);
+        ws2.custom_name = Some("gamma".to_string());
+        ws2.cached_git_branch = Some("feature/x".to_string());
+        app.workspaces = vec![ws0, ws1, ws2];
+
+        let area = ratatui::layout::Rect::new(0, 0, 40, 16);
+        let runtimes = crate::terminal::TerminalRuntimeRegistry::new();
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(area.width, area.height))
+                .expect("test terminal");
+        terminal
+            .draw(|frame| {
+                crate::ui::sidebar::render_workspace_list(&app, &runtimes, frame, area, false)
+            })
+            .expect("workspace list should render");
+
+        let buffer = terminal.backend().buffer();
+        let row = |y: u16| -> String {
+            (0..area.width)
+                .map(|x| buffer[(x, y)].symbol().to_string())
+                .collect()
+        };
+        let rows: Vec<String> = (0..area.height).map(row).collect();
+        // One and only one branch glyph on screen: ws1's header. ws0's row
+        // (exception) and ws2's row (model OFF) must be fully blank.
+        let header_rows: Vec<usize> = rows
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| r.contains('\u{2387}'))
+            .map(|(y, _)| y)
+            .collect();
+        assert_eq!(
+            header_rows.len(),
+            1,
+            "exactly one visible branch header: {rows:?}"
+        );
+        assert!(
+            rows[header_rows[0]].contains("main"),
+            "the surviving header declares the branch: {:?}",
+            rows[header_rows[0]]
+        );
+        for name in ["alpha", "beta", "gamma"] {
+            assert!(
+                rows.iter().any(|r| r.contains(name)),
+                "the {name} block must render below its (possibly hidden) header: {rows:?}"
+            );
+        }
+        // The hidden headers claim no hit area either — a blank row that
+        // toggles collapse on click would be an invisible affordance.
+        let (_cards, _headers, project_rows) =
+            crate::ui::compute_workspace_list_areas_all(&app, area);
+        let section_hits: Vec<usize> = project_rows
+            .iter()
+            .filter(|a| {
+                matches!(
+                    a.target,
+                    crate::app::state::ProjectRowTarget::Section { .. }
+                )
+            })
+            .map(|a| a.rect.y as usize)
+            .collect();
+        assert_eq!(
+            section_hits,
+            vec![header_rows[0]],
+            "only the visible header carries a Section hit area: {project_rows:?}"
+        );
+
+        std::fs::remove_dir_all(&checkout_a).unwrap();
+        std::fs::remove_dir_all(&checkout_c).unwrap();
     }
 
     #[test]

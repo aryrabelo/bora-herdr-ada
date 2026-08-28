@@ -40,5 +40,10 @@ pub use self::{
     },
 };
 
+/// Test-support: the sidebar capture fixture names these via
+/// `crate::workspace::`; no production consumer exists yet.
+#[cfg(test)]
+pub use self::change_set::{ChangeSection, ChangedFile};
+
 #[cfg(test)]
 pub(super) use self::status::git_ahead_behind;

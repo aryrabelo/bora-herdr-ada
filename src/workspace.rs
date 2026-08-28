@@ -39,6 +39,11 @@ pub use self::{
     },
     tab::{NewPane, Tab},
 };
+
+/// Test-support re-export: only the sidebar capture fixture names these
+/// types through `crate::workspace::`; no production consumer exists yet.
+#[cfg(test)]
+pub use self::git::{ChangeSection, ChangedFile};
 pub(crate) use self::{
     git::{
         fetch_local_branches, fetch_my_issues, fetch_my_open_prs,
