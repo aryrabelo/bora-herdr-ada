@@ -1584,18 +1584,45 @@ fn pane_dots_columns(
 /// L1 of a Project-view workspace's `PaneDotsRow` block (bora-79l F2,
 /// ALVO_CAPTURE rows 04/28): the workspace's own already-disambiguated
 /// unique name, indented to `PANE_DOTS_INDENT` and colored `overlay1` — the
-/// SAME color `⎇` uses on its `SectionRow` (gate G1). No state glyph lands
-/// here; every pane's state is l2's payload (`pane_dots_dots_line`).
-/// Deliberately NOT dim: the old single-line row dimmed this name because
-/// it shared a row with the (louder) dots; split onto its own line, it
-/// reads at the same weight the branch glyph does.
-fn pane_dots_name_line(name: &str, p: &Palette, width: u16) -> Line<'static> {
-    let avail = width.saturating_sub(PANE_DOTS_INDENT);
-    let name_text = truncate_end(name, avail as usize);
-    Line::from(vec![
+/// SAME color `⎇` uses on its `SectionRow` (gate G1) — with the workspace's
+/// uncommitted diff beside it (`+916 −2`, T2 contract item 1). No state
+/// glyph lands here; every pane's state is l2's payload
+/// (`pane_dots_dots_line`). Deliberately NOT dim in any pane state: the old
+/// single-line row dimmed this name because it shared a row with the
+/// (louder) dots; split onto its own line, it reads at the same weight the
+/// branch glyph does — "a parte importante não some", inclusive parado.
+fn pane_dots_name_line(
+    name: &str,
+    diff: Option<(u32, u32)>,
+    p: &Palette,
+    width: u16,
+) -> Line<'static> {
+    let diff_spans: Vec<Span<'static>> = match diff {
+        // U+2212 MINUS SIGN, byte for byte the same `+916 −2` the branch
+        // header's cluster and ALVO_CAPTURE pin — never an ASCII hyphen.
+        // R1 keeps diff numbers gray: they are git plumbing, not a state.
+        Some((added, removed)) => vec![
+            Span::styled("  ", Style::default()),
+            Span::styled(
+                format!("+{added} −{removed}"),
+                Style::default().fg(p.overlay1),
+            ),
+        ],
+        None => Vec::new(),
+    };
+    // The diff reserves its width FIRST (the section-row cluster's own
+    // rule): a long name ellipsizes before the numbers ever lose a cell.
+    let diff_width: usize = diff_spans
+        .iter()
+        .map(|s| display_width(s.content.as_ref()))
+        .sum();
+    let avail = (width.saturating_sub(PANE_DOTS_INDENT) as usize).saturating_sub(diff_width);
+    let mut spans = vec![
         Span::styled(" ".repeat(PANE_DOTS_INDENT as usize), Style::default()),
-        Span::styled(name_text, Style::default().fg(p.overlay1)),
-    ])
+        Span::styled(truncate_end(name, avail), Style::default().fg(p.overlay1)),
+    ];
+    spans.extend(diff_spans);
+    Line::from(spans)
 }
 
 /// L2 of a Project-view workspace's `PaneDotsRow` block (bora-79l F2,
@@ -1628,26 +1655,33 @@ fn pane_dots_dots_line(dots: &[(&'static str, Style)], width: u16) -> Line<'stat
 }
 
 /// Live glyph + style for one `PaneDotsRow` l2 dot (bora-79l F2, "the glyph
-/// convergence itself is F2's leaf" — `capture::alvo_fixture`'s doc). A
-/// STATIC bullet per pane state, never `state_dot`'s animated sand-timer
-/// for the idle-unseen case: the design's "esperando você" dot reads as a
-/// steady yellow `●`, not a busy hourglass, so it is never mistaken for
-/// ongoing work the way `Working`'s spinner is. `Working` and `Blocked`
-/// reuse the SAME shared glyph sets `state_dot`/`agent_icon` already use
-/// elsewhere (`super::spinner_frame`, `blocked_glyph`'s dots/symbols
-/// preference) so this stays in lockstep with every other spinner/falha
-/// indicator in the app, rather than a second convention drifting from
-/// theirs.
+/// convergence itself is F2's leaf" — `capture::alvo_fixture`'s doc). T2
+/// (bora-79l) closes the convergence: the design's five "estados da
+/// bolinha", one hue per meaning (R1), mapped onto `AgentState` + `seen` by
+/// each state's own gloss in the anatomy's "Os estados da bolinha do
+/// painel" block — with every ALVO_CAPTURE text row preserved byte for
+/// byte (◆ stays ◆, ● stays ●; only hues/bold move):
 ///
-/// `AgentState` (`detect::mod.rs`) plus `seen` gives exactly 5 distinguishable
-/// combinations, matching the design's "5 estados da 0.45.6": `Working`
-/// (girando), `Idle`+unseen (amarela, esperando você), `Idle`+seen (parado),
-/// `Blocked` (vermelho, falha), `Unknown` (parado, plain shell — reads
-/// identically to `Idle`+seen, both ○). The design names a further "verde
-/// respondeu" state; `PaneDetail` carries only `state`+`seen` (no separate
-/// "just finished vs. asking a question" signal), so today's model cannot
-/// distinguish it from `Idle`+unseen — adding that distinction needs new
-/// detection, out of this leaf's scope (render-only).
+/// - `Working` — "trabalhando" — the shared Braille spinner
+///   (`super::spinner_frame`), overlay1+BOLD per the alvo mock's `.spin.o1.b`
+///   (cinza, R1: the spinner is plumbing, not a state hue).
+/// - `Blocked`+unseen — "esperando VOCÊ · agent parou pra perguntar" — ●
+///   amarelo: `Blocked` is literally "needs human input and is blocked on a
+///   response", and unseen means the question has not even been read yet.
+/// - `Idle`+unseen — "respondeu / pronto · terminou, vem ler" — ● verde:
+///   `Idle` is "agent finished" and unseen is "vem ler".
+/// - `Blocked`+seen — "falhou" — the shared `blocked_glyph` (the repo's
+///   falha glyph, dots/symbols preference) in red BOLD, exactly the state
+///   `capture::alvo_fixture`'s "main" (Blocked+seen) pins as ALVO row 05's
+///   `◆ falha real`.
+/// - `Idle`+seen / `Unknown` — "parado" — hollow ○ overlay0, plain: a
+///   finished-and-read agent and a plain shell both read as quiet.
+///
+/// The bullets are STATIC, never `state_dot`'s animated sand-timer: a
+/// steady ● is never mistaken for ongoing work the way `Working`'s spinner
+/// is. `Working`/falha reuse the SAME shared glyph sets `state_dot`/
+/// `agent_icon` use elsewhere (`super::spinner_frame`, `blocked_glyph`)
+/// rather than a second convention drifting from theirs.
 fn pane_dots_dot_glyph(
     state: AgentState,
     seen: bool,
@@ -1656,13 +1690,23 @@ fn pane_dots_dot_glyph(
     p: &Palette,
 ) -> (&'static str, Style) {
     match (state, seen) {
-        (AgentState::Working, _) => (super::spinner_frame(tick), Style::default().fg(p.overlay0)),
-        (AgentState::Idle, false) => ("●", Style::default().fg(p.yellow)),
-        (AgentState::Idle, true) => ("○", Style::default().fg(p.overlay0)),
-        (AgentState::Blocked, _) => (
+        (AgentState::Working, _) => (
+            super::spinner_frame(tick),
+            Style::default().fg(p.overlay1).add_modifier(Modifier::BOLD),
+        ),
+        (AgentState::Blocked, false) => (
+            "●",
+            Style::default().fg(p.yellow).add_modifier(Modifier::BOLD),
+        ),
+        (AgentState::Idle, false) => (
+            "●",
+            Style::default().fg(p.green).add_modifier(Modifier::BOLD),
+        ),
+        (AgentState::Blocked, true) => (
             blocked_glyph(indicator_style),
             Style::default().fg(p.red).add_modifier(Modifier::BOLD),
         ),
+        (AgentState::Idle, true) => ("○", Style::default().fg(p.overlay0)),
         (AgentState::Unknown, _) => ("○", Style::default().fg(p.overlay0)),
     }
 }
@@ -3154,6 +3198,11 @@ fn render_workspace_list(
     // printed none). Indented child rows consult this so they never repeat
     // a branch the header directly above them already shows.
     let mut parent_branch: Option<String> = None;
+    // The `parts.diff` switch of the most recently visited `SectionRow`
+    // (true = the pre-model default, matching `section_model_flags`'s
+    // no-layout fallback). The paired `PaneDotsRow` reads it so l1's diff
+    // slot and the header's cluster obey ONE flag, never two derivations.
+    let mut section_show_diff = true;
 
     for (entry_idx, entry) in entries.iter().enumerate().skip(scroll) {
         let needed = entry_row_height(entry, &entries, entry_idx, app.sidebar_project.row_gap);
@@ -3586,6 +3635,14 @@ fn render_workspace_list(
                 show_diff,
                 ..
             } => {
+                // The section's `parts.diff` switch rides along to the
+                // paired `PaneDotsRow` below (T2): l1's `+N −M` slot obeys
+                // the SAME flag the header's cluster does, tracked here —
+                // not re-derived — so the two rows of one section can
+                // never disagree about whether the diff part is on.
+                // Tracked even when the header itself is hidden: the
+                // switch is a PART, independent of `header_on`.
+                section_show_diff = *show_diff;
                 // T3 (bora-79l): the header line renders only when the
                 // model's switch is ON and the same-branch exception has
                 // not hidden it. A hidden header still OWNS its row
@@ -3677,11 +3734,18 @@ fn render_workspace_list(
                     }
                 }
                 if let Some(ws) = app.workspaces.get(*ws_idx) {
-                    // L1: the workspace name, no state glyph (bora-79l F2 —
-                    // `pane_dots_name_line`'s doc, ALVO_CAPTURE rows 04/28).
+                    // L1: the workspace name + the section's diff part
+                    // (bora-79l F2/T2 — `pane_dots_name_line`'s doc,
+                    // ALVO_CAPTURE rows 04/28 and the "nome cinza claro +
+                    // diff" mock row). No state glyph ever lands here.
                     if row_y < list_bottom {
+                        let diff = if section_show_diff {
+                            workspace_diff_counts(ws)
+                        } else {
+                            None
+                        };
                         frame.render_widget(
-                            Paragraph::new(pane_dots_name_line(name, p, body.width)),
+                            Paragraph::new(pane_dots_name_line(name, diff, p, body.width)),
                             Rect::new(body.x, row_y, body.width, 1),
                         );
                         if show_active_marker {
@@ -9198,7 +9262,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
     #[test]
     fn pane_dots_name_line_never_contains_a_repo_name() {
         let p = Palette::catppuccin();
-        let text = line_text(&pane_dots_name_line("agent-x", &p, 40));
+        let text = line_text(&pane_dots_name_line("agent-x", None, &p, 40));
 
         assert!(text.contains("agent-x"));
         assert!(!text.contains("cnb_landing_page"));
@@ -9211,7 +9275,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
         // colors it `overlay1` (the same as `⎇`), and never draws a state
         // glyph — every pane's state is l2's payload.
         let p = Palette::catppuccin();
-        let line = pane_dots_name_line("main", &p, 40);
+        let line = pane_dots_name_line("main", None, &p, 40);
         let text = line_text(&line);
         assert_eq!(
             text.find('m'),
@@ -9417,38 +9481,63 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
 
     #[test]
     fn pane_dots_dot_glyph_covers_every_reachable_agent_state() {
-        // Gate G1 (bora-79l.3): the design names "5 estados da 0.45.6"
-        // (girando/esperando você/respondeu/falha/parado); `AgentState`
-        // (`detect::mod.rs`) + `seen` gives exactly 5 distinguishable
-        // combinations, and `pane_dots_dot_glyph`'s own doc explains why
-        // "respondeu" (green) is not one of them today — this pins the 4
-        // visually distinct outputs the current model CAN produce, plus
-        // the fifth combination (`Unknown`) reading identically to
-        // `Idle`+seen, exactly as `capture::alvo_fixture`'s "scratch"
-        // workspace (plain shell) demonstrates.
+        // Gate G1 (bora-79l.3) named the design's "5 estados da 0.45.6";
+        // T2 (bora-79l) closed the convergence by splitting `Blocked` on
+        // `seen` — attribution, same five combos:
+        //
+        //   before  Idle+unseen → ● yellow ("esperando você"); no green anywhere
+        //   after   Idle+unseen → ● GREEN ("respondeu/pronto · terminou, vem
+        //           ler"), Blocked+unseen → ● yellow ("esperando VOCÊ · agent
+        //           parou pra perguntar"), Blocked+seen keeps the capture's
+        //           `◆ falha real` (ALVO row 05's own combo), spinner moves to
+        //           overlay1+BOLD (the alvo mock's `.spin.o1.b`).
+        //
+        // Every ALVO_CAPTURE text row survives byte for byte (◆ stays ◆,
+        // ● stays ●); only hues/bold move. Fica vermelho se qualquer estado
+        // trocar de hue (R1: um significado por cor) ou o spinner parar de
+        // usar o frame compartilhado.
         let p = Palette::catppuccin();
         let dots = crate::config::StatusIndicatorStyle::Dots;
 
         let (glyph, style) = pane_dots_dot_glyph(AgentState::Working, true, 0, dots, &p);
         assert_eq!(glyph, "⠋", "Working animates the shared spinner: {glyph:?}");
-        assert_eq!(style.fg, Some(p.overlay0));
+        assert_eq!(
+            style.fg,
+            Some(p.overlay1),
+            "the spinner is R1 gray — overlay1, the alvo mock's .spin.o1.b"
+        );
+        assert!(style.add_modifier.contains(Modifier::BOLD));
+
+        let (glyph, style) = pane_dots_dot_glyph(AgentState::Blocked, false, 0, dots, &p);
+        assert_eq!(
+            glyph, "●",
+            "Blocked+unseen (\"esperando VOCÊ · agent parou pra perguntar\") is \
+             a STATIC yellow bullet, never an animated glyph: {glyph:?}"
+        );
+        assert_eq!(style.fg, Some(p.yellow), "R1: amarelo é só esperando VOCÊ");
+        assert!(style.add_modifier.contains(Modifier::BOLD));
 
         let (glyph, style) = pane_dots_dot_glyph(AgentState::Idle, false, 0, dots, &p);
         assert_eq!(
             glyph, "●",
-            "Idle+unseen (\"esperando você\") is a STATIC yellow bullet, \
-             never the animated sand-timer: {glyph:?}"
+            "Idle+unseen (\"respondeu / pronto · terminou, vem ler\") is a \
+             STATIC green bullet: {glyph:?}"
         );
-        assert_eq!(style.fg, Some(p.yellow));
+        assert_eq!(style.fg, Some(p.green), "R1: verde é só respondeu/pronto");
+        assert!(style.add_modifier.contains(Modifier::BOLD));
+
+        let (glyph, style) = pane_dots_dot_glyph(AgentState::Blocked, true, 0, dots, &p);
+        assert_eq!(glyph, "◆", "Blocked+seen (\"falha\") is red: {glyph:?}");
+        assert_eq!(style.fg, Some(p.red), "R1: vermelho é só falha real");
+        assert!(style.add_modifier.contains(Modifier::BOLD));
 
         let (glyph, style) = pane_dots_dot_glyph(AgentState::Idle, true, 0, dots, &p);
         assert_eq!(glyph, "○", "Idle+seen (\"parado\"): {glyph:?}");
         assert_eq!(style.fg, Some(p.overlay0));
-
-        let (glyph, style) = pane_dots_dot_glyph(AgentState::Blocked, true, 0, dots, &p);
-        assert_eq!(glyph, "◆", "Blocked (\"falha\") is red: {glyph:?}");
-        assert_eq!(style.fg, Some(p.red));
-        assert!(style.add_modifier.contains(Modifier::BOLD));
+        assert!(
+            !style.add_modifier.contains(Modifier::BOLD),
+            "parado is the quiet state — the alvo mock's plain .o0, no .b"
+        );
 
         let (glyph, style) = pane_dots_dot_glyph(AgentState::Unknown, true, 0, dots, &p);
         assert_eq!(
@@ -9504,6 +9593,246 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
                 "no row in Project view may draw the old pane-row connector: {text:?} at row {y}"
             );
         }
+    }
+
+    /// Common fixture for the T2 (bora-79l) end-to-end dot tests: one
+    /// Project-view workspace whose single root pane sits in the given
+    /// `(state, seen)`, already attached to a test terminal.
+    fn pane_dots_block_fixture(state: AgentState, seen: bool) -> AppState {
+        let mut app = AppState::test_new();
+        app.view_mode = crate::config::ViewMode::Project;
+        let mut ws = Workspace::test_new("alvo-ws");
+        ws.test_split(Direction::Vertical);
+        app.workspaces = vec![ws];
+        app.ensure_test_terminals();
+        let pane = app.workspaces[0].tabs[0].root_pane;
+        let terminal_id = app.workspaces[0].tabs[0].panes[&pane]
+            .attached_terminal_id
+            .clone();
+        let terminal = app.terminals.get_mut(&terminal_id).unwrap();
+        terminal.detected_agent = Some(Agent::Claude);
+        terminal.state = state;
+        app.workspaces[0].tabs[0].panes.get_mut(&pane).unwrap().seen = seen;
+        app
+    }
+
+    #[test]
+    fn pane_dots_spinner_frame_advances_between_animation_ticks() {
+        // P5 regression lock (T2 contract item 5): the pane dot SPINS while
+        // the agent works — the Project-view arm must keep consuming
+        // `app.spinner_tick` exactly like the other modes' arms do.
+        // Deterministic by construction: the SAME AppState re-rendered with
+        // only `spinner_tick` advanced, no wall clock anywhere. Fica vermelho
+        // se o braço parar de consumir o tick (a bolinha congelada da
+        // regressão P5) — os dois renders seriam byte-idênticos.
+        let mut app = pane_dots_block_fixture(AgentState::Working, true);
+        let area = Rect::new(0, 0, 30, 10);
+        let runtimes = crate::terminal::TerminalRuntimeRegistry::new();
+        let render_dot = |app: &AppState| -> String {
+            let mut terminal =
+                Terminal::new(TestBackend::new(area.width, area.height)).expect("test terminal");
+            terminal
+                .draw(|frame| render_workspace_list(app, &runtimes, frame, area, false))
+                .expect("workspace list should render");
+            let (_cards, _headers, project_rows) = compute_workspace_list_areas_all(app, area);
+            let hit = project_rows
+                .iter()
+                .find(|a| matches!(a.target, ProjectRowTarget::Pane { .. }))
+                .expect("one dot hit area for the single pane");
+            terminal.backend().buffer()[(hit.rect.x, hit.rect.y)]
+                .symbol()
+                .to_string()
+        };
+
+        app.spinner_tick = 0;
+        let frame_a = render_dot(&app);
+        // Two animation ticks (= 2 × SPINNER_TICK_STEP = 10) provably cross
+        // a glyph boundary of `spinner_frame`'s divisor 8; a single tick
+        // (5) can land inside the same glyph cell, which is why the
+        // deterministic form advances two.
+        app.spinner_tick += 2 * crate::app::SPINNER_TICK_STEP;
+        let frame_b = render_dot(&app);
+        assert_ne!(
+            frame_a, frame_b,
+            "fica vermelho se o spinner não girar entre ticks: {frame_a:?} == {frame_b:?}"
+        );
+        assert_ne!(frame_a, " ", "the dot cell holds a glyph, not blank space");
+    }
+
+    #[test]
+    fn pane_dots_name_stays_overlay1_and_undimmed_in_every_pane_state() {
+        // T2 contract item 1: "NUNCA esmaecido/dim — inclusive com painel
+        // parado (a parte importante não some)". Renders the real block
+        // under every reachable (state, seen) combo and pins the name
+        // cells' fg AND the absence of DIM on the RENDERED buffer — not on
+        // a hand-built Line. Fica vermelho se qualquer estado voltar a
+        // esmaecer o nome (o comportamento da linha única antiga) ou trocar
+        // a cor do nome por outra que não o overlay1 do rótulo de branch.
+        let p = Palette::catppuccin();
+        for (state, seen) in [
+            (AgentState::Working, true),
+            (AgentState::Blocked, false),
+            (AgentState::Blocked, true),
+            (AgentState::Idle, false),
+            (AgentState::Idle, true),
+            (AgentState::Unknown, true),
+        ] {
+            let app = pane_dots_block_fixture(state, seen);
+            let area = Rect::new(0, 0, 30, 10);
+            let runtimes = crate::terminal::TerminalRuntimeRegistry::new();
+            let mut terminal =
+                Terminal::new(TestBackend::new(area.width, area.height)).expect("test terminal");
+            terminal
+                .draw(|frame| render_workspace_list(&app, &runtimes, frame, area, false))
+                .expect("workspace list should render");
+            let (_cards, _headers, project_rows) = compute_workspace_list_areas_all(&app, area);
+            let hit = project_rows
+                .iter()
+                .find(|a| matches!(a.target, ProjectRowTarget::Pane { .. }))
+                .expect("one dot hit area for the single pane");
+            let l1_y = hit.rect.y.saturating_sub(1);
+
+            let buffer = terminal.backend().buffer();
+            let l1 = row_text(buffer, l1_y, area.width);
+            let name_col = l1
+                .find(|c: char| !c.is_whitespace())
+                .unwrap_or_else(|| panic!("l1 must carry the name: {l1:?}"));
+            let name_len = "alvo-ws".len();
+            for x in name_col..name_col + name_len {
+                let cell = &buffer[(x as u16, l1_y)];
+                assert_eq!(
+                    cell.fg, p.overlay1,
+                    "fica vermelho se o nome deixar de ser overlay1 em \
+                     {state:?}+seen={seen} (col {x}): {l1:?}"
+                );
+                assert!(
+                    !cell.modifier.contains(Modifier::DIM),
+                    "fica vermelho se o nome esmaecer em {state:?}+seen={seen}: {l1:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn pane_dots_dots_start_at_the_rendered_name_column() {
+        // T2 contract item 2: as bolinhas ficam na MESMA coluna do nome
+        // (col 3), na l2 — anchored against the RENDERED buffer, not
+        // against re-derived arithmetic that could drift the same way
+        // twice: the first non-blank column of l2 must be EXACTLY the
+        // first non-blank column of l1, and the dot hit-rect must land on
+        // that same column. Fica vermelho se as bolinhas deslocarem da
+        // coluna do nome (ex.: ancorarem na largura renderizada do nome ou
+        // no canto direito da linha).
+        let app = pane_dots_block_fixture(AgentState::Blocked, true);
+        let area = Rect::new(0, 0, 30, 10);
+        let runtimes = crate::terminal::TerminalRuntimeRegistry::new();
+        let mut terminal =
+            Terminal::new(TestBackend::new(area.width, area.height)).expect("test terminal");
+        terminal
+            .draw(|frame| render_workspace_list(&app, &runtimes, frame, area, false))
+            .expect("workspace list should render");
+        let (_cards, _headers, project_rows) = compute_workspace_list_areas_all(&app, area);
+        let hit = project_rows
+            .iter()
+            .find(|a| matches!(a.target, ProjectRowTarget::Pane { .. }))
+            .expect("one dot hit area for the single pane");
+
+        let buffer = terminal.backend().buffer();
+        let l1 = row_text(buffer, hit.rect.y.saturating_sub(1), area.width);
+        let l2 = row_text(buffer, hit.rect.y, area.width);
+        let name_col = l1
+            .find(|c: char| !c.is_whitespace())
+            .expect("l1 carries the name");
+        let dot_col = l2
+            .find(|c: char| !c.is_whitespace())
+            .expect("l2 carries the dot glyph");
+        assert_eq!(
+            dot_col, name_col,
+            "fica vermelho se a bolinha sair da coluna do nome: l1 {l1:?} vs l2 {l2:?}"
+        );
+        assert_eq!(
+            hit.rect.x, dot_col as u16,
+            "the hit-rect lands on that same rendered column: {l2:?}"
+        );
+    }
+
+    #[test]
+    fn pane_dots_name_line_carries_the_diff_beside_the_name() {
+        // T2 contract item 1: o diff `+916 −2` ao lado do nome na l1, com
+        // U+2212 MINUS SIGN (nunca hyphen ASCII), em cinza overlay1 (R1:
+        // diff é plumbing). Two layers: the line builder itself, then the
+        // render arm end to end off `cached_change_set` — the same source
+        // the branch header's cluster reads. Fica vermelho se o diff
+        // sumir da l1, vier com hyphen ASCII, pintar fora do cinza, ou o
+        // braço parar de passar o diff pro builder.
+        let p = Palette::catppuccin();
+        let line = pane_dots_name_line("hotfix", Some((916, 2)), &p, 40);
+        let text = line_text(&line);
+        assert!(
+            text.contains('+') && text.contains('\u{2212}'),
+            "the diff uses U+2212 MINUS SIGN, byte for byte `+916 −2`: {text:?}"
+        );
+        assert!(
+            text.contains("+916 −2"),
+            "the diff renders beside the name: {text:?}"
+        );
+        assert!(
+            !text.contains("-2"),
+            "fica vermelho se o menos vier como hyphen ASCII: {text:?}"
+        );
+        assert!(
+            text.find("hotfix") < text.find("+916"),
+            "the name comes first, the diff beside it: {text:?}"
+        );
+        let diff_span = line
+            .spans
+            .iter()
+            .find(|s| s.content.as_ref().starts_with("+916"))
+            .expect("diff span");
+        assert_eq!(
+            diff_span.style.fg,
+            Some(p.overlay1),
+            "R1: diff numbers stay gray: {diff_span:?}"
+        );
+
+        // End to end: the render arm computes the diff from the workspace's
+        // cached change set (gated by the section's `parts.diff`, default
+        // ON with no layout — `section_model_flags`).
+        let mut app = pane_dots_block_fixture(AgentState::Idle, true);
+        app.workspaces[0].cached_change_set = Some(crate::workspace::WorkspaceChangeSet {
+            sections: vec![crate::workspace::ChangeSection {
+                kind: crate::workspace::ChangeSectionKind::Unstaged,
+                files: vec![crate::workspace::ChangedFile {
+                    path: "src/sidebar.rs".to_string(),
+                    added: Some(916),
+                    removed: Some(2),
+                    status: crate::workspace::ChangeStatus::Modified,
+                }],
+            }],
+            base_ref: None,
+        });
+        let area = Rect::new(0, 0, 40, 10);
+        let runtimes = crate::terminal::TerminalRuntimeRegistry::new();
+        let mut terminal =
+            Terminal::new(TestBackend::new(area.width, area.height)).expect("test terminal");
+        terminal
+            .draw(|frame| render_workspace_list(&app, &runtimes, frame, area, false))
+            .expect("workspace list should render");
+        let (_cards, _headers, project_rows) = compute_workspace_list_areas_all(&app, area);
+        let hit = project_rows
+            .iter()
+            .find(|a| matches!(a.target, ProjectRowTarget::Pane { .. }))
+            .expect("one dot hit area for the single pane");
+        let buffer = terminal.backend().buffer();
+        let l1 = row_text(buffer, hit.rect.y.saturating_sub(1), area.width);
+        assert!(
+            l1.contains("alvo-ws") && l1.contains("+916 −2"),
+            "fica vermelho se a l1 renderizada não carregar nome+diff: {l1:?}"
+        );
+        assert!(
+            l1.contains('\u{2212}'),
+            "the rendered minus is U+2212, not ASCII: {l1:?}"
+        );
     }
 
     #[test]
