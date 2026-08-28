@@ -132,7 +132,7 @@ dependencies = [
 
 [[package]]
 name = "bora"
-version = "0.45.22"
+version = "0.45.23"
 dependencies = [
  "base64",
  "bincode",

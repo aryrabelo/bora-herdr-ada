@@ -4873,6 +4873,13 @@ impl HeadlessServer {
         // paths cannot drift — the headless path shipped without it once
         // and projects written while the server ran never grouped.
         changed |= self.app.poll_projects_store();
+        // Every spinner animation (the Project view working dot among
+        // them) advances on this tick. It lives in the shared
+        // `App::tick_animation` helper so both tick paths advance it —
+        // the headless path shipped without it once and every spinner
+        // froze at one frame in server mode, the only mode most
+        // operators run.
+        changed |= self.app.tick_animation(now);
 
         if self
             .app
@@ -5448,6 +5455,7 @@ mod tests {
         // must be picked up by a later tick too.
         write("later");
         server.handle_scheduled_tasks_headless(Instant::now(), false);
+
         let projects = &server.app.state.projects.current().projects;
         assert!(projects.contains_key("later"));
         assert!(
@@ -5456,6 +5464,50 @@ mod tests {
         );
     }
 
+    #[test]
+    fn headless_tick_advances_spinner_and_rearms_animation() {
+        // The spinner tick lives in the shared `App::tick_animation`
+        // helper (same drift family as the projects poll above): before
+        // the helper, the headless path never advanced `spinner_tick`,
+        // so every spinner froze at one frame in server mode.
+        let mut server = test_headless_server();
+        let ws = crate::workspace::Workspace::test_new("spin");
+        let pane_id = ws.tabs[0].root_pane;
+        server.app.state.workspaces.push(ws);
+        let terminal_id = server.app.state.workspaces[0]
+            .terminal_id(pane_id)
+            .expect("pane terminal")
+            .clone();
+        let mut terminal =
+            crate::terminal::TerminalState::new(terminal_id, std::path::PathBuf::from("/tmp"));
+        terminal.state = crate::detect::AgentState::Working;
+        let terminal_id = server.app.state.workspaces[0]
+            .terminal_id(pane_id)
+            .expect("pane terminal")
+            .clone();
+        server.app.state.terminals.insert(terminal_id, terminal);
+
+        let now = Instant::now();
+        server.handle_scheduled_tasks_headless(now, false);
+        let deadline = server
+            .app
+            .next_animation_tick
+            .expect("the headless tick must arm the animation timer");
+
+        let tick_before = server.app.state.spinner_tick;
+        assert!(
+            server.handle_scheduled_tasks_headless(deadline, false),
+            "an animation tick must mark the frame dirty so clients see the spinner move"
+        );
+        assert_eq!(
+            server.app.state.spinner_tick,
+            tick_before.wrapping_add(crate::app::SPINNER_TICK_STEP)
+        );
+        assert!(
+            server.app.next_animation_tick.is_some(),
+            "the tick must re-arm so the spinner keeps animating"
+        );
+    }
     #[test]
     fn retained_render_plan_covers_each_render_path() {
         assert_eq!(

@@ -338,6 +338,33 @@ impl App {
         }
     }
 
+    /// ONE owner of the spinner-animation tick: advance `spinner_tick`
+    /// when the animation deadline is due, then re-arm the timer. This
+    /// helper is the ONLY owner of that decision and is called by both
+    /// tick paths (standalone `handle_scheduled_tasks` and the headless
+    /// server's `handle_scheduled_tasks_headless`), so the two cannot
+    /// drift — the headless path shipped without any animation handling
+    /// once and every spinner froze at one frame in server mode, the mode
+    /// most operators actually run (same drift family as
+    /// `poll_projects_store` above). Returns whether visible state
+    /// changed.
+    pub(crate) fn tick_animation(&mut self, now: Instant) -> bool {
+        let mut changed = false;
+        if self
+            .next_animation_tick
+            .is_some_and(|deadline| now >= deadline)
+        {
+            self.state.spinner_tick = self
+                .state
+                .spinner_tick
+                .wrapping_add(crate::app::SPINNER_TICK_STEP);
+            self.next_animation_tick = None;
+            changed = true;
+        }
+        self.sync_animation_timer(now);
+        changed
+    }
+
     pub(crate) fn handle_scheduled_tasks(&mut self, now: Instant, geometry_dirty: bool) -> bool {
         let mut changed = false;
         let mut resized = false;
@@ -404,17 +431,7 @@ impl App {
             changed = true;
         }
 
-        if self
-            .next_animation_tick
-            .is_some_and(|deadline| now >= deadline)
-        {
-            self.state.spinner_tick = self
-                .state
-                .spinner_tick
-                .wrapping_add(crate::app::SPINNER_TICK_STEP);
-            self.next_animation_tick = None;
-            changed = true;
-        }
+        changed |= self.tick_animation(now);
 
         // Self-heal: `idle_since` is an Instant and cannot survive
         // restore/handoff, so terminals restored in Idle state come back
