@@ -1113,7 +1113,11 @@ impl App {
         channels::read_joined_members(name, |pane| self.parse_pane_id(pane).is_some())
     }
 
-    fn find_channel_workspace(&self, name: &str) -> Option<usize> {
+    /// `pub(crate)`: also called from `app::input::chat`'s passive
+    /// delivery badge writers (`set_channel_unread_badge` /
+    /// `clear_channel_unread_badge`, ceo-bora#33) to resolve a channel
+    /// name to the workspace whose `metadata_tokens` carry its badge.
+    pub(crate) fn find_channel_workspace(&self, name: &str) -> Option<usize> {
         self.state
             .workspaces
             .iter()

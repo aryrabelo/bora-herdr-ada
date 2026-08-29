@@ -915,12 +915,6 @@
           "description": "Human display name in the channel chat view. `null` resolves to the OS username, then \"you\"."
         },
         {
-          "key": "ui.chat_open_on_mention",
-          "type": "boolean",
-          "default": "true",
-          "description": "Open the chat view automatically when an agent message addresses the human seat (`@<ui.chat_name>`) while the view is closed. Suppressed while the human is typing or mid-modal, falling back to the toast. Only meaningful when `chat_view` is on."
-        },
-        {
           "key": "ui.channel_burst_messages",
           "type": "number",
           "default": "8",

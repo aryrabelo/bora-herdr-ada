@@ -29,15 +29,28 @@ use super::overlays::rect_contains;
 /// the selection into view.
 const CHAT_PROMPT_ROWS: u16 = 8;
 
-/// How recently the human must have typed for the mention auto-open to
-/// stand down: never steal focus from someone mid-keystroke.
-const CHAT_AUTO_OPEN_TYPING_WINDOW: std::time::Duration = std::time::Duration::from_secs(3);
+/// Metadata-token key `App::notify_chat_to_human` patches onto a
+/// channel's own workspace to carry its unread badge + one-line dim
+/// preview — the same `Workspace::metadata_tokens` store `bora workspace
+/// report-metadata` patches, so the sidebar row renders it with zero
+/// extra wiring (see the "Metadata tokens" comment in
+/// `src/ui/sidebar.rs`).
+const CHAT_UNREAD_TOKEN: &str = "chat_unread";
 
-/// Modes the chat view may auto-open over. An explicit allowlist of the
-/// quiet browsing modes, so any mode added later defaults to "do not
-/// hijack" — onboarding, prompts, and modals are never interrupted.
-fn chat_auto_open_allowed(mode: Mode) -> bool {
-    matches!(mode, Mode::Terminal | Mode::Navigate)
+/// Collapses `text` to one line (channel messages can carry newlines) and
+/// caps its length, so one very long message can't grow the sidebar
+/// badge without bound. `from_name` is already the resolved sender —
+/// ceo-bora#31's identity chain (`App::pane_display_name`), applied once
+/// at `ChannelMessage` construction time in `app::api::channels` — never
+/// a raw pane id or glyph.
+fn chat_human_preview(from_name: &str, text: &str) -> String {
+    const MAX_CHARS: usize = 160;
+    let mut collapsed = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.chars().count() > MAX_CHARS {
+        collapsed = collapsed.chars().take(MAX_CHARS).collect::<String>();
+        collapsed.push('…');
+    }
+    format!("{from_name}: {collapsed}")
 }
 
 /// The `error.message` an API rejection carries, for the chat status line.
@@ -233,10 +246,13 @@ impl App {
             }
         }
         // The human is now looking at this room's transcript: catch its
-        // seen cursor up to what the cached summary reports as current, and
-        // clear its badge in-place so the change shows in this render
-        // rather than waiting for the next `channel.list` refresh.
+        // seen cursor up to what the cached summary reports as current,
+        // and clear both its `channel.list` badge (mark_chat_channel_seen)
+        // and its sidebar `chat_unread` badge (clear_channel_unread_badge)
+        // in-place, so the change shows in this render rather than
+        // waiting for the next refresh.
         self.state.mark_chat_channel_seen(&name);
+        self.clear_channel_unread_badge(&name);
         let members = self.dispatch_api_request(
             "tui.chat.channel_members",
             Method::ChannelMembers(ChannelMembersParams { name }),
@@ -618,17 +634,22 @@ impl App {
         }
     }
 
-    /// Surface for an agent message addressed to the human seat while the
-    /// chat view is closed: auto-open the view on the mentioning channel
-    /// when policy allows, else raise the existing NeedsAttention toast.
-    /// While the view is open the highlighted timeline line is the surface
-    /// — and toasts render below interactive overlays, so a toast would be
-    /// hidden there anyway. Reuses the existing surfaces; no new subsystem.
+    /// Passive delivery for a message addressed to the human seat
+    /// (ceo-bora#33, owner's decision 2026-08-29): a `to_human` arrival
+    /// never injects a line into whatever pane is on screen and never
+    /// switches the active workspace or view — it only updates the
+    /// channel's own badge/preview (`set_channel_unread_badge`) and, while
+    /// nothing else already shows it, raises the existing NeedsAttention
+    /// toast. Reading a message stays a deliberate `prefix+i` open. While
+    /// the human is already looking at exactly this room the message
+    /// lands live in the open timeline (`push_chat_message`), so no badge
+    /// and no toast are needed there.
     pub(crate) fn notify_chat_to_human(&mut self, channel: &str, message: &ChannelMessage) {
-        if !message.to_human || self.state.mode == Mode::Chat {
+        if !message.to_human || self.state.is_viewing_chat_channel(channel) {
             return;
         }
-        if self.try_auto_open_chat(channel) {
+        self.set_channel_unread_badge(channel, message);
+        if self.state.mode == Mode::Chat {
             return;
         }
         let previous_toast = self.state.toast.clone();
@@ -644,56 +665,52 @@ impl App {
         self.render_notify.notify_one();
     }
 
-    /// Auto-open policy for a mention: open the chat view on the channel
-    /// that mentioned the human, unless a suppression rule says the human
-    /// is busy — a keystroke inside the typing window, or a mode outside
-    /// the quiet allowlist. A failed open (channel vanished from the list)
-    /// also returns false, so the caller falls back to the toast.
-    fn try_auto_open_chat(&mut self, channel: &str) -> bool {
-        if !self.state.chat_open_on_mention
-            || !chat_auto_open_allowed(self.state.mode)
-            || self.human_last_input_at.elapsed() < CHAT_AUTO_OPEN_TYPING_WINDOW
-            || !self.open_chat_view_on(channel)
-        {
-            return false;
-        }
-        tracing::debug!(channel, "chat view auto-opened on a mention");
-        self.render_dirty.request_generic();
-        self.render_notify.notify_one();
-        true
-    }
-
-    /// Open the chat view selecting the named channel, reusing the plain
-    /// open path (state reset + list/history fetch). The list is refreshed
-    /// before the mode switch, so a channel missing from it returns false
-    /// with the mode untouched — no opening on an arbitrary channel. Only
-    /// the auto-open path calls this, and it records where to return.
-    fn open_chat_view_on(&mut self, channel: &str) -> bool {
-        if !self.state.chat_view {
-            return false;
-        }
-        self.refresh_chat_channels();
-        let needle = crate::persist::channels::normalize_channel_name(channel);
-        let Some(idx) = self.state.chat.channels.iter().position(|summary| {
-            crate::persist::channels::normalize_channel_name(&summary.name) == needle
-        }) else {
-            return false;
+    /// Writes the dim one-line preview + unread badge onto `channel`'s own
+    /// workspace row (`Workspace::metadata_tokens`), keyed by
+    /// `CHAT_UNREAD_TOKEN`. A channel whose workspace can't be found (e.g.
+    /// gone) is a silent no-op, same posture as every other channel
+    /// sidecar write. Cleared by `clear_channel_unread_badge` once the
+    /// human's seen cursor advances for this room.
+    fn set_channel_unread_badge(&mut self, channel: &str, message: &ChannelMessage) {
+        let normalized = crate::persist::channels::normalize_channel_name(channel);
+        let Some(ws_idx) = self.find_channel_workspace(&normalized) else {
+            return;
         };
-        let return_mode = self.state.mode;
-        self.state.open_chat_view();
-        self.state.chat.selected = idx;
-        self.state.chat.return_mode = Some(return_mode);
-        self.refresh_chat_channel_data();
-        true
+        let Some(ws) = self.state.workspaces.get_mut(ws_idx) else {
+            return;
+        };
+        let preview = chat_human_preview(&message.from_name, &message.text);
+        ws.metadata_tokens.patch(
+            std::collections::HashMap::from([(CHAT_UNREAD_TOKEN.to_string(), Some(preview))]),
+            None,
+            std::time::Instant::now(),
+        );
     }
 
-    /// Close the chat view. An auto-open recorded the mode it interrupted;
-    /// closing returns there. Manual opens keep today's `leave_modal`.
+    /// Removes the badge `set_channel_unread_badge` wrote. Called from
+    /// `refresh_chat_channel_data` — the same "human is now looking at
+    /// this room" moment that already advances `chat.seen` — so opening
+    /// the panel is the one and only way a badge clears.
+    fn clear_channel_unread_badge(&mut self, channel: &str) {
+        let normalized = crate::persist::channels::normalize_channel_name(channel);
+        let Some(ws_idx) = self.find_channel_workspace(&normalized) else {
+            return;
+        };
+        let Some(ws) = self.state.workspaces.get_mut(ws_idx) else {
+            return;
+        };
+        ws.metadata_tokens.patch(
+            std::collections::HashMap::from([(CHAT_UNREAD_TOKEN.to_string(), None)]),
+            None,
+            std::time::Instant::now(),
+        );
+    }
+
+    /// Close the chat view, unconditionally through the standard
+    /// leave-modal path — there is no other mode to return to now that
+    /// nothing auto-opens this view.
     fn close_chat_view(&mut self) {
-        match self.state.chat.return_mode.take() {
-            Some(mode) if mode != Mode::Chat => self.state.mode = mode,
-            _ => leave_modal(&mut self.state),
-        }
+        leave_modal(&mut self.state);
     }
 }
 
@@ -717,6 +734,21 @@ impl AppState {
             .channels
             .get(self.chat.selected)
             .map(|channel| channel.name.as_str())
+    }
+
+    /// Whether the human is currently looking at `channel`'s room in the
+    /// open chat view — the one case a `to_human` arrival needs neither a
+    /// badge nor a toast, since it already lands live in the open
+    /// timeline (`push_chat_message`). `channel` is the normalized
+    /// (hashless) name, matching every other channel-identity comparison
+    /// in this file.
+    pub(crate) fn is_viewing_chat_channel(&self, channel: &str) -> bool {
+        self.mode == Mode::Chat
+            && self
+                .selected_chat_channel_name()
+                .map(crate::persist::channels::normalize_channel_name)
+                .as_deref()
+                == Some(channel)
     }
 
     /// Advances the human's seen cursor for `name` to that room's current
@@ -1179,172 +1211,127 @@ mod tests {
         );
     }
 
-    // ---- mention auto-open (ui.chat_open_on_mention) ---------------------
-
-    /// The auto-open posture: flag on, view enabled and closed, human idle
-    /// (last keystroke outside the 3 s window).
-    fn auto_open_app() -> App {
+    #[test]
+    fn to_human_arrival_never_injects_a_line_or_switches_workspace() {
         let mut app = test_app();
-        app.state.chat_view = true;
-        app.state.chat_open_on_mention = true;
+        app.state.workspaces = vec![
+            crate::workspace::Workspace::test_new("work"),
+            crate::workspace::Workspace::test_new("channel-home"),
+        ];
+        app.state.workspaces[1].set_custom_name("#eng".into());
+        app.state.active = Some(0);
+        app.state.selected = 0;
         app.state.mode = Mode::Terminal;
-        app.human_last_input_at = std::time::Instant::now() - std::time::Duration::from_secs(4);
-        app
-    }
 
-    #[test]
-    fn mention_with_the_flag_off_toasts_exactly_as_before() {
-        let mut app = auto_open_app();
-        app.state.chat_open_on_mention = false;
-
-        app.notify_chat_to_human("design", &to_human_message("builder", "status?"));
-
-        assert_eq!(app.state.mode, Mode::Terminal, "flag off never opens");
-        let toast = app.state.toast.as_ref().expect("the toast is the fallback");
-        assert_eq!(toast.kind, crate::app::state::ToastKind::NeedsAttention);
-        assert_eq!(toast.title, "builder › you");
-        assert_eq!(toast.context, "#design");
-        assert!(toast.target.is_none());
-    }
-
-    #[test]
-    fn a_keystroke_0s_ago_suppresses_the_open_and_toasts() {
-        let mut app = auto_open_app();
-        app.human_last_input_at = std::time::Instant::now();
-
-        app.notify_chat_to_human("design", &to_human_message("builder", "status?"));
+        app.notify_chat_to_human("eng", &to_human_message("builder", "status?"));
 
         assert_eq!(
             app.state.mode,
             Mode::Terminal,
-            "never eat keystrokes from someone working in a pane"
+            "a to_human arrival never opens the chat overlay over the active session"
+        );
+        assert_eq!(
+            app.state.active,
+            Some(0),
+            "and never switches the active workspace to the channel's own"
+        );
+        assert_eq!(app.state.selected, 0, "sidebar selection is untouched");
+        assert!(
+            app.state.chat.messages.is_empty(),
+            "nothing is injected into any transcript while the view is closed"
+        );
+    }
+
+    #[test]
+    fn to_human_arrival_sets_the_channel_workspace_unread_badge() {
+        let mut app = test_app();
+        app.state.workspaces = vec![crate::workspace::Workspace::test_new("channel-home")];
+        app.state.workspaces[0].set_custom_name("#eng".into());
+        app.state.mode = Mode::Terminal;
+
+        app.notify_chat_to_human("eng", &to_human_message("builder", "ping the deploy"));
+
+        assert_eq!(
+            app.state.workspaces[0]
+                .metadata_tokens
+                .values()
+                .get("chat_unread"),
+            Some(&"builder: ping the deploy".to_string()),
+            "the badge carries a one-line preview with the resolved sender"
+        );
+    }
+
+    #[test]
+    fn a_very_long_or_multiline_message_still_previews_as_one_capped_line() {
+        let mut app = test_app();
+        app.state.workspaces = vec![crate::workspace::Workspace::test_new("channel-home")];
+        app.state.workspaces[0].set_custom_name("#eng".into());
+
+        let sprawling = format!("line one\nline two\n{}", "x".repeat(400));
+        app.notify_chat_to_human("eng", &to_human_message("builder", &sprawling));
+
+        let preview = app.state.workspaces[0]
+            .metadata_tokens
+            .values()
+            .get("chat_unread")
+            .cloned()
+            .expect("badge set");
+        assert!(
+            !preview.contains('\n'),
+            "the preview is one line: {preview:?}"
         );
         assert!(
-            app.state.toast.is_some(),
-            "suppression falls back to the toast"
+            preview.chars().count() < sprawling.chars().count(),
+            "a very long message is capped, not stored whole: {preview:?}"
         );
     }
 
     #[test]
-    fn busy_modes_are_never_hijacked() {
-        for mode in [
-            Mode::Onboarding,
-            Mode::ReleaseNotes,
-            Mode::ProductAnnouncement,
-            Mode::Prefix,
-            Mode::Copy,
-            Mode::RenameWorkspace,
-            Mode::RenameTab,
-            Mode::RenamePane,
-            Mode::SetWorkspaceGroup,
-            Mode::ProjectNameInput,
-            Mode::NewLinkedWorktree,
-            Mode::OpenExistingWorktree,
-            Mode::ConfirmRemoveWorktree,
-            Mode::Resize,
-            Mode::ConfirmClose,
-            Mode::ContextMenu,
-            Mode::Settings,
-            Mode::GlobalMenu,
-            Mode::KeybindHelp,
-            Mode::Navigator,
-        ] {
-            let mut app = auto_open_app();
-            app.state.mode = mode;
+    fn opening_the_panel_on_this_channel_needs_no_badge_or_toast() {
+        let mut app = test_app();
+        app.state.workspaces = vec![crate::workspace::Workspace::test_new("channel-home")];
+        app.state.workspaces[0].set_custom_name("#eng".into());
+        app.state.open_chat_view();
+        app.state.chat.channels = vec![channel("#eng")];
+        app.state.chat.selected = 0;
 
-            app.notify_chat_to_human("design", &to_human_message("builder", "hi"));
+        app.notify_chat_to_human("eng", &to_human_message("builder", "already looking"));
 
-            assert_eq!(app.state.mode, mode, "{mode:?} must not be hijacked");
-            assert!(app.state.toast.is_some(), "{mode:?} still gets the toast");
-        }
-    }
-
-    #[test]
-    fn broadcast_chatter_with_the_view_armed_still_does_nothing() {
-        let mut app = auto_open_app();
-
-        app.notify_chat_to_human("design", &message("plain broadcast"));
-
-        assert_eq!(app.state.mode, Mode::Terminal, "no open for chatter");
+        assert!(
+            app.state.workspaces[0].metadata_tokens.is_empty(),
+            "the human is already looking at this exact room: no badge"
+        );
         assert!(app.state.toast.is_none(), "and no toast either");
     }
 
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn a_mention_opens_the_view_on_the_mentioning_channel() {
-        let mut app = creating_app();
-        // Two channels, so "the right one" is distinguishable from row 0.
-        for name in ["eng", "ops"] {
-            app.open_new_channel_prompt();
-            for c in name.chars() {
-                press(&mut app, KeyCode::Char(c));
-            }
-            press(&mut app, KeyCode::Enter);
-        }
-        app.state.mode = Mode::Terminal; // view closed
-        app.human_last_input_at = std::time::Instant::now() - std::time::Duration::from_secs(4);
-
-        app.notify_chat_to_human("ops", &to_human_message("builder", "@arya status?"));
-
-        assert_eq!(app.state.mode, Mode::Chat, "idle human, flag on: it opens");
-        assert_eq!(
-            app.state.selected_chat_channel_name(),
-            Some("#ops"),
-            "on the channel that mentioned, not channel 0"
-        );
-        assert!(app.state.toast.is_none(), "no toast under the open view");
-        crate::app::api::test_support::shutdown_test_runtimes(&mut app);
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn closing_after_an_auto_open_returns_to_the_prior_mode() {
-        let mut app = creating_app();
-        app.open_new_channel_prompt();
-        for c in "eng".chars() {
-            press(&mut app, KeyCode::Char(c));
-        }
-        press(&mut app, KeyCode::Enter);
-        app.state.mode = Mode::Navigate; // where the human was
-        app.human_last_input_at = std::time::Instant::now() - std::time::Duration::from_secs(4);
-
-        app.notify_chat_to_human("eng", &to_human_message("builder", "@arya ready"));
-        assert_eq!(app.state.mode, Mode::Chat);
-
-        press(&mut app, KeyCode::Esc);
-
-        assert_eq!(app.state.mode, Mode::Navigate, "back where they were");
-
-        // A manual open records nothing, so close keeps today's behaviour:
-        // workspaces exist, so it lands on Terminal.
-        app.state.open_chat_view();
-        press(&mut app, KeyCode::Esc);
-        assert_eq!(app.state.mode, Mode::Terminal);
-        crate::app::api::test_support::shutdown_test_runtimes(&mut app);
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn a_mention_naming_a_channel_absent_from_the_list_toasts_instead() {
-        let mut app = creating_app();
-        app.open_new_channel_prompt();
-        for c in "eng".chars() {
-            press(&mut app, KeyCode::Char(c));
-        }
-        press(&mut app, KeyCode::Enter);
+    #[test]
+    fn opening_the_panel_clears_the_channel_badge() {
+        let mut app = test_app();
+        app.state.workspaces = vec![crate::workspace::Workspace::test_new("channel-home")];
+        app.state.workspaces[0].set_custom_name("#eng".into());
         app.state.mode = Mode::Terminal;
-        app.human_last_input_at = std::time::Instant::now() - std::time::Duration::from_secs(4);
 
-        app.notify_chat_to_human("ghost", &to_human_message("builder", "@arya hi"));
-
-        assert_eq!(
-            app.state.mode,
-            Mode::Terminal,
-            "no opening on an arbitrary channel"
+        app.notify_chat_to_human("eng", &to_human_message("builder", "ping"));
+        assert!(
+            !app.state.workspaces[0].metadata_tokens.is_empty(),
+            "arrival sets the badge"
         );
-        let toast = app.state.toast.as_ref().expect("toast fallback");
-        assert_eq!(toast.context, "#ghost");
-        crate::app::api::test_support::shutdown_test_runtimes(&mut app);
+
+        // Deliberate open (`prefix+i`): select the room and let the real
+        // production refresh path run, exactly as `select_chat_channel`
+        // does when the human clicks into the channel.
+        app.state.chat.channels = vec![channel_with_activity(
+            "#eng",
+            1,
+            Some("2026-08-29T00:00:00Z"),
+        )];
+        app.state.chat.selected = 0;
+        app.refresh_chat_channel_data();
+
+        assert!(
+            app.state.workspaces[0].metadata_tokens.is_empty(),
+            "a deliberate open clears the badge"
+        );
     }
 
     /// A chat app whose `channel.create` builds a workspace that survives the
