@@ -1854,14 +1854,16 @@ fn pane_dots_dots_line(dots: &[(&'static str, Style)], width: u16) -> Line<'stat
 /// each state's own gloss in the anatomy's "Os estados da bolinha do
 /// painel" block — with every ALVO_CAPTURE text row preserved byte for
 /// byte (◆ stays ◆, ● stays ●; only hues/bold move), save ONE attributed
-/// text change below (R5: the Working glyph itself, ⠋ → ⠁):
+/// text change below (2026-08-28, 2ª rodada: Working de volta ao braille):
 ///
-/// - `Working` — "trabalhando" — the `sand` set at the working cadence
-///   (`super::working_sand_frame`), overlay1+BOLD per the alvo mock's
+/// - `Working` — "trabalhando" — the shared braille spinner
+///   (`super::spinner_frame`), overlay1+BOLD per the alvo mock's
 ///   `.spin.o1.b` (cinza, R1: the spinner is plumbing, not a state hue).
-///   Owner, 2026-08-28: the shared braille spinner is one gray cell —
-///   "não está aparecendo sinal que está mudando"; sand's fill-and-drain
-///   has the mass to read as motion. `spinner_frame` stays everywhere else.
+///   Owner, 2026-08-28 (2ª rodada): a tentativa de rodar o set `sand` no
+///   Working foi lida como a animação de idle ("está com a animação de
+///   idle pra quando ele está trabalhando") — sand é o set ambiente, então
+///   o Working voltou pro braille para os dois estados não dividirem
+///   família de glifos.
 /// - `Blocked`+unseen — "parado, esperando VOCÊ · o agent parou pra
 ///   perguntar e a pergunta não foi lida" — ● VERMELHO: the owner's R5b
 ///   ruling (2026-08-28, "super importante... quando tivesse bloqueado ele
@@ -1896,7 +1898,7 @@ fn pane_dots_dot_glyph(
 ) -> (&'static str, Style) {
     match (state, seen) {
         (AgentState::Working, _) => (
-            super::working_sand_frame(tick),
+            super::spinner_frame(tick),
             Style::default().fg(p.overlay1).add_modifier(Modifier::BOLD),
         ),
         (AgentState::Blocked, false) => {
@@ -9933,17 +9935,18 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
         //           seen only tells ● (unanswered) from ◆ (read)
         //
         // Every ALVO_CAPTURE text row survives byte for byte (◆ stays ◆,
-        // ● stays ●) — R5's ⠋→⠁ is the one text move, attributed above.
+        // ● stays ●) — the 2026-08-28 2ª-rodada ⠁→⠋ (Working de volta ao
+        // braille) é o único movimento de texto, atribuído acima.
         // Fica vermelho se qualquer estado trocar de hue (R1: um
         // significado por cor) ou o spinner parar de animar o frame
-        // compartilhado (sand, na cadência do spinner_frame).
+        // compartilhado (braille, cadência do spinner_frame).
         let p = Palette::catppuccin();
         let dots = crate::config::StatusIndicatorStyle::Dots;
 
         let (glyph, style) = pane_dots_dot_glyph(AgentState::Working, true, 0, dots, &p);
         assert_eq!(
-            glyph, "⠁",
-            "Working animates the shared sand set: {glyph:?}"
+            glyph, "⠋",
+            "Working animates the shared braille set: {glyph:?}"
         );
         assert_eq!(
             style.fg,

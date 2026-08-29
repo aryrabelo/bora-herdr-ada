@@ -455,11 +455,11 @@ const FIXTURE_HEIGHT: u16 = 40;
 // its first block. The bottom pad came OUT of the band
 // (`project_band_top_pad`) and the blank row returned BELOW it as PLAIN
 // background (`project_view_trailing_gap`) — same 3-row rhythm, so every
-// text row here keeps its index; only row 03's FILL changed (surface0 →
-// default). The `⠋` Working dots become `⠁` in the same round: the owner
-// could not see the braille spinner move ("não está aparecendo sinal que
-// está mudando"), so the dots row animates the `sand` set at working
-// cadence (`working_sand_frame`).
+// default). The Working dots stay on the shared braille spinner (`⠋`):
+// a round on 2026-08-28 moved them to `sand` (`⠁`) for visibility, but the
+// owner then read the animation as the idle one ("está com a animação de
+// idle pra quando ele está trabalhando") — sand is the ambient set — so
+// Working went back to the braille set.
 
 const ALVO_CAPTURE: &str = r#"                                                 project
 
@@ -473,13 +473,13 @@ const ALVO_CAPTURE: &str = r#"                                                 p
 
  ⎇ feature/x
    feature-x
-   ⠁
+   ⠋
    research-feature-x
-   ⠁
+   ⠋
 
  ⎇ feature/y
    feature-y
-   ⠁
+   ⠋
 
  ⎇ cleanup
    cleanup
@@ -506,7 +506,7 @@ fn alvo_lines() -> Vec<&'static str> {
 
 /// Builds the fixture the alvo describes: 8 workspaces under the "Bora"
 /// project in alvo row order — main (◆ falha) + main-review (○) on `main`,
-/// feature-x + research-feature-x on `feature/x` (both ⠁), feature-y (⠁),
+/// feature-x + research-feature-x on `feature/x` (both ⠋), feature-y (⠋),
 /// cleanup (○), scratch (○, plain shell), and the linked hotfix worktree
 /// (↑2 ↓1, ● esperando VOCÊ). `AgentState` has no dedicated falha variant
 /// today, so falha is fixture-mapped to `Blocked` and waiting-on-you to
@@ -884,7 +884,7 @@ fn dot_class(dot: &str) -> Option<&'static str> {
         "◆" => Some("rd b"),
         "●" => Some("rd b"),
         "○" => Some("o0"),
-        "⠁" => Some("o1 b"),
+        "⠋" => Some("o1 b"),
         _ => None,
     }
 }

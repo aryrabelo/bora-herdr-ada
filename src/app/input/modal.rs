@@ -965,7 +965,10 @@ pub(super) fn apply_context_menu_action(
             | ContextMenuKind::GitWorkspace { ws_idx, .. },
             Some(item_str),
         ) if item_str.starts_with("Add to ") => {
-            let slug = item_str["Add to ".len()..].to_string();
+            let Some(slug) = slug_from_add_to_label(&item_str["Add to ".len()..]) else {
+                leave_modal(state);
+                return;
+            };
             if let Some(dir) = state
                 .workspaces
                 .get(ws_idx)
@@ -1072,7 +1075,10 @@ pub(super) fn apply_context_menu_action(
         (ContextMenuKind::ProjectMemberTargets { member_dir }, Some(item_str))
             if item_str.starts_with("Add to ") =>
         {
-            let slug = item_str["Add to ".len()..].to_string();
+            let Some(slug) = slug_from_add_to_label(&item_str["Add to ".len()..]) else {
+                leave_modal(state);
+                return;
+            };
             if let Err(err) = add_member(&slug, &member_dir) {
                 tracing::warn!(err = ?err, "project member_add failed");
             }
@@ -1817,7 +1823,10 @@ impl App {
                 | ContextMenuKind::GitWorkspace { ws_idx, .. },
                 Some(item_str),
             ) if item_str.starts_with("Add to ") => {
-                let slug = item_str["Add to ".len()..].to_string();
+                let Some(slug) = slug_from_add_to_label(&item_str["Add to ".len()..]) else {
+                    leave_modal(&mut self.state);
+                    return;
+                };
                 if let Some(dir) = self
                     .state
                     .workspaces
@@ -1945,7 +1954,10 @@ impl App {
             (ContextMenuKind::ProjectMemberTargets { member_dir }, Some(item_str))
                 if item_str.starts_with("Add to ") =>
             {
-                let slug = item_str["Add to ".len()..].to_string();
+                let Some(slug) = slug_from_add_to_label(&item_str["Add to ".len()..]) else {
+                    leave_modal(&mut self.state);
+                    return;
+                };
                 self.runtime_project_member_add(
                     "tui.project.member_add",
                     crate::api::schema::ProjectMemberAddParams {
@@ -2411,21 +2423,25 @@ impl ProjectAssemblyContext {
     }
 }
 
-/// Assembly-menu item labels for `ctx`. `known_project_slugs` is every slug
-/// currently in `projects.yml`, in the order `"Add to <slug>"` should offer
-/// them. Membership is the only thing gating item presence: `Remove` only
+/// Assembly-menu item labels for `ctx`. `known_projects` is every
+/// `(slug, display label)` currently in `projects.yml`, in the order the
+/// `Add to <label>` items should offer them. The label is the project's
+/// display `name`, falling back to the slug: the owner renamed a project's
+/// name to "wayfinder" and the menus kept saying "muiraquita" — the menu
+/// speaks the name the operator chose, the slug stays plumbing.
+/// Membership is the only thing gating item presence: `Remove` only
 /// when `ctx.current_project_slug` is `Some` (there is a project to remove
-/// from); `"Add to <slug>"` / `"New project…"` only when it is `None`.
+/// from); `Add to <label>` / `"New project…"` only when it is `None`.
 /// "New project…" never writes from here — every dispatch path routes it to
 /// the `ProjectNameInput` prompt instead.
 pub(crate) fn project_assembly_menu_items(
     ctx: &ProjectAssemblyContext,
-    known_project_slugs: &[String],
+    known_projects: &[(String, String)],
 ) -> Vec<String> {
     let mut items = Vec::new();
     if ctx.current_project_slug.is_none() {
-        for slug in known_project_slugs {
-            items.push(format!("Add to {slug}"));
+        for (_, label) in known_projects {
+            items.push(format!("Add to {label}"));
         }
         items.push("New project\u{2026}".to_string());
     } else {
@@ -2434,9 +2450,28 @@ pub(crate) fn project_assembly_menu_items(
     items
 }
 
-/// The assembly items a Project-view workspace row splices into its context
-/// menu: membership resolved against `projects.yml` read FRESH, never the
-/// cached `ProjectsStore`.
+/// The slug behind an `Add to {label}` item: match by display `name`
+/// first, then by bare slug (unnamed projects, and items built before a
+/// name existed). Reads `projects.yml` FRESH — the same source the
+/// emitter labeled from — so label and resolution cannot disagree about a
+/// project renamed between the menu opening and the click. `None` = the
+/// label names nothing that exists anymore; the dispatch sites close the
+/// menu without writing.
+pub(crate) fn slug_from_add_to_label(label: &str) -> Option<String> {
+    let file = projects::load_projects_file_fresh().ok()?;
+    if let Some((slug, _)) = file
+        .projects
+        .iter()
+        .find(|(_, project)| project.name.as_deref() == Some(label))
+    {
+        return Some(slug.clone());
+    }
+    file.projects.contains_key(label).then(|| label.to_string())
+}
+
+/// `project_assembly_menu_items` for one dir, resolving membership fresh.
+/// An unreadable file degrades to just "New project…" — the one item that
+/// needs nothing from disk.
 pub(crate) fn workspace_assembly_items(
     workspaces: &[crate::workspace::Workspace],
     ws_idx: usize,
@@ -2447,18 +2482,24 @@ pub(crate) fn workspace_assembly_items(
     assembly_items_for_dir(&ws.project_member_dir())
 }
 
-/// `project_assembly_menu_items` for one dir, resolving membership fresh.
-/// An unreadable file degrades to just "New project…" — the one item that
-/// needs nothing from disk.
+/// The assembly items a Project-view workspace row splices into its context
+/// menu: membership resolved against `projects.yml` read FRESH, never the
+/// cached `ProjectsStore`.
 pub(crate) fn assembly_items_for_dir(member_dir: &str) -> Vec<String> {
     let Ok(file) = projects::load_projects_file_fresh() else {
         return vec!["New project\u{2026}".to_string()];
     };
     let ctx = ProjectAssemblyContext::for_dir(&file, member_dir);
-    let slugs: Vec<String> = file.projects.keys().cloned().collect();
-    project_assembly_menu_items(&ctx, &slugs)
+    let known: Vec<(String, String)> = file
+        .projects
+        .iter()
+        .map(|(slug, project)| {
+            let label = project.name.clone().unwrap_or_else(|| slug.clone());
+            (slug.clone(), label)
+        })
+        .collect();
+    project_assembly_menu_items(&ctx, &known)
 }
-
 /// Why a file-level assembly write could not be applied.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg(test)]
@@ -3052,16 +3093,52 @@ mod project_assembly_menu_tests {
             member_dir: "/repo/other".into(),
             current_project_slug: None,
         };
-        let slugs = vec!["cnb".to_string()];
+        let known = vec![("cnb".to_string(), "cnb".to_string())];
 
-        let member_items = project_assembly_menu_items(&member, &slugs);
-        let unmatched_items = project_assembly_menu_items(&unmatched, &slugs);
+        let member_items = project_assembly_menu_items(&member, &known);
+        let unmatched_items = project_assembly_menu_items(&unmatched, &known);
 
         assert!(member_items.contains(&"Remove".to_string()));
         assert!(!unmatched_items.contains(&"Remove".to_string()));
 
         assert!(unmatched_items.contains(&"Add to cnb".to_string()));
         assert!(!member_items.contains(&"Add to cnb".to_string()));
+    }
+
+    #[test]
+    fn add_to_items_speak_the_display_name_and_resolve_back_to_the_slug() {
+        // The owner renamed a project whose slug stayed "muiraquita" to the
+        // display name "wayfinder"; the menu kept offering "Add to
+        // muiraquita" — the slug is plumbing, the label is the operator's
+        seed_project("muiraquita", &[]);
+        seed_project("bare", &[]);
+        projects::update_projects_file::<String>(move |file| {
+            file.projects.get_mut("muiraquita").expect("seeded").name =
+                Some("wayfinder".to_string());
+            Ok(())
+        })
+        .unwrap();
+
+        let items = assembly_items_for_dir("/repo/other");
+        assert!(
+            items.contains(&"Add to wayfinder".to_string()),
+            "named project is offered by display name: {items:?}"
+        );
+        assert!(
+            items.contains(&"Add to bare".to_string()),
+            "unnamed project falls back to its slug: {items:?}"
+        );
+        assert_eq!(
+            slug_from_add_to_label("wayfinder").as_deref(),
+            Some("muiraquita"),
+            "display name resolves back to the slug"
+        );
+        assert_eq!(
+            slug_from_add_to_label("bare").as_deref(),
+            Some("bare"),
+            "bare slug still resolves (unnamed projects)"
+        );
+        assert_eq!(slug_from_add_to_label("ghost"), None);
     }
 
     #[test]
