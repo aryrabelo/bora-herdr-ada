@@ -1481,7 +1481,7 @@ impl App {
                     "failed to append delivery-drop notice to channel history"
                 );
             } else {
-                self.state.push_chat_message(&channel, line);
+                self.push_chat_message(&channel, line);
             }
         }
     }

@@ -220,8 +220,16 @@ impl App {
         );
         if let Ok(parsed) = serde_json::from_str::<SuccessResponse>(&history) {
             if let ResponseResult::ChannelHistory { messages } = parsed.result {
+                // Resolve every `to_pane` this history references before the
+                // messages move into state — render never derives identity,
+                // only reads `chat.to_names`.
+                let to_panes: std::collections::HashSet<String> =
+                    messages.iter().filter_map(|m| m.to_pane.clone()).collect();
                 self.state.chat.messages = messages;
                 self.state.reset_chat_scroll_to_bottom();
+                for pane in to_panes {
+                    self.cache_chat_to_name(&pane);
+                }
             }
         }
         // The human is now looking at this room's transcript: catch its
@@ -238,6 +246,28 @@ impl App {
                 self.state.chat.members = members;
             }
         }
+    }
+
+    /// Resolves `pane` through `pane_display_name` (the #31 identity chain)
+    /// and caches the result in `chat.to_names`. No-op when the pane can't
+    /// be resolved — render's fallback is the raw pane id, never a bare
+    /// glyph, so an unresolved entry degrades gracefully.
+    fn cache_chat_to_name(&mut self, pane: &str) {
+        if let Some(display) = self.pane_display_name(pane) {
+            self.state.chat.to_names.insert(pane.to_string(), display);
+        }
+    }
+
+    /// Live-append entry point for every channel-send/system-notice path in
+    /// `app::api::channels` and `app::mod` — resolves the pushed message's
+    /// `to_pane` (if any) into `chat.to_names` before delegating to the
+    /// pure `AppState::push_chat_message`, which has no App/workspace
+    /// access and so cannot resolve identity itself.
+    pub(crate) fn push_chat_message(&mut self, channel: &str, message: ChannelMessage) {
+        if let Some(pane) = message.to_pane.clone() {
+            self.cache_chat_to_name(&pane);
+        }
+        self.state.push_chat_message(channel, message);
     }
 
     /// Select a channel row (mouse click / keyboard) and reload its data.
@@ -1786,8 +1816,8 @@ mod tests {
         let clamped = crate::ui::chat_display_line_count(&app.state.chat, area.width);
         assert_eq!(
             clamped,
-            crate::ui::MAX_MESSAGE_LINES + 1,
-            "precondition: the message is collapsed to the clamp + marker"
+            crate::ui::MAX_MESSAGE_LINES + 2,
+            "precondition: block header + the message collapsed to the clamp + marker"
         );
         (app, area)
     }
@@ -1797,7 +1827,7 @@ mod tests {
         let (mut app, area) = chat_app_with_overflowing_message();
 
         // Click the marker row (last display line of the message).
-        let marker_row = area.y + crate::ui::MAX_MESSAGE_LINES as u16;
+        let marker_row = area.y + 1 + crate::ui::MAX_MESSAGE_LINES as u16;
         app.handle_chat_click(area.x + 10, marker_row);
 
         assert_eq!(

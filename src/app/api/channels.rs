@@ -557,7 +557,7 @@ impl App {
         if let Err(err) = channels::append_message(&name, &message) {
             return encode_error(id, "channel_send_failed", err.to_string());
         }
-        self.state.push_chat_message(&name, message.clone());
+        self.push_chat_message(&name, message.clone());
         self.notify_chat_to_human(&name, &message);
 
         // Durable-record event, mirroring the QueuedPromptDelivered emission:
@@ -721,7 +721,7 @@ impl App {
         if let Err(err) = channels::append_message(&name, &message) {
             return encode_error(id, "channel_send_failed", err.to_string());
         }
-        self.state.push_chat_message(&name, message.clone());
+        self.push_chat_message(&name, message.clone());
         self.notify_chat_to_human(&name, &message);
         self.emit_event(crate::api::schema::EventEnvelope {
             event: crate::api::schema::EventKind::ChannelMessage,
@@ -826,7 +826,7 @@ impl App {
                 "failed to append channel burst notice"
             );
         } else {
-            self.state.push_chat_message(channel, line);
+            self.push_chat_message(channel, line);
         }
     }
 
@@ -1095,7 +1095,7 @@ impl App {
                 "failed to append channel protocol notice"
             );
         } else {
-            self.state.push_chat_message(channel, line);
+            self.push_chat_message(channel, line);
         }
     }
 
@@ -1356,7 +1356,12 @@ impl App {
     /// the previous version restated the first rung and omitted the second,
     /// which is exactly how the two drifted (see
     /// [`member_addressable_name`]).
-    fn pane_display_name(&self, public_pane_id: &str) -> Option<String> {
+    ///
+    /// `pub(crate)`: also the resolver for a message's `to_pane` in the
+    /// chat view's Messages column (`app::input::chat` caches its result
+    /// in `ChatViewState::to_names` at data-refresh time) — one identity
+    /// chain, never restated at that callsite either.
+    pub(crate) fn pane_display_name(&self, public_pane_id: &str) -> Option<String> {
         let (ws_idx, pane_id) = self.parse_pane_id(public_pane_id)?;
         let label = self.workspace_label(ws_idx);
         // A pane with no detected agent still has a workspace label, and

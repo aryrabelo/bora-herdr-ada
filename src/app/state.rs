@@ -2113,6 +2113,16 @@ pub struct ChatViewState {
     /// toggles it and requests the full repaint the reflow requires. Chat
     /// local view state, never sent to the server.
     pub expanded_message: Option<usize>,
+    /// Cache of public pane id -> addressable display name, for messages'
+    /// `to_pane` destinations. Populated at data-refresh time (channel
+    /// switch, live append) by delegating to `App::pane_display_name` —
+    /// the same #31 identity chain every other sender/addressee label
+    /// uses — so render stays a pure, cheap per-frame/per-line pass with
+    /// no identity re-derivation. Entries accumulate across channels and
+    /// are never evicted; a stale mapping is harmless (worst case a pane
+    /// that changed name shows its old one until next resolved), while
+    /// eviction would require tracking staleness for no render benefit.
+    pub to_names: std::collections::HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
