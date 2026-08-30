@@ -14,12 +14,22 @@ use super::{
     text::{display_width, middle_elide},
     widgets::{panel_contrast_fg, render_panel_shell},
 };
-use crate::api::schema::{AgentStatus, ChannelSenderKind};
+use crate::api::schema::AgentStatus;
 use crate::app::state::{AppState, ChatPrompt, ChatViewState, Palette};
 
 const TIME_WIDTH: usize = 5; // "HH:MM"
-const SENDER_WIDTH: usize = 14;
-const COLUMN_GAP: usize = 1;
+/// Left indent before the "HH:MM" column on a message's first line, and
+/// the same width every continuation/header-separator line reuses via
+/// `MESSAGE_GUTTER` so wrapped text always lines up under the timestamp.
+const MESSAGE_INDENT: usize = 2;
+/// Gap between "HH:MM" and whatever follows (destination token or text).
+const TIME_GAP: usize = 2;
+/// Full message-line gutter: 2-col indent + 5-col "HH:MM" + 2-col gap = 9.
+/// Replaces the old 21-col right-aligned sender column (`SENDER_WIDTH` +
+/// `TIME_WIDTH` + `COLUMN_GAP*2`) now that a message's sender lives once
+/// in its block's header line instead of repeating on every message row
+/// (ceo-bora#38: grouped-by-sender Messages column).
+const MESSAGE_GUTTER: usize = MESSAGE_INDENT + TIME_WIDTH + TIME_GAP;
 /// Bottom row of the channel column: click (or Ctrl+N) to create a channel.
 /// Same `+` vocabulary the sidebar uses for "new worktree" / "run command".
 pub(crate) const NEW_CHANNEL_LABEL: &str = "+ new channel";
@@ -507,22 +517,24 @@ fn short_time(ts: &str) -> &str {
     ts.split('T').nth(1).and_then(|t| t.get(0..5)).unwrap_or("")
 }
 
-/// Deterministic per-sender colour, the way every IRC client since the
-/// nineties has done it: same nick, same hue, every session, no state. Makes
-/// a wall of agent traffic scannable — you find your reviewer by colour
-/// before you finish reading the name. `to_human` and `Human` senders are
-/// styled by the caller and never reach this.
-fn sender_color(name: &str, p: &Palette) -> Color {
-    // FNV-1a: tiny, stable across runs and platforms, and unlike `DefaultHasher`
-    // it is specified — a hash that changed between releases would repaint
-    // everyone's nick on upgrade.
-    let mut hash: u32 = 0x811c_9dc5;
-    for byte in name.as_bytes() {
-        hash ^= u32::from(*byte);
-        hash = hash.wrapping_mul(0x0100_0193);
+/// Month abbreviations for [`short_date`] — no chrono dependency for a
+/// three-letter lookup.
+const MONTH_ABBR: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
+
+/// RFC 3339 date -> block-header date, e.g. `2026-08-29T...` -> `"29-Aug"`.
+/// Falls back to an empty string on an unexpected format, same contract as
+/// [`short_time`].
+fn short_date(ts: &str) -> String {
+    let mut parts = ts.split('T').next().unwrap_or("").splitn(3, '-');
+    let _year = parts.next();
+    let month = parts.next().and_then(|m| m.parse::<usize>().ok());
+    let day = parts.next();
+    match (day, month.filter(|m| (1..=12).contains(m))) {
+        (Some(day), Some(month)) => format!("{day}-{}", MONTH_ABBR[month - 1]),
+        _ => String::new(),
     }
-    let wheel = [p.mauve, p.green, p.yellow, p.blue, p.teal, p.peach, p.red];
-    wheel[hash as usize % wheel.len()]
 }
 
 /// Max timeline rows one message may occupy before it collapses. A
@@ -575,98 +587,137 @@ pub(crate) fn chat_message_index_at_line(
 /// Render, scroll math, and hit-testing all run through this one function,
 /// so the three can never disagree about where a message starts or how
 /// tall the timeline is.
+///
+/// Messages are grouped by consecutive `from_name` (chronology is never
+/// reordered — "consecutive" means adjacent in `chat.messages`). Each
+/// block opens with a `<label> · DD-Mon` header line, tagged with the
+/// block's first message index; a blank separator line precedes every
+/// header but the first, tagged with the *preceding* message's index so a
+/// collapsed message's marker and the separator above the next block both
+/// keep mapping to a real message for click-to-expand.
 fn chat_display_lines_indexed(
     chat: &ChatViewState,
     p: &Palette,
     width: u16,
 ) -> Vec<(usize, Line<'static>)> {
     let width = width.max(1) as usize;
-    let text_width = width
-        .saturating_sub(TIME_WIDTH + SENDER_WIDTH + COLUMN_GAP * 2)
-        .max(1);
+    let text_width = width.saturating_sub(MESSAGE_GUTTER).max(1);
+    let indent = " ".repeat(MESSAGE_GUTTER);
     let mut lines = Vec::new();
+    let mut prev_sender: Option<&str> = None;
     for (message_idx, message) in chat.messages.iter().enumerate() {
-        let time = short_time(&message.ts);
-        let mut sender = middle_elide(&message.from_name, SENDER_WIDTH);
-        if message.to_pane.is_some() {
-            sender = format!("›{sender}");
+        if prev_sender != Some(message.from_name.as_str()) {
+            if message_idx > 0 {
+                lines.push((message_idx - 1, Line::default()));
+            }
+            let header = format!("{} · {}", message.from_name, short_date(&message.ts));
+            lines.push((
+                message_idx,
+                Line::from(Span::styled(
+                    header,
+                    Style::default().fg(p.accent).add_modifier(Modifier::BOLD),
+                )),
+            ));
         }
-        let sender = format!("{sender:>width$}", width = SENDER_WIDTH);
-        let indent = " ".repeat(TIME_WIDTH + COLUMN_GAP + SENDER_WIDTH + COLUMN_GAP);
-        // The band restyles every span on the line, so the sender keeps
-        // only weight there — accent-on-accent would be invisible.
-        let band = message
-            .to_human
-            .then(|| Style::default().bg(p.accent).fg(p.panel_bg));
-        let sender_style = if message.to_human {
-            Style::default().add_modifier(Modifier::BOLD)
-        } else if message.from_kind == ChannelSenderKind::Human {
-            Style::default().fg(p.accent).add_modifier(Modifier::BOLD)
+        prev_sender = Some(message.from_name.as_str());
+
+        let time = short_time(&message.ts).to_string();
+        // Destination token: a short inverted badge for the human seat
+        // (bg-styled on its own span only — the line itself never carries
+        // a bg), or the resolved pane name in dim for a targeted pane.
+        // `to_names` is populated at data-refresh time (`App::pane_display_name`
+        // via `App::cache_chat_to_name`); an unresolved pane falls back to
+        // its raw id rather than a bare glyph.
+        let dest: Option<(String, Style)> = if message.to_human {
+            Some((
+                "→você".to_string(),
+                Style::default()
+                    .bg(p.accent)
+                    .fg(p.panel_bg)
+                    .add_modifier(Modifier::BOLD),
+            ))
         } else {
-            Style::default()
-                .fg(sender_color(&message.from_name, p))
-                .add_modifier(Modifier::BOLD)
+            message.to_pane.as_ref().map(|pane| {
+                let name = chat
+                    .to_names
+                    .get(pane)
+                    .cloned()
+                    .unwrap_or_else(|| pane.clone());
+                (format!("→{name}"), Style::default().fg(p.overlay0))
+            })
         };
-        let wrapped = wrap_width(&message.text, text_width);
+
+        // The destination token rides before the text on the first line:
+        // its columns come out of that line's wrap budget, or a full first
+        // line plus the token overflows the panel and the tail clips.
+        let token_cols = dest
+            .as_ref()
+            .map(|(token, _)| display_width(token) + 1)
+            .unwrap_or(0);
+        let first_width = text_width.saturating_sub(token_cols).max(1);
+        let wrapped = wrap_width(&message.text, first_width, text_width);
         let total = wrapped.len();
         let expanded = chat.expanded_message == Some(message_idx);
         let shown = if expanded { total } else { MAX_MESSAGE_LINES };
         for (wrapped_idx, chunk) in wrapped.into_iter().take(shown).enumerate() {
             let mut spans = Vec::new();
             if wrapped_idx == 0 {
-                // Literal separator, not `{COLUMN_GAP}` — that formats the
-                // usize and printed a stray "1" after every timestamp
-                // ("16:111" instead of "16:11 ").
-                spans.push(Span::raw(format!("{time}{}", " ".repeat(COLUMN_GAP))));
-                spans.push(Span::styled(sender.clone(), sender_style));
-                spans.push(Span::raw(" "));
+                spans.push(Span::raw(" ".repeat(MESSAGE_INDENT)));
+                spans.push(Span::styled(time.clone(), Style::default().fg(p.overlay0)));
+                spans.push(Span::raw(" ".repeat(TIME_GAP)));
+                if let Some((token, style)) = &dest {
+                    spans.push(Span::styled(token.clone(), *style));
+                    spans.push(Span::raw(" "));
+                }
             } else {
                 spans.push(Span::raw(indent.clone()));
             }
             spans.push(Span::raw(chunk));
-            let line = match band {
-                Some(style) => Line::from(spans).style(style),
-                None => Line::from(spans),
-            };
-            lines.push((message_idx, line));
+            lines.push((message_idx, Line::from(spans)));
         }
         // Real wrapped-line total minus what was shown — never estimated
         // from character count, which word boundaries routinely contradict.
         let hidden = total.saturating_sub(shown);
         if hidden > 0 {
             let spans = vec![
-                Span::raw(indent),
+                Span::raw(indent.clone()),
                 Span::styled(
                     format!("… +{hidden} lines"),
                     Style::default().fg(p.overlay0),
                 ),
             ];
-            let line = match band {
-                Some(style) => Line::from(spans).style(style),
-                None => Line::from(spans),
-            };
-            lines.push((message_idx, line));
+            lines.push((message_idx, Line::from(spans)));
         }
     }
     lines
 }
 
-/// Greedy word wrap on display width, breaking over-long words.
-fn wrap_width(text: &str, max_width: usize) -> Vec<String> {
+/// Greedy word wrap on display width, breaking over-long words. The first
+/// line wraps to `first_max`, every later line to `max_width`: an inline
+/// destination token rides before the text on the first line and must
+/// reserve its columns there, or the panel clips the line's tail.
+fn wrap_width(text: &str, first_max: usize, max_width: usize) -> Vec<String> {
+    let budget = |on_first: bool| {
+        if on_first {
+            first_max.max(1)
+        } else {
+            max_width.max(1)
+        }
+    };
     let mut lines = Vec::new();
     let mut current = String::new();
     let mut current_width = 0usize;
     for word in text.split(' ') {
         let word_width = display_width(word).max(1);
-        if !current.is_empty() && current_width + 1 + word_width > max_width {
+        if !current.is_empty() && current_width + 1 + word_width > budget(lines.is_empty()) {
             lines.push(std::mem::take(&mut current));
             current_width = 0;
         }
-        if current_width + word_width > max_width {
+        if current_width + word_width > budget(lines.is_empty()) {
             // Single word longer than the line: hard-break it.
             for ch in word.chars() {
                 let ch_width = display_width(&ch.to_string());
-                if current_width + ch_width > max_width {
+                if current_width + ch_width > budget(lines.is_empty()) {
                     lines.push(std::mem::take(&mut current));
                     current_width = 0;
                 }
@@ -707,12 +758,11 @@ mod tests {
         }
     }
 
-    fn human_message(name: &str, text: &str) -> crate::api::schema::ChannelMessage {
+    /// Like `agent_message`, with an arbitrary `from_name` — the block
+    /// grouping tests need to control sender identity directly.
+    fn named_message(name: &str, text: &str) -> crate::api::schema::ChannelMessage {
         crate::api::schema::ChannelMessage {
-            from_pane: String::new(),
             from_name: name.into(),
-            from_kind: ChannelSenderKind::Human,
-            to_human: false,
             ..agent_message(text)
         }
     }
@@ -724,122 +774,212 @@ mod tests {
         }
     }
 
-    /// The sender span of the first wrapped line of `message`.
-    fn sender_span<'a>(lines: &'a [Line<'static>], idx: usize) -> &'a Span<'static> {
-        &lines[idx].spans[1]
+    fn to_pane_message(pane: &str, text: &str) -> crate::api::schema::ChannelMessage {
+        crate::api::schema::ChannelMessage {
+            to_pane: Some(pane.into()),
+            ..agent_message(text)
+        }
+    }
+
+    /// Header lines are the only lines rendered as one bare span whose text
+    /// contains the `<label> · DD-Mon` separator — used to locate them
+    /// without depending on styling internals.
+    fn header_labels(lines: &[Line<'static>]) -> Vec<String> {
+        lines
+            .iter()
+            .filter(|line| line.spans.len() == 1 && line.spans[0].content.contains(" · "))
+            .map(|line| {
+                line.spans[0]
+                    .content
+                    .split(" · ")
+                    .next()
+                    .unwrap_or_default()
+                    .to_string()
+            })
+            .collect()
     }
 
     #[test]
-    fn timestamp_column_is_time_then_space_not_the_gap_constant() {
-        let mut state = AppState::test_new();
-        state.chat.messages = vec![agent_message("oi")];
-
-        let lines = chat_display_lines(&state.chat, &state.palette, 80);
-        let time = lines[0].spans[0].content.to_string();
-
-        // Regression: this span was `format!("{time}{COLUMN_GAP}")`, which
-        // formats the usize and rendered "15:311" on every single line.
-        assert_eq!(time, "15:31 ");
-        assert!(
-            !time.ends_with(&COLUMN_GAP.to_string()),
-            "the gap constant must never be printed as a digit"
-        );
-    }
-
-    #[test]
-    fn sender_colour_is_stable_and_spreads_across_the_wheel() {
-        let p = crate::app::state::Palette::catppuccin();
-
-        // Same nick, same hue — every session, or the view repaints itself
-        // between restarts and colour stops being a way to find anyone.
-        assert_eq!(sender_color("reviewer", &p), sender_color("reviewer", &p));
-
-        // And the wheel actually spreads: a handful of real pane names must
-        // not all collapse onto one colour, which would pass a stability
-        // test while being useless on screen.
-        let names = ["builder", "reviewer", "scout", "w40:p1", "w42:p1", "omp"];
-        let distinct: std::collections::HashSet<_> =
-            names.iter().map(|n| sender_color(n, &p)).collect();
-        assert!(
-            distinct.len() >= 3,
-            "6 senders collapsed onto {} colour(s)",
-            distinct.len()
-        );
-    }
-
-    #[test]
-    fn human_and_agent_senders_render_distinctly() {
+    fn consecutive_same_sender_messages_share_one_header() {
         let mut state = AppState::test_new();
         state.chat.messages = vec![
-            agent_message("deploying now"),
-            human_message("ary", "ship it"),
+            named_message("a", "one"),
+            named_message("b", "two"),
+            named_message("a", "three"),
+            named_message("a", "four"),
+            named_message("c", "five"),
         ];
 
         let lines = chat_display_lines(&state.chat, &state.palette, 80);
 
-        assert_eq!(lines.len(), 2, "both messages fit on one line each");
-        let agent = sender_span(&lines, 0).style;
-        let human = sender_span(&lines, 1).style;
-        assert_eq!(
-            agent.fg,
-            Some(sender_color("builder", &state.palette)),
-            "agent sender carries its own deterministic colour"
-        );
-        assert_ne!(
-            agent.fg,
-            Some(state.palette.accent),
-            "and it is never the accent, which is reserved for the human seat"
-        );
-        assert_eq!(
-            human.fg,
-            Some(state.palette.accent),
-            "human sender carries the accent color"
-        );
-        assert!(human.add_modifier.contains(Modifier::BOLD));
-        assert_ne!(agent, human, "human vs agent lines are visually distinct");
+        // a,b,a,a,c -> 4 blocks (a,b,a,c); the a,a run shares one header.
+        assert_eq!(header_labels(&lines), vec!["a", "b", "a", "c"]);
 
-        // The human's own line reads as them: the configured chat name is
-        // the sender label, right-aligned like every sender.
-        let label = sender_span(&lines, 1).content.to_string();
-        assert_eq!(label, format!("{:>width$}", "ary", width = SENDER_WIDTH));
-    }
-
-    #[test]
-    fn to_human_messages_get_the_highlight_band_on_every_wrapped_line() {
-        let mut state = AppState::test_new();
-        let long = "a to-human message long enough to wrap across several timeline rows so the band must cover continuation lines too";
-        state.chat.messages = vec![agent_message("chatter"), to_human_message(long)];
-
-        let lines = chat_display_lines(&state.chat, &state.palette, 60);
-
-        assert_eq!(lines[0].style.bg, None, "broadcast line has no band");
-        let band = Style::default()
-            .bg(state.palette.accent)
-            .fg(state.palette.panel_bg);
-        assert!(lines.len() > 3, "the long message wraps to multiple lines");
-        for line in &lines[1..] {
-            assert_eq!(line.style, band, "every wrapped line carries the band");
+        // Every header is styled accent+bold, uniformly — sender identity
+        // no longer carries a per-nick colour (that lived in the deleted
+        // `sender_color` hash-wheel).
+        for line in &lines {
+            if line.spans.len() == 1 && line.spans[0].content.contains(" · ") {
+                assert_eq!(line.spans[0].style.fg, Some(state.palette.accent));
+                assert!(line.spans[0].style.add_modifier.contains(Modifier::BOLD));
+            }
         }
-        // The band leaves the sender readable: bold survives, no accent fg.
-        let sender = sender_span(&lines, 1).style;
-        assert!(sender.add_modifier.contains(Modifier::BOLD));
-        assert_ne!(sender.fg, Some(state.palette.accent));
+
+        // One blank separator line precedes every header but the first:
+        // 4 blocks -> 3 separators.
+        let blanks = lines.iter().filter(|line| line.spans.is_empty()).count();
+        assert_eq!(
+            blanks, 3,
+            "a blank line separates every block but the first"
+        );
     }
 
     #[test]
-    fn to_human_flag_does_not_change_wrapped_line_count() {
-        // The scroll math shares this wrap path; styling must stay
-        // count-neutral or scroll offsets drift between renders.
+    fn header_carries_the_block_date() {
+        let mut state = AppState::test_new();
+        state.chat.messages = vec![agent_message("hi")];
+
+        let lines = chat_display_lines(&state.chat, &state.palette, 80);
+
+        assert_eq!(lines[0].spans[0].content, "builder · 15-Aug");
+    }
+
+    #[test]
+    fn first_line_carries_time_continuation_lines_carry_only_the_gutter_indent() {
+        let mut state = AppState::test_new();
+        let text = long_agent_text();
+        state.chat.messages = vec![agent_message(&text)];
+
+        // Narrow enough that the fixture wraps to several lines well under
+        // the clamp, so line 2 is a genuine continuation, not the marker.
+        let lines = chat_display_lines(&state.chat, &state.palette, 40);
+
+        // Line 0 is the block header; line 1 is the message's own first
+        // content line: 2-col indent, dim "HH:MM", 2-col gap, then text.
+        let first = &lines[1];
+        assert_eq!(first.spans[0].content, " ".repeat(MESSAGE_INDENT));
+        assert_eq!(first.spans[1].content, "15:31");
+        assert_eq!(first.spans[1].style.fg, Some(state.palette.overlay0));
+        assert_eq!(first.spans[2].content, " ".repeat(TIME_GAP));
+
+        // Line 2 is a wrapped continuation: only the 9-col gutter indent,
+        // no timestamp, then text — exactly two spans.
+        let cont = &lines[2];
+        assert_eq!(
+            cont.spans.len(),
+            2,
+            "continuation line is indent + text only"
+        );
+        assert_eq!(cont.spans[0].content, " ".repeat(MESSAGE_GUTTER));
+    }
+
+    #[test]
+    fn to_pane_destination_resolves_through_the_to_names_cache() {
+        let mut state = AppState::test_new();
+        state
+            .chat
+            .to_names
+            .insert("w1:p2".to_string(), "reviewer".to_string());
+        state.chat.messages = vec![to_pane_message("w1:p2", "ping")];
+
+        let lines = chat_display_lines(&state.chat, &state.palette, 80);
+        let content: String = lines[1]
+            .spans
+            .iter()
+            .map(|s| s.content.to_string())
+            .collect();
+
+        assert!(
+            content.contains("→reviewer"),
+            "resolves through the cache: {content}"
+        );
+        assert!(
+            !content.contains("w1:p2"),
+            "the raw pane id must not leak once resolved"
+        );
+        assert!(!content.contains('›'), "no bare glyph destination marker");
+    }
+
+    #[test]
+    fn unresolved_to_pane_falls_back_to_the_raw_pane_id() {
+        let mut state = AppState::test_new();
+        state.chat.messages = vec![to_pane_message("w9:p9", "ping")];
+
+        let lines = chat_display_lines(&state.chat, &state.palette, 80);
+        let content: String = lines[1]
+            .spans
+            .iter()
+            .map(|s| s.content.to_string())
+            .collect();
+
+        assert!(
+            content.contains("→w9:p9"),
+            "an unresolved pane id falls back to itself, never a bare glyph: {content}"
+        );
+    }
+
+    #[test]
+    fn to_human_badge_is_token_scoped_not_a_full_line_band() {
+        let mut state = AppState::test_new();
+        state.chat.messages = vec![to_human_message("ship it")];
+
+        let lines = chat_display_lines(&state.chat, &state.palette, 80);
+        let content_line = &lines[1];
+
+        // The line itself carries no background — only the badge span does.
+        assert_eq!(content_line.style.bg, None, "the line carries no bg");
+        let badge = content_line
+            .spans
+            .iter()
+            .find(|s| s.content.as_ref() == "→você")
+            .expect("destination badge span present");
+        assert_eq!(badge.style.bg, Some(state.palette.accent));
+        assert_eq!(badge.style.fg, Some(state.palette.panel_bg));
+        assert!(badge.style.add_modifier.contains(Modifier::BOLD));
+        for span in &content_line.spans {
+            if span.content.as_ref() != "→você" {
+                assert_eq!(span.style.bg, None, "only the badge span carries bg");
+            }
+        }
+    }
+
+    #[test]
+    fn destination_token_reserves_its_columns_on_the_first_line() {
+        // The token is content on the first line, so the wrap budget
+        // reserves its width there: a full first line plus the token must
+        // still fit the panel. The wrapped total may legitimately move —
+        // render and scroll math share this same wrap, so they stay in
+        // agreement either way.
         let mut state = AppState::test_new();
         let text = "same text rendered twice, once plain and once addressed to the human seat";
-        state.chat.messages = vec![agent_message(text)];
-        let plain = chat_display_line_count(&state.chat, 50);
-
         state.chat.messages = vec![to_human_message(text)];
-        let highlighted = chat_display_line_count(&state.chat, 50);
+        let width = 50u16;
+        let lines = chat_display_lines(&state.chat, &state.palette, width);
 
-        assert_eq!(plain, highlighted);
-        assert!(plain > 1);
+        for line in &lines {
+            let used: usize = line.spans.iter().map(|s| display_width(&s.content)).sum();
+            assert!(
+                used <= width as usize,
+                "line overflows the {width}-col panel: {used} cols"
+            );
+        }
+        // And the reservation is real: the same text wraps narrower on its
+        // first line when a token rides before it (line 0 is the header).
+        state.chat.messages = vec![agent_message(text)];
+        let plain_first = chat_display_lines(&state.chat, &state.palette, width)[1]
+            .spans
+            .last()
+            .map(|s| display_width(&s.content))
+            .unwrap_or(0);
+        let tokened_first = lines[1]
+            .spans
+            .last()
+            .map(|s| display_width(&s.content))
+            .unwrap_or(0);
+        assert!(
+            tokened_first < plain_first,
+            "first line must wrap narrower with a token ({tokened_first} vs {plain_first})"
+        );
     }
 
     /// ~2k chars of irregular words — long enough to wrap far past the
@@ -880,9 +1020,7 @@ mod tests {
 
     /// The display width a message body gets inside an 80-column timeline.
     fn text_width_at(width: usize) -> usize {
-        width
-            .saturating_sub(TIME_WIDTH + SENDER_WIDTH + COLUMN_GAP * 2)
-            .max(1)
+        width.saturating_sub(MESSAGE_GUTTER).max(1)
     }
 
     #[test]
@@ -895,23 +1033,23 @@ mod tests {
 
         // The truth the marker must report: the production wrap of the same
         // text at the same width the timeline used.
-        let total = wrap_width(&text, text_width_at(80)).len();
+        let total = wrap_width(&text, text_width_at(80), text_width_at(80)).len();
         assert!(
             total > MAX_MESSAGE_LINES + 5,
             "fixture must truly overflow the clamp (wraps to {total})"
         );
 
-        // Exactly the clamp in content lines, plus one marker line — no
-        // more, no less. Without the clamp this renders all {total} lines.
+        // Header line, then exactly the clamp in content lines, plus one
+        // marker line — no more, no less.
         assert_eq!(
             lines.len(),
-            MAX_MESSAGE_LINES + 1,
-            "clamped message = {MAX_MESSAGE_LINES} content lines + 1 marker"
+            1 + MAX_MESSAGE_LINES + 1,
+            "header + {MAX_MESSAGE_LINES} content lines + 1 marker"
         );
 
         // The marker sits on the last line and carries the REAL hidden
         // count: wrapped total minus shown, never chars-estimated.
-        let marker = lines[MAX_MESSAGE_LINES]
+        let marker = lines[1 + MAX_MESSAGE_LINES]
             .spans
             .iter()
             .map(|span| span.content.to_string())
@@ -922,13 +1060,12 @@ mod tests {
             "marker count is the true wrapped-line remainder"
         );
 
-        // The shown content is a prefix of the full wrap: the first line
-        // still carries the timestamp/sender header, so a collapsed message
+        // The shown content is a prefix of the full wrap: the first
+        // content line still carries the timestamp, so a collapsed message
         // remains attributable.
         assert_eq!(
-            lines[0].spans[0].content.to_string(),
-            "15:31 ",
-            "clamped first line keeps the timestamp column"
+            lines[1].spans[1].content, "15:31",
+            "clamped first content line keeps the timestamp"
         );
     }
 
@@ -940,12 +1077,12 @@ mod tests {
         state.chat.expanded_message = Some(0);
 
         let lines = chat_display_lines(&state.chat, &state.palette, 80);
-        let total = wrap_width(&text, text_width_at(80)).len();
+        let total = wrap_width(&text, text_width_at(80), text_width_at(80)).len();
 
         assert_eq!(
             lines.len(),
-            total,
-            "the expanded message renders every wrapped line and no marker"
+            1 + total,
+            "the header plus every wrapped line, no marker"
         );
     }
 
@@ -955,13 +1092,14 @@ mod tests {
         let text = long_agent_text();
         state.chat.messages = vec![agent_message("first"), agent_message(&text)];
 
-        // With the long message collapsed, display line 1 + MAX is its
-        // marker row; that row must hit-test to message 1, so clicking
-        // "… +N lines" expands the message it summarizes.
+        // Both messages are "builder" — one shared header at line 0. Line 1
+        // is "first"'s own content line; the long message's clamped content
+        // starts at line 2, so its marker (collapsed) sits at 2 + MAX.
         let width = 80u16;
         assert_eq!(chat_message_index_at_line(&state.chat, width, 0), Some(0));
+        assert_eq!(chat_message_index_at_line(&state.chat, width, 1), Some(0));
         assert_eq!(
-            chat_message_index_at_line(&state.chat, width, 1 + MAX_MESSAGE_LINES),
+            chat_message_index_at_line(&state.chat, width, 2 + MAX_MESSAGE_LINES),
             Some(1),
             "the marker row belongs to the message it collapses"
         );

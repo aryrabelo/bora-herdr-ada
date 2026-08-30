@@ -4331,7 +4331,10 @@ fn render_workspace_list(
                     .map(display_width)
                     .unwrap_or_default();
                 // Metadata tokens reported through `bora workspace
-                // report-metadata` (a channel's unread badge, a `$pr` chip).
+                // report-metadata` (external orchestrator badges, a `$pr`
+                // chip) or patched in-process (`chat_unread`: a channel's
+                // own passive-delivery badge + dim one-line preview,
+                // ceo-bora#33 — `app::input::chat::set_channel_unread_badge`).
                 //
                 // With the default `[ui.sidebar.spaces] rows` (state_icon,
                 // workspace, branch, git_status — none of them custom), only
@@ -7065,6 +7068,57 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
         assert!(
             rows.iter().any(|row| row.contains("3 msg")),
             "configured $unread token is drawn on the workspace row via the real config path: {rows:?}"
+        );
+    }
+
+    #[test]
+    fn channel_unread_arrival_renders_a_dim_one_line_preview_by_default() {
+        // No `[ui.sidebar.spaces] rows` configured for a custom token: the
+        // fallback path (sibling of `workspace_row_renders_configured_custom_token`
+        // above) draws every reported metadata value, so the passive-delivery
+        // badge (ceo-bora#33, `chat_unread` key —
+        // `app::input::chat::set_channel_unread_badge`) needs zero sidebar
+        // config to become visible.
+        let mut app = AppState::test_new();
+        let mut ws = Workspace::test_new("canal-ary");
+        ws.set_custom_name("#canal-ary".into());
+        ws.cached_git_branch = None;
+        ws.metadata_tokens.patch(
+            std::collections::HashMap::from([(
+                "chat_unread".to_string(),
+                Some("builder: status?".to_string()),
+            )]),
+            None,
+            std::time::Instant::now(),
+        );
+        app.workspaces = vec![ws];
+
+        let runtimes = crate::terminal::TerminalRuntimeRegistry::new();
+        let area = Rect::new(0, 0, 40, 8);
+        let mut terminal = Terminal::new(TestBackend::new(40, 8)).expect("test terminal");
+        terminal
+            .draw(|frame| render_workspace_list(&app, &runtimes, frame, area, false))
+            .expect("workspace list should render");
+        let rows: Vec<String> = (0..8)
+            .map(|row| {
+                (0..40)
+                    .map(|col| terminal.backend().buffer()[(col, row)].symbol().to_string())
+                    .collect()
+            })
+            .collect();
+
+        let needle = "builder: status?";
+        let row_idx = rows
+            .iter()
+            .position(|row| row.contains(needle))
+            .unwrap_or_else(|| panic!("resolved-sender preview not drawn by default: {rows:?}"));
+        let col = rows[row_idx].find(needle).expect("substring located") as u16;
+        assert_eq!(
+            terminal.backend().buffer()[(col, row_idx as u16)]
+                .style()
+                .fg,
+            Some(app.palette.overlay0),
+            "the preview draws in the palette's dim/muted tone, not the bright name colour"
         );
     }
 

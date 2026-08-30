@@ -2102,17 +2102,22 @@ pub struct ChatViewState {
     pub seen: std::collections::HashMap<String, u64>,
     /// Open modal sub-mode (new channel / add member), when any.
     pub prompt: Option<ChatPrompt>,
-    /// Mode to return to when the view closes, recorded when the view
-    /// auto-opened over that mode (a mention while the human was away).
-    /// Manual opens leave it `None` and close through the standard
-    /// leave-modal path.
-    pub return_mode: Option<Mode>,
     /// Index of the timeline message currently rendered expanded (unclamped).
     /// Lives here rather than in the render path because `render()` is pure:
     /// it can only read this, never derive or mutate it — the input layer
     /// toggles it and requests the full repaint the reflow requires. Chat
     /// local view state, never sent to the server.
     pub expanded_message: Option<usize>,
+    /// Cache of public pane id -> addressable display name, for messages'
+    /// `to_pane` destinations. Populated at data-refresh time (channel
+    /// switch, live append) by delegating to `App::pane_display_name` —
+    /// the same #31 identity chain every other sender/addressee label
+    /// uses — so render stays a pure, cheap per-frame/per-line pass with
+    /// no identity re-derivation. Entries accumulate across channels and
+    /// are never evicted; a stale mapping is harmless (worst case a pane
+    /// that changed name shows its old one until next resolved), while
+    /// eviction would require tracking staleness for no render benefit.
+    pub to_names: std::collections::HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2344,9 +2349,6 @@ pub struct AppState {
     /// Resolved human chat identity (`ui.chat_name`, else OS username, else
     /// "you"). One source of truth for the chat send path and the renderer.
     pub chat_name: String,
-    /// Whether a message addressing the human seat auto-opens the chat view
-    /// (`ui.chat_open_on_mention`). Only meaningful with `chat_view` on.
-    pub chat_open_on_mention: bool,
     /// `ui.channel_burst_messages` — see `channel_burst_window`.
     pub channel_burst_messages: u32,
     /// `ui.channel_burst_window_secs`, as a `Duration`. Together with
@@ -2886,7 +2888,6 @@ impl AppState {
             channel_group_name: "channels".to_string(),
             chat_view: false,
             chat_name: "you".to_string(),
-            chat_open_on_mention: true,
             channel_burst_messages: 8,
             channel_burst_window: std::time::Duration::from_secs(600),
             hide_tab_bar_when_single_tab: false,
