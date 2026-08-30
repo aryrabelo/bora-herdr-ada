@@ -830,6 +830,53 @@ impl App {
         }
     }
 
+    /// Announces a join-time autorename (ceo-bora#34) on the channel, in
+    /// the same `from_name: "bora"` / `from_pane: "system"` shape as the
+    /// burst and protocol notices: who joined, and the name they answer to
+    /// now.
+    ///
+    /// Silent when the joining pane's name did not collide, which is the
+    /// ordinary case — a notice on every join would be noise, and the
+    /// thing worth saying is precisely that `@base` no longer reaches this
+    /// pane. Called only from the branch that actually grew the roster, so
+    /// a repeated `channel.join` stays idempotent here too.
+    fn append_channel_autorename_notice(&mut self, channel: &str, ws_idx: usize, public_id: &str) {
+        let Some(member) = self
+            .channel_member_names(ws_idx)
+            .into_iter()
+            .find(|member| member.public_id == public_id)
+        else {
+            return;
+        };
+        if member.addressable == member.base {
+            return;
+        }
+        let line = ChannelMessage {
+            ts: now_rfc3339(),
+            seq: channels::next_seq(channel),
+            from_pane: "system".to_string(),
+            from_name: "bora".to_string(),
+            from_kind: ChannelSenderKind::Agent,
+            text: format!(
+                "{public_id} joined as @{} — the name @{} is shared, so address this pane by @{}",
+                member.addressable, member.base, member.addressable
+            ),
+            in_reply_to: None,
+            to_pane: None,
+            to_human: false,
+        };
+        if let Err(err) = channels::append_message(channel, &line) {
+            tracing::warn!(
+                channel = %channel,
+                pane = %public_id,
+                error = %err,
+                "failed to append channel autorename notice"
+            );
+        } else {
+            self.push_chat_message(channel, line);
+        }
+    }
+
     pub(super) fn handle_channel_history(
         &mut self,
         id: String,
@@ -940,6 +987,9 @@ impl App {
                 return encode_error(id, "channel_join_failed", err.to_string());
             }
             tracing::info!(channel = %name, pane = %public_id, "pane joined channel");
+            // Only on the call that actually added the pane: joining twice
+            // is idempotent, and so is the notice.
+            self.append_channel_autorename_notice(&name, ws_idx, &public_id);
         }
         self.send_channel_protocol(&name, ws_idx, &public_id);
         encode_success(
@@ -1275,6 +1325,66 @@ impl App {
         members
     }
 
+    /// Every agent-hosting member's addressable name, with collisions
+    /// resolved: a base name held by two or more members becomes
+    /// `{base}-1`, `{base}-2`, … by the member's position in
+    /// [`Self::channel_member_panes`]'s order (ceo-bora#34).
+    ///
+    /// The ordinal is DERIVED from that order, never stored, and that is
+    /// what makes it survive a restart: the order is the workspace's own
+    /// pane layout followed by the joined roster, and the roster is an
+    /// append-ordered file (`channels::write_joined_members`). Same join
+    /// order in, same names out, with nothing added to storage. Recording
+    /// the rename instead would need a second source of truth that
+    /// `channel.leave`, a pane close, and a workspace rename could each
+    /// leave stale.
+    ///
+    /// The rung chain in [`member_addressable_name`] is untouched: this is
+    /// a layer above it, so the workspace label still wins rung 0 and both
+    /// consumers below still read one identity.
+    fn channel_member_names(&self, ws_idx: usize) -> Vec<ChannelMemberName> {
+        let bases: Vec<(String, String)> = self
+            .channel_member_panes(ws_idx)
+            .into_iter()
+            .filter_map(|member| {
+                let info = self.agent_info(member.ws_idx, member.pane_id)?;
+                let base = member_addressable_name(
+                    self.workspace_label(member.ws_idx),
+                    &info,
+                    &member.public_id,
+                );
+                Some((member.public_id, base))
+            })
+            .collect();
+        // Case-insensitively, because that is how a nick matches: `omp`
+        // and `OMP` are one collision, not two unique names that `@omp`
+        // would then refuse to resolve.
+        let mut totals: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        for (_, base) in &bases {
+            *totals.entry(base.to_ascii_lowercase()).or_insert(0) += 1;
+        }
+        let mut ordinals: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
+        bases
+            .into_iter()
+            .map(|(public_id, base)| {
+                let key = base.to_ascii_lowercase();
+                let addressable = if totals.get(&key).copied().unwrap_or(0) < 2 {
+                    base.clone()
+                } else {
+                    let ordinal = ordinals.entry(key).or_insert(0);
+                    *ordinal += 1;
+                    format!("{base}-{ordinal}")
+                };
+                ChannelMemberName {
+                    public_id,
+                    base,
+                    addressable,
+                }
+            })
+            .collect()
+    }
+
     /// Every member pane of the channel, as a `channel.members` listing —
     /// who would receive a `channel.send`, and how they got there.
     fn channel_members(&self, ws_idx: usize, name: &str) -> Vec<ChannelMember> {
@@ -1290,17 +1400,17 @@ impl App {
             }
         };
         let cursors = channels::read_channel_cursors(name);
+        // ponytail: linear scan over tens of members, like the roster
+        // de-duplication above.
+        let names = self.channel_member_names(ws_idx);
         self.channel_member_panes(ws_idx)
             .into_iter()
             .map(|member| {
                 let agent = self.agent_info(member.ws_idx, member.pane_id);
-                let name = agent.as_ref().map(|info| {
-                    member_addressable_name(
-                        self.workspace_label(member.ws_idx),
-                        info,
-                        &member.public_id,
-                    )
-                });
+                let name = names
+                    .iter()
+                    .find(|named| named.public_id == member.public_id)
+                    .map(|named| named.addressable.clone());
                 let cursor = cursors
                     .iter()
                     .find(|entry| entry.pane == member.public_id)
@@ -1424,21 +1534,20 @@ impl App {
     /// `Unknown`.
     fn resolve_channel_nick(&self, ws_idx: usize, nick: &str) -> NickResolution {
         let mut matches: Vec<(String, String)> = Vec::new();
-        for member in self.channel_member_panes(ws_idx) {
-            let Some(info) = self.agent_info(member.ws_idx, member.pane_id) else {
-                continue;
-            };
-            let named = member_addressable_name(
-                self.workspace_label(member.ws_idx),
-                &info,
-                &member.public_id,
-            );
+        for member in self.channel_member_names(ws_idx) {
             let compact_id = compact_pane_id(&member.public_id);
+            // Both spellings match, and that is the anti-amplification
+            // guarantee of ceo-bora#30 surviving ceo-bora#34: the SUFFIXED
+            // name reaches exactly one pane, while the bare colliding base
+            // still matches every holder and so still lands in
+            // `Ambiguous` below. Dropping the base here would turn a
+            // refusal into `Unknown` — quieter, and wrong.
             let matched = member.public_id == nick
                 || compact_id.eq_ignore_ascii_case(nick)
-                || named.eq_ignore_ascii_case(nick);
+                || member.base.eq_ignore_ascii_case(nick)
+                || member.addressable.eq_ignore_ascii_case(nick);
             if matched {
-                matches.push((member.public_id, named));
+                matches.push((member.public_id, member.addressable));
             }
         }
         // The human seat collides with an agent of the same name exactly
@@ -1515,6 +1624,17 @@ struct ChannelMemberPane {
     pane_id: crate::layout::PaneId,
     public_id: String,
     source: ChannelMemberSource,
+}
+
+/// One agent-hosting member's two names: the `base` its rung chain mints
+/// and the `addressable` one a nick actually gets, which differ only when
+/// the base collided and [`App::channel_member_names`] suffixed it.
+/// Carrying both is what lets the resolver keep refusing a bare colliding
+/// base while resolving its suffixed forms.
+struct ChannelMemberName {
+    public_id: String,
+    base: String,
+    addressable: String,
 }
 
 /// Outcome of resolving a nick against a channel's member agents and the
@@ -3346,6 +3466,162 @@ mod tests {
             },
         );
         serde_json::from_str(&response).unwrap()
+    }
+
+    /// Join-time collision autorename (ceo-bora#34): two panes answering to
+    /// the same base name become `@rev-1`/`@rev-2`, the channel is told, the
+    /// suffixed names each reach exactly one pane, and the bare colliding
+    /// base still REFUSES rather than amplifying to both (ceo-bora#30).
+    #[tokio::test]
+    async fn colliding_joins_are_autorenamed_by_join_order() {
+        let _isolated = IsolatedDirs::new("autorename-join");
+        let mut app = test_app();
+        create_channel(&mut app, "eng");
+        let (first, _first_rx) = outside_agent_pane(&mut app, "rev");
+        let (second, _second_rx) = outside_agent_pane(&mut app, "rev");
+        skip_protocol("eng", &first);
+        skip_protocol("eng", &second);
+
+        assert_eq!(join(&mut app, "#eng", &first)["result"]["source"], "joined");
+        assert_eq!(
+            member_names(&mut app, "#eng"),
+            vec!["rev".to_string()],
+            "one holder of the base name is not a collision, so it keeps it"
+        );
+
+        assert_eq!(
+            join(&mut app, "#eng", &second)["result"]["source"],
+            "joined"
+        );
+        assert_eq!(
+            member_names(&mut app, "#eng"),
+            vec!["rev-1".to_string(), "rev-2".to_string()],
+            "the second join collides, so both holders take an ordinal"
+        );
+
+        // Contract 2: the channel is told who joined and how it ended up.
+        let notice = channels::read_tail("eng", 10)
+            .unwrap()
+            .into_iter()
+            .find(|message| message.from_pane == "system" && message.text.contains("rev-2"))
+            .expect("a colliding join must announce the rename");
+        assert_eq!(notice.from_name, "bora");
+        assert!(
+            notice.text.contains(&second),
+            "the notice names who joined: {}",
+            notice.text
+        );
+
+        // Contract 3, both halves. A suffixed nick is unique...
+        let sent = app.handle_channel_send(
+            "req-suffixed".into(),
+            ChannelSendParams {
+                name: "#eng".into(),
+                text: "ping".into(),
+                from_pane: None,
+                to: Some("rev-2".into()),
+                in_reply_to: None,
+                from_human: false,
+            },
+        );
+        let sent: serde_json::Value = serde_json::from_str(&sent).unwrap();
+        let deliveries = sent["result"]["deliveries"].as_array().unwrap();
+        assert_eq!(deliveries.len(), 1, "@rev-2 reaches exactly one pane");
+        assert_eq!(deliveries[0]["pane_id"], serde_json::json!(second));
+
+        // ...and the bare base still refuses, which is the anti-amplification
+        // guarantee autorename must not quietly retire.
+        let refused = app.handle_channel_send(
+            "req-bare".into(),
+            ChannelSendParams {
+                name: "#eng".into(),
+                text: "ping".into(),
+                from_pane: None,
+                to: Some("rev".into()),
+                in_reply_to: None,
+                from_human: false,
+            },
+        );
+        let refused: serde_json::Value = serde_json::from_str(&refused).unwrap();
+        assert_eq!(
+            refused["error"]["code"],
+            serde_json::json!("channel_nick_ambiguous"),
+            "{refused}"
+        );
+
+        super::super::test_support::shutdown_test_runtimes(&mut app);
+    }
+
+    /// The ordinal follows the PERSISTED join order, which is what makes it
+    /// survive a restart (ceo-bora#34): nothing is stored per rename, so the
+    /// roster file is the only thing the names can come from. Rewriting that
+    /// file with the opposite join history must swap the ordinals — an
+    /// implementation keying off pane id, or off a `HashMap`'s iteration
+    /// order, would not move.
+    #[tokio::test]
+    async fn autorename_ordinals_follow_the_persisted_join_order() {
+        let _isolated = IsolatedDirs::new("autorename-restart");
+        let mut app = test_app();
+        create_channel(&mut app, "eng");
+        let (first, _first_rx) = outside_agent_pane(&mut app, "rev");
+        let (second, _second_rx) = outside_agent_pane(&mut app, "rev");
+        skip_protocol("eng", &first);
+        skip_protocol("eng", &second);
+        join(&mut app, "#eng", &first);
+        join(&mut app, "#eng", &second);
+
+        assert_eq!(
+            channels::read_joined_members("eng", |_| true),
+            vec![first.clone(), second.clone()],
+            "the roster is the append-ordered record of who joined when"
+        );
+        assert_eq!(
+            member_names(&mut app, "#eng"),
+            vec!["rev-1".to_string(), "rev-2".to_string()]
+        );
+
+        // Re-reading it unchanged is a restart: same order in, same names out.
+        assert_eq!(
+            member_names(&mut app, "#eng"),
+            vec!["rev-1".to_string(), "rev-2".to_string()],
+            "same join order must always mint the same names"
+        );
+
+        // The other join history, on disk, mints the other assignment.
+        channels::write_joined_members("eng", &[second.clone(), first.clone()]).unwrap();
+        let response = app.handle_channel_members(
+            "req".into(),
+            ChannelMembersParams {
+                name: "#eng".into(),
+            },
+        );
+        let response: serde_json::Value = serde_json::from_str(&response).unwrap();
+        let members = response["result"]["members"].as_array().unwrap();
+        let by_pane = |pane: &str| -> String {
+            members
+                .iter()
+                .find(|member| member["pane_id"] == serde_json::json!(pane))
+                .and_then(|member| member["name"].as_str())
+                .expect("member must be listed")
+                .to_string()
+        };
+        assert_eq!(by_pane(&second), "rev-1");
+        assert_eq!(by_pane(&first), "rev-2");
+
+        super::super::test_support::shutdown_test_runtimes(&mut app);
+    }
+
+    /// Addressable names of a channel's agent members, in listing order.
+    fn member_names(app: &mut App, name: &str) -> Vec<String> {
+        let response =
+            app.handle_channel_members("req".into(), ChannelMembersParams { name: name.into() });
+        let response: serde_json::Value = serde_json::from_str(&response).unwrap();
+        response["result"]["members"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|member| member["name"].as_str().map(str::to_string))
+            .collect()
     }
 
     fn broadcast(app: &mut App, from_pane: &str, text: &str) -> serde_json::Value {

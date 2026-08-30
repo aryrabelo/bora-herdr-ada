@@ -7,6 +7,7 @@ Bora is a fork of [herdr](https://github.com/ogulcancelik/herdr). This changelog
 ### Added
 
 - Project view sidebar redesign: group headers lose the hexagon and gain an underline; one section row per workspace (collapse chevron, bright uppercase name, dim branch) with a right-aligned git/PR state cluster (ahead/behind, uncommitted/staged markers, PR number + checks rollup, unknown never green); worktree workspaces render as full workspace sections marked ⌗; every pane gets its own ○ row; a blank row now separates workspace blocks (`ui.sidebar.project.row_gap`, default 1); state icons ship in plain unicode by default with an opt-in Nerd Font set (`ui.sidebar.project.glyph_style = "nerd_font"`).
+- Colliding channel names are resolved at join time instead of leaving a room where nobody is addressable. Two members answering to the same name — most often two panes detected as the same tool — now take ordinals in join order: `@rev` becomes `@rev-1` and `@rev-2`, `channel members` lists the renamed form, and the channel gets a line naming the pane that joined and the name it answers to now. The ordinal is derived from the join roster rather than recorded, so the same join order always mints the same names across restarts and there is no second source of truth for a `channel leave` or a workspace rename to leave stale. Addressing the bare colliding name is still refused as ambiguous rather than amplified to every holder: the suffixed name is the one that reaches exactly one pane.
 
 ### Fixed
 
