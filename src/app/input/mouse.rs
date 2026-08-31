@@ -1287,23 +1287,25 @@ impl AppState {
                             self.request_full_repaint();
                             return None;
                         }
-                        // Folders view: a drop over a GROUP HEADER row
-                        // assigns the dragged workspace's `visual_group` to
-                        // that folder instead of reordering it, mirroring
-                        // the Project-view reparent-by-drop above. Reuses
-                        // the geometry pass's own
-                        // `workspace_group_header_areas` (never recomputed
-                        // from row arithmetic — see AGENTS.md) and the same
-                        // mutation path the context menu's "New group"/"→
-                        // group" items use (`ws.visual_group = ...` +
-                        // `mark_session_dirty`); `request_full_repaint`
-                        // mirrors the reparent branch above since this also
-                        // fires mid-drag, outside the modal flow that
-                        // already triggers a repaint on its own. The
-                        // synthetic `"hidden:"` header (the collapsed-count
-                        // toggle row) is excluded — it names no folder.
+                        // Folders view: a drop anywhere INSIDE a folder — its
+                        // GROUP HEADER row or any of its member rows — moves
+                        // the dragged workspace into that folder instead of
+                        // reordering it, mirroring the Project-view
+                        // reparent-by-drop above and the context menu's "New
+                        // group"/"→ group" items (`ws.visual_group = ...` +
+                        // `mark_session_dirty`). A drop in the ungrouped/loose
+                        // area resolves no target group and falls through to
+                        // reorder below. Header hits reuse the geometry pass's
+                        // own `workspace_group_header_areas` (never recomputed
+                        // from row arithmetic — see AGENTS.md); member hits
+                        // resolve the row's workspace via `workspace_at_row`
+                        // and take its `visual_group`. The synthetic
+                        // `"hidden:"` header names no folder and is excluded.
+                        // `request_full_repaint` mirrors the reparent branch
+                        // above since this also fires mid-drag, outside the
+                        // modal flow that already triggers a repaint on its own.
                         if self.view_mode == crate::config::ViewMode::Folders {
-                            let folder_drop = self
+                            let target_group = self
                                 .view
                                 .workspace_group_header_areas
                                 .iter()
@@ -1313,10 +1315,15 @@ impl AppState {
                                         && mouse.column < header.rect.x + header.rect.width
                                 })
                                 .filter(|header| header.collapse_key != "hidden:")
-                                .cloned();
-                            if let Some(header) = folder_drop {
+                                .map(|header| header.name.clone())
+                                .or_else(|| {
+                                    self.workspace_at_row(mouse.row)
+                                        .and_then(|ws_idx| self.workspaces.get(ws_idx))
+                                        .and_then(|ws| ws.visual_group.clone())
+                                });
+                            if let Some(group) = target_group {
                                 if let Some(ws) = self.workspaces.get_mut(source_ws_idx) {
-                                    ws.visual_group = Some(header.name);
+                                    ws.visual_group = Some(group);
                                 }
                                 self.mark_session_dirty();
                                 self.request_full_repaint();

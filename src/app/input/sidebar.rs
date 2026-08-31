@@ -1807,6 +1807,69 @@ mod tests {
     }
 
     #[test]
+    fn folders_mode_drag_onto_group_member_row_assigns_visual_group() {
+        // The reported gesture: dropping a workspace onto a folder's MEMBER
+        // row (not the thin header line) must move it into that folder,
+        // reading the target's `visual_group` via `workspace_at_row`. Goes
+        // red if member-row targeting is dropped and only the header hit
+        // remains — the state the user hit as "drag is wrong, only
+        // right-click works".
+        let mut app = app_for_mouse_test();
+        let mut ws0 = Workspace::test_new("alpha");
+        ws0.visual_group = Some("g1".into());
+        ws0.cached_git_branch = None;
+        let mut ws1 = Workspace::test_new("loose");
+        ws1.cached_git_branch = None;
+        app.state.workspaces = vec![ws0, ws1];
+        app.state.view_mode = crate::config::ViewMode::Folders;
+        app.state.sidebar_spaces.rows = vec![vec![crate::config::SpaceSidebarToken::Workspace]];
+        app.state.sidebar_spaces.row_gap = 0;
+        app.state.active = None;
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 20));
+
+        let member_row = app
+            .state
+            .view
+            .workspace_card_areas
+            .iter()
+            .find(|card| card.ws_idx == 0)
+            .expect("g1 member card present")
+            .rect
+            .y;
+        let source_row = app
+            .state
+            .view
+            .workspace_card_areas
+            .iter()
+            .find(|card| card.ws_idx == 1)
+            .expect("loose card present")
+            .rect
+            .y;
+
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            2,
+            source_row,
+        ));
+        app.handle_mouse(mouse(
+            MouseEventKind::Drag(MouseButton::Left),
+            2,
+            member_row,
+        ));
+        app.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 2, member_row));
+
+        assert_eq!(
+            app.state
+                .workspaces
+                .iter()
+                .find(|ws| ws.display_name() == "loose")
+                .and_then(|ws| ws.visual_group.as_deref()),
+            Some("g1")
+        );
+        assert!(app.state.drag.is_none());
+    }
+
+    #[test]
     fn folders_mode_drag_outside_header_still_reorders() {
         let mut app = app_for_mouse_test();
         app.state.workspaces = vec![
