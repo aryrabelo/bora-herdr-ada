@@ -1682,6 +1682,8 @@ fn push_pane_dots_row(entries: &mut Vec<WorkspaceListEntry>, ws_idx: usize, dots
         ws_idx,
         name: String::new(),
         dots,
+        // Project view keeps the 2-line block; `inline` is Folders-only.
+        inline: false,
     });
 }
 

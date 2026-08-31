@@ -940,7 +940,8 @@ pub(crate) enum WorkspaceListEntry {
     /// (unlike every other arm there) takes an `app: &AppState` parameter:
     /// per-dot hit areas need each pane's live `pane_id` to build a
     /// `ProjectRowTarget::Pane`, and a 2-field entry has nowhere else to
-    /// get it from. Dot hit areas land on l2 (`row_y + 1`), never l1.
+    /// get it from. Dot hit areas land on l2 (`row_y + 1`) when the block
+    /// is 2 lines, and on the row itself when `inline` is set.
     PaneDotsRow {
         ws_idx: usize,
         name: String,
@@ -951,6 +952,12 @@ pub(crate) enum WorkspaceListEntry {
         /// the model a second time. OFF collapses the block to its l1
         /// name line alone (`entry_row_height`).
         dots: bool,
+        /// Folders view (owner's ruling, 2026-08-31): name and dots share
+        /// ONE row — `name ○ ○` — instead of the Project view's 2-line
+        /// block. Carried on the entry so all three lockstep passes
+        /// (height, render, hit areas) agree without reading `view_mode`.
+        /// Ignored when `dots` is off (both shapes are 1 row of name).
+        inline: bool,
     },
     /// Project-level: one open PR authored by the user with no local
     /// worktree, inside the `PULL REQUESTS` band (bora-yw6.2, C2). `checks`
@@ -1024,9 +1031,10 @@ fn entry_row_height(
         WorkspaceListEntry::SectionHeader { .. } => 1,
         WorkspaceListEntry::SectionItem { .. } => 1,
         // bora-79l F2: the block split into l1 (name) + l2 (dots) —
-        // `pane_dots_name_line`/`pane_dots_dots_line`'s own docs.
-        WorkspaceListEntry::PaneDotsRow { dots, .. } => {
-            if *dots {
+        // `pane_dots_name_line`/`pane_dots_dots_line`'s own docs. The
+        // Folders `inline` shape puts the dots ON the name row instead.
+        WorkspaceListEntry::PaneDotsRow { dots, inline, .. } => {
+            if *dots && !*inline {
                 2
             } else {
                 1
@@ -1082,8 +1090,11 @@ fn project_band_top_pad(entries: &[WorkspaceListEntry], idx: usize) -> u16 {
 #[cfg(test)]
 pub(crate) fn expected_entry_height(entries: &[WorkspaceListEntry], idx: usize) -> u16 {
     match entries.get(idx) {
-        Some(WorkspaceListEntry::PaneDotsRow { dots, .. }) => {
-            if *dots {
+        Some(WorkspaceListEntry::PaneDotsRow { dots, inline, .. }) => {
+            // Restated independently of `entry_row_height` on purpose
+            // (this helper's own doc): 2 lines only for a non-inline
+            // block with its dots line on.
+            if *dots && !*inline {
                 2
             } else {
                 1
@@ -1779,6 +1790,84 @@ fn pane_dots_columns(
         .collect()
 }
 
+/// Name hue shared by `pane_dots_name_line` and the Folders inline row —
+/// one function so the 2-line and inline shapes can never disagree about
+/// R5b (red = blocked+unseen, yellow = idle+unseen, else `overlay1`).
+fn pane_dots_name_style(waiting: bool, ready: bool, p: &Palette) -> Style {
+    if waiting {
+        Style::default().fg(p.red).add_modifier(Modifier::BOLD)
+    } else if ready {
+        Style::default().fg(p.yellow).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(p.overlay1)
+    }
+}
+
+/// Layout for a Folders inline `PaneDotsRow` (`inline: true`): name and
+/// dots share ONE row — `   name ○ ○`. Returns the truncated display name
+/// plus ordered `(pane, public number, column)` triples, and BOTH lockstep
+/// passes (render and hit areas) must take their answer from here: the
+/// columns are anchored to data the two passes share — the entry's `name`,
+/// the workspace's panes, the same `width` — never to each pass's own
+/// geometry (the `pane_dots_layout` right-pinning lesson). The name keeps
+/// at least `INLINE_NAME_MIN` columns; past that, dots truncate on the
+/// right exactly like `pane_dots_columns` does.
+fn pane_dots_inline_layout(
+    name: &str,
+    ws: &crate::workspace::Workspace,
+    width: u16,
+) -> (String, Vec<(crate::layout::PaneId, usize, u16)>) {
+    const INLINE_NAME_MIN: u16 = 8;
+    let mut panes: Vec<(crate::layout::PaneId, usize)> = ws
+        .public_pane_numbers
+        .iter()
+        .map(|(&id, &number)| (id, number))
+        .collect();
+    panes.sort_by_key(|(_, number)| *number);
+
+    let avail = width.saturating_sub(PANE_DOTS_INDENT);
+    let dots_full = (panes.len() as u16).saturating_mul(2).saturating_sub(1);
+    // Name first: the row identifies itself by the name, so dots degrade
+    // before it drops below the floor.
+    let name_budget = avail
+        .saturating_sub(dots_full.saturating_add(1))
+        .max(INLINE_NAME_MIN.min(avail));
+    let display = truncate_end(name, name_budget as usize);
+    let start = PANE_DOTS_INDENT
+        .saturating_add(display_width_u16(&display))
+        .saturating_add(1);
+    // Largest `n` with `2n - 1 <= width - start`; 0 when nothing fits.
+    let max_dots = width.saturating_sub(start).div_ceil(2) as usize;
+    panes.truncate(max_dots);
+    let columns = panes
+        .into_iter()
+        .enumerate()
+        .map(|(i, (pane_id, number))| (pane_id, number, start + (i * 2) as u16))
+        .collect();
+    (display, columns)
+}
+
+/// The Folders inline row itself: indent, the already-laid-out name, then
+/// one dot per pane. Spans are appended contiguously (one space after the
+/// name, one between dots), which reproduces exactly the columns
+/// `pane_dots_inline_layout` returned — that identity is what the
+/// hit-area lockstep test pins against the rendered buffer.
+fn pane_dots_inline_line(
+    display: &str,
+    name_style: Style,
+    dots: &[(&'static str, Style)],
+) -> Line<'static> {
+    let mut spans = vec![
+        Span::styled(" ".repeat(PANE_DOTS_INDENT as usize), Style::default()),
+        Span::styled(display.to_owned(), name_style),
+    ];
+    for (glyph, style) in dots {
+        spans.push(Span::styled(" ", Style::default()));
+        spans.push(Span::styled(*glyph, *style));
+    }
+    Line::from(spans)
+}
+
 /// L1 of a Project-view workspace's `PaneDotsRow` block (bora-79l F2,
 /// ALVO_CAPTURE rows 04/28): the workspace's own already-disambiguated
 /// unique name, indented to `PANE_DOTS_INDENT` and colored `overlay1` — the
@@ -1811,13 +1900,7 @@ fn pane_dots_name_line(
     width: u16,
 ) -> Line<'static> {
     let avail = width.saturating_sub(PANE_DOTS_INDENT) as usize;
-    let style = if waiting {
-        Style::default().fg(p.red).add_modifier(Modifier::BOLD)
-    } else if ready {
-        Style::default().fg(p.yellow).add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(p.overlay1)
-    };
+    let style = pane_dots_name_style(waiting, ready, p);
     Line::from(vec![
         Span::styled(" ".repeat(PANE_DOTS_INDENT as usize), Style::default()),
         Span::styled(truncate_end(name, avail), style),
@@ -2070,17 +2153,18 @@ pub(crate) fn next_entry_is_indented_workspace(entries: &[WorkspaceListEntry], i
 
 /// `Folders` view: a flat workspace list that honors only user-defined
 /// `visual_group` folders. No repo auto-grouping and no branch brackets. Each
-/// row is a `PaneDotsRow` block — the SAME 2-line "name + one dot per pane"
-/// shape Project view uses (`push_pane_dots_row`'s doc), reused unmodified
-/// rather than the single-status `Workspace` row: a workspace's real
-/// per-pane state is not collapsible into one dot. `name` is the same base
-/// label Project view's blocks carry (`project_view::workspace_group_name`)
-/// with no disambiguating hint — Folders groups are user-named containers,
-/// not branch groups, so two same-named members are not the collision that
-/// hint exists for. A group is anchored at its first member's position in
-/// workspace-vec order; later members are pulled up under the shared
-/// header. Ungrouped workspaces stay flat and drag-reorderable, exactly
-/// like the Flat view.
+/// row is an INLINE `PaneDotsRow` (owner's ruling, 2026-08-31): ONE line,
+/// `name ○ ○` — the name followed by one dot per pane on the same row
+/// (`pane_dots_inline_layout`), instead of Project view's 2-line block or
+/// the single-status `Workspace` row: a workspace's real per-pane state is
+/// not collapsible into one dot, and a folder list should stay one row per
+/// workspace. `name` is the same base label Project view's blocks carry
+/// (`project_view::workspace_group_name`) with no disambiguating hint —
+/// Folders groups are user-named containers, not branch groups, so two
+/// same-named members are not the collision that hint exists for. A group
+/// is anchored at its first member's position in workspace-vec order;
+/// later members are pulled up under the shared header. Ungrouped
+/// workspaces stay flat and drag-reorderable, exactly like the Flat view.
 ///
 /// `PaneDotsRow` carries no indent/rail field (Project view never needed
 /// one — every block there sits under a branch header at the same fixed
@@ -2120,6 +2204,7 @@ fn folders_view_entries(app: &AppState, force_expanded: bool) -> Vec<WorkspaceLi
                             ws_idx: member_idx,
                             name: project_view::workspace_group_name(&app.workspaces[member_idx]),
                             dots: true,
+                            inline: true,
                         });
                     }
                 }
@@ -2130,6 +2215,7 @@ fn folders_view_entries(app: &AppState, force_expanded: bool) -> Vec<WorkspaceLi
             ws_idx,
             name: project_view::workspace_group_name(ws),
             dots: true,
+            inline: true,
         });
     }
 
@@ -3117,24 +3203,36 @@ fn workspace_list_areas_for_entries(
             // together from the `SectionRow` above. The dots stay
             // first-class: each keeps its own 1-cell `ProjectRowHitArea`
             // at the SAME column `render_workspace_list`'s `PaneDotsRow`
-            // arm draws it — both call `pane_dots_columns`, so they cannot
-            // drift — and the input dispatcher resolves `project_row_areas`
-            // BEFORE `workspace_card_areas`, so inside a dot's own cell the
-            // dot wins over the block.
-            WorkspaceListEntry::PaneDotsRow { ws_idx, dots, .. } => {
-                let card_height = if *dots { 2 } else { 1 };
+            // arm draws it — both take their columns from the one layout
+            // function for the row's shape (`pane_dots_columns`, or
+            // `pane_dots_inline_layout` for the Folders inline row), so
+            // they cannot drift — and the input dispatcher resolves
+            // `project_row_areas` BEFORE `workspace_card_areas`, so inside
+            // a dot's own cell the dot wins over the block.
+            WorkspaceListEntry::PaneDotsRow {
+                ws_idx,
+                name,
+                dots,
+                inline,
+            } => {
+                let card_height = if *dots && !*inline { 2 } else { 1 };
                 cards.push(crate::app::state::WorkspaceCardArea {
                     ws_idx: *ws_idx,
                     rect: Rect::new(body.x, row_y, body.width, card_height),
                     indented: true,
                 });
-                // T6 6b: no l2 row, no per-dot hit area — there is
-                // nothing at `row_y + 1` for a dot to be hit-tested
-                // against.
+                // T6 6b: no dots, no per-dot hit area — there is nothing
+                // for a dot to be hit-tested against.
                 if *dots {
                     if let Some(ws) = app.workspaces.get(*ws_idx) {
-                        let dots_row_y = row_y.saturating_add(1);
-                        for (_pane_id, number, column) in pane_dots_columns(ws, body.width) {
+                        // Inline (Folders): the dots live ON the name row.
+                        let (dots_row_y, columns) = if *inline {
+                            let (_display, columns) = pane_dots_inline_layout(name, ws, body.width);
+                            (row_y, columns)
+                        } else {
+                            (row_y.saturating_add(1), pane_dots_columns(ws, body.width))
+                        };
+                        for (_pane_id, number, column) in columns {
                             project_rows.push(ProjectRowHitArea {
                                 rect: Rect::new(body.x + column, dots_row_y, 1, 1),
                                 target: ProjectRowTarget::Pane {
@@ -4098,6 +4196,7 @@ fn render_workspace_list(
                 ws_idx,
                 name,
                 dots: dots_on,
+                inline,
             } => {
                 // The block carries the workspace's visual state now (P2,
                 // bora-79l T1) — the same GC3 three-way decision the
@@ -4111,7 +4210,7 @@ fn render_workspace_list(
                 // source both the selection fill and the active-bar loop
                 // below read, so they can never desync from
                 // `entry_row_height` when `dots` is off (1 row, not 2).
-                let block_height: u16 = if *dots_on { 2 } else { 1 };
+                let block_height: u16 = if *dots_on && !*inline { 2 } else { 1 };
                 let selected = *ws_idx == app.selected && is_navigating;
                 let is_active = Some(*ws_idx) == app.active;
                 let is_dragged = dragged_ws_idx == Some(*ws_idx);
@@ -4155,65 +4254,98 @@ fn render_workspace_list(
                         && details
                             .iter()
                             .any(|d| matches!(d.state, AgentState::Idle) && !d.seen);
-                    // L1: the workspace name (bora-79l F2 —
-                    // `pane_dots_name_line`'s doc, ALVO_CAPTURE rows 04/28;
-                    // T7 divergence A removed the diff slot this carried).
-                    // No state glyph ever lands here.
-                    if row_y < list_bottom {
-                        frame.render_widget(
-                            Paragraph::new(pane_dots_name_line(
-                                name, waiting, ready, p, body.width,
-                            )),
-                            Rect::new(body.x, row_y, body.width, 1),
-                        );
-                        if show_active_marker {
-                            // The blue bar (contract T1 item 3), painted
-                            // AFTER the line so it lands on the indent's
-                            // blank first cell — `PANE_DOTS_INDENT` keeps
-                            // every glyph clear of column 0.
-                            let buf = frame.buffer_mut();
-                            buf[(body.x, row_y)].set_symbol("▎");
-                            buf[(body.x, row_y)].set_style(Style::default().fg(p.accent));
-                        }
-                    }
-                    // L2: one dot per pane. Live state per dot, resolved
-                    // here rather than carried on the entry (`PaneDotsRow`'s
-                    // doc) — one `pane_details` call for the whole block,
-                    // hoisted above l1 and shared with it, not one per dot
-                    // — so this stays cheaper than the old
-                    // per-`PaneRow` render path it replaces (which called
-                    // `pane_details` once PER PANE). T6 6b: skipped
-                    // entirely when `dots` is off — there is no l2 row.
-                    if *dots_on {
-                        let dots_row_y = row_y.saturating_add(1);
-                        if dots_row_y < list_bottom {
-                            let columns = pane_dots_columns(ws, body.width);
-                            let dots: Vec<(&'static str, Style)> = columns
-                                .iter()
-                                .map(|(pane_id, _number, _column)| {
-                                    details
-                                        .iter()
-                                        .find(|d| d.pane_id == *pane_id)
-                                        .map(|d| {
-                                            pane_dots_dot_glyph(
-                                                d.state,
-                                                d.seen,
-                                                app.spinner_tick,
-                                                app.status_indicators,
-                                                p,
-                                            )
-                                        })
-                                        .unwrap_or(("○", Style::default().fg(p.overlay0)))
-                                })
-                                .collect();
+                    // Dot glyphs, one per pane in layout order — shared by
+                    // both shapes (the closure only turns a pane into its
+                    // live glyph; columns come from the shape's layout fn).
+                    let dot_glyphs = |columns: &[(crate::layout::PaneId, usize, u16)]| {
+                        columns
+                            .iter()
+                            .map(|(pane_id, _number, _column)| {
+                                details
+                                    .iter()
+                                    .find(|d| d.pane_id == *pane_id)
+                                    .map(|d| {
+                                        pane_dots_dot_glyph(
+                                            d.state,
+                                            d.seen,
+                                            app.spinner_tick,
+                                            app.status_indicators,
+                                            p,
+                                        )
+                                    })
+                                    .unwrap_or(("○", Style::default().fg(p.overlay0)))
+                            })
+                            .collect::<Vec<(&'static str, Style)>>()
+                    };
+                    if *inline && *dots_on {
+                        // Folders (owner's ruling, 2026-08-31): ONE row,
+                        // `name ○ ○` — name and dots share the line, laid
+                        // out by `pane_dots_inline_layout` (the same call
+                        // the hit-area pass makes).
+                        if row_y < list_bottom {
+                            let (display, columns) = pane_dots_inline_layout(name, ws, body.width);
+                            let dots = dot_glyphs(&columns);
                             frame.render_widget(
-                                Paragraph::new(pane_dots_dots_line(&dots, body.width)),
-                                Rect::new(body.x, dots_row_y, body.width, 1),
+                                Paragraph::new(pane_dots_inline_line(
+                                    &display,
+                                    pane_dots_name_style(waiting, ready, p),
+                                    &dots,
+                                )),
+                                Rect::new(body.x, row_y, body.width, 1),
                             );
                             if show_active_marker {
                                 let buf = frame.buffer_mut();
-                                buf[(body.x, dots_row_y)].set_symbol("▎");
-                                buf[(body.x, dots_row_y)].set_style(Style::default().fg(p.accent));
+                                buf[(body.x, row_y)].set_symbol("▎");
+                                buf[(body.x, row_y)].set_style(Style::default().fg(p.accent));
+                            }
+                        }
+                        // (No `continue`: the loop's own `row_y` advance
+                        // below the match must still run for this entry.)
+                    } else {
+                        // L1: the workspace name (bora-79l F2 —
+                        // `pane_dots_name_line`'s doc, ALVO_CAPTURE rows 04/28;
+                        // T7 divergence A removed the diff slot this carried).
+                        // No state glyph ever lands here.
+                        if row_y < list_bottom {
+                            frame.render_widget(
+                                Paragraph::new(pane_dots_name_line(
+                                    name, waiting, ready, p, body.width,
+                                )),
+                                Rect::new(body.x, row_y, body.width, 1),
+                            );
+                            if show_active_marker {
+                                // The blue bar (contract T1 item 3), painted
+                                // AFTER the line so it lands on the indent's
+                                // blank first cell — `PANE_DOTS_INDENT` keeps
+                                // every glyph clear of column 0.
+                                let buf = frame.buffer_mut();
+                                buf[(body.x, row_y)].set_symbol("▎");
+                                buf[(body.x, row_y)].set_style(Style::default().fg(p.accent));
+                            }
+                        }
+                        // L2: one dot per pane. Live state per dot, resolved
+                        // here rather than carried on the entry (`PaneDotsRow`'s
+                        // doc) — one `pane_details` call for the whole block,
+                        // hoisted above l1 and shared with it, not one per dot
+                        // — so this stays cheaper than the old
+                        // per-`PaneRow` render path it replaces (which called
+                        // `pane_details` once PER PANE). T6 6b: skipped
+                        // entirely when `dots` is off — there is no l2 row.
+                        if *dots_on {
+                            let dots_row_y = row_y.saturating_add(1);
+                            if dots_row_y < list_bottom {
+                                let columns = pane_dots_columns(ws, body.width);
+                                let dots = dot_glyphs(&columns);
+                                frame.render_widget(
+                                    Paragraph::new(pane_dots_dots_line(&dots, body.width)),
+                                    Rect::new(body.x, dots_row_y, body.width, 1),
+                                );
+                                if show_active_marker {
+                                    let buf = frame.buffer_mut();
+                                    buf[(body.x, dots_row_y)].set_symbol("▎");
+                                    buf[(body.x, dots_row_y)]
+                                        .set_style(Style::default().fg(p.accent));
+                                }
                             }
                         }
                     }
@@ -7096,11 +7228,13 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
                     ws_idx: 0,
                     name: "alpha".into(),
                     dots: true,
+                    inline: true,
                 },
                 WorkspaceListEntry::PaneDotsRow {
                     ws_idx: 1,
                     name: "beta".into(),
                     dots: true,
+                    inline: true,
                 },
             ]
         );
@@ -7136,16 +7270,19 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
                     ws_idx: 0,
                     name: "alpha".into(),
                     dots: true,
+                    inline: true,
                 },
                 WorkspaceListEntry::PaneDotsRow {
                     ws_idx: 2,
                     name: "gamma".into(),
                     dots: true,
+                    inline: true,
                 },
                 WorkspaceListEntry::PaneDotsRow {
                     ws_idx: 1,
                     name: "loose".into(),
                     dots: true,
+                    inline: true,
                 },
             ]
         );
@@ -9798,6 +9935,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
             },
             WorkspaceListEntry::PaneDotsRow {
                 dots: true,
+                inline: false,
                 ws_idx: 0,
                 name: "ws0".into(),
             },
@@ -9813,6 +9951,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
             },
             WorkspaceListEntry::PaneDotsRow {
                 dots: true,
+                inline: false,
                 ws_idx: 1,
                 name: "ws1".into(),
             },
@@ -9864,6 +10003,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
             },
             WorkspaceListEntry::PaneDotsRow {
                 dots: true,
+                inline: false,
                 ws_idx: 0,
                 name: "ws0".into(),
             },
@@ -9871,6 +10011,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
             // its own anymore, just the block glued under the header.
             WorkspaceListEntry::PaneDotsRow {
                 dots: true,
+                inline: false,
                 ws_idx: 1,
                 name: "ws1".into(),
             },
@@ -9886,6 +10027,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
             },
             WorkspaceListEntry::PaneDotsRow {
                 dots: true,
+                inline: false,
                 ws_idx: 2,
                 name: "ws2".into(),
             },
@@ -9905,6 +10047,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
             },
             WorkspaceListEntry::PaneDotsRow {
                 dots: true,
+                inline: false,
                 ws_idx: 3,
                 name: "ws3".into(),
             },
@@ -10127,13 +10270,13 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
 
     #[test]
     fn folders_view_workspace_with_two_panes_emits_dots_for_both() {
-        // The whole point of swapping Folders off the single-status
-        // `Workspace` row and onto `PaneDotsRow` (bora follow-up): a
-        // workspace's real per-pane state must show, one dot per pane, not
-        // collapse into one status per workspace. Mirrors
+        // Owner's rulings, in order: Folders shows a workspace's REAL
+        // per-pane state, one dot per pane (not one status per workspace),
+        // and name + dots share ONE line (2026-08-31 — "não era pra ter
+        // duas linhas"). Mirrors
         // `pane_dots_row_hit_areas_land_on_the_rendered_dots_own_columns`'s
-        // style (Project view's own proof of the same lockstep contract)
-        // but for Folders.
+        // style: hit areas are pinned against the RENDERED buffer, never
+        // against re-derived arithmetic.
         let mut app = AppState::test_new();
         app.view_mode = crate::config::ViewMode::Folders;
         let mut ws = Workspace::test_new("multi-pane");
@@ -10152,12 +10295,13 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
         assert_eq!(
             cards.len(),
             1,
-            "one PaneDotsRow block card for the workspace: {cards:?}"
+            "one inline PaneDotsRow card for the workspace: {cards:?}"
         );
         assert_eq!(
-            cards[0].rect.height, 2,
-            "the block spans both rows (l1 name + l2 dots)"
+            cards[0].rect.height, 1,
+            "inline: the whole row — name and dots — is ONE line"
         );
+        let name_row = cards[0].rect.y;
 
         let mut pane_hits: Vec<_> = project_rows
             .iter()
@@ -10171,7 +10315,19 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
         pane_hits.sort_by_key(|a| a.rect.x);
 
         let buffer = terminal.backend().buffer();
+        // The name renders on the same row the dots land on.
+        let row_text: String = (0..area.width)
+            .map(|x| buffer[(x, name_row)].symbol().to_owned())
+            .collect();
+        assert!(
+            row_text.contains("multi-pane"),
+            "the name shares the dots' row: {row_text:?}"
+        );
         for hit in &pane_hits {
+            assert_eq!(
+                hit.rect.y, name_row,
+                "inline: every dot hit area sits ON the name row: {hit:?}"
+            );
             let cell = &buffer[(hit.rect.x, hit.rect.y)];
             assert_ne!(
                 cell.symbol(),
@@ -10179,6 +10335,11 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
                 "each dot hit area must land on a rendered glyph, not blank space: {cell:?}"
             );
         }
+        assert_eq!(
+            pane_hits[1].rect.x - pane_hits[0].rect.x,
+            2,
+            "dots sit 2 columns apart after the name: {pane_hits:?}"
+        );
     }
 
     #[test]
@@ -10826,6 +10987,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
             },
             WorkspaceListEntry::PaneDotsRow {
                 dots: true,
+                inline: false,
                 ws_idx: 5,
                 name: "agent".into(),
             },
