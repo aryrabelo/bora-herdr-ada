@@ -1039,6 +1039,10 @@ pub enum Mode {
     RenamePane,
     /// User is typing a visual group name for a workspace.
     SetWorkspaceGroup,
+    /// User is typing a new name for an existing visual group; the old name
+    /// being renamed lives in `AppState::rename_group_target`. On confirm,
+    /// every workspace in that group is moved to the new name.
+    RenameGroup,
     /// User is typing a project name (creating or renaming a project in
     /// `projects.yml`). What the name is for lives in
     /// `AppState::project_name_target`.
@@ -1692,6 +1696,8 @@ pub fn build_context_menu_items(
                 vec!["Unhide".to_string()]
             } else {
                 vec![
+                    "Rename group\u{2026}".to_string(),
+                    CONTEXT_MENU_SEPARATOR.to_string(),
                     "Hide 5m".to_string(),
                     "Hide 10m".to_string(),
                     "Hide 15m".to_string(),
@@ -2222,6 +2228,9 @@ pub struct AppState {
     /// existing project or creation of a new one (whose first member may be
     /// the dir the menu was opened from). `None` unless that mode is active.
     pub project_name_target: Option<ProjectNameTarget>,
+    /// The existing visual-group name being renamed by the
+    /// `Mode::RenameGroup` modal. `None` unless that mode is active.
+    pub rename_group_target: Option<String>,
     pub worktree_create: Option<WorktreeCreateState>,
     pub worktree_open: Option<WorktreeOpenState>,
     pub chat: ChatViewState,
@@ -2777,6 +2786,7 @@ impl AppState {
             pending_workspace_create_cwd: None,
             rename_pane_target: None,
             project_name_target: None,
+            rename_group_target: None,
             worktree_create: None,
             worktree_open: None,
             worktree_remove: None,

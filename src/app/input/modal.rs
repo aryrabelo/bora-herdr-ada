@@ -400,6 +400,41 @@ pub(super) fn open_set_workspace_group(state: &mut AppState, ws_idx: usize) {
     state.mode = Mode::SetWorkspaceGroup;
 }
 
+pub(super) fn open_rename_group(state: &mut AppState, old_name: String) {
+    state.rename_pane_target = None;
+    state.name_input = old_name.clone();
+    state.rename_group_target = Some(old_name);
+    // Prefill selected so a fresh type replaces the old name in one go.
+    state.name_input_replace_on_type = true;
+    state.mode = Mode::RenameGroup;
+}
+
+/// Renames an existing visual group: moves every workspace in `old` to
+/// `new_name` and migrates the `vg:<old>` collapse/hide keys. No-op on an
+/// empty or unchanged name; renaming onto an existing group name merges the
+/// two. Shared by the keyboard and mouse-save confirm paths so they cannot
+/// drift apart.
+pub(super) fn apply_group_rename(state: &mut AppState, old: &str, new_name: &str) {
+    let new_name = new_name.trim();
+    if new_name.is_empty() || new_name == old {
+        return;
+    }
+    for ws in &mut state.workspaces {
+        if ws.visual_group.as_deref() == Some(old) {
+            ws.visual_group = Some(new_name.to_string());
+        }
+    }
+    let old_key = format!("vg:{old}");
+    let new_key = format!("vg:{new_name}");
+    if state.collapsed_space_keys.remove(&old_key) {
+        state.collapsed_space_keys.insert(new_key.clone());
+    }
+    if let Some(until) = state.hidden_space_keys.remove(&old_key) {
+        state.hidden_space_keys.insert(new_key, until);
+    }
+    state.mark_session_dirty();
+}
+
 pub(crate) fn open_new_workspace_dialog(state: &mut AppState, cwd: std::path::PathBuf) {
     let suggested_name = crate::workspace::derive_label_from_cwd(&cwd);
     state.creating_new_tab = false;
@@ -650,6 +685,11 @@ pub(super) fn apply_rename_action(state: &mut AppState, action: ModalAction) {
                     }
                     state.mark_session_dirty();
                 }
+                Mode::RenameGroup => {
+                    if let Some(old) = state.rename_group_target.take() {
+                        apply_group_rename(state, &old, &new_name);
+                    }
+                }
                 Mode::ProjectNameInput => {
                     if let Some(target) = state.project_name_target.take() {
                         let name = new_name.trim();
@@ -677,6 +717,7 @@ pub(super) fn apply_rename_action(state: &mut AppState, action: ModalAction) {
             state.pending_workspace_create_cwd = None;
             state.rename_pane_target = None;
             state.project_name_target = None;
+            state.rename_group_target = None;
             state.name_input.clear();
             state.name_input_replace_on_type = false;
             leave_modal(state);
@@ -691,6 +732,7 @@ pub(super) fn apply_rename_action(state: &mut AppState, action: ModalAction) {
             state.pending_workspace_create_cwd = None;
             state.rename_pane_target = None;
             state.project_name_target = None;
+            state.rename_group_target = None;
             state.name_input.clear();
             state.name_input_replace_on_type = false;
             leave_modal(state);
@@ -1329,6 +1371,9 @@ pub(super) fn apply_context_menu_action(
             }
             leave_modal(state);
         }
+        (ContextMenuKind::GroupHeader { name, .. }, Some("Rename group\u{2026}")) => {
+            open_rename_group(state, name);
+        }
         (
             ContextMenuKind::GroupHeader { collapse_key, .. },
             Some(label @ ("Hide 5m" | "Hide 10m" | "Hide 15m" | "Hide 30m")),
@@ -1546,6 +1591,11 @@ impl App {
                     self.state.workspaces[selected].visual_group = Some(new_name);
                 }
                 self.state.mark_session_dirty();
+            }
+            Mode::RenameGroup => {
+                if let Some(old) = self.state.rename_group_target.take() {
+                    apply_group_rename(&mut self.state, &old, &new_name);
+                }
             }
             Mode::ProjectNameInput => {
                 if let Some(target) = self.state.project_name_target.take() {
@@ -2246,6 +2296,9 @@ impl App {
                 }
                 leave_modal(&mut self.state);
             }
+            (ContextMenuKind::GroupHeader { name, .. }, Some("Rename group\u{2026}")) => {
+                open_rename_group(&mut self.state, name);
+            }
             (
                 ContextMenuKind::GroupHeader { collapse_key, .. },
                 Some(label @ ("Hide 5m" | "Hide 10m" | "Hide 15m" | "Hide 30m")),
@@ -2351,6 +2404,7 @@ fn cancel_rename_modal(state: &mut AppState) {
     state.pending_workspace_create_cwd = None;
     state.rename_pane_target = None;
     state.project_name_target = None;
+    state.rename_group_target = None;
     state.name_input.clear();
     state.name_input_replace_on_type = false;
     leave_modal(state);
@@ -3608,6 +3662,74 @@ mod tests {
 
         std::env::remove_var(crate::config::CONFIG_PATH_ENV_VAR);
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn rename_group_moves_all_members_and_migrates_collapse_key() {
+        let mut state = state_with_workspaces(&["a", "b", "c"]);
+        state.workspaces[0].visual_group = Some("g1".into());
+        state.workspaces[1].visual_group = Some("g1".into());
+        state.workspaces[2].visual_group = Some("g2".into());
+        state.collapsed_space_keys.insert("vg:g1".into());
+
+        open_rename_group(&mut state, "g1".into());
+        assert_eq!(state.mode, Mode::RenameGroup);
+        assert_eq!(state.name_input, "g1");
+        assert_eq!(state.rename_group_target.as_deref(), Some("g1"));
+
+        state.name_input = "renamed".into();
+        apply_rename_action(&mut state, ModalAction::Save);
+
+        assert_eq!(state.workspaces[0].visual_group.as_deref(), Some("renamed"));
+        assert_eq!(state.workspaces[1].visual_group.as_deref(), Some("renamed"));
+        // A workspace outside the renamed group is untouched.
+        assert_eq!(state.workspaces[2].visual_group.as_deref(), Some("g2"));
+        // The collapse key follows the rename so the folder stays collapsed.
+        assert!(!state.collapsed_space_keys.contains("vg:g1"));
+        assert!(state.collapsed_space_keys.contains("vg:renamed"));
+        // Target is consumed and the modal closed.
+        assert!(state.rename_group_target.is_none());
+        assert_ne!(state.mode, Mode::RenameGroup);
+    }
+
+    #[test]
+    fn group_header_menu_rename_item_opens_rename_modal() {
+        // Guards the label shared between the menu builder (state.rs) and the
+        // selection handler: a drift renders the item and does nothing.
+        let mut state = state_with_workspaces(&["a", "b"]);
+        state.workspaces[0].visual_group = Some("g1".into());
+        state.workspaces[1].visual_group = Some("g1".into());
+        let kind = ContextMenuKind::GroupHeader {
+            name: "g1".into(),
+            collapse_key: "vg:g1".into(),
+            hidden: false,
+        };
+        let items = build_context_menu_items(
+            &kind,
+            &state.workspaces,
+            state.view_mode,
+            &[],
+            &[],
+            &state.installed_plugins,
+        );
+        let idx = items
+            .iter()
+            .position(|i| i == "Rename group\u{2026}")
+            .expect("rename group item present");
+        let menu = ContextMenuState {
+            items,
+            kind,
+            x: 0,
+            y: 0,
+            list: MenuListState::new(0),
+            bora_commands: vec![],
+            bora_port: None,
+        };
+        let mut runtimes = crate::terminal::TerminalRuntimeRegistry::new();
+        apply_context_menu_action(&mut state, &mut runtimes, menu, idx);
+        assert_eq!(state.mode, Mode::RenameGroup);
+        assert_eq!(state.rename_group_target.as_deref(), Some("g1"));
+        assert_eq!(state.name_input, "g1");
     }
 
     #[test]

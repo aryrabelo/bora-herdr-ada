@@ -728,6 +728,7 @@ impl App {
             projects: crate::persist::projects::ProjectsStore::load(),
             #[cfg(test)]
             projects: crate::persist::projects::ProjectsStore::empty(),
+            rename_group_target: None,
             project_todos: std::collections::HashMap::new(),
             project_notes: std::collections::HashMap::new(),
             terminals: std::collections::HashMap::new(),
@@ -2907,6 +2908,7 @@ impl App {
             | Mode::RenameTab
             | Mode::RenamePane
             | Mode::SetWorkspaceGroup
+            | Mode::RenameGroup
             | Mode::ProjectNameInput => {
                 self.handle_rename_key_via_api(key_event);
             }

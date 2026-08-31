@@ -522,6 +522,7 @@ pub fn render_with_runtime_registry(
         | Mode::RenameTab
         | Mode::RenamePane
         | Mode::SetWorkspaceGroup
+        | Mode::RenameGroup
         | Mode::ProjectNameInput => render_rename_overlay(app, frame, frame.area()),
         Mode::NewLinkedWorktree => render_new_linked_worktree_overlay(app, frame, frame.area()),
         Mode::OpenExistingWorktree => {

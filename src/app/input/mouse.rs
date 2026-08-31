@@ -502,6 +502,7 @@ impl AppState {
                         | Mode::RenameTab
                         | Mode::RenamePane
                         | Mode::SetWorkspaceGroup
+                        | Mode::RenameGroup
                         | Mode::ProjectNameInput
                 ) {
                     let action = self
