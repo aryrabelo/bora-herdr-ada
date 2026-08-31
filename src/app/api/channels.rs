@@ -3610,6 +3610,91 @@ mod tests {
 
         super::super::test_support::shutdown_test_runtimes(&mut app);
     }
+    /// Three holders of one base name — the "colisão múltipla" path of
+    /// ceo-bora#34's DoD. The ordinals keep counting: `rev-1`/`rev-2`/
+    /// `rev-3`, the third colliding join announces its rename like the
+    /// others, the highest suffix reaches exactly its own pane, and the
+    /// bare base refuses naming all three candidates rather than
+    /// amplifying (ceo-bora#30).
+    #[tokio::test]
+    async fn three_colliding_joins_take_ordinals_one_two_three() {
+        let _isolated = IsolatedDirs::new("autorename-triple");
+        let mut app = test_app();
+        create_channel(&mut app, "eng");
+        let (first, _first_rx) = outside_agent_pane(&mut app, "rev");
+        let (second, _second_rx) = outside_agent_pane(&mut app, "rev");
+        let (third, _third_rx) = outside_agent_pane(&mut app, "rev");
+        skip_protocol("eng", &first);
+        skip_protocol("eng", &second);
+        skip_protocol("eng", &third);
+
+        join(&mut app, "#eng", &first);
+        join(&mut app, "#eng", &second);
+        assert_eq!(join(&mut app, "#eng", &third)["result"]["source"], "joined");
+        assert_eq!(
+            member_names(&mut app, "#eng"),
+            vec![
+                "rev-1".to_string(),
+                "rev-2".to_string(),
+                "rev-3".to_string()
+            ],
+            "each successive holder takes the next free ordinal"
+        );
+
+        let notice = channels::read_tail("eng", 10)
+            .unwrap()
+            .into_iter()
+            .find(|message| message.from_pane == "system" && message.text.contains("rev-3"))
+            .expect("the third colliding join must announce its rename too");
+        assert!(
+            notice.text.contains(&third),
+            "the notice names who joined: {}",
+            notice.text
+        );
+
+        let sent = app.handle_channel_send(
+            "req-third".into(),
+            ChannelSendParams {
+                name: "#eng".into(),
+                text: "ping".into(),
+                from_pane: None,
+                to: Some("rev-3".into()),
+                in_reply_to: None,
+                from_human: false,
+            },
+        );
+        let sent: serde_json::Value = serde_json::from_str(&sent).unwrap();
+        let deliveries = sent["result"]["deliveries"].as_array().unwrap();
+        assert_eq!(deliveries.len(), 1, "@rev-3 reaches exactly one pane");
+        assert_eq!(deliveries[0]["pane_id"], serde_json::json!(third));
+
+        let refused = app.handle_channel_send(
+            "req-bare".into(),
+            ChannelSendParams {
+                name: "#eng".into(),
+                text: "ping".into(),
+                from_pane: None,
+                to: Some("rev".into()),
+                in_reply_to: None,
+                from_human: false,
+            },
+        );
+        let refused: serde_json::Value = serde_json::from_str(&refused).unwrap();
+        assert_eq!(
+            refused["error"]["code"],
+            serde_json::json!("channel_nick_ambiguous"),
+            "{refused}"
+        );
+        assert!(
+            refused["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("matches 3 channel members"),
+            "all three holders are offered as candidates: {refused}"
+        );
+
+        super::super::test_support::shutdown_test_runtimes(&mut app);
+    }
 
     /// Addressable names of a channel's agent members, in listing order.
     fn member_names(app: &mut App, name: &str) -> Vec<String> {
