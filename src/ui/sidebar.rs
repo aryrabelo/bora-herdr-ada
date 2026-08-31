@@ -570,6 +570,7 @@ fn workspace_agent_label(
         crate::terminal::TerminalId,
         crate::terminal::TerminalState,
     >,
+    hide_synthetic: bool,
 ) -> Option<String> {
     let detail = ws.pane_details(terminals).into_iter().next()?;
     let registered = ws
@@ -578,6 +579,11 @@ fn workspace_agent_label(
         .find_map(|tab| tab.panes.get(&detail.pane_id))
         .and_then(|pane| terminals.get(&pane.attached_terminal_id))
         .and_then(|terminal| terminal.agent_name.clone());
+    if hide_synthetic {
+        // Pane badges suppressed (`ui.hide_pane_badges` / Folders view): keep
+        // a registered `bora agent rename` name, drop the synthetic `@wNpN`.
+        return registered;
+    }
     Some(registered.unwrap_or_else(|| {
         ws.public_pane_number(detail.pane_id)
             .map(|n| format!("{}p{}", ws.id, crate::workspace::encode_public_number(n)))
@@ -2062,6 +2068,77 @@ pub(crate) fn next_entry_is_indented_workspace(entries: &[WorkspaceListEntry], i
     )
 }
 
+/// `Folders` view: a flat workspace list that honors only user-defined
+/// `visual_group` folders. No repo auto-grouping and no branch brackets. Each
+/// row is a `PaneDotsRow` block — the SAME 2-line "name + one dot per pane"
+/// shape Project view uses (`push_pane_dots_row`'s doc), reused unmodified
+/// rather than the single-status `Workspace` row: a workspace's real
+/// per-pane state is not collapsible into one dot. `name` is the same base
+/// label Project view's blocks carry (`project_view::workspace_group_name`)
+/// with no disambiguating hint — Folders groups are user-named containers,
+/// not branch groups, so two same-named members are not the collision that
+/// hint exists for. A group is anchored at its first member's position in
+/// workspace-vec order; later members are pulled up under the shared
+/// header. Ungrouped workspaces stay flat and drag-reorderable, exactly
+/// like the Flat view.
+///
+/// `PaneDotsRow` carries no indent/rail field (Project view never needed
+/// one — every block there sits under a branch header at the same fixed
+/// `PANE_DOTS_INDENT`), so a grouped member's block renders at the same
+/// indent as an ungrouped one; only its position under the `GroupHeader`
+/// says it belongs to the folder. // ponytail: no tree-rail bracket for
+/// grouped members (the old `Workspace{indented, rail}` shape had one,
+/// `PaneDotsRow` does not) — add an `indented`/`rail` field to
+/// `PaneDotsRow` (threaded through `pane_dots_columns`/`pane_dots_name_
+/// line`/`pane_dots_dots_line` and the geometry pass) if that bracket is
+/// wanted back.
+fn folders_view_entries(app: &AppState, force_expanded: bool) -> Vec<WorkspaceListEntry> {
+    let mut members: std::collections::HashMap<&str, Vec<usize>> = std::collections::HashMap::new();
+    for (ws_idx, ws) in app.workspaces.iter().enumerate() {
+        if let Some(group) = ws.visual_group.as_deref() {
+            members.entry(group).or_default().push(ws_idx);
+        }
+    }
+
+    let mut entries = Vec::new();
+    let mut emitted = std::collections::HashSet::<&str>::new();
+    for (ws_idx, ws) in app.workspaces.iter().enumerate() {
+        if let Some(group) = ws.visual_group.as_deref() {
+            if !emitted.insert(group) {
+                continue;
+            }
+            let vg_key = format!("vg:{group}");
+            let collapsed = !force_expanded && app.collapsed_space_keys.contains(&vg_key);
+            entries.push(WorkspaceListEntry::GroupHeader {
+                name: group.to_owned(),
+                collapse_key: vg_key,
+            });
+            if !collapsed {
+                if let Some(group_members) = members.get(group) {
+                    for &member_idx in group_members {
+                        entries.push(WorkspaceListEntry::PaneDotsRow {
+                            ws_idx: member_idx,
+                            name: project_view::workspace_group_name(&app.workspaces[member_idx]),
+                            dots: true,
+                        });
+                    }
+                }
+            }
+            continue;
+        }
+        entries.push(WorkspaceListEntry::PaneDotsRow {
+            ws_idx,
+            name: project_view::workspace_group_name(ws),
+            dots: true,
+        });
+    }
+
+    if force_expanded {
+        return entries;
+    }
+    apply_hidden_filter(app, &std::collections::HashSet::new(), entries)
+}
+
 fn workspace_list_entries_inner(app: &AppState, force_expanded: bool) -> Vec<WorkspaceListEntry> {
     if app.view_mode == crate::config::ViewMode::Project {
         // Three levels, built by the pure module. Never falls through to the
@@ -2071,6 +2148,10 @@ fn workspace_list_entries_inner(app: &AppState, force_expanded: bool) -> Vec<Wor
             return entries;
         }
         return apply_hidden_filter(app, &std::collections::HashSet::new(), entries);
+    }
+
+    if app.view_mode == crate::config::ViewMode::Folders {
+        return folders_view_entries(app, force_expanded);
     }
 
     if !app.groups_workspaces() {
@@ -4359,7 +4440,12 @@ fn render_workspace_list(
                 // plain-shell pane reports no agent identity at all, and
                 // such a row keeps the display name — a duplicate name still
                 // says more than an anonymous empty label.
-                let agent_badge = workspace_agent_label(ws, &app.terminals);
+                // `WorkspaceListEntry::Workspace` is never emitted while
+                // `view_mode == Folders` anymore (`folders_view_entries`
+                // pushes `PaneDotsRow` instead), so this arm has no Folders
+                // carve-out to make.
+                let hide_badges = app.hide_pane_badges;
+                let agent_badge = workspace_agent_label(ws, &app.terminals, hide_badges);
                 let full_label = if *indented && agent_badge.is_some() {
                     indented_child_label(ws, parent_branch.as_deref())
                 } else {
@@ -4815,7 +4901,7 @@ mod tests {
             ws.id,
             crate::workspace::encode_public_number(ws.public_pane_number(first_pane).unwrap())
         );
-        let detected_only = workspace_agent_label(ws, &app.terminals);
+        let detected_only = workspace_agent_label(ws, &app.terminals, false);
         assert_eq!(detected_only.as_deref(), Some(expected_addr.as_str()));
 
         // A registered `agent rename` name wins over the detected label.
@@ -4823,7 +4909,33 @@ mod tests {
             .get_mut(&terminal_id)
             .unwrap()
             .set_agent_name("planner".into());
-        let registered = workspace_agent_label(&app.workspaces[0], &app.terminals);
+        let registered = workspace_agent_label(&app.workspaces[0], &app.terminals, false);
+        assert_eq!(registered.as_deref(), Some("planner"));
+    }
+
+    #[test]
+    fn workspace_agent_label_hide_synthetic_drops_pane_id_keeps_registered_name() {
+        let mut app = crate::app::state::AppState::test_new();
+        let workspace = Workspace::test_new("bridge");
+        let first_pane = workspace.tabs[0].root_pane;
+        app.workspaces = vec![workspace];
+        app.ensure_test_terminals();
+        let terminal_id = app.workspaces[0].tabs[0].panes[&first_pane]
+            .attached_terminal_id
+            .clone();
+        app.terminals.get_mut(&terminal_id).unwrap().detected_agent = Some(Agent::Pi);
+
+        // Detected-only pane: with hide_synthetic the `@wNpN` badge is dropped
+        // entirely instead of falling back to the pane id.
+        let detected_only = workspace_agent_label(&app.workspaces[0], &app.terminals, true);
+        assert_eq!(detected_only, None);
+
+        // A registered `agent rename` name survives suppression.
+        app.terminals
+            .get_mut(&terminal_id)
+            .unwrap()
+            .set_agent_name("planner".into());
+        let registered = workspace_agent_label(&app.workspaces[0], &app.terminals, true);
         assert_eq!(registered.as_deref(), Some("planner"));
     }
 
@@ -6959,6 +7071,109 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
                     rail: BranchRail::None,
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn folders_view_ungrouped_workspaces_stay_flat() {
+        let mut app = AppState::test_new();
+        app.view_mode = crate::config::ViewMode::Folders;
+        let mut ws0 = Workspace::test_new("alpha");
+        ws0.cached_git_branch = Some("main".into());
+        let mut ws1 = Workspace::test_new("beta");
+        ws1.cached_git_branch = Some("dev".into());
+        app.workspaces = vec![ws0, ws1];
+
+        let entries = workspace_list_entries(&app);
+
+        // No repo grouping, no branch brackets: each row is a `PaneDotsRow`
+        // block (real per-pane dots), the same shape Project view uses,
+        // never the single-status `Workspace` row.
+        assert_eq!(
+            entries,
+            vec![
+                WorkspaceListEntry::PaneDotsRow {
+                    ws_idx: 0,
+                    name: "alpha".into(),
+                    dots: true,
+                },
+                WorkspaceListEntry::PaneDotsRow {
+                    ws_idx: 1,
+                    name: "beta".into(),
+                    dots: true,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn folders_view_groups_only_by_visual_group() {
+        let mut app = AppState::test_new();
+        app.view_mode = crate::config::ViewMode::Folders;
+        let mut ws0 = Workspace::test_new("alpha");
+        ws0.visual_group = Some("mine".into());
+        ws0.cached_git_branch = Some("main".into());
+        let ws1 = Workspace::test_new("loose");
+        let mut ws2 = Workspace::test_new("gamma");
+        ws2.visual_group = Some("mine".into());
+        app.workspaces = vec![ws0, ws1, ws2];
+
+        let entries = workspace_list_entries(&app);
+
+        // The folder is anchored at its first member; the later member is
+        // pulled up under the shared header as its own `PaneDotsRow` block
+        // (no tree rail — `PaneDotsRow` carries none, unlike the retired
+        // `Workspace{indented, rail}` shape); the ungrouped workspace stays
+        // flat, same block shape. No ProjectHeader/BranchHeader anywhere.
+        assert_eq!(
+            entries,
+            vec![
+                WorkspaceListEntry::GroupHeader {
+                    name: "mine".into(),
+                    collapse_key: "vg:mine".into(),
+                },
+                WorkspaceListEntry::PaneDotsRow {
+                    ws_idx: 0,
+                    name: "alpha".into(),
+                    dots: true,
+                },
+                WorkspaceListEntry::PaneDotsRow {
+                    ws_idx: 2,
+                    name: "gamma".into(),
+                    dots: true,
+                },
+                WorkspaceListEntry::PaneDotsRow {
+                    ws_idx: 1,
+                    name: "loose".into(),
+                    dots: true,
+                },
+            ]
+        );
+        assert!(!entries.iter().any(|e| matches!(
+            e,
+            WorkspaceListEntry::ProjectHeader { .. } | WorkspaceListEntry::BranchHeader { .. }
+        )));
+    }
+
+    #[test]
+    fn folders_view_collapsed_group_hides_members() {
+        let mut app = AppState::test_new();
+        app.view_mode = crate::config::ViewMode::Folders;
+        let mut ws0 = Workspace::test_new("alpha");
+        ws0.visual_group = Some("mine".into());
+        let mut ws1 = Workspace::test_new("beta");
+        ws1.visual_group = Some("mine".into());
+        app.workspaces = vec![ws0, ws1];
+        app.collapsed_space_keys.insert("vg:mine".into());
+
+        let entries = workspace_list_entries(&app);
+
+        assert_eq!(
+            entries,
+            vec![WorkspaceListEntry::GroupHeader {
+                name: "mine".into(),
+                collapse_key: "vg:mine".into(),
+            }]
         );
     }
 
@@ -9908,6 +10123,62 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
             2,
             "dots sit 2 columns apart: {pane_hits:?}"
         );
+    }
+
+    #[test]
+    fn folders_view_workspace_with_two_panes_emits_dots_for_both() {
+        // The whole point of swapping Folders off the single-status
+        // `Workspace` row and onto `PaneDotsRow` (bora follow-up): a
+        // workspace's real per-pane state must show, one dot per pane, not
+        // collapse into one status per workspace. Mirrors
+        // `pane_dots_row_hit_areas_land_on_the_rendered_dots_own_columns`'s
+        // style (Project view's own proof of the same lockstep contract)
+        // but for Folders.
+        let mut app = AppState::test_new();
+        app.view_mode = crate::config::ViewMode::Folders;
+        let mut ws = Workspace::test_new("multi-pane");
+        ws.test_split(Direction::Vertical);
+        app.workspaces = vec![ws];
+
+        let area = Rect::new(0, 0, 30, 10);
+        let runtimes = crate::terminal::TerminalRuntimeRegistry::new();
+        let mut terminal =
+            Terminal::new(TestBackend::new(area.width, area.height)).expect("test terminal");
+        terminal
+            .draw(|frame| render_workspace_list(&app, &runtimes, frame, area, false))
+            .expect("workspace list should render");
+
+        let (cards, _headers, project_rows) = compute_workspace_list_areas_all(&app, area);
+        assert_eq!(
+            cards.len(),
+            1,
+            "one PaneDotsRow block card for the workspace: {cards:?}"
+        );
+        assert_eq!(
+            cards[0].rect.height, 2,
+            "the block spans both rows (l1 name + l2 dots)"
+        );
+
+        let mut pane_hits: Vec<_> = project_rows
+            .iter()
+            .filter(|a| matches!(a.target, ProjectRowTarget::Pane { .. }))
+            .collect();
+        assert_eq!(
+            pane_hits.len(),
+            2,
+            "Folders must show one dot per pane, not one status per workspace: {pane_hits:?}"
+        );
+        pane_hits.sort_by_key(|a| a.rect.x);
+
+        let buffer = terminal.backend().buffer();
+        for hit in &pane_hits {
+            let cell = &buffer[(hit.rect.x, hit.rect.y)];
+            assert_ne!(
+                cell.symbol(),
+                " ",
+                "each dot hit area must land on a rendered glyph, not blank space: {cell:?}"
+            );
+        }
     }
 
     #[test]

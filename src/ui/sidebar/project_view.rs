@@ -245,7 +245,7 @@ pub(super) fn project_view_entries(
 /// cached auto label, else the repo name (the repo-name fallback is a
 /// fixture/cold-cache path: `cached_auto_label` is empty only before
 /// git-identity discovery has run).
-fn workspace_group_name(ws: &Workspace) -> String {
+pub(super) fn workspace_group_name(ws: &Workspace) -> String {
     ws.custom_name.clone().unwrap_or_else(|| {
         if ws.cached_auto_label.is_empty() {
             ws.cached_git_space

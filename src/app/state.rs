@@ -2342,6 +2342,11 @@ pub struct AppState {
     /// Sidebar workspace view mode (`ui.view_mode`, back-compat alias
     /// `ui.group_workspaces_by_repo`).
     pub(crate) view_mode: crate::config::ViewMode,
+    /// Suppress the `@wNpN` synthetic pane badge on `Workspace`-shaped
+    /// sidebar rows (`ui.hide_pane_badges`). The Folders view never emits
+    /// that row shape (it uses `PaneDotsRow`'s real per-pane dots
+    /// instead), so this flag has nothing to do there.
+    pub(crate) hide_pane_badges: bool,
     pub show_pane_ids_on_pane_borders: bool,
     pub channel_group_name: String,
     /// Whether the fork-only chat view surface is enabled (`ui.chat_view`).
@@ -2884,6 +2889,7 @@ impl AppState {
             pane_gaps: false,
             show_agent_labels_on_pane_borders: false,
             view_mode: crate::config::ViewMode::Repo,
+            hide_pane_badges: false,
             show_pane_ids_on_pane_borders: false,
             channel_group_name: "channels".to_string(),
             chat_view: false,

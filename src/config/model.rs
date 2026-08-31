@@ -201,9 +201,12 @@ pub enum SidebarCollapsedModeConfig {
 
 /// Sidebar workspace view mode. `Flat` shows a freely drag-reorderable list
 /// with no grouping at all — repo, channel, and visual groups all dissolve.
-/// `Repo` groups workspaces under repo headers and is the historical
-/// default. `Project` is reserved for a later bead's project entry model
-/// (bora-49p.3) and renders identically to `Repo` until that lands.
+/// `Folders` is a flat list too, but honors user-defined `visual_group`
+/// folders (and nothing else): no repo auto-grouping, no branch brackets,
+/// and the `@wNpN` pane badge is always suppressed, so a row is just its
+/// name — like `Flat` with drag-in folders. `Repo` groups workspaces under
+/// repo headers and is the historical default. `Project` is the
+/// projects.yml-backed entry model.
 ///
 /// Deliberately backward compatible with the retired
 /// `group_workspaces_by_repo` boolean: this type's `Deserialize` impl
@@ -215,16 +218,18 @@ pub enum SidebarCollapsedModeConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ViewMode {
     Flat,
+    Folders,
     #[default]
     Repo,
     Project,
 }
 
 impl ViewMode {
-    /// Flat -> Repo -> Project -> Flat.
+    /// Flat -> Folders -> Repo -> Project -> Flat.
     pub fn cycle(self) -> ViewMode {
         match self {
-            ViewMode::Flat => ViewMode::Repo,
+            ViewMode::Flat => ViewMode::Folders,
+            ViewMode::Folders => ViewMode::Repo,
             ViewMode::Repo => ViewMode::Project,
             ViewMode::Project => ViewMode::Flat,
         }
@@ -233,6 +238,7 @@ impl ViewMode {
     pub fn as_str(self) -> &'static str {
         match self {
             ViewMode::Flat => "flat",
+            ViewMode::Folders => "folders",
             ViewMode::Repo => "repo",
             ViewMode::Project => "project",
         }
@@ -265,11 +271,12 @@ impl<'de> Deserialize<'de> for ViewMode {
             Raw::Bool(false) => Ok(ViewMode::Flat),
             Raw::Str(s) => match s.as_str() {
                 "flat" => Ok(ViewMode::Flat),
+                "folders" => Ok(ViewMode::Folders),
                 "repo" => Ok(ViewMode::Repo),
                 "project" => Ok(ViewMode::Project),
                 other => Err(de::Error::unknown_variant(
                     other,
-                    &["flat", "repo", "project"],
+                    &["flat", "folders", "repo", "project"],
                 )),
             },
         }
@@ -1037,9 +1044,10 @@ pub struct UiConfig {
     pub show_agent_labels_on_pane_borders: bool,
     /// Sidebar workspace view mode: `flat` shows a freely drag-reorderable
     /// list with no grouping (repo, channel, and visual groups all
-    /// dissolve); `repo` groups workspaces under repo headers (default);
-    /// `project` is reserved for a later bead's project entry model and
-    /// renders identically to `repo` for now. Default: repo.
+    /// dissolve); `folders` is a flat list that honors only user-defined
+    /// `visual_group` folders (no repo grouping, no branch, no pane badge);
+    /// `repo` groups workspaces under repo headers (default); `project` is
+    /// the projects.yml-backed entry model. Default: repo.
     ///
     /// Deliberately backward compatible with the retired
     /// `group_workspaces_by_repo` boolean via a serde alias plus a
@@ -1049,6 +1057,12 @@ pub struct UiConfig {
     /// ambiguity and fails to parse rather than silently picking one.
     #[serde(alias = "group_workspaces_by_repo")]
     pub view_mode: ViewMode,
+    /// Suppress the `@wNpN` synthetic pane badge on `Workspace`-shaped
+    /// sidebar rows (a registered `bora agent rename` name is still shown).
+    /// The `folders` view never emits that row shape (it shows real
+    /// per-pane dots instead), so this flag has nothing to do there.
+    /// Default: false.
+    pub hide_pane_badges: bool,
     /// Lead each split pane border with its public pane id (`w26:p1`) so two panes
     /// running the same agent stay distinguishable. Default: false.
     pub show_pane_ids_on_pane_borders: bool,
@@ -1311,6 +1325,7 @@ impl Default for UiConfig {
             pane_gaps: true,
             show_agent_labels_on_pane_borders: false,
             view_mode: ViewMode::Repo,
+            hide_pane_badges: false,
             show_pane_ids_on_pane_borders: false,
             channel_group_name: "channels".to_string(),
             chat_view: false,

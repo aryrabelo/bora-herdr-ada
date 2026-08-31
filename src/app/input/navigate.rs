@@ -2477,7 +2477,7 @@ mod tests {
     }
 
     #[test]
-    fn custom_view_mode_key_cycles_flat_repo_project_and_wraps() {
+    fn custom_view_mode_key_cycles_all_modes_and_wraps() {
         let mut state = state_with_workspaces(&["test"]);
         state.keybinds.cycle_view_mode = crate::config::ActionKeybinds::prefix("g");
         assert_eq!(state.view_mode, crate::config::ViewMode::Repo);
@@ -2493,6 +2493,12 @@ mod tests {
             KeyEvent::new(KeyCode::Char('g'), KeyModifiers::empty()),
         );
         assert_eq!(state.view_mode, crate::config::ViewMode::Flat);
+
+        handle_navigate_key(
+            &mut state,
+            KeyEvent::new(KeyCode::Char('g'), KeyModifiers::empty()),
+        );
+        assert_eq!(state.view_mode, crate::config::ViewMode::Folders);
 
         handle_navigate_key(
             &mut state,

@@ -87,15 +87,17 @@ fn toast_delivery_index(delivery: ToastDelivery) -> usize {
 fn view_mode_index(mode: ViewMode) -> usize {
     match mode {
         ViewMode::Flat => 0,
-        ViewMode::Repo => 1,
-        ViewMode::Project => 2,
+        ViewMode::Folders => 1,
+        ViewMode::Repo => 2,
+        ViewMode::Project => 3,
     }
 }
 
 fn view_mode_for_index(idx: usize) -> ViewMode {
     match idx {
         0 => ViewMode::Flat,
-        1 => ViewMode::Repo,
+        1 => ViewMode::Folders,
+        2 => ViewMode::Repo,
         _ => ViewMode::Project,
     }
 }

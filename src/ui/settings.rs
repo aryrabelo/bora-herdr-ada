@@ -183,9 +183,10 @@ pub(super) fn render_settings_overlay(app: &AppState, frame: &mut Frame, area: R
                 frame,
                 content_area,
                 "sidebar view",
-                "flat: freely drag-reorderable, no grouping. repo: grouped under repo headers. project: grouped under projects declared in projects.yml (project > worktree > workspace); ungrouped workspaces land in Ungrouped",
+                "flat: freely drag-reorderable, no grouping. folders: flat list with only your visual-group folders (no repo/branch, no pane badge). repo: grouped under repo headers. project: grouped under projects declared in projects.yml (project > worktree > workspace); ungrouped workspaces land in Ungrouped",
                 &[
                     ("flat", ViewMode::Flat),
+                    ("folders", ViewMode::Folders),
                     ("repo", ViewMode::Repo),
                     ("project", ViewMode::Project),
                 ],

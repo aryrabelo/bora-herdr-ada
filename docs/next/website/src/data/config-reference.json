@@ -623,7 +623,7 @@
           "key": "keys.cycle_view_mode",
           "type": "string",
           "default": "unset",
-          "description": "Keybinding that cycles the sidebar view mode: flat -> repo -> project -> flat. Same thing the view-mode label on the sidebar's workspace header toggles when clicked."
+          "description": "Keybinding that cycles the sidebar view mode: flat -> folders -> repo -> project -> flat. Same thing the view-mode label on the sidebar's workspace header toggles when clicked."
         },
         {
           "key": "keys.chat",
@@ -883,12 +883,19 @@
           "key": "ui.view_mode",
           "type": "enum",
           "default": "\"repo\"",
-          "description": "How the sidebar groups workspaces. \"repo\" groups them by repository (the default). \"flat\" shows one flat list that can be freely drag-reordered — repo, channel, and visual groups all dissolve, and switching back regroups automatically. \"project\" groups them by declared project (projects.yml); until the project entry model lands it renders like \"repo\". Replaces the retired boolean ui.group_workspaces_by_repo, which is still accepted as an alias: false means \"flat\", true means \"repo\".",
+          "description": "How the sidebar groups workspaces. \"repo\" groups them by repository (the default). \"flat\" shows one flat list that can be freely drag-reordered — repo, channel, and visual groups all dissolve, and switching back regroups automatically. \"folders\" is a flat list too, but honors only your user-defined visual_group folders — no repo grouping, no branch brackets, and the @wNpN pane badge is suppressed. \"project\" groups them by declared project (projects.yml). Replaces the retired boolean ui.group_workspaces_by_repo, which is still accepted as an alias: false means \"flat\", true means \"repo\".",
           "values": [
             "flat",
+            "folders",
             "repo",
             "project"
           ]
+        },
+        {
+          "key": "ui.hide_pane_badges",
+          "type": "boolean",
+          "default": "false",
+          "description": "Suppress the synthetic @wNpN pane badge on sidebar workspace rows (a registered `bora agent rename` name is still shown). The \"folders\" view has no pane badges by construction: its rows carry per-pane dots instead."
         },
         {
           "key": "ui.show_pane_ids_on_pane_borders",

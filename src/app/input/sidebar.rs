@@ -1724,6 +1724,126 @@ mod tests {
     }
 
     #[test]
+    fn folders_mode_drag_onto_group_header_assigns_visual_group() {
+        let mut app = app_for_mouse_test();
+        let mut ws0 = Workspace::test_new("alpha");
+        ws0.visual_group = Some("g1".into());
+        ws0.cached_git_branch = None;
+        let mut ws1 = Workspace::test_new("loose");
+        ws1.cached_git_branch = None;
+        app.state.workspaces = vec![ws0, ws1];
+        app.state.view_mode = crate::config::ViewMode::Folders;
+        app.state.sidebar_spaces.rows = vec![vec![crate::config::SpaceSidebarToken::Workspace]];
+        app.state.sidebar_spaces.row_gap = 0;
+        app.state.active = None;
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 20));
+
+        let header = app
+            .state
+            .view
+            .workspace_group_header_areas
+            .iter()
+            .find(|h| h.name == "g1")
+            .expect("g1 header rendered")
+            .clone();
+        let source_row = app
+            .state
+            .view
+            .workspace_card_areas
+            .iter()
+            .find(|card| card.ws_idx == 1)
+            .expect("loose card present")
+            .rect
+            .y;
+
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            2,
+            source_row,
+        ));
+        app.handle_mouse(mouse(
+            MouseEventKind::Drag(MouseButton::Left),
+            2,
+            header.rect.y,
+        ));
+        assert!(matches!(
+            app.state.drag.as_ref().map(|drag| &drag.target),
+            Some(DragTarget::WorkspaceReorder {
+                source_ws_idx: 1,
+                ..
+            })
+        ));
+        app.handle_mouse(mouse(
+            MouseEventKind::Up(MouseButton::Left),
+            2,
+            header.rect.y,
+        ));
+
+        assert_eq!(app.state.workspaces[1].visual_group.as_deref(), Some("g1"));
+        assert!(app.state.drag.is_none());
+    }
+
+    #[test]
+    fn folders_mode_drag_outside_header_still_reorders() {
+        let mut app = app_for_mouse_test();
+        app.state.workspaces = vec![
+            Workspace::test_new("a"),
+            Workspace::test_new("b"),
+            Workspace::test_new("c"),
+        ];
+        app.state.view_mode = crate::config::ViewMode::Folders;
+        app.state.sidebar_spaces.rows = vec![vec![crate::config::SpaceSidebarToken::Workspace]];
+        app.state.sidebar_spaces.row_gap = 0;
+        for ws in &mut app.state.workspaces {
+            ws.cached_git_branch = None;
+        }
+        app.state.active = Some(1);
+        app.state.selected = 2;
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 20));
+
+        let source_row = app.state.view.workspace_card_areas[1].rect.y;
+        let target_row = crate::ui::workspace_drop_indicator_row(
+            &app.state.view.workspace_card_areas,
+            app.state.workspace_list_rect(),
+            0,
+        )
+        .unwrap();
+
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            2,
+            source_row,
+        ));
+        app.handle_mouse(mouse(
+            MouseEventKind::Drag(MouseButton::Left),
+            2,
+            target_row,
+        ));
+        assert!(matches!(
+            app.state.drag.as_ref().map(|drag| &drag.target),
+            Some(DragTarget::WorkspaceReorder {
+                source_ws_idx: 1,
+                insert_idx: Some(0),
+                ..
+            })
+        ));
+        app.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 2, target_row));
+
+        let names: Vec<_> = app
+            .state
+            .workspaces
+            .iter()
+            .map(crate::workspace::Workspace::display_name)
+            .collect();
+        assert_eq!(names, vec!["b", "a", "c"]);
+        assert!(app
+            .state
+            .workspaces
+            .iter()
+            .all(|ws| ws.visual_group.is_none()));
+    }
+
+    #[test]
     fn clicking_tab_scroll_button_reveals_hidden_tabs_without_renaming() {
         let mut app = app_for_mouse_test();
         let mut ws = Workspace::test_new("test");

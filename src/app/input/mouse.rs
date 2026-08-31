@@ -1277,6 +1277,42 @@ impl AppState {
                             self.request_full_repaint();
                             return None;
                         }
+                        // Folders view: a drop over a GROUP HEADER row
+                        // assigns the dragged workspace's `visual_group` to
+                        // that folder instead of reordering it, mirroring
+                        // the Project-view reparent-by-drop above. Reuses
+                        // the geometry pass's own
+                        // `workspace_group_header_areas` (never recomputed
+                        // from row arithmetic — see AGENTS.md) and the same
+                        // mutation path the context menu's "New group"/"→
+                        // group" items use (`ws.visual_group = ...` +
+                        // `mark_session_dirty`); `request_full_repaint`
+                        // mirrors the reparent branch above since this also
+                        // fires mid-drag, outside the modal flow that
+                        // already triggers a repaint on its own. The
+                        // synthetic `"hidden:"` header (the collapsed-count
+                        // toggle row) is excluded — it names no folder.
+                        if self.view_mode == crate::config::ViewMode::Folders {
+                            let folder_drop = self
+                                .view
+                                .workspace_group_header_areas
+                                .iter()
+                                .find(|header| {
+                                    mouse.row == header.rect.y
+                                        && mouse.column >= header.rect.x
+                                        && mouse.column < header.rect.x + header.rect.width
+                                })
+                                .filter(|header| header.collapse_key != "hidden:")
+                                .cloned();
+                            if let Some(header) = folder_drop {
+                                if let Some(ws) = self.workspaces.get_mut(source_ws_idx) {
+                                    ws.visual_group = Some(header.name);
+                                }
+                                self.mark_session_dirty();
+                                self.request_full_repaint();
+                                return None;
+                            }
+                        }
                         if !self.groups_workspaces() {
                             // Flat mode: every row is an independent drag
                             // target, never a block. `insert_idx` is already
