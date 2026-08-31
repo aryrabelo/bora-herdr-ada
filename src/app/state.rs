@@ -145,7 +145,11 @@ impl Palette {
             panel_bg: Color::Rgb(24, 24, 37),
             sidebar_bg: Color::Reset,
             active_row_bg: Color::Rgb(30, 30, 46),
-            selection_bg: Color::Rgb(49, 50, 68),
+            // Selection cursor one visible step above `surface0` (owner's
+            // ask, 2026-08-31: "mais claro" — at surface0 it was nearly
+            // indistinguishable from an unselected row). Catppuccin
+            // surface2.
+            selection_bg: Color::Rgb(88, 91, 112),
             surface0: Color::Rgb(49, 50, 68),
             surface1: Color::Rgb(69, 71, 90),
             surface_dim: Color::Rgb(30, 30, 46),
