@@ -547,8 +547,15 @@ impl AppState {
                     .and_then(|ws| ws.worktree_space())
                     .map(|space| space.key.as_str())
             });
-            let inside_group_gap =
-                self.groups_workspaces() && card_group.is_some() && card_group == previous_group;
+            // Repo view owns this suppression: its linked worktrees render
+            // NESTED under the group root, so gaps between same-repo
+            // siblings are not independent slots. Project and Folders make
+            // every row a top-level root, so every gap there is a real
+            // slot — suppressing them made drops land on the wrong side of
+            // same-repo siblings.
+            let inside_group_gap = self.view_mode == crate::config::ViewMode::Repo
+                && card_group.is_some()
+                && card_group == previous_group;
             if !inside_group_gap {
                 insert_indices.push(card.ws_idx);
             }
@@ -585,11 +592,15 @@ impl AppState {
         // renders its own top-level `PaneDotsRow` block (6a), which the
         // `roots` filter below treats as a root. Applying this guard
         // there let the drag OPEN and then silently swallowed the drop, since
-        // `None` here means "nothing to move".
-        if self.view_mode != crate::config::ViewMode::Project
-            && source
-                .worktree_space()
-                .is_some_and(|space| space.is_linked_worktree)
+        // `None` here means "nothing to move". Folders view (2026-08-31) is
+        // the same shape: every row is a top-level `PaneDotsRow`, so it
+        // gets the same exemption.
+        if !matches!(
+            self.view_mode,
+            crate::config::ViewMode::Project | crate::config::ViewMode::Folders
+        ) && source
+            .worktree_space()
+            .is_some_and(|space| space.is_linked_worktree)
         {
             return None;
         }
@@ -635,7 +646,13 @@ impl AppState {
         // `last_card.ws_idx + 1`, which can collide with a member of the source's
         // own (moving) group. Treat any insert target that belongs to the source
         // block as "end", so the whole block lands after the remaining roots.
-        let source_group_key = source.worktree_space().map(|space| space.key.clone());
+        // Folders has no blocks: it moves ONE row per drag — its contract is
+        // the Flat view's — so no group key and no block-end special case.
+        let source_group_key = if self.view_mode == crate::config::ViewMode::Folders {
+            None
+        } else {
+            source.worktree_space().map(|space| space.key.clone())
+        };
         let target_in_source_block = self
             .workspaces
             .get(insert_idx)
@@ -654,23 +671,29 @@ impl AppState {
             return None;
         }
 
-        let workspace_ids = match source.worktree_space() {
-            Some(source_space) => {
-                let mut ids = vec![source.id.clone()];
-                ids.extend(
-                    self.workspaces
-                        .iter()
-                        .filter(|workspace| workspace.id != source.id)
-                        .filter(|workspace| {
-                            workspace
-                                .worktree_space()
-                                .is_some_and(|space| space.key == source_space.key)
-                        })
-                        .map(|workspace| workspace.id.clone()),
-                );
-                ids
+        let workspace_ids = if self.view_mode == crate::config::ViewMode::Folders {
+            // Folders: the dragged row travels ALONE — never its repo
+            // siblings, which are independent rows in this view.
+            vec![source.id.clone()]
+        } else {
+            match source.worktree_space() {
+                Some(source_space) => {
+                    let mut ids = vec![source.id.clone()];
+                    ids.extend(
+                        self.workspaces
+                            .iter()
+                            .filter(|workspace| workspace.id != source.id)
+                            .filter(|workspace| {
+                                workspace
+                                    .worktree_space()
+                                    .is_some_and(|space| space.key == source_space.key)
+                            })
+                            .map(|workspace| workspace.id.clone()),
+                    );
+                    ids
+                }
+                None => vec![source.id.clone()],
             }
-            None => vec![source.id.clone()],
         };
         let before_workspace_id = if effective_end {
             None
@@ -1841,6 +1864,122 @@ mod tests {
             .workspaces
             .iter()
             .all(|ws| ws.visual_group.is_none()));
+    }
+
+    #[test]
+    fn folders_mode_linked_worktree_drag_moves_one_row_not_the_repo_block() {
+        // The fleet reality: nearly every row IS a linked worktree. Folders
+        // drags must behave like Flat — the grabbed row travels ALONE — even
+        // though `groups_workspaces()` is true there. Goes red if the Folders
+        // exemption is dropped from `can_reorder` (drag never opens), from
+        // `workspace_move_block_params`' linked-worktree guard (drop silently
+        // swallowed), or from its `workspace_ids` expansion (the whole repo
+        // sibling block travels with the grabbed row).
+        let mut app = app_for_mouse_test();
+        app.state.view_mode = crate::config::ViewMode::Folders;
+        let space = |linked: bool, checkout: &str| crate::workspace::WorktreeSpaceMembership {
+            key: "repo-key".into(),
+            label: "herdr".into(),
+            repo_root: "/repo/herdr".into(),
+            checkout_path: checkout.into(),
+            is_linked_worktree: linked,
+        };
+        let mut main = Workspace::test_new("main");
+        main.worktree_space = Some(space(false, "/repo/herdr"));
+        main.cached_git_branch = None;
+        let mut wt_a = Workspace::test_new("wt-a");
+        wt_a.worktree_space = Some(space(true, "/repo/herdr-a"));
+        wt_a.cached_git_branch = None;
+        let mut wt_b = Workspace::test_new("wt-b");
+        wt_b.worktree_space = Some(space(true, "/repo/herdr-b"));
+        wt_b.cached_git_branch = None;
+        let mut loose = Workspace::test_new("loose");
+        loose.cached_git_branch = None;
+        app.state.workspaces = vec![main, wt_a, wt_b, loose];
+        app.state.sidebar_spaces.rows = vec![vec![crate::config::SpaceSidebarToken::Workspace]];
+        app.state.sidebar_spaces.row_gap = 0;
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 20));
+
+        let cards = app.state.view.workspace_card_areas.clone();
+        let source_row = cards
+            .iter()
+            .find(|card| card.ws_idx == 1)
+            .expect("wt-a card present")
+            .rect
+            .y;
+        let area = app.state.workspace_list_rect();
+        let bottom_row =
+            crate::ui::workspace_drop_indicator_row(&cards, area, 4).expect("bottom slot present");
+
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            2,
+            source_row,
+        ));
+        app.handle_mouse(mouse(
+            MouseEventKind::Drag(MouseButton::Left),
+            2,
+            bottom_row,
+        ));
+        assert!(matches!(
+            app.state.drag.as_ref().map(|drag| &drag.target),
+            Some(DragTarget::WorkspaceReorder {
+                source_ws_idx: 1,
+                insert_idx: Some(4),
+                ..
+            })
+        ));
+        app.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 2, bottom_row));
+
+        let names: Vec<_> = app
+            .state
+            .workspaces
+            .iter()
+            .map(crate::workspace::Workspace::display_name)
+            .collect();
+        assert_eq!(names, vec!["main", "wt-b", "loose", "wt-a"]);
+    }
+
+    #[test]
+    fn folders_mode_drop_slot_exists_between_same_repo_siblings() {
+        // In Folders the list is flat and every row is an independent drag
+        // root, so a slot must exist between two adjacent rows even when
+        // they share a worktree key — the Repo-view gap suppression must
+        // not leak in, or drops between same-repo siblings land on the
+        // wrong side of the pair.
+        let mut app = app_for_mouse_test();
+        app.state.view_mode = crate::config::ViewMode::Folders;
+        let mut workspaces = Vec::new();
+        for (idx, name) in ["a", "b", "c"].into_iter().enumerate() {
+            let mut ws = Workspace::test_new(name);
+            ws.worktree_space = Some(crate::workspace::WorktreeSpaceMembership {
+                key: "repo-key".into(),
+                label: "herdr".into(),
+                repo_root: "/repo/herdr".into(),
+                checkout_path: format!("/repo/herdr-{idx}").into(),
+                is_linked_worktree: true,
+            });
+            ws.cached_git_branch = None;
+            workspaces.push(ws);
+        }
+        app.state.workspaces = workspaces;
+        app.state.sidebar_spaces.rows = vec![vec![crate::config::SpaceSidebarToken::Workspace]];
+        app.state.sidebar_spaces.row_gap = 0;
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 20));
+
+        let cards = app.state.view.workspace_card_areas.clone();
+        let area = app.state.workspace_list_rect();
+        let slot_before_b = crate::ui::workspace_drop_indicator_row(&cards, area, 1)
+            .expect("slot before b present");
+
+        assert_eq!(
+            app.state.workspace_drop_index_at_row(slot_before_b),
+            Some(1)
+        );
     }
 
     #[test]

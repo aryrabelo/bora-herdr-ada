@@ -1049,8 +1049,18 @@ impl AppState {
                             // (nearly all of them ARE linked worktrees) would
                             // silently refuse to drag — the exact regression
                             // reported.
+                            // Folders view (2026-08-31) likewise gives
+                            // every workspace its own top-level `PaneDotsRow`
+                            // (`folders_view_entries`), so the same exemption
+                            // applies there — without it virtually every real
+                            // row (a linked worktree) refuses to drag, and the
+                            // press resolves as a click on release.
                             !self.groups_workspaces()
-                                || self.view_mode == crate::config::ViewMode::Project
+                                || matches!(
+                                    self.view_mode,
+                                    crate::config::ViewMode::Project
+                                        | crate::config::ViewMode::Folders
+                                )
                                 || ws
                                     .worktree_space()
                                     .is_none_or(|space| !space.is_linked_worktree)

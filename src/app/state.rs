@@ -2544,9 +2544,12 @@ impl AppState {
         self.view_mode
     }
 
-    /// True for any mode that visually groups workspaces (`Repo` and
-    /// `Project` — `Project` renders like `Repo` until bora-49p.3 lands its
-    /// own entry model). Only `Flat` disables grouping.
+    /// True for any mode that visually groups workspaces (`Repo`, `Project`,
+    /// and `Folders` — `Project` renders like `Repo` until bora-49p.3 lands
+    /// its own entry model; `Folders` groups by the user's `visual_group`
+    /// headers). Only `Flat` disables grouping. NOTE: grouping here is about
+    /// HEADERS existing, not about drag semantics — Folders drags move one
+    /// independent row, Flat-style, despite this returning true.
     pub(crate) fn groups_workspaces(&self) -> bool {
         self.view_mode != crate::config::ViewMode::Flat
     }
