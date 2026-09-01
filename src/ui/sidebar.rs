@@ -4206,10 +4206,14 @@ fn render_workspace_list(
                 // "this is the active workspace" case is a lighter
                 // statement — the blue bar at the block's left border —
                 // so the dots' own state colours stay legible on the
-                // active row too. T6 6b: `block_height` is the single
-                // source both the selection fill and the active-bar loop
-                // below read, so they can never desync from
-                // `entry_row_height` when `dots` is off (1 row, not 2).
+                // active row too. Folders exception below (owner ask,
+                // 2026-09-01): its one-line rows fill the active row with
+                // `active_row_bg` as well, so the marker row stands out
+                // from the identical lines around it.
+                // T6 6b: `block_height` is the single source both the
+                // selection fill and the active-bar loop below read, so
+                // they can never desync from `entry_row_height` when
+                // `dots` is off (1 row, not 2).
                 let block_height: u16 = if *dots_on && !*inline { 2 } else { 1 };
                 let selected = *ws_idx == app.selected && is_navigating;
                 let is_active = Some(*ws_idx) == app.active;
@@ -4229,6 +4233,23 @@ fn render_workspace_list(
                         }
                         for x in body.x..body.x + body.width {
                             buf[(x, y)].set_style(Style::default().bg(bg));
+                        }
+                    }
+                } else if show_active_marker && *inline {
+                    // Folders (owner ask, 2026-09-01): the marker-only
+                    // active row is one identical line among many, so the
+                    // bar alone doesn't separate it — fill it with
+                    // `active_row_bg` too. `inline` is the Folders shape
+                    // (`folders_view_entries` is the only `inline: true`
+                    // emitter), so Project view's 2-line blocks keep the
+                    // GC3 marker-only statement.
+                    let buf = frame.buffer_mut();
+                    for y in row_y..row_y.saturating_add(block_height) {
+                        if y >= list_bottom {
+                            break;
+                        }
+                        for x in body.x..body.x + body.width {
+                            buf[(x, y)].set_style(Style::default().bg(p.active_row_bg));
                         }
                     }
                 }
@@ -11079,6 +11100,111 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
             Color::Reset,
             "the SectionRow branch line must not paint the workspace selection anymore"
         );
+    }
+
+    #[test]
+    fn folders_active_row_gets_background_fill_and_others_do_not() {
+        // Owner ask, 2026-09-01: in Folders view the row carrying the
+        // active `▎` marker must stand out from the folder's other rows
+        // with a lighter fill — and ONLY that row is filled.
+        let mut app = AppState::test_new();
+        app.palette = crate::app::state::Palette::catppuccin();
+        app.view_mode = crate::config::ViewMode::Folders;
+        let mut ws0 = Workspace::test_new("alpha");
+        ws0.visual_group = Some("mine".into());
+        let mut ws1 = Workspace::test_new("beta");
+        ws1.visual_group = Some("mine".into());
+        app.workspaces = vec![ws0, ws1];
+        app.active = Some(1);
+
+        let runtimes = crate::terminal::TerminalRuntimeRegistry::new();
+        let area = Rect::new(0, 0, 30, 10);
+        let mut terminal =
+            Terminal::new(TestBackend::new(area.width, area.height)).expect("test terminal");
+        terminal
+            .draw(|frame| render_workspace_list(&app, &runtimes, frame, area, false))
+            .expect("workspace list should render");
+        let buffer = terminal.backend().buffer();
+
+        let row_with = |needle: &str| {
+            (0..area.height)
+                .find(|&y| {
+                    (0..area.width)
+                        .map(|x| buffer[(x, y)].symbol().to_owned())
+                        .collect::<String>()
+                        .contains(needle)
+                })
+                .unwrap_or_else(|| panic!("row containing {needle:?} must render"))
+        };
+        let active_row = row_with("beta");
+        let idle_row = row_with("alpha");
+        let header_row = row_with("mine");
+
+        let active_text: String = (0..area.width)
+            .map(|x| buffer[(x, active_row)].symbol().to_owned())
+            .collect();
+        assert!(
+            active_text.contains('▎'),
+            "the active row must keep its marker: {active_text:?}"
+        );
+        for x in 0..area.width {
+            assert_eq!(
+                buffer[(x, active_row)].bg,
+                app.palette.active_row_bg,
+                "every cell of the marker row carries the lighter fill (col {x})"
+            );
+        }
+        assert_ne!(
+            buffer[(0, idle_row)].bg,
+            app.palette.active_row_bg,
+            "a non-active member row must stay unfilled"
+        );
+        assert_ne!(
+            buffer[(0, header_row)].bg,
+            app.palette.active_row_bg,
+            "the folder header row must stay unfilled"
+        );
+    }
+
+    #[test]
+    fn project_view_active_block_keeps_marker_only_fill() {
+        // Scope guard for the Folders active-row fill (owner ask,
+        // 2026-09-01): Project view's 2-line blocks keep the GC3
+        // marker-only statement — the bar draws, no background lands on
+        // the active block.
+        let mut app = AppState::test_new();
+        app.palette = crate::app::state::Palette::catppuccin();
+        app.view_mode = crate::config::ViewMode::Project;
+        app.workspaces = vec![Workspace::test_new("alpha")];
+        app.active = Some(0);
+
+        let runtimes = crate::terminal::TerminalRuntimeRegistry::new();
+        let area = Rect::new(0, 0, 30, 20);
+        let mut terminal =
+            Terminal::new(TestBackend::new(area.width, area.height)).expect("test terminal");
+        terminal
+            .draw(|frame| render_workspace_list(&app, &runtimes, frame, area, false))
+            .expect("workspace list should render");
+
+        let (cards, _, _) = compute_workspace_list_areas_all(&app, area);
+        let active_card = cards
+            .iter()
+            .find(|c| c.ws_idx == 0)
+            .expect("the active PaneDotsRow block must push a card");
+
+        let buffer = terminal.backend().buffer();
+        for y in [active_card.rect.y, active_card.rect.y + 1] {
+            assert_eq!(
+                buffer[(active_card.rect.x, y)].symbol(),
+                "▎",
+                "the active block's border carries the bar on row {y}"
+            );
+            assert_ne!(
+                buffer[(active_card.rect.x, y)].bg,
+                app.palette.active_row_bg,
+                "Project view keeps GC3: no active-row fill on row {y}"
+            );
+        }
     }
 
     #[test]
