@@ -235,6 +235,14 @@ repaint fix was reported as ineffective while the installed binary was ten
 minor versions behind the tree, and the same stale binary had earlier been
 suspected of *causing* a regression that shipped after it was built.)
 
+**After landing a change, you can put the running server on the new build
+yourself: `just install && bora server live-handoff`.** `live-handoff` hands
+the running headless server over to the freshly installed binary without
+killing panes or sessions, so the stale-binary trap above does not have to
+wait on a human restart. Run `bora --version` after the handoff — the swap is
+only proven when the reported version matches the tree you just built.
+(learned 2026-09-01, binding, owner instruction.)
+
 **`just check`/`just lint` only lint the host target you run them on and cannot compile target-gated Rust from a macOS box; only CI's `ubuntu-latest` leg lints that code.** Two separate gating shapes hide code from a macOS run, and the second one is easy to miss: whole-file `#![cfg(not(target_os = "macos"))]` test files (`tests/auto_detect.rs`, `tests/cli.rs`), and platform modules excluded by an **outer** `#[cfg(target_os = ...)]` on their `mod` declaration in `src/platform/mod.rs` (`src/platform/linux.rs`, `src/platform/windows.rs`) — including their `#[cfg(test)] mod tests`. A green `just check` on macOS is not proof any of it is clean; `lint` prints a reminder naming all four files, and that reminder is a to-verify list, not noise. (learned 2026-08-13, binding: clippy failures in Linux-only-gated test files reached CI invisibly from a macOS `just check` this way. Reasserted 2026-08-22, binding: it happened again, and worse — `9a2db191` left `std::sync::{Mutex, OnceLock}` unused in `src/platform/linux.rs`'s test module and CI stayed red across three commits, because the reminder only grepped for the whole-file inner attribute and never mentioned the platform modules at all. The `lint` recipe now lists them explicitly. Cross-compiling to verify locally does not work on this machine: the vendored libghostty-vt build script needs zig 0.15.2 and mise resolves 0.16.0, so CI is the only verifier — push the fix and watch the run.)
 
 **A stale `target/` cache can pin an absolute path to a checkout that no longer
