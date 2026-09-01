@@ -2360,6 +2360,9 @@ pub struct AppState {
     /// that row shape (it uses `PaneDotsRow`'s real per-pane dots
     /// instead), so this flag has nothing to do there.
     pub(crate) hide_pane_badges: bool,
+    /// Quiet seconds before a background pane is promoted to unseen
+    /// attention (`ui.idle_attention_seconds`). `0` disables promotion.
+    pub(crate) idle_attention_seconds: u64,
     pub show_pane_ids_on_pane_borders: bool,
     pub channel_group_name: String,
     /// Whether the fork-only chat view surface is enabled (`ui.chat_view`).
@@ -2907,6 +2910,7 @@ impl AppState {
             show_agent_labels_on_pane_borders: false,
             view_mode: crate::config::ViewMode::Repo,
             hide_pane_badges: false,
+            idle_attention_seconds: 300,
             show_pane_ids_on_pane_borders: false,
             channel_group_name: "channels".to_string(),
             chat_view: false,

@@ -1063,6 +1063,10 @@ pub struct UiConfig {
     /// per-pane dots instead), so this flag has nothing to do there.
     /// Default: false.
     pub hide_pane_badges: bool,
+    /// Promote a background-workspace pane to the sidebar attention state
+    /// (unseen: yellow/red dot, "N waiting" counter) after it has produced
+    /// no PTY output for this many seconds. `0` disables. Default: 300.
+    pub idle_attention_seconds: u64,
     /// Lead each split pane border with its public pane id (`w26:p1`) so two panes
     /// running the same agent stay distinguishable. Default: false.
     pub show_pane_ids_on_pane_borders: bool,
@@ -1326,6 +1330,7 @@ impl Default for UiConfig {
             show_agent_labels_on_pane_borders: false,
             view_mode: ViewMode::Repo,
             hide_pane_badges: false,
+            idle_attention_seconds: 300,
             show_pane_ids_on_pane_borders: false,
             channel_group_name: "channels".to_string(),
             chat_view: false,
@@ -2194,6 +2199,21 @@ delay_seconds = {}
         let error = toml::from_str::<Config>(&toml).unwrap_err().to_string();
 
         assert!(error.contains("ui.toast.delay_seconds must be between 0 and 3600"));
+    }
+
+    #[test]
+    fn idle_attention_seconds_parses_and_defaults_to_five_minutes() {
+        let config = Config::default();
+        assert_eq!(config.ui.idle_attention_seconds, 300);
+
+        let config: Config = toml::from_str(
+            r#"
+[ui]
+idle_attention_seconds = 0
+"#,
+        )
+        .unwrap();
+        assert_eq!(config.ui.idle_attention_seconds, 0);
     }
 
     #[test]

@@ -3586,6 +3586,37 @@ fn workspace_selection_background(p: &Palette, is_active: bool) -> Color {
     }
 }
 
+/// Aggregate sidebar attention counts: `(waiting, blocked)`. A pane is
+/// waiting when it is unseen — flipped by a completion transition, a
+/// blocked state, or the quiet-promotion tick
+/// (`App::promote_quiet_panes`) — and every unseen pane is something that
+/// finished or stalled while you were elsewhere. Channel workspaces are
+/// skipped: their panes go quiet by design and carry their own unread
+/// badge. Computed once per sidebar render, never per row.
+fn attention_pane_counts(app: &AppState) -> (usize, usize) {
+    let mut waiting = 0;
+    let mut blocked = 0;
+    for ws in &app.workspaces {
+        if ws.channel_home_name().is_some() {
+            continue;
+        }
+        for pane in ws.tabs.iter().flat_map(|tab| tab.panes.values()) {
+            if pane.seen {
+                continue;
+            }
+            waiting += 1;
+            if app
+                .terminals
+                .get(&pane.attached_terminal_id)
+                .is_some_and(|terminal| terminal.state == crate::detect::AgentState::Blocked)
+            {
+                blocked += 1;
+            }
+        }
+    }
+    (waiting, blocked)
+}
+
 fn render_workspace_list(
     app: &AppState,
     terminal_runtimes: &TerminalRuntimeRegistry,
@@ -3630,6 +3661,36 @@ fn render_workspace_list(
                 .alignment(Alignment::Right),
                 toggle_rect,
             );
+        }
+        // Aggregate attention counter, left-aligned on the same margin
+        // row as the view-mode toggle (which owns the trailing cells).
+        // Render-only affordance: the dots already carry the per-row
+        // one; this answers "how many are waiting" across every folder
+        // at a glance. Red means at least one unseen pane is blocked.
+        let (waiting, blocked) = attention_pane_counts(app);
+        if waiting > 0 {
+            let label = format!("{waiting} waiting");
+            let avail = if toggle_rect != Rect::default() {
+                (toggle_rect.x - area.x) as usize
+            } else {
+                area.width as usize
+            };
+            let label: String = label.chars().take(avail).collect();
+            if !label.is_empty() {
+                let color = if blocked > 0 { p.red } else { p.yellow };
+                frame.render_widget(
+                    Paragraph::new(Span::styled(
+                        label,
+                        Style::default().fg(color).add_modifier(Modifier::BOLD),
+                    )),
+                    Rect::new(
+                        area.x,
+                        area.y,
+                        u16::try_from(avail).unwrap_or(area.width),
+                        1,
+                    ),
+                );
+            }
         }
     }
     let metrics = workspace_list_scroll_metrics(app, area);
@@ -11205,6 +11266,78 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
                 "Project view keeps GC3: no active-row fill on row {y}"
             );
         }
+    }
+
+    #[test]
+    fn waiting_counter_renders_only_when_panes_are_unseen() {
+        // B of the attention work (owner ask, 2026-09-01): the sidebar
+        // margin row answers "how many panes are waiting" — absent at
+        // zero, attention-yellow on plain unseen, red when an unseen pane
+        // is blocked.
+        let mut app = AppState::test_new();
+        app.palette = crate::app::state::Palette::catppuccin();
+        app.workspaces = vec![Workspace::test_new("alpha")];
+        app.active = Some(0);
+        app.ensure_test_terminals();
+
+        let area = Rect::new(0, 0, 40, 12);
+        let render = |app: &crate::app::state::AppState| {
+            let runtimes = crate::terminal::TerminalRuntimeRegistry::new();
+            let mut terminal =
+                Terminal::new(TestBackend::new(area.width, area.height)).expect("test terminal");
+            terminal
+                .draw(|frame| render_workspace_list(app, &runtimes, frame, area, false))
+                .expect("workspace list should render");
+            terminal.backend().buffer().clone()
+        };
+
+        // Everything seen: no counter on the margin row.
+        let buffer = render(&app);
+        let row: String = (0..area.width)
+            .map(|x| buffer[(x, area.y)].symbol().to_owned())
+            .collect();
+        assert!(
+            !row.contains("waiting"),
+            "no unseen panes, no counter: {row:?}"
+        );
+
+        // An unseen pane: the counter appears, attention yellow.
+        let pane = app.workspaces[0].tabs[0].root_pane;
+        app.workspaces[0].tabs[0].panes.get_mut(&pane).unwrap().seen = false;
+        let buffer = render(&app);
+        let row: String = (0..area.width)
+            .map(|x| buffer[(x, area.y)].symbol().to_owned())
+            .collect();
+        assert!(row.contains("1 waiting"), "counter must render: {row:?}");
+        let label_x = (0..area.width)
+            .find(|&x| buffer[(x, area.y)].symbol() != " ")
+            .expect("counter label cell");
+        assert_eq!(
+            buffer[(label_x, area.y)].fg,
+            app.palette.yellow,
+            "plain waiting is the attention yellow"
+        );
+
+        // A blocked unseen pane: the counter turns red.
+        let terminal_id = app.workspaces[0]
+            .terminal_id(pane)
+            .expect("pane terminal")
+            .clone();
+        let mut terminal_state = crate::terminal::TerminalState::new(
+            terminal_id.clone(),
+            std::path::PathBuf::from("/tmp"),
+        );
+        terminal_state.state = crate::detect::AgentState::Blocked;
+        app.terminals.insert(terminal_id, terminal_state);
+        let buffer = render(&app);
+        let label_x = (0..area.width)
+            .find(|&x| buffer[(x, area.y)].symbol() != " ")
+            .expect("counter label cell");
+        assert_eq!(
+            buffer[(label_x, area.y)].fg,
+            app.palette.red,
+            "a blocked unseen pane turns the counter red"
+        );
     }
 
     #[test]

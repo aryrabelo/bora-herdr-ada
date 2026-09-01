@@ -1060,6 +1060,7 @@ pub struct PaneRuntime {
     child_wait_completed: Option<Arc<AtomicBool>>,
     kitty_keyboard_flags: Arc<AtomicU16>,
     content_seq: Arc<AtomicU64>,
+    last_output_at: Arc<Mutex<Option<std::time::Instant>>>,
     detection_content_seq: Arc<AtomicU64>,
     full_lifecycle_authority_active: Arc<AtomicBool>,
     detect_reset_notify: Arc<Notify>,
@@ -2072,12 +2073,14 @@ impl PaneRuntime {
         let kitty_keyboard_flags = Arc::new(AtomicU16::new(keyboard_protocol_flags));
         let content_seq = Arc::new(AtomicU64::new(0));
         let detection_content_seq = Arc::new(AtomicU64::new(0));
+        let last_output_at = Arc::new(Mutex::new(None));
 
         let io = {
             let terminal = terminal.clone();
             let response_writer = response_tx;
             let content_seq = content_seq.clone();
             let detection_content_seq = detection_content_seq.clone();
+            let last_output_at = last_output_at.clone();
             let child_pid = child_pid.clone();
             let read_events = events.clone();
             let reported_cwd = reported_cwd.clone();
@@ -2085,6 +2088,9 @@ impl PaneRuntime {
             let delay_rt = rt.clone();
             let on_read = Box::new(move |bytes: &[u8]| {
                 content_seq.fetch_add(1, Ordering::AcqRel);
+                if let Ok(mut stamp) = last_output_at.lock() {
+                    *stamp = Some(std::time::Instant::now());
+                }
                 let shell_pid = child_pid.load(Ordering::Acquire);
                 let result =
                     terminal.process_pty_bytes(pane_id, shell_pid, bytes, &response_writer);
@@ -2158,6 +2164,7 @@ impl PaneRuntime {
             child_wait_completed: None,
             kitty_keyboard_flags,
             content_seq,
+            last_output_at,
             detection_content_seq,
             full_lifecycle_authority_active,
             detect_reset_notify,
@@ -2215,6 +2222,7 @@ impl PaneRuntime {
         let child_wait_completed = Arc::new(AtomicBool::new(false));
         let content_seq = Arc::new(AtomicU64::new(0));
         let detection_content_seq = Arc::new(AtomicU64::new(0));
+        let last_output_at = Arc::new(Mutex::new(None));
         let full_lifecycle_authority_active = Arc::new(AtomicBool::new(false));
         {
             let child_wait_completed = child_wait_completed.clone();
@@ -2248,12 +2256,16 @@ impl PaneRuntime {
             let render_dirty = render_dirty.clone();
             let content_seq = content_seq.clone();
             let detection_content_seq = detection_content_seq.clone();
+            let last_output_at = last_output_at.clone();
             let child_pid = child_pid.clone();
             let events = events.clone();
             let reported_cwd = reported_cwd.clone();
             let rt = tokio::runtime::Handle::current();
             let on_read = Box::new(move |bytes: &[u8]| {
                 content_seq.fetch_add(1, Ordering::AcqRel);
+                if let Ok(mut stamp) = last_output_at.lock() {
+                    *stamp = Some(std::time::Instant::now());
+                }
                 let shell_pid = child_pid.load(Ordering::Acquire);
                 let result =
                     terminal.process_pty_bytes(pane_id, shell_pid, bytes, &response_writer);
@@ -2707,6 +2719,7 @@ impl PaneRuntime {
             child_wait_completed: Some(child_wait_completed),
             kitty_keyboard_flags,
             content_seq,
+            last_output_at,
             detection_content_seq,
             full_lifecycle_authority_active,
             detect_reset_notify,
@@ -2756,6 +2769,21 @@ impl PaneRuntime {
 
     pub(crate) fn content_seq(&self) -> u64 {
         self.content_seq.load(Ordering::Acquire)
+    }
+
+    /// Last PTY output instant, `None` until the first chunk after spawn —
+    /// the quiet-promotion gate reads this, and `None` is what keeps
+    /// restored shells (whose pre-restart output predates the stamp) from
+    /// mass-promoting on the first tick.
+    pub(crate) fn last_output_at(&self) -> Option<std::time::Instant> {
+        *self.last_output_at.lock().ok()?
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_last_output_at(&self, at: std::time::Instant) {
+        if let Ok(mut stamp) = self.last_output_at.lock() {
+            *stamp = Some(at);
+        }
     }
 
     /// Resize if the dimensions actually changed.
@@ -3196,6 +3224,9 @@ impl PaneRuntime {
 
     pub(crate) fn test_process_pty_bytes(&self, bytes: &[u8]) {
         self.content_seq.fetch_add(1, Ordering::AcqRel);
+        if let Ok(mut stamp) = self.last_output_at.lock() {
+            *stamp = Some(std::time::Instant::now());
+        }
         let (tx, _rx) = mpsc::channel(1);
         let _ = self.terminal.process_pty_bytes(self.pane_id, 0, bytes, &tx);
         self.content_seq.fetch_add(1, Ordering::Release);
@@ -3240,6 +3271,7 @@ impl PaneRuntime {
                 child_wait_completed: None,
                 kitty_keyboard_flags: Arc::new(AtomicU16::new(0)),
                 content_seq: Arc::new(AtomicU64::new(0)),
+                last_output_at: Arc::new(Mutex::new(None)),
                 detection_content_seq: Arc::new(AtomicU64::new(0)),
                 full_lifecycle_authority_active: Arc::new(AtomicBool::new(false)),
                 detect_reset_notify: Arc::new(Notify::new()),
@@ -3270,6 +3302,20 @@ mod tests {
         apply_pane_launch_env(&mut cmd, &PaneLaunchEnv::default());
 
         assert!(cmd.get_env("CODEX_THREAD_ID").is_none());
+    }
+
+    #[tokio::test]
+    async fn process_pty_bytes_sets_last_output() {
+        let runtime = PaneRuntime::test_with_screen_bytes(10, 5, b"");
+        assert!(
+            runtime.last_output_at().is_none(),
+            "no output yet: the stamp must be None so restored shells never promote"
+        );
+        runtime.test_process_pty_bytes(b"hello");
+        assert!(
+            runtime.last_output_at().is_some(),
+            "a PTY chunk must stamp last_output_at"
+        );
     }
 
     #[tokio::test]
@@ -3892,6 +3938,7 @@ mod tests {
             child_wait_completed: None,
             kitty_keyboard_flags: Arc::new(AtomicU16::new(0)),
             content_seq: Arc::new(AtomicU64::new(0)),
+            last_output_at: Arc::new(Mutex::new(None)),
             detection_content_seq: Arc::new(AtomicU64::new(0)),
             full_lifecycle_authority_active: Arc::new(AtomicBool::new(false)),
             detect_reset_notify: Arc::new(Notify::new()),
@@ -3925,6 +3972,7 @@ mod tests {
             child_wait_completed: None,
             kitty_keyboard_flags: Arc::new(AtomicU16::new(0)),
             content_seq: Arc::new(AtomicU64::new(0)),
+            last_output_at: Arc::new(Mutex::new(None)),
             detection_content_seq: Arc::new(AtomicU64::new(0)),
             full_lifecycle_authority_active: Arc::new(AtomicBool::new(false)),
             detect_reset_notify: Arc::new(Notify::new()),

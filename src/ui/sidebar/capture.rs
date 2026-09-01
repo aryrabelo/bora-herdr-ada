@@ -461,7 +461,7 @@ const FIXTURE_HEIGHT: u16 = 40;
 // idle pra quando ele está trabalhando") — sand is the ambient set — so
 // Working went back to the braille set.
 
-const ALVO_CAPTURE: &str = r#"                                                 project
+const ALVO_CAPTURE: &str = r#"1 waiting                                        project
 
  Bora                                                8/8
 
@@ -1361,6 +1361,11 @@ mod tests {
     /// fixture also stopped pinning an ACTIVE workspace — the `▎` bar
     /// is T1's transient overlay, not structure. Run with:
     /// `cargo nextest run -E 'test(p4a)'`
+    /// Attribution (owner-rule golden update, 2026-09-01): row 00 used to
+    /// be a blank margin row with only the right-pinned `project` toggle;
+    /// it now leads with the `1 waiting` attention counter because the
+    /// fixture carries an unseen pane — the counter aggregates the same
+    /// signal the row dots already express. Every other row is unchanged.
     #[test]
     fn p4a_project_view_capture_matches_alvo_line_by_line() {
         let (_isolated, _checkout, app) = alvo_fixture();

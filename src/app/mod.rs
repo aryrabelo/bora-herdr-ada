@@ -890,6 +890,7 @@ impl App {
             show_agent_labels_on_pane_borders: config.ui.show_agent_labels_on_pane_borders,
             view_mode: config.ui.view_mode,
             hide_pane_badges: config.ui.hide_pane_badges,
+            idle_attention_seconds: config.ui.idle_attention_seconds,
             show_pane_ids_on_pane_borders: config.ui.show_pane_ids_on_pane_borders,
             channel_group_name: config.ui.channel_group_name.clone(),
             chat_view: config.ui.chat_view,
@@ -2309,6 +2310,7 @@ impl App {
                     config.ui.show_agent_labels_on_pane_borders;
                 self.state.view_mode = config.ui.view_mode;
                 self.state.hide_pane_badges = config.ui.hide_pane_badges;
+                self.state.idle_attention_seconds = config.ui.idle_attention_seconds;
                 self.state.show_pane_ids_on_pane_borders = config.ui.show_pane_ids_on_pane_borders;
                 self.state.chat_view = config.ui.chat_view;
                 self.state.chat_name = config.ui.effective_chat_name();

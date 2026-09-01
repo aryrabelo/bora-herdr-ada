@@ -4880,6 +4880,10 @@ impl HeadlessServer {
         // froze at one frame in server mode, the only mode most
         // operators run.
         changed |= self.app.tick_animation(now);
+        // Quiet-panes promotion for the sidebar attention counter: shared
+        // helper (`App::promote_quiet_panes`), same drift rule as the two
+        // calls above — this is the tick path most operators actually run.
+        changed |= self.app.promote_quiet_panes(now);
 
         if self
             .app

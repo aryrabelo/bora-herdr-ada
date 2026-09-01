@@ -910,6 +910,12 @@
           "description": "Sidebar group that collects `#`-labelled channel workspaces. The grouping rule keys off the `#` label, never off this string."
         },
         {
+          "key": "ui.idle_attention_seconds",
+          "type": "integer",
+          "default": "300",
+          "description": "Promote a background-workspace pane to the sidebar attention state (unseen: yellow/red dot, and the \"N waiting\" counter on the view row) after it has produced no output for this many seconds. Focusing its workspace clears it. 0 disables."
+        },
+        {
           "key": "ui.chat_view",
           "type": "boolean",
           "default": "false",

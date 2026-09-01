@@ -364,6 +364,57 @@ impl App {
         self.sync_animation_timer(now);
         changed
     }
+    /// ONE owner of the quiet-panes promotion: a pane in a background
+    /// workspace whose terminal has produced no PTY output for
+    /// `ui.idle_attention_seconds` flips to unseen (`seen = false`) — the
+    /// exact channel the finished/blocked dots, the idle-age label and the
+    /// sidebar "N waiting" counter already read. A promoted pane recovers
+    /// the moment its workspace is focused (`seen` resets there). The
+    /// stamp is `None` until a pane's first output chunk after spawn, so
+    /// shells restored from a previous server run never mass-promote on
+    /// the first tick. `ui.idle_attention_seconds = 0` disables. Runs
+    /// unconditionally on every scheduled tick (one Instant compare per
+    /// pane) and is called by both tick paths (standalone
+    /// `handle_scheduled_tasks` and the headless server's
+    /// `handle_scheduled_tasks_headless`) — same drift rule as
+    /// `poll_projects_store` and `tick_animation` above. Returns whether
+    /// visible state changed.
+    pub(crate) fn promote_quiet_panes(&mut self, now: Instant) -> bool {
+        let quiet_seconds = self.state.idle_attention_seconds;
+        if quiet_seconds == 0 {
+            return false;
+        }
+        let active = self.state.active;
+        let terminal_runtimes = &self.terminal_runtimes;
+        let state = &mut self.state;
+        let mut changed = false;
+        for (ws_idx, ws) in state.workspaces.iter_mut().enumerate() {
+            // You are looking at it — quiet here is not "waiting for you".
+            if Some(ws_idx) == active {
+                continue;
+            }
+            // Channel panes go quiet by design and have their own unread badge.
+            if ws.channel_home_name().is_some() {
+                continue;
+            }
+            for pane in ws.tabs.iter_mut().flat_map(|tab| tab.panes.values_mut()) {
+                if !pane.seen {
+                    continue;
+                }
+                let Some(last_output) = terminal_runtimes
+                    .get(&pane.attached_terminal_id)
+                    .and_then(crate::terminal::TerminalRuntime::last_output_at)
+                else {
+                    continue;
+                };
+                if now.duration_since(last_output).as_secs() >= quiet_seconds {
+                    pane.seen = false;
+                    changed = true;
+                }
+            }
+        }
+        changed
+    }
 
     pub(crate) fn handle_scheduled_tasks(&mut self, now: Instant, geometry_dirty: bool) -> bool {
         let mut changed = false;
@@ -517,6 +568,8 @@ impl App {
             self.workspace_idle_check_deadline =
                 Some(now + crate::app::WORKSPACE_IDLE_CHECK_INTERVAL);
         }
+
+        changed |= self.promote_quiet_panes(now);
 
         // Expire temporary sidebar hides so their rows return to the list.
         if self
@@ -1196,6 +1249,95 @@ mod tests {
             is_focused: true,
         });
         (app, pane_id)
+    }
+
+    #[tokio::test]
+    async fn promote_quiet_panes_flips_quiet_background_pane_only() {
+        let (mut app, active_pane) = test_app_with_pane();
+        let background = Workspace::test_new("bg");
+        let background_pane = background.tabs[0].root_pane;
+        app.state.workspaces.push(background);
+        let now = Instant::now();
+
+        let active_terminal = app.state.workspaces[0]
+            .terminal_id(active_pane)
+            .expect("active pane terminal")
+            .clone();
+        let active_runtime = crate::terminal::TerminalRuntime::test_with_screen_bytes(10, 5, b"x");
+        active_runtime.set_last_output_at(now - Duration::from_secs(6000));
+        app.terminal_runtimes
+            .insert(active_terminal, active_runtime);
+
+        let background_terminal = app.state.workspaces[1]
+            .terminal_id(background_pane)
+            .expect("background pane terminal")
+            .clone();
+        let quiet_runtime = crate::terminal::TerminalRuntime::test_with_screen_bytes(10, 5, b"x");
+        quiet_runtime.set_last_output_at(now - Duration::from_secs(600));
+        app.terminal_runtimes
+            .insert(background_terminal, quiet_runtime);
+
+        assert!(
+            app.promote_quiet_panes(now),
+            "a promotion must mark the tick dirty"
+        );
+        assert!(
+            app.state.workspaces[0].tabs[0].panes[&active_pane].seen,
+            "the workspace you are looking at must never promote"
+        );
+        assert!(
+            !app.state.workspaces[1].tabs[0].panes[&background_pane].seen,
+            "a background pane quiet past ui.idle_attention_seconds must promote"
+        );
+    }
+
+    #[tokio::test]
+    async fn promote_quiet_panes_skips_stampless_channel_and_zero_threshold() {
+        let (mut app, _active_pane) = test_app_with_pane();
+        let quiet = Workspace::test_new("quiet");
+        let quiet_pane = quiet.tabs[0].root_pane;
+        app.state.workspaces.push(quiet);
+        let quiet_terminal = app.state.workspaces[1]
+            .terminal_id(quiet_pane)
+            .expect("quiet pane terminal")
+            .clone();
+        // No stamp: a runtime whose last output predates the spawn (None)
+        // must never promote, or restored shells would mass-flip.
+        app.terminal_runtimes.insert(
+            quiet_terminal,
+            crate::terminal::TerminalRuntime::test_with_screen_bytes(10, 5, b"x"),
+        );
+        let now = Instant::now();
+        assert!(
+            !app.promote_quiet_panes(now),
+            "stampless panes never promote"
+        );
+
+        // Channel workspaces go quiet by design and carry their own badge.
+        let channel = Workspace::test_new("#general");
+        let channel_pane = channel.tabs[0].root_pane;
+        app.state.workspaces.push(channel);
+        let channel_terminal = app.state.workspaces[2]
+            .terminal_id(channel_pane)
+            .expect("channel pane terminal")
+            .clone();
+        let channel_runtime = crate::terminal::TerminalRuntime::test_with_screen_bytes(10, 5, b"x");
+        channel_runtime.set_last_output_at(now - Duration::from_secs(600));
+        app.terminal_runtimes
+            .insert(channel_terminal, channel_runtime);
+        assert!(!app.promote_quiet_panes(now), "channel panes never promote");
+
+        // Threshold 0 disables the whole pass.
+        app.state.idle_attention_seconds = 0;
+        let quiet_terminal = app.state.workspaces[1]
+            .terminal_id(quiet_pane)
+            .expect("quiet pane terminal")
+            .clone();
+        let stamped = crate::terminal::TerminalRuntime::test_with_screen_bytes(10, 5, b"x");
+        stamped.set_last_output_at(now - Duration::from_secs(600));
+        app.terminal_runtimes.insert(quiet_terminal, stamped);
+        assert!(!app.promote_quiet_panes(now), "0 must disable promotion");
+        assert!(app.state.workspaces[1].tabs[0].panes[&quiet_pane].seen);
     }
 
     #[test]

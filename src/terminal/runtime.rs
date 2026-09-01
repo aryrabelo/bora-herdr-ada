@@ -576,6 +576,10 @@ impl TerminalRuntime {
     pub(crate) fn content_seq(&self) -> u64 {
         self.0.content_seq()
     }
+
+    pub(crate) fn last_output_at(&self) -> Option<std::time::Instant> {
+        self.0.last_output_at()
+    }
 }
 
 #[cfg(test)]
@@ -603,6 +607,11 @@ impl TerminalRuntime {
 
     pub(crate) fn test_process_pty_bytes(&self, bytes: &[u8]) {
         self.0.test_process_pty_bytes(bytes);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_last_output_at(&self, at: std::time::Instant) {
+        self.0.set_last_output_at(at);
     }
 
     pub(crate) fn test_set_child_pid(&self, pid: u32) {

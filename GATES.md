@@ -1,30 +1,52 @@
-# Gates: folders selected-row background
+# Gates: sidebar attention (toast confirm + quiet promotion + waiting counter)
 
-Scope: In sidebar Folders view only, the workspace row that carries the active
-`▎` marker (and any navigate-selected row) renders with a lighter background
-fill than the other rows. No other view mode changes.
+Scope: (A) confirm the finish/blocked toast is already enabled on this machine;
+(C) a pane in a background workspace that goes quiet for `ui.idle_attention_seconds`
+(default 300, 0=off) is promoted to the existing unseen-attention channel; (B) the
+sidebar's top margin row shows an aggregate "N waiting" counter (red when any
+unseen pane is blocked). Flat/Repo/Project/Folders rows are otherwise untouched.
 
-- [x] G1: Folders mode — the active row (marker row) fills with `active_row_bg`; other workspace rows and the group header stay unfilled; the `▎` bar still draws on the filled row.
-  CHECK: cargo nextest run -E 'test(folders_active_row_gets_background_fill_and_others_do_not)' 2>&1 | tail -5
+- [x] G1: A confirmed — dotfiles config (the real source; `~/.config/bora/config.toml` is a nix-store symlink) already ships `[ui.toast] delivery = "terminal"`.
+  CHECK: grep -A1 '^\[ui.toast\]' ~/Sites/dotfiles-2026/dotfiles/bora/config.toml
+  EXPECT: /delivery = "terminal"/
+  EVIDENCE: [ui.toast] | delivery = "terminal"
+
+- [x] G2: Output stamp — a PTY read chunk records `last_output_at` on the pane runtime; None until first output (so restored shells never mass-promote).
+  CHECK: cargo nextest run -E 'test(process_pty_bytes_sets_last_output)' 2>&1 | tail -4
   EXPECT: /1 test run: 1 passed/
-  EVIDENCE: ──────────── | Summary [   0.019s] 1 test run: 1 passed, 4226 skipped
+  EVIDENCE: ──────────── | Summary [   0.015s] 1 test run: 1 passed, 4231 skipped
 
-- [x] G2: Scope guard — Project view's 2-line `PaneDotsRow` blocks keep the GC3 marker-only statement (active row background stays Reset).
-  CHECK: cargo nextest run -E 'test(project_view_active_block_keeps_marker_only_fill)' 2>&1 | tail -5
-  EXPECT: /1 test run: 1 passed/
-  EVIDENCE: ──────────── | Summary [   0.011s] 1 test run: 1 passed, 4226 skipped
+- [x] G3: Quiet promotion — `App::promote_quiet_panes` flips `seen=false` for quiet panes in background workspaces; skips the active workspace, channel workspaces, already-unseen panes, and runs forever-off when `ui.idle_attention_seconds = 0`.
+  CHECK: cargo nextest run -E 'test(promote_quiet_panes)' 2>&1 | tail -4
+  EXPECT: /passed/
+  EVIDENCE: ──────────── | Summary [   0.021s] 2 tests run: 2 passed, 4230 skipped
 
-- [x] G3: Scope guard — Flat view unchanged: existing GC3 tests (active-but-not-selected has no bg) still pass untouched.
-  CHECK: cargo nextest run -E 'test(navigate_selection_keeps_its_existing_background) or test(selected_active_workspace_resolves) or test(pane_dots_row_block_paints_selection)' 2>&1 | tail -5
-  EXPECT: /4 tests run: 4 passed/
-  EVIDENCE: ──────────── | Summary [   0.012s] 4 tests run: 4 passed, 4223 skipped
+- [x] G4: Tick wiring — the helper is called from BOTH scheduled-tick paths (App tick and `handle_scheduled_tasks_headless`), the projects.yml-poll rule.
+  CHECK: grep -rn "promote_quiet_panes" src/app/runtime.rs src/server/headless.rs
+  EXPECT: /runtime\.rs.*promote_quiet_panes/
+  EVIDENCE: src/server/headless.rs:4884:        // helper (`App::promote_quiet_panes`), same drift rule as the two | src/server/headless.rs:4886:        changed |= self.app.promote_quiet_panes(now);
 
-- [x] G4: Mutation check — gating the new fill off (or widening it) makes G1/G2 redden, proving the tests defend the scope.
-  CHECK: manual mutation run, revert after
+- [x] G5: Waiting counter — the sidebar margin row renders "N waiting" when the count is > 0 (red when any unseen pane is blocked, yellow otherwise) and renders nothing at 0.
+  CHECK: cargo nextest run -E 'test(waiting_counter)' 2>&1 | tail -4
+  EXPECT: /passed/
+  EVIDENCE: ──────────── | Summary [   0.011s] 1 test run: 1 passed, 4231 skipped
+
+- [x] G6: Config — `ui.idle_attention_seconds` parses (default 300; 0 allowed as off).
+  CHECK: cargo nextest run -E 'test(idle_attention_seconds)' 2>&1 | tail -4
+  EXPECT: /passed/
+  EVIDENCE: ──────────── | Summary [   0.011s] 1 test run: 1 passed, 4231 skipped
+
+- [x] G7: Mutation check — breaking the promotion gate and the counter gate redden G3/G5 respectively.
+  CHECK: manual mutation run, revert via inverse sed
   EXPECT: /tests fail under mutation, pass after revert/
-  EVIDENCE: mutation 1 (gate widened to every mode): project_view_active_block_keeps_marker_only_fill FAILed; mutation 2 (gate disabled): folders_active_row test FAILed (0 passed, 1 failed). Both reverted; 6-test battery green after revert.
+  EVIDENCE: mutation A (counter gate → `if false`): waiting_counter FAILed 0 passed; mutation B (active-workspace skip removed): flips test FAILed 0 passed. Both restored via inverse sed (guard verified with grep -F); promote tests 2/2 green after revert.
 
-- [x] G5: Repo gate — `just check` passes.
+- [x] G8: Repo gate — `just check` passes.
   CHECK: just check 2>&1 | tail -5
   EXPECT: /OK/
   EVIDENCE: OK | docs reminder: if this changes user-facing behavior, make sure the relevant release docs are updated or called out before release.
+
+- [x] G9: Closeout — version bump, `docs/next/CHANGELOG.md` entries, commit landed.
+  CHECK: git log --oneline -1
+  EXPECT: /attention|waiting|quiet/
+  EVIDENCE: 61ed837c feat(sidebar): waiting counter and quiet-pane promotion for background terminals (v0.45.36)
