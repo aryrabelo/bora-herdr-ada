@@ -470,6 +470,11 @@ impl App {
             foreground_cwd: ws.tabs[tab_idx]
                 .foreground_cwd_for_pane(pane_id, &self.terminal_runtimes)
                 .map(|cwd| cwd.display().to_string()),
+            // Never read the process table here: `pane_info` also feeds the
+            // `pane.created`/`pane.updated` event payloads, and a per-event
+            // process scan is the multiplicative fan-out AGENTS.md forbids.
+            // `foreground_process` is filled on demand in `handle_pane_list`.
+            foreground_process: None,
             label: terminal.manual_label.clone(),
             agent: terminal.effective_agent_label().map(str::to_string),
             title: presentation.title,

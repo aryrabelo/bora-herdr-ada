@@ -1110,6 +1110,12 @@
                 "null"
               ]
             },
+            "foreground_process": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "idle_seconds": {
               "description": "Seconds since this pane's agent entered the idle state. Present only\nwhile the agent is idle; cleared on any activity.",
               "format": "uint64",
@@ -9751,6 +9757,12 @@
               "type": "boolean"
             },
             "foreground_cwd": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "foreground_process": {
               "type": [
                 "string",
                 "null"

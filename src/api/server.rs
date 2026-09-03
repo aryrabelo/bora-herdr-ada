@@ -995,6 +995,7 @@ mod tests {
             focused: true,
             cwd: None,
             foreground_cwd: None,
+            foreground_process: None,
             label: None,
             agent: Some("pi".into()),
             title: None,

@@ -136,8 +136,36 @@ impl App {
 
     pub(super) fn handle_pane_list(&mut self, id: String, params: PaneListParams) -> String {
         match self.collect_panes_for_workspace(params.workspace_id.as_deref()) {
-            Ok(panes) => encode_success(id, ResponseResult::PaneList { panes }),
+            Ok(mut panes) => {
+                self.enrich_foreground_process(&mut panes);
+                encode_success(id, ResponseResult::PaneList { panes })
+            }
             Err((code, message)) => encode_error(id, &code, message),
+        }
+    }
+
+    /// Fill `foreground_process` on `pane list` rows.
+    ///
+    /// This deliberately does not live in `App::pane_info`: that constructor
+    /// also feeds `pane.created`/`pane.updated` events (and the session
+    /// snapshot), so a process-table read there would run once per pane per
+    /// emitted event per attached client — exactly the multiplicative
+    /// fan-out AGENTS.md forbids. `pane list` is an explicit on-demand
+    /// request, the one place this per-pane cost is bounded by a caller
+    /// asking for it. Do not "simplify" this back into the constructor.
+    fn enrich_foreground_process(&mut self, panes: &mut [crate::api::schema::PaneInfo]) {
+        for pane in panes.iter_mut() {
+            let Some((ws_idx, pane_id)) = self.parse_pane_id(&pane.pane_id) else {
+                continue;
+            };
+            let Some((runtime, _workspace_id)) = self.lookup_runtime(ws_idx, pane_id) else {
+                continue;
+            };
+            pane.foreground_process = runtime
+                .child_pid()
+                .and_then(crate::detect::foreground_job)
+                .and_then(|job| job.processes.into_iter().next())
+                .map(|process| process.name);
         }
     }
 
@@ -243,7 +271,7 @@ impl App {
                     pane_id: public_pane_id,
                     shell_pid,
                     foreground_process_group_id,
-                    tty: None,
+                    tty: shell_pid.and_then(crate::platform::process_tty),
                     foreground_processes,
                 },
             },
@@ -4275,6 +4303,162 @@ mod tests {
             let response = app.handle_pane_report_metadata("req".into(), params);
 
             assert_eq!(metadata_error_code(&response), "invalid_metadata_ttl");
+        }
+    }
+
+    /// Spawn `sleep` as a session leader whose controlling terminal is a
+    /// freshly-minted pty. That makes the child's own process group the
+    /// foreground group of a real tty, so `foreground_job` and `process_tty`
+    /// resolve against it deterministically — never against cargo/just or
+    /// whatever shares the test runner's terminal. Returns (pid, master_fd);
+    /// the caller must keep the master open until the child is killed, or the
+    /// slave hangs up.
+    fn spawn_sleep_with_own_pty() -> (std::process::Child, libc::c_int) {
+        use std::os::unix::process::CommandExt;
+        unsafe {
+            let master = libc::posix_openpt(libc::O_RDWR | libc::O_NOCTTY);
+            assert!(master >= 0, "posix_openpt failed");
+            assert_eq!(libc::grantpt(master), 0);
+            assert_eq!(libc::unlockpt(master), 0);
+            let name = libc::ptsname(master);
+            let slave_path = std::ffi::CStr::from_ptr(name).to_owned();
+
+            let child = std::process::Command::new("/bin/sleep")
+                .arg("30")
+                .pre_exec(move || {
+                    if libc::setsid() == -1 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    // A session leader with no controlling terminal acquires
+                    // one by opening a terminal; from then on this child's
+                    // own group is that tty's foreground group.
+                    let fd = libc::open(slave_path.as_ptr(), libc::O_RDWR);
+                    if fd == -1 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    #[cfg(target_os = "linux")]
+                    {
+                        if libc::ioctl(fd, libc::TIOCSCTTY, 0) == -1 {
+                            return Err(std::io::Error::last_os_error());
+                        }
+                    }
+                    Ok(())
+                })
+                .spawn()
+                .expect("sleep spawns on unix");
+            (child, master)
+        }
+    }
+
+    fn pane_list_with_sleeper_child() -> (App, String, std::process::Child, libc::c_int) {
+        let (sleeper, master) = spawn_sleep_with_own_pty();
+        let (mut app, public_pane_id) = app_with_test_workspace();
+        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        let (runtime, _rx) =
+            crate::terminal::TerminalRuntime::test_with_channel_capacity(80, 24, 4);
+        runtime.test_set_child_pid(sleeper.id());
+        app.state.insert_test_runtime(pane_id, runtime);
+        (app, public_pane_id, sleeper, master)
+    }
+
+    #[tokio::test]
+    async fn pane_list_reports_the_foreground_process_name() {
+        let (mut app, public_pane_id, mut sleeper, master) = pane_list_with_sleeper_child();
+
+        let response = app.handle_pane_list("req".into(), PaneListParams { workspace_id: None });
+        let response: SuccessResponse = serde_json::from_str(&response).unwrap();
+        let ResponseResult::PaneList { panes } = response.result else {
+            panic!("expected pane list");
+        };
+        let row = panes
+            .iter()
+            .find(|pane| pane.pane_id == public_pane_id)
+            .expect("listed panes contain the target pane");
+
+        assert_eq!(
+            row.foreground_process.as_deref(),
+            Some("sleep"),
+            "pane list must carry the foreground process name"
+        );
+
+        // G2 at unit level: the enriched value agrees with what
+        // `pane process-info` reports for the same pane.
+        let process_response = app.handle_pane_process_info(
+            "req2".into(),
+            PaneProcessInfoParams {
+                pane_id: Some(public_pane_id),
+            },
+        );
+        let process_response: SuccessResponse = serde_json::from_str(&process_response).unwrap();
+        let ResponseResult::PaneProcessInfo { process_info } = process_response.result else {
+            panic!("expected process info");
+        };
+        assert_eq!(
+            process_info
+                .foreground_processes
+                .first()
+                .map(|p| p.name.as_str()),
+            row.foreground_process.as_deref()
+        );
+
+        sleeper.kill().expect("kill sleeper");
+        let _ = sleeper.wait();
+        unsafe { libc::close(master) };
+    }
+
+    #[tokio::test]
+    async fn pane_process_info_reports_the_controlling_tty() {
+        let (mut app, public_pane_id, mut sleeper, master) = pane_list_with_sleeper_child();
+
+        // The sleeper is a session leader whose controlling terminal is its
+        // own pty slave, so the resolver must report that real device node.
+        let response = app.handle_pane_process_info(
+            "req".into(),
+            PaneProcessInfoParams {
+                pane_id: Some(public_pane_id),
+            },
+        );
+        let response: SuccessResponse = serde_json::from_str(&response).unwrap();
+        let ResponseResult::PaneProcessInfo { process_info } = response.result else {
+            panic!("expected process info");
+        };
+        let tty = process_info.tty.expect("pty-backed sleeper resolves a tty");
+        assert!(tty.starts_with("/dev/"), "expected /dev path, got {tty}");
+
+        // A session WITHOUT a controlling terminal reports None instead of
+        // inventing one: a bare setsid'd process has e_tdev NODEV
+        // ((dev_t)-1, i.e. u32::MAX on macOS), which the resolver rejects
+        // before scanning /dev.
+        let (mut bare, bare_master) = spawn_bare_setsid_sleeper();
+        assert_eq!(crate::platform::process_tty(bare.id()), None);
+        bare.kill().expect("kill bare sleeper");
+        let _ = bare.wait();
+        unsafe { libc::close(bare_master) };
+
+        sleeper.kill().expect("kill sleeper");
+        let _ = sleeper.wait();
+        unsafe { libc::close(master) };
+    }
+
+    /// A setsid'd sleeper with NO controlling terminal, for the None branch.
+    fn spawn_bare_setsid_sleeper() -> (std::process::Child, libc::c_int) {
+        use std::os::unix::process::CommandExt;
+        unsafe {
+            let master = libc::posix_openpt(libc::O_RDWR | libc::O_NOCTTY);
+            assert!(master >= 0);
+            assert_eq!(libc::grantpt(master), 0);
+            assert_eq!(libc::unlockpt(master), 0);
+            let child = std::process::Command::new("/bin/sleep")
+                .arg("30")
+                .pre_exec(|| {
+                    if libc::setsid() == -1 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    Ok(())
+                })
+                .spawn()
+                .expect("sleep spawns on unix");
+            (child, master)
         }
     }
 }
