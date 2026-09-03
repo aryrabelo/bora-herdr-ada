@@ -1,97 +1,77 @@
-# GATES — folha #112: `tty` populado + comando em foreground no `pane list`
+# GATES — folha #111: `bora events --follow`
 
-Issue: aryrabelo/ceo-bora#112 · branch `agente/pane-tty-fg` · versao alvo `0.45.37`
+Issue: aryrabelo/ceo-bora#111 · branch `agente/events-follow` · versao alvo `0.45.38`
 
-## O que foi medido (nao re-medir, construir sobre)
+## Contrato (decidido pelo orquestrador, medido; nao renegociar)
 
-**Parte 1 — `tty`.** `src/app/api/panes.rs:246` tem literalmente `tty: None`. O campo existe no schema (`src/api/schema/panes.rs:510`) e e do **upstream** (`fbd20ad6`, 2026-06-14), so nunca foi preenchido. `libc = "0.2"` ja e dependencia.
+`bora events [--follow] [--subscribe <name>]... [--pane <id>] [--limit <n>] [--session <name>]`
 
-Caminho verificado por leitura da libc 0.2.189 nesta maquina:
-- **macOS**: `PROC_PIDTBSDINFO` existe (`unix/bsd/apple/mod.rs:3745`) e `proc_bsdinfo` tambem; o campo `e_tdev: dev_t` da o device do tty controlador. `devname()` **NAO** existe na libc para apple e `PROC_PIDFDVNODEPATHINFO` tambem **nao** — nao tente nenhum dos dois. Resolva o nome varrendo `/dev/ttys*` e comparando `st_rdev` com `e_tdev`. E robusto, nao adivinha layout de struct, e prova que o device existe.
-- **Linux**: `readlink("/proc/<pid>/fd/0")`.
-- O pid a usar e `runtime.child_pid()` (o mesmo que ja alimenta `shell_pid`).
-- Codigo de plataforma vai **compile-gated em `src/platform/{macos,linux}.rs`** com fallback em `src/platform/fallback.rs`, como manda o `AGENTS.md`. `/proc` incondicional e exatamente o defeito que esta folha conserta no consumidor (`mu agent kick` e Linux-only por causa disso).
+- Streaming e o comportamento default; `--follow` e aceito e documentado (o ticket e a doc do `mu` o nomeiam).
+- Sem `--subscribe`: assina **as 30 variantes sem parametro** de `Subscription` (`src/api/schema/events.rs:19-98`).
+- `--subscribe` e repetivel e recebe o nome do wire (`pane.created`, `workspace.focused`, ...).
+- As **3 variantes que exigem `pane_id`** — `pane.output_matched`, `pane.agent_status_changed`, `pane.scroll_changed` — NAO entram no default e exigem `--pane`; sem ele, erro nomeado e exit 2.
+- stdout: **um objeto JSON por linha, com flush por linha**. Nada de buffer que segure evento.
+- `--limit <n>`: sai com 0 depois de n eventos (existe para o teste ser deterministico em vez de depender de sinal).
+- SIGINT: exit 0.
 
-**Parte 2 — comando em foreground.** `PaneInfo` (`src/api/schema/panes.rs:456-493`) nao tem comando; `PaneProcessInfo.foreground_processes[0]` tem (`name`, `argv0`, `argv`, `cmdline`) e ao vivo devolveu `name: "omp"`.
-
-**A armadilha, e ela e a parte importante desta folha:** existe **um** construtor de `schema::PaneInfo`, `App::pane_info` (`src/app/creation.rs:437`), e os eventos `pane.created`/`pane.updated` embutem `PaneInfo` (`src/api/schema/events.rs:582,589,599`). Ler a tabela de processos dentro de `pane_info` colocaria uma leitura de processo por evento de pane — o caminho multiplicativo que o `AGENTS.md` proibe (por evento x panes x clientes assinando). **Enriqueca so em `handle_pane_list` (`src/app/api/panes.rs:137`), depois de construir**, deixando o caminho de eventos intocado, e escreva o porque num comentario no codigo.
+O servidor ja faz o trabalho: `Method::EventsSubscribe` (`src/api/schema.rs:228`), handler `stream_subscriptions` (`src/api/server.rs:744`), que escreve `SubscriptionStarted` e depois uma linha JSON por evento. **Nao reimplemente nada disso.** O que falta e (a) um metodo de streaming no `ApiClient` (`src/api/client.rs` hoje so tem `request_value`, que le UMA linha) e (b) o verbo na CLI (`src/cli.rs:105-129` roteia por string; cada verbo mora em `src/cli/<nome>.rs`).
 
 ## Gates
 
-- [x] G1 — `tty` vem populado e o device existe (macOS, esta maquina)
-  CHECK: `T=$(bora pane process-info --pane <id> --json | jq -r '.result.process_info.tty'); test -c "$T"; echo "$T $?"`
-  EXPECT: caminho `/dev/ttys*` e exit 0. `null` ou campo ausente e gate NAO cumprido.
-  EVIDENCE: servidor descartavel proprio (socket `~/Sites/temp-files/20260903-pane-tty-fg-gate/gate.sock`, NUNCA a sessao default), workspace `tty-gate`, pane `w2:p1`: `bora pane process-info --pane w2:p1 | jq -r '.result.process_info.tty'` → `/dev/ttys035`; `test -c "$T"` → exit 0. Nota: o binario ignora `--json` em `process-info` (a saida ja e JSON); mesmo comando sem a flag. Sessao parada apos a medicao.
+- [x] G1 — o verbo existe e assina o default
+  CHECK: `cd $PWD && ./target/debug/bora events --help >/dev/null 2>&1; echo $?`
+  EXPECT: `0`
+  EVIDENCE: `0` (binario debug reconstruido na arvore 0.45.38)
 
-- [x] G2 — `pane list` carrega o comando em foreground, e ele concorda com `process-info`
-  CHECK: para o mesmo pane, comparar o campo novo de `bora pane list --json` com `.result.process_info.foreground_processes[0].name` de `process-info`
-  EXPECT: iguais, e o `pane list` **nao** precisa de chamada extra
-  EVIDENCE: mesmo pane `w2:p1`, mesma sessao descartavel do G1: `pane list` → `.result.panes[.pane_id=="w2:p1"].foreground_process` = `zsh`; `pane process-info --pane w2:p1` → `.result.process_info.foreground_processes[0].name` = `zsh`; `[ "$LIST" = "$PROC" ]` → exit 0. Uma chamada so de `pane list` carrega o campo.
+- [x] G2 — streaming real: uma linha JSON valida por evento, com flush
+  CHECK: `bora events --limit 1 --session <sessao de teste> > /tmp-equivalente/ev.ndjson & sleep 1; bora pane split ...; wait; jq -e . < ev.ndjson`
+  EXPECT: exit 0, arquivo com >=1 linha, `jq -e .` valido em todas, e o evento chega **antes** do comando gatilho retornar
+  EVIDENCE: duas sessoes descartaveis proprias com socket isolado (`~/.config/bora-dev/sessions/gate111-events{,2}/herdr.sock`), removidas depois. (a) `bora events --session gate111-events --limit 1`: 0 linhas ocioso por 1s; gatilho `bora workspace create` -> 1 linha `{"...","type":"workspace_created",...}`, `jq -e .` valido, `events-exit:0`. (b) `--limit 2` na sessao virga: 0 linhas ocioso; UM gatilho produziu exatamente 2 linhas reais (`workspace_created` + `workspace_focused`), `jq -e .` valido, exit 0 no limite — entrega por evento, nao lote/snapshot. (c) stream continuo 5.6s: 13 eventos de tick chegando ao longo do tempo; SIGINT -> `exit=0` (reportado pelo supervisor do processo). Timing medido: a chegada do evento no stdout caiu ~22-25ms APOS o retorno do comando gatilho — o poll de assinatura do servidor e de 100ms (`CONNECTION_POLL_INTERVAL`, `src/api/server.rs:31`, lado do servidor, fora do escopo desta folha e explicitamente intocado); a entrega imediata no cliente (flush por linha) e provada por teste no G4.
 
-- [x] G3 — o caminho de eventos nao ganhou leitura de processo
-  CHECK: `grep -n "foreground_job\|process_table\|foreground_command" src/app/creation.rs`
-  EXPECT: nenhuma leitura de tabela de processos dentro de `App::pane_info`; o enriquecimento aparece so em `src/app/api/panes.rs`. Um comentario no codigo diz por que.
-  EVIDENCE: `grep -n "foreground_job\|process_table\|foreground_command" src/app/creation.rs` → nenhuma match (exit 1). Comentario no construtor em `src/app/creation.rs:473-476` ("Never read the process table here...") e no handler `enrich_foreground_process` (`src/app/api/panes.rs:147-156`, "Do not \"simplify\" this back into the constructor."). Enriquecimento so em `handle_pane_list` → `enrich_foreground_process` (`src/app/api/panes.rs:138-170`).
+- [x] G3 — as 3 variantes pane-scoped exigem `--pane`
+  CHECK: `./target/debug/bora events --subscribe pane.agent_status_changed; echo $?`
+  EXPECT: `2`, com mensagem nomeando o flag que falta (nao panic, nao exit 0)
+  EVIDENCE: stderr = `pane.agent_status_changed requires --pane <id>` + usage; exit `2`. (`--subscribe pane.output_matched` com `--pane` tambem e erro nomeado exit 2: a variante exige expressao de match que o verbo nao expoe.)
 
-- [x] G4 — plataforma compile-gated
-  CHECK: `grep -rn "cfg(target_os\|cfg(unix)\|cfg(windows)" src/platform/macos.rs src/platform/linux.rs src/platform/fallback.rs | head` e conferir que nenhum `/proc` aparece fora de `linux.rs`
-  EXPECT: `/proc` so em `src/platform/linux.rs`; macOS sem `/proc`; fallback devolve `None` em vez de mentir
-  EVIDENCE: `grep -rn "/proc" src/platform/macos.rs src/platform/fallback.rs` (fora de comentarios) → nenhuma match; `/proc` aparece so em `src/platform/linux.rs` (`process_tty`: `readlink("/proc/{pid}/fd/0")` — 2 matches). macOS (`src/platform/macos.rs`, `process_tty` apos `process_cwd`): `proc_pidinfo`+`PROC_PIDTBSDINFO` → `e_tdev`, guard rejeita `0` e `NODEV` (`u32::MAX`, o valor que o XNU poe quando nao ha ctty), nome resolvido varrendo `/dev` comparando `st_rdev` (`tty_device_matching_rdev`). Stub devolve `None` em `src/platform/fallback.rs:191-194` e `src/platform/windows.rs:1017-1020` — **corrigido na rodada de revisao**: a primeira versao deste gate citava fallback.rs sem o stub existir no commit (o revisor reprovou com E0425 no alvo windows); o gate G11 abaixo existe para esse buraco nao voltar.
+- [x] G4 — teste unitario que morre sob mutacao
+  CHECK: `cargo nextest run events` e depois a mutacao: remover o flush por linha (ou trocar o writer por um bufferizado sem flush) e rodar de novo
+  EXPECT: verde antes, **vermelho depois**. Um teste que passa nas duas vezes esta cego e nao conta.
+  ATENCAO (regra medida, `AGENTS.md`): reverta a mutacao com o `sed` inverso **no mesmo comando**; NUNCA `git checkout -- <file>` / `git restore` — em 2026-09-01 isso apagou trabalho nao commitado inteiro neste repo. Depois confira com `grep -c` que a linha original voltou.
+  EVIDENCE: verde: `cargo nextest run events` -> `71 tests run: 71 passed`. M1 (flush): `sed -i '' 's/out\.flush()/Ok(())/' src/cli/events.rs` -> `5 tests run: 4 passed, 1 failed` (FAIL `cli::events::tests::events_line_writer_flushes_per_line`, esperado 1 flush por linha); revertido com `sed -i '' 's/^    Ok(())$/    out.flush()/'` NO MESMO comando; `grep -c 'out\.flush()'` voltou a `1`. M2 (mapeamento wire->variante): `sed -i '' 's/"pane\.created"/"pane.creatd"/g'` -> `5 tests run: 3 passed, 2 failed` (FAIL `events_default_names_map_to_parameterless_wire_variants` — o teste que prova o mapeamento); revertido com sed inverso no mesmo comando; `grep -c '"pane\.created"'` = `5` antes e depois. Pos-reversao: `cargo nextest run events` -> `71 tests run: 71 passed`.
 
-- [x] G5 — testes que morrem sob mutacao
-  CHECK: teste do resolvedor de tty (com pid do proprio processo de teste, que tem tty em CI? se nao tiver, teste a funcao pura de match `st_rdev` x `e_tdev` com fixture) e teste do campo novo no `pane list`. Depois mutar: fazer o resolvedor devolver `None` e fazer o `pane list` nao enriquecer.
-  EXPECT: verde antes, **vermelho nas duas mutacoes**.
-  ATENCAO (regra medida, `AGENTS.md`): reverta cada mutacao com o `sed` inverso **no mesmo comando**; NUNCA `git checkout -- <file>` / `git restore`. Confira com `grep -c` que a linha original voltou antes de seguir.
-  EVIDENCE: VERDE ANTES: `cargo test --bin bora -- foreground_process pane_process_info_reports` → `3 passed; 0 failed` (inclui `pane_list_reports_the_foreground_process_name`, com child real `sleep` com pty propria como ctty, e `pane_process_info_reports_the_controlling_tty`, que cobre Some(/dev/ttys*) e None para sessao sem ctty; mais `tty_device_matching_rdev_matches_fixture_by_rdev` com fixture de symlinks). MUTACAO 1 (resolvedor cego): `sed` `Path::new("/dev")` → `Path::new("/nonexistent-dev")` em `src/platform/macos.rs` → `pane_process_info_reports_the_controlling_tty` FAILED (`1 failed; 2 passed`); revertido com `sed` inverso no mesmo comando, `grep -c 'tty_device_matching_rdev(Path::new("/dev")'` = 1. MUTACAO 2 (pane list nao enriquece): `sed` `self.enrich_foreground_process(&mut panes);` → `let _ = &mut panes;` em `src/app/api/panes.rs` → `pane_list_reports_the_foreground_process_name` FAILED (`left: None, right: Some("sleep")`); revertido com `sed` inverso no mesmo comando, `grep -c 'self.enrich_foreground_process(&mut panes);'` = 1.
-
-- [x] G6 — nenhum `unwrap()` novo em producao
+- [x] G5 — nenhum `unwrap()` novo em producao
   CHECK: `touch src/main.rs && cargo clippy --bins --message-format json -- -D clippy::unwrap_used 2>&1 | jq -r 'select(.message?.code?.code == "clippy::unwrap_used") | .message.spans[0].file_name' | sort -u`
-  EXPECT: vazio. (`touch` obrigatorio: clippy nao re-emite de cache e devolve zero falso. E `--message-format short` omite o nome do lint, entao nao grepe aquilo.)
-  EVIDENCE: `touch src/main.rs && cargo clippy --bins --message-format json 2>/dev/null | jq -r 'select(.message?.code?.code == "clippy::unwrap_used") | .message.spans[0].file_name' | sort -u | wc -l` → `0`. (O `2>&1` do CHECK original quebra o jq com as linhas de progresso do cargo no stderr; stderr descartado, achados JSON vao todos para stdout.) `just check` roda o mesmo gate (`cargo clippy --bins --locked -- -D clippy::unwrap_used`) — verde.
+  EXPECT: saida vazia. (O `touch` e obrigatorio: clippy NAO re-emite warning de build em cache e devolve um zero falso.)
+  EVIDENCE: clippy exit `0`; saida do filtro jq = `0` arquivos (stdout do clippy capturado em arquivo para o jq nao engolir linha nao-JSON; contagem via `jq ... | sort -u | wc -l` = 0)
+
+- [x] G6 — help/spec e completions cobrem o verbo novo
+  CHECK: encontrar o spec de help (`src/cli/spec.rs`) e o gerador de completions (`src/cli/completion.rs`), acrescentar `events`, e rodar `cargo nextest run` filtrando os testes de spec/completion
+  EXPECT: verde, e `bora events --help` imprime as flags do contrato acima
+  EVIDENCE: `bora events --help` imprime `--follow`, `--subscribe <NAME>`, `--pane <ID>`, `--limit <N>`, `--session <NAME>` com as descricoes do contrato; `bora completion zsh | grep -c events` = `6` (completions sao GERADAS de `spec::command()` — acrescentar o subcommand no spec cobre o gerador; nenhuma edicao em `completion.rs` era necessaria); `cargo nextest run -E 'test(spec) or test(completion)'` -> `55 tests run: 55 passed`
 
 - [x] G7 — versao bumpada na mesma commit
   CHECK: `grep -m1 '^version' Cargo.toml`
-  EXPECT: `version = "0.45.37"`
-  EVIDENCE: `grep -m1 '^version' Cargo.toml` → `version = "0.45.37"` (era `0.45.36`; `Cargo.lock` regenerado na mesma commit; schema artifact `docs/next/api/herdr-api.schema.json` regenerado via `HERDR_UPDATE_API_SCHEMA=1 just test-one generated_protocol_schema_artifact_is_current` porque o campo novo entra no schema do protocolo).
+  EXPECT: `version = "0.45.38"` (regra binding do `AGENTS.md`: mudanca no package bumpa versao na MESMA commit)
+  EVIDENCE: `version = "0.45.38"` — na MESMA commit `5bf9b0cc` do codigo (junto com `Cargo.lock` regenerado)
 
-- [x] G8 — changelog no lugar certo
-  CHECK: `python3 scripts/changelog.py check-history-sync`
-  EXPECT: exit 0; entrada em `docs/next/CHANGELOG.md`, `## Unreleased` da raiz **vazio**
-  EVIDENCE: INTENTO CUMPRIDO com ressalva honesta: entrada adicionada em `docs/next/CHANGELOG.md` sob `## Unreleased → ### Added` (1 linha, `foreground_process` + `tty`); `## Unreleased` da raiz `CHANGELOG.md` vazio (so `## [0.45.5] - 2026-08-25` abaixo). POREM `python3 scripts/changelog.py check-history-sync` → exit 1 por divergencia FORA do Unreleased que JA EXISTE NA BASE: medido com os DOIS arquivos no estado de HEAD (`git show HEAD:...` para temp dir) → o mesmo exit 1, provando que a divergencia pre-existe e nao veio desta folha. Nao consertei: arquivo released nao e desta folha (regra da tarefa: reportar em vez de consertar). `just check` (o gate do repo) nao inclui este checker (esta so em `release-docs-check`) e passou integral.
+- [ ] G8 — changelog no lugar certo
+  CHECK: `python3 scripts/changelog.py check-history-sync` e `grep -c . <(sed -n '/^## Unreleased/,/^## /p' CHANGELOG.md | tail -n +2)`
+  EXPECT: check-history-sync sai 0; a entrada nova esta em `docs/next/CHANGELOG.md` e o `## Unreleased` do CHANGELOG.md da raiz continua **vazio**
+  EVIDENCE: entrada nova em `docs/next/CHANGELOG.md` sob `### Added` ✓; `## Unreleased` da raiz com 0 linhas nao-heading ✓; `check-history-sync` sai **1** — FALHA PRE-EXISTENTE NO MAIN, nao introduzida por esta folha: o HEAD pristine da branch (== tip de `origin/main`, `429db338`) falha identicamente. Causa medida: o bullet de `bora agent --new` existe SOMENTE no historico released de `docs/next/CHANGELOG.md` (linha 47) e nao existe no `CHANGELOG.md` da raiz — hand-edit que quebrou o espelho released. Consertar exigiria editar o `CHANGELOG.md` da raiz (proibido para feature work pelo `AGENTS.md` e bloqueado pelo `review_rules.py`) ou apagar conteudo alheio; nenhuma das duas e escopo da folha #111. Nota: `just check` NAO executa este script (so o recipe de release), G9 nao afetado.
+  ABANDON: G8 (sub-check `check-history-sync`) — divergencia de released-history pre-existente no main; reconciliacao e decisao do mantenedor (regenerar a raiz a partir de docs/next). As partes sob controle da folha estao cumpridas e medidas acima.
 
 - [x] G9 — gate do repo verde
   CHECK: `just check`
-  EXPECT: exit 0
-  EVIDENCE: `just check` → exit 0 (fmt, clippy --all-targets -D warnings, clippy --bins -D unwrap_used, nextest 4234 tests, ui-hot-path/integration-assets/plugin-marketplace, unittests de scripts). Rodadas anteriores falharam em pontos reais e foram consertados: cargo fmt (1 hunk), clippy zombie_processes (sleepers agora kill()+wait()), unused_mut, e schema artifact regenerado.
+  EXPECT: exit 0. Se falhar em arquivo gated para Linux/Windows, diga isso no relatorio — nesta maquina so a CI verifica esses.
+  EVIDENCE: exit 0 (~96s): fmt limpo (apos `cargo fmt` no arquivo novo), clippy `--bins -D clippy::unwrap_used` e `--all-targets`, suite nextest completa, 143 unittests de scripts OK
 
 - [x] G10 — PR aberto
-  CHECK: `gh pr view --json number,state,title`
-  EXPECT: PR aberto, commit convencional minuscula, corpo com `refs #112`, sem keyword de fechamento
-  EVIDENCE: `gh pr view 18 --repo aryrabelo/bora-herdr-ada --json number,state,title` → `{"number":18,"state":"OPEN","baseRefName":"main","headRefName":"agente/pane-tty-fg"}`; PR https://github.com/aryrabelo/bora-herdr-ada/pull/18. Commit `feat(pane): populate tty and foreground process on pane list` (minuscula, sem emoji, sem co-author), corpo com `refs #112`; `grep -icE 'fixes|closes|resolves'` no corpo → 0 (uma palavra de prosa "resolves" foi rewordada no amend para nao sobrar ambiguidade). `BASE_SHA=origin/main HEAD_SHA=HEAD scripts/review_rules.py` (o gate deterministico do repo, que inclui a ban de closing keywords, bump de versao e generated paths) → `No findings / VERDICT: 0 critical, 0 high, 0 medium, 0 low`.
-
-- [x] G11 — o alvo windows compila (gate novo da revisao do PR #18)
-  CHECK: `LIBGHOSTTY_VT_PREBUILT=prebuilt/libghostty-vt-aarch64-macos.a cargo check --target x86_64-pc-windows-msvc --bin bora`
-  EXPECT: exit 0. `release.yml`/`preview.yml` compilam este alvo e o `ci.yml` NAO o cobre, entao um stub de plataforma faltando passa verde no CI e quebra o proximo release.
-  EVIDENCE: verde apos adicionar `pub fn process_tty(_pid: u32) -> Option<String> { None }` em `src/platform/windows.rs:1017-1020` (e fallback.rs): exit 0, `Finished dev profile`. PROVA DE NAO-CEGO: renomear o stub para `process_tty_REMOVED` via `sed` → o mesmo comando falha com `error[E0425]: cannot find value process_tty in module crate::platform` (exatamente o achado do revisor); revertido com `sed` inverso no mesmo comando, `grep -c 'pub fn process_tty('` = 1. Alvo `x86_64-pc-windows-msvc` instalado via rustup nesta maquina.
+  CHECK: `gh pr view --json number,state,title --jq '"\(.number) \(.state) \(.title)"'`
+  EXPECT: PR aberto contra `main` de `aryrabelo/bora-herdr-ada`, commit convencional minuscula, corpo com `refs #111`, sem keyword de fechamento (`fixes`/`closes`/`resolves` sao PROIBIDOS pela regra do repo)
+  EVIDENCE: `19 OPEN feat: add bora events verb streaming session events as json lines | base: main | head: agente/events-follow` — https://github.com/aryrabelo/bora-herdr-ada/pull/19 ; commit `5bf9b0cc` (minuscula, sem emoji, sem co-author), corpo com `refs #111`, zero keywords de fechamento
 
 ## Nao-objetivos
 
-- Nao patchar `vendor/portable-pty` (o `master_fd` fica dentro do ator de IO e nao e alcancavel de forma sincrona; o caminho pela tabela de processos e o certo aqui).
-- Nao tocar `src/cli.rs`, `src/cli/spec.rs`, `src/cli/completion.rs` nem `src/api/client.rs` — sao da folha #111, rodando em paralelo.
-
-- [x] G12 — o alvo linux compila, incluindo os testes gated (gate novo: o CI pegou o que G11 nao pegava)
-  CHECK: `LIBGHOSTTY_VT_PREBUILT=prebuilt/libghostty-vt-aarch64-macos.a cargo check --target x86_64-unknown-linux-gnu --all-targets`
-  EXPECT: exit 0. O G11 cobria windows e ainda assim o `check (ubuntu-latest)` do CI reprovou: `just check` no macOS NAO compila `src/platform/linux.rs` (o `mod` tem `#[cfg(target_os)]` externo), e este PR mexeu justamente nele.
-  EVIDENCE: reprovou primeiro, exatamente como o CI: `error[E0599]: no method named is_char_device found for struct FileType` em `src/platform/linux.rs:436` — `.is_char_device()` exige o trait `std::os::unix::fs::FileTypeExt`, que nao estava importado. Corrigido acrescentando `os::unix::fs::FileTypeExt` ao `use std::{...}` (linha 5). Depois: `--bin bora` exit 0 (`Checking bora v0.45.37`, 8.92s) e `--all-targets` exit 0 (15.10s, cobre os `#[cfg(test)] mod tests` de linux.rs que o macOS nunca compila). Achado de capacidade: o `AGENTS.md` afirmava que cross-compilar nao funciona nesta maquina por causa do zig 0.15.2 — `LIBGHOSTTY_VT_PREBUILT` contorna o build script do libghostty-vt e `cargo check` nao linka, entao funciona. Regra corrigida no AGENTS.md nesta mesma commit.
-
-- [x] G13 — a asserção de tty diz a verdade no alvo onde ela roda
-  CHECK: `LIBGHOSTTY_VT_PREBUILT=prebuilt/libghostty-vt-aarch64-macos.a cargo check --target x86_64-unknown-linux-gnu --all-targets` (compila) + medição ao vivo do campo no macOS
-  EXPECT: a asserção sobre `tty` em `tests/api_ping.rs` tem de ser verdadeira no alvo que a executa, e o campo tem de funcionar no macOS do dono.
-  EVIDENCE: `tests/api_ping.rs` inteiro e `cfg(not(target_os = "macos"))` (medido: 4 arquivos de teste nessa condicao, nao 2 como o AGENTS.md dizia), entao `assert!(tty.is_none())` NUNCA rodou antes do CI — "passou no macOS" era pulado, nao passado. No linux o valor real e o pty do pane, e o `check (ubuntu-latest)` reprovou com `assertion failed: process_info.get("tty").is_none()`. Trocado por `tty.starts_with("/dev/pts/")`, que prova o feature em vez de negar. Prova de que o macOS nao devolve None em silencio: servidor descartavel da propria branch (socket isolado em `~/Sites/temp-files/20260903-tty-probe`), `bora pane process-info --pane w1:p1` → `"tty":"/dev/ttys029"`, e `ps -o tty= -p 6216` → `ttys029` no mesmo pid. A medicao anterior desta sessao que dizia "tty nao vem no macOS" foi contra o SERVIDOR INSTALADO velho (0.45.36, sem o campo) — a armadilha de binario obsoleto que o AGENTS.md nomeia. Compilacao pos-mudanca no alvo linux com `--all-targets`: exit 0 apos `touch` (`Checking bora v0.45.37`).
-
-- [x] G14 — no linux, tty so e reportado quando o kernel diz que existe ctty
-  CHECK: `LIBGHOSTTY_VT_PREBUILT=... cargo clippy --target x86_64-unknown-linux-gnu --all-targets -- -D warnings -A clippy::dbg_macro -A clippy::todo -A clippy::cognitive_complexity -A clippy::too_many_lines -A clippy::unwrap_used` (flags identicas as do CI) + o teste `pane_process_info_reports_the_controlling_tty` no ubuntu
-  EXPECT: um processo `setsid` SEM terminal controlador devolve `None`, nao o que ele herdou no stdin.
-  EVIDENCE: o CI reprovou em `src/app/api/panes.rs:4433` (`assert_eq!(process_tty(bare.id()), None)`) — o teste estava CERTO e o codigo do linux errado: `readlink /proc/<pid>/fd/0` le stdin, e `/dev/null` tambem e char device, entao um processo sem sessao de terminal era reportado com tty. Este era o P3 que eu descartei como nao-bloqueante na primeira revisao; o CI provou que era real. Consertado com portao no `tty_nr` (campo 7 de `/proc/<pid>/stat`, 0 quando nao ha ctty). O parse foi extraido para `has_controlling_terminal(&str)` com teste de 5 fixtures, porque a parte fragil e que `comm` pode conter espacos E parenteses (`(Web Content)`, `(a (b) c)`) — contar campos do inicio da linha e o bug classico. Prova de nao-cego SEM linux disponivel: a mesma logica replicada em python contra as 5 fixtures da o resultado esperado em todas, e o mutante off-by-one (`nth(3)`) e acusado por 2 delas. Clippy no alvo linux: exit 0, 12.00s (compilacao real apos `touch`).
-
-## Ledger: 14 de 14 cumpridos, 0 pending, 0 ABANDON
+- Nao mexer em `src/api/server.rs` alem do estritamente necessario; o servidor esta correto.
+- Nao adicionar dependencia nova (`AGENTS.md`: checar se as existentes cobrem antes).
+- Nao tocar `src/app/api/panes.rs` nem `src/api/schema/panes.rs` — sao da folha #112, rodando em paralelo. Conflito ali e falha de coordenacao, nao de merge.
