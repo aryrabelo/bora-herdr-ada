@@ -70,6 +70,14 @@ pub(super) fn run_events_command(args: &[String]) -> std::io::Result<i32> {
         }
     };
 
+    if parsed.pane_id.is_some() && parsed.subscriptions.is_empty() {
+        eprintln!(
+            "--pane requires --subscribe <name>: the default subscriptions are not pane-scoped"
+        );
+        eprintln!("{EVENTS_USAGE}");
+        return Ok(2);
+    }
+
     let subscriptions = match build_subscriptions(&parsed.subscriptions, parsed.pane_id.as_deref())
     {
         Ok(subscriptions) => subscriptions,
@@ -96,6 +104,16 @@ pub(super) fn run_events_command(args: &[String]) -> std::io::Result<i32> {
     };
     let (_ack, mut stream) = match client.open_stream(&request) {
         Ok(opened) => opened,
+        // A server-side rejection (e.g. a `--pane` id the server cannot
+        // resolve) carries a structured ErrorResponse: print its JSON like
+        // every other verb instead of leaking Rust Debug formatting.
+        Err(ApiClientError::ErrorResponse(response)) => {
+            eprintln!(
+                "{}",
+                serde_json::to_string(&response).map_err(std::io::Error::other)?
+            );
+            return Ok(1);
+        }
         Err(err) => {
             return Err(super::map_server_not_running_or_io(
                 err,
@@ -117,14 +135,7 @@ pub(super) fn run_events_command(args: &[String]) -> std::io::Result<i32> {
         }
         match stream.next_value() {
             Ok(event) => {
-                if let Err(err) = write_event_line(&mut out, &event) {
-                    // A closed stdout (e.g. piped into `head`) is a clean
-                    // stop: the server notices the dropped socket on its own.
-                    if err.kind() == std::io::ErrorKind::BrokenPipe {
-                        return Ok(0);
-                    }
-                    return Err(err);
-                }
+                write_event_line(&mut out, &event)?;
                 delivered += 1;
             }
             Err(ApiClientError::EmptyResponse) => {
@@ -410,6 +421,17 @@ mod tests {
         let message = parse_events_args(&["--limit".into(), "lots".into()])
             .expect_err("non-numeric limit must be a named error");
         assert!(message.contains("--limit"), "got: {message}");
+    }
+
+    #[test]
+    fn events_build_subscriptions_applies_the_pane_flag_to_requested_names() {
+        let requested = build_subscriptions(&["pane.scroll_changed".into()], Some("p1")).unwrap();
+        assert_eq!(
+            serde_json::to_value(&requested).unwrap(),
+            serde_json::json!([{ "type": "pane.scroll_changed", "pane_id": "p1" }])
+        );
+        let defaults = build_subscriptions(&[], Some("p1")).unwrap();
+        assert_eq!(defaults.len(), 30);
     }
 
     #[derive(Default)]

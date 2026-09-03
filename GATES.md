@@ -31,14 +31,12 @@ O servidor ja faz o trabalho: `Method::EventsSubscribe` (`src/api/schema.rs:228`
 - [x] G3 — as 3 variantes pane-scoped exigem `--pane`
   CHECK: `./target/debug/bora events --subscribe pane.agent_status_changed; echo $?`
   EXPECT: `2`, com mensagem nomeando o flag que falta (nao panic, nao exit 0)
-  EVIDENCE: stderr = `pane.agent_status_changed requires --pane <id>` + usage; exit `2`. (`--subscribe pane.output_matched` com `--pane` tambem e erro nomeado exit 2: a variante exige expressao de match que o verbo nao expoe.)
 
-- [x] G4 — teste unitario que morre sob mutacao
+  EVIDENCE: stderr = `pane.agent_status_changed requires --pane <id>` + usage; exit `2`. (`--subscribe pane.output_matched` com `--pane` tambem e erro nomeado exit 2: a variante exige expressao de match que o verbo nao expoe.) Fix pos-revisao, medido ao vivo: rejeicao do SERVIDOR (ex. `--pane nope`) sai como JSON estruturado `{"id":"cli:events:subscribe:sub:0:probe","error":{"code":"pane_not_found","message":"pane nope not found"}}` com exit 1 (antes vazava Debug do Rust); `--pane` sem `--subscribe` e erro nomeado exit 2 (`--pane requires --subscribe <name>: the default subscriptions are not pane-scoped`), nunca silencio.
   CHECK: `cargo nextest run events` e depois a mutacao: remover o flush por linha (ou trocar o writer por um bufferizado sem flush) e rodar de novo
   EXPECT: verde antes, **vermelho depois**. Um teste que passa nas duas vezes esta cego e nao conta.
   ATENCAO (regra medida, `AGENTS.md`): reverta a mutacao com o `sed` inverso **no mesmo comando**; NUNCA `git checkout -- <file>` / `git restore` — em 2026-09-01 isso apagou trabalho nao commitado inteiro neste repo. Depois confira com `grep -c` que a linha original voltou.
-  EVIDENCE: verde: `cargo nextest run events` -> `71 tests run: 71 passed`. M1 (flush): `sed -i '' 's/out\.flush()/Ok(())/' src/cli/events.rs` -> `5 tests run: 4 passed, 1 failed` (FAIL `cli::events::tests::events_line_writer_flushes_per_line`, esperado 1 flush por linha); revertido com `sed -i '' 's/^    Ok(())$/    out.flush()/'` NO MESMO comando; `grep -c 'out\.flush()'` voltou a `1`. M2 (mapeamento wire->variante): `sed -i '' 's/"pane\.created"/"pane.creatd"/g'` -> `5 tests run: 3 passed, 2 failed` (FAIL `events_default_names_map_to_parameterless_wire_variants` — o teste que prova o mapeamento); revertido com sed inverso no mesmo comando; `grep -c '"pane\.created"'` = `5` antes e depois. Pos-reversao: `cargo nextest run events` -> `71 tests run: 71 passed`.
-
+  EVIDENCE: verde: `cargo nextest run events` -> `72 tests run: 72 passed`. M1 (flush): `sed -i '' 's/out\.flush()/Ok(())/' src/cli/events.rs` -> `5 tests run: 4 passed, 1 failed` (FAIL `cli::events::tests::events_line_writer_flushes_per_line`, esperado 1 flush por linha); revertido com `sed -i '' 's/^    Ok(())$/    out.flush()/'` NO MESMO comando; `grep -c 'out\.flush()'` voltou a `1`. M2 (mapeamento wire->variante): `sed -i '' 's/"pane\.created"/"pane.creatd"/g'` -> `5 tests run: 3 passed, 2 failed` (FAIL `events_default_names_map_to_parameterless_wire_variants` — o teste que prova o mapeamento); revertido com sed inverso no mesmo comando; `grep -c '"pane\.created"'` = `5` antes e depois. M3 (pos-revisao: cegueira provada pelo revisor — nenhum teste chamava `build_subscriptions`, e mutar `subscription_for_name(name, pane_id)` para `None` deixava os 5 testes verdes): novo teste `events_build_subscriptions_applies_the_pane_flag_to_requested_names`; mutacao `s/subscription_for_name(name, pane_id)/subscription_for_name(name, pane_id.filter(|p| p.is_empty()))/` (mutante que compila) -> `6 tests run: 5 passed, 1 failed` (FAIL exatamente no teste novo); revertido com sed inverso no mesmo comando; `grep -cF 'pane_id.filter'` = `1` durante e `0` apos, `grep -cF 'subscription_for_name(name, pane_id)'` = `1` antes e depois. Pos-reversao: `cargo nextest run events` -> `72 tests run: 72 passed`.
 - [x] G5 — nenhum `unwrap()` novo em producao
   CHECK: `touch src/main.rs && cargo clippy --bins --message-format json -- -D clippy::unwrap_used 2>&1 | jq -r 'select(.message?.code?.code == "clippy::unwrap_used") | .message.spans[0].file_name' | sort -u`
   EXPECT: saida vazia. (O `touch` e obrigatorio: clippy NAO re-emite warning de build em cache e devolve um zero falso.)
@@ -62,8 +60,7 @@ O servidor ja faz o trabalho: `Method::EventsSubscribe` (`src/api/schema.rs:228`
 
 - [x] G9 — gate do repo verde
   CHECK: `just check`
-  EXPECT: exit 0. Se falhar em arquivo gated para Linux/Windows, diga isso no relatorio — nesta maquina so a CI verifica esses.
-  EVIDENCE: exit 0 (~96s): fmt limpo (apos `cargo fmt` no arquivo novo), clippy `--bins -D clippy::unwrap_used` e `--all-targets`, suite nextest completa, 143 unittests de scripts OK
+  EVIDENCE: exit 0 (~82s): fmt limpo, clippy `--bins -D clippy::unwrap_used` e `--all-targets`, suite nextest completa, 143 unittests de scripts OK. Extra pos-revisao do dono: `LIBGHOSTTY_VT_PREBUILT=prebuilt/libghostty-vt-aarch64-macos.a cargo check --target x86_64-unknown-linux-gnu --all-targets` -> exit 0 em ~24s (ponto cego de lint do Linux verificado localmente; o codigo novo nao tem gating de plataforma).
 
 - [x] G10 — PR aberto
   CHECK: `gh pr view --json number,state,title --jq '"\(.number) \(.state) \(.title)"'`
