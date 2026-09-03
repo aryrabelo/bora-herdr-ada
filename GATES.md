@@ -50,7 +50,7 @@ O servidor ja faz o trabalho: `Method::EventsSubscribe` (`src/api/schema.rs:228`
 - [x] G7 — versao bumpada na mesma commit
   CHECK: `grep -m1 '^version' Cargo.toml`
   EXPECT: `version = "0.45.38"` (regra binding do `AGENTS.md`: mudanca no package bumpa versao na MESMA commit)
-  EVIDENCE: `version = "0.45.38"` — na MESMA commit `5bf9b0cc` do codigo (junto com `Cargo.lock` regenerado)
+  EVIDENCE: `version = "0.45.38"` — na MESMA commit `768d3f81` do codigo (junto com `Cargo.lock` regenerado). Pos-rebase em `main` `279cb8a0` (apos merge do #112/#18, que aterrissou 0.45.37): versao mantida em `0.45.38` — a proxima livre — resolvida no conflito do rebase.
 
 - [ ] G8 — changelog no lugar certo
   CHECK: `python3 scripts/changelog.py check-history-sync` e `grep -c . <(sed -n '/^## Unreleased/,/^## /p' CHANGELOG.md | tail -n +2)`
@@ -65,7 +65,7 @@ O servidor ja faz o trabalho: `Method::EventsSubscribe` (`src/api/schema.rs:228`
 - [x] G10 — PR aberto
   CHECK: `gh pr view --json number,state,title --jq '"\(.number) \(.state) \(.title)"'`
   EXPECT: PR aberto contra `main` de `aryrabelo/bora-herdr-ada`, commit convencional minuscula, corpo com `refs #111`, sem keyword de fechamento (`fixes`/`closes`/`resolves` sao PROIBIDOS pela regra do repo)
-  EVIDENCE: `19 OPEN feat: add bora events verb streaming session events as json lines | base: main | head: agente/events-follow` — https://github.com/aryrabelo/bora-herdr-ada/pull/19 ; commit `5bf9b0cc` (minuscula, sem emoji, sem co-author), corpo com `refs #111`, zero keywords de fechamento
+  EVIDENCE: `19 OPEN feat: add bora events verb streaming session events as json lines | base: main | head: agente/events-follow` — https://github.com/aryrabelo/bora-herdr-ada/pull/19 ; commits `768d3f81`/`69a04601`/`baafb8b2` rebasados sobre `279cb8a0` (minusculas, sem emoji, sem co-author, corpos com `refs #111`, zero keywords de fechamento)
 
 ## Nao-objetivos
 
