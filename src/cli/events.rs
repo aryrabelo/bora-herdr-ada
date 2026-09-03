@@ -70,10 +70,10 @@ pub(super) fn run_events_command(args: &[String]) -> std::io::Result<i32> {
         }
     };
 
-    if parsed.pane_id.is_some() && parsed.subscriptions.is_empty() {
-        eprintln!(
-            "--pane requires --subscribe <name>: the default subscriptions are not pane-scoped"
-        );
+    if let Some(message) =
+        pane_without_subscribe_error(parsed.pane_id.as_deref(), &parsed.subscriptions)
+    {
+        eprintln!("{message}");
         eprintln!("{EVENTS_USAGE}");
         return Ok(2);
     }
@@ -194,6 +194,20 @@ fn parse_events_args(args: &[String]) -> Result<EventsArgs, String> {
         }
     }
     Ok(parsed)
+}
+
+/// Rejects `--pane` given without `--subscribe`: the default subscriptions
+/// are not pane-scoped, so the flag would be silently ignored. Returns the
+/// named error message when the guard trips.
+fn pane_without_subscribe_error(pane_id: Option<&str>, subscriptions: &[String]) -> Option<String> {
+    if pane_id.is_some() && subscriptions.is_empty() {
+        Some(
+            "--pane requires --subscribe <name>: the default subscriptions are not pane-scoped"
+                .to_string(),
+        )
+    } else {
+        None
+    }
 }
 
 /// Maps a wire event name to its `Subscription`. The 30 parameterless
@@ -421,6 +435,27 @@ mod tests {
         let message = parse_events_args(&["--limit".into(), "lots".into()])
             .expect_err("non-numeric limit must be a named error");
         assert!(message.contains("--limit"), "got: {message}");
+    }
+
+    #[test]
+    fn events_pane_without_subscribe_is_a_named_error() {
+        let message = pane_without_subscribe_error(Some("p1"), &[]).expect("guard must trip");
+        assert!(
+            message.contains("--pane"),
+            "must name the given flag: {message}"
+        );
+        assert!(
+            message.contains("--subscribe"),
+            "must name the missing flag: {message}"
+        );
+        assert!(
+            pane_without_subscribe_error(None, &[]).is_none(),
+            "no --pane given: the guard must stay quiet"
+        );
+        assert!(
+            pane_without_subscribe_error(Some("p1"), &["pane.scroll_changed".into()]).is_none(),
+            "--pane with --subscribe is legitimate"
+        );
     }
 
     #[test]
