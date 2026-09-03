@@ -39,6 +39,7 @@ pub(super) fn command() -> Command {
         .subcommand(notification_command())
         .subcommand(agent_command())
         .subcommand(pane_command())
+        .subcommand(events_command())
         .subcommand(terminal_command())
         .subcommand(session_command())
         .subcommand(integration_command())
@@ -840,6 +841,27 @@ fn terminal_command() -> Command {
                 )
                 .subcommand(Command::new("clear").about("Clear the outer terminal title")),
         )
+}
+
+fn events_command() -> Command {
+    Command::new("events")
+        .about("Stream session events as JSON lines on stdout")
+        .arg(
+            flag("follow").help(
+                "Keep streaming until interrupted (already the default; accepted for compatibility)",
+            ),
+        )
+        .arg(
+            repeatable_option("subscribe", "NAME").help(
+                "Event name to subscribe to, e.g. pane.created (default: every event that needs no --pane)",
+            ),
+        )
+        .arg(
+            option("pane", "ID")
+                .help("Pane id required by the pane-scoped subscriptions like pane.agent_status_changed"),
+        )
+        .arg(option("limit", "N").help("Exit successfully after N events"))
+        .arg(option("session", "NAME").help("Stream from a named session instead of the default one"))
 }
 
 fn session_command() -> Command {

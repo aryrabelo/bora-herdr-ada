@@ -74,6 +74,23 @@ impl ApiClient {
         read_json_line(&mut reader)
     }
 
+    /// Opens a streaming request: sends `request`, reads and validates the
+    /// first response line, and returns it together with a reader positioned
+    /// after it. Streaming handlers (`events.subscribe`) then write one JSON
+    /// line per event and never close the stream until the client goes away.
+    pub fn open_stream(
+        &self,
+        request: &Request,
+    ) -> Result<(SuccessResponse, EventStream), ApiClientError> {
+        let mut stream = self.connect()?;
+        write_request(&mut stream, request)?;
+
+        let mut reader = BufReader::new(stream);
+        let value: serde_json::Value = read_json_line(&mut reader)?;
+        let response = parse_response_value(value)?;
+        Ok((response, EventStream { reader }))
+    }
+
     pub fn status(&self) -> Result<crate::api::RuntimeStatus, ApiClientError> {
         let response = self.request(Request {
             id: "api-client:status".into(),
@@ -95,6 +112,18 @@ impl ApiClient {
 
     fn connect(&self) -> io::Result<LocalStream> {
         crate::ipc::connect_local_stream(&self.socket_path())
+    }
+}
+
+/// Reader over an open streaming API response; each `next_value` consumes
+/// exactly one JSON line.
+pub struct EventStream {
+    reader: BufReader<LocalStream>,
+}
+
+impl EventStream {
+    pub fn next_value(&mut self) -> Result<serde_json::Value, ApiClientError> {
+        read_json_line(&mut self.reader)
     }
 }
 
