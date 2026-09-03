@@ -2,6 +2,7 @@ use std::{
     collections::{HashSet, VecDeque},
     io::Write,
     os::fd::RawFd,
+    os::unix::fs::FileTypeExt,
     path::PathBuf,
     process::{Command, Stdio},
     sync::OnceLock,
@@ -419,6 +420,50 @@ pub fn process_cwd(pid: u32) -> Option<PathBuf> {
     std::fs::read_link(format!("/proc/{pid}/cwd")).ok()
 }
 
+/// Resolve the TTY device path of a pane child process.
+///
+/// Reads `/proc/<pid>/fd/0` — the child's stdin, which for a pane's direct
+/// shell is the pty slave — and only reports the target when it is a
+/// character device, so pipes and sockets are never presented as ttys.
+/// Gated on `tty_nr` (field 7 of `/proc/<pid>/stat`) so a process with no
+/// controlling terminal is never given one; the NAME still comes from fd 0,
+/// which is the pty slave for a pane's own shell. A process that has a ctty
+/// but redirected stdin elsewhere would be named by that redirect — no
+/// caller does this today, and the alternative is decoding `tty_nr`'s packed
+/// True when field 7 (`tty_nr`) of a `/proc/<pid>/stat` body is non-zero.
+///
+/// Split out from [`process_tty`] because the parse is the only fiddly part:
+/// `comm` is parenthesised and may itself contain spaces AND parens, so the
+/// fixed fields are counted from after its LAST closing paren — state, ppid,
+/// pgrp, session, tty_nr. Counting from the start of the line instead is the
+/// classic bug here, and it only shows up for processes whose name has a
+/// space in it.
+fn has_controlling_terminal(stat: &str) -> Option<bool> {
+    let after_comm = stat.rsplit_once(')')?.1;
+    Some(after_comm.split_whitespace().nth(4)? != "0")
+}
+/// major/minor and scanning `/dev` for a match, as the macOS path must.
+pub fn process_tty(pid: u32) -> Option<String> {
+    if pid == 0 {
+        return None;
+    }
+    // Ask the kernel whether a controlling terminal EXISTS before naming
+    // one. Field 7 (`tty_nr`) of `/proc/<pid>/stat` is 0 for a process
+    // without one; fd 0 cannot answer that question, because a `setsid`'d
+    // process keeps whatever it inherited on stdin and `/dev/null` is a
+    // character device too — reading fd 0 alone reports a tty for a session
+    // that has none.
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    if !has_controlling_terminal(&stat)? {
+        return None;
+    }
+    let path = std::fs::read_link(format!("/proc/{pid}/fd/0")).ok()?;
+    let meta = std::fs::metadata(&path).ok()?;
+    meta.file_type()
+        .is_char_device()
+        .then(|| path.display().to_string())
+}
+
 /// Read a Herdr agent identity hint from a process environment.
 pub fn process_agent_hint(pid: u32) -> Option<crate::detect::Agent> {
     if pid == 0 {
@@ -785,6 +830,25 @@ fn process_session_id(pid: u32) -> Option<i32> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn has_controlling_terminal_reads_field_seven_after_the_last_paren() {
+        // Real shape: pid (comm) state ppid pgrp session tty_nr ...
+        // 34816 == 0x8800 == major 136 (pts), minor 0.
+        let with = "1234 (bash) S 1230 1234 1234 34816 1250 4194304 0 0";
+        let without = "1235 (sleep) S 1 1235 1235 0 -1 4194304 0 0";
+        assert_eq!(has_controlling_terminal(with), Some(true));
+        assert_eq!(has_controlling_terminal(without), Some(false));
+
+        // comm with a space, and comm containing its own parens: counting
+        // fields from the start of the line gets both of these wrong.
+        let spaced = "1236 (Web Content) S 1 1236 1236 34817 1250 0 0 0";
+        let parens = "1237 (a (b) c) S 1 1237 1237 0 -1 0 0 0";
+        assert_eq!(has_controlling_terminal(spaced), Some(true));
+        assert_eq!(has_controlling_terminal(parens), Some(false));
+
+        assert_eq!(has_controlling_terminal("garbage with no paren"), None);
+    }
+
     use super::*;
     use std::{cell::RefCell, collections::HashMap};
 
@@ -1309,5 +1373,28 @@ mod tests {
         assert_eq!(argv[1], "-c");
         assert!(argv[2].contains("EDITOR:-vi"));
         assert!(argv[2].contains("/tmp/herdr scrollback.txt"));
+    }
+}
+
+#[cfg(test)]
+mod tty_tests {
+    use super::*;
+
+    #[test]
+    fn process_tty_resolves_the_own_controlling_terminal() {
+        // The test binary has a controlling terminal only when run from an
+        // interactive session; detached, there is nothing to resolve and
+        // this assertion is vacuous by design.
+        if unsafe { libc::isatty(libc::STDIN_FILENO) } == 0
+            && unsafe { libc::isatty(libc::STDOUT_FILENO) } == 0
+        {
+            return;
+        }
+        let tty = process_tty(std::process::id())
+            .expect("own pid with a controlling tty resolves to a device path");
+        assert!(
+            tty.starts_with("/dev/"),
+            "expected a /dev device path, got {tty}"
+        );
     }
 }

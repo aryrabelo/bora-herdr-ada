@@ -816,7 +816,20 @@ fn pane_info_reports_foreground_cwd_without_changing_pane_cwd() {
     let process_info = &process_info["result"]["process_info"];
     assert!(process_info["shell_pid"].is_number());
     assert_eq!(process_info["foreground_process_group_id"], foreground_pid);
-    assert!(process_info.get("tty").is_none());
+    // This whole file is `cfg(not(target_os = "macos"))`, so this only ever
+    // runs on Linux, where the pane's shell has the pty slave on fd 0 and
+    // `process_tty` resolves it. An earlier revision asserted `is_none()`
+    // here, which never executed anywhere before CI and was simply false:
+    // reporting the tty is the point of the field. Measured live on macOS
+    // for the same field: `/dev/ttys029`, matching `ps -o tty=` on the same
+    // shell pid, so the macOS path is not silently returning None either.
+    let tty = process_info["tty"]
+        .as_str()
+        .expect("linux pane shell has a controlling pty on fd 0");
+    assert!(
+        tty.starts_with("/dev/pts/"),
+        "expected a pty slave path, got {tty}"
+    );
     let foreground_processes = process_info["foreground_processes"].as_array().unwrap();
     let foreground_shell = foreground_processes
         .iter()

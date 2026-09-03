@@ -2,6 +2,7 @@ use std::ffi::OsStr;
 use std::io::Write;
 use std::os::fd::RawFd;
 use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::{FileTypeExt, MetadataExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::ptr::NonNull;
@@ -938,6 +939,55 @@ pub fn process_cwd(pid: u32) -> Option<PathBuf> {
     Some(PathBuf::from(OsStr::from_bytes(&vip_path[..nul])))
 }
 
+/// Resolve the controlling TTY device path for a process.
+///
+/// The `libc` crate exposes neither `devname()` nor
+/// `PROC_PIDFDVNODEPATHINFO` on Apple targets, so read the controlling
+/// terminal device id (`e_tdev`) from `proc_bsdinfo` and resolve the name
+/// by scanning `/dev` for the device node whose `st_rdev` matches.
+/// Matching on device ids proves the node exists instead of guessing a
+/// name from the major/minor numbers.
+pub fn process_tty(pid: u32) -> Option<String> {
+    if pid == 0 {
+        return None;
+    }
+    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+    let ret = unsafe {
+        libc::proc_pidinfo(
+            pid as libc::c_int,
+            libc::PROC_PIDTBSDINFO,
+            0,
+            &mut info as *mut _ as *mut libc::c_void,
+            size,
+        )
+    };
+    if ret != size {
+        return None;
+    }
+    // XNU initializes e_tdev to NODEV = (dev_t)-1 when the process has no
+    // controlling terminal; 0 is kept out too because /dev/console (and a
+    // few kernel pseudo-devices) share rdev 0.
+    if info.e_tdev == 0 || info.e_tdev == u32::MAX {
+        return None;
+    }
+    tty_device_matching_rdev(Path::new("/dev"), u64::from(info.e_tdev))
+        .map(|path| path.display().to_string())
+}
+
+/// Find the character device in `dir` whose device id equals `rdev`.
+fn tty_device_matching_rdev(dir: &Path, rdev: u64) -> Option<PathBuf> {
+    std::fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .find(|entry| {
+            std::fs::metadata(entry.path())
+                .map(|meta| meta.file_type().is_char_device() && meta.rdev() == rdev)
+                .unwrap_or(false)
+        })
+        .map(|entry| entry.path())
+}
+
 pub fn session_processes(child_pid: u32) -> Vec<u32> {
     if child_pid == 0 {
         return Vec::new();
@@ -1277,5 +1327,56 @@ printf '%s\n' "$@" > "$HERDR_NOTIFY_ARGS"
         ));
         assert!(!super::pid_is_descendant_of(0, std::process::id()));
         assert!(!super::pid_is_descendant_of(std::process::id(), 0));
+    }
+}
+
+#[cfg(test)]
+mod tty_tests {
+    use super::*;
+
+    #[test]
+    fn tty_device_matching_rdev_matches_fixture_by_rdev() {
+        let dir = std::env::temp_dir().join(format!("herdr_tty_fixture_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Char devices cannot be minted unprivileged, but symlinks stat
+        // through to their targets, so existing device nodes stand in as
+        // the fixture's distinct rdevs.
+        let null_rdev = std::fs::metadata("/dev/null").unwrap().rdev();
+        let zero_rdev = std::fs::metadata("/dev/zero").unwrap().rdev();
+        assert_ne!(null_rdev, zero_rdev, "fixture needs two distinct rdevs");
+        std::os::unix::fs::symlink("/dev/zero", dir.join("zero")).unwrap();
+        std::os::unix::fs::symlink("/dev/null", dir.join("null")).unwrap();
+        std::fs::write(dir.join("plain"), b"x").unwrap();
+
+        assert_eq!(
+            tty_device_matching_rdev(&dir, zero_rdev),
+            Some(dir.join("zero"))
+        );
+        assert_eq!(
+            tty_device_matching_rdev(&dir, null_rdev),
+            Some(dir.join("null"))
+        );
+        assert_eq!(tty_device_matching_rdev(&dir, u64::MAX), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn process_tty_resolves_the_own_controlling_terminal() {
+        // The test binary has a controlling terminal only when run from an
+        // interactive session; detached, there is nothing to resolve and
+        // this assertion is vacuous by design.
+        if unsafe { libc::isatty(libc::STDIN_FILENO) } == 0
+            && unsafe { libc::isatty(libc::STDOUT_FILENO) } == 0
+        {
+            return;
+        }
+        let tty = process_tty(std::process::id())
+            .expect("own pid with a controlling tty resolves to a device path");
+        assert!(
+            tty.starts_with("/dev/"),
+            "expected a /dev device path, got {tty}"
+        );
     }
 }
