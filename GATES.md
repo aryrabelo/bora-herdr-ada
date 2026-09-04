@@ -86,6 +86,12 @@ Branch `agente/channel-inject-now`, worktree `~/Sites/bora-team/worktrees/bora/c
 
 Nota de contagem: o relatório anterior disse "10 de 10". Com a revogação do G3 (defeito inexistente) e o âmbito do G7 reduzido a observação CLI (as grafias sempre funcionaram; não é resultado deste PR), os gates de RESULTADO deste PR são G1, G2, G4, G5, G6, G8, G9, G10, G11, G12, G13 — todos com evidência colada aqui.
 
+- [x] G14 — CI macos vermelho no PR: `open_twice_on_an_already_repaired_channel_does_not_duplicate_the_transcript_pane` sem `IsolatedDirs` (não-regressão: o teste já nascia sem isolamento no `main`; o conserto é nossa porque o PR está vermelho)
+  CHECK: `grep -A2 'fn open_twice_on_an_already_repaired' src/app/api/channels.rs | grep -c IsolatedDirs` e auditoria `grep -c IsolatedDirs::new src/app/api/channels.rs`
+  EXPECT: guard presente no teste; 69 guards no total (62 → 69)
+  EVIDENCE: auditoria dos 14 testes de canal sem guard: 7 tocam estado em disco e receberam guard (`create_normalizes…`, `create_seeds…`, `create_succeeds_even…`, `create_gives…`, `open_repairs…`, `open_twice…`, `list_reports…` — este último via `create_channel`); os outros 7 são puros em memória (`open_on_unknown` erra antes de tocar disco, `from_human_cannot_be_claimed_over_the_wire`, `channel_protocol_briefing_teaches…`, `classify_delivery_maps_outcomes`, `member_addressable_name_falls_back…`, `leading_mention_nick_parses…`, `burst_active_counts…`) e ficaram como estão. Prova de sobrevivência ao ataque, medida: com o guarda REMOVIDO (mutação), suíte CHEIA 3× (4246 testes, `-j 16`: 20.5s/19.9s/20.4s, 4246/4246 passed) e suíte de canais 15× `-j 16` (76/76 em todas) — **nenhuma falha fabricada localmente**. LIMITE DECLARADO: a janela de corrida (mutex `IsolatedDirs` detido por outro teste no instante exato do `handle_channel_open`) não foi reproduzível nesta máquina; a evidência do conserto é o mecanismo nomeado pela regra binding do `AGENTS.md` (guarda process-wide; sem ele o teste resolve estado contra o diretório de OUTRO teste) + a vacina idêntica aos 62 irmãos + o CI do PR julgando no runner onde falhou.
+  P3 de doc no mesmo commit: `cli-reference.mdx` `channel ask` agora lista `[--pane ID|--current]` (o verbo aceita; `parse_channel_ask_flags` em `cli.rs`).
+
 ## Nao-objetivos respeitados
 
 - `to_human`/`notify_chat_to_human`: intocados (passivo, ceo-bora#33).
