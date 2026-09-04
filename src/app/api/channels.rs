@@ -643,7 +643,7 @@ impl App {
             targets
                 .into_iter()
                 .map(|target| {
-                    self.send_channel_protocol(&name, ws_idx, &target);
+                    self.send_channel_protocol(&name, ws_idx, &target, params.when_idle);
                     let response = self.handle_agent_prompt(
                         format!("{id}:channel:{target}"),
                         AgentPromptParams {
@@ -979,7 +979,7 @@ impl App {
             // A pane in the channel's own workspace is a member by
             // construction. Succeed, but say so: recording it would imply a
             // membership that `channel.leave` could take away.
-            self.send_channel_protocol(&name, ws_idx, &public_id);
+            self.send_channel_protocol(&name, ws_idx, &public_id, Some(true));
             return encode_success(
                 id,
                 ResponseResult::ChannelJoined {
@@ -999,7 +999,7 @@ impl App {
             // is idempotent, and so is the notice.
             self.append_channel_autorename_notice(&name, ws_idx, &public_id);
         }
-        self.send_channel_protocol(&name, ws_idx, &public_id);
+        self.send_channel_protocol(&name, ws_idx, &public_id, Some(true));
         encode_success(
             id,
             ResponseResult::ChannelJoined {
@@ -1072,14 +1072,23 @@ impl App {
     /// a pane with no scope entry gets no suffix — never an invented empty
     /// section. Delivery goes through `handle_agent_prompt` with
     /// `from_pane: None` — exempt from the agent-prompt rate limit and
-    /// carries no `[from ...]` prefix — and `when_idle: Some(true)`, so a
-    /// `Working` pane gets it queued rather than dropped. Always appends
-    /// one system line to the channel's transcript recording the delivery,
-    /// mirroring `App::report_queued_prompt_dropped`'s drop-notice line.
+    /// carries no `[from ...]` prefix — and the caller's `when_idle` mode:
+    /// the `channel.send` fan-out passes the message's own mode so the
+    /// briefing and the message travel together and the agent always reads
+    /// the protocol BEFORE its first message, whichever mode the sender
+    /// chose. Standalone callers (`channel join`) pass `Some(true)` so
+    /// joining never types into a running turn. Always appends one system
+    /// line to the channel's transcript recording the delivery.
     /// `ws_idx` is the channel's own workspace, kept only for tracing
     /// context — the pane is always addressed by its already-resolved
     /// public id.
-    fn send_channel_protocol(&mut self, channel: &str, ws_idx: usize, public_pane_id: &str) {
+    fn send_channel_protocol(
+        &mut self,
+        channel: &str,
+        ws_idx: usize,
+        public_pane_id: &str,
+        when_idle: Option<bool>,
+    ) {
         let already_sent = channels::read_protocol_sent(channel)
             .into_iter()
             .any(|entry| entry.pane == public_pane_id && entry.version >= CHANNEL_PROTOCOL_VERSION);
@@ -1118,7 +1127,7 @@ impl App {
                 ),
                 wait: None,
                 from_pane: None,
-                when_idle: Some(true),
+                when_idle,
                 when_idle_timeout_ms: None,
                 peer_pid: None,
                 origin_channel: None,
@@ -1176,11 +1185,10 @@ impl App {
     /// `clear_channel_unread_badge`, ceo-bora#33) to resolve a channel
     /// name to the workspace whose `metadata_tokens` carry its badge.
     pub(crate) fn find_channel_workspace(&self, name: &str) -> Option<usize> {
-        let name = channels::normalize_channel_name(name);
         self.state
             .workspaces
             .iter()
-            .position(|ws| ws.channel_home_name() == Some(name.as_str()))
+            .position(|ws| ws.channel_home_name() == Some(name))
     }
 
     /// Resolves `from_pane` to a channel member and advances that member's
@@ -2536,21 +2544,82 @@ mod tests {
         super::super::test_support::shutdown_test_runtimes(&mut app);
     }
 
-    /// Channel names resolve identically with or without the leading `#`.
+    /// Fan-out order contract: an UNBRIEFED Working member receives the
+    /// protocol block and the message in the SAME delivery mode — both
+    /// injected immediately by default, briefing FIRST, nothing queued. A
+    /// briefing that queued while the message injected would teach the
+    /// agent a protocol it reads only after answering a message it was
+    /// never taught to read.
     #[tokio::test]
-    async fn find_channel_workspace_matches_name_with_or_without_hash() {
-        let _isolated = IsolatedDirs::new("find-by-hash");
+    async fn channel_protocol_and_message_inject_together_for_working_member() {
+        let _isolated = IsolatedDirs::new("send-unbriefed-working");
         let mut app = test_app();
-        create_channel(&mut app, "eng");
-        assert_eq!(
-            app.find_channel_workspace("eng"),
-            app.find_channel_workspace("#eng"),
-            "both spellings must resolve to the same workspace"
+        let ws_idx = create_bare_channel_workspace(&mut app, "eng");
+        let first = app.state.workspaces[ws_idx].tabs[0].root_pane;
+        let second =
+            app.state.workspaces[ws_idx].test_split(ratatui::layout::Direction::Horizontal);
+        app.state.ensure_test_terminals();
+        for (pane, state) in [
+            (first, crate::detect::AgentState::Idle),
+            (second, crate::detect::AgentState::Working),
+        ] {
+            let terminal_id = app.state.workspaces[ws_idx]
+                .pane_state(pane)
+                .unwrap()
+                .attached_terminal_id
+                .clone();
+            let terminal = app.state.terminals.get_mut(&terminal_id).unwrap();
+            terminal.set_detected_state(Some(crate::detect::Agent::OpenCode), state);
+        }
+        let (_rx1, mut rx2) = {
+            let (r1, rx1) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+            app.state.insert_test_runtime(first, r1);
+            let (r2, rx2) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+            app.state.insert_test_runtime(second, r2);
+            (rx1, rx2)
+        };
+        let worker = app.public_pane_id(ws_idx, second).unwrap();
+        // Deliberately NO skip_protocol: the member has never been briefed.
+
+        let sent = app.handle_channel_send(
+            "req".into(),
+            ChannelSendParams {
+                name: "#eng".into(),
+                text: "first words".into(),
+                from_pane: None,
+                to: None,
+                in_reply_to: None,
+                when_idle: None,
+                from_human: false,
+            },
         );
-        assert!(app.find_channel_workspace("#eng").is_some());
-        assert!(app.find_channel_workspace("eng").is_some());
-        assert!(app.find_channel_workspace("nope").is_none());
-        assert!(app.find_channel_workspace("#nope").is_none());
+        let sent: serde_json::Value = serde_json::from_str(&sent).unwrap();
+        let deliveries = sent["result"]["deliveries"].as_array().unwrap();
+        assert_eq!(deliveries.len(), 2);
+        let worker_delivery = deliveries
+            .iter()
+            .find(|d| d["pane_id"] == serde_json::json!(worker))
+            .expect("the Working member must be a delivery target");
+        assert_eq!(worker_delivery["status"], serde_json::json!("delivered"));
+        assert!(
+            !app.pending_agent_prompts.contains_key(&worker),
+            "briefing and message must BOTH inject to an unbriefed Working member, not queue"
+        );
+
+        // Order: the protocol block reaches the pane first, the message second.
+        let first_bytes = rx2.try_recv().expect("briefing must inject");
+        let first_write = String::from_utf8_lossy(&first_bytes);
+        assert!(
+            first_write.contains("channel protocol for #eng"),
+            "briefing must be the FIRST write into an unbriefed pane: {first_write:?}"
+        );
+        let second_bytes = rx2.try_recv().expect("message must inject");
+        let second_write = String::from_utf8_lossy(&second_bytes);
+        assert!(
+            second_write.contains("[#eng seq=") && second_write.contains("first words"),
+            "the channel message must follow the briefing: {second_write:?}"
+        );
+        super::super::test_support::shutdown_test_runtimes(&mut app);
     }
 
     /// The briefing must teach the delivery truth: immediate mid-turn
@@ -4668,7 +4737,7 @@ mod tests {
         let _isolated = IsolatedDirs::new("protocol-restart");
         let mut app = test_app();
         create_channel(&mut app, "eng");
-        app.send_channel_protocol("eng", 0, "w1A:p2");
+        app.send_channel_protocol("eng", 0, "w1A:p2", None);
         let history = channels::read_tail("eng", 10).unwrap();
         assert_eq!(
             history.iter().filter(|m| m.from_pane == "system").count(),
@@ -4681,7 +4750,7 @@ mod tests {
         // persisted protocol.json record must suppress a resend for the
         // same pane, even though this App instance never saw that pane.
         let mut restarted = test_app();
-        restarted.send_channel_protocol("eng", 0, "w1A:p2");
+        restarted.send_channel_protocol("eng", 0, "w1A:p2", None);
         let history_after = channels::read_tail("eng", 10).unwrap();
         assert_eq!(
             history_after
@@ -4697,7 +4766,7 @@ mod tests {
         // `entry.version >= CHANNEL_PROTOCOL_VERSION` gate is strict, not
         // pane-presence, so v1-briefed panes see the v2 scope-aware text.
         channels::mark_protocol_sent("eng", "w1A:p3", CHANNEL_PROTOCOL_VERSION - 1).unwrap();
-        restarted.send_channel_protocol("eng", 0, "w1A:p3");
+        restarted.send_channel_protocol("eng", 0, "w1A:p3", None);
         let history_bump = channels::read_tail("eng", 10).unwrap();
         assert_eq!(
             history_bump
@@ -4721,7 +4790,7 @@ mod tests {
         let mut app = test_app();
         let (_reviewer, worker, _rx) = channel_with_two_agents(&mut app, "reviewer", "worker");
 
-        app.send_channel_protocol("eng", 0, &worker);
+        app.send_channel_protocol("eng", 0, &worker, Some(true));
 
         assert!(
             app.pending_agent_prompts.contains_key(&worker),
@@ -4738,7 +4807,7 @@ mod tests {
         create_channel(&mut app, "eng");
         let (outsider, mut rx) = outside_agent_pane(&mut app, "brandos");
 
-        app.send_channel_protocol("eng", 0, &outsider);
+        app.send_channel_protocol("eng", 0, &outsider, None);
         let injected = rx
             .try_recv()
             .expect("protocol block must be injected immediately");
