@@ -67,6 +67,25 @@ Branch `agente/channel-inject-now`, worktree `~/Sites/bora-team/worktrees/bora/c
   - M3 (G3): `let name = channels::normalize_channel_name(name);` → `let name = name.to_string();` → `FAIL ... find_channel_workspace_matches_name_with_or_without_hash`; reversão pelo mesmo padrão; `grep -cF` = 1.
   - M4 (G4): `passes --when-idle, and` → `passes --hold-idle, and` → `FAIL ... channel_protocol_briefing_teaches_immediate_delivery`; reversão; `grep -cF 'passes --when-idle, and'` = 1; suíte de canais 76/76 após as 4.
 
+## Revisao do PR #20 (adendos pos-review, mesmos padroes)
+
+- [x] G11 — P1 pos-review: briefing viaja no MESMO modo `when_idle` da mensagem; ordem briefing→mensagem; fila vazia no default; doc comment mentiroso reescrito
+  CHECK: `cargo nextest run -E 'test(channel_protocol_and_message_inject_together_for_working_member)'` e a mutação M5: `sed -i '' 's\|^                when_idle,$\|                when_idle: Some(true),\|' src/app/api/channels.rs && cargo nextest run -E 'test(channel_protocol_and_message_inject_together_for_working_member)'; sed -i '' 's\|^                when_idle: Some(true),$\|                when_idle,\|' src/app/api/channels.rs; grep -c '^                when_idle,$' src/app/api/channels.rs`
+  EXPECT: verde antes; **FAIL depois** da mutação; reversão provada (`grep` = 1) e reparo linha-a-linha dos literais de teste que a reversão larga alcançou (2407/2523/3095 → `Some(true)` de novo; medido: suíte de canais 76/76 após reparo)
+  EVIDENCE: teste novo usa membro Working NÃO briefado (sem `skip_protocol`), runtime real no alvo: primeiro `try_recv` contém `channel protocol for #eng`, segundo contém `[#eng seq=` + texto, `pending_agent_prompts` do alvo vazio. Sob M5 o teste morre (briefing enfileirado, fila não-vazia). `send_channel_protocol` ganhou parâmetro `when_idle`; fan-out passa `params.when_idle`; `channel join` passa `Some(true)` (juntar-se nunca digita num turno rodando) — razões verdadeiras no doc comment, "queued rather than dropped" apagado (era falso desde o nascimento: nunca houve drop de prompt sem `when_idle`).
+
+- [x] G12 — Revogação: o defeito de nome sem `#` NÃO EXISTIA (diagnóstico do dono era proxy de `jq`, exit 5 era do jq)
+  CHECK: `grep -n 'normalize_channel_name' src/app/api/channels.rs` e `cargo nextest run -E 'test(find_channel_workspace)'`
+  EXPECT: `find_channel_workspace` SEM normalização (voltou ao formato da base); teste `find_channel_workspace_matches_name_with_or_without_hash` REMOVIDO
+  EVIDENCE: todos os 9 callers de produção já normalizavam antes (medido pelo revisor na base `bc2c5914`); a normalização adicionada era inalcançável em produção e custava uma alocação por lookup. Entrada do CHANGELOG: frase falsa sobre lookups de nome apagada; entrada agora só descreve a mudança de entrega.
+
+- [x] G13 — Docs de usuário em `docs/next/website` refletindo o default novo
+  CHECK: `grep -c 'when-idle' docs/next/website/src/content/docs/cli-reference.mdx docs/next/website/src/content/docs/agent-automation.mdx`
+  EXPECT: ambos citam `--when-idle` com a semântica nova
+  EVIDENCE: `agent-automation.mdx:78` agora diz "injected immediately into every member even mid-turn — like steering … `--when-idle` opts back into hold-until-idle deferral" (estava de cabeça pra baixo); `cli-reference.mdx` ganhou seção `## Channels` com o bloco de verbos incluindo `channel send … --when-idle` e o parágrafo de semântica de entrega.
+
+Nota de contagem: o relatório anterior disse "10 de 10". Com a revogação do G3 (defeito inexistente) e o âmbito do G7 reduzido a observação CLI (as grafias sempre funcionaram; não é resultado deste PR), os gates de RESULTADO deste PR são G1, G2, G4, G5, G6, G8, G9, G10, G11, G12, G13 — todos com evidência colada aqui.
+
 ## Nao-objetivos respeitados
 
 - `to_human`/`notify_chat_to_human`: intocados (passivo, ceo-bora#33).

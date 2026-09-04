@@ -321,6 +321,25 @@ A successful start returns only after the expected agent owns the same terminal 
 
 Use `pane send-text`, `pane send-keys`, `pane run`, and `terminal attach` for ordinary terminals, servers, tests, shells, or low-level terminal control. Use `pane run` when you want to submit a command with Enter.
 
+## Channels
+
+Agent `#channels` are workspaces named `#name` that group agent panes for broadcast; the full workflow (members, nicks, transcripts, asks) lives in [Agent automation](/docs/agent-automation/).
+
+```bash
+herdr channel create <name>
+herdr channel list
+herdr channel members <name> [--json]
+herdr channel send <name> <text> [--pane ID|--current] [--to NICK] [--reply-to SEQ] [--when-idle]
+herdr channel note <name> <text> [--pane ID|--current]
+herdr channel ask <name> <nick> <text> [--timeout MS]
+herdr channel history <name> [--lines N] [--json]
+herdr channel tail <name> [--after SEQ] [--follow] [--json]
+herdr channel join <name> [--pane ID] [--scope-write DIR]... [--scope-read DIR]...
+herdr channel leave <name> [--pane ID]
+```
+
+`channel send` injects immediately into every member agent pane, even one that is mid-turn — the receipt reports `delivered` per member. `--when-idle` opts into hold-until-idle delivery: a working target's message is queued (bounded per-target FIFO) and reported as `deferred` with its queue position instead. An unbriefed pane receives the channel protocol briefing and its first message in the same delivery mode, briefing first.
+
 ## Direct terminal attach
 
 ```bash
