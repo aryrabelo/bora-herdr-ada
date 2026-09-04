@@ -186,7 +186,12 @@ fn channel_command() -> Command {
                     option("to", "NICK")
                         .help("Address one member; fails loudly on an unknown or ambiguous nick"),
                 )
-                .arg(option("reply-to", "SEQ").help("Answer a channel ask question by its seq")),
+                .arg(option("reply-to", "SEQ").help("Answer a channel ask question by its seq"))
+                .arg(
+                    flag("when-idle").help(
+                        "Hold delivery until each Working member is free (default: inject immediately, like steering)",
+                    ),
+                ),
         )
         .subcommand(
             Command::new("note")
@@ -1557,7 +1562,7 @@ mod tests {
         }
 
         let send = command_path(&cmd, &["channel", "send"]);
-        for option in ["to", "reply-to"] {
+        for option in ["to", "reply-to", "when-idle"] {
             assert!(
                 has_option(send, option),
                 "channel send spec is missing --{option}, accepted by \

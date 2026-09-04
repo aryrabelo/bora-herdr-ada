@@ -2336,6 +2336,13 @@
                 "string",
                 "null"
               ]
+            },
+            "when_idle": {
+              "description": "Delivery gate for the agent-member fan-out. Absent/false (the\ndefault): the message is injected into the recipient pane\nimmediately, even mid-turn — steering semantics, the same default\nas `agent prompt`. `true` (`channel send --when-idle`): a Working\ntarget has the message queued instead (deferred receipt) until its\nnext observed idle.",
+              "type": [
+                "boolean",
+                "null"
+              ]
             }
           },
           "required": [

@@ -49,6 +49,14 @@ pub struct ChannelSendParams {
     /// only — recorded on the message, never used for delivery.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub in_reply_to: Option<u64>,
+    /// Delivery gate for the agent-member fan-out. Absent/false (the
+    /// default): the message is injected into the recipient pane
+    /// immediately, even mid-turn — steering semantics, the same default
+    /// as `agent prompt`. `true` (`channel send --when-idle`): a Working
+    /// target has the message queued instead (deferred receipt) until its
+    /// next observed idle.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub when_idle: Option<bool>,
     /// Trust anchor, exactly like `peer_pid` on agent prompts: never part
     /// of the wire shape (`#[serde(skip)]` drops it during deserialize), set
     /// only in-process by the TUI chat send path. A socket client cannot
