@@ -1793,11 +1793,17 @@ fn pane_dots_columns(
 /// Name hue shared by `pane_dots_name_line` and the Folders inline row —
 /// one function so the 2-line and inline shapes can never disagree about
 /// R5b (red = blocked+unseen, yellow = idle+unseen, else `overlay1`).
-fn pane_dots_name_style(waiting: bool, ready: bool, p: &Palette) -> Style {
+/// `quiet` is the third, lesser tier: no agent, just a background pane
+/// promoted by the quiet-output tick. It is counted by the `N waiting`
+/// label, so it must be legible — plain white text, no bold, never yellow
+/// (that hue stays reserved for "agent pronto, vem ler").
+fn pane_dots_name_style(waiting: bool, ready: bool, quiet: bool, p: &Palette) -> Style {
     if waiting {
         Style::default().fg(p.red).add_modifier(Modifier::BOLD)
     } else if ready {
         Style::default().fg(p.yellow).add_modifier(Modifier::BOLD)
+    } else if quiet {
+        Style::default().fg(p.text)
     } else {
         Style::default().fg(p.overlay1)
     }
@@ -1896,11 +1902,12 @@ fn pane_dots_name_line(
     name: &str,
     waiting: bool,
     ready: bool,
+    quiet: bool,
     p: &Palette,
     width: u16,
 ) -> Line<'static> {
     let avail = width.saturating_sub(PANE_DOTS_INDENT) as usize;
-    let style = pane_dots_name_style(waiting, ready, p);
+    let style = pane_dots_name_style(waiting, ready, quiet, p);
     Line::from(vec![
         Span::styled(" ".repeat(PANE_DOTS_INDENT as usize), Style::default()),
         Span::styled(truncate_end(name, avail), style),
@@ -2002,7 +2009,18 @@ fn pane_dots_dot_glyph(
             Style::default().fg(p.red).add_modifier(Modifier::BOLD),
         ),
         (AgentState::Idle, true) => ("○", Style::default().fg(p.overlay0)),
-        (AgentState::Unknown, _) => ("○", Style::default().fg(p.overlay0)),
+        // A plain shell (no agent) promoted by the quiet tick: it IS one of
+        // the "N waiting", so it must be visible — but it is a lesser
+        // weight than a finished agent, so it keeps the hollow ○ and takes
+        // plain white (`text`) instead of spending yellow, which stays
+        // reserved for "agent pronto, vem ler". NOT `overlay1`: against
+        // `overlay0` that is Rgb(127,132,156) vs Rgb(108,112,134), a
+        // difference the owner could not see on the real sidebar.
+        (AgentState::Unknown, false) => (
+            "○",
+            Style::default().fg(p.text).add_modifier(Modifier::BOLD),
+        ),
+        (AgentState::Unknown, true) => ("○", Style::default().fg(p.overlay0)),
     }
 }
 
@@ -4336,6 +4354,14 @@ fn render_workspace_list(
                         && details
                             .iter()
                             .any(|d| matches!(d.state, AgentState::Idle) && !d.seen);
+                    // Third tier: no agent, just a background pane the
+                    // quiet tick promoted. Counted by `N waiting`, so the
+                    // name goes white rather than staying `overlay1`.
+                    let quiet = !waiting
+                        && !ready
+                        && details
+                            .iter()
+                            .any(|d| matches!(d.state, AgentState::Unknown) && !d.seen);
                     // Dot glyphs, one per pane in layout order — shared by
                     // both shapes (the closure only turns a pane into its
                     // live glyph; columns come from the shape's layout fn).
@@ -4370,7 +4396,7 @@ fn render_workspace_list(
                             frame.render_widget(
                                 Paragraph::new(pane_dots_inline_line(
                                     &display,
-                                    pane_dots_name_style(waiting, ready, p),
+                                    pane_dots_name_style(waiting, ready, quiet, p),
                                     &dots,
                                 )),
                                 Rect::new(body.x, row_y, body.width, 1),
@@ -4391,7 +4417,7 @@ fn render_workspace_list(
                         if row_y < list_bottom {
                             frame.render_widget(
                                 Paragraph::new(pane_dots_name_line(
-                                    name, waiting, ready, p, body.width,
+                                    name, waiting, ready, quiet, p, body.width,
                                 )),
                                 Rect::new(body.x, row_y, body.width, 1),
                             );
@@ -10199,7 +10225,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
     #[test]
     fn pane_dots_name_line_never_contains_a_repo_name() {
         let p = Palette::catppuccin();
-        let text = line_text(&pane_dots_name_line("agent-x", false, false, &p, 40));
+        let text = line_text(&pane_dots_name_line("agent-x", false, false, false, &p, 40));
 
         assert!(text.contains("agent-x"));
         assert!(!text.contains("cnb_landing_page"));
@@ -10212,7 +10238,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
         // colors it `overlay1` (the same as `⎇`), and never draws a state
         // glyph — every pane's state is l2's payload.
         let p = Palette::catppuccin();
-        let line = pane_dots_name_line("main", false, false, &p, 40);
+        let line = pane_dots_name_line("main", false, false, false, &p, 40);
         let text = line_text(&line);
         assert_eq!(
             text.find('m'),
@@ -10576,6 +10602,26 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
         );
         assert_eq!(style.fg, Some(p.overlay0));
 
+        // A plain shell promoted by the quiet tick is counted in the
+        // "N waiting" margin label, so it must not render identically to a
+        // seen one — brighter and bold, still hollow, never yellow.
+        let (glyph, style) = pane_dots_dot_glyph(AgentState::Unknown, false, 0, dots, &p);
+        assert_eq!(
+            glyph, "○",
+            "an unseen plain shell keeps the lesser hollow weight: {glyph:?}"
+        );
+        assert_eq!(
+            style.fg,
+            Some(p.text),
+            "unseen plain shell is plain white, not yellow (yellow stays \
+             reserved for \"agent pronto, vem ler\") and not overlay1, \
+             which is indistinguishable from overlay0 on the real sidebar"
+        );
+        assert!(
+            style.add_modifier.contains(Modifier::BOLD),
+            "it is one of the N waiting: it must stand out from a seen ○"
+        );
+
         // Falha reuses the shared dots/symbols preference (`blocked_glyph`),
         // never a second inline match.
         let symbols = crate::config::StatusIndicatorStyle::Symbols;
@@ -10715,6 +10761,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
             (AgentState::Idle, false),
             (AgentState::Idle, true),
             (AgentState::Unknown, true),
+            (AgentState::Unknown, false),
         ] {
             let app = pane_dots_block_fixture(state, seen);
             let area = Rect::new(0, 0, 30, 10);
@@ -10743,6 +10790,10 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
                     p.red
                 } else if matches!(state, AgentState::Idle) && !seen {
                     p.yellow
+                } else if matches!(state, AgentState::Unknown) && !seen {
+                    // Third tier: counted by `N waiting`, so legible white —
+                    // never yellow, which stays the finished-agent hue.
+                    p.text
                 } else {
                     p.overlay1
                 };
@@ -10813,7 +10864,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
         // voltar à l1 (a render arm voltando a passá-lo ou o builder o
         // aceitando de novo).
         let p = Palette::catppuccin();
-        let text = line_text(&pane_dots_name_line("hotfix", false, false, &p, 40));
+        let text = line_text(&pane_dots_name_line("hotfix", false, false, false, &p, 40));
         assert_eq!(
             text.trim_end(),
             "   hotfix",
