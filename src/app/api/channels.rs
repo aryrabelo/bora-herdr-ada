@@ -1866,6 +1866,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_normalizes_name_and_rejects_duplicates() {
+        let _isolated = IsolatedDirs::new("create-normalize");
         let mut app = test_app();
         let created = create_channel(&mut app, "#eng");
         assert_eq!(
@@ -1892,6 +1893,7 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn create_seeds_the_pane_with_the_channel_tail_command() {
+        let _isolated = IsolatedDirs::new("create-seed");
         let mut app = test_app();
         app.state.default_shell = "/bin/cat".into();
         create_channel(&mut app, "eng");
@@ -1947,6 +1949,7 @@ mod tests {
     /// failed `channel.create`.
     #[tokio::test]
     async fn create_succeeds_even_when_the_channel_pane_cannot_be_seeded() {
+        let _isolated = IsolatedDirs::new("create-noseed");
         let mut app = test_app();
 
         app.seed_channel_tail_pane(0, crate::layout::PaneId::alloc(), "ghost");
@@ -1962,6 +1965,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_gives_the_channel_both_a_transcript_and_a_shell_pane() {
+        let _isolated = IsolatedDirs::new("create-panes");
         let mut app = test_app();
         create_channel(&mut app, "twopane");
         let ws_idx = app
@@ -1986,6 +1990,7 @@ mod tests {
     /// existing channel's panes.
     #[tokio::test]
     async fn open_repairs_a_pre_two_pane_shape_channel_workspace() {
+        let _isolated = IsolatedDirs::new("open-repair");
         let mut app = test_app();
         let ws_idx = app
             .create_workspace_with_launch_env(std::env::temp_dir(), false, Vec::new())
@@ -2061,6 +2066,7 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn open_twice_on_an_already_repaired_channel_does_not_duplicate_the_transcript_pane() {
+        let _isolated = IsolatedDirs::new("open-twice-idem");
         let mut app = test_app();
         app.state.default_shell = "/bin/sh".into();
 
@@ -2155,6 +2161,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_reports_only_hash_named_ungrouped_workspaces() {
+        let _isolated = IsolatedDirs::new("list-hash-only");
         let mut app = test_app();
         create_channel(&mut app, "eng");
         // A regular (non-channel) workspace should not show up.
