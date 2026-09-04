@@ -1056,6 +1056,7 @@ pub struct PaneRuntime {
     input_overflow: Arc<PaneInputOverflow>,
     current_size: Cell<(u16, u16, u32, u32)>,
     child_pid: Arc<AtomicU32>,
+    tty_name: Option<String>,
     reported_cwd: Arc<Mutex<Option<std::path::PathBuf>>>,
     child_wait_completed: Option<Arc<AtomicBool>>,
     kitty_keyboard_flags: Arc<AtomicU16>,
@@ -2160,6 +2161,7 @@ impl PaneRuntime {
             input_overflow: Arc::new(PaneInputOverflow::default()),
             current_size: Cell::new((rows, cols, cell_width_px, cell_height_px)),
             child_pid,
+            tty_name: None,
             reported_cwd,
             child_wait_completed: None,
             kitty_keyboard_flags,
@@ -2215,6 +2217,7 @@ impl PaneRuntime {
 
         let spawned = crate::pty::backend::spawn_with_portable_pty(rows, cols, cmd)
             .inspect_err(|err| error!(pane = pane_id.raw(), err = %err, "{spawn_error_message}"))?;
+        let tty_name = spawned.tty_name;
 
         // --- Child watcher task ---
         let child_pid = Arc::new(AtomicU32::new(0));
@@ -2715,6 +2718,7 @@ impl PaneRuntime {
             input_overflow: Arc::new(PaneInputOverflow::default()),
             current_size: Cell::new((rows, cols, 0, 0)),
             child_pid,
+            tty_name,
             reported_cwd,
             child_wait_completed: Some(child_wait_completed),
             kitty_keyboard_flags,
@@ -3161,6 +3165,13 @@ impl PaneRuntime {
         (pid > 0).then_some(pid)
     }
 
+    /// Name of the slave PTY this runtime's pane was spawned with, captured
+    /// from the master at openpty time. `None` for handoff-imported runtimes
+    /// and test channels, which never opened the PTY themselves.
+    pub fn tty_name(&self) -> Option<&str> {
+        self.tty_name.as_deref()
+    }
+
     pub fn follow_cwd(&self) -> Option<std::path::PathBuf> {
         #[cfg(unix)]
         {
@@ -3267,6 +3278,7 @@ impl PaneRuntime {
                 input_overflow: Arc::new(PaneInputOverflow::default()),
                 current_size: Cell::new((rows, cols, 0, 0)),
                 child_pid: Arc::new(AtomicU32::new(0)),
+                tty_name: None,
                 reported_cwd: Arc::new(Mutex::new(None)),
                 child_wait_completed: None,
                 kitty_keyboard_flags: Arc::new(AtomicU16::new(0)),
@@ -3934,6 +3946,7 @@ mod tests {
             input_overflow: Arc::new(PaneInputOverflow::default()),
             current_size: Cell::new((80, 24, 0, 0)),
             child_pid: Arc::new(AtomicU32::new(0)),
+            tty_name: None,
             reported_cwd: Arc::new(Mutex::new(None)),
             child_wait_completed: None,
             kitty_keyboard_flags: Arc::new(AtomicU16::new(0)),
@@ -3968,6 +3981,7 @@ mod tests {
             input_overflow: Arc::new(PaneInputOverflow::default()),
             current_size: Cell::new((80, 24, 0, 0)),
             child_pid: Arc::new(AtomicU32::new(0)),
+            tty_name: None,
             reported_cwd: Arc::new(Mutex::new(None)),
             child_wait_completed: None,
             kitty_keyboard_flags: Arc::new(AtomicU16::new(0)),

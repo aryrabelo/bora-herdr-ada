@@ -7,6 +7,10 @@ use crate::pty::fd;
 pub(crate) struct SpawnedPty {
     pub master_fd: OwnedFd,
     pub child: Box<dyn Child + Send + Sync>,
+    /// Slave PTY device path (e.g. `/dev/ttys029`), captured from the master
+    /// at openpty time. This is the authoritative name of the PTY bora
+    /// created — no process-table scan or `/dev` walk needed to report it.
+    pub tty_name: Option<String>,
 }
 
 pub(crate) fn spawn_with_portable_pty(
@@ -27,6 +31,10 @@ pub(crate) fn spawn_with_portable_pty(
         .master
         .as_raw_fd()
         .ok_or_else(|| std::io::Error::other("pty master fd is unavailable"))?;
+    let tty_name = pair
+        .master
+        .tty_name()
+        .map(|path| path.display().to_string());
     let actor_fd = fd::duplicate_cloexec_fd(master_fd)?;
     let actor_fd = unsafe { OwnedFd::from_raw_fd(actor_fd) };
     let child = pair
@@ -38,6 +46,7 @@ pub(crate) fn spawn_with_portable_pty(
     Ok(SpawnedPty {
         master_fd: actor_fd,
         child,
+        tty_name,
     })
 }
 
@@ -85,6 +94,30 @@ mod tests {
             before + 1,
             "portable-pty setup should leave only the Herdr-owned master fd in the parent: {:?}",
             parent_pty_fd_targets()
+        );
+
+        let _ = spawned.child.kill();
+        let _ = spawned.child.wait();
+        drop(spawned.master_fd);
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tty_name_tests {
+    use super::*;
+
+    #[test]
+    fn spawned_pty_carries_the_slave_tty_name() {
+        let mut cmd = CommandBuilder::new("/bin/sleep");
+        cmd.arg("30");
+        cmd.env(crate::HERDR_ENV_VAR, crate::HERDR_ENV_VALUE);
+
+        let mut spawned =
+            spawn_with_portable_pty(24, 80, cmd).expect("portable pty spawn succeeds");
+        let tty = spawned.tty_name.clone().expect("slave tty name captured");
+        assert!(
+            tty.starts_with("/dev/"),
+            "expected a /dev slave path, got {tty}"
         );
 
         let _ = spawned.child.kill();

@@ -10129,6 +10129,7 @@
               ]
             },
             "tty": {
+              "description": "Controlling terminal of the pane's PTY slave — the device bora\ncreated for the pane — when known in this server process.",
               "type": [
                 "string",
                 "null"

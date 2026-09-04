@@ -12,6 +12,19 @@ pub struct ForegroundProcess {
     pub cmdline: Option<String>,
 }
 
+impl ForegroundProcess {
+    /// Denormalized command identity: argv0 as invoked (basename, login-dash
+    /// stripped by the collectors) when present, else the kernel-reported
+    /// name. argv0 is the truthful "what ran" for script shims and tools
+    /// that rewrite their title; the name is a truncated kernel guess.
+    pub fn command_name(&self) -> &str {
+        self.argv0
+            .as_deref()
+            .filter(|argv0| !argv0.is_empty())
+            .unwrap_or(self.name.as_str())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ForegroundJob {
     pub process_group_id: u32,
@@ -395,6 +408,22 @@ impl PrefixInputSource for RealPrefixInputSource {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn foreground_process_command_name_prefers_argv0() {
+        let process = |name: &str, argv0: Option<&str>| ForegroundProcess {
+            pid: 1,
+            name: name.to_string(),
+            argv0: argv0.map(str::to_string),
+            argv: None,
+            cmdline: None,
+        };
+        // argv0 reflects how the command was invoked (script shims);
+        // the kernel name is the fallback, and empty argv0 is not a name.
+        assert_eq!(process("python3", Some("pip")).command_name(), "pip");
+        assert_eq!(process("sleep", None).command_name(), "sleep");
+        assert_eq!(process("sleep", Some("")).command_name(), "sleep");
+    }
 
     #[test]
     fn terminal_resize_signal_is_recorded_once_per_delivery() {

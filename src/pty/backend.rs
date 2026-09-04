@@ -11,6 +11,9 @@ use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize}
 pub(crate) struct SpawnedPty {
     pub master: Box<dyn MasterPty + Send>,
     pub child: Box<dyn Child + Send + Sync>,
+    /// ConPTY has no device-path name to report; kept for cross-platform
+    /// parity with the unix `SpawnedPty`.
+    pub tty_name: Option<String>,
 }
 
 #[cfg(windows)]
@@ -36,5 +39,6 @@ pub(crate) fn spawn_with_portable_pty(
     Ok(SpawnedPty {
         master: pair.master,
         child,
+        tty_name: None,
     })
 }

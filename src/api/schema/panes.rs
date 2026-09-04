@@ -508,6 +508,8 @@ pub struct PaneProcessInfo {
     pub shell_pid: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub foreground_process_group_id: Option<u32>,
+    /// Controlling terminal of the pane's PTY slave — the device bora
+    /// created for the pane — when known in this server process.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tty: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

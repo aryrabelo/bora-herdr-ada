@@ -165,7 +165,7 @@ impl App {
                 .child_pid()
                 .and_then(crate::detect::foreground_job)
                 .and_then(|job| job.processes.into_iter().next())
-                .map(|process| process.name);
+                .map(|process| process.command_name().to_string());
         }
     }
 
@@ -271,7 +271,14 @@ impl App {
                     pane_id: public_pane_id,
                     shell_pid,
                     foreground_process_group_id,
-                    tty: shell_pid.and_then(crate::platform::process_tty),
+                    // The slave PTY name captured at openpty time is the
+                    // authoritative answer; the process-table scan is only
+                    // a fallback for handoff-imported panes that never
+                    // opened their PTY in this process.
+                    tty: runtime
+                        .tty_name()
+                        .map(str::to_string)
+                        .or_else(|| shell_pid.and_then(crate::platform::process_tty)),
                     foreground_processes,
                 },
             },
@@ -4393,11 +4400,17 @@ mod tests {
         let ResponseResult::PaneProcessInfo { process_info } = process_response.result else {
             panic!("expected process info");
         };
+        // Restates the `foreground_process` rule independently of
+        // `ForegroundProcess::command_name`: argv0 when present, else the
+        // kernel name. Two statements of one rule that must agree IS the
+        // agreement test.
         assert_eq!(
-            process_info
-                .foreground_processes
-                .first()
-                .map(|p| p.name.as_str()),
+            process_info.foreground_processes.first().map(|p| {
+                p.argv0
+                    .as_deref()
+                    .filter(|argv0| !argv0.is_empty())
+                    .unwrap_or(p.name.as_str())
+            }),
             row.foreground_process.as_deref()
         );
 
