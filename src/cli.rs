@@ -208,7 +208,7 @@ fn channel_list() -> std::io::Result<i32> {
 
 fn channel_send(args: &[String]) -> std::io::Result<i32> {
     let usage =
-        "usage: bora channel send <name> <text> [--pane ID|--current] [--to NICK] [--reply-to SEQ]";
+        "usage: bora channel send <name> <text> [--pane ID|--current] [--to NICK] [--reply-to SEQ] [--when-idle]";
     let Some(name) = args.first() else {
         eprintln!("{usage}");
         return Ok(2);
@@ -221,13 +221,14 @@ fn channel_send(args: &[String]) -> std::io::Result<i32> {
         .ok()
         .filter(|value| !value.trim().is_empty())
         .map(|value| normalize_pane_id(&value));
-    let (from_pane, to, in_reply_to) = match parse_channel_send_flags(&args[2..], env_pane_id) {
-        Ok(parsed) => parsed,
-        Err(message) => {
-            eprintln!("{message}");
-            return Ok(2);
-        }
-    };
+    let (from_pane, to, in_reply_to, when_idle) =
+        match parse_channel_send_flags(&args[2..], env_pane_id) {
+            Ok(parsed) => parsed,
+            Err(message) => {
+                eprintln!("{message}");
+                return Ok(2);
+            }
+        };
     let response = send_request(&Request {
         id: "cli:channel:send".into(),
         method: Method::ChannelSend(ChannelSendParams {
@@ -236,6 +237,7 @@ fn channel_send(args: &[String]) -> std::io::Result<i32> {
             from_pane,
             to,
             in_reply_to,
+            when_idle: when_idle.then_some(true),
             from_human: false,
         }),
     })?;
@@ -393,21 +395,23 @@ fn parse_channel_ask_flags(
 }
 
 /// Parses the flags accepted by `bora channel send` after `<name> <text>`.
-/// Returns `(from_pane, to, in_reply_to)`; `from_pane` starts from
+/// Returns `(from_pane, to, in_reply_to, when_idle)`; `from_pane` starts from
 /// `env_pane_id` and can be overridden by `--pane`. `--current` is accepted
 /// as a no-op flag for explicitness since `env_pane_id` already reflects
 /// the current pane. `--reply-to SEQ` answers a `channel.ask` question:
 /// threaded verbatim onto the sent message's `in_reply_to`, never validated
 /// client-side — the server rejects a seq past the channel's current max.
-/// `(from_pane, timeout_ms, reply_to)`-shaped flag bundle for `channel ask`.
-type ChannelAskFlags = (Option<String>, Option<String>, Option<u64>);
+/// `--when-idle` is the opt-in for hold-until-idle delivery to a Working
+/// member (the default injects immediately); it only flips the wire flag.
+type ChannelSendFlags = (Option<String>, Option<String>, Option<u64>, bool);
 
 fn parse_channel_send_flags(
     args: &[String],
     mut from_pane: Option<String>,
-) -> Result<ChannelAskFlags, String> {
+) -> Result<ChannelSendFlags, String> {
     let mut to = None;
     let mut in_reply_to = None;
+    let mut when_idle = false;
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
@@ -439,12 +443,16 @@ fn parse_channel_send_flags(
                 );
                 index += 2;
             }
+            "--when-idle" => {
+                when_idle = true;
+                index += 1;
+            }
             option => {
                 return Err(format!("unknown option: {option}"));
             }
         }
     }
-    Ok((from_pane, to, in_reply_to))
+    Ok((from_pane, to, in_reply_to, when_idle))
 }
 
 fn channel_history(args: &[String]) -> std::io::Result<i32> {
@@ -931,7 +939,7 @@ fn print_channel_help() {
     );
     eprintln!("  bora channel list                            list #channel workspaces");
     eprintln!(
-        "  bora channel send <name> <text> [--pane ID|--current] [--to NICK] [--reply-to SEQ]"
+        "  bora channel send <name> <text> [--pane ID|--current] [--to NICK] [--reply-to SEQ] [--when-idle]"
     );
     eprintln!(
         "                                                post to a #channel and prompt its agents"
@@ -1809,20 +1817,23 @@ mod tests {
     #[test]
     fn parses_channel_send_to_flag() {
         let args = vec!["--to".to_string(), "worker".to_string()];
-        let (from_pane, to, in_reply_to) = super::parse_channel_send_flags(&args, None).unwrap();
+        let (from_pane, to, in_reply_to, when_idle) =
+            super::parse_channel_send_flags(&args, None).unwrap();
         assert_eq!(from_pane, None);
         assert_eq!(to, Some("worker".to_string()));
         assert_eq!(in_reply_to, None);
+        assert!(!when_idle);
     }
 
     #[test]
     fn channel_send_flags_default_to_none_without_to() {
         let args = vec!["--current".to_string()];
-        let (from_pane, to, in_reply_to) =
+        let (from_pane, to, in_reply_to, when_idle) =
             super::parse_channel_send_flags(&args, Some("w1A:p2".to_string())).unwrap();
         assert_eq!(from_pane, Some("w1A:p2".to_string()));
         assert_eq!(to, None);
         assert_eq!(in_reply_to, None);
+        assert!(!when_idle);
     }
 
     #[test]
@@ -1842,19 +1853,30 @@ mod tests {
             "--to".to_string(),
             "reviewer".to_string(),
         ];
-        let (from_pane, to, in_reply_to) = super::parse_channel_send_flags(&args, None).unwrap();
+        let (from_pane, to, in_reply_to, when_idle) =
+            super::parse_channel_send_flags(&args, None).unwrap();
         assert_eq!(from_pane, Some("w1A:p2".to_string()));
         assert_eq!(to, Some("reviewer".to_string()));
         assert_eq!(in_reply_to, None);
+        assert!(!when_idle);
     }
 
     #[test]
     fn channel_send_flags_parse_reply_to() {
         let args = vec!["--reply-to".to_string(), "7".to_string()];
-        let (from_pane, to, in_reply_to) = super::parse_channel_send_flags(&args, None).unwrap();
+        let (from_pane, to, in_reply_to, when_idle) =
+            super::parse_channel_send_flags(&args, None).unwrap();
         assert_eq!(from_pane, None);
         assert_eq!(to, None);
         assert_eq!(in_reply_to, Some(7));
+        assert!(!when_idle);
+    }
+
+    #[test]
+    fn parses_channel_send_when_idle_flag() {
+        let args = vec!["--when-idle".to_string()];
+        let (_, _, _, when_idle) = super::parse_channel_send_flags(&args, None).unwrap();
+        assert!(when_idle);
     }
 
     #[test]

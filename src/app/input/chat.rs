@@ -360,6 +360,7 @@ impl App {
                 from_pane: None,
                 to: None,
                 in_reply_to: None,
+                when_idle: None,
                 // Trust anchor: in-process only, never deserializable from a
                 // socket body. This is the one place the human seat is claimed.
                 from_human: true,

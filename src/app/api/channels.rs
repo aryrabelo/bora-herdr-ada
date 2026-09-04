@@ -31,7 +31,12 @@ const MAX_CHANNEL_HISTORY_LINES: u32 = 1000;
 /// what the runtime now does ("never resend because of that; the message
 /// already went out to everyone"), which is the one kind of stale briefing
 /// that makes an agent act wrongly rather than merely miss a feature.
-const CHANNEL_PROTOCOL_VERSION: u32 = 4;
+/// v5: channel fan-out delivery defaults to IMMEDIATE injection, even when
+/// the recipient is mid-turn (steering semantics, matching `agent
+/// prompt`'s default); `--when-idle` is the opt-in for hold-until-idle —
+/// v4 panes were told messages are "deferred while the target is busy",
+/// the opposite of what the runtime now does by default.
+const CHANNEL_PROTOCOL_VERSION: u32 = 5;
 
 /// Injected once per pane into every channel it joins or is already a
 /// member of — see `App::send_channel_protocol`. Teaches an LLM agent, in
@@ -83,9 +88,11 @@ const CHANNEL_PROTOCOL: &str = concat!(
     "  bora channel tail <name> --after <seq>\n",
     "passing the highest `seq=N` you have already seen.\n",
     "\n",
-    "Sends are rate-limited (2s per sender->target) and deferred while the\n",
-    "target is busy. A `deferred` receipt means QUEUED for delivery — that\n",
-    "is not a failure, do not resend it.\n",
+    "Sends are rate-limited (2s per sender->target). A message addressed to\n",
+    "you arrives WHILE YOU ARE WORKING, like steering — read it mid-turn;\n",
+    "a sender who wants it held until you are free passes --when-idle, and\n",
+    "then a `deferred` receipt means QUEUED for delivery — that is not a\n",
+    "failure, do not resend it.\n",
     "\n",
     "Discipline: when you finish delegated work, @mention the delegator in\n",
     "your report. Never send a bare acknowledgement. Stay silent on a\n",
@@ -644,7 +651,7 @@ impl App {
                             text: prefixed.clone(),
                             wait: None,
                             from_pane: None,
-                            when_idle: Some(true),
+                            when_idle: params.when_idle,
                             when_idle_timeout_ms: None,
                             peer_pid: None,
                             origin_channel: Some(name.clone()),
@@ -766,6 +773,7 @@ impl App {
                 from_pane: params.from_pane,
                 to: Some(params.to),
                 in_reply_to: None,
+                when_idle: None,
                 from_human: false,
             },
             true,
@@ -1168,10 +1176,11 @@ impl App {
     /// `clear_channel_unread_badge`, ceo-bora#33) to resolve a channel
     /// name to the workspace whose `metadata_tokens` carry its badge.
     pub(crate) fn find_channel_workspace(&self, name: &str) -> Option<usize> {
+        let name = channels::normalize_channel_name(name);
         self.state
             .workspaces
             .iter()
-            .position(|ws| ws.channel_home_name() == Some(name))
+            .position(|ws| ws.channel_home_name() == Some(name.as_str()))
     }
 
     /// Resolves `from_pane` to a channel member and advances that member's
@@ -2174,6 +2183,7 @@ mod tests {
                 from_pane: Some("w1A:p2".into()),
                 to: None,
                 in_reply_to: None,
+                when_idle: None,
                 from_human: false,
             },
         );
@@ -2253,6 +2263,7 @@ mod tests {
                 from_pane: None,
                 to: None,
                 in_reply_to: None,
+                when_idle: None,
                 from_human: true,
             },
         );
@@ -2268,6 +2279,7 @@ mod tests {
                 from_pane: Some("w1A:p9".into()),
                 to: None,
                 in_reply_to: None,
+                when_idle: None,
                 from_human: false,
             },
         );
@@ -2307,6 +2319,7 @@ mod tests {
                     from_pane: None,
                     to: None,
                     in_reply_to: None,
+                    when_idle: None,
                     from_human: true,
                 },
             );
@@ -2367,9 +2380,9 @@ mod tests {
         {
             let terminal = app.state.terminals.get_mut(&terminal_id).unwrap();
             terminal.detected_agent = Some(crate::detect::Agent::Claude);
-            // Busy target: `channel.send`'s `when_idle: true` fast path defers
-            // rather than injecting immediately, matching what actually happens
-            // when a member agent is mid-task.
+            // Busy target: delivery is immediate by default now, so the
+            // opt-in `when_idle` is what defers here — the drop notice this
+            // test exists for is only reachable for a QUEUED prompt.
             terminal.state = crate::detect::AgentState::Working;
         }
         let public_pane_id = app.public_pane_id(ws_idx, pane_id).unwrap();
@@ -2383,6 +2396,7 @@ mod tests {
                 from_pane: Some("w1A:p2".into()),
                 to: None,
                 in_reply_to: None,
+                when_idle: Some(true),
                 from_human: false,
             },
         );
@@ -2404,6 +2418,158 @@ mod tests {
         assert!(system_line.text.contains(&public_pane_id));
         assert!(system_line.text.contains("dropped"));
         super::super::test_support::shutdown_test_runtimes(&mut app);
+    }
+
+    /// Default delivery: a member mid-turn receives the message NOW (like
+    /// steering) — injected bytes, `delivered` receipt, nothing queued.
+    /// This is the behavior the v5 briefing teaches.
+    #[tokio::test]
+    async fn channel_send_to_working_member_injects_immediately_by_default() {
+        let _isolated = IsolatedDirs::new("send-midturn");
+        let mut app = test_app();
+        let ws_idx = create_bare_channel_workspace(&mut app, "eng");
+        let first = app.state.workspaces[ws_idx].tabs[0].root_pane;
+        let second =
+            app.state.workspaces[ws_idx].test_split(ratatui::layout::Direction::Horizontal);
+        app.state.ensure_test_terminals();
+        for (pane, state) in [
+            (first, crate::detect::AgentState::Idle),
+            (second, crate::detect::AgentState::Working),
+        ] {
+            let terminal_id = app.state.workspaces[ws_idx]
+                .pane_state(pane)
+                .unwrap()
+                .attached_terminal_id
+                .clone();
+            let terminal = app.state.terminals.get_mut(&terminal_id).unwrap();
+            terminal.set_detected_state(Some(crate::detect::Agent::OpenCode), state);
+        }
+        // BOTH members get runtimes: the Working one too, so the send has a
+        // real pane to type into mid-turn. The receiver must stay alive.
+        let (_rx1, mut rx2) = {
+            let (r1, rx1) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+            app.state.insert_test_runtime(first, r1);
+            let (r2, rx2) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+            app.state.insert_test_runtime(second, r2);
+            (rx1, rx2)
+        };
+        let worker = app.public_pane_id(ws_idx, second).unwrap();
+        skip_protocol("eng", &worker);
+        let first_public = app.public_pane_id(ws_idx, first).unwrap();
+        skip_protocol("eng", &first_public);
+
+        let sent = app.handle_channel_send(
+            "req".into(),
+            ChannelSendParams {
+                name: "#eng".into(),
+                text: "mid-turn hello".into(),
+                from_pane: Some(first_public),
+                to: None,
+                in_reply_to: None,
+                when_idle: None,
+                from_human: false,
+            },
+        );
+        let sent: serde_json::Value = serde_json::from_str(&sent).unwrap();
+        let deliveries = sent["result"]["deliveries"].as_array().unwrap();
+        let worker_delivery = deliveries
+            .iter()
+            .find(|d| d["pane_id"] == serde_json::json!(worker))
+            .expect("the Working member must be a delivery target");
+        assert_eq!(
+            worker_delivery["status"],
+            serde_json::json!("delivered"),
+            "a Working member must receive the message immediately by default: {worker_delivery:?}"
+        );
+        let injected = rx2
+            .try_recv()
+            .expect("mid-turn delivery must type into the busy pane");
+        let injected = String::from_utf8_lossy(&injected);
+        assert!(injected.contains("[#eng seq=1 from "), "got: {injected}");
+        assert!(injected.contains("mid-turn hello"), "got: {injected}");
+        assert!(
+            !app.pending_agent_prompts.contains_key(&worker),
+            "immediate delivery must not queue anything"
+        );
+        super::super::test_support::shutdown_test_runtimes(&mut app);
+    }
+
+    /// Opt-in: `when_idle` restores the hold-until-idle delivery for a
+    /// Working member — queued, `deferred` receipt with the queue position.
+    #[tokio::test]
+    async fn channel_send_when_idle_defers_to_working_member() {
+        let _isolated = IsolatedDirs::new("send-when-idle");
+        let mut app = test_app();
+        let (reviewer, worker, _rx) = channel_with_two_agents(&mut app, "reviewer", "worker");
+        skip_protocol("eng", &reviewer);
+        skip_protocol("eng", &worker);
+
+        let sent = app.handle_channel_send(
+            "req".into(),
+            ChannelSendParams {
+                name: "#eng".into(),
+                text: "hold this".into(),
+                from_pane: Some("w1A:p9".into()),
+                to: None,
+                in_reply_to: None,
+                when_idle: Some(true),
+                from_human: false,
+            },
+        );
+        let sent: serde_json::Value = serde_json::from_str(&sent).unwrap();
+        let deliveries = sent["result"]["deliveries"].as_array().unwrap();
+        let worker_delivery = deliveries
+            .iter()
+            .find(|d| d["pane_id"] == serde_json::json!(worker))
+            .expect("the Working member must be a delivery target");
+        assert_eq!(
+            worker_delivery["status"],
+            serde_json::json!("deferred"),
+            "when_idle must hold delivery for the Working member: {worker_delivery:?}"
+        );
+        assert_eq!(
+            worker_delivery["detail"],
+            serde_json::json!("queued (pos 1)"),
+            "the deferred receipt must carry the queue position"
+        );
+        assert!(app.pending_agent_prompts.contains_key(&worker));
+        super::super::test_support::shutdown_test_runtimes(&mut app);
+    }
+
+    /// Channel names resolve identically with or without the leading `#`.
+    #[tokio::test]
+    async fn find_channel_workspace_matches_name_with_or_without_hash() {
+        let _isolated = IsolatedDirs::new("find-by-hash");
+        let mut app = test_app();
+        create_channel(&mut app, "eng");
+        assert_eq!(
+            app.find_channel_workspace("eng"),
+            app.find_channel_workspace("#eng"),
+            "both spellings must resolve to the same workspace"
+        );
+        assert!(app.find_channel_workspace("#eng").is_some());
+        assert!(app.find_channel_workspace("eng").is_some());
+        assert!(app.find_channel_workspace("nope").is_none());
+        assert!(app.find_channel_workspace("#nope").is_none());
+    }
+
+    /// The briefing must teach the delivery truth: immediate mid-turn
+    /// arrival by default, `--when-idle` as the opt-in — and the version
+    /// bump is what gets the correction re-briefed to already-briefed panes.
+    #[test]
+    fn channel_protocol_briefing_teaches_immediate_delivery() {
+        assert!(
+            CHANNEL_PROTOCOL.contains("--when-idle"),
+            "briefing must name the --when-idle opt-in"
+        );
+        assert!(
+            CHANNEL_PROTOCOL.contains("WHILE YOU ARE WORKING"),
+            "briefing must state that messages arrive mid-turn"
+        );
+        assert!(
+            !CHANNEL_PROTOCOL.contains("deferred while the"),
+            "stale claim that sends wait for idle must be gone"
+        );
     }
 
     #[tokio::test]
@@ -2537,6 +2703,7 @@ mod tests {
                 from_pane: Some("w1A:p2".into()),
                 to: None,
                 in_reply_to: None,
+                when_idle: None,
                 from_human: false,
             },
         );
@@ -2748,6 +2915,7 @@ mod tests {
                 from_pane: Some("w1A:p9".into()),
                 to: Some("opencode".into()),
                 in_reply_to: None,
+                when_idle: None,
                 from_human: false,
             },
         );
@@ -2785,6 +2953,7 @@ mod tests {
                 from_pane: Some("w1A:p9".into()),
                 to: Some(compact_id),
                 in_reply_to: None,
+                when_idle: None,
                 from_human: false,
             },
         );
@@ -2815,6 +2984,7 @@ mod tests {
                 from_pane: Some("w1A:p9".into()),
                 to: Some("reviewer".into()),
                 in_reply_to: None,
+                when_idle: None,
                 from_human: false,
             },
         );
@@ -2850,6 +3020,10 @@ mod tests {
                 from_pane: Some(reviewer.clone()),
                 to: Some(worker.clone()),
                 in_reply_to: Some(1),
+                // The worker pane is mid-turn by fixture: opt into the
+                // hold-until-idle delivery so the reply is QUEUED (the
+                // `deferred` receipt asserted below), not injected.
+                when_idle: Some(true),
                 from_human: false,
             },
         );
@@ -2884,6 +3058,7 @@ mod tests {
                 from_pane: Some("w1A:p9".into()),
                 to: Some("dup".into()),
                 in_reply_to: None,
+                when_idle: None,
                 from_human: false,
             },
         );
@@ -2922,6 +3097,7 @@ mod tests {
                 from_pane: Some("w1A:p9".into()),
                 to: Some("ghost".into()),
                 in_reply_to: None,
+                when_idle: None,
                 from_human: false,
             },
         );
@@ -2952,6 +3128,7 @@ mod tests {
                 from_pane: Some("w1A:p9".into()),
                 to: Some("ARYA".into()),
                 in_reply_to: None,
+                when_idle: None,
                 from_human: false,
             },
         );
@@ -2995,6 +3172,7 @@ mod tests {
                 from_pane: Some("w1A:p9".into()),
                 to: Some("reviewer".into()),
                 in_reply_to: None,
+                when_idle: None,
                 from_human: false,
             },
         );
@@ -3042,6 +3220,7 @@ mod tests {
                 from_pane: Some("w1A:p9".into()),
                 to: None,
                 in_reply_to: None,
+                when_idle: None,
                 from_human: false,
             },
         );
@@ -3071,6 +3250,7 @@ mod tests {
                 from_pane: Some("w1A:p8".into()),
                 to: None,
                 in_reply_to: None,
+                when_idle: None,
                 from_human: false,
             },
         );
@@ -3108,6 +3288,7 @@ mod tests {
                 from_pane: Some("w1A:p9".into()),
                 to: None,
                 in_reply_to: None,
+                when_idle: None,
                 from_human: false,
             },
         );
@@ -3124,6 +3305,7 @@ mod tests {
                 from_pane: Some("w1A:p9".into()),
                 to: None,
                 in_reply_to: None,
+                when_idle: None,
                 from_human: false,
             },
         );
@@ -3147,6 +3329,7 @@ mod tests {
                 from_pane: None,
                 to: None,
                 in_reply_to: None,
+                when_idle: None,
                 from_human: false,
             },
         );
@@ -3162,6 +3345,7 @@ mod tests {
                 from_pane: None,
                 to: None,
                 in_reply_to: None,
+                when_idle: None,
                 from_human: false,
             },
         );
@@ -3186,6 +3370,7 @@ mod tests {
                 from_pane: Some("w1A:p9".into()),
                 to: None,
                 in_reply_to: None,
+                when_idle: None,
                 from_human: false,
             },
         );
@@ -3228,6 +3413,7 @@ mod tests {
                 from_pane: Some("w1A:p9".into()),
                 to: None,
                 in_reply_to: None,
+                when_idle: None,
                 from_human: false,
             },
         );
@@ -3257,6 +3443,7 @@ mod tests {
                 from_pane: Some("w1A:p9".into()),
                 to: None,
                 in_reply_to: None,
+                when_idle: None,
                 from_human: false,
             },
         );
@@ -3302,6 +3489,7 @@ mod tests {
                 from_pane: Some("w1A:p9".into()),
                 to: None,
                 in_reply_to: None,
+                when_idle: None,
                 from_human: false,
             },
         );
@@ -3326,6 +3514,7 @@ mod tests {
                 from_pane: Some("w1A:p8".into()),
                 to: Some("reviewer".into()),
                 in_reply_to: None,
+                when_idle: None,
                 from_human: false,
             },
         );
@@ -3354,6 +3543,7 @@ mod tests {
                 from_pane: Some(reviewer.clone()),
                 to: Some("reviewer".into()),
                 in_reply_to: None,
+                when_idle: None,
                 from_human: false,
             },
         );
@@ -3521,6 +3711,7 @@ mod tests {
                 from_pane: None,
                 to: Some("rev-2".into()),
                 in_reply_to: None,
+                when_idle: None,
                 from_human: false,
             },
         );
@@ -3539,6 +3730,7 @@ mod tests {
                 from_pane: None,
                 to: Some("rev".into()),
                 in_reply_to: None,
+                when_idle: None,
                 from_human: false,
             },
         );
@@ -3660,6 +3852,7 @@ mod tests {
                 from_pane: None,
                 to: Some("rev-3".into()),
                 in_reply_to: None,
+                when_idle: None,
                 from_human: false,
             },
         );
@@ -3676,6 +3869,7 @@ mod tests {
                 from_pane: None,
                 to: Some("rev".into()),
                 in_reply_to: None,
+                when_idle: None,
                 from_human: false,
             },
         );
@@ -3720,6 +3914,7 @@ mod tests {
                 from_pane: Some(from_pane.into()),
                 to: None,
                 in_reply_to: None,
+                when_idle: None,
                 from_human: false,
             },
         );
@@ -3782,6 +3977,7 @@ mod tests {
                 from_pane: Some("w1A:p9".into()),
                 to: None,
                 in_reply_to: None,
+                when_idle: None,
                 from_human: false,
             },
         );
@@ -3802,6 +3998,7 @@ mod tests {
                 from_pane: Some("w1A:p8".into()),
                 to: None,
                 in_reply_to: None,
+                when_idle: None,
                 from_human: false,
             },
         );
@@ -4025,6 +4222,7 @@ mod tests {
                 from_pane: Some("w1A:p9".into()),
                 to: Some("brandos".into()),
                 in_reply_to: None,
+                when_idle: None,
                 from_human: false,
             },
         );
@@ -4044,6 +4242,7 @@ mod tests {
                 from_pane: Some("w1A:p8".into()),
                 to: Some("brandos".into()),
                 in_reply_to: None,
+                when_idle: None,
                 from_human: false,
             },
         );
@@ -4065,6 +4264,7 @@ mod tests {
                 from_pane: Some("w1A:p7".into()),
                 to: None,
                 in_reply_to: None,
+                when_idle: None,
                 from_human: false,
             },
         );
@@ -4595,6 +4795,7 @@ mod tests {
                     from_pane: None,
                     to: None,
                     in_reply_to: None,
+                    when_idle: None,
                     from_human: true,
                 },
             );
@@ -4667,6 +4868,7 @@ mod tests {
                     from_pane: None,
                     to: None,
                     in_reply_to: None,
+                    when_idle: None,
                     from_human: true,
                 },
             );
@@ -4681,6 +4883,7 @@ mod tests {
                 from_pane: None,
                 to: None,
                 in_reply_to: None,
+                when_idle: None,
                 from_human: true,
             },
             true,
@@ -4743,6 +4946,7 @@ mod tests {
                     from_pane: None,
                     to: None,
                     in_reply_to: None,
+                    when_idle: None,
                     from_human: true,
                 },
             );
@@ -4859,6 +5063,7 @@ mod tests {
                 from_pane: None,
                 to: None,
                 in_reply_to: None,
+                when_idle: None,
                 from_human: true,
             },
         );
@@ -4871,6 +5076,7 @@ mod tests {
                 from_pane: None,
                 to: None,
                 in_reply_to: Some(5),
+                when_idle: None,
                 from_human: true,
             },
         );
@@ -4898,6 +5104,7 @@ mod tests {
                 from_pane: None,
                 to: None,
                 in_reply_to: Some(1),
+                when_idle: None,
                 from_human: true,
             },
         );

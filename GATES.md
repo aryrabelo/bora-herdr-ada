@@ -1,74 +1,77 @@
-# GATES — folha #111: `bora events --follow`
+# GATES — channel send: entrega imediata como default (agente/channel-inject-now)
 
-Issue: aryrabelo/ceo-bora#111 · branch `agente/events-follow` · versao alvo `0.45.38`
+Branch `agente/channel-inject-now`, worktree `~/Sites/bora-team/worktrees/bora/channel-inject-now`, base `origin/main` (`bc2c5914`).
 
-## Contrato (decidido pelo orquestrador, medido; nao renegociar)
+## Contrato (decisões do dono, nao renegociar)
 
-`bora events [--follow] [--subscribe <name>]... [--pane <id>] [--limit <n>] [--session <name>]`
-
-- Streaming e o comportamento default; `--follow` e aceito e documentado (o ticket e a doc do `mu` o nomeiam).
-- Sem `--subscribe`: assina **as 30 variantes sem parametro** de `Subscription` (`src/api/schema/events.rs:19-98`).
-- `--subscribe` e repetivel e recebe o nome do wire (`pane.created`, `workspace.focused`, ...).
-- As **3 variantes que exigem `pane_id`** — `pane.output_matched`, `pane.agent_status_changed`, `pane.scroll_changed` — NAO entram no default e exigem `--pane`; sem ele, erro nomeado e exit 2.
-- stdout: **um objeto JSON por linha, com flush por linha**. Nada de buffer que segure evento.
-- `--limit <n>`: sai com 0 depois de n eventos (existe para o teste ser deterministico em vez de depender de sinal).
-- SIGINT: exit 0.
-
-O servidor ja faz o trabalho: `Method::EventsSubscribe` (`src/api/schema.rs:228`), handler `stream_subscriptions` (`src/api/server.rs:744`), que escreve `SubscriptionStarted` e depois uma linha JSON por evento. **Nao reimplemente nada disso.** O que falta e (a) um metodo de streaming no `ApiClient` (`src/api/client.rs` hoje so tem `request_value`, que le UMA linha) e (b) o verbo na CLI (`src/cli.rs:105-129` roteia por string; cada verbo mora em `src/cli/<nome>.rs`).
+- Default do `channel send` = injeção imediata (mesmo default do `agent prompt`); `--when-idle` é o opt-in do comportamento antigo (`deferred` + `queue_position`).
+- Entrega ao assento humano continua passiva (ceo-bora#33, binding) — `to_human` intocado.
+- Damper de burst, resolução de nick e a fila `pending_agent_prompts` intocados.
+- `CHANNEL_PROTOCOL_VERSION` 4→5 com reescrita do trecho que mentia ("deferred while the target is busy").
+- Nome de canal com ou sem `#` resolve igual; canal inexistente = erro nomeado.
+- `--timeout <MS>` NÃO foi adicionado: `channel send` vai direto pro App (sem o wait de conexão de `agent prompt` em `src/api/wait.rs::prompt_agent`), e o drain da fila usa o settle fixo — `when_idle_timeout_ms` não é honrado nesse caminho; seria flag morta.
 
 ## Gates
 
-- [x] G1 — o verbo existe e assina o default
-  CHECK: `cd $PWD && ./target/debug/bora events --help >/dev/null 2>&1; echo $?`
-  EXPECT: `0`
-  EVIDENCE: `0` (binario debug reconstruido na arvore 0.45.38)
+- [x] G1 — Fan-out default é imediato: membro ocupado (Working) recebe `delivered`
+  CHECK: `cargo nextest run -E 'test(channel_send_to_working_member_injects_immediately_by_default)'`
+  EXPECT: `1/1 passed`
+  EVIDENCE: `Summary [ 0.068s] 4 tests run: 4 passed` (com os 3 outros gates novos). Teste novo: membro `Working` COM runtime recebe bytes `[<canal> seq=N from ...]` no buffer, receipt `delivered`, `pending_agent_prompts` vazio.
 
-- [x] G2 — streaming real: uma linha JSON valida por evento, com flush
-  CHECK: `bora events --limit 1 --session <sessao de teste> > /tmp-equivalente/ev.ndjson & sleep 1; bora pane split ...; wait; jq -e . < ev.ndjson`
-  EXPECT: exit 0, arquivo com >=1 linha, `jq -e .` valido em todas, e o evento chega **antes** do comando gatilho retornar
-  EVIDENCE: duas sessoes descartaveis proprias com socket isolado (`~/.config/bora-dev/sessions/gate111-events{,2}/herdr.sock`), removidas depois. (a) `bora events --session gate111-events --limit 1`: 0 linhas ocioso por 1s; gatilho `bora workspace create` -> 1 linha `{"...","type":"workspace_created",...}`, `jq -e .` valido, `events-exit:0`. (b) `--limit 2` na sessao virga: 0 linhas ocioso; UM gatilho produziu exatamente 2 linhas reais (`workspace_created` + `workspace_focused`), `jq -e .` valido, exit 0 no limite — entrega por evento, nao lote/snapshot. (c) stream continuo 5.6s: 13 eventos de tick chegando ao longo do tempo; SIGINT -> `exit=0` (reportado pelo supervisor do processo). Timing medido: a chegada do evento no stdout caiu ~22-25ms APOS o retorno do comando gatilho — o poll de assinatura do servidor e de 100ms (`CONNECTION_POLL_INTERVAL`, `src/api/server.rs:31`, lado do servidor, fora do escopo desta folha e explicitamente intocado); a entrega imediata no cliente (flush por linha) e provada por teste no G4.
+- [x] G2 — Opt-in preservado: `when_idle: Some(true)` mantém `deferred` + `queue_position`
+  CHECK: `cargo nextest run -E 'test(channel_send_when_idle_defers_to_working_member)'`
+  EXPECT: `1/1 passed`
+  EVIDENCE: teste novo via `channel_with_two_agents` (worker Working) → status `deferred`, detail `queued (pos 1)` — mesmo recibo de hoje, `classify_delivery` intocado.
 
-- [x] G3 — as 3 variantes pane-scoped exigem `--pane`
-  CHECK: `./target/debug/bora events --subscribe pane.agent_status_changed; echo $?`
-  EXPECT: `2`, com mensagem nomeando o flag que falta (nao panic, nao exit 0)
+- [x] G3 — Nome com/sem `#` resolve igual; inexistente é erro nomeado
+  CHECK: `cargo nextest run -E 'test(find_channel_workspace_matches_name_with_or_without_hash) or test(members_on_missing_channel_is_error)'`
+  EXPECT: `2/2 passed`
+  EVIDENCE: `find_channel_workspace` agora normaliza com `channels::normalize_channel_name` (reuso, sem segundo `trim_start_matches`); `members_on_missing_channel_is_error` já existia e continua verde.
 
-  EVIDENCE: stderr = `pane.agent_status_changed requires --pane <id>` + usage; exit `2`. (`--subscribe pane.output_matched` com `--pane` tambem e erro nomeado exit 2: a variante exige expressao de match que o verbo nao expoe.) Fix pos-revisao, medido ao vivo: rejeicao do SERVIDOR (ex. `--pane nope`) sai como JSON estruturado `{"id":"cli:events:subscribe:sub:0:probe","error":{"code":"pane_not_found","message":"pane nope not found"}}` com exit 1 (antes vazava Debug do Rust); `--pane` sem `--subscribe` e erro nomeado exit 2 (`--pane requires --subscribe <name>: the default subscriptions are not pane-scoped`), nunca silencio.
-  CHECK: `cargo nextest run events` e depois a mutacao: remover o flush por linha (ou trocar o writer por um bufferizado sem flush) e rodar de novo
-  EXPECT: verde antes, **vermelho depois**. Um teste que passa nas duas vezes esta cego e nao conta.
-  ATENCAO (regra medida, `AGENTS.md`): reverta a mutacao com o `sed` inverso **no mesmo comando**; NUNCA `git checkout -- <file>` / `git restore` — em 2026-09-01 isso apagou trabalho nao commitado inteiro neste repo. Depois confira com `grep -c` que a linha original voltou.
-  EVIDENCE: verde: `cargo nextest run events` -> `72 tests run: 72 passed`. M1 (flush): `sed -i '' 's/out\.flush()/Ok(())/' src/cli/events.rs` -> `5 tests run: 4 passed, 1 failed` (FAIL `cli::events::tests::events_line_writer_flushes_per_line`, esperado 1 flush por linha); revertido com `sed -i '' 's/^    Ok(())$/    out.flush()/'` NO MESMO comando; `grep -c 'out\.flush()'` voltou a `1`. M2 (mapeamento wire->variante): `sed -i '' 's/"pane\.created"/"pane.creatd"/g'` -> `5 tests run: 3 passed, 2 failed` (FAIL `events_default_names_map_to_parameterless_wire_variants` — o teste que prova o mapeamento); revertido com sed inverso no mesmo comando; `grep -c '"pane\.created"'` = `5` antes e depois. M3 (pos-revisao: cegueira provada pelo revisor — nenhum teste chamava `build_subscriptions`, e mutar `subscription_for_name(name, pane_id)` para `None` deixava os 5 testes verdes): novo teste `events_build_subscriptions_applies_the_pane_flag_to_requested_names`; mutacao `s/subscription_for_name(name, pane_id)/subscription_for_name(name, pane_id.filter(|p| p.is_empty()))/` (mutante que compila) -> `6 tests run: 5 passed, 1 failed` (FAIL exatamente no teste novo); revertido com sed inverso no mesmo comando; `grep -cF 'pane_id.filter'` = `1` durante e `0` apos, `grep -cF 'subscription_for_name(name, pane_id)'` = `1` antes e depois. Pos-reversao: `cargo nextest run events` -> `72 tests run: 72 passed`. M4 (pos-revisao P3: o guarda `--pane` sem `--subscribe` nao tinha teste — inverte-lo deixava os 7 testes verdes): guarda extraido para `pane_without_subscribe_error` + teste `events_pane_without_subscribe_is_a_named_error`; verde `7 tests run: 7 passed`; mutacao `s/pane_id\.is_some() \&\& subscriptions\.is_empty()/pane_id.is_some()/` -> `7 tests run: 6 passed, 1 failed` (FAIL exatamente no teste novo); revertido com sed inverso no mesmo comando; `grep -cF 'pane_id.is_some() && subscriptions.is_empty()'` = `1` antes e depois, residuo `if pane_id.is_some() {` = `0`.
-- [x] G5 — nenhum `unwrap()` novo em producao
-  CHECK: `touch src/main.rs && cargo clippy --bins --message-format json -- -D clippy::unwrap_used 2>&1 | jq -r 'select(.message?.code?.code == "clippy::unwrap_used") | .message.spans[0].file_name' | sort -u`
-  EXPECT: saida vazia. (O `touch` e obrigatorio: clippy NAO re-emite warning de build em cache e devolve um zero falso.)
-  EVIDENCE: clippy exit `0`; saida do filtro jq = `0` arquivos (stdout do clippy capturado em arquivo para o jq nao engolir linha nao-JSON; contagem via `jq ... | sort -u | wc -l` = 0)
+- [x] G4 — Briefing diz a verdade (v5)
+  CHECK: `cargo nextest run -E 'test(channel_protocol_briefing_teaches_immediate_delivery)'`
+  EXPECT: `1/1 passed`
+  EVIDENCE: texto novo ensina "arrives WHILE YOU ARE WORKING, like steering" + `--when-idle`; assert nega o texto velho ("deferred while the" não pode existir). Version 4→5 com doc comment da razão; re-brief garantido pelo gate `entry.version >= CHANNEL_PROTOCOL_VERSION` (já caracterizado por teste de resend existente). `clippy::assertions_on_constants` derrubou o assert de constante — removido, o bump fica provado pelo diff e pelos testes de resend.
 
-- [x] G6 — help/spec e completions cobrem o verbo novo
-  CHECK: encontrar o spec de help (`src/cli/spec.rs`) e o gerador de completions (`src/cli/completion.rs`), acrescentar `events`, e rodar `cargo nextest run` filtrando os testes de spec/completion
-  EXPECT: verde, e `bora events --help` imprime as flags do contrato acima
-  EVIDENCE: `bora events --help` imprime `--follow`, `--subscribe <NAME>`, `--pane <ID>`, `--limit <N>`, `--session <NAME>` com as descricoes do contrato; `bora completion zsh | grep -c events` = `6` (completions sao GERADAS de `spec::command()` — acrescentar o subcommand no spec cobre o gerador; nenhuma edicao em `completion.rs` era necessaria); `cargo nextest run -E 'test(spec) or test(completion)'` -> `55 tests run: 55 passed`
+- [x] G5 — Prova viva: `channel send` para pane ocupado devolve `delivered` e chega no pane
+  CHECK: servidor descartável próprio (socket+config em `~/Sites/temp-files/20260904-bora-chan-proof/`, binário `target/debug/bora` da worktree, `bora --version` → `0.45.39 (v0.8.2[2c042bb2].bora-45.39)`)
+  EXPECT: `"status": "delivered"` para o pane Working; texto no pane
+  EVIDENCE: canal `#proof` com 2 membros agentes reais (gemini CLI detectado: `gemlab` idle, `gemwork` working — working atingido pela regra `esc_cancel_working` do manifest em tela real, sem chamada de modelo; p4 com `GEMINI_API_KEY=invalid-proof-key` pra isolar quota). Send default: `{"deliveries":[{"pane_id":"w1:p3","status":"delivered"},{"pane_id":"w1:p4","status":"delivered"}],"seq":1}` — **p4 estava `working` no momento do send**. Chegada visível: buffer do p4 renderiza `> [bora] channel protocol for #proof (v5):` (bytes digitados no pane); p3 idle→`working` após receber a mensagem (turno real iniciado pelo texto entregue). Repetição com p3+p4 working: ambos `delivered` (seq=5). Servidor derrubado (`hub stop`, exit 0, uptime 11m46s).
 
-- [x] G7 — versao bumpada na mesma commit
-  CHECK: `grep -m1 '^version' Cargo.toml`
-  EXPECT: `version = "0.45.38"` (regra binding do `AGENTS.md`: mudanca no package bumpa versao na MESMA commit)
-  EVIDENCE: `version = "0.45.38"` — na MESMA commit `768d3f81` do codigo (junto com `Cargo.lock` regenerado). Pos-rebase em `main` `279cb8a0` (apos merge do #112/#18, que aterrissou 0.45.37): versao mantida em `0.45.38` — a proxima livre — resolvida no conflito do rebase.
+- [x] G6 — Prova viva do opt-in: `--when-idle` devolve `deferred` com `queue_position`
+  CHECK: mesmo servidor; `bora channel send proof "..." --when-idle` com p3 e p4 `working`
+  EXPECT: `"status": "deferred"`, `"detail": "queued (pos 1)"`
+  EVIDENCE: `{"deliveries":[{"detail":"queued (pos 1)","pane_id":"w1:p3","status":"deferred"},{"detail":"queued (pos 1)","pane_id":"w1:p4","status":"deferred"}],"seq":4}` — comportamento de hoje preservado byte a byte no recibo.
 
-- [ ] G8 — changelog no lugar certo
-  CHECK: `python3 scripts/changelog.py check-history-sync` e `grep -c . <(sed -n '/^## Unreleased/,/^## /p' CHANGELOG.md | tail -n +2)`
-  EXPECT: check-history-sync sai 0; a entrada nova esta em `docs/next/CHANGELOG.md` e o `## Unreleased` do CHANGELOG.md da raiz continua **vazio**
-  EVIDENCE: entrada nova em `docs/next/CHANGELOG.md` sob `### Added` ✓; `## Unreleased` da raiz com 0 linhas nao-heading ✓; `check-history-sync` sai **1** — FALHA PRE-EXISTENTE NO MAIN, nao introduzida por esta folha: o HEAD pristine da branch (== tip de `origin/main`, `429db338`) falha identicamente. Causa medida: o bullet de `bora agent --new` existe SOMENTE no historico released de `docs/next/CHANGELOG.md` (linha 47) e nao existe no `CHANGELOG.md` da raiz — hand-edit que quebrou o espelho released. Consertar exigiria editar o `CHANGELOG.md` da raiz (proibido para feature work pelo `AGENTS.md` e bloqueado pelo `review_rules.py`) ou apagar conteudo alheio; nenhuma das duas e escopo da folha #111. Nota: `just check` NAO executa este script (so o recipe de release), G9 nao afetado.
-  ABANDON: G8 (sub-check `check-history-sync`) — divergencia de released-history pre-existente no main; reconciliacao e decisao do mantenedor (regenerar a raiz a partir de docs/next). As partes sob controle da folha estao cumpridas e medidas acima.
+- [x] G7 — CLI real: grafias idênticas; erro nomeado
+  CHECK: `bora channel members proof` vs `bora channel members '#proof'` vs `bora channel members nope`
+  EXPECT: saída idêntica nas duas grafias (exit 0); erro nomeado na inexistente
+  EVIDENCE: ambas grafias → mesmas 4 linhas (`w1:p1/-/-/workspace`, `w1:p3/idle/gemlab/workspace`, `w1:p4/working/gemwork/workspace`, `w1:p2/-/-/workspace`), exit 0. `members nope`: stdout vazio, stderr `{"error":{"code":"channel_not_found","message":"channel #nope not found"},"id":"cli:channel:members"}`, exit 1.
 
-- [x] G9 — gate do repo verde
+- [x] G8 — Suíte verde
   CHECK: `just check`
-  EVIDENCE: exit 0 (~82s): fmt limpo, clippy `--bins -D clippy::unwrap_used` e `--all-targets`, suite nextest completa, 143 unittests de scripts OK. Extra pos-revisao do dono: `LIBGHOSTTY_VT_PREBUILT=prebuilt/libghostty-vt-aarch64-macos.a cargo check --target x86_64-unknown-linux-gnu --all-targets` -> exit 0 em ~24s (ponto cego de lint do Linux verificado localmente; o codigo novo nao tem gating de plataforma).
+  EXPECT: exit 0
+  EVIDENCE: verde após regenerar artefato de schema (`HERDR_UPDATE_API_SCHEMA=1 just test-one generated_protocol_schema_artifact_is_current` — campo novo `when_idle` mudou o schema gerado; `docs/next/api/herdr-api.schema.json` atualizado). Fim: `Ran 143 tests in 5.895s / OK`, nextest completo, fmt limpo.
 
-- [x] G10 — PR aberto
-  CHECK: `gh pr view --json number,state,title --jq '"\(.number) \(.state) \(.title)"'`
-  EXPECT: PR aberto contra `main` de `aryrabelo/bora-herdr-ada`, commit convencional minuscula, corpo com `refs #111`, sem keyword de fechamento (`fixes`/`closes`/`resolves` sao PROIBIDOS pela regra do repo)
-  EVIDENCE: `19 OPEN feat: add bora events verb streaming session events as json lines | base: main | head: agente/events-follow` — https://github.com/aryrabelo/bora-herdr-ada/pull/19 ; commits `768d3f81`/`69a04601`/`baafb8b2` rebasados sobre `279cb8a0` (minusculas, sem emoji, sem co-author, corpos com `refs #111`, zero keywords de fechamento)
+- [x] G9 — fmt + clippy alvo Linux (flags do CI, com touch)
+  CHECK: `cargo fmt --check` e `LIBGHOSTTY_VT_PREBUILT=prebuilt/libghostty-vt-aarch64-macos.a cargo clippy --target x86_64-unknown-linux-gnu --all-targets -- -D warnings -A clippy::dbg_macro -A clippy::todo -A clippy::cognitive_complexity -A clippy::too_many_lines -A clippy::unwrap_used`
+  EXPECT: ambos exit 0
+  EVIDENCE: fmt `FMT_CLEAN`; clippy `Finished dev profile ... in 21.89s` após `touch src/app/api/channels.rs` (re-emissão real, não cache). `prebuilt/` copiado do checkout compartilhado (mesmo vendor commit, gitignored).
 
-## Nao-objetivos
+- [x] G10 — Mutação por resultado (4/4)
+  CHECK: sed-muta + nextest do teste NOMEADO + sed-reverte + `grep -cF` no MESMO comando
+  EXPECT: verde antes, FAIL depois, reversão provada
+  EVIDENCE (todas contra `src/app/api/channels.rs`, cada uma partindo de suíte verde 76/76):
+  - M1 (G1): `when_idle: params.when_idle,` → `when_idle: Some(true),` → `FAIL ... channel_send_to_working_member_injects_immediately_by_default` (`0 passed, 1 failed`). **Reverter largo demais**: o sed de reversão casou os 5 `when_idle: Some(true),` do arquivo e quebrou os outros 4 sites; reparado com `sed` endereçado por linha (1121/2399/2515/3030), verificado `grep -c` (`params.when_idle` = 1, `Some(true)` = 4) e suíte 76/76 de novo. Nenhum `git restore` usado.
+  - M2 (G2): linha 654 → `when_idle: None,` → `FAIL ... channel_send_when_idle_defers_to_working_member`; reversão por linha; `grep -cF 'when_idle: params.when_idle,'` = 1.
+  - M3 (G3): `let name = channels::normalize_channel_name(name);` → `let name = name.to_string();` → `FAIL ... find_channel_workspace_matches_name_with_or_without_hash`; reversão pelo mesmo padrão; `grep -cF` = 1.
+  - M4 (G4): `passes --when-idle, and` → `passes --hold-idle, and` → `FAIL ... channel_protocol_briefing_teaches_immediate_delivery`; reversão; `grep -cF 'passes --when-idle, and'` = 1; suíte de canais 76/76 após as 4.
 
-- Nao mexer em `src/api/server.rs` alem do estritamente necessario; o servidor esta correto.
-- Nao adicionar dependencia nova (`AGENTS.md`: checar se as existentes cobrem antes).
-- Nao tocar `src/app/api/panes.rs` nem `src/api/schema/panes.rs` — sao da folha #112, rodando em paralelo. Conflito ali e falha de coordenacao, nao de merge.
+## Nao-objetivos respeitados
+
+- `to_human`/`notify_chat_to_human`: intocados (passivo, ceo-bora#33).
+- Burst damper (`burst_active`, `record_channel_burst_send`): intocado.
+- `member_addressable_name`: intocado.
+- `pending_agent_prompts`: intocado (sirve `--when-idle` e `agent prompt --when-idle`).
+- Briefing do protocolo (`send_channel_protocol`) segue com `when_idle: Some(true)` interno — a decisão de default imediato é para mensagens de canal, não para o bloco de ensino.
+- `channel.ask` herda o default imediato pelo mesmo fan-out (pergunta enfileirada também era silêncio); sem flag própria.
