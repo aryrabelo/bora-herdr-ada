@@ -67,6 +67,61 @@ These instructions are layered.
 - **Layout changes must force a repaint, not just a re-render.** Any `AppState` mutation that reflows pane content (sidebar/right-panel toggle, or anything else that changes pane column/row allocation) without changing the outer terminal's `(cols, rows)` must explicitly signal a full repaint to every attached client. Both transport encoders (`ClientRenderState::TerminalAnsi`'s `BlitEncoder` and the default `SemanticFrame` client's local `BlitEncoder`) decide full-vs-diff repaint purely from whether the outer frame's dimensions changed; a layout change alone never trips that check, so the diff/scroll-shift path runs against already-reflowed content and desyncs the physical terminal from the encoder's model until an unrelated full redraw happens to fire. Route new layout-affecting mutations through `AppState::request_full_repaint()` (sets `force_full_repaint`, bridged into per-client `ClientRenderState::request_repaint()` in `HeadlessServer::render_and_stream`, and carried over the wire on `FrameData.force_full_repaint` for `SemanticFrame` clients) instead of assuming a dimension check will catch it. (learned 2026-08-13, binding: this exact gap caused a persistent, reproducible flicker — sidebar toggle open→close would desync the terminal until a workspace switch forced a full redraw — that survived two earlier throughput-focused render fixes because neither touched the full-repaint decision itself.)
   **Switching workspace and switching tab are in scope and were missed for months.** The rule above was written from the sidebar-toggle case and named only "sidebar/right-panel toggle", so the two mutations that reflow the ENTIRE terminal area — `AppState::switch_workspace` and `switch_workspace_tab` in `src/app/actions.rs` — went unrouted, and the bug reached the owner as "I have to click a workspace two to five times to switch". Every click worked: `self.active` changed, `workspace.focus` was logged each time, and three log lines 82ms apart for the same workspace id is what a user retrying a click that appears to do nothing looks like. Diagnosing it from the code alone is close to impossible, because the state transition is correct; the evidence that cracked it was the server log showing repeated successful focus events for one workspace, which says the input path is fine and the output path is not. Note the irony recorded in the original rule — a workspace switch was what accidentally repaired the sidebar-toggle desync — which is exactly why nobody suspected that a workspace switch had the same defect. When adding any mutation that changes which panes occupy the terminal area, assume it is in scope and gate the repaint on an actual change so re-selecting what is already active stays free. `toggle_zoom` and `close_pane` are the two remaining unrouted candidates; they are filed rather than fixed because there is no observed report for them and they may be covered by per-pane resize instead. (learned 2026-08-25, binding.)
 
+### Prior art before building
+
+Before any non-trivial feature reaches Rust, prove nobody already does it
+well. The order matters: **grill the idea first**, until the destination is
+sharp — a prior-art search run against a fuzzy destination returns everything
+and decides nothing — then sweep these four shelves and write down what each
+one returned, **including the searches that returned nothing**, because a
+measured absence is a finding and the next session will otherwise search
+again:
+
+1. **GitHub at large** — is there a project that already solves this? Name
+   stars, last commit, and licence, and say explicitly whether it solves it
+   for a runtime like ours or for one we do not have (tmux, wezterm, a bare
+   shell). A project whose whole design assumes tmux is a design reference,
+   not a dependency.
+2. **herdr plugins** — <https://herdr.dev/plugins/>, but the searchable
+   directory is the GitHub topic `herdr-plugin` (~250 repos, measured
+   2026-09-07); the site listing is a 30-minute auto-refresh with **no review
+   of any kind**, so treat it as an index, never as a vetting signal. Sweep it
+   in star bands, because GitHub's code search caps at 50 results per query
+   and the low-star bands overflow silently. A plugin that already does it
+   beats a core patch, and a core patch that could have been a plugin is fork
+   merge-conflict surface bought for nothing (see Fork merge friction). Before
+   concluding a feature must be core, check the plugin ceiling against the
+   code: a plugin CAN hold a long-lived connection (`[[startup]]` is spawned
+   detached and awaited without timeout, `src/app/api/plugins/runtime.rs`) and
+   CAN draw in its own pane (`[[panes]]`), but CANNOT declare a sidebar
+   band/view (`REGISTRY` is `const` in-binary and each band carries a compiled
+   `push: fn(...)`) and CANNOT inject a workspace row the server does not
+   have — its only sidebar channel is decorating an existing row with a
+   metadata token.
+3. **pi packages** — `https://pi.dev/packages?name=<term>`, one query per
+   term. `omp` is of the pi lineage, so a pi package frequently runs on omp.
+4. **omp plugins** — <https://github.com/topics/omp-plugin>. omp is the
+   primary coding harness here, so a fleet/orchestration answer may belong
+   there rather than inside bora at all.
+
+Adoption has a **security gate**, not only a feature gate. For every
+third-party candidate worth considering, state who maintains it, what it
+executes at install and at runtime, which credential/socket/network it
+reaches, and whether the code is auditable at the size it is. For a
+herdr/bora plugin the bar is higher than it looks: the trust boundary is
+INSTALL, not call — an enabled plugin receives `HERDR_SOCKET_PATH` and
+therefore the reach of the entire CLI, unattended, at every server start (see
+the plugin trust-boundary rule under Code Conventions). "Popular" is not an
+audit.
+
+The result of the sweep is written where the decision lives — the map ticket,
+an ADR, or this file — never left in a chat.
+
+(learned 2026-09-07, binding, owner instruction: *"temos que saber no GitHub
+se não tem alguém que já faz isso bem, depois da gente fazer o grilling e
+entender o que a gente quer"*, with the three plugin shelves and the security
+requirement named in the same breath.)
+
 ### Multiplicative performance paths
 
 Treat work reachable from view computation, rendering, background-pane resizing,
