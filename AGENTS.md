@@ -338,6 +338,38 @@ server:
 env -u HERDR_SOCKET_PATH -u HERDR_CLIENT_SOCKET_PATH cargo run -- <command>
 ```
 
+**Trialling a third-party plugin: `--session` is NOT isolation, and two clones
+are NOT two builds.** Three facts measured 2026-09-07 while running the
+`herdr-mirror` plugin against a second machine, each of which silently
+invalidates the obvious safety plan:
+
+- **The plugin registry is global per NAMESPACE, not per session.**
+  `registry_path()` is `config_dir().join("plugins.json")`
+  (`src/persist/plugin_registry.rs`) and a named session only moves the *data*
+  dir (`src/session.rs`), never `config_dir()`. So `plugin link` inside
+  `bora --session throwaway` writes into the registry the LIVE session reads,
+  and its `[[startup]]`/event hooks then run in the live server. Isolation
+  requires `HERDR_NAMESPACE=<name>` on every command; verify by hashing
+  `~/.config/bora/plugins.json` before and after. Also clear
+  `HERDR_ENV`/`HERDR_SOCKET_PATH` from the environment: the first blocks a
+  nested bora (`src/main.rs`) and the second makes `--session` a no-op
+  (`src/session.rs`).
+- **`CARGO_TARGET_DIR` is set globally on this machine (`~/.cargo/target`), so
+  two clones of the same crate share one `target/release/<bin>`.** Building
+  clone B overwrites clone A's binary with no warning, and a trial that
+  believes it is exercising the fork can be measuring upstream. Pass an
+  explicit `--target-dir` per clone, and prove which build you have by probing
+  the binary for a symbol only one side contains — not by its path.
+- **There is no `bora server start`.** `bora server` runs headless in the
+  foreground; the daemon is otherwise spawned only by the TUI launch path
+  (`spawn_server_daemon`, `src/server/autodetect.rs`), and a plain CLI verb
+  does NOT start one — it fails with `server_not_running` and stops. On a
+  headless remote host the equivalent is
+  `nohup bora server </dev/null >/dev/null 2>&1 &`, which is exactly what
+  `build_server_daemon_command` does. Non-interactive SSH also drops
+  `~/.local/bin` from `PATH`, so anything naming the binary remotely needs an
+  absolute path.
+
 ### Rules-review gate
 
 `.github/workflows/independent-review.yml` runs `scripts/review_rules.py` on
