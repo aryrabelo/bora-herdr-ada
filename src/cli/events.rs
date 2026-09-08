@@ -206,10 +206,12 @@ fn pane_without_subscribe_error(pane_id: Option<&str>, subscriptions: &[String])
     }
 }
 
-/// Maps a wire event name to its `Subscription`. The 25 parameterless
-/// variants map directly; the pane-scoped three require `--pane` (and
+/// Maps a wire event name to its `Subscription`. The parameterless variants
+/// map directly; the three pane-scoped ones require `--pane` (and
 /// `pane.output_matched` additionally needs a match expression this verb
-/// does not expose).
+/// does not expose). The count lives in `DEFAULT_EVENT_NAMES` and its one
+/// guard test, never restated here — this comment said 25 while the set held
+/// 26 for exactly as long as it took a reviewer to notice.
 fn subscription_for_name(name: &str, pane_id: Option<&str>) -> Result<Subscription, String> {
     if matches!(
         name,
