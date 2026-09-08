@@ -65,6 +65,8 @@ pub enum Subscription {
     PaneAgentDetected {},
     #[serde(rename = "pane.result_reported")]
     PaneResultReported {},
+    #[serde(rename = "channel.message")]
+    ChannelMessage {},
     #[serde(rename = "pane.output_matched")]
     PaneOutputMatched {
         pane_id: String,

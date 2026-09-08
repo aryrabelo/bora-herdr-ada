@@ -818,7 +818,7 @@ Tab event subscriptions include `tab.created`, `tab.closed`, `tab.focused`,
 `workspace_id`, requested `insert_index`, and updated ordered `tabs` list for
 that workspace.
 Pane event subscriptions include `pane.created`, `pane.updated`, `pane.closed`, `pane.focused`,
-`pane.moved`, `pane.exited`, `pane.agent_detected`,
+`pane.moved`, `pane.exited`, `pane.agent_detected`, `pane.result_reported`,
 `pane.output_matched`, `pane.agent_status_changed`, and `pane.scroll_changed`.
 Terminal-title changes can emit `pane.updated`, but spinner-only raw-title changes do not emit it when `terminal_title_stripped` is unchanged.
 `pane.scroll_changed` is scoped to one `pane_id` and emits `pane_id`,
@@ -830,6 +830,8 @@ updated `PaneLayoutSnapshot` for one tab. Clients that bootstrap with
 `workspace_id` and `tab_id`.
 
 Worktree event subscriptions include `worktree.created`, `worktree.opened`, and `worktree.removed`. Worktree events describe Git checkout lifecycle. `worktree.created` includes the opened `workspace` and created `worktree`. `worktree.opened` includes the target `workspace`, opened `worktree`, and `already_open`. `worktree.removed` includes the `workspace_id`, removed `worktree`, and `forced`.
+
+Channel event subscriptions include `channel.message`, emitted right after a message is durably appended to a `#channel` transcript and before it is fanned out to the channel's members. It carries the normalized `channel` name without the leading `#`, the monotonic per-channel `seq`, `from_name`, and `text`; `from_pane` is omitted for unattributed senders, and `to_pane` carries the resolved pane id when the message was addressed to one member instead of broadcast. The subscription takes no parameters — a client interested in one room filters on `channel` rather than subscribing per room.
 
 Use `events.subscribe` for lifecycle events. Dedicated wait helpers are documented separately when a one-shot wait is supported.
 
