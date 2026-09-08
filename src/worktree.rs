@@ -903,7 +903,18 @@ pub(crate) fn ensure_context_dir(repo_root: &Path, checkout_path: &Path) {
 
 /// Append `line` to the git exclude file if not already present (idempotent).
 fn ensure_exclude_line(exclude_path: &Path, line: &str) {
-    let existing = std::fs::read_to_string(exclude_path).unwrap_or_default();
+    let existing = match std::fs::read_to_string(exclude_path) {
+        Ok(content) => content,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
+        // Unreadable (non-UTF-8 bytes, permissions, ...): refuse to touch it.
+        // We cannot tell whether `line` is already there, and the operator's
+        // hand-written ignore rules are worth far more than one excluded
+        // `.context/` dir.
+        Err(err) => {
+            tracing::warn!(path = %exclude_path.display(), "worktree: read exclude failed, leaving it untouched: {err}");
+            return;
+        }
+    };
     if existing
         .lines()
         .any(|existing_line| existing_line.trim() == line)
@@ -916,13 +927,25 @@ fn ensure_exclude_line(exclude_path: &Path, line: &str) {
             return;
         }
     }
-    let mut content = existing;
-    if !content.is_empty() && !content.ends_with('\n') {
-        content.push('\n');
+    let mut addition = String::new();
+    if !existing.is_empty() && !existing.ends_with('\n') {
+        addition.push('\n');
     }
-    content.push_str(line);
-    content.push('\n');
-    if let Err(err) = std::fs::write(exclude_path, content) {
+    addition.push_str(line);
+    addition.push('\n');
+    // Append rather than rewrite: several bora processes can create worktrees
+    // in the same repo concurrently and share this one exclude file. A
+    // read-modify-write would drop a sibling's line; an append at worst leaves
+    // a duplicate `.context/`, which git ignores just the same.
+    let write = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(exclude_path)
+        .and_then(|mut file| {
+            use std::io::Write;
+            file.write_all(addition.as_bytes())
+        });
+    if let Err(err) = write {
         tracing::warn!(path = %exclude_path.display(), "worktree: write exclude failed: {err}");
     }
 }
@@ -1554,5 +1577,43 @@ prunable stale
 
         let _ = std::fs::remove_dir_all(&repo);
         let _ = std::fs::remove_dir_all(&checkout);
+    }
+
+    #[test]
+    fn ensure_exclude_line_leaves_unreadable_file_untouched() {
+        let dir = unique_temp_path("exclude-non-utf8");
+        std::fs::create_dir_all(&dir).unwrap();
+        let exclude = dir.join("exclude");
+        let original: &[u8] = b"*.log\n\xff\xfe\n";
+        std::fs::write(&exclude, original).unwrap();
+
+        ensure_exclude_line(&exclude, ".context/");
+
+        assert_eq!(std::fs::read(&exclude).unwrap(), original);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ensure_exclude_line_appends_once_preserving_content() {
+        let dir = unique_temp_path("exclude-append");
+        std::fs::create_dir_all(&dir).unwrap();
+        let exclude = dir.join("exclude");
+        // No trailing newline: the appended line must not glue onto it.
+        std::fs::write(&exclude, "*.log\nbuild/").unwrap();
+
+        ensure_exclude_line(&exclude, ".context/");
+        assert_eq!(
+            std::fs::read_to_string(&exclude).unwrap(),
+            "*.log\nbuild/\n.context/\n"
+        );
+
+        ensure_exclude_line(&exclude, ".context/");
+        assert_eq!(
+            std::fs::read_to_string(&exclude).unwrap(),
+            "*.log\nbuild/\n.context/\n"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
