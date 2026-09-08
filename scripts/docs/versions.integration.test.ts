@@ -4,21 +4,20 @@ import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promis
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 
-const script = resolve(import.meta.dir, 'docs-versions.mjs');
-const prepareScript = resolve(import.meta.dir, 'prepare-docs.mjs');
+const script = resolve(import.meta.dir, 'versions.mjs');
 const temporaryDirectories: string[] = [];
 
 afterEach(async () => {
-  await Promise.all(temporaryDirectories.splice(0).map((path) => rm(path, { recursive: true, force: true })));
+  await Promise.all(
+    temporaryDirectories.splice(0).map((path) => rm(path, { recursive: true, force: true })),
+  );
 });
 
 describe('documentation release publishing', () => {
-  test('snapshots tagged next docs and switches stable to generated snapshots', async () => {
+  test('publishes immutable tagged snapshots and validates maintained corrections', async () => {
     const root = await mkdtemp(join(tmpdir(), 'herdr-docs-'));
     temporaryDirectories.push(root);
-    await write(root, 'website/src/content/docs/index.mdx', 'stable docs\n');
-    await write(root, 'website/src/data/config-reference.json', '{"stable":true}\n');
-    await write(root, 'website/latest.json', '{"version":"0.9.0"}\n');
+    await write(root, 'distribution/latest.json', '{"version":"0.9.0"}\n');
     await write(root, 'README.md', 'stable readme\n');
     await write(root, 'README.zh-CN.md', 'stable readme zh-cn\n');
     await write(root, 'README.pt-BR.md', 'stable readme pt-br\n');
@@ -39,8 +38,6 @@ describe('documentation release publishing', () => {
 
     runScript(root, ['publish', 'v1.0.0']);
 
-    await expect(read(root, 'website/src/content/docs/index.mdx')).rejects.toThrow();
-    await expect(read(root, 'website/src/data/config-reference.json')).rejects.toThrow();
     expect(await read(root, 'README.md')).toBe('next readme\n');
     expect(await read(root, 'README.zh-CN.md')).toBe('next readme zh-cn\n');
     expect(await read(root, 'README.pt-BR.md')).toBe('next readme pt-br\n');
@@ -56,46 +53,11 @@ describe('documentation release publishing', () => {
       source: 'docs/next/website/src/content/docs',
     });
 
-    const previewCommit = git(root, ['rev-parse', 'HEAD']).trim();
-    await write(root, 'docs/preview/website/src/content/docs/index.mdx', 'preview docs\n');
-    await write(
-      root,
-      'docs/preview/website/src/data/config-reference.json',
-      '{"preview":true}\n',
-    );
-    await write(
-      root,
-      'website/preview.json',
-      `${JSON.stringify({ build_id: 'preview-test', commit: previewCommit })}\n`,
-    );
-    runPrepare(root);
-    const stableDocs = await read(root, 'website/src/content/docs/index.mdx');
-    expect(stableDocs).toContain('next docs');
-    expect(stableDocs).toContain(
-      'editUrl: https://github.com/herdrdev/herdr/blob/master/docs/versions/1.0.0/website/src/content/docs/index.mdx',
-    );
-    const versionedDocs = await read(
-      root,
-      'website/src/content/docs/_versions/1.0.0/index.mdx',
-    );
-    expect(versionedDocs).toContain('next docs');
-    expect(versionedDocs).toContain(
-      'editUrl: https://github.com/herdrdev/herdr/blob/master/docs/versions/1.0.0/website/src/content/docs/index.mdx',
-    );
-    expect(await read(root, 'website/src/content/docs/preview/index.mdx')).toContain(
-      'Preview build `preview-test`',
-    );
-    expect(await read(root, 'website/src/data/config-reference.json')).toBe('{"next":true}\n');
-
-    await write(root, 'website/latest.json', '{"version":"1.0.0"}\n');
+    await write(root, 'distribution/latest.json', '{"version":"1.0.0"}\n');
     runScript(root, ['check']);
 
     const correctedDocs = '---\ntitle: Documentation\n---\n\ncorrected docs\n';
-    await write(
-      root,
-      'docs/versions/1.0.0/website/src/content/docs/index.mdx',
-      correctedDocs,
-    );
+    await write(root, 'docs/versions/1.0.0/website/src/content/docs/index.mdx', correctedDocs);
     await write(
       root,
       'docs/versions/1.0.0/website/src/data/config-reference.json',
@@ -106,19 +68,6 @@ describe('documentation release publishing', () => {
     await write(root, 'README.md', 'post-release correction\n');
     runScript(root, ['publish', 'v1.0.0']);
     expect(await read(root, 'README.md')).toBe('post-release correction\n');
-
-    runPrepare(root);
-    expect(await read(root, 'website/src/content/docs/index.mdx')).toContain('corrected docs');
-    expect(await read(root, 'website/src/content/docs/_versions/1.0.0/index.mdx')).toContain(
-      'corrected docs',
-    );
-    expect(await read(root, 'website/src/data/config-reference.json')).toBe(
-      '{"corrected":true}\n',
-    );
-    const versionReferences = JSON.parse(
-      await read(root, 'website/src/data/config-reference-versions.json'),
-    );
-    expect(versionReferences['1.0.0']).toEqual({ corrected: true });
 
     runScript(root, ['publish', 'v0.9.0']);
     const archivedManifest = JSON.parse(await read(root, 'docs/versions/manifest.json'));
@@ -138,10 +87,7 @@ describe('documentation release publishing', () => {
       correctedArchivedDocs,
     );
 
-    const archivedDocsRoot = resolve(
-      root,
-      'docs/versions/0.9.0/website/src/content/docs',
-    );
+    const archivedDocsRoot = resolve(root, 'docs/versions/0.9.0/website/src/content/docs');
     await rm(archivedDocsRoot, { recursive: true, force: true });
     expect(() => runScript(root, ['check'])).toThrow();
     await write(
@@ -158,8 +104,6 @@ describe('documentation release publishing', () => {
     delete archivedManifest.versions[0].commit;
     await write(root, 'docs/versions/manifest.json', `${JSON.stringify(archivedManifest)}\n`);
     expect(() => runScript(root, ['check'])).toThrow();
-    // This test runs a dozen git and node subprocesses; slow CI builders can
-    // exceed the 5s default timeout.
   }, 30_000);
 });
 
@@ -179,14 +123,6 @@ function git(root: string, args: string[]) {
 
 function runScript(root: string, args: string[]) {
   execFileSync('node', [script, ...args], {
-    cwd: root,
-    env: { ...process.env, HERDR_DOCS_REPO_ROOT: root },
-    stdio: 'pipe',
-  });
-}
-
-function runPrepare(root: string) {
-  execFileSync('node', [prepareScript, '--docs-only'], {
     cwd: root,
     env: { ...process.env, HERDR_DOCS_REPO_ROOT: root },
     stdio: 'pipe',

@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { normalizeVersion, sortVersionsNewestFirst } from './docs-versions.mjs';
+import { normalizeVersion, sortVersionsNewestFirst } from './versions.mjs';
 
 describe('normalizeVersion', () => {
   test.each([

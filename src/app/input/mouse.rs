@@ -3662,7 +3662,7 @@ mod tests {
         app.state.workspaces = vec![Workspace::test_new("a"), Workspace::test_new("b")];
         app.state.active = Some(0);
         app.state.selected = 1;
-        app.state.mode = Mode::ConfirmClose;
+        app.state.begin_workspace_close_confirmation(1);
 
         let popup = app.state.confirm_close_rect();
         let inner = Rect::new(
@@ -4580,7 +4580,7 @@ mod tests {
     }
 
     #[test]
-    fn clicking_pane_context_menu_close_last_pane_of_parent_closes_only_it() {
+    fn clicking_pane_context_menu_close_last_parent_group_pane_keeps_confirmation_mode() {
         let mut app = app_for_mouse_test();
         let mut parent = Workspace::test_new("main");
         let pane_id = parent.tabs[0].root_pane;
@@ -4625,9 +4625,8 @@ mod tests {
         ));
 
         assert_eq!(app.state.selected, 0);
-        assert_ne!(app.state.mode, Mode::ConfirmClose);
-        assert_eq!(app.state.workspaces.len(), 1);
-        assert_eq!(app.state.workspaces[0].display_name(), "issue");
+        assert_eq!(app.state.mode, Mode::ConfirmClose);
+        assert_eq!(app.state.workspaces.len(), 2);
         assert!(app.state.context_menu.is_none());
     }
 

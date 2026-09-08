@@ -8,16 +8,15 @@ import {
   gitTreesEqual,
   listDocumentationPaths,
   resolveCommit,
-} from './docs-snapshot.mjs';
+} from './snapshot.mjs';
 
-const websiteDir = dirname(fileURLToPath(import.meta.url));
+const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = process.env.HERDR_DOCS_REPO_ROOT
   ? resolve(process.env.HERDR_DOCS_REPO_ROOT)
-  : resolve(websiteDir, '../..');
+  : resolve(scriptDir, '../..');
 const versionsDir = resolve(repoRoot, 'docs/versions');
 const manifestPath = resolve(versionsDir, 'manifest.json');
-const stableDocsDir = resolve(repoRoot, 'website/src/content/docs');
-const stableReferencePath = resolve(repoRoot, 'website/src/data/config-reference.json');
+const latestManifestPath = resolve(repoRoot, 'distribution/latest.json');
 const git = createGit(repoRoot);
 
 const VERSION_PATTERN = /^v?(\d+\.\d+\.\d+)$/;
@@ -111,7 +110,7 @@ export async function backfillVersions() {
     process.stdout.write(`snapshotted ${tag}\n`);
   }
 
-  const current = JSON.parse(await readFile(resolve(repoRoot, 'website/latest.json'), 'utf8')).version;
+  const current = JSON.parse(await readFile(latestManifestPath, 'utf8')).version;
   await writeManifest({
     schema_version: 1,
     stable_source: manifest.stable_source ?? 'legacy',
@@ -130,9 +129,9 @@ export async function checkVersions() {
     throw new Error(`${manifestPath} has an unsupported schema`);
   }
 
-  const latest = JSON.parse(await readFile(resolve(repoRoot, 'website/latest.json'), 'utf8')).version;
+  const latest = JSON.parse(await readFile(latestManifestPath, 'utf8')).version;
   if (manifest.current !== normalizeVersion(latest)) {
-    throw new Error(`docs current version ${manifest.current} does not match website latest ${latest}`);
+    throw new Error(`docs current version ${manifest.current} does not match distribution latest ${latest}`);
   }
 
   const expectedOrder = sortVersionsNewestFirst(manifest.versions).map(({ version }) => version);
@@ -236,8 +235,6 @@ export async function publishVersion(tag) {
   }
 
   const metadata = await snapshotTag(tag, 'docs/next/website/src/content/docs');
-  await rm(stableDocsDir, { recursive: true, force: true });
-  await rm(stableReferencePath, { force: true });
 
   for (const readme of ['README.md', 'README.zh-CN.md', 'README.pt-BR.md']) {
     const nextReadme = `docs/next/${readme}`;
@@ -277,7 +274,7 @@ async function main() {
     return;
   }
   throw new Error(
-    'usage: node website/scripts/docs-versions.mjs backfill | check | current | publish <tag>',
+    'usage: node scripts/docs/versions.mjs backfill | check | current | publish <tag>',
   );
 }
 

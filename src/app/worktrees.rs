@@ -211,7 +211,7 @@ impl App {
                 }
             };
 
-        let list = match crate::worktree::list_existing_worktrees(&space.repo_root) {
+        let list = match crate::worktree::list_existing_worktrees(&space.repo_root, false) {
             Ok(list) => list,
             Err(err) => {
                 self.state.config_diagnostic = Some(err);
@@ -610,6 +610,7 @@ impl App {
                     &path,
                     &branch,
                     "HEAD",
+                    false,
                 )
             });
             let _ = event_tx.blocking_send(AppEvent::WorktreeAddFinished(Box::new(
@@ -659,6 +660,7 @@ impl App {
                 pr: None,
                 focus: true,
                 label: None,
+                trust_repository: false,
             },
         );
         if let Some(message) = immediate_api_error_message(immediate_response.as_deref()) {
@@ -702,7 +704,8 @@ impl App {
                 }
                 #[cfg(windows)]
                 if !remove.force_confirmation
-                    && crate::worktree::checkout_has_dirty_files(&remove.path).unwrap_or(false)
+                    && crate::worktree::checkout_has_dirty_files(&remove.path, false)
+                        .unwrap_or(false)
                 {
                     remove.force_confirmation = true;
                     remove.error = None;
@@ -747,12 +750,13 @@ impl App {
             })
             .unwrap_or((None, None));
 
-        let command = crate::worktree::build_worktree_remove_command(&repo_root, &path, force);
+        let command =
+            crate::worktree::build_worktree_remove_command(&repo_root, &path, force, false);
         tracing::info!(workspace_id = %workspace_id, path = %path.display(), force, "starting git worktree remove");
         let event_tx = self.event_tx.clone();
         std::thread::spawn(move || {
             let result = crate::worktree::run_worktree_remove_command_with_recovery(
-                &command, &repo_root, &path, force,
+                &command, &repo_root, &path, force, false,
             );
             let _ = event_tx.blocking_send(AppEvent::WorktreeRemoveFinished(Box::new(
                 WorktreeRemoveResult {
@@ -789,6 +793,7 @@ impl App {
                 branch: None,
                 focus: true,
                 label: None,
+                trust_repository: false,
             },
         );
         if serde_json::from_str::<crate::api::schema::SuccessResponse>(&response).is_ok() {
@@ -812,7 +817,7 @@ impl App {
         }
         #[cfg(windows)]
         if !remove.force_confirmation
-            && crate::worktree::checkout_has_dirty_files(&remove.path).unwrap_or(false)
+            && crate::worktree::checkout_has_dirty_files(&remove.path, false).unwrap_or(false)
         {
             remove.force_confirmation = true;
             remove.error = None;
@@ -828,6 +833,7 @@ impl App {
             crate::api::schema::WorktreeRemoveParams {
                 workspace_id,
                 force,
+                trust_repository: false,
             },
         );
         if let Some(message) = immediate_api_error_message(immediate_response.as_deref()) {
@@ -867,7 +873,7 @@ impl App {
             let result = (|| -> Result<(), String> {
                 crate::worktree::merge_branch_to_parent(&repo_root, &path, &branch)?;
                 let remove =
-                    crate::worktree::build_worktree_remove_command(&repo_root, &path, false);
+                    crate::worktree::build_worktree_remove_command(&repo_root, &path, false, false);
                 crate::worktree::run_worktree_command(&remove)
             })();
             let _ = event_tx.blocking_send(AppEvent::WorktreeRemoveFinished(Box::new(
@@ -1166,6 +1172,7 @@ impl App {
     }
 
     pub(crate) fn close_removed_linked_worktree_workspace(&mut self, ws_idx: usize) {
+        let removed_workspace_was_active = self.state.active == Some(ws_idx);
         let parent_key = self
             .state
             .workspaces
@@ -1177,6 +1184,9 @@ impl App {
         self.state.selected = ws_idx;
         self.state.close_selected_workspace();
 
+        if !removed_workspace_was_active {
+            return;
+        }
         let Some(parent_key) = parent_key else {
             return;
         };
@@ -1540,7 +1550,7 @@ mod tests {
         assert!(checkout.join("README.md").exists());
 
         shutdown_test_runtimes(&mut app);
-        let remove = crate::worktree::build_worktree_remove_command(&repo, &checkout, false);
+        let remove = crate::worktree::build_worktree_remove_command(&repo, &checkout, false, false);
         let _ = crate::worktree::run_worktree_command(&remove);
         let _ = std::fs::remove_dir_all(worktree_root);
         let _ = std::fs::remove_dir_all(repo);
@@ -2210,7 +2220,7 @@ mod tests {
         }));
 
         shutdown_test_runtimes(&mut app);
-        let remove = crate::worktree::build_worktree_remove_command(&repo, &checkout, false);
+        let remove = crate::worktree::build_worktree_remove_command(&repo, &checkout, false, false);
         crate::worktree::run_worktree_command(&remove).unwrap();
         let _ = std::fs::remove_dir_all(worktree_root);
         let _ = std::fs::remove_dir_all(repo);
@@ -2308,7 +2318,7 @@ mod tests {
         }
         assert!(checkout.join("README.md").exists());
 
-        let remove = crate::worktree::build_worktree_remove_command(&repo, &checkout, false);
+        let remove = crate::worktree::build_worktree_remove_command(&repo, &checkout, false, false);
         crate::worktree::run_worktree_command(&remove).unwrap();
         let _ = std::fs::remove_dir_all(worktree_root);
         let _ = std::fs::remove_dir_all(repo);
@@ -2367,7 +2377,7 @@ mod tests {
             branch
         );
 
-        let remove = crate::worktree::build_worktree_remove_command(&repo, &checkout, false);
+        let remove = crate::worktree::build_worktree_remove_command(&repo, &checkout, false, false);
         crate::worktree::run_worktree_command(&remove).unwrap();
         let _ = std::fs::remove_dir_all(worktree_root);
         let _ = std::fs::remove_dir_all(repo);
@@ -2415,8 +2425,12 @@ mod tests {
         }
         assert!(checkout.join("README.md").exists());
 
-        let remove_new =
-            crate::worktree::build_worktree_remove_command(&source_checkout_path, &checkout, false);
+        let remove_new = crate::worktree::build_worktree_remove_command(
+            &source_checkout_path,
+            &checkout,
+            false,
+            false,
+        );
         crate::worktree::run_worktree_command(&remove_new).unwrap();
         let _ = std::fs::remove_dir_all(worktree_root);
         let _ = std::fs::remove_dir_all(source_checkout_path);
@@ -2475,10 +2489,11 @@ mod tests {
         }
         assert!(checkout.join("SOURCE.md").exists());
 
-        let remove_new = crate::worktree::build_worktree_remove_command(&repo, &checkout, false);
+        let remove_new =
+            crate::worktree::build_worktree_remove_command(&repo, &checkout, false, false);
         crate::worktree::run_worktree_command(&remove_new).unwrap();
         let remove_source =
-            crate::worktree::build_worktree_remove_command(&repo, &source_checkout, false);
+            crate::worktree::build_worktree_remove_command(&repo, &source_checkout, false, false);
         crate::worktree::run_worktree_command(&remove_source).unwrap();
         let _ = std::fs::remove_dir_all(worktree_root);
         let _ = std::fs::remove_dir_all(repo);

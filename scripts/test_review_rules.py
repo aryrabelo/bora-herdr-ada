@@ -76,8 +76,8 @@ class GeneratedPathsCheckTests(unittest.TestCase):
                 "docs/versions/0.20.0/index.md",
                 "docs/preview/website/index.html",
                 "website/src/content/docs/guide.md",
-                "website/latest.json",
-                "website/preview.json",
+                "distribution/latest.json",
+                "distribution/preview.json",
             ]
         )
         self.assertEqual(len(findings), 5)
@@ -187,11 +187,11 @@ class RenderReportTests(unittest.TestCase):
         self.assertEqual(report.splitlines()[-1], "VERDICT: 0 critical, 0 high, 0 medium, 0 low")
 
     def test_reports_findings_grouped_with_matching_verdict_counts(self) -> None:
-        findings = check_generated_paths(["website/latest.json"]) + check_issue_closing_keywords(
+        findings = check_generated_paths(["distribution/latest.json"]) + check_issue_closing_keywords(
             [Commit(sha="abc123", subject="fixes #1", body="")]
         )
         report = render_report(findings)
-        self.assertIn("CRITICAL - website/latest.json:", report)
+        self.assertIn("CRITICAL - distribution/latest.json:", report)
         self.assertIn("HIGH - abc123:", report)
         self.assertEqual(report.splitlines()[-1], "VERDICT: 1 critical, 1 high, 0 medium, 0 low")
 

@@ -7,16 +7,16 @@ import {
   extractGitTree,
   gitPathExists,
   resolveCommit,
-} from './docs-snapshot.mjs';
+} from './snapshot.mjs';
 
-const websiteDir = dirname(fileURLToPath(import.meta.url));
+const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = process.env.HERDR_DOCS_REPO_ROOT
   ? resolve(process.env.HERDR_DOCS_REPO_ROOT)
-  : resolve(websiteDir, '../..');
+  : resolve(scriptDir, '../..');
 const git = createGit(repoRoot);
 const sourceRoot = 'docs/next/website';
 const snapshotRoot = resolve(repoRoot, 'docs/preview/website');
-const manifestPath = resolve(repoRoot, 'website/preview.json');
+const manifestPath = resolve(repoRoot, 'distribution/preview.json');
 const fullShaPattern = /^[0-9a-f]{40}$/;
 
 export async function snapshotPreview(ref) {
@@ -67,7 +67,7 @@ async function main() {
     await checkPreview();
     return;
   }
-  throw new Error('usage: node website/scripts/docs-preview.mjs check | snapshot <commit>');
+  throw new Error('usage: node scripts/docs/preview.mjs check | snapshot <commit>');
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

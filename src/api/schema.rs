@@ -84,7 +84,7 @@ pub enum Method {
     #[serde(rename = "workspace.set_group")]
     WorkspaceSetGroup(WorkspaceSetGroupParams),
     #[serde(rename = "workspace.close")]
-    WorkspaceClose(WorkspaceTarget),
+    WorkspaceClose(WorkspaceCloseParams),
     #[serde(rename = "worktree.list")]
     WorktreeList(WorktreeListParams),
     #[serde(rename = "worktree.create")]

@@ -17,7 +17,7 @@ $env:HERDR_INSTALL_DIR = Join-Path $root "bin"
 $env:HERDR_CHANNEL = "preview"
 Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path $root | Out-Null
-$installer = (Resolve-Path (Join-Path $PSScriptRoot "..\website\install.ps1")).Path
+$installer = (Resolve-Path (Join-Path $PSScriptRoot "..\distribution\install.ps1")).Path
 
 $previousErrorActionPreference = $ErrorActionPreference
 $ErrorActionPreference = "Continue"
@@ -32,9 +32,9 @@ if ($installerExitCode -ne 0) {
     throw "The installer failed on Windows ARM64 with exit code $installerExitCode."
 }
 
-$installedHerdr = Join-Path $env:HERDR_INSTALL_DIR "herdr.exe"
+$installedHerdr = Join-Path $env:HERDR_INSTALL_DIR "bora.exe"
 if (-not (Test-Path -LiteralPath $installedHerdr -PathType Leaf)) {
-    throw "The installer exited successfully without activating herdr.exe."
+    throw "The installer exited successfully without activating bora.exe."
 }
 & $installedHerdr --version
 if ($LASTEXITCODE -ne 0) {

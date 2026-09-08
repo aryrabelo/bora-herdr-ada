@@ -45,8 +45,8 @@ jobs:
 
       - name: Validate published documentation
         run: |
-          node website/scripts/docs-versions.mjs check
-          node website/scripts/docs-preview.mjs check
+          node scripts/docs/versions.mjs check
+          node scripts/docs/preview.mjs check
 
       - name: Build published website
         run: cd website && bun install --frozen-lockfile && bun run build

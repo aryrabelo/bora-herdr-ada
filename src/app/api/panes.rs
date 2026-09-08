@@ -1614,11 +1614,20 @@ impl App {
         let Some(public_pane_id) = self.public_pane_id(ws_idx, pane_id) else {
             return Err(pane_not_found(id, &target.pane_id));
         };
+        let workspace_id = self.public_workspace_id(ws_idx);
+        let layout_update_target = self.layout_update_target_after_pane_removal(ws_idx, pane_id);
+        if self.state.close_pane_would_close_workspace(ws_idx, pane_id)
+            && self.state.confirm_implicit_worktree_group_close(ws_idx)
+        {
+            return Err(encode_error(
+                id,
+                "confirmation_required",
+                "closing this pane would close a worktree group",
+            ));
+        }
         // The recipient disappeared before any queued `when_idle` prompt could be
         // replayed to it; nothing left to drain to, so drop and log instead.
         self.fail_pending_agent_prompts(&public_pane_id);
-        let workspace_id = self.public_workspace_id(ws_idx);
-        let layout_update_target = self.layout_update_target_after_pane_removal(ws_idx, pane_id);
         let workspace_snapshot = self.workspace_info(ws_idx);
         let terminal_id = self.state.terminal_id_for_pane(ws_idx, pane_id);
         let should_close_workspace = {

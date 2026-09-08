@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 
-const script = resolve(import.meta.dir, 'docs-preview.mjs');
+const script = resolve(import.meta.dir, 'preview.mjs');
 const temporaryDirectories: string[] = [];
 
 afterEach(async () => {
@@ -56,7 +56,7 @@ async function fixture() {
 async function writeManifest(root: string, commit: string) {
   await write(
     root,
-    'website/preview.json',
+    'distribution/preview.json',
     `${JSON.stringify({
       schema_version: 1,
       channel: 'preview',

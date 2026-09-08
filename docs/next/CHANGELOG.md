@@ -4,6 +4,33 @@ Bora is a fork of [herdr](https://github.com/ogulcancelik/herdr). This changelog
 
 ## Unreleased
 
+### Synced from herdr
+- Merged upstream `herdrdev/herdr` through `8a6d6973` (47 commits, the 0.8.x line before the client-shell refactor) into the fork.
+- Custom themes can now define separate light and dark color overrides when automatic theme switching is enabled. (#837, thanks @aneym)
+- Claude Code integration hooks now ignore Cursor CLI's Claude-compatible session events, preventing Cursor sessions from being stored as resumable Claude sessions. (#2832)
+- Running named servers now activate remote agent-detection manifests downloaded by another server, preventing stale agent states and `agent explain` output until restart. (#2711)
+- New lifecycle event subscriptions now stream only events emitted after subscription begins instead of replaying retained history. (#1270)
+- Windows users whose endpoint security blocks the fileless PowerShell install command can now use a local `install.cmd` bootstrap; installer downloads use `curl.exe` while preserving package checksum verification. (#2751)
+- Oh My Pi panes now stay working when a turn ends with an automatic continuation already scheduled, instead of briefly reporting idle and completing `agent wait` early. (#2851, thanks @taoeffect)
+- Retained mouse selections now copy when Ctrl+C or Cmd+C arrives before a delayed mouse release instead of forwarding the copy shortcut to the pane. (#3100, thanks @moret)
+- Removing a background worktree workspace no longer changes focus to its parent workspace. (#3098)
+- Worktree commands can now trust an explicitly selected repository for one request, allowing the full lifecycle on accessible Windows repositories owned by another SID without changing global Git configuration. (#3044)
+- Closing the last tab or pane of a worktree group's parent workspace now asks for confirmation (or returns `confirmation_required` over the API) instead of silently closing the whole group; `bora workspace close` takes `--group` to close a group explicitly. (#3206, #2874)
+- Prefix bindings such as `prefix+|` now recognize characters produced by macOS Option and custom keyboard layouts, while exact chords such as `prefix+alt+w` keep priority. (#3079, thanks @vlcinsky)
+- Direct terminal attaches now preserve multiline pastes as one paste instead of submitting each line separately. (#3054)
+- Windows clients now preserve layout-generated text for Shift-only keys, so characters such as `/` on German keyboards reach shell panes and pasted input. (#3045)
+- Windows panes now keep bare `cursor-agent` launches detected after Cursor hands off to its bundled Node process. (#3032)
+- Oversized Kitty images no longer prevent smaller images shown later in the same pane from rendering. (#3033)
+- `bora agent explain --file` now reports fixture read failures as structured JSON instead of exposing Rust I/O debug output. (#3022)
+- Wayland clipboard copies no longer freeze the app while `wl-copy` remains alive to serve the selection. (#3014)
+- Claude Code panes now use visible turn, background shell, and background agent activity as working-state fallbacks when OSC titles are unavailable or disabled. (#1630, #2241)
+- Claude Code panes now remain working while MCP tasks continue in the background after a turn ends. (#3090)
+- Tab bar status commands now remove ESC-prefixed terminal control sequences instead of displaying their sequence bodies as text. (#3001)
+- Unix plugin pane commands now default `PWD` to their resolved working directory, so direct popup tools open at explicit `--cwd` paths while preserving caller-provided `PWD` values. (#2984)
+- Plugin link handlers now receive matching OSC 8 `file://` clicks while unmatched file links remain excluded from the system URL opener. (#2941)
+- Muse agent detection (`src/detect/manifests/muse.toml`). (#2489)
+- Installers, release manifests and agent-detection manifests moved from `website/` to `distribution/`; `bora update` and the installers read `distribution/latest.json` / `distribution/preview.json`.
+
 ### Added
 
 - `bora pane list` carries a `foreground_process` field: the name of the process currently in the pane's foreground process group (e.g. `omp`), so callers no longer need a second `pane process-info` round trip just to see what is running in a pane. The field is filled only in the `pane list` response, never in `pane.created`/`pane.updated` events, keeping a process-table read out of the event fan-out path. `pane process-info` now also resolves the pane's controlling terminal (`tty`, e.g. `/dev/ttys003`) from the shell's process info instead of always returning `null`.

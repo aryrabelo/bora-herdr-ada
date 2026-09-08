@@ -28,6 +28,7 @@ pub(super) fn run_worktree_command(args: &[String]) -> std::io::Result<i32> {
 fn worktree_list(args: &[String]) -> std::io::Result<i32> {
     let mut workspace_id = None;
     let mut cwd = None;
+    let mut trust_repository = false;
 
     let mut index = 0;
     while index < args.len() {
@@ -48,6 +49,10 @@ fn worktree_list(args: &[String]) -> std::io::Result<i32> {
                 cwd = Some(normalize_path_arg(value)?);
                 index += 2;
             }
+            "--trust-repository" => {
+                trust_repository = true;
+                index += 1;
+            }
             "--json" => index += 1,
             other => {
                 eprintln!("unknown option: {other}");
@@ -56,11 +61,17 @@ fn worktree_list(args: &[String]) -> std::io::Result<i32> {
         }
     }
     if workspace_id.is_some() && cwd.is_some() {
-        eprintln!("usage: bora worktree list [--workspace ID | --cwd PATH] [--json]");
+        eprintln!(
+            "usage: bora worktree list [--workspace ID | --cwd PATH] [--json] [--trust-repository]"
+        );
         return Ok(2);
     }
 
-    super::runtime::worktree_list(WorktreeListParams { workspace_id, cwd })
+    super::runtime::worktree_list(WorktreeListParams {
+        workspace_id,
+        cwd,
+        trust_repository,
+    })
 }
 
 fn worktree_create(args: &[String]) -> std::io::Result<i32> {
@@ -72,6 +83,7 @@ fn worktree_create(args: &[String]) -> std::io::Result<i32> {
     let mut path = None;
     let mut label = None;
     let mut focus = false;
+    let mut trust_repository = false;
 
     let mut index = 0;
     while index < args.len() {
@@ -144,6 +156,10 @@ fn worktree_create(args: &[String]) -> std::io::Result<i32> {
                 focus = false;
                 index += 1;
             }
+            "--trust-repository" => {
+                trust_repository = true;
+                index += 1;
+            }
             "--json" => index += 1,
             other => {
                 eprintln!("unknown option: {other}");
@@ -155,7 +171,7 @@ fn worktree_create(args: &[String]) -> std::io::Result<i32> {
         || pr.is_some() && (branch.is_some() || base.is_some())
     {
         eprintln!(
-            "usage: bora worktree create [--workspace ID | --cwd PATH] [--branch NAME] [--base REF] [--pr NUMBER] [--path PATH] [--label TEXT] [--focus] [--no-focus] [--json] (--pr is mutually exclusive with --branch/--base)"
+            "usage: bora worktree create [--workspace ID | --cwd PATH] [--branch NAME] [--base REF] [--pr NUMBER] [--path PATH] [--label TEXT] [--focus] [--no-focus] [--json] [--trust-repository] (--pr is mutually exclusive with --branch/--base)"
         );
         return Ok(2);
     }
@@ -169,6 +185,7 @@ fn worktree_create(args: &[String]) -> std::io::Result<i32> {
         path,
         label,
         focus,
+        trust_repository,
     })
 }
 
@@ -179,6 +196,7 @@ fn worktree_open(args: &[String]) -> std::io::Result<i32> {
     let mut branch = None;
     let mut label = None;
     let mut focus = false;
+    let mut trust_repository = false;
 
     let mut index = 0;
     while index < args.len() {
@@ -231,6 +249,10 @@ fn worktree_open(args: &[String]) -> std::io::Result<i32> {
                 focus = false;
                 index += 1;
             }
+            "--trust-repository" => {
+                trust_repository = true;
+                index += 1;
+            }
             "--json" => index += 1,
             other => {
                 eprintln!("unknown option: {other}");
@@ -240,13 +262,13 @@ fn worktree_open(args: &[String]) -> std::io::Result<i32> {
     }
     if workspace_id.is_some() && cwd.is_some() {
         eprintln!(
-            "usage: bora worktree open [--workspace ID | --cwd PATH] (--path PATH | --branch NAME) [--label TEXT] [--focus] [--no-focus] [--json]"
+            "usage: bora worktree open [--workspace ID | --cwd PATH] (--path PATH | --branch NAME) [--label TEXT] [--focus] [--no-focus] [--json] [--trust-repository]"
         );
         return Ok(2);
     }
     if path.is_some() == branch.is_some() {
         eprintln!(
-            "usage: bora worktree open [--workspace ID | --cwd PATH] (--path PATH | --branch NAME) [--label TEXT] [--focus] [--no-focus] [--json]"
+            "usage: bora worktree open [--workspace ID | --cwd PATH] (--path PATH | --branch NAME) [--label TEXT] [--focus] [--no-focus] [--json] [--trust-repository]"
         );
         return Ok(2);
     }
@@ -258,12 +280,14 @@ fn worktree_open(args: &[String]) -> std::io::Result<i32> {
         branch,
         label,
         focus,
+        trust_repository,
     })
 }
 
 fn worktree_remove(args: &[String]) -> std::io::Result<i32> {
     let mut workspace_id = None;
     let mut force = false;
+    let mut trust_repository = false;
 
     let mut index = 0;
     while index < args.len() {
@@ -280,6 +304,10 @@ fn worktree_remove(args: &[String]) -> std::io::Result<i32> {
                 force = true;
                 index += 1;
             }
+            "--trust-repository" => {
+                trust_repository = true;
+                index += 1;
+            }
             "--json" => index += 1,
             other => {
                 eprintln!("unknown option: {other}");
@@ -289,26 +317,29 @@ fn worktree_remove(args: &[String]) -> std::io::Result<i32> {
     }
 
     let Some(workspace_id) = workspace_id else {
-        eprintln!("usage: bora worktree remove --workspace ID [--force] [--json]");
+        eprintln!(
+            "usage: bora worktree remove --workspace ID [--force] [--json] [--trust-repository]"
+        );
         return Ok(2);
     };
 
     super::runtime::worktree_remove(WorktreeRemoveParams {
         workspace_id,
         force,
+        trust_repository,
     })
 }
 
 fn print_worktree_help() {
     eprintln!("bora worktree commands:");
-    eprintln!("  bora worktree list [--workspace ID | --cwd PATH] [--json]");
+    eprintln!("  bora worktree list [--workspace ID | --cwd PATH] [--json] [--trust-repository]");
     eprintln!(
-        "  bora worktree create [--workspace ID | --cwd PATH] [--branch NAME] [--base REF] [--pr NUMBER] [--path PATH] [--label TEXT] [--focus] [--no-focus] [--json]"
+        "  bora worktree create [--workspace ID | --cwd PATH] [--branch NAME] [--base REF] [--pr NUMBER] [--path PATH] [--label TEXT] [--focus] [--no-focus] [--json] [--trust-repository]"
     );
     eprintln!(
-        "  bora worktree open [--workspace ID | --cwd PATH] (--path PATH | --branch NAME) [--label TEXT] [--focus] [--no-focus] [--json]"
+        "  bora worktree open [--workspace ID | --cwd PATH] (--path PATH | --branch NAME) [--label TEXT] [--focus] [--no-focus] [--json] [--trust-repository]"
     );
-    eprintln!("  bora worktree remove --workspace ID [--force] [--json]");
+    eprintln!("  bora worktree remove --workspace ID [--force] [--json] [--trust-repository]");
 }
 
 fn normalize_path_arg(value: &str) -> std::io::Result<String> {
