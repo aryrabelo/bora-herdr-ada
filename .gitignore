@@ -47,7 +47,8 @@ graphify-out/
 
 # Per-pane north/scratch notes written by `north-note`. They are session
 # artifacts of whoever happens to be driving a pane, never repo content —
-# and without this entry they show up as untracked noise in every
-# `git status` (measured 2026-09-07: `foninholandia` has them TRACKED for
-# lack of this line).
+# and without this entry a `git add -A` stages them, which is how
+# `foninholandia` ended up with them TRACKED (measured 2026-09-07).
+# Ignoring only stops that recurring; anything already tracked still needs
+# `git rm --cached`, as the commit beside this one does.
 /scratch/

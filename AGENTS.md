@@ -194,25 +194,29 @@ classes, and how to resolve them, so the next sync is cheap:
   example text in the pre-release-audit prompts free of it.
 
 - **The pending 0.9.0 sync is a client rewrite, not a sync — size it before starting.**
-  Measured 2026-09-08: last merged upstream commit is `2c042bb2` (2026-08-20, what
-  `build_info.rs` declares), upstream tip `68c7b78e` is **105 commits** and **117 new
-  `src/` files** ahead, at version `0.9.0`. Upstream moved the entire TUI into a
-  `src/client/shell/*` + `src/client/endpoint/*` layer — completing the Runtime/client
-  boundary migration this file asks new work to respect — which drains
-  `src/ui/sidebar.rs` by **3324 lines** and `src/app/state.rs` by **1320**. That is the
-  "upstream blocks conflicting wholesale where the fork moved code" trap at its worst,
-  because the fork's `sidebar.rs` is 482 KB against an upstream file that is being
-  emptied: git cannot align them, so expect one huge conflict whose "ours" side is
-  empty, and resolve it by taking `ours` and porting the genuine upstream delta by
-  hand. Consequence for planning: do NOT land fork work in `src/ui/sidebar.rs` or
-  `src/app/state.rs` ahead of this merge — it is guaranteed rework. Channels and the
-  chat view are safe by contrast: `src/app/api/channels.rs`, `src/persist/channels.rs`,
-  `src/app/input/chat.rs`, `src/ui/chat.rs` and `src/api/schema/channels.rs` are all
-  **absent upstream**, so the merge brings no competing implementation and no conflict
-  in them. Upstream's `Subscription` enum has 27 variants to the fork's 33 (the six
-  extras are `pane.result_reported`, three `github.*`, `todo.changed`,
-  `scratchpad.changed`, all appended at the end), so appending another fork variant
-  stays a small conflict. Full analysis in `.local/prd/channel-identity-and-subscribe.md`.
+  Every figure here is measured from the last merged upstream commit `2c042bb2`
+  (2026-08-20, what `build_info.rs` declares) to upstream tip `8be4cf76` (2026-09-09).
+  The tip moves daily — it moved twice while this note was being written, and an
+  earlier draft's figures were already wrong by the time it was reviewed — so
+  re-derive rather than trust: `git rev-list --count 2c042bb2..upstream/master` and
+  `git diff --numstat 2c042bb2..upstream/master -- <path>` produce every number below.
+  At that tip: **107 commits** and **115 new `src/` files** ahead, at version `0.9.0`.
+  Upstream moved the entire TUI into a `src/client/shell/*` + `src/client/endpoint/*`
+  layer — completing the Runtime/client boundary migration this file asks new work to
+  respect — deleting **3102 lines** from `src/ui/sidebar.rs` and **1220** from
+  `src/app/state.rs`. That is the "upstream blocks conflicting wholesale where the fork
+  moved code" trap at its worst, because the fork's `sidebar.rs` is 334 KB against an
+  upstream file that is being emptied: git cannot align them, so expect one huge
+  conflict whose "ours" side is empty, and resolve it by taking `ours` and porting the
+  genuine upstream delta by hand. Consequence for planning: do NOT land fork work in
+  `src/ui/sidebar.rs` or `src/app/state.rs` ahead of this merge — it is guaranteed
+  rework. Channels and the chat view are safe by contrast: `src/app/api/channels.rs`,
+  `src/persist/channels.rs`, `src/app/input/chat.rs`, `src/ui/chat.rs` and
+  `src/api/schema/channels.rs` are all **absent upstream**, so the merge brings no
+  competing implementation and no conflict in them. The fork's `Subscription` enum is
+  upstream's 27 variants plus exactly two appended at the end (`pane.result_reported`,
+  `channel.message`), dropping none, so appending another fork variant stays a small
+  conflict. Full analysis in `.local/prd/channel-identity-and-subscribe.md`.
 
 Every upstream sync also updates `UPSTREAM_HERDR_VERSION`/`UPSTREAM_HERDR_COMMIT` in
 `src/build_info.rs` to the merged upstream tip, in the same commit as the merge — see
