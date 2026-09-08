@@ -153,8 +153,9 @@ unconditional — no per-repo config file is involved (`src/worktree.rs`).
   copy is logged without failing creation. It is a copy, not a link, so later
   edits to the root file are not visible in the worktree.
 - **`.context/` scratch dir.** Created in the new checkout, and excluded from
-  git by appending a `.context/` line to `<git common dir>/info/exclude`. The
-  append is idempotent, so the line is written at most once.
+  git by appending a `.context/` line to `<git common dir>/info/exclude`.
+  Repeated calls add nothing; two worktree creations racing in the same repo
+  can leave a duplicate line, which git ignores just the same.
 
 > [!NOTE]
 > Worktrees created off a shared `.git` all read the **same** `info/exclude`.
