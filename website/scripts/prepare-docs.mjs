@@ -13,7 +13,7 @@ const previewDocsDir = resolve(stableDocsDir, 'preview');
 const generatedVersionsDocsDir = resolve(stableDocsDir, '_versions');
 const versionsDir = resolve(repoRoot, 'docs/versions');
 const versionsManifestPath = resolve(versionsDir, 'manifest.json');
-const previewManifestPath = resolve(repoRoot, 'website/preview.json');
+const previewManifestPath = resolve(repoRoot, 'distribution/preview.json');
 const generatedVersionsDataPath = resolve(repoRoot, 'website/src/data/docs-versions.json');
 const stableConfigReferenceDestination = resolve(
   repoRoot,
@@ -65,17 +65,20 @@ async function preparePublicAssets() {
   await rm(publicDir, { recursive: true, force: true });
   await mkdir(publicDir, { recursive: true });
 
-  for (const file of [
-    'install.sh',
-    'install.ps1',
-    'agent-guide.md',
-    'latest.json',
-    'preview.json',
-    'robots.txt',
-    '_headers',
-    '_redirects',
+  // Installers, manifests and agent-facing files moved to distribution/ in the
+  // upstream 0.8.x sync; the site keeps serving them at the root.
+  for (const [directory, file] of [
+    ['distribution', 'install.sh'],
+    ['distribution', 'install.ps1'],
+    ['distribution', 'install.cmd'],
+    ['distribution', 'agent-guide.md'],
+    ['distribution', 'latest.json'],
+    ['distribution', 'preview.json'],
+    ['website', 'robots.txt'],
+    ['website', '_headers'],
+    ['website', '_redirects'],
   ]) {
-    const source = resolve(repoRoot, 'website', file);
+    const source = resolve(repoRoot, directory, file);
     try {
       await cp(source, resolve(publicDir, file));
     } catch (error) {
@@ -83,8 +86,12 @@ async function preparePublicAssets() {
     }
   }
 
-  for (const directory of ['assets', 'css', 'agent-detection']) {
-    await cp(resolve(repoRoot, 'website', directory), resolve(publicDir, directory), {
+  for (const [directory, name] of [
+    ['website', 'assets'],
+    ['website', 'css'],
+    ['distribution', 'agent-detection'],
+  ]) {
+    await cp(resolve(repoRoot, directory, name), resolve(publicDir, name), {
       recursive: true,
     });
   }

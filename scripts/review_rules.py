@@ -35,8 +35,8 @@ GENERATED_PATH_PREFIXES = (
     "website/src/content/docs/",
 )
 GENERATED_PATH_EXACT = (
-    "website/latest.json",
-    "website/preview.json",
+    "distribution/latest.json",
+    "distribution/preview.json",
 )
 
 PACKAGE_SECTION_RE = re.compile(r"^\s*\[package\]\s*$")

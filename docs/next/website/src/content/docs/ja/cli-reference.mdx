@@ -301,6 +301,25 @@ herdr agent explain --file PATH --agent LABEL [--json|--verbose]
 
 通常のターミナル、サーバー、テスト、シェル、低レベルなターミナル制御には `pane send-text`、`pane send-keys`、`pane run`、`terminal attach` を使ってください。Enter 付きでコマンドを送信したいときは `pane run` を使います。
 
+## チャンネル
+
+エージェントの `#channels` は、ブロードキャストのためにエージェントペインをまとめる `#name` という名前のワークスペースです。ワークフロー全体 (メンバー、ニック、トランスクリプト、ask) は [エージェント自動化](/ja/docs/agent-automation/) を参照してください。
+
+```bash
+herdr channel create <name>
+herdr channel list
+herdr channel members <name> [--json]
+herdr channel send <name> <text> [--pane ID|--current] [--to NICK] [--reply-to SEQ] [--when-idle]
+herdr channel note <name> <text> [--pane ID|--current]
+herdr channel ask <name> <nick> <text> [--pane ID|--current] [--timeout MS]
+herdr channel history <name> [--lines N] [--json]
+herdr channel tail <name> [--after SEQ] [--follow] [--json]
+herdr channel join <name> [--pane ID]
+herdr channel leave <name> [--pane ID]
+```
+
+`channel send` は、ターンの途中であってもすべてのメンバーエージェントペインに即座に注入します。レシートはメンバーごとに `delivered` を報告します。`--when-idle` を付けると、アイドルになるまで保留する配信になります。作業中のターゲットへのメッセージはキューに入り (ターゲットごとに上限付きの FIFO)、代わりにキュー位置とともに `deferred` として報告されます。まだ説明を受けていないペインには、同じ配信モードでチャンネルプロトコルの説明と最初のメッセージが、説明を先にして届きます。
+
 ## ダイレクトターミナルアタッチ
 
 ```bash

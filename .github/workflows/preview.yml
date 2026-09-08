@@ -433,13 +433,13 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A docs/preview website/preview.json
+          git add -A docs/preview distribution/preview.json
           git diff --cached --quiet || git commit -m "docs: publish preview documentation"
           remote="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           for attempt in 1 2 3; do
             git pull --rebase "$remote" main
-            node website/scripts/docs-preview.mjs check
-            node website/scripts/docs-versions.mjs check
+            node scripts/docs/preview.mjs check
+            node scripts/docs/versions.mjs check
             (cd website && bun run build)
             if git push "$remote" HEAD:main; then
               exit 0

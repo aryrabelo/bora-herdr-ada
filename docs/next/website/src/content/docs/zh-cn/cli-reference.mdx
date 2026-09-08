@@ -301,6 +301,25 @@ herdr agent explain --file PATH --agent LABEL [--json|--verbose]
 
 普通终端、服务器、测试、shell 或底层终端控制,请使用 `pane send-text`、`pane send-keys`、`pane run` 和 `terminal attach`。想带回车提交命令时用 `pane run`。
 
+## 频道
+
+智能体 `#channels` 是名为 `#name` 的工作区,把智能体窗格聚合起来用于广播;完整的工作流 (成员、昵称、记录、ask) 见[智能体自动化](/zh-cn/docs/agent-automation/)。
+
+```bash
+herdr channel create <name>
+herdr channel list
+herdr channel members <name> [--json]
+herdr channel send <name> <text> [--pane ID|--current] [--to NICK] [--reply-to SEQ] [--when-idle]
+herdr channel note <name> <text> [--pane ID|--current]
+herdr channel ask <name> <nick> <text> [--pane ID|--current] [--timeout MS]
+herdr channel history <name> [--lines N] [--json]
+herdr channel tail <name> [--after SEQ] [--follow] [--json]
+herdr channel join <name> [--pane ID]
+herdr channel leave <name> [--pane ID]
+```
+
+`channel send` 会立即注入到每个成员智能体窗格,即使对方正处于一轮对话中;回执按成员报告 `delivered`。`--when-idle` 选择等到空闲再投递:发给工作中目标的消息会进入队列 (每个目标有上限的 FIFO),并改为报告 `deferred` 以及它的队列位置。尚未收到简介的窗格会以同一投递模式收到频道协议简介和第一条消息,简介在前。
+
 ## 直接终端附加
 
 ```bash

@@ -40,7 +40,7 @@ if [[ -z "$baseline" ]]; then
   # The baseline binary comes from the same manifest the installer and `bora
   # update` read, so the fork's repo and its `bora-<platform>-<arch>` asset
   # naming can never drift out of this script again.
-  baseline_url=$(jq -er --arg key "${platform}-${arch}" '.assets[$key]' "$repo_root/website/latest.json")
+  baseline_url=$(jq -er --arg key "${platform}-${arch}" '.assets[$key]' "$repo_root/distribution/latest.json")
   baseline="$root/bora-baseline"
   curl -fL --retry 3 "$baseline_url" -o "$baseline"
   chmod +x "$baseline"
