@@ -20,7 +20,9 @@
       systems = [
         "x86_64-linux"
         "aarch64-linux"
-        "x86_64-darwin"
+        # x86_64-darwin dropped: nixpkgs 26.11 removed the platform, and the
+        # only nixpkgs that still fetches crates from static.crates.io is 26.11+.
+        # Intel Mac users keep the cargo-built herdr-macos-x86_64 release asset.
         "aarch64-darwin"
       ];
       forAllSystems = lib.genAttrs systems;
