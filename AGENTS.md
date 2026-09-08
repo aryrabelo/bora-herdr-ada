@@ -194,16 +194,16 @@ classes, and how to resolve them, so the next sync is cheap:
   example text in the pre-release-audit prompts free of it.
 
 - **The pending 0.9.0 sync is a client rewrite, not a sync — size it before starting.**
-  Every figure here is measured from the last merged upstream commit `2c042bb2`
-  (2026-08-20, what `build_info.rs` declares) to upstream tip `8be4cf76` (2026-09-09).
-  The tip moves daily — it moved twice while this note was being written, and an
-  earlier draft's figures were already wrong by the time it was reviewed — so
-  re-derive rather than trust: `git rev-list --count 2c042bb2..upstream/master` and
-  `git diff --numstat 2c042bb2..upstream/master -- <path>` produce every number below.
-  At that tip: **107 commits** and **115 new `src/` files** ahead, at version `0.9.0`.
+  Every figure here is measured from the last merged upstream commit `8a6d6973`
+  (2026-09-01, what `build_info.rs` declares) to upstream tip `8be4cf76` (2026-09-09).
+  The tip moves daily and so does the base — this note has already been re-pinned
+  once, when stage 1 of the sync landed on 2026-09-08 and halved every figure below —
+  so re-derive rather than trust: `git rev-list --count 8a6d6973..upstream/master` and
+  `git diff --numstat 8a6d6973..upstream/master -- <path>` produce every number below.
+  At that tip: **61 commits** and **114 new `src/` files** ahead, at version `0.9.0`.
   Upstream moved the entire TUI into a `src/client/shell/*` + `src/client/endpoint/*`
   layer — completing the Runtime/client boundary migration this file asks new work to
-  respect — deleting **3102 lines** from `src/ui/sidebar.rs` and **1220** from
+  respect — deleting **3102 lines** from `src/ui/sidebar.rs` and **1228** from
   `src/app/state.rs`. That is the "upstream blocks conflicting wholesale where the fork
   moved code" trap at its worst, because the fork's `sidebar.rs` is 334 KB against an
   upstream file that is being emptied: git cannot align them, so expect one huge
@@ -220,7 +220,7 @@ classes, and how to resolve them, so the next sync is cheap:
   tail (`pane.output_matched`, `pane.agent_status_changed`, `pane.scroll_changed`,
   `layout.updated`) that is identical to upstream's own last four. That shared tail
   gives a 3-way merge unambiguous context on both sides of the insertion, and upstream
-  added **zero** `Subscription` variants across those 107 commits, so the region is
+  added **zero** `Subscription` variants across those 61 commits, so the region is
   uncontested. Anchor a new fork variant beside those two rather than after the tail;
   appending past the tail is what would put both sides on the same line. Full analysis
   in `.local/prd/channel-identity-and-subscribe.md`.
