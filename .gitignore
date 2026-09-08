@@ -47,6 +47,7 @@ graphify-out/
 
 # Local usina dispatch/scope artifacts (per-worktree agent bookkeeping)
 /.usina-*
+
 # Per-pane north/scratch notes written by `north-note`. They are session
 # artifacts of whoever happens to be driving a pane, never repo content —
 # and without this entry a `git add -A` stages them, which is how
