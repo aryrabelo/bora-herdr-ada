@@ -32,9 +32,9 @@ if ($installerExitCode -ne 0) {
     throw "The installer failed on Windows ARM64 with exit code $installerExitCode."
 }
 
-$installedHerdr = Join-Path $env:HERDR_INSTALL_DIR "herdr.exe"
+$installedHerdr = Join-Path $env:HERDR_INSTALL_DIR "bora.exe"
 if (-not (Test-Path -LiteralPath $installedHerdr -PathType Leaf)) {
-    throw "The installer exited successfully without activating herdr.exe."
+    throw "The installer exited successfully without activating bora.exe."
 }
 & $installedHerdr --version
 if ($LASTEXITCODE -ne 0) {
