@@ -86,10 +86,6 @@ pub(super) fn render_rename_overlay(app: &AppState, frame: &mut Frame, area: Rec
         Mode::RenameWorkspace => "rename workspace",
         Mode::SetWorkspaceGroup => "set workspace group",
         Mode::RenameGroup => "rename group",
-        Mode::ProjectNameInput => match &app.project_name_target {
-            Some(crate::app::state::ProjectNameTarget::Rename { .. }) => "rename project",
-            _ => "new project",
-        },
         Mode::RenameTab if app.creating_new_tab => "new tab",
         Mode::RenameTab => "rename tab",
         Mode::RenamePane => "rename pane",

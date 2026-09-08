@@ -8,7 +8,6 @@ pub mod github;
 pub mod integrations;
 pub mod panes;
 pub mod plugins;
-pub mod projects;
 pub mod response;
 pub mod scratchpads;
 pub mod server;
@@ -26,7 +25,6 @@ pub use github::*;
 pub use integrations::*;
 pub use panes::*;
 pub use plugins::*;
-pub use projects::*;
 pub use response::*;
 pub use scratchpads::*;
 pub use server::*;
@@ -91,8 +89,6 @@ pub enum Method {
     WorkspaceReportMetadata(WorkspaceReportMetadataParams),
     #[serde(rename = "workspace.set_group")]
     WorkspaceSetGroup(WorkspaceSetGroupParams),
-    #[serde(rename = "workspace.set_project")]
-    WorkspaceSetProject(WorkspaceSetProjectParams),
     #[serde(rename = "workspace.close")]
     WorkspaceClose(WorkspaceTarget),
     #[serde(rename = "worktree.list")]
@@ -282,20 +278,6 @@ pub enum Method {
     ChannelNote(ChannelNoteParams),
     #[serde(rename = "channel.ask")]
     ChannelAsk(ChannelAskParams),
-    #[serde(rename = "project.list")]
-    ProjectList(EmptyParams),
-    #[serde(rename = "project.create")]
-    ProjectCreate(ProjectCreateParams),
-    #[serde(rename = "project.update")]
-    ProjectUpdate(ProjectUpdateParams),
-    #[serde(rename = "project.member_add")]
-    ProjectMemberAdd(ProjectMemberAddParams),
-    #[serde(rename = "project.member_remove")]
-    ProjectMemberRemove(ProjectMemberRemoveParams),
-    #[serde(rename = "project.section_create")]
-    ProjectSectionCreate(ProjectSectionCreateParams),
-    #[serde(rename = "project.section_update")]
-    ProjectSectionUpdate(ProjectSectionUpdateParams),
     #[serde(rename = "todo.create")]
     TodoCreate(TodoCreateParams),
     #[serde(rename = "todo.complete")]

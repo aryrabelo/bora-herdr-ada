@@ -10,16 +10,15 @@ pub mod channels;
 mod io;
 pub mod pending_prompts;
 pub mod plugin_registry;
-pub mod projects;
 mod restore;
 pub mod scratchpads;
 mod snapshot;
 pub mod todos;
 
 pub use self::io::{clear, clear_history, load, load_history, save};
+pub use self::restore::restore;
 #[cfg(unix)]
 pub use self::restore::{handoff_pane_aliases, restore_handoff};
-pub use self::restore::{reconcile_section_layout, restore};
 pub use self::snapshot::{
     capture, capture_history, DirectionSnapshot, LayoutSnapshot, SessionHistorySnapshot,
     SessionSnapshot, TabSnapshot, WorkspaceSnapshot,

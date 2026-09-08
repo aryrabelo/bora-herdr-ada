@@ -106,9 +106,9 @@ fn test_default_state_dir() -> PathBuf {
 /// other and against every other config-env mutation.
 ///
 /// **One guard, both variables, on purpose.** This was briefly two structs,
-/// one per variable, and a test that needed both (a `project.create` handler
-/// test: `projects.yml` lives under `config_dir()`, and binding the project's
-/// channel writes a roster under `state_dir()`) constructed both — which
+/// one per variable, and a test that needed both (a handler test whose
+/// config-file write lives under `config_dir()` and whose channel binding
+/// writes a roster under `state_dir()`) constructed both — which
 /// self-deadlocks forever, because `test_config_env_lock` is a plain
 /// `parking_lot::Mutex` and is not reentrant. Nothing in the type system
 /// stopped that, and the symptom was not a failing test but a hung suite, so

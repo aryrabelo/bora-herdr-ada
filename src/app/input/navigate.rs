@@ -2486,12 +2486,6 @@ mod tests {
             &mut state,
             KeyEvent::new(KeyCode::Char('g'), KeyModifiers::empty()),
         );
-        assert_eq!(state.view_mode, crate::config::ViewMode::Project);
-
-        handle_navigate_key(
-            &mut state,
-            KeyEvent::new(KeyCode::Char('g'), KeyModifiers::empty()),
-        );
         assert_eq!(state.view_mode, crate::config::ViewMode::Flat);
 
         handle_navigate_key(

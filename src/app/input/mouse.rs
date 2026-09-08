@@ -6,8 +6,8 @@ use tracing::warn;
 use crate::{
     app::state::{
         build_context_menu_items, AgentPanelSort, AppState, ContextMenuKind, ContextMenuState,
-        DragState, DragTarget, MenuListState, Mode, ProjectRowTarget, RightClickPassthroughGesture,
-        TabPressState, ViewLayout, WorkspacePressState,
+        DragState, DragTarget, MenuListState, Mode, RightClickPassthroughGesture, TabPressState,
+        ViewLayout, WorkspacePressState,
     },
     layout::{PaneInfo, SplitBorder},
     selection::Selection,
@@ -22,7 +22,6 @@ use super::{
         modal_action_from_buttons, open_global_menu, open_new_tab_dialog, ModalAction,
     },
     settings::SettingsAction,
-    sidebar::project_row_target_at,
     ScrollbarClickTarget, TAB_DRAG_THRESHOLD, WORKSPACE_DRAG_THRESHOLD,
 };
 
@@ -503,7 +502,6 @@ impl AppState {
                         | Mode::RenamePane
                         | Mode::SetWorkspaceGroup
                         | Mode::RenameGroup
-                        | Mode::ProjectNameInput
                 ) {
                     let action = self
                         .rename_modal_inner()
@@ -611,8 +609,6 @@ impl AppState {
                                 items: build_context_menu_items(
                                     &kind,
                                     &self.workspaces,
-                                    self.view_mode,
-                                    &[],
                                     &[],
                                     &self.installed_plugins,
                                 ),
@@ -643,8 +639,6 @@ impl AppState {
                                 items: build_context_menu_items(
                                     &kind,
                                     &self.workspaces,
-                                    self.view_mode,
-                                    &[],
                                     &[],
                                     &self.installed_plugins,
                                 ),
@@ -779,82 +773,6 @@ impl AppState {
                         self.mark_session_dirty();
                         self.request_full_repaint();
                         return None;
-                    }
-
-                    if !self.view.project_row_areas.is_empty() {
-                        if let Some(target) = project_row_target_at(
-                            &self.view.project_row_areas,
-                            mouse.column,
-                            mouse.row,
-                        )
-                        .cloned()
-                        {
-                            // P2, bora-79l T1: the branch line is NOT a
-                            // workspace row anymore — the workspace's own
-                            // `PaneDotsRow` block carries its card and its
-                            // press (via `workspace_at_row` below). A
-                            // `Section` target only keeps its caret
-                            // column's collapse; everywhere else on the
-                            // row records no press, so neither a click
-                            // (mouse-up's `chrome_press_action`) nor a
-                            // Drag can switch workspace from the branch
-                            // line. Every other `ProjectRowTarget`
-                            // (Project, Band, SectionItem, Pane, OpenPr,
-                            // OpenWorktree) stays exactly as click-only
-                            // as before.
-                            if let ProjectRowTarget::Section { .. } = &target {
-                                // Split the row by column (owner's ask: "eu
-                                // clico no nome da workspace e ele
-                                // retrai" — clicking anywhere used to
-                                // collapse). T3 (bora-79l) removed the
-                                // `▾`/`▸` chevron from the branch header
-                                // (collapse belongs to the folder), but
-                                // the geometry pass still gives this
-                                // row's `ProjectRowHitArea.rect` the same
-                                // `x` the render used, so the row's
-                                // first TWO cells — formerly the
-                                // chevron's column, now the leading
-                                // `⌗`/`⎇` slot — remain the collapse
-                                // target, read back here rather than a
-                                // hardcoded literal. The visible
-                                // affordance for that column is T6's to
-                                // design.
-                                let on_caret = self
-                                    .view
-                                    .project_row_areas
-                                    .iter()
-                                    .find(|area| {
-                                        mouse.column >= area.rect.x
-                                            && mouse.column < area.rect.x + area.rect.width
-                                            && mouse.row >= area.rect.y
-                                            && mouse.row < area.rect.y + area.rect.height
-                                    })
-                                    // The caret glyph plus its separating
-                                    // space, i.e. the row's first TWO cells.
-                                    // One cell is a hostile mouse target in
-                                    // a mouse-first TUI, and the second cell
-                                    // is the chevron's own trailing space —
-                                    // it belongs to the caret visually, so
-                                    // spending it here costs no reachable
-                                    // part of the name.
-                                    .is_some_and(|area| mouse.column < area.rect.x + 2);
-                                if !on_caret {
-                                    // P2, bora-79l T1: the branch line no
-                                    // longer selects the workspace — no
-                                    // `WorkspacePressState` is recorded, so
-                                    // neither mouse-up's
-                                    // `chrome_press_action` nor a Drag past
-                                    // the threshold can act on this row.
-                                    // The workspace's own affordances now
-                                    // live one row down: its `PaneDotsRow`
-                                    // block's `WorkspaceCardArea` feeds
-                                    // `workspace_presses` via
-                                    // `workspace_at_row` below.
-                                    return None;
-                                }
-                            }
-                            return self.handle_project_row_click(target);
-                        }
                     }
 
                     if let Some(target) =
@@ -1037,31 +955,16 @@ impl AppState {
                             // under its main checkout's group card and has no
                             // independent position of its own — only the
                             // group root can be dragged, which is why this
-                            // guard exists at all. Project view is different
-                            // by construction (bora-c1h): every workspace,
-                            // linked worktree or not, gets its own top-level
-                            // `SectionRow`/`WorkspaceCardArea`, and
-                            // `workspace_move_block_params`'s own `roots`
-                            // computation already treats every `SectionRow`
-                            // as a drag root (see its `WorkspaceListEntry`
-                            // match). So the "linked worktrees can't reorder
-                            // independently" restriction must not apply
-                            // there, or virtually every Project-view row
-                            // (nearly all of them ARE linked worktrees) would
-                            // silently refuse to drag — the exact regression
-                            // reported.
-                            // Folders view (2026-08-31) likewise gives
-                            // every workspace its own top-level `PaneDotsRow`
-                            // (`folders_view_entries`), so the same exemption
-                            // applies there — without it virtually every real
-                            // row (a linked worktree) refuses to drag, and the
-                            // press resolves as a click on release.
+                            // guard exists at all. Folders view (2026-08-31)
+                            // gives every workspace its own top-level
+                            // `PaneDotsRow` (`folders_view_entries`), so the
+                            // "linked worktrees can't reorder independently"
+                            // restriction must not apply there — without this
+                            // exemption virtually every real row (a linked
+                            // worktree) refuses to drag, and the press
+                            // resolves as a click on release.
                             !self.groups_workspaces()
-                                || matches!(
-                                    self.view_mode,
-                                    crate::config::ViewMode::Project
-                                        | crate::config::ViewMode::Folders
-                                )
+                                || self.view_mode == crate::config::ViewMode::Folders
                                 || ws
                                     .worktree_space()
                                     .is_none_or(|space| !space.is_linked_worktree)
@@ -1249,50 +1152,10 @@ impl AppState {
                                 ..
                             },
                     }) => {
-                        // A drop over a Project-view PROJECT HEADER row
-                        // (not another workspace row) re-parents the
-                        // dragged workspace into that project instead of
-                        // reordering it — "navigate between different
-                        // groups" by drag. Checked first so it wins
-                        // cleanly over the reorder path below; dropping on
-                        // a `Section`/other row target leaves `reparent`
-                        // `None` and falls through unchanged.
-                        // `ProjectRowTarget::Project`'s `collapse_key` is
-                        // `proj:{slug}` for a declared project (bora-uqv,
-                        // see `push_project_group`) or `ORPHANS_COLLAPSE_KEY`
-                        // for the implicit `declared: false` orphan bucket,
-                        // which carries no slug — dropping there clears the
-                        // binding, the exact inverse of an explicit
-                        // assignment, and what `set_project(None)` means.
-                        let reparent = project_row_target_at(
-                            &self.view.project_row_areas,
-                            mouse.column,
-                            mouse.row,
-                        )
-                        .and_then(|target| match target {
-                            ProjectRowTarget::Project { collapse_key }
-                                if collapse_key == crate::ui::ORPHANS_COLLAPSE_KEY =>
-                            {
-                                Some(None)
-                            }
-                            ProjectRowTarget::Project { collapse_key } => {
-                                Some(collapse_key.strip_prefix("proj:").map(str::to_string))
-                            }
-                            _ => None,
-                        });
-                        if let Some(slug) = reparent {
-                            if let Some(ws) = self.workspaces.get_mut(source_ws_idx) {
-                                ws.set_project(slug);
-                            }
-                            self.mark_session_dirty();
-                            self.request_full_repaint();
-                            return None;
-                        }
                         // Folders view: a drop anywhere INSIDE a folder — its
                         // GROUP HEADER row or any of its member rows — moves
                         // the dragged workspace into that folder instead of
-                        // reordering it, mirroring the Project-view
-                        // reparent-by-drop above and the context menu's "New
+                        // reordering it, mirroring the context menu's "New
                         // group"/"→ group" items (`ws.visual_group = ...` +
                         // `mark_session_dirty`). A drop in the ungrouped/loose
                         // area resolves no target group and falls through to
@@ -1302,9 +1165,9 @@ impl AppState {
                         // resolve the row's workspace via `workspace_at_row`
                         // and take its `visual_group`. The synthetic
                         // `"hidden:"` header names no folder and is excluded.
-                        // `request_full_repaint` mirrors the reparent branch
-                        // above since this also fires mid-drag, outside the
-                        // modal flow that already triggers a repaint on its own.
+                        // `request_full_repaint` fires here since this also
+                        // fires mid-drag, outside the modal flow that already
+                        // triggers a repaint on its own.
                         if self.view_mode == crate::config::ViewMode::Folders {
                             let target_group = self
                                 .view
@@ -1591,40 +1454,12 @@ impl AppState {
                     } else {
                         (vec![], vec![], None)
                     };
-                    let mut items = build_context_menu_items(
+                    let items = build_context_menu_items(
                         &kind,
                         &self.workspaces,
-                        self.view_mode,
-                        &{
-                            // bora-uqv: in Project view the row menu
-                            // splices project membership items where the
-                            // visual-group items would be.
-                            if self.view_mode == crate::config::ViewMode::Project {
-                                super::modal::workspace_assembly_items(&self.workspaces, idx)
-                            } else {
-                                Vec::new()
-                            }
-                        },
                         &bora_labels,
                         &self.installed_plugins,
                     );
-                    // bora-79l.10 T6b: the workspace's own PaneDotsRow block
-                    // is a Project-view section's row too — splice the
-                    // section controls on top of everything the block's
-                    // menu already offers, never in place of it. Bead
-                    // bora-79l.7 (F5) was supposed to land this and did not.
-                    if self.view_mode == crate::config::ViewMode::Project {
-                        if let Some(checkout_key) = self
-                            .workspaces
-                            .get(idx)
-                            .map(crate::workspace::Workspace::project_member_dir)
-                        {
-                            items.extend(super::modal::section_menu_items_for_checkout(
-                                &self.projects,
-                                &checkout_key,
-                            ));
-                        }
-                    }
                     self.context_menu = Some(ContextMenuState {
                         items,
                         kind,
@@ -1657,8 +1492,6 @@ impl AppState {
                         items: build_context_menu_items(
                             &kind,
                             &self.workspaces,
-                            self.view_mode,
-                            &[],
                             &[],
                             &self.installed_plugins,
                         ),
@@ -1670,81 +1503,6 @@ impl AppState {
                         bora_port: None,
                     });
                     self.mode = Mode::ContextMenu;
-                } else if self.view_mode == crate::config::ViewMode::Project {
-                    // bora-uqv: right-click on a Project-view project header
-                    // (or the Ungrouped bucket) opens the assembly menu; on a
-                    // worktree/checkout row, the membership menu for that dir.
-                    match project_row_target_at(
-                        &self.view.project_row_areas,
-                        mouse.column,
-                        mouse.row,
-                    )
-                    .cloned()
-                    {
-                        Some(ProjectRowTarget::Project { collapse_key }) => {
-                            let slug = if collapse_key == crate::ui::ORPHANS_COLLAPSE_KEY {
-                                None
-                            } else {
-                                collapse_key.strip_prefix("proj:").map(str::to_string)
-                            };
-                            let hidden = self.is_hidden(&collapse_key);
-                            let mut items = Vec::new();
-                            if !super::modal::orphan_member_dirs(self).is_empty() {
-                                items.push("Add workspaces\u{2026}".to_string());
-                            }
-                            items.push("New project\u{2026}".to_string());
-                            if slug.is_some() {
-                                items.push("Rename project\u{2026}".to_string());
-                            }
-                            items.push(crate::app::state::CONTEXT_MENU_SEPARATOR.to_string());
-                            if hidden {
-                                items.push("Unhide".to_string());
-                            } else {
-                                items.push("Hide 5m".to_string());
-                                items.push("Hide 10m".to_string());
-                                items.push("Hide 15m".to_string());
-                                items.push("Hide 30m".to_string());
-                            }
-                            self.context_menu = Some(ContextMenuState {
-                                items,
-                                kind: ContextMenuKind::ProjectHeader {
-                                    slug,
-                                    collapse_key,
-                                    hidden,
-                                },
-                                x: mouse.column,
-                                y: mouse.row,
-                                list: MenuListState::new(0),
-                                bora_commands: vec![],
-                                bora_port: None,
-                            });
-                            self.mode = Mode::ContextMenu;
-                        }
-                        Some(ProjectRowTarget::Section { checkout_key, .. }) => {
-                            let mut items = super::modal::assembly_items_for_dir(&checkout_key);
-                            // bora-79l.10 T6b: bead bora-79l.7 (F5) was
-                            // supposed to land the section controls on this
-                            // row and did not — splice them on top of the
-                            // membership items, never in place of them.
-                            items.extend(super::modal::section_menu_items_for_checkout(
-                                &self.projects,
-                                &checkout_key,
-                            ));
-                            self.context_menu = Some(ContextMenuState {
-                                items,
-                                kind: ContextMenuKind::ProjectMemberTargets {
-                                    member_dir: checkout_key,
-                                },
-                                x: mouse.column,
-                                y: mouse.row,
-                                list: MenuListState::new(0),
-                                bora_commands: vec![],
-                                bora_port: None,
-                            });
-                            self.mode = Mode::ContextMenu;
-                        }
-                        _ => {}
-                    }
                 }
             }
 
@@ -1760,8 +1518,6 @@ impl AppState {
                         items: build_context_menu_items(
                             &kind,
                             &self.workspaces,
-                            self.view_mode,
-                            &[],
                             &[],
                             &self.installed_plugins,
                         ),
@@ -1811,8 +1567,6 @@ impl AppState {
                         items: build_context_menu_items(
                             &kind,
                             &self.workspaces,
-                            self.view_mode,
-                            &[],
                             &[],
                             &self.installed_plugins,
                         ),
@@ -2652,94 +2406,6 @@ impl AppState {
             grab_row_offset,
         ))
     }
-
-    /// Dispatches a Project-view row click resolved by
-    /// `sidebar::project_row_target_at` against the geometry pass's own
-    /// `ProjectRowHitArea`s — it never re-derives what a row means from the
-    /// mouse position itself.
-    fn handle_project_row_click(
-        &mut self,
-        target: crate::app::state::ProjectRowTarget,
-    ) -> Option<MouseAction> {
-        use crate::app::state::ProjectRowTarget;
-        match target {
-            ProjectRowTarget::Project { collapse_key }
-            | ProjectRowTarget::Band { collapse_key }
-            | ProjectRowTarget::Section { collapse_key, .. } => {
-                self.toggle_project_row_collapse(collapse_key);
-                None
-            }
-            ProjectRowTarget::OpenWorktree { checkout_key } => {
-                self.request_new_workspace_cwd = Some(std::path::PathBuf::from(checkout_key));
-                None
-            }
-            ProjectRowTarget::Pane { ws_idx, pane_id } => {
-                let pane_id = self
-                    .workspaces
-                    .get(ws_idx)
-                    .and_then(|ws| pane_id_from_public_number(ws, &pane_id))?;
-                self.mode = Mode::Terminal;
-                Some(MouseAction::FocusPane { ws_idx, pane_id })
-            }
-            // COMMANDS rows launch into the worktree's representative
-            // workspace (bora-55c.3), resolved from the tick-refreshed
-            // command cache. CHECKS/TODOS/NOTES rows have no action yet.
-            ProjectRowTarget::SectionItem {
-                kind,
-                label,
-                ws_idx,
-            } => {
-                // Compares by wire name rather than descriptor identity —
-                // deliberate (bora-by6 G6): click behaviour is not yet a
-                // declared field on `SectionDescriptor`, so this stays the
-                // same "COMMANDS only" wildcard the closed enum had. An
-                // `on_click` descriptor field is the natural next step once
-                // a non-COMMANDS band needs one.
-                if kind.wire_name == "commands" {
-                    if let Some(ws_idx) = ws_idx {
-                        self.pending_bora_command = self.section_command_launch(ws_idx, &label);
-                    }
-                }
-                None
-            }
-            // A PR row in the project-level PULL REQUESTS band opens the PR
-            // in a new worktree — the same destination
-            // `ContextMenuKind::RepoPr`'s "Open in worktree" reaches, set
-            // through the same `request_open_pr_worktree` field, so the
-            // sidebar row and the right panel's right-click cannot drift.
-            ProjectRowTarget::OpenPr { ws_idx, number } => {
-                self.request_open_pr_worktree = Some((ws_idx, number));
-                None
-            }
-            // T4 (bora-79l, P3): the SectionRow header's "+" — defer, like
-            // every App-owned action, resolving nothing here. The pair is
-            // the section's branch-group identity, re-resolved to a source
-            // workspace at drain time (`start_section_worktree_create`).
-            ProjectRowTarget::SectionNew {
-                repo_identity,
-                branch,
-            } => {
-                self.request_section_worktree_create = Some((repo_identity, branch));
-                None
-            }
-        }
-    }
-
-    /// Toggles one Project-view collapse key. Collapsing/expanding reflows
-    /// every row below it without changing the sidebar's own outer
-    /// dimensions, so — unlike a resize — the dimension-keyed full-repaint
-    /// heuristics never see it; the layout change itself must ask for a
-    /// full repaint (AGENTS.md, learned 2026-08-13) or a client keeps
-    /// stale rows under the ones that just moved.
-    fn toggle_project_row_collapse(&mut self, key: String) {
-        if self.collapsed_space_keys.contains(&key) {
-            self.collapsed_space_keys.remove(&key);
-        } else {
-            self.collapsed_space_keys.insert(key);
-        }
-        self.mark_session_dirty();
-        self.request_full_repaint();
-    }
 }
 
 #[cfg(test)]
@@ -2770,25 +2436,6 @@ fn apply_scroll(scroll: &mut usize, delta: i16, max_scroll: usize) {
     }
 }
 
-/// Resolves a `ProjectRowTarget::Pane`'s `pane_id` — the row's public pane
-/// number (e.g. `"p1"`, or the full `"w28p1"` compact id — see
-/// `workspace::public_pane_id_for_number`) — against `ws`'s live panes.
-/// Never reconstructs a raw `layout::PaneId`: that type has no public
-/// constructor from an arbitrary value outside `layout.rs`. The public
-/// pane number is the one stable identifier already shared by chat
-/// addressing and the socket API, so this reuses it rather than inventing
-/// a second convention.
-fn pane_id_from_public_number(
-    ws: &crate::workspace::Workspace,
-    raw: &str,
-) -> Option<crate::layout::PaneId> {
-    let encoded = raw.rsplit('p').next().unwrap_or(raw);
-    let pane_number = crate::workspace::decode_public_number(encoded)?;
-    ws.public_pane_numbers
-        .iter()
-        .find_map(|(id, number)| (*number == pane_number).then_some(*id))
-}
-
 #[cfg(test)]
 mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventKind};
@@ -2796,59 +2443,17 @@ mod tests {
 
     use super::super::{
         app_for_mouse_test, capture_snapshot, mouse, numbered_lines_bytes, root_layout_ratio,
-        unique_temp_path,
     };
     use super::*;
     use crate::app::input::modal::handle_context_menu_key;
     use crate::{
         app::state::{
             build_context_menu_items, ContextMenuKind, ContextMenuState, MenuListState, Mode,
-            ProjectRowHitArea, ProjectRowTarget, ViewLayout,
+            ViewLayout,
         },
         detect::{Agent, AgentState},
         workspace::Workspace,
     };
-
-    #[test]
-    fn clicking_a_project_row_toggles_collapse_and_forces_full_repaint() {
-        let mut app = app_for_mouse_test();
-        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 20));
-        let list_area = app.state.workspace_list_rect();
-        // Offset row (not the list's first line) — a dispatcher that
-        // re-derives position instead of trusting the area would miss it.
-        let row_rect = Rect::new(list_area.x, list_area.y + 3, list_area.width, 1);
-        app.state.view.project_row_areas = vec![ProjectRowHitArea {
-            rect: row_rect,
-            target: ProjectRowTarget::Project {
-                collapse_key: "project:cnb".into(),
-            },
-        }];
-        app.state.force_full_repaint = false;
-
-        app.handle_mouse(mouse(
-            MouseEventKind::Down(MouseButton::Left),
-            row_rect.x,
-            row_rect.y,
-        ));
-
-        assert!(app.state.collapsed_space_keys.contains("project:cnb"));
-        assert!(
-            app.state.force_full_repaint,
-            "collapsing a project row must force a full repaint (AGENTS.md 2026-08-13)"
-        );
-
-        app.state.force_full_repaint = false;
-        app.handle_mouse(mouse(
-            MouseEventKind::Down(MouseButton::Left),
-            row_rect.x,
-            row_rect.y,
-        ));
-        assert!(!app.state.collapsed_space_keys.contains("project:cnb"));
-        assert!(
-            app.state.force_full_repaint,
-            "expanding it back must repaint too"
-        );
-    }
 
     #[test]
     fn view_mode_toggle_click_cycles_view_mode_and_resets_workspace_scroll() {
@@ -2884,7 +2489,7 @@ mod tests {
         app.state.workspace_scroll = 3;
         app.state.force_full_repaint = false;
         // Recompute: the toggle label's width differs per mode ("repo"
-        // vs "project"), so the rect itself moves after the cycle above.
+        // vs "flat"), so the rect itself moves after the cycle above.
         let (ws_area, _) = crate::ui::expanded_sidebar_sections(
             app.state.view.sidebar_rect,
             app.state.sidebar_section_split,
@@ -2904,68 +2509,6 @@ mod tests {
         assert_eq!(
             app.state.workspace_scroll, 3,
             "a click outside the toggle must not touch workspace_scroll"
-        );
-    }
-
-    #[test]
-    fn clicking_an_open_worktree_row_requests_a_new_workspace_at_its_checkout_path() {
-        let mut app = app_for_mouse_test();
-        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 20));
-        let list_area = app.state.workspace_list_rect();
-        let row_rect = Rect::new(list_area.x, list_area.y + 1, list_area.width, 1);
-        app.state.view.project_row_areas = vec![ProjectRowHitArea {
-            rect: row_rect,
-            target: ProjectRowTarget::OpenWorktree {
-                checkout_key: "/repo/cnb-worktree".into(),
-            },
-        }];
-
-        app.handle_mouse(mouse(
-            MouseEventKind::Down(MouseButton::Left),
-            row_rect.x,
-            row_rect.y,
-        ));
-
-        assert_eq!(
-            app.state.request_new_workspace_cwd,
-            Some(std::path::PathBuf::from("/repo/cnb-worktree"))
-        );
-    }
-
-    #[test]
-    fn clicking_a_project_pane_row_focuses_the_pane_by_its_public_number() {
-        let mut app = app_for_mouse_test();
-        let ws = Workspace::test_new("multi-pane");
-        let root_pane = ws.tabs[0].root_pane;
-        app.state.workspaces = vec![ws];
-        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 20));
-        let list_area = app.state.workspace_list_rect();
-        let row_rect = Rect::new(list_area.x, list_area.y + 2, list_area.width, 1);
-        app.state.view.project_row_areas = vec![ProjectRowHitArea {
-            rect: row_rect,
-            target: ProjectRowTarget::Pane {
-                ws_idx: 0,
-                pane_id: "p1".into(),
-            },
-        }];
-
-        let action = app.state.handle_mouse(
-            &mut app.terminal_runtimes,
-            crate::app::LOCAL_INPUT_SOURCE,
-            mouse(
-                MouseEventKind::Down(MouseButton::Left),
-                row_rect.x,
-                row_rect.y,
-            ),
-        );
-
-        let Some(MouseAction::FocusPane { ws_idx, pane_id }) = action else {
-            panic!("expected FocusPane action");
-        };
-        assert_eq!(ws_idx, 0);
-        assert_eq!(
-            pane_id, root_pane,
-            "the workspace's only (root, public number 1) pane must be the focus target"
         );
     }
 
@@ -4246,14 +3789,7 @@ mod tests {
             hidden: false,
         };
         app.state.context_menu = Some(ContextMenuState {
-            items: build_context_menu_items(
-                &kind,
-                &[],
-                crate::config::ViewMode::Repo,
-                &[],
-                &[],
-                &Default::default(),
-            ),
+            items: build_context_menu_items(&kind, &[], &[], &Default::default()),
             kind,
             x: 2,
             y: 2,
@@ -4555,14 +4091,7 @@ mod tests {
             ws_idx: 1,
             hidden: false,
         };
-        let items = build_context_menu_items(
-            &kind,
-            &[],
-            crate::config::ViewMode::Repo,
-            &[],
-            &[],
-            &Default::default(),
-        );
+        let items = build_context_menu_items(&kind, &[], &[], &Default::default());
         let close_idx = items.iter().position(|i| i == "Close").expect("close item");
         app.state.context_menu = Some(ContextMenuState {
             items,
@@ -4611,14 +4140,7 @@ mod tests {
             ws_idx: 1,
             hidden: false,
         };
-        let items = build_context_menu_items(
-            &kind,
-            &[],
-            crate::config::ViewMode::Repo,
-            &[],
-            &[],
-            &Default::default(),
-        );
+        let items = build_context_menu_items(&kind, &[], &[], &Default::default());
         let close_idx = items.iter().position(|i| i == "Close").unwrap() as u16;
         app.state.context_menu = Some(ContextMenuState {
             items,
@@ -4679,14 +4201,7 @@ mod tests {
             right_click_passthrough: false,
         };
         app.state.context_menu = Some(ContextMenuState {
-            items: build_context_menu_items(
-                &kind,
-                &[],
-                crate::config::ViewMode::Repo,
-                &[],
-                &[],
-                &Default::default(),
-            ),
+            items: build_context_menu_items(&kind, &[], &[], &Default::default()),
             kind,
             x: 2,
             y: 2,
@@ -6444,1222 +5959,6 @@ mod tests {
 
         assert_eq!(app.state.request_open_create_worktree, Some(identity));
         app.state.assert_invariants_for_test();
-    }
-
-    #[test]
-    fn project_view_section_plus_click_requests_section_worktree_create() {
-        // T4 (bora-79l, P3): clicking the SectionRow header's trailing
-        // 3-cell "+" must reach `start_section_worktree_create` — not the
-        // collapse toggle of the Section area underneath. The areas here
-        // come from the REAL geometry walk (`compute_workspace_list_areas_
-        // all`), so this goes red if any of the wiring drops out: the
-        // emission, the before-Section ordering (first-match hit-test), or
-        // the click arm. It also pins that the + click does NOT collapse
-        // the section and does NOT record a workspace press.
-        let mut app = app_for_mouse_test();
-        app.state.view_mode = crate::config::ViewMode::Project;
-        let identity = "github.com/owner/proj".to_string();
-        let mut ws = Workspace::test_new("proj");
-        ws.cached_git_branch = Some("main".into());
-        ws.cached_git_space = Some(crate::workspace::GitSpaceMetadata {
-            key: "key-p".into(),
-            repo_identity: identity.clone(),
-            checkout_key: "/repo/proj".into(),
-            repo_name: "proj".into(),
-            repo_root: std::path::PathBuf::from("/repo/proj"),
-            is_linked_worktree: false,
-        });
-        app.state.workspaces = vec![ws];
-        app.state.active = Some(0);
-        app.state.selected = 0;
-        app.state.ensure_test_terminals();
-
-        let area = app.state.view.sidebar_rect;
-        let (_cards, _headers, project_rows) =
-            crate::ui::compute_workspace_list_areas_all(&app.state, area);
-        let plus = project_rows
-            .iter()
-            .find(|row| {
-                matches!(
-                    row.target,
-                    crate::app::state::ProjectRowTarget::SectionNew { .. }
-                )
-            })
-            .expect("the SectionRow must emit a SectionNew + area");
-        let plus_rect = plus.rect;
-        assert_eq!(
-            plus.target,
-            crate::app::state::ProjectRowTarget::SectionNew {
-                repo_identity: identity.clone(),
-                branch: "main".into(),
-            }
-        );
-        assert!(
-            project_rows.iter().any(|row| matches!(
-                row.target,
-                crate::app::state::ProjectRowTarget::Section { .. }
-            )),
-            "the full-row Section area is still emitted underneath"
-        );
-
-        app.state.view.project_row_areas = project_rows;
-        app.state.handle_mouse(
-            &mut app.terminal_runtimes,
-            crate::app::LOCAL_INPUT_SOURCE,
-            mouse(
-                MouseEventKind::Down(MouseButton::Left),
-                plus_rect.x + 1,
-                plus_rect.y,
-            ),
-        );
-
-        assert_eq!(
-            app.state.request_section_worktree_create,
-            Some((identity, "main".into()))
-        );
-        assert!(
-            app.state.collapsed_space_keys.is_empty(),
-            "the + click must not toggle the section's collapse"
-        );
-        assert!(
-            app.state.workspace_presses.is_empty(),
-            "the + click must not record a workspace press (click-only, like OpenPr)"
-        );
-        app.state.assert_invariants_for_test();
-    }
-
-    /// Local git scaffolding for the T4 demo test (worktrees.rs's own
-    /// helpers are private to its test module): a committed repo on
-    /// `main`.
-    fn section_plus_demo_repo(name: &str) -> std::path::PathBuf {
-        fn git(repo: &std::path::Path, args: &[&str]) {
-            let status = std::process::Command::new("git")
-                .arg("-C")
-                .arg(repo)
-                .args(args)
-                .status()
-                .unwrap();
-            assert!(
-                status.success(),
-                "git -C {} {} failed",
-                repo.display(),
-                args.join(" ")
-            );
-        }
-        let repo = unique_temp_path(name);
-        std::fs::create_dir_all(&repo).unwrap();
-        git(&repo, &["init", "--quiet", "-b", "main"]);
-        git(&repo, &["config", "user.email", "herdr@example.invalid"]);
-        git(&repo, &["config", "user.name", "Herdr Test"]);
-        std::fs::write(repo.join("README.md"), "test\n").unwrap();
-        git(&repo, &["add", "README.md"]);
-        git(&repo, &["commit", "--quiet", "-m", "initial"]);
-        repo
-    }
-    #[tokio::test]
-    async fn section_plus_click_creates_workspace_in_section_with_clickable_block() {
-        // T4 demo (bora-79l.12, gate 2) — the whole chain against real git:
-        // the real geometry walk emits the SectionNew "+" area; a real
-        // mouse click lands in it; App's drain reaches
-        // `start_section_worktree_create`; the deferred worktree.create
-        // runs `git worktree add` on the worker thread; the finished event
-        // opens the workspace; and the new workspace renders in Project
-        // view under the same ProjectRow as the clicked section, with a
-        // clickable PaneDotsRow block (T1: the block is the card). Fica
-        // vermelho em qualquer elo: emissão, clique, drain, criação,
-        // abertura, ou o card pós-criação.
-        let repo = section_plus_demo_repo("section-plus-demo-repo");
-        let worktree_root = unique_temp_path("section-plus-demo-root");
-        let identity = "github.com/owner/demo".to_string();
-
-        let mut app = app_for_mouse_test();
-        app.state.view_mode = crate::config::ViewMode::Project;
-        app.state.worktree_directory = worktree_root.clone();
-        let mut ws = Workspace::test_new("demo");
-        ws.identity_cwd = repo.clone();
-        ws.cached_git_branch = Some("main".into());
-        ws.cached_git_space = Some(crate::workspace::GitSpaceMetadata {
-            key: "demo-key".into(),
-            repo_identity: identity.clone(),
-            checkout_key: repo.display().to_string(),
-            repo_name: "demo".into(),
-            repo_root: repo.clone(),
-            is_linked_worktree: false,
-        });
-        app.state.workspaces = vec![ws];
-        app.state.active = Some(0);
-        app.state.selected = 0;
-        app.state.ensure_test_terminals();
-        app.state.view.sidebar_rect = ratatui::layout::Rect::new(0, 0, 40, 20);
-
-        // 1. The real geometry walk emits the "+" for the `main` section.
-        let area = app.state.view.sidebar_rect;
-        let (_cards, _headers, rows) =
-            crate::ui::compute_workspace_list_areas_all(&app.state, area);
-        let plus_rect = rows
-            .iter()
-            .find(|row| {
-                matches!(
-                    row.target,
-                    crate::app::state::ProjectRowTarget::SectionNew { .. }
-                )
-            })
-            .expect("the SectionRow must emit a SectionNew + area")
-            .rect;
-
-        // 2. A real click inside those 3 cells.
-        app.state.view.project_row_areas = rows;
-        app.state.handle_mouse(
-            &mut app.terminal_runtimes,
-            crate::app::LOCAL_INPUT_SOURCE,
-            mouse(
-                MouseEventKind::Down(MouseButton::Left),
-                plus_rect.x + 1,
-                plus_rect.y,
-            ),
-        );
-        assert_eq!(
-            app.state.request_section_worktree_create.take(),
-            Some((identity.clone(), "main".into()))
-        );
-
-        // 3. App's drain (mod.rs's one-liner — same method, same args).
-        app.start_section_worktree_create(&identity, "main");
-
-        // 4. The worker thread ran real git; pump the finished event
-        //    through the same handler App::run uses.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        let event = loop {
-            if let Ok(event) = app.event_rx.try_recv() {
-                break event;
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "timed out waiting for the worktree create event"
-            );
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        };
-        match event {
-            crate::events::AppEvent::WorktreeAddFinished(result) => {
-                app.handle_worktree_add_finished(*result);
-            }
-            other => panic!("unexpected event: {other:?}"),
-        }
-
-        // 5. The workspace exists, focused, on the shared generator's
-        //    namespaced branch, under the worktree directory.
-        assert_eq!(
-            app.state.workspaces.len(),
-            2,
-            "worktree + workspace created"
-        );
-        assert_eq!(app.state.active, Some(1), "focus: true switched to it");
-        let new_checkout = app.state.workspaces[1].identity_cwd.clone();
-        assert!(
-            new_checkout.starts_with(&worktree_root),
-            "checkout under the configured worktree dir: {new_checkout:?}"
-        );
-        let branch_out = std::process::Command::new("git")
-            .arg("-C")
-            .arg(&new_checkout)
-            .args(["branch", "--show-current"])
-            .output()
-            .unwrap();
-        assert!(branch_out.status.success());
-        let new_branch = String::from_utf8(branch_out.stdout)
-            .unwrap()
-            .trim()
-            .to_string();
-        assert!(
-            new_branch.starts_with("worktree/"),
-            "the branch came from generated_branch_slug — the generator the \
-             other modes' + use (its `worktree/` namespace): {new_branch:?}"
-        );
-        // "Na section certa": the new worktree belongs to the clicked
-        // section's repo (membership's repo_root is the source checkout),
-        // not to whatever workspace happened to be focused.
-        assert_eq!(
-            app.state.workspaces[1]
-                .worktree_space()
-                .map(|membership| membership.repo_root.as_path()),
-            Some(repo.as_path()),
-            "membership records the section's repo root"
-        );
-
-        // 6. Post-creation render: the new workspace's block is clickable —
-        //    a WorkspaceCardArea spanning its 2-row PaneDotsRow, resolving
-        //    through the same workspace_at_row every press/drag/switch uses
-        //    — and both sections sit under ONE ProjectRow (the project
-        //    context of the clicked +), whose header carries its own +.
-        let (cards, _headers2, rows2) =
-            crate::ui::compute_workspace_list_areas_all(&app.state, area);
-        let card_rect = cards
-            .iter()
-            .find(|card| card.ws_idx == 1)
-            .expect("the new workspace's PaneDotsRow block must carry a card")
-            .rect;
-        assert_eq!(card_rect.height, 2, "the block spans both rows (T1)");
-        app.state.view.workspace_card_areas = cards;
-        assert_eq!(
-            app.state.workspace_at_row(card_rect.y + 1),
-            Some(1),
-            "a click on the block resolves to the new workspace"
-        );
-        assert_eq!(
-            rows2
-                .iter()
-                .filter(|row| {
-                    matches!(
-                        row.target,
-                        crate::app::state::ProjectRowTarget::Project { .. }
-                    )
-                })
-                .count(),
-            1,
-            "both SectionRows render under the same ProjectRow — the \
-             clicked section's project context: {rows2:?}"
-        );
-        assert!(
-            rows2.iter().any(|row| matches!(
-                row.target,
-                crate::app::state::ProjectRowTarget::SectionNew { .. }
-            )),
-            "the new section's header carries its own + too"
-        );
-
-        for (_, runtime) in app.terminal_runtimes.drain() {
-            runtime.shutdown();
-        }
-        let remove = crate::worktree::build_worktree_remove_command(&repo, &new_checkout, false);
-        crate::worktree::run_worktree_command(&remove).unwrap();
-        let _ = std::fs::remove_dir_all(worktree_root);
-        let _ = std::fs::remove_dir_all(repo);
-    }
-
-    #[test]
-    fn commands_section_item_click_launches_tagged_command() {
-        let mut app = app_for_mouse_test();
-        let mut ws = Workspace::test_new("one");
-        ws.cached_commands = Some(vec![crate::bora_config::BoraCommand {
-            label: "dev".into(),
-            command: "htop".into(),
-            mode: crate::bora_config::BoraCommandMode::Pane,
-            branch: None,
-        }]);
-        app.state.workspaces = vec![ws];
-        app.state.active = Some(0);
-
-        // A COMMANDS row click resolves through the tick-refreshed cache and
-        // dispatches the launch into the row's workspace (bora-55c.3).
-        assert!(app
-            .state
-            .handle_project_row_click(crate::app::state::ProjectRowTarget::SectionItem {
-                kind: crate::ui::SectionDescriptor::from_wire_name("commands")
-                    .expect("registry has a commands descriptor"),
-                label: "dev".to_string(),
-                ws_idx: Some(0),
-            })
-            .is_none());
-        let launched = app
-            .state
-            .pending_bora_command
-            .take()
-            .expect("a COMMANDS row click must dispatch the launch");
-        assert_eq!(launched.command, "htop");
-        assert_eq!(launched.label.as_deref(), Some("dev"));
-        assert_eq!(launched.ws_idx, 0);
-
-        // A non-COMMANDS row (and a label the cache does not declare) never
-        // launches.
-        assert!(app
-            .state
-            .handle_project_row_click(crate::app::state::ProjectRowTarget::SectionItem {
-                kind: crate::ui::SectionDescriptor::from_wire_name("todos")
-                    .expect("registry has a todos descriptor"),
-                label: "dev".to_string(),
-                ws_idx: None,
-            })
-            .is_none());
-        assert!(app
-            .state
-            .handle_project_row_click(crate::app::state::ProjectRowTarget::SectionItem {
-                kind: crate::ui::SectionDescriptor::from_wire_name("commands")
-                    .expect("registry has a commands descriptor"),
-                label: "not-declared".to_string(),
-                ws_idx: Some(0),
-            })
-            .is_none());
-        assert!(app.state.pending_bora_command.is_none());
-    }
-
-    #[test]
-    fn open_pr_row_click_requests_the_pr_worktree() {
-        // A PR row in the project-level PULL REQUESTS band must reach the same
-        // destination as the right panel's right-click "Open in worktree":
-        // `request_open_pr_worktree`, which `App` drains into
-        // `start_pr_worktree_create`. If the two ever diverged, the sidebar row
-        // and the menu item would claim to do the same thing and not.
-        let mut app = app_for_mouse_test();
-        assert!(app
-            .state
-            .handle_project_row_click(crate::app::state::ProjectRowTarget::OpenPr {
-                ws_idx: 2,
-                number: 42,
-            })
-            .is_none());
-        assert_eq!(app.state.request_open_pr_worktree, Some((2, 42)));
-    }
-
-    #[test]
-    fn section_row_click_toggles_its_own_workspace_collapse_bora_c1h() {
-        // bora-c1h G9: a SectionRow click toggles ITS OWN workspace's
-        // collapse (`wsec:{ws_idx}`), not the checkout's — a checkout with
-        // 2+ open workspaces must collapse them independently.
-        let mut app = app_for_mouse_test();
-        let target = crate::app::state::ProjectRowTarget::Section {
-            ws_idx: 3,
-            checkout_key: "/repo/checkout".into(),
-            collapse_key: "wsec:3".into(),
-        };
-        assert!(app.state.handle_project_row_click(target.clone()).is_none());
-        assert!(
-            app.state.collapsed_space_keys.contains("wsec:3"),
-            "first click collapses the section"
-        );
-        assert!(app.state.handle_project_row_click(target).is_none());
-        assert!(
-            !app.state.collapsed_space_keys.contains("wsec:3"),
-            "second click expands it back"
-        );
-    }
-
-    #[test]
-    fn section_row_right_click_opens_project_member_targets_from_checkout_key() {
-        // bora-c1h G9: right-click on a Section row still opens the
-        // bora-uqv `ProjectMemberTargets` menu, resolving `member_dir`
-        // straight from `checkout_key` — no more `wt:`-prefix stripping.
-        let mut app = app_for_mouse_test();
-        app.state.view_mode = crate::config::ViewMode::Project;
-        let row_rect = Rect::new(0, 5, 20, 1);
-        app.state.view.project_row_areas = vec![ProjectRowHitArea {
-            rect: row_rect,
-            target: ProjectRowTarget::Section {
-                ws_idx: 0,
-                checkout_key: "/repo/checkout".into(),
-                collapse_key: "wsec:0".into(),
-            },
-        }];
-        app.state.handle_mouse(
-            &mut app.terminal_runtimes,
-            crate::app::LOCAL_INPUT_SOURCE,
-            mouse(MouseEventKind::Down(MouseButton::Right), 2, 5),
-        );
-        let menu = app
-            .state
-            .context_menu
-            .as_ref()
-            .expect("right-click on a Section row must open a context menu");
-        assert!(
-            matches!(
-                &menu.kind,
-                crate::app::state::ContextMenuKind::ProjectMemberTargets { member_dir }
-                    if member_dir == "/repo/checkout"
-            ),
-            "expected ProjectMemberTargets{{member_dir: \"/repo/checkout\"}}, got {:?}",
-            menu.kind
-        );
-    }
-
-    #[test]
-    fn project_view_workspace_press_lives_on_the_pane_dots_block_not_the_branch_line() {
-        // P2, bora-79l T1 — attribution flip of
-        // `project_view_section_row_press_records_workspace_press_only_for_section_targets`:
-        // the `WorkspacePressState` (what drag-reorder and mouse-up's
-        // `chrome_press_action`/FocusWorkspace feed on) is recorded from
-        // the workspace's own 2-row block via `workspace_at_row`, never
-        // from the branch line or a band row. Goes red if the `Section`
-        // arm regresses to recording a press, or if the block's card
-        // stops feeding one.
-        let mut app = app_for_mouse_test();
-        app.state.view_mode = crate::config::ViewMode::Project;
-        let branch_row = Rect::new(0, 5, 20, 1);
-        let band_row = Rect::new(0, 8, 20, 1);
-        let block = Rect::new(0, 6, 20, 2);
-        app.state.view.project_row_areas = vec![
-            ProjectRowHitArea {
-                rect: branch_row,
-                target: ProjectRowTarget::Section {
-                    ws_idx: 3,
-                    checkout_key: "/repo/checkout".into(),
-                    collapse_key: "wsec:3".into(),
-                },
-            },
-            ProjectRowHitArea {
-                rect: band_row,
-                target: ProjectRowTarget::Band {
-                    collapse_key: "band:commands".into(),
-                },
-            },
-        ];
-        app.state.view.workspace_card_areas = vec![crate::app::state::WorkspaceCardArea {
-            ws_idx: 3,
-            rect: block,
-            indented: true,
-        }];
-
-        // The branch line records nothing — decision 7.
-        app.state.handle_mouse(
-            &mut app.terminal_runtimes,
-            1,
-            mouse(MouseEventKind::Down(MouseButton::Left), 2, 5),
-        );
-        assert!(
-            !app.state.workspace_presses.contains_key(&1),
-            "a branch-line press must not record a WorkspacePressState (P2)"
-        );
-
-        // BOTH rows of the block record the press (l1 and l2).
-        for row in [block.y, block.y + 1] {
-            app.state.handle_mouse(
-                &mut app.terminal_runtimes,
-                2,
-                mouse(MouseEventKind::Down(MouseButton::Left), 2, row),
-            );
-            let press = app
-                .state
-                .workspace_presses
-                .get(&2)
-                .expect("a block press must record a WorkspacePressState");
-            assert_eq!(press.ws_idx, 3);
-            assert_eq!(press.start_row, row);
-        }
-
-        // A band row records nothing, as ever.
-        app.state.handle_mouse(
-            &mut app.terminal_runtimes,
-            3,
-            mouse(MouseEventKind::Down(MouseButton::Left), 2, 8),
-        );
-        assert!(
-            !app.state.workspace_presses.contains_key(&3),
-            "a Band row must not record a workspace press"
-        );
-    }
-
-    #[test]
-    fn project_view_pane_dots_block_drag_opens_workspace_reorder_for_linked_worktree() {
-        // P2, bora-79l T1 — attribution flip of
-        // `project_view_section_row_drag_opens_workspace_reorder_for_linked_worktree`:
-        // the drag now STARTS on the workspace's own 2-row block, and a
-        // linked worktree must still reorder there (Project view gives
-        // every workspace its own card; the Flat/Repo refusal stays
-        // pinned by `flat_mode_drag_reorders_linked_worktree`). Goes red
-        // if the block stops feeding `workspace_presses`, if the branch
-        // line regresses to starting a drag, or if the Project-view
-        // exemption in `can_reorder`/`workspace_move_block_params` is
-        // dropped.
-        let mut app = app_for_mouse_test();
-        app.state.view_mode = crate::config::ViewMode::Project;
-        let mut ws = Workspace::test_new("linked");
-        ws.worktree_space = Some(crate::workspace::WorktreeSpaceMembership {
-            key: "grp".into(),
-            label: "grp".into(),
-            repo_root: "/repo".into(),
-            checkout_path: "/repo/checkout".into(),
-            is_linked_worktree: true,
-        });
-        app.state.workspaces = vec![ws];
-        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 20));
-        let list_area = app.state.workspace_list_rect();
-        let branch_row = Rect::new(list_area.x, list_area.y, list_area.width, 1);
-        let block = Rect::new(list_area.x, list_area.y + 1, list_area.width, 2);
-        app.state.view.project_row_areas = vec![ProjectRowHitArea {
-            rect: branch_row,
-            target: ProjectRowTarget::Section {
-                ws_idx: 0,
-                checkout_key: "/repo/checkout".into(),
-                collapse_key: "wsec:0".into(),
-            },
-        }];
-        app.state.view.workspace_card_areas = vec![crate::app::state::WorkspaceCardArea {
-            ws_idx: 0,
-            rect: block,
-            indented: true,
-        }];
-
-        // The branch line starts no drag — decision 7's drag half.
-        app.handle_mouse(mouse(
-            MouseEventKind::Down(MouseButton::Left),
-            branch_row.x + 2,
-            branch_row.y,
-        ));
-        app.handle_mouse(mouse(
-            MouseEventKind::Drag(MouseButton::Left),
-            branch_row.x + 4,
-            branch_row.y,
-        ));
-        assert!(
-            app.state.drag.is_none(),
-            "a drag gesture on the branch line must not open WorkspaceReorder (P2)"
-        );
-
-        // The same gesture one row down, on the block, opens the reorder.
-        app.handle_mouse(mouse(
-            MouseEventKind::Down(MouseButton::Left),
-            block.x + 2,
-            block.y,
-        ));
-        app.handle_mouse(mouse(
-            MouseEventKind::Drag(MouseButton::Left),
-            block.x + 4,
-            block.y,
-        ));
-
-        assert!(
-            matches!(
-                &app.state.drag,
-                Some(DragState {
-                    target: DragTarget::WorkspaceReorder {
-                        source_ws_idx: 0,
-                        ..
-                    }
-                })
-            ),
-            "expected an open WorkspaceReorder drag from the linked-worktree's \
-             PaneDotsRow block"
-        );
-    }
-
-    #[test]
-    fn project_view_dot_cell_wins_over_the_block_inside_its_own_rect() {
-        // P2, bora-79l T1 item 6: inside a dot's own 1-cell rect the dot
-        // wins — the dispatcher resolves `project_row_areas` BEFORE
-        // `workspace_card_areas`, so a click on a dot focuses THAT pane
-        // (FocusPane on press) while the same row's non-dot cells switch
-        // workspace (FocusWorkspace on mouse-up). Goes red if the dispatch
-        // order flips or the dot hit areas stop landing inside the card's
-        // rows.
-        let mut app = app_for_mouse_test();
-        app.state.view_mode = crate::config::ViewMode::Project;
-        let mut ws = Workspace::test_new("two-panes");
-        let root_pane = ws.tabs[0].root_pane;
-        ws.test_split(Direction::Vertical);
-        app.state.workspaces = vec![ws];
-        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 20));
-
-        let card = app
-            .state
-            .view
-            .workspace_card_areas
-            .iter()
-            .find(|card| card.ws_idx == 0)
-            .expect("the PaneDotsRow block must be the workspace's card");
-        let card = *card;
-        let mut dot_hits: Vec<_> = app
-            .state
-            .view
-            .project_row_areas
-            .iter()
-            .filter(|area| matches!(area.target, ProjectRowTarget::Pane { .. }))
-            .cloned()
-            .collect();
-        dot_hits.sort_by_key(|area| area.rect.x);
-        assert_eq!(dot_hits.len(), 2, "one dot hit per pane: {dot_hits:?}");
-        // The dot rects live INSIDE the card's rows — the overlap is the
-        // point: the dot must win by dispatch order, not by geometry.
-        for hit in &dot_hits {
-            assert!(
-                hit.rect.y >= card.rect.y && hit.rect.y < card.rect.y + card.rect.height,
-                "the dot rect {:?} must sit inside the block card {:?}",
-                hit.rect,
-                card.rect
-            );
-        }
-
-        // Click the second dot's own cell: FocusPane for that pane.
-        let action = app.state.handle_mouse(
-            &mut app.terminal_runtimes,
-            crate::app::LOCAL_INPUT_SOURCE,
-            mouse(
-                MouseEventKind::Down(MouseButton::Left),
-                dot_hits[1].rect.x,
-                dot_hits[1].rect.y,
-            ),
-        );
-        match action {
-            Some(MouseAction::FocusPane { ws_idx, pane_id }) => {
-                assert_eq!(ws_idx, 0);
-                assert_ne!(
-                    pane_id, root_pane,
-                    "the second dot must focus the second pane, not the root"
-                );
-            }
-            _ => panic!("expected FocusPane from a dot cell"),
-        }
-
-        // One column left of the first dot — still the block's l2 row,
-        // no dot rect: the card wins, FocusWorkspace on mouse-up.
-        let non_dot_col = dot_hits[0].rect.x.saturating_sub(1);
-        let down = app.state.handle_mouse(
-            &mut app.terminal_runtimes,
-            crate::app::LOCAL_INPUT_SOURCE,
-            mouse(
-                MouseEventKind::Down(MouseButton::Left),
-                non_dot_col,
-                dot_hits[0].rect.y,
-            ),
-        );
-        assert!(
-            down.is_none(),
-            "a non-dot block cell records no action on press"
-        );
-        let up = app.state.handle_mouse(
-            &mut app.terminal_runtimes,
-            crate::app::LOCAL_INPUT_SOURCE,
-            mouse(
-                MouseEventKind::Up(MouseButton::Left),
-                non_dot_col,
-                dot_hits[0].rect.y,
-            ),
-        );
-        assert!(
-            matches!(up, Some(MouseAction::FocusWorkspace { ws_idx: 0 })),
-            "a non-dot cell on the block must switch workspace (FocusWorkspace)"
-        );
-    }
-
-    #[test]
-    fn project_view_pane_dots_block_click_focuses_the_workspace_branch_line_does_not() {
-        // P2, bora-79l T1 — attribution flip of
-        // `project_view_section_row_click_without_drag_focuses_the_workspace`:
-        // a plain click (no drag) on the workspace's own 2-row block must
-        // update `active` (the block's card feeds `workspace_presses`;
-        // mouse-up's `chrome_press_action` turns it into
-        // FocusWorkspace), while the same click on the branch line above
-        // must do NOTHING — decision 7. Goes red if either side regresses.
-        let mut app = app_for_mouse_test();
-        app.state.view_mode = crate::config::ViewMode::Project;
-        app.state.workspaces = vec![Workspace::test_new("a"), Workspace::test_new("b")];
-        app.state.active = Some(0);
-        app.state.selected = 0;
-        let branch_row = Rect::new(0, 5, 20, 1);
-        let block = Rect::new(0, 6, 20, 2);
-        app.state.view.project_row_areas = vec![ProjectRowHitArea {
-            rect: branch_row,
-            target: ProjectRowTarget::Section {
-                ws_idx: 1,
-                checkout_key: "/repo/checkout-b".into(),
-                collapse_key: "wsec:1".into(),
-            },
-        }];
-        app.state.view.workspace_card_areas = vec![crate::app::state::WorkspaceCardArea {
-            ws_idx: 1,
-            rect: block,
-            indented: true,
-        }];
-
-        // Branch line: click does not switch workspace.
-        app.handle_mouse(mouse(
-            MouseEventKind::Down(MouseButton::Left),
-            branch_row.x + 5,
-            branch_row.y,
-        ));
-        app.handle_mouse(mouse(
-            MouseEventKind::Up(MouseButton::Left),
-            branch_row.x + 5,
-            branch_row.y,
-        ));
-        assert_eq!(
-            app.state.active,
-            Some(0),
-            "a click on the branch line must NOT switch workspace (P2, decision 7)"
-        );
-
-        // The block one row down: the same click focuses the workspace —
-        // on BOTH of its rows.
-        for row in [block.y, block.y + 1] {
-            app.handle_mouse(mouse(
-                MouseEventKind::Down(MouseButton::Left),
-                block.x + 5,
-                row,
-            ));
-            app.handle_mouse(mouse(
-                MouseEventKind::Up(MouseButton::Left),
-                block.x + 5,
-                row,
-            ));
-            assert_eq!(
-                app.state.active,
-                Some(1),
-                "a click on the block's row {row} must focus the workspace, \
-                 same as a Flat/Repo card"
-            );
-        }
-    }
-
-    #[test]
-    fn project_view_section_row_caret_still_collapses_rest_of_row_does_nothing() {
-        // P2, bora-79l T1 — attribution flip of
-        // `project_view_section_row_caret_collapses_rest_of_row_focuses_without_collapsing`:
-        // the caret split survives (only the caret `▾`/`▸` column
-        // collapses), but the "rest of the row selects" half moved one row
-        // down — clicking the branch line's non-caret region now does
-        // NOTHING (the workspace's own block carries selection). Goes red
-        // if the caret loses its collapse or the branch line regresses to
-        // selecting.
-        let mut app = app_for_mouse_test();
-        app.state.view_mode = crate::config::ViewMode::Project;
-        app.state.workspaces = vec![Workspace::test_new("a"), Workspace::test_new("b")];
-        app.state.active = Some(0);
-        app.state.selected = 0;
-        let row_rect = Rect::new(0, 5, 20, 1);
-        let collapse_key = "wsec:1".to_string();
-        app.state.view.project_row_areas = vec![ProjectRowHitArea {
-            rect: row_rect,
-            target: ProjectRowTarget::Section {
-                ws_idx: 1,
-                checkout_key: "/repo/checkout-b".into(),
-                collapse_key: collapse_key.clone(),
-            },
-        }];
-
-        // Click away from the caret column: no focus, no collapse.
-        app.handle_mouse(mouse(
-            MouseEventKind::Down(MouseButton::Left),
-            row_rect.x + 5,
-            row_rect.y,
-        ));
-        app.handle_mouse(mouse(
-            MouseEventKind::Up(MouseButton::Left),
-            row_rect.x + 5,
-            row_rect.y,
-        ));
-        assert_eq!(
-            app.state.active,
-            Some(0),
-            "a click away from the caret must NOT switch workspace anymore (P2)"
-        );
-        assert!(
-            !app.state.collapsed_space_keys.contains(&collapse_key),
-            "a click away from the caret must not collapse the row"
-        );
-
-        // Click on the caret column: collapses.
-        app.handle_mouse(mouse(
-            MouseEventKind::Down(MouseButton::Left),
-            row_rect.x,
-            row_rect.y,
-        ));
-        app.handle_mouse(mouse(
-            MouseEventKind::Up(MouseButton::Left),
-            row_rect.x,
-            row_rect.y,
-        ));
-        assert!(
-            app.state.collapsed_space_keys.contains(&collapse_key),
-            "a click on the caret must collapse the row"
-        );
-    }
-
-    #[test]
-    fn project_view_pane_dots_block_right_click_opens_the_full_workspace_menu() {
-        // P2, bora-79l T1 — attribution flip of
-        // `project_view_section_row_right_click_merges_full_workspace_menu_with_project_membership`:
-        // right-click on the workspace's own 2-row block resolves the
-        // block's `WorkspaceCardArea` through `workspace_at_row` and gets
-        // the FULL menu (`ContextMenuKind::GitWorkspace`/
-        // `Workspace` + the project-membership splice). Goes red if the
-        // menu stops opening from the block (card moved away or
-        // right-click routing broken). The branch line's own narrow menu
-        // stays pinned by
-        // `section_row_right_click_opens_project_member_targets_from_checkout_key`.
-        let mut app = app_for_mouse_test();
-        app.state.view_mode = crate::config::ViewMode::Project;
-        let mut ws = Workspace::test_new("linked");
-        ws.worktree_space = Some(crate::workspace::WorktreeSpaceMembership {
-            key: "grp".into(),
-            label: "grp".into(),
-            repo_root: "/repo".into(),
-            checkout_path: "/repo/checkout".into(),
-            is_linked_worktree: true,
-        });
-        app.state.workspaces = vec![ws];
-        let branch_row = Rect::new(0, 5, 20, 1);
-        let block = Rect::new(0, 6, 20, 2);
-        app.state.view.workspace_card_areas = vec![crate::app::state::WorkspaceCardArea {
-            ws_idx: 0,
-            rect: block,
-            indented: true,
-        }];
-        app.state.view.project_row_areas = vec![ProjectRowHitArea {
-            rect: branch_row,
-            target: ProjectRowTarget::Section {
-                ws_idx: 0,
-                checkout_key: "/repo/checkout".into(),
-                collapse_key: "wsec:0".into(),
-            },
-        }];
-
-        // Right-click on the branch line: NO workspace menu — the narrow
-        // membership menu for the checkout dir opens instead.
-        app.state.handle_mouse(
-            &mut app.terminal_runtimes,
-            crate::app::LOCAL_INPUT_SOURCE,
-            mouse(
-                MouseEventKind::Down(MouseButton::Right),
-                branch_row.x + 1,
-                branch_row.y,
-            ),
-        );
-        let branch_menu = app
-            .state
-            .context_menu
-            .as_ref()
-            .expect("right-click on the branch line still opens a menu");
-        assert!(
-            matches!(
-                &branch_menu.kind,
-                crate::app::state::ContextMenuKind::ProjectMemberTargets { .. }
-            ),
-            "the branch line's menu is the member-only one now: {:?}",
-            branch_menu.kind
-        );
-        app.state.context_menu = None;
-        app.state.mode = Mode::Terminal;
-
-        // Right-click one row down, on the block: the FULL workspace menu.
-        app.state.handle_mouse(
-            &mut app.terminal_runtimes,
-            crate::app::LOCAL_INPUT_SOURCE,
-            mouse(
-                MouseEventKind::Down(MouseButton::Right),
-                block.x + 1,
-                block.y,
-            ),
-        );
-        let menu = app
-            .state
-            .context_menu
-            .as_ref()
-            .expect("right-click on the workspace block must open a context menu");
-        assert!(
-            matches!(
-                &menu.kind,
-                crate::app::state::ContextMenuKind::GitWorkspace { ws_idx: 0, .. }
-            ),
-            "expected the full workspace menu (GitWorkspace) from the block"
-        );
-        assert!(
-            menu.items.iter().any(|item| item == "Rename"),
-            "full workspace item missing: {:?}",
-            menu.items
-        );
-        assert!(
-            menu.items.iter().any(|item| item == "New project\u{2026}"),
-            "project membership item missing: {:?}",
-            menu.items
-        );
-    }
-
-    #[test]
-    fn project_view_section_row_and_pane_dots_row_menus_gain_section_controls_bora_79l_10() {
-        // bora-79l.10 T6b: bead bora-79l.7 (F5) was supposed to land the
-        // section-control items on BOTH the branch header row (SectionRow
-        // -> ProjectMemberTargets) and the workspace's own block
-        // (PaneDotsRow -> GitWorkspace) and did not. Red on either row if
-        // the splice regresses, and red if a single item either row
-        // already offered (membership "Remove", the workspace's "Rename")
-        // drops out — proving nothing was traded away.
-        use crate::config::IsolatedDirs;
-        use crate::persist::projects::{self, Member, Project, WorktreesScope};
-
-        let _isolated = IsolatedDirs::new("section-menu-controls-both-rows");
-        let checkout = "/repo/checkout";
-        projects::update_projects_file::<String>(move |file| {
-            file.projects.insert(
-                "alpha".to_string(),
-                Project {
-                    name: None,
-                    channel: None,
-                    members: vec![Member {
-                        dir: checkout.to_string(),
-                        worktrees: WorktreesScope::All,
-                        template: None,
-                    }],
-                    orchestrator: None,
-                    sections: None,
-                    layout: None,
-                    auto_join: true,
-                },
-            );
-            Ok(())
-        })
-        .expect("seed alpha project owning the checkout");
-
-        let mut app = app_for_mouse_test();
-        app.state.projects = projects::ProjectsStore::load();
-        app.state.view_mode = crate::config::ViewMode::Project;
-        let mut ws = Workspace::test_new("linked");
-        ws.worktree_space = Some(crate::workspace::WorktreeSpaceMembership {
-            key: "grp".into(),
-            label: "grp".into(),
-            repo_root: "/repo".into(),
-            checkout_path: checkout.into(),
-            is_linked_worktree: true,
-        });
-        app.state.workspaces = vec![ws];
-
-        let branch_row = Rect::new(0, 5, 20, 1);
-        let block = Rect::new(0, 6, 20, 2);
-        app.state.view.workspace_card_areas = vec![crate::app::state::WorkspaceCardArea {
-            ws_idx: 0,
-            rect: block,
-            indented: true,
-        }];
-        app.state.view.project_row_areas = vec![ProjectRowHitArea {
-            rect: branch_row,
-            target: ProjectRowTarget::Section {
-                ws_idx: 0,
-                checkout_key: checkout.to_string(),
-                collapse_key: "wsec:0".into(),
-            },
-        }];
-
-        // The branch line: ProjectMemberTargets, keeps "Remove" AND gains
-        // the section controls.
-        app.state.handle_mouse(
-            &mut app.terminal_runtimes,
-            crate::app::LOCAL_INPUT_SOURCE,
-            mouse(
-                MouseEventKind::Down(MouseButton::Right),
-                branch_row.x + 1,
-                branch_row.y,
-            ),
-        );
-        let branch_menu = app
-            .state
-            .context_menu
-            .as_ref()
-            .expect("right-click on the branch line opens a menu");
-        assert!(
-            matches!(
-                &branch_menu.kind,
-                ContextMenuKind::ProjectMemberTargets { member_dir } if member_dir == checkout
-            ),
-            "kind: {:?}",
-            branch_menu.kind
-        );
-        assert!(
-            branch_menu.items.iter().any(|item| item == "Remove"),
-            "the pre-existing membership item must survive: {:?}",
-            branch_menu.items
-        );
-        for expected in [
-            "Header: ON",
-            "PART bolinhas: ON",
-            "PART diff: ON",
-            "Nova section: BRANCH",
-            "Nova section: COMANDO",
-            "Nova section: CHECKS",
-            "Nova section: LIVRE",
-        ] {
-            assert!(
-                branch_menu.items.iter().any(|item| item == expected),
-                "branch line menu missing {expected:?}: {:?}",
-                branch_menu.items
-            );
-        }
-        app.state.context_menu = None;
-        app.state.mode = Mode::Terminal;
-
-        // The block: GitWorkspace, keeps "Rename" AND gains the same
-        // section controls.
-        app.state.handle_mouse(
-            &mut app.terminal_runtimes,
-            crate::app::LOCAL_INPUT_SOURCE,
-            mouse(
-                MouseEventKind::Down(MouseButton::Right),
-                block.x + 1,
-                block.y,
-            ),
-        );
-        let block_menu = app
-            .state
-            .context_menu
-            .as_ref()
-            .expect("right-click on the block opens a menu");
-        assert!(
-            matches!(
-                &block_menu.kind,
-                ContextMenuKind::GitWorkspace { ws_idx: 0, .. }
-            ),
-            "kind: {:?}",
-            block_menu.kind
-        );
-        assert!(
-            block_menu.items.iter().any(|item| item == "Rename"),
-            "the pre-existing workspace item must survive: {:?}",
-            block_menu.items
-        );
-        for expected in [
-            "Header: ON",
-            "PART bolinhas: ON",
-            "PART diff: ON",
-            "Nova section: BRANCH",
-            "Nova section: COMANDO",
-            "Nova section: CHECKS",
-            "Nova section: LIVRE",
-        ] {
-            assert!(
-                block_menu.items.iter().any(|item| item == expected),
-                "block menu missing {expected:?}: {:?}",
-                block_menu.items
-            );
-        }
-    }
-
-    #[test]
-    fn workspace_drag_dropped_on_declared_project_header_reparents_it() {
-        // bora regression fix, item 5 ("navigate between different
-        // groups"): dropping a dragged workspace onto a declared
-        // project's header row moves it into that project via the
-        // already-existing `Workspace::set_project`/`project()` binding —
-        // no schema change, no `projects.yml` write from here.
-        let mut app = app_for_mouse_test();
-        app.state.view_mode = crate::config::ViewMode::Project;
-        app.state.workspaces = vec![Workspace::test_new("a")];
-        let project_header = Rect::new(0, 3, 20, 1);
-        app.state.view.project_row_areas = vec![ProjectRowHitArea {
-            rect: project_header,
-            target: ProjectRowTarget::Project {
-                collapse_key: "proj:alpha".into(),
-            },
-        }];
-        app.state.drag = Some(DragState {
-            target: DragTarget::WorkspaceReorder {
-                source_id: crate::app::LOCAL_INPUT_SOURCE,
-                source_ws_idx: 0,
-                insert_idx: Some(0),
-            },
-        });
-        app.state.force_full_repaint = false;
-
-        app.state.handle_mouse(
-            &mut app.terminal_runtimes,
-            crate::app::LOCAL_INPUT_SOURCE,
-            mouse(
-                MouseEventKind::Up(MouseButton::Left),
-                project_header.x + 1,
-                project_header.y,
-            ),
-        );
-
-        assert_eq!(app.state.workspaces[0].project(), Some("alpha"));
-        assert!(app.state.drag.is_none());
-        assert!(
-            app.state.force_full_repaint,
-            "re-parenting reflows the list and must force a full repaint (AGENTS.md)"
-        );
-    }
-
-    #[test]
-    fn workspace_drag_dropped_on_orphan_project_header_clears_project() {
-        // The inverse of the above: dropping onto the implicit
-        // `declared: false` orphan bucket (no slug) clears the binding,
-        // exactly what `set_project(None)` means.
-        let mut app = app_for_mouse_test();
-        app.state.view_mode = crate::config::ViewMode::Project;
-        let mut ws = Workspace::test_new("a");
-        ws.set_project(Some("alpha".to_string()));
-        app.state.workspaces = vec![ws];
-        let orphan_header = Rect::new(0, 3, 20, 1);
-        app.state.view.project_row_areas = vec![ProjectRowHitArea {
-            rect: orphan_header,
-            target: ProjectRowTarget::Project {
-                collapse_key: crate::ui::ORPHANS_COLLAPSE_KEY.to_string(),
-            },
-        }];
-        app.state.drag = Some(DragState {
-            target: DragTarget::WorkspaceReorder {
-                source_id: crate::app::LOCAL_INPUT_SOURCE,
-                source_ws_idx: 0,
-                insert_idx: Some(0),
-            },
-        });
-
-        app.state.handle_mouse(
-            &mut app.terminal_runtimes,
-            crate::app::LOCAL_INPUT_SOURCE,
-            mouse(
-                MouseEventKind::Up(MouseButton::Left),
-                orphan_header.x + 1,
-                orphan_header.y,
-            ),
-        );
-
-        assert_eq!(app.state.workspaces[0].project(), None);
-    }
-
-    #[test]
-    fn workspace_drag_dropped_on_a_workspace_row_still_reorders_and_leaves_project_untouched() {
-        // Distinguishes the two drops cleanly: a `Section` (workspace)
-        // drop target must still reorder, and must never touch the
-        // source's `project()` binding — only a `Project` (header) drop
-        // target re-parents.
-        let mut app = app_for_mouse_test();
-        let mut ws_a = Workspace::test_new("a");
-        ws_a.set_project(Some("alpha".to_string()));
-        app.state.workspaces = vec![ws_a, Workspace::test_new("b")];
-        app.state.active = Some(0);
-        app.state.selected = 0;
-        let area = Rect::new(0, 0, 106, 20);
-        crate::ui::compute_view(&mut app.state, area);
-
-        let second = app.state.view.workspace_card_areas[1].rect;
-        // A stray Project-view `Section` hit area happens to sit over the
-        // second card too — proves the drop distinguishes by TARGET KIND,
-        // not merely by "some project_row_areas entry exists here".
-        app.state.view.project_row_areas = vec![ProjectRowHitArea {
-            rect: second,
-            target: ProjectRowTarget::Section {
-                ws_idx: 1,
-                checkout_key: "/repo/checkout-b".into(),
-                collapse_key: "wsec:1".into(),
-            },
-        }];
-        app.state.drag = Some(DragState {
-            target: DragTarget::WorkspaceReorder {
-                source_id: crate::app::LOCAL_INPUT_SOURCE,
-                source_ws_idx: 0,
-                insert_idx: Some(2),
-            },
-        });
-
-        let action = app.state.handle_mouse(
-            &mut app.terminal_runtimes,
-            crate::app::LOCAL_INPUT_SOURCE,
-            mouse(
-                MouseEventKind::Up(MouseButton::Left),
-                second.x + 1,
-                second.y,
-            ),
-        );
-
-        assert_eq!(
-            app.state.workspaces[0].project(),
-            Some("alpha"),
-            "dropping on a workspace row must not touch the source's project binding"
-        );
-        assert!(
-            matches!(
-                action,
-                Some(MouseAction::MoveWorkspace {
-                    source_ws_idx: 0,
-                    insert_idx: 2,
-                })
-            ),
-            "dropping on a workspace row must still reorder"
-        );
     }
 
     fn dagr_test_plugin(enabled: bool) -> crate::api::schema::InstalledPluginInfo {

@@ -76,10 +76,6 @@ pub struct WorkspaceSnapshot {
     pub active_tab: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub visual_group: Option<String>,
-    /// Explicit `projects.yml` slug binding; `None` means "derive from
-    /// directory", matching `Workspace::project`'s pre-existing default.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub project: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -179,7 +175,6 @@ impl From<LegacyWorkspaceSnapshot> for WorkspaceSnapshot {
             tabs: vec![tab],
             active_tab: 0,
             visual_group: None,
-            project: None,
         }
     }
 }
@@ -337,7 +332,6 @@ fn capture_workspace(
             .collect(),
         active_tab: ws.active_tab,
         visual_group: ws.visual_group.clone(),
-        project: ws.project.clone(),
     }
 }
 
@@ -654,25 +648,6 @@ mod tests {
     }
 
     #[test]
-    fn round_trip_snapshot_written_in_project_mode_reloads_as_project() {
-        let snap = SessionSnapshot {
-            version: SNAPSHOT_VERSION,
-            workspaces: vec![],
-            active: None,
-            selected: 0,
-            sidebar_width: None,
-            sidebar_section_split: None,
-            collapsed_space_keys: std::collections::HashSet::new(),
-            right_panel_width: None,
-            right_panel_collapsed: None,
-            view_mode: crate::config::ViewMode::Project,
-        };
-        let json = serde_json::to_string(&snap).unwrap();
-        let restored = parse_snapshot(&json).unwrap();
-        assert_eq!(restored.view_mode, crate::config::ViewMode::Project);
-    }
-
-    #[test]
     fn snapshot_missing_view_mode_field_reloads_as_repo() {
         // Simulates a snapshot file written before this bead: no
         // "view_mode" key at all, not even a null.
@@ -759,7 +734,6 @@ mod tests {
                 }],
                 active_tab: 0,
                 visual_group: None,
-                project: None,
             }],
             active: Some(0),
             selected: 0,
@@ -793,79 +767,6 @@ mod tests {
         );
         assert_eq!(restored.sidebar_width, Some(26));
         assert_eq!(restored.sidebar_section_split, Some(0.5));
-    }
-
-    #[test]
-    fn round_trip_workspace_project_binding() {
-        let mut state = state_with_workspaces(&["beta"]);
-        state.workspaces[0].set_project(Some("beta".to_string()));
-
-        let captured = capture_from_state(&state);
-        assert_eq!(
-            captured.workspaces[0].project.as_deref(),
-            Some("beta"),
-            "capture_workspace must copy the binding onto the WorkspaceSnapshot"
-        );
-
-        let json = serde_json::to_string(&captured).unwrap();
-        let restored = parse_snapshot(&json).unwrap();
-
-        assert_eq!(restored.workspaces[0].project.as_deref(), Some("beta"));
-    }
-
-    #[test]
-    fn old_snapshot_without_project_key_restores_as_none() {
-        // Simulates a snapshot file written before the project-binding
-        // field existed: no "project" key at all, not even a null.
-        let json = serde_json::json!({
-            "version": SNAPSHOT_VERSION,
-            "workspaces": [{
-                "id": "wold",
-                "identity_cwd": "/tmp",
-                "tabs": [{
-                    "layout": { "Pane": 0 },
-                    "panes": {
-                        "0": { "cwd": "/tmp" }
-                    },
-                    "zoomed": false,
-                    "focused": 0,
-                    "root_pane": 0
-                }],
-                "active_tab": 0
-            }],
-            "active": 0,
-            "selected": 0
-        })
-        .to_string();
-
-        let restored = parse_snapshot(&json).unwrap();
-
-        assert_eq!(restored.workspaces[0].project, None);
-    }
-
-    #[test]
-    fn workspace_snapshot_with_no_project_omits_the_key_when_serialized() {
-        let snap = WorkspaceSnapshot {
-            id: Some("wnone".to_string()),
-            custom_name: None,
-            identity_cwd: PathBuf::from("/tmp"),
-            worktree_space: None,
-            public_pane_numbers: HashMap::new(),
-            next_public_pane_number: 0,
-            public_tab_numbers: Vec::new(),
-            next_public_tab_number: 0,
-            tabs: vec![],
-            active_tab: 0,
-            visual_group: None,
-            project: None,
-        };
-
-        let json = serde_json::to_string(&snap).unwrap();
-
-        assert!(
-            !json.contains("project"),
-            "a workspace with no project binding must not bloat the snapshot with the key: {json}"
-        );
     }
 
     #[test]
@@ -1399,7 +1300,6 @@ mod tests {
                 }],
                 active_tab: 0,
                 visual_group: None,
-                project: None,
             }],
             active: Some(0),
             selected: 0,

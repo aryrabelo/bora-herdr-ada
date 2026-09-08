@@ -1347,22 +1347,6 @@ impl AppState {
                 crate::ui::WorkspaceListEntry::GroupHeader { .. }
                 | crate::ui::WorkspaceListEntry::ProjectHeader { .. }
                 | crate::ui::WorkspaceListEntry::HiddenHeader { .. } => None,
-                // Project view (6a): every member workspace is its own
-                // `PaneDotsRow` block, so the BLOCK is what cycling and
-                // numbered switching visit — the group's `SectionRow`
-                // names only the representative and would visit it
-                // twice. A collapsed section emits no blocks, so its
-                // members drop out of the cycle exactly like a
-                // collapsed project's do. Focusing an individual pane
-                // from the keyboard is bora-49p.5, not this order; from
-                // the mouse it is the per-dot hit area on this very
-                // row.
-                crate::ui::WorkspaceListEntry::ProjectRow { .. }
-                | crate::ui::WorkspaceListEntry::WorktreeRow { .. }
-                | crate::ui::WorkspaceListEntry::SectionHeader { .. }
-                | crate::ui::WorkspaceListEntry::SectionItem { .. }
-                | crate::ui::WorkspaceListEntry::PrRow { .. }
-                | crate::ui::WorkspaceListEntry::SectionRow { .. } => None,
                 crate::ui::WorkspaceListEntry::PaneDotsRow { ws_idx, .. } => Some(ws_idx),
             })
             .collect::<Vec<_>>();
@@ -2930,7 +2914,6 @@ impl AppState {
             AppEvent::RepoPrsRefreshed { .. } => Vec::new(),
             AppEvent::RepoIssuesRefreshed { .. } => Vec::new(),
             AppEvent::RepoBranchesRefreshed { .. } => Vec::new(),
-            AppEvent::RepoWorktreesRefreshed { .. } => Vec::new(),
             AppEvent::WorktreeAddFinished(_) => Vec::new(),
             AppEvent::WorktreeRemoveFinished(_) => Vec::new(),
             AppEvent::WorktreeMergeToMainFinished { .. } => Vec::new(),

@@ -1,14 +1,3 @@
-#[cfg(test)]
-mod capture;
-pub(crate) mod project_view;
-// Render wiring landed for `PaneDotsRow` (F2) and for the branch header
-// (F3, bora-79l T3): `project_view` now consumes `Section.header_on`,
-// `SectionParts.diff` and the `SectionKind::Branch` shape at emission, and
-// `section_row_line` renders the declared header. Still unconsumed:
-// `SectionParts.dots` (the l2 toggle) and full model-driven section
-// emission (F7) — dead_code stays allowed until those land.
-#[allow(dead_code)]
-pub(crate) mod sections;
 mod tokens;
 
 use std::time::Instant;
@@ -28,7 +17,7 @@ use super::status::{
     state_label_color,
 };
 use super::text::{display_width, display_width_u16, truncate_end};
-use crate::app::state::{AgentPanelSort, Palette, ProjectRowHitArea, ProjectRowTarget};
+use crate::app::state::{AgentPanelSort, Palette};
 use crate::app::{AppState, Mode};
 use crate::detect::AgentState;
 use crate::terminal::TerminalRuntimeRegistry;
@@ -41,10 +30,17 @@ const AGENT_PANEL_HEADER_ROWS: u16 = 3;
 /// or be hit-tested). Doubles as the list's top margin.
 const WORKSPACE_LIST_TOP_MARGIN_ROWS: u16 = 1;
 
+/// Blank row after a folder's last `PaneDotsRow` block, before the next
+/// header. This was `[ui.sidebar.projects] row_gap` (default 1) back when
+/// the Project view existed; with that view retired the default is pinned
+/// here and applies ONLY after a `PaneDotsRow` — exactly where the old
+/// trailing-gap rule put it — so Flat/Repo/Folders layout is unchanged.
+/// See `entry_row_height`'s `PaneDotsRow` arm.
+const WORKSPACE_LIST_ROW_GAP: u16 = 1;
+
 /// Glyph + style for a resolved `ChecksRollup` value, shared by
-/// `checks_badge` (worktree/branch PR badges) and `pr_checks_glyph`
-/// (bora-yw6.2's PULL REQUESTS band rows) so the CHECKS palette never
-/// drifts between the two surfaces.
+/// `checks_badge` (worktree/branch PR badges) so the CHECKS palette
+/// never drifts between surfaces.
 fn checks_rollup_glyph(
     rollup: crate::workspace::ChecksRollup,
     p: &Palette,
@@ -108,8 +104,8 @@ fn sidebar_section_heights(total_h: u16, split_ratio: f32) -> (u16, u16) {
 
 /// Whether the agent-detail panel occupies the bottom of the expanded sidebar.
 ///
-/// Retired (2026-08-23): the panel is visually gone so the Project view's three
-/// levels get the whole column. The panel code is deliberately NOT deleted —
+/// Retired (2026-08-23): the panel is visually gone so the workspace list
+/// gets the whole column. The panel code is deliberately NOT deleted —
 /// every `agent_panel_*` helper keeps its existing call sites and simply runs
 /// against a zero-height rect, so nothing became dead code, no `AppState`
 /// field was dropped, and old snapshots (`sidebar_section_split`) restore
@@ -168,7 +164,7 @@ fn agent_panel_header_label_rect(area: Rect, label: &str) -> Rect {
 }
 
 /// Right-aligned click target on the workspace list's top margin row that
-/// cycles Flat/Repo/Project view (bora regression fix: commit 7bb8133b
+/// cycles Flat/Repo/Folders view (bora regression fix: commit 7bb8133b
 /// removed both the ` spaces` title and this toggle when it only meant to
 /// drop the title — restoring the toggle alone, not the title).
 pub(crate) fn view_mode_toggle_rect(area: Rect, mode: crate::config::ViewMode) -> Rect {
@@ -679,93 +675,6 @@ pub(crate) struct ProjectHeaderBranch {
     pub behind: usize,
 }
 
-/// Where a Project-view attachment band may appear in the tree: hanging off
-/// a `WorktreeRow` (today: COMMANDS, CHECKS) or off a `ProjectRow` (today:
-/// TODOS, NOTES, PULL REQUESTS). A descriptor declares its own level, and
-/// the resolver (`project_view::filter_by_level`) honours it — this is what
-/// makes placing a band where it never declared it may appear
-/// unrepresentable, rather than merely unconventional (bora-by6).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SectionLevel {
-    Worktree,
-    Project,
-}
-
-/// How a band header's right-aligned counter reads.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SectionCounter {
-    /// `done/total`, a progress readout (COMMANDS, CHECKS, TODOS).
-    Progress,
-    /// A plain count with no denominator — a list, not a progress bar
-    /// (NOTES, PULL REQUESTS).
-    Count,
-}
-
-/// How a band's item bullet reacts to `running`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SectionBullet {
-    /// `●` running / `·` idle — the default.
-    Standard,
-    /// Idle renders as a red `✗` failure marker instead of a dim dot: CHECKS
-    /// rows exist only to flag failures, so an idle row IS the problem.
-    FlagIdleAsError,
-}
-
-/// Registry entry for one Project-view attachment band (bora-by6). This
-/// replaces the closed `ProjectSection` enum: placement (`level`),
-/// presentation (`glyph`/`label`/`counter`/`bullet`), and behavior (`push`)
-/// for a band all live on its descriptor instead of being scattered across
-/// per-variant match arms, so a new band costs one `const` registry entry
-/// (`project_view::REGISTRY`) plus one push function — not a match arm in
-/// every site that used to enumerate the closed set. A row band is referred
-/// to by `&'static` reference to a descriptor, never by enum variant.
-#[derive(Debug)]
-pub(crate) struct SectionDescriptor {
-    /// The name a `sections.order:` entry uses (case-insensitive lookup via
-    /// `from_wire_name`).
-    pub(crate) wire_name: &'static str,
-    pub(crate) glyph: &'static str,
-    pub(crate) label: &'static str,
-    pub(crate) level: SectionLevel,
-    pub(crate) counter: SectionCounter,
-    pub(crate) bullet: SectionBullet,
-    /// Pushes this band's header/items onto `entries`, or nothing when the
-    /// band's data source is empty/absent (rule 5) — and an explicit error
-    /// row, never a silently empty band, when the data source errored. The
-    /// seven pre-registry push functions had non-uniform signatures
-    /// (`&[String]` selection, `&Workspace`, a bare `slug`, an added
-    /// `local_branches`); `project_view::SectionPushCtx` normalizes them
-    /// onto one borrowed-context type so one function-pointer type fits
-    /// every band.
-    pub(crate) push: fn(&mut Vec<WorkspaceListEntry>, &project_view::SectionPushCtx<'_>),
-}
-
-// `wire_name` is the unique key by design (one registry entry per name,
-// checked in `#[test] fn registry_wire_names_are_unique`), so equality
-// compares it alone. A derived `PartialEq` would also compare `push`, and
-// comparing function pointers for equality is unreliable across codegen
-// units (rustc's `unpredictable_function_pointer_comparisons` lint) — this
-// impl sidesteps that entirely rather than silencing the lint.
-impl PartialEq for SectionDescriptor {
-    fn eq(&self, other: &Self) -> bool {
-        self.wire_name == other.wire_name
-    }
-}
-impl Eq for SectionDescriptor {}
-
-impl SectionDescriptor {
-    /// Case-insensitive `sections.order:` lookup. `None` for an
-    /// unrecognized name — the resolver ignores it rather than erroring, so
-    /// a future bora writing an unknown section name into `projects.yml`
-    /// cannot break an older binary's sidebar.
-    pub(crate) fn from_wire_name(name: &str) -> Option<&'static SectionDescriptor> {
-        project_view::REGISTRY
-            .iter()
-            .copied()
-            .find(|section| section.wire_name.eq_ignore_ascii_case(name))
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum WorkspaceListEntry {
     Workspace {
@@ -808,181 +717,32 @@ pub(crate) enum WorkspaceListEntry {
     /// number of temporarily-hidden workspaces beneath it.
     HiddenHeader { count: usize },
 
-    // ── Project view (`ViewMode::Project`) ────────────────────────────────
-    // These six variants are emitted ONLY by the project-view builder in
-    // `sidebar::project_view`; the Flat and Repo views never produce them and
-    // are untouched. Every one is height 1, like every variant above.
-    /// Top level: a user-declared project from `projects.yml`. `live`/`total`
-    /// is the aggregate workspace count rendered right-aligned. The trailing
-    /// implicit group holding workspaces that match no member has
-    /// `declared: false`.
-    ProjectRow {
-        name: String,
-        collapse_key: String,
-        live: usize,
-        total: usize,
-        declared: bool,
-    },
-    /// A worktree found on disk with no workspace open on it (bora-qdi):
-    /// rendered dimmed as an open affordance, carries no `ws_idx` children.
-    /// This is the ONLY case this variant still covers (bora-c1h) — every
-    /// OPEN checkout now renders one `SectionRow` per workspace instead
-    /// (`repo`/`ahead`/`behind`/`pr` stay meaningless for an unopened row
-    /// and are always the zero/`None` defaults).
-    WorktreeRow {
-        checkout_key: String,
-        repo: Option<String>,
-        branch: String,
-        ahead: usize,
-        behind: usize,
-        pr: Option<u64>,
-        collapse_key: String,
-        unopened: bool,
-    },
-    /// T6 pass 6a (bora-79l.10): the GROUP row of one branch section —
-    /// ONE `SectionRow` per branch group (`branch_group`), header at the
-    /// TOP of the group, the members' `PaneDotsRow` blocks contiguous
-    /// below. Before 6a every workspace got its own `SectionRow` and the
-    /// same-branch exception pushed the one visible header BETWEEN the
-    /// blocks (the "generic-row problem" this bead exists to kill). No
-    /// new variant carries the change: this row, `PaneDotsRow` and
-    /// `SectionHeader` are the runtime.
-    ///
-    /// Per-workspace fields name the REPRESENTATIVE member (the FIRST
-    /// workspace of the group): `ws_idx` is the workspace git/PR/checks
-    /// state is read from at render time (see `section_row_line`),
-    /// `checkout_key` names its checkout (bora-uqv's
-    /// `ProjectMemberTargets` right-click menu resolves `member_dir`
-    /// straight from it), and `collapse_key` (`wsec:{ws_idx}`)
-    /// collapses the whole group's blocks — one toggle per section now.
-    SectionRow {
-        ws_idx: usize,
-        checkout_key: String,
-        collapse_key: String,
-        /// T3 (bora-79l): the section model's header switch — read from the
-        /// project's `layout:` at emission (`section_model_flags`), obeyed
-        /// by the renderer and the geometry pass. T6's toggle button WRITES
-        /// the model; this field only carries it.
-        header_on: bool,
-        /// Same-branch exception (T3 decision 5): set at emission when a
-        /// LOWER `SectionRow` of the same (repo, branch) exists in this
-        /// project group — the upper header stays hidden so two headers of
-        /// one branch never coexist visible. 6a narrowed where that can
-        /// happen: emission groups by `branch_group`, so within one
-        /// project the exception only fires between STACKED runtime
-        /// sections (rare, 6b's world); in the normal one-section-per-
-        /// branch shape the header simply sits at the top.
-        header_hidden: bool,
-        /// T3: `SectionParts.diff` from the same model lookup — gates the
-        /// `+N −M` diff numbers inside the header's state cluster.
-        show_diff: bool,
-        /// T7 (bora-79l, divergence C): the branch-GROUP key
-        /// (`project_view::branch_group_key` — repo identity + branch)
-        /// the whole container is keyed by. `project_view_trailing_gap`
-        /// compares it across consecutive sections to place the blank
-        /// separator row: blank BETWEEN branch groups (and before a band
-        /// header), never between sibling workspaces of one branch
-        /// (ALVO_CAPTURE rows 04-07 are glued, row 08 is blank).
-        branch_group: String,
-        /// 6a: the group's `+N −M` cluster — the SUM of every member's
-        /// cached change set, folded once at emission (membership is
-        /// emission-time knowledge the renderer does not have); the
-        /// renderer only gates it on `show_diff`. PR/checks stay the
-        /// representative's own (`ws_idx` above).
-        diff: Option<(u32, u32)>,
-    },
-    /// Third level: a `COMMANDS` or `CHECKS` band hanging off a worktree,
-    /// with a right-aligned `done/total`. Emitted only when non-empty, in
-    /// declared order (`sections.order:`, default COMMANDS then CHECKS —
-    /// bora-5ia, `project_view::resolve_section_order`).
-    /// `TODOS`/`NOTES` use the same shape one level up, hanging off the
-    /// project row (bora-s3y.3), also declarable, default TODOS then NOTES.
-    SectionHeader {
-        kind: &'static SectionDescriptor,
-        collapse_key: String,
-        done: usize,
-        total: usize,
-        /// T6 6b (bora-79l.10): `Section.name`, when declared, overrides
-        /// the descriptor's static `label` at render (`section_header_
-        /// line`) — the only way a per-instance header name can reach
-        /// this row, since `kind` is a shared `&'static` descriptor and
-        /// cannot itself carry one (no `Box::leak`, plan decision).
-        /// `None` for every registry band (COMMANDS/CHECKS/TODOS/
-        /// NOTES/PULL REQUESTS): they have no per-instance name to
-        /// carry, only declared (`push_declared_sections`) sections do.
-        name: Option<String>,
-    },
-    /// A row inside a `SectionHeader` band.
-    SectionItem {
-        kind: &'static SectionDescriptor,
-        label: String,
-        detail: Option<String>,
-        running: bool,
-        /// The workspace a COMMANDS row launches into (the worktree's
-        /// representative workspace, bora-55c.3). `None` for bands whose
-        /// rows are not launchable (CHECKS/TODOS/NOTES).
-        ws_idx: Option<usize>,
-    },
-    /// Project view's replacement for `PaneRow`: one 2-line BLOCK per OPEN
-    /// workspace, regardless of pane count — l1 the workspace's own
-    /// unique name (`pane_dots_name_line`), l2 one state dot per pane
-    /// (`pane_dots_dots_line`), height 2 (`entry_row_height`, bora-79l F2,
-    /// ALVO_CAPTURE rows 04-05/28-29). `name` is already disambiguated at
-    /// emission (the same unique-name resolution `SectionRow`'s sibling
-    /// `Workspace` rows use elsewhere), so this variant never re-derives
-    /// it.
+    /// A workspace's pane-state BLOCK: l1 the workspace's own unique name
+    /// (`pane_dots_name_line`), l2 one state dot per pane
+    /// (`pane_dots_dots_line`), height 2 when the dots line is on
+    /// (`entry_row_height`, bora-79l F2, ALVO_CAPTURE rows 04-05/28-29).
+    /// `name` is already disambiguated at emission (the same base label
+    /// `workspace_group_name` gives every workspace row), so this variant
+    /// never re-derives it.
     ///
     /// Pane identity AND pane state are both read from
-    /// `AppState.workspaces[ws_idx]` at render/hit-test time, never
-    /// carried on the entry — same rule `SectionRow` already states for
-    /// git/PR state, extended here to the pane list itself since its
-    /// length is not fixed. This is why `workspace_list_areas_for_entries`
-    /// (unlike every other arm there) takes an `app: &AppState` parameter:
-    /// per-dot hit areas need each pane's live `pane_id` to build a
-    /// `ProjectRowTarget::Pane`, and a 2-field entry has nowhere else to
-    /// get it from. Dot hit areas land on l2 (`row_y + 1`) when the block
-    /// is 2 lines, and on the row itself when `inline` is set.
+    /// `AppState.workspaces[ws_idx]` at render time, never carried on the
+    /// entry — its length is not fixed, so a 2-field entry has nowhere
+    /// else to carry it. Dots land on l2 (`row_y + 1`) when the block is
+    /// 2 lines, and on the row itself when `inline` is set.
     PaneDotsRow {
         ws_idx: usize,
         name: String,
-        /// T6 6b (bora-79l.10): the owning Branch section's
-        /// `parts.dots` flag (`project_view::section_model_flags`),
-        /// carried onto the entry so every lockstep pass reads the
+        /// Carried onto the entry so every lockstep pass reads the
         /// l2-toggle off the row itself rather than re-deriving it from
         /// the model a second time. OFF collapses the block to its l1
         /// name line alone (`entry_row_height`).
         dots: bool,
         /// Folders view (owner's ruling, 2026-08-31): name and dots share
-        /// ONE row — `name ○ ○` — instead of the Project view's 2-line
-        /// block. Carried on the entry so all three lockstep passes
+        /// ONE row — `name ○ ○` — instead of the 2-line split block. Carried on the entry so all three lockstep passes
         /// (height, render, hit areas) agree without reading `view_mode`.
         /// Ignored when `dots` is off (both shapes are 1 row of name).
         inline: bool,
-    },
-    /// Project-level: one open PR authored by the user with no local
-    /// worktree, inside the `PULL REQUESTS` band (bora-yw6.2, C2). `checks`
-    /// is A1's `OpenPr.checks: Option<ChecksRollup>` (`workspace::git::open_prs`
-    /// reuses the pre-existing `check_status::ChecksRollup` rather than a
-    /// second convention — `None` means no checks reported for the head
-    /// commit), read straight off `AppState.repo_open_prs` — no fetch, no
-    /// allocation beyond the fields themselves, same as every other row
-    /// here. Height 1.
-    PrRow {
-        number: u64,
-        title: String,
-        url: String,
-        head_ref: String,
-        is_draft: bool,
-        checks: Option<crate::workspace::ChecksRollup>,
-        /// A representative workspace of this PR's repo, resolved ONCE when
-        /// the band is built, so the click can name which repo to create the
-        /// worktree in. `None` when no open workspace shares the repo
-        /// identity yet, which makes the row render normally but stay
-        /// un-clickable rather than opening a worktree in the wrong repo.
-        /// Resolved at build time and not at hit-test time on purpose: the
-        /// lookup is a scan over `app.workspaces`, and the geometry walk runs
-        /// per render x per pane x per client.
-        ws_idx: Option<usize>,
     },
 }
 
@@ -1009,763 +769,44 @@ pub(crate) fn worktree_new_hit_areas_from_headers(
 /// Shared row-height for a single entry. ALL three lockstep passes
 /// (`workspace_list_visible_count`, `compute_workspace_list_areas`,
 /// `render_workspace_list`) MUST call this. Never duplicate height logic.
-fn entry_row_height(
-    entry: &WorkspaceListEntry,
-    entries: &[WorkspaceListEntry],
-    idx: usize,
-    row_gap: u16,
-) -> u16 {
-    let base: u16 = match entry {
+fn entry_row_height(entry: &WorkspaceListEntry, entries: &[WorkspaceListEntry], idx: usize) -> u16 {
+    match entry {
         WorkspaceListEntry::GroupHeader { .. } => 1,
         WorkspaceListEntry::ProjectHeader { .. } => 1,
         WorkspaceListEntry::BranchHeader { .. } => 1,
         WorkspaceListEntry::Workspace { .. } => 1,
         WorkspaceListEntry::HiddenHeader { .. } => 1,
-        // R3, refined the same day (owner saw it rendered): the band grows
-        // by ONE pad row above its text — `project_band_top_pad`'s doc. The
-        // breathing room BELOW the band is a plain row now, not band
-        // (`project_view_trailing_gap`).
-        WorkspaceListEntry::ProjectRow { .. } => 1 + project_band_top_pad(entries, idx),
-        WorkspaceListEntry::WorktreeRow { .. } => 1,
-        WorkspaceListEntry::SectionRow { .. } => 1,
-        WorkspaceListEntry::SectionHeader { .. } => 1,
-        WorkspaceListEntry::SectionItem { .. } => 1,
         // bora-79l F2: the block split into l1 (name) + l2 (dots) —
         // `pane_dots_name_line`/`pane_dots_dots_line`'s own docs. The
         // Folders `inline` shape puts the dots ON the name row instead.
         WorkspaceListEntry::PaneDotsRow { dots, inline, .. } => {
-            if *dots && !*inline {
-                2
-            } else {
-                1
-            }
-        }
-        WorkspaceListEntry::PrRow { .. } => 1,
-    };
-    base + project_view_trailing_gap(entry, entries, idx, row_gap)
-}
-
-/// Padding row inside a project header's filled band (R3, refined by the
-/// owner's second ruling of 2026-08-28): ONE blank BAND-COLORED row above
-/// the first header of a run, none below, none between siblings.
-///
-/// Consecutive `ProjectRow`s still render as ONE continuous band, so the
-/// pad belongs to the BAND, not to the row. The first ruling gave the band
-/// a pad on each side; seeing it rendered, the owner called the padding
-/// "muito grande" and the band glued ("colada") to the content below, so
-/// the bottom pad came OUT of the band and the breathing room moved to
-/// `project_view_trailing_gap` as one PLAIN row after it — same total
-/// height, less purple, background where the band used to be.
-///
-/// A single `u16` (not the old `(top, bottom)` pair — there is no bottom)
-/// read by three passes: `entry_row_height` for the height, the renderer
-/// to place the text line, and `compute_workspace_list_areas` to size the
-/// hit rect. It is derived purely from `entries`/`idx` — data all three
-/// already hold — so they cannot disagree (AGENTS.md: "a derived column
-/// must be anchored to data both passes share").
-fn project_band_top_pad(entries: &[WorkspaceListEntry], idx: usize) -> u16 {
-    if !matches!(
-        entries.get(idx),
-        Some(WorkspaceListEntry::ProjectRow { .. })
-    ) {
-        return 0;
-    }
-    u16::from(!matches!(
-        idx.checked_sub(1).and_then(|prev| entries.get(prev)),
-        Some(WorkspaceListEntry::ProjectRow { .. })
-    ))
-}
-
-/// The row height a Project-view entry is CONTRACTED to have, restated
-/// independently of `entry_row_height` so the lockstep tests that call it
-/// still assert something.
-///
-/// Several tests used to hardcode "1, except `PaneDotsRow` is 2"; R3 made
-/// a third shape (the padded project band) and broke all of them at once,
-/// which is the signal that the expectation wanted one owner. Deriving it
-/// from `project_band_pads` would be a tautology — the helper under test
-/// would supply its own expected value — so the neighbour walk is spelled
-/// out again here on purpose. Two statements of one rule that must agree
-/// IS the test.
-#[cfg(test)]
-pub(crate) fn expected_entry_height(entries: &[WorkspaceListEntry], idx: usize) -> u16 {
-    match entries.get(idx) {
-        Some(WorkspaceListEntry::PaneDotsRow { dots, inline, .. }) => {
-            // Restated independently of `entry_row_height` on purpose
-            // (this helper's own doc): 2 lines only for a non-inline
-            // block with its dots line on.
-            if *dots && !*inline {
-                2
-            } else {
-                1
-            }
-        }
-        // R3, refined: the text row plus ONE top-edge pad — 2 alone, 1
-        // with a sibling above. No bottom pad (owner's second ruling,
-        // 2026-08-28): the row below the band is
-        // `project_view_trailing_gap`'s plain separator, not this entry's.
-        Some(WorkspaceListEntry::ProjectRow { .. }) => {
-            let is_band =
-                |i: usize| matches!(entries.get(i), Some(WorkspaceListEntry::ProjectRow { .. }));
-            2 - u16::from(idx > 0 && is_band(idx - 1))
-        }
-        _ => 1,
-    }
-}
-
-/// Trailing blank-row discipline for Project view (bora-c1h G7, T7
-/// bora-79l divergence C, T6 6a the group shape). Two rules:
-///
-/// - After a `PaneDotsRow`: a blank row separates the END of a branch
-///   GROUP (or the last group, before a band) from the next header —
-///   never sibling members of one branch (ALVO_CAPTURE: rows 04-07
-///   glued, row 08 blank), never right before the next project's
-///   `ProjectRow`, never after the final block in the list. "Same
-///   group" is decided by `SectionRow::branch_group` (repo identity +
-///   branch): a block's own group is the nearest `SectionRow` ABOVE it
-///   — 6a made groups hold 2+ blocks, so the walk skips sibling
-///   `PaneDotsRow`s instead of reading `entries[idx - 1]` directly. A
-///   next section whose header is HIDDEN (stacked-sections same-branch
-///   exception) suppresses the gap too: the hidden header still owns a
-///   row and paints nothing, so that row already IS the separator — a
-///   gap on top of it was the doubled blank the owner pointed at.
-/// - After a `ProjectRow`: ONE plain row, when anything follows. R3's
-///   first ruling moved the respiro INSIDE the band (2026-08-28, "espaço
-///   indesejado"); the owner's second ruling the same day — seeing it
-///   rendered — sent it back out: the band's bottom pad read as oversized
-///   padding and the purple sat glued ("colada", "apertadinho") to its
-///   first block. So the band keeps only its TOP pad
-///   (`project_band_top_pad`) and this gap returns as BACKGROUND, not
-///   band: same 3-row rhythm, half the purple. Nothing after the band
-///   (list end) → no gap, the same rule as the block gap below.
-///
-/// Attribution: before T7 the gap fired after EVERY block; before
-/// bora-c1h G7 `PaneRow` could repeat N times per workspace, so the gap
-/// only applied after the LAST sibling `PaneRow` of a block.
-///
-/// `entry_row_height`'s own `entries`/`idx` peek (its doc) is exactly what
-/// this needs, so the three lockstep passes stay in agreement by
-/// construction — no separate pass.
-fn project_view_trailing_gap(
-    entry: &WorkspaceListEntry,
-    entries: &[WorkspaceListEntry],
-    idx: usize,
-    row_gap: u16,
-) -> u16 {
-    if matches!(entry, WorkspaceListEntry::ProjectRow { .. }) {
-        return u16::from(entries.get(idx + 1).is_some());
-    }
-    let WorkspaceListEntry::PaneDotsRow { .. } = entry else {
-        return 0;
-    };
-    // The owning section: the nearest `SectionRow` above this block.
-    // Emission guarantees one exists (the group header tops every
-    // group); `unwrap_or("")` keeps a hand-built orphan block
-    // conservative — a separator, never a glue.
-    let own_group = entries[..idx]
-        .iter()
-        .rev()
-        .find_map(|e| match e {
-            WorkspaceListEntry::SectionRow { branch_group, .. } => Some(branch_group.as_str()),
-            _ => None,
-        })
-        .unwrap_or("");
-    match entries.get(idx + 1) {
-        None => 0,
-        Some(WorkspaceListEntry::ProjectRow { .. }) => 0,
-        // The next member block of the SAME group: glued (6a — a group
-        // is one section, its blocks contiguous under the header).
-        Some(WorkspaceListEntry::PaneDotsRow { .. }) => 0,
-        // A hidden header (stacked-sections exception) paints nothing —
-        // its OWNED row already IS the blank separator, so the gap
-        // would double it (T7 divergence C: "hoje há branco dobrado em
-        // alguns lugares" was exactly gap + hidden-header row).
-        Some(WorkspaceListEntry::SectionRow {
-            header_hidden: true,
-            ..
-        }) => 0,
-        Some(WorkspaceListEntry::SectionRow {
-            branch_group: next, ..
-        }) if next == own_group => 0,
-        _ => row_gap,
-    }
-}
-
-/// Chevron glyph for a collapsible Project-view row (`ProjectRow`,
-/// `WorktreeRow`). Shared so the two variants' chevrons never drift.
-fn project_chevron(collapsed: bool) -> &'static str {
-    if collapsed {
-        "▸"
-    } else {
-        "▾"
-    }
-}
-
-/// Compose a Project-view row from left-hand spans plus a right-aligned
-/// trailing span, filling the gap between them with `fill` (plain spaces
-/// when `None`, a ruler character when `Some`). Centralizes the width
-/// arithmetic: `ProjectRow`'s `n/m` and `SectionHeader`'s ruled `n/m` both
-/// go through this, so the left and right budgets can't drift out of sync —
-/// forgetting to reserve the trailing width in one place while truncating
-/// in another is exactly the truncation-budget bug this session's sidebar
-/// work has already shipped twice.
-fn project_row_trailing(
-    mut spans: Vec<Span<'static>>,
-    trailing: Span<'static>,
-    fill: Option<(char, Style)>,
-    width: u16,
-) -> Line<'static> {
-    let width = width as usize;
-    let used: usize = spans
-        .iter()
-        .map(|s| display_width(s.content.as_ref()))
-        .sum();
-    let trailing_width = display_width(trailing.content.as_ref());
-    let gap = width.saturating_sub(used + trailing_width);
-    if gap > 0 {
-        match fill {
-            Some((ch, style)) => spans.push(Span::styled(ch.to_string().repeat(gap), style)),
-            None => spans.push(Span::styled(" ".repeat(gap), Style::default())),
+            // One blank row after a folder's LAST block, before the next
+            // header — `WORKSPACE_LIST_ROW_GAP`, which only ever applied
+            // after a `PaneDotsRow`; sibling blocks stay glued and the
+            // list end claims no gap.
+            let base: u16 = if *dots && !*inline { 2 } else { 1 };
+            let next_gap = match entries.get(idx + 1) {
+                None | Some(WorkspaceListEntry::PaneDotsRow { .. }) => 0,
+                Some(_) => WORKSPACE_LIST_ROW_GAP,
+            };
+            base + next_gap
         }
     }
-    spans.push(trailing);
-    Line::from(spans)
 }
 
-/// Top-level Project-view row: one leading gutter column, an optional
-/// chevron, project name, `n/m` (live/total workspaces) right-aligned.
-/// See `WorkspaceListEntry::ProjectRow`. T7 (bora-79l, divergence F): the
-/// title renders ` Bora` with one leading space (ALVO_CAPTURE row 01) —
-/// the same single gutter column every other Project-view row starts with.
-///
-/// Chevron only when CLOSED (owner's later ask, on top of ground-truth
-/// re-approval's original "no chevron at all"): an expanded group already
-/// shows its own workspace rows below, each carrying its own `SectionRow`
-/// `▾`/`▸` disclosure glyph, so a second one here would be a duplicate
-/// affordance the approved mock never drew. A collapsed group shows
-/// nothing else beneath it, so it gets the caret back to say so.
-///
-/// Still no ruler either way (ground-truth re-approval, pinned by
-/// `project_row_line_has_no_separator_rule_before_the_counter`): the
-/// approved mock's `.g` rule draws none — the underline alone reads as a
-/// header. Solo #11's dash-fill ruler (kept by `section_header_line`, a
-/// distinct third-level row) was a deviation from the approved design, not
-/// the source of truth, and stays rejected here — the gap before the
-/// counter is plain space.
-pub(crate) fn project_row_line(
-    name: &str,
-    live: usize,
-    total: usize,
-    collapsed: bool,
-    p: &Palette,
-    width: u16,
-) -> Line<'static> {
-    let counter = format!(" {live}/{total}");
-    // T7 divergence F: the 1-column gutter every Project-view row shares.
-    let mut spans = vec![Span::styled(" ", Style::default())];
-    if collapsed {
-        spans.push(Span::styled(
-            format!("{} ", project_chevron(true)),
-            Style::default().fg(p.overlay1),
-        ));
-    }
-    let prefix_width: usize = spans
-        .iter()
-        .map(|s| display_width(s.content.as_ref()))
-        .sum();
-    // +1 reserves the mandatory separating space after the name so a long
-    // name never butts directly against the counter.
-    let avail = (width as usize).saturating_sub(prefix_width + display_width(&counter) + 1);
-    spans.push(Span::styled(
-        truncate_end(name, avail),
-        // ITALIC | UNDERLINED, no BOLD (item 6, owner's decision after a
-        // channel-collision check): a terminal only offers THREE face
-        // channels — bold, italic, bold-italic (Ghostty's
-        // `font-family-{bold,italic,bold-italic}` / `font-style-*`).
-        // ITALIC alone claims the plain-italic channel for a display face,
-        // uncontested. `section_row_line`'s branch label already claims
-        // BOLD|ITALIC for ITS OWN distinct face (see that span's own
-        // "don't clean this up" comment) — putting this header on
-        // BOLD|ITALIC too would repaint every branch label in Project view
-        // along with it, defeating the point of a face aimed at only this
-        // row. BOLD is deliberately absent for a second reason: this row's
-        // own slightly-lighter background (`p.surface0`, painted by the
-        // `ProjectRow` render arm) now supplies the emphasis BOLD used to
-        // carry — the owner's own call ("I don't think we even need the
-        // Bold if we had the background").
-        Style::default()
-            .fg(p.mauve)
-            .add_modifier(Modifier::ITALIC | Modifier::UNDERLINED),
-    ));
-    spans.push(Span::styled(" ", Style::default()));
-    project_row_trailing(
-        spans,
-        // The counter stays dim (`p.overlay0`). It briefly used `p.red` to
-        // supply a "pink" companion to the ask "half purple, half pink",
-        // reasoning that Catppuccin's `red` is a soft rose and that this row
-        // carries no state cluster to collide with. Reverted: the harm the
-        // binding rule names ("spending red on it makes a real CI failure
-        // harder to spot") is about the READER's eye scanning the sidebar
-        // for red, not about collisions within one row — putting a rose tone
-        // on every project header trains that eye to ignore the hue. The ask
-        // needs no second colour anyway: `p.mauve` is `Rgb(203, 166, 247)`,
-        // purple leaning pink, which IS "half purple, half pink" in one
-        // swatch. Adding a real `pink` palette field stays available if the
-        // owner later wants two distinct tones here.
-        //
-        // Investigated per the lead's ask, and worth keeping: `p.mauve` is a
-        // real, distinct colour in `Palette::catppuccin()` and in every
-        // RGB-capable built-in theme, and `project_row_trailing`'s later
-        // spans never touch an earlier span's fg (each `Span` keeps its own
-        // style), so there is no override bug here.
-        Span::styled(counter, Style::default().fg(p.overlay0)),
-        None,
-        width,
-    )
-}
-
-/// Second-level Project-view row, unopened worktrees ONLY now (bora-c1h):
-/// chevron, optional repo name (omitted when the project holds a single
-/// repo), branch, ahead/behind, PR badge, always dimmed — a worktree found
-/// on disk with no workspace open on it, an open affordance rather than a
-/// live row. Every OPEN checkout renders via `section_row_line` instead.
-pub(crate) fn worktree_row_line(
-    repo: Option<&str>,
-    branch: &str,
-    ahead: usize,
-    behind: usize,
-    pr: Option<u64>,
-    collapsed: bool,
-    unopened: bool,
-    p: &Palette,
-    width: u16,
-) -> Line<'static> {
-    let dim = |style: Style| {
-        if unopened {
-            style.add_modifier(Modifier::DIM)
-        } else {
-            style
-        }
-    };
-    let mut spans = vec![
-        Span::styled("  ", Style::default()),
-        Span::styled(
-            project_chevron(collapsed),
-            dim(Style::default().fg(p.accent)),
-        ),
-        Span::styled(" ", Style::default()),
-    ];
-    if let Some(repo) = repo {
-        spans.push(Span::styled(
-            format!("{repo}  "),
-            dim(Style::default().fg(p.overlay0)),
-        ));
-    }
-    let mut trailing: Vec<Span<'static>> = Vec::new();
-    if ahead > 0 {
-        trailing.push(Span::styled(" ", Style::default()));
-        trailing.push(Span::styled(
-            format!("↑{ahead}"),
-            dim(Style::default().fg(p.green)),
-        ));
-    }
-    if behind > 0 {
-        trailing.push(Span::styled(" ", Style::default()));
-        trailing.push(Span::styled(
-            format!("↓{behind}"),
-            dim(Style::default().fg(p.red)),
-        ));
-    }
-    if let Some(pr) = pr {
-        trailing.push(Span::styled(" ", Style::default()));
-        trailing.push(Span::styled(
-            format!("#{pr}"),
-            dim(Style::default().fg(p.green)),
-        ));
-    }
-    let prefix_width: usize = spans
-        .iter()
-        .map(|s| display_width(s.content.as_ref()))
-        .sum();
-    let trailing_width: usize = trailing
-        .iter()
-        .map(|s| display_width(s.content.as_ref()))
-        .sum();
-    let avail = (width as usize).saturating_sub(prefix_width + trailing_width);
-    spans.push(Span::styled(
-        truncate_end(branch, avail),
-        dim(Style::default().fg(p.overlay1)),
-    ));
-    spans.extend(trailing);
-    Line::from(spans)
-}
-
-/// PR chip tone for `section_row_line` — derived from `PrSummary.state` at
-/// the call site so this function stays string-free.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum PrChipTone {
-    Open,
-    Merged,
-    Draft,
-    Closed,
-}
-
-/// Display cap for a git ahead/behind count (G5 ground-truth re-approval):
-/// a real fork can sit tens of thousands of commits behind (the owner's own
-/// `rails/rails` example, ~99485) and an unbounded integer in the fixed
-/// state-cluster budget pushes the whole cluster off the row's right edge.
-/// Caps the rendered STRING only — the underlying `usize` this receives is
-/// never touched, only how it prints.
-fn capped_count(n: usize) -> String {
-    if n > 99 {
-        "99+".to_string()
-    } else {
-        n.to_string()
-    }
-}
-
-/// T3 (bora-79l): the DECLARED branch header of a sessions `Section` —
-/// `⎇ main ········································PR42 ✗` (the
-/// ALVO_CAPTURE rows 03/09/15/19/23/27 contract; T7 divergence B: the
-/// cluster sits FLUSH against the leader — no space after the last dot).
-/// Slot order is fixed:
-/// `[⌗ linked-worktree marker] [⎇ branch label] [dotted leader]
-/// [state cluster]` — no chevron (collapse belongs to the folder,
-/// `ProjectRow`) and no workspace/repo name slot: the name lives on the
-/// section's `PaneDotsRow` block, which is what killed the P1 redundancy
-/// of printing it on both lines.
-///
-/// Attribution — before T3 this line was `▾ MAIN ⎇ main   PR42 ✗`
-/// (chevron + `⌗` in mauve + UPPERCASE repo-name slot with A3's
-/// `───────` rule for repeats + a BOLD|ITALIC|DIM branch riding the
-/// Ghostty font-selection channel + a cluster of green-ahead /
-/// yellow-behind / yellow-dirty glyphs and GitHub-toned PR chips). The
-/// owner's model replaced every one of those by assignment: the header
-/// declares a BRANCH, the marker is overlay1 (R1: mauve is the
-/// ProjectRow's alone), the branch label is plain overlay1+BOLD with no
-/// font-selection games, and the whole cluster is R1 gray — red is spent
-/// ONLY on a real check failure, through `checks_rollup_glyph`, whose
-/// single-owner rule survives untouched. The dirty/staged `✱`/`±` glyph
-/// pair is subsumed by the numeric `+N −M` diff (the numbers ARE the
-/// state; a glyph beside them would repeat it).
-#[allow(clippy::too_many_arguments)] // one row, six independent glyph slots — a struct would only rename this list
-pub(crate) fn section_row_line(
-    is_worktree: bool,
-    branch: Option<&str>,
-    diff: Option<(u32, u32)>,
-    ahead: usize,
-    behind: usize,
-    pr: Option<(u64, PrChipTone)>,
-    checks: Option<crate::workspace::ChecksRollup>,
-    glyphs: &crate::config::ProjectGlyphs,
-    p: &Palette,
-    width: u16,
-) -> Line<'static> {
-    let mut spans: Vec<Span<'static>> = vec![Span::styled(" ", Style::default())];
-    if is_worktree {
-        spans.push(Span::styled(
-            "⌗ ",
-            // R1: overlay1, never mauve — mauve on this row would make a
-            // linked worktree read as a second folder.
-            Style::default().fg(p.overlay1),
-        ));
-    }
-    // Right-aligned state cluster (G5 rule kept): reserve the cluster's
-    // full width BEFORE the branch label gets any, so a long label
-    // ellipsizes before the cluster ever loses a cell — never the
-    // reverse.
-    let mut trailing: Vec<Span<'static>> = Vec::new();
-    // T7 (bora-79l, divergence B): the cluster sits FLUSH against the
-    // dotted leader — a separator space exists only BETWEEN cluster
-    // elements, never before the first (ALVO_CAPTURE rows 03/27:
-    // `·····PR42 ✗`, `····+916 −2 ↑2 ↓1`). Nested so the push sites
-    // below cannot forget the rule.
-    fn push_cluster(trailing: &mut Vec<Span<'static>>, span: Span<'static>) {
-        if !trailing.is_empty() {
-            trailing.push(Span::styled(" ", Style::default()));
-        }
-        trailing.push(span);
-    }
-    if let Some((added, removed)) = diff {
-        // U+2212 MINUS SIGN, matching ALVO_CAPTURE's `+916 −2` byte for
-        // byte; NOT capped like ahead/behind — the alvo itself pins +916.
-        push_cluster(
-            &mut trailing,
-            Span::styled(
-                format!("+{added} −{removed}"),
-                Style::default().fg(p.overlay1),
-            ),
-        );
-    }
-    if ahead > 0 {
-        // R1 gray, not green: in the owner's color budget green means
-        // "answered/ready" (a pane state). Ahead-of-origin is git
-        // plumbing, and spending a loud hue on it would bury the one red
-        // that matters (a failing check).
-        push_cluster(
-            &mut trailing,
-            Span::styled(
-                format!("{}{}", glyphs.ahead, capped_count(ahead)),
-                Style::default().fg(p.overlay1),
-            ),
-        );
-    }
-    if behind > 0 {
-        // Gray for the same R1 reason the old yellow is gone: being
-        // behind origin is a nudge, not a failure, and it must not
-        // compete with a real ✗.
-        push_cluster(
-            &mut trailing,
-            Span::styled(
-                format!("{}{}", glyphs.behind, capped_count(behind)),
-                Style::default().fg(p.overlay1),
-            ),
-        );
-    }
-    if let Some((pr, _tone)) = pr {
-        // R1: the chip prints gray whatever its state — merged, draft,
-        // closed, open. Red is reserved for a failing check (the ✗ glyph
-        // after the chip), so `PR42` never shouts. The tone still rides
-        // along because `show_checks` below keys on OPEN.
-        push_cluster(
-            &mut trailing,
-            Span::styled(
-                format!("{}{pr}", glyphs.pr),
-                Style::default().fg(p.overlay1),
-            ),
-        );
-    }
-    // Checks glyph has a single owner (repo rule: `run_state` in
-    // `workspace/git/check_status.rs` is the only source of a check's
-    // rollup state) — always through `checks_rollup_glyph`, never a local
-    // color table, so this row and the CHECKS band can never drift on
-    // what counts as passing. This is the ONE place in the cluster where
-    // red may appear (a real failing check). The glyph only accompanies
-    // an OPEN chip (or no chip at all): for merged/closed/draft the CI
-    // state is moot and the chip already carries the state. The baked-in
-    // leading space is trimmed here — `push_cluster` owns all spacing
-    // (T7, divergence B).
-    let show_checks = match pr {
-        Some((_, tone)) => tone == PrChipTone::Open,
-        None => true,
-    };
-    if show_checks {
-        if let Some(rollup) = checks {
-            let (glyph, style) = checks_rollup_glyph(rollup, p);
-            push_cluster(&mut trailing, Span::styled(glyph.trim_start(), style));
-        }
-    }
-
-    let prefix_width: usize = spans
-        .iter()
-        .map(|s| display_width(s.content.as_ref()))
-        .sum();
-    let trailing_width: usize = trailing
-        .iter()
-        .map(|s| display_width(s.content.as_ref()))
-        .sum();
-    // 1 column for the space that separates label from leader; the label
-    // budget below excludes the `⎇ ` glyph's own cells, subtracted at the
-    // truncate call, and the label ellipsizes into whatever is left
-    // (`spike/m0-ambie…` is the mock's own example).
-    let branch_glyph_width = branch.map(|_| display_width(glyphs.branch) + 1);
-    let label_budget = (width as usize).saturating_sub(prefix_width + trailing_width + 1);
-    if let Some(b) = branch {
-        if let Some(gw) = branch_glyph_width {
-            spans.push(Span::styled(
-                format!("{} ", glyphs.branch),
-                Style::default().fg(p.overlay1),
-            ));
-            // A terminal grid has no font-size axis: BOLD alone is the
-            // label's emphasis (overlay1 bold, R1 — the old
-            // BOLD|ITALIC|DIM font-selection stack died with the name
-            // slot; see the attribution above).
-            spans.push(Span::styled(
-                truncate_end(b, label_budget.saturating_sub(gw)),
-                Style::default().fg(p.overlay1).add_modifier(Modifier::BOLD),
-            ));
-        }
-    }
-    if trailing_width > 0 {
-        // Dotted leader (T3 decision 3): `·` in surface1 — the same
-        // connective colour the band headers' own `·` leader uses (T7) —
-        // running from the label to the cluster and ending FLUSH against
-        // its first element. It exists ONLY when a cluster does; with no
-        // cluster there is nothing to lead to, and the row stays as short
-        // as its content.
-        spans.push(Span::styled(" ", Style::default()));
-        let used: usize = spans
-            .iter()
-            .map(|s| display_width(s.content.as_ref()))
-            .sum();
-        let dots = (width as usize).saturating_sub(used + trailing_width);
-        if dots > 0 {
-            spans.push(Span::styled(
-                "·".repeat(dots),
-                Style::default().fg(p.surface1),
-            ));
-        }
-    }
-    spans.extend(trailing);
-    Line::from(spans)
-}
-
-/// Uncommitted diff totals for a branch header's `+N −M` cluster slot:
-/// `added`/`removed` summed over the cached change set's unstaged and
-/// staged sections — the same `cached_change_set` the right panel's
-/// Changes tab reads, so the two surfaces cannot disagree about what
-/// "the diff" is. `None` when nothing counted (clean tree, no cache yet,
-/// or binary/untracked-only changes whose numstat is absent).
-fn workspace_diff_counts(ws: &crate::workspace::Workspace) -> Option<(u32, u32)> {
-    use crate::workspace::ChangeSectionKind;
-    let cs = ws.cached_change_set.as_ref()?;
-    let mut added = 0u32;
-    let mut removed = 0u32;
-    for section in &cs.sections {
-        match section.kind {
-            ChangeSectionKind::Unstaged | ChangeSectionKind::Staged => {
-                for file in &section.files {
-                    if let (Some(a), Some(r)) = (file.added, file.removed) {
-                        added = added.saturating_add(a);
-                        removed = removed.saturating_add(r);
-                    }
-                }
-            }
-            ChangeSectionKind::Committed => {}
-        }
-    }
-    (added > 0 || removed > 0).then_some((added, removed))
-}
-
-/// Third-level Project-view row: a `COMANDO`/`CHECKS` band header — glyph,
-/// uppercase name, a `·` dotted leader filling the remaining width, then a
-/// right-aligned `done/total` sitting FLUSH against the leader's last dot
-/// (T7 bora-79l, ALVO_CAPTURE rows 31/33: ` ≡ COMANDO ·····0/1`). The
-/// leader is load-bearing: without it the row reads as a plain label
-/// instead of a section; the `·` matches the branch headers' own leader
-/// and the indent is the single gutter column every Project-view row
-/// shares.
-pub(crate) fn section_header_line(
-    kind: &'static SectionDescriptor,
-    done: usize,
-    total: usize,
-    // T6 6b (bora-79l.10): `Section.name`, when declared, overrides the
-    // descriptor's static `label` — `kind` is a shared `&'static`
-    // descriptor and cannot carry a per-instance name itself.
-    name: Option<&str>,
-    p: &Palette,
-    width: u16,
-) -> Line<'static> {
-    // NOTES/PULL REQUESTS are plain lists, not a progress bar: show the
-    // count, not a meaningless `0/N` — a declared field on the descriptor
-    // (`SectionCounter`) now, not a wildcard match (bora-by6 G6). No
-    // leading space either way: the counter ends the leader flush (T7).
-    let counter = match kind.counter {
-        SectionCounter::Count => format!("{total}"),
-        SectionCounter::Progress => format!("{done}/{total}"),
-    };
-    let label = name.unwrap_or(kind.label).to_string();
-    let spans = vec![
-        Span::styled(" ", Style::default()),
-        Span::styled(kind.glyph, Style::default().fg(p.overlay1)),
-        Span::styled(" ", Style::default()),
-        Span::styled(
-            label,
-            Style::default().fg(p.overlay0).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(" ", Style::default()),
-    ];
-    project_row_trailing(
-        spans,
-        Span::styled(counter, Style::default().fg(p.overlay0)),
-        Some(('·', Style::default().fg(p.surface1))),
-        width,
-    )
-}
-
-/// Fourth-level Project-view row: a single COMMANDS/CHECKS entry — a state
-/// bullet, its label, and an optional right-aligned detail (e.g. a port).
-/// The bullet is kind-aware: COMMANDS marks running entries (`●`), CHECKS
-/// rows exist only to flag failures (a provider error row included), so an
-/// idle CHECKS row gets the red `✗` from the design mockup, not the dim dot.
-pub(crate) fn section_item_line(
-    kind: &'static SectionDescriptor,
-    label: &str,
-    detail: Option<&str>,
-    running: bool,
-    p: &Palette,
-    width: u16,
-) -> Line<'static> {
-    // Bullet style is a declared field on the descriptor (`SectionBullet`)
-    // now, not a wildcard match on the kind (bora-by6 G6).
-    let (bullet, bullet_style) = match (kind.bullet, running) {
-        (SectionBullet::FlagIdleAsError, false) => ("✗", Style::default().fg(p.red)),
-        (_, true) => ("●", Style::default().fg(p.green)),
-        (_, false) => ("·", Style::default().fg(p.overlay0)),
-    };
-    let mut spans = vec![
-        Span::styled("   ", Style::default()),
-        Span::styled(bullet, bullet_style),
-        Span::styled(" ", Style::default()),
-    ];
-    let trailing = detail.map(|d| Span::styled(d.to_string(), Style::default().fg(p.overlay0)));
-    let prefix_width: usize = spans
-        .iter()
-        .map(|s| display_width(s.content.as_ref()))
-        .sum();
-    let trailing_width = trailing
-        .as_ref()
-        .map(|s| display_width(s.content.as_ref()))
-        .unwrap_or(0);
-    let avail = (width as usize).saturating_sub(prefix_width + trailing_width);
-    spans.push(Span::styled(
-        truncate_end(label, avail),
-        Style::default().fg(p.overlay1),
-    ));
-    match trailing {
-        Some(trailing) => project_row_trailing(spans, trailing, None, width),
-        None => Line::from(spans),
-    }
-}
-
-/// Pane order: `public_pane_numbers` sorted ascending — the same order the
-/// old per-pane `PaneRow` path used to emit, so a workspace's pane sequence
-/// reads the same as before this shape change. That responsibility now
-/// lives ENTIRELY here: `project_view::push_pane_dots_row` carries no pane
-/// data at all (`PaneDotsRow`'s own doc), so this is the single place "a
-/// workspace's pane order" is defined for Project view. `number` rides
-/// along so both callers derive the same `wNpN` address via
-/// `project_view::pane_address` without a second lookup or a second
-/// convention for the same string.
-///
-/// Indent shared by BOTH lines of a `PaneDotsRow` block (bora-79l F2,
-/// ALVO_CAPTURE rows 04-05/28-29, `ui::sidebar::capture`): column 3 (3
-/// leading cells), matching the section's own base indent (`SectionRow`'s
-/// ` ⎇ ` glyph column) plus the two extra columns the approved mock gives
-/// child rows. l1 (name) and l2 (dots) each start here independently now —
-/// unlike the old single-line row, they no longer share one column budget,
-/// so there is no separate name/dots gap constant to keep in lockstep with
-/// the name's rendered width anymore.
+/// Shared indent of every `PaneDotsRow` line (bora-79l F2): column 3 (3
+/// leading cells) for both the name line and the dots line, in the 2-line
+/// block shape and in the Folders inline row alike.
 const PANE_DOTS_INDENT: u16 = 3;
 
 /// Ordered `(pane, public number, column)` for one workspace's l2 dots
-/// line (bora-79l F2; replaces the old single-line row's `pane_dots_layout`,
-/// which anchored dot columns to the rendered name on the SAME line — that
-/// coupling no longer exists once the name moved to its own l1).
-///
-/// THIRD lockstep consumer alongside `render_workspace_list` and
-/// `workspace_list_areas_for_entries` (see `entry_row_height`'s contract):
-/// the renderer draws the dots at these columns and the geometry pass makes
-/// each dot's hit area from them, so a disagreement here is a click that
-/// focuses the wrong pane rather than a visible error.
-///
-/// One dot per pane, one column each, separated by a single space, starting
-/// at `PANE_DOTS_INDENT` — never right-pinned to the row's right edge
-/// (bora-c1h's "dots anchored to a shared, reproducible column" lesson:
-/// the two passes must derive the SAME columns from the SAME inputs, which
-/// `width` and the workspace's own pane count already are). Past the point
-/// where even a single dot cannot fit, this returns fewer triples than the
-/// workspace has panes rather than drawing off the row.
+/// line (bora-79l F2): one dot per pane, one column each, separated by a
+/// single space, starting at `PANE_DOTS_INDENT` — never right-pinned to
+/// the row's right edge. The renderer draws the dots at these columns, so
+/// a disagreement between this and the render arm is a dot drawn in the
+/// wrong place rather than a visible drift. Past the point where even a
+/// single dot cannot fit, this returns fewer triples than the workspace
+/// has panes rather than drawing off the row.
 fn pane_dots_columns(
     ws: &crate::workspace::Workspace,
     width: u16,
@@ -1809,15 +850,13 @@ fn pane_dots_name_style(waiting: bool, ready: bool, quiet: bool, p: &Palette) ->
     }
 }
 
-/// Layout for a Folders inline `PaneDotsRow` (`inline: true`): name and
+/// Layout for the Folders inline `PaneDotsRow` (`inline: true`): name and
 /// dots share ONE row — `   name ○ ○`. Returns the truncated display name
-/// plus ordered `(pane, public number, column)` triples, and BOTH lockstep
-/// passes (render and hit areas) must take their answer from here: the
-/// columns are anchored to data the two passes share — the entry's `name`,
-/// the workspace's panes, the same `width` — never to each pass's own
-/// geometry (the `pane_dots_layout` right-pinning lesson). The name keeps
-/// at least `INLINE_NAME_MIN` columns; past that, dots truncate on the
-/// right exactly like `pane_dots_columns` does.
+/// plus ordered `(pane, public number, column)` triples; the renderer must
+/// take its answer from here (not re-derive columns), the
+/// right-pinning lesson `pane_dots_columns` records. The name keeps at least
+/// `INLINE_NAME_MIN` columns; past that, dots truncate on the right
+/// exactly like `pane_dots_columns` does.
 fn pane_dots_inline_layout(
     name: &str,
     ws: &crate::workspace::Workspace,
@@ -1856,8 +895,8 @@ fn pane_dots_inline_layout(
 /// The Folders inline row itself: indent, the already-laid-out name, then
 /// one dot per pane. Spans are appended contiguously (one space after the
 /// name, one between dots), which reproduces exactly the columns
-/// `pane_dots_inline_layout` returned — that identity is what the
-/// hit-area lockstep test pins against the rendered buffer.
+/// `pane_dots_inline_layout` returned — that identity is what the Folders
+/// lockstep test pins against the rendered buffer.
 fn pane_dots_inline_line(
     display: &str,
     name_style: Style,
@@ -1874,10 +913,10 @@ fn pane_dots_inline_line(
     Line::from(spans)
 }
 
-/// L1 of a Project-view workspace's `PaneDotsRow` block (bora-79l F2,
+/// L1 of a workspace's `PaneDotsRow` block (bora-79l F2,
 /// ALVO_CAPTURE rows 04/28): the workspace's own already-disambiguated
 /// unique name, indented to `PANE_DOTS_INDENT` and colored `overlay1` — the
-/// SAME color `⎇` uses on its `SectionRow` (gate G1). T7 (bora-79l,
+/// SAME color the `⎇` branch glyph uses (gate G1). T7 (bora-79l,
 /// divergence A) removed the `+N −M` diff this line carried since T2: no
 /// PaneDotsRow l1 ever carries a diff — the numbers live ONLY in the
 /// header's cluster (ALVO row 28 is bare `hotfix`, row 27 carries
@@ -1914,7 +953,7 @@ fn pane_dots_name_line(
     ])
 }
 
-/// L2 of a Project-view workspace's `PaneDotsRow` block (bora-79l F2,
+/// L2 of a workspace's `PaneDotsRow` block (bora-79l F2,
 /// ALVO_CAPTURE rows 05/29): one state dot per pane, in the SAME order
 /// `pane_dots_columns` returned (so glyph `i` in `dots` is drawn at
 /// `pane_dots_columns`'s dot `i`), separated by a single space, starting at
@@ -1943,8 +982,8 @@ fn pane_dots_dots_line(dots: &[(&'static str, Style)], width: u16) -> Line<'stat
     Line::from(spans)
 }
 
-/// Live glyph + style for one `PaneDotsRow` l2 dot (bora-79l F2, "the glyph
-/// convergence itself is F2's leaf" — `capture::alvo_fixture`'s doc). T2
+/// Live glyph + style for one `PaneDotsRow` l2 dot (bora-79l F2, the glyph
+/// convergence leaf). T2
 /// (bora-79l) closes the convergence: the design's five "estados da
 /// bolinha", one hue per meaning (R1), mapped onto `AgentState` + `seen` by
 /// each state's own gloss in the anatomy's "Os estados da bolinha do
@@ -1973,8 +1012,7 @@ fn pane_dots_dots_line(dots: &[(&'static str, Style)], width: u16) -> Line<'stat
 ///   a bolinha, tem que ficar amarela a letra também"). Yellow owns
 ///   "pronto pra ler"; green leaves this dot row entirely.
 /// - `Blocked`+seen — "falhou" — the shared `blocked_glyph` (the repo's
-///   falha glyph, dots/symbols preference) in red BOLD, exactly the state
-///   `capture::alvo_fixture`'s "main" (Blocked+seen) pins as ALVO row 05's
+///   falha glyph, dots/symbols preference) in red BOLD — ALVO row 05's
 ///   `◆ falha real`.
 /// - `Idle`+seen / `Unknown` — "parado" — hollow ○ overlay0, plain: a
 ///   finished-and-read agent and a plain shell both read as quiet.
@@ -2022,67 +1060,6 @@ fn pane_dots_dot_glyph(
         ),
         (AgentState::Unknown, true) => ("○", Style::default().fg(p.overlay0)),
     }
-}
-
-/// Sixth-level Project-view row: one PULL REQUESTS entry — PR number,
-/// title, and a trailing checks-rollup glyph (bora-yw6.2). A draft PR dims
-/// its number and gets a hollow bullet instead of the solid state dot.
-pub(crate) fn pr_row_line(
-    number: u64,
-    title: &str,
-    is_draft: bool,
-    checks: Option<crate::workspace::ChecksRollup>,
-    p: &Palette,
-    width: u16,
-) -> Line<'static> {
-    let (bullet, bullet_style) = if is_draft {
-        ("◌", Style::default().fg(p.subtext0))
-    } else {
-        ("●", Style::default().fg(p.green))
-    };
-    let number_style = if is_draft {
-        Style::default().fg(p.subtext0)
-    } else {
-        Style::default().fg(p.overlay1)
-    };
-    let mut spans = vec![
-        Span::styled("      ", Style::default()),
-        Span::styled(bullet, bullet_style),
-        Span::styled(" ", Style::default()),
-        Span::styled(format!("#{number} "), number_style),
-    ];
-    let trailing = pr_checks_glyph(checks, p).map(|(glyph, style)| Span::styled(glyph, style));
-    let prefix_width: usize = spans
-        .iter()
-        .map(|s| display_width(s.content.as_ref()))
-        .sum();
-    let trailing_width = trailing
-        .as_ref()
-        .map(|s| display_width(s.content.as_ref()))
-        .unwrap_or(0);
-    let avail = (width as usize).saturating_sub(prefix_width + trailing_width);
-    spans.push(Span::styled(
-        truncate_end(title, avail),
-        Style::default().fg(p.overlay1),
-    ));
-    match trailing {
-        Some(trailing) => project_row_trailing(spans, trailing, None, width),
-        None => Line::from(spans),
-    }
-}
-
-/// Glyph + style for A1's `OpenPr.checks: Option<ChecksRollup>` (bora-yw6.2,
-/// contract C1) — A2 owns only this mapping; the precedence and
-/// GitHub-conclusion-string mapping that PRODUCE the rollup are A1's
-/// (`workspace::git::open_prs`). `None` means no checks reported for the
-/// head commit — no trailing glyph, exactly like `checks_badge` returning
-/// `None` for a PR with zero check runs. Delegates to `checks_rollup_glyph`
-/// so the palette never drifts from the worktree CHECKS band's own glyphs.
-fn pr_checks_glyph(
-    checks: Option<crate::workspace::ChecksRollup>,
-    p: &Palette,
-) -> Option<(&'static str, Style)> {
-    Some(checks_rollup_glyph(checks?, p))
 }
 
 pub(crate) fn normalized_workspace_scroll(app: &AppState, area: Rect, requested: usize) -> usize {
@@ -2135,6 +1112,24 @@ fn effective_visual_group<'a>(
     ws.channel_home_name().is_some().then_some(channel_group)
 }
 
+/// Base display name for a workspace row: the user's custom name when set,
+/// else the auto label, else the repo name. Folders rows carry exactly
+/// this label with no disambiguating hint — folder groups are user-named
+/// containers, not branch groups, so two same-named members are not the
+/// collision a hint exists for.
+fn workspace_group_name(ws: &crate::workspace::Workspace) -> String {
+    ws.custom_name.clone().unwrap_or_else(|| {
+        if ws.cached_auto_label.is_empty() {
+            ws.cached_git_space
+                .as_ref()
+                .map(|space| space.repo_name.clone())
+                .unwrap_or_default()
+        } else {
+            ws.cached_auto_label.clone()
+        }
+    })
+}
+
 /// Git space a workspace contributes to repo grouping, which for a channel is
 /// none at all.
 ///
@@ -2173,20 +1168,20 @@ pub(crate) fn next_entry_is_indented_workspace(entries: &[WorkspaceListEntry], i
 /// `visual_group` folders. No repo auto-grouping and no branch brackets. Each
 /// row is an INLINE `PaneDotsRow` (owner's ruling, 2026-08-31): ONE line,
 /// `name ○ ○` — the name followed by one dot per pane on the same row
-/// (`pane_dots_inline_layout`), instead of Project view's 2-line block or
+/// (`pane_dots_inline_layout`), instead of the 2-line split block or
 /// the single-status `Workspace` row: a workspace's real per-pane state is
 /// not collapsible into one dot, and a folder list should stay one row per
-/// workspace. `name` is the same base label Project view's blocks carry
-/// (`project_view::workspace_group_name`) with no disambiguating hint —
+/// workspace. `name` is the same base label every workspace row carries
+/// (`workspace_group_name`) with no disambiguating hint —
 /// Folders groups are user-named containers, not branch groups, so two
 /// same-named members are not the collision that hint exists for. A group
 /// is anchored at its first member's position in workspace-vec order;
 /// later members are pulled up under the shared header. Ungrouped
 /// workspaces stay flat and drag-reorderable, exactly like the Flat view.
 ///
-/// `PaneDotsRow` carries no indent/rail field (Project view never needed
-/// one — every block there sits under a branch header at the same fixed
-/// `PANE_DOTS_INDENT`), so a grouped member's block renders at the same
+/// `PaneDotsRow` carries no indent/rail field (the retired Project view,
+/// which introduced the block, never needed one — every block there sat
+/// under a branch header at the same fixed `PANE_DOTS_INDENT`), so a grouped member's block renders at the same
 /// indent as an ungrouped one; only its position under the `GroupHeader`
 /// says it belongs to the folder. // ponytail: no tree-rail bracket for
 /// grouped members (the old `Workspace{indented, rail}` shape had one,
@@ -2220,7 +1215,7 @@ fn folders_view_entries(app: &AppState, force_expanded: bool) -> Vec<WorkspaceLi
                     for &member_idx in group_members {
                         entries.push(WorkspaceListEntry::PaneDotsRow {
                             ws_idx: member_idx,
-                            name: project_view::workspace_group_name(&app.workspaces[member_idx]),
+                            name: workspace_group_name(&app.workspaces[member_idx]),
                             dots: true,
                             inline: true,
                         });
@@ -2231,7 +1226,7 @@ fn folders_view_entries(app: &AppState, force_expanded: bool) -> Vec<WorkspaceLi
         }
         entries.push(WorkspaceListEntry::PaneDotsRow {
             ws_idx,
-            name: project_view::workspace_group_name(ws),
+            name: workspace_group_name(ws),
             dots: true,
             inline: true,
         });
@@ -2244,16 +1239,6 @@ fn folders_view_entries(app: &AppState, force_expanded: bool) -> Vec<WorkspaceLi
 }
 
 fn workspace_list_entries_inner(app: &AppState, force_expanded: bool) -> Vec<WorkspaceListEntry> {
-    if app.view_mode == crate::config::ViewMode::Project {
-        // Three levels, built by the pure module. Never falls through to the
-        // Flat or Repo paths below: the Repo view and its tests stay untouched.
-        let entries = project_view::project_view_entries(app, force_expanded);
-        if force_expanded {
-            return entries;
-        }
-        return apply_hidden_filter(app, &std::collections::HashSet::new(), entries);
-    }
-
     if app.view_mode == crate::config::ViewMode::Folders {
         return folders_view_entries(app, force_expanded);
     }
@@ -2532,14 +1517,6 @@ fn apply_hidden_filter(
         WorkspaceListEntry::ProjectHeader { .. } => 1,
         WorkspaceListEntry::BranchHeader { .. } => 2,
         WorkspaceListEntry::Workspace { .. } => 3,
-        // Project view depths. The hidden filter drops a header whose members
-        // all became hidden, so these must nest correctly or a project row
-        // would survive with nothing under it.
-        WorkspaceListEntry::ProjectRow { .. } => 0,
-        WorkspaceListEntry::WorktreeRow { .. } | WorkspaceListEntry::SectionRow { .. } => 1,
-        WorkspaceListEntry::SectionHeader { .. } => 2,
-        WorkspaceListEntry::SectionItem { .. } => 3,
-        WorkspaceListEntry::PrRow { .. } => 3,
         // Strictly deeper than `Workspace`, whose child it is.
         WorkspaceListEntry::PaneDotsRow { .. } => 4,
     };
@@ -2580,11 +1557,8 @@ fn apply_hidden_filter(
             }
         }
         match entry {
-            // 6a: `PaneDotsRow` is the workspace child the hidden filter
-            // counts — every member has exactly one block. A
-            // `SectionRow` is the GROUP container now (its `ws_idx`
-            // names only the representative), so it stopped being a
-            // child and became a header below.
+            // `PaneDotsRow` is the workspace child the hidden filter
+            // counts — every Folders member is exactly one block.
             WorkspaceListEntry::Workspace { ws_idx, .. }
             | WorkspaceListEntry::PaneDotsRow { ws_idx, .. } => {
                 let hidden = ws_hidden(*ws_idx);
@@ -2595,14 +1569,8 @@ fn apply_hidden_filter(
             }
             WorkspaceListEntry::GroupHeader { .. }
             | WorkspaceListEntry::ProjectHeader { .. }
-            | WorkspaceListEntry::BranchHeader { .. }
-            | WorkspaceListEntry::ProjectRow { .. }
-            | WorkspaceListEntry::WorktreeRow { .. }
-            | WorkspaceListEntry::SectionRow { .. }
-            | WorkspaceListEntry::SectionHeader { .. } => open.push(i),
-            WorkspaceListEntry::HiddenHeader { .. }
-            | WorkspaceListEntry::SectionItem { .. }
-            | WorkspaceListEntry::PrRow { .. } => {}
+            | WorkspaceListEntry::BranchHeader { .. } => open.push(i),
+            WorkspaceListEntry::HiddenHeader { .. } => {}
         }
     }
 
@@ -2630,37 +1598,14 @@ fn apply_hidden_filter(
                 }
             }
             WorkspaceListEntry::HiddenHeader { .. } => result.push(entry),
-            // Project view. A pane row belongs to a workspace, so it hides
-            // with it; the container rows follow the same all-children-hidden
-            // rule as their repo-view counterparts above. `PaneDotsRow`
-            // (bora Project-view row-shape rework) replaced the old
-            // per-pane `PaneRow` here — same rule, same `ws_idx` source of
-            // truth.
+            // A pane row belongs to a workspace, so it hides with it —
+            // same rule, same `ws_idx` source of truth as every other
+            // workspace child above.
             WorkspaceListEntry::PaneDotsRow { ws_idx, .. } => {
                 if !ws_hidden(*ws_idx) {
                     result.push(entry);
                 }
             }
-            // 6a: the section row is the GROUP container — it drops when
-            // every member block below it hid (same all-children-hidden
-            // rule as the project row), never on its representative
-            // alone. `wsec:` collapse keys never enter the hidden set,
-            // so `is_hidden` stays false for an expanded group.
-            WorkspaceListEntry::SectionRow { .. } => {
-                if !had_child[i] || has_kept_child[i] {
-                    result.push(entry);
-                }
-            }
-            WorkspaceListEntry::ProjectRow { collapse_key, .. }
-            | WorkspaceListEntry::WorktreeRow { collapse_key, .. } => {
-                let drop = app.is_hidden(collapse_key) || (had_child[i] && !has_kept_child[i]);
-                if !drop {
-                    result.push(entry);
-                }
-            }
-            WorkspaceListEntry::SectionHeader { .. }
-            | WorkspaceListEntry::SectionItem { .. }
-            | WorkspaceListEntry::PrRow { .. } => result.push(entry),
         }
     }
 
@@ -2864,7 +1809,7 @@ fn workspace_list_visible_count(app: &AppState, area: Rect, scroll: usize) -> us
     let mut visible = 0usize;
     let entries = workspace_list_entries(app);
     for (entry_idx, entry) in entries.iter().enumerate().skip(scroll) {
-        let needed = entry_row_height(entry, &entries, entry_idx, app.sidebar_project.row_gap);
+        let needed = entry_row_height(entry, &entries, entry_idx);
         if used_rows.saturating_add(needed) > body.height {
             break;
         }
@@ -3023,40 +1968,24 @@ pub(crate) fn agent_panel_scrollbar_rect(app: &AppState, area: Rect) -> Option<R
     ))
 }
 
-/// Core geometry walk shared by `compute_workspace_list_areas` (Flat/Repo
-/// card + group-header areas) and `compute_project_row_areas` (Project-view
-/// row areas). Takes entries and the body rect directly rather than
-/// deriving them from `app` itself, so every arm except `PaneDotsRow` stays
-/// testable with hand-built entries and `AppState::test_new()` — no
-/// dependency on the entries builder in `sidebar::project_view`.
-///
-/// `app` exists for `PaneDotsRow` and `SectionRow`: the dots' per-dot hit
-/// areas need each pane's live `pane_id`, which (unlike every other row
-/// here) is not carried on the entry (`PaneDotsRow`'s doc comment explains
-/// why), and the header's `SectionNew` "+" target (T4, bora-79l) carries
-/// the section's `(repo_identity, branch)` read from the live workspace at
-/// walk time — the same render-time-read rule the `SectionRow` render arm
-/// already states for git/PR state, kept off the entry so a stale branch
-/// can never outlive one frame.
+/// Core geometry walk for the workspace list's card + group-header areas.
+/// Takes entries and the body rect directly rather than deriving them from
+/// `app` itself, so every arm stays testable with hand-built entries.
 fn workspace_list_areas_for_entries(
     entries: &[WorkspaceListEntry],
-    app: &AppState,
     scroll: usize,
     body: Rect,
-    row_gap: u16,
 ) -> (
     Vec<crate::app::state::WorkspaceCardArea>,
     Vec<crate::app::state::GroupHeaderCardArea>,
-    Vec<ProjectRowHitArea>,
 ) {
     let mut row_y = body.y;
     let body_bottom = body.y + body.height;
     let mut cards = Vec::new();
     let mut headers: Vec<crate::app::state::GroupHeaderCardArea> = Vec::new();
-    let mut project_rows: Vec<ProjectRowHitArea> = Vec::new();
 
     for (entry_idx, entry) in entries.iter().enumerate().skip(scroll) {
-        let needed = entry_row_height(entry, entries, entry_idx, row_gap);
+        let needed = entry_row_height(entry, entries, entry_idx);
         if row_y.saturating_add(needed) > body_bottom {
             break;
         }
@@ -3101,137 +2030,16 @@ fn workspace_list_areas_for_entries(
                     rect: Rect::new(body.x, row_y, body.width, 1),
                 });
             }
-            WorkspaceListEntry::ProjectRow { collapse_key, .. } => {
-                // R3, refined: the TOP pad is part of the header, so a
-                // click on it hits the header. The trailing gap row below
-                // the band is `project_view_trailing_gap`'s plain
-                // separator — background, not header — and claims no hit.
-                let top_pad = project_band_top_pad(entries, entry_idx);
-                project_rows.push(ProjectRowHitArea {
-                    rect: Rect::new(body.x, row_y, body.width, 1 + top_pad),
-                    target: ProjectRowTarget::Project {
-                        collapse_key: collapse_key.clone(),
-                    },
-                });
-            }
-            WorkspaceListEntry::WorktreeRow { checkout_key, .. } => {
-                // WorktreeRow exists only for on-disk worktrees with no
-                // open workspace now (bora-qdi) — every live checkout
-                // renders as a `SectionRow` per workspace instead
-                // (bora-c1h). A click always opens it.
-                project_rows.push(ProjectRowHitArea {
-                    rect: Rect::new(body.x, row_y, body.width, 1),
-                    target: ProjectRowTarget::OpenWorktree {
-                        checkout_key: checkout_key.clone(),
-                    },
-                });
-            }
-            WorkspaceListEntry::SectionRow {
-                ws_idx,
-                checkout_key,
-                collapse_key,
-                header_on,
-                header_hidden,
-                ..
-            } => {
-                // T3: a hidden header (model OFF, or the same-branch
-                // exception) paints no line, so it claims no hit area —
-                // an invisible affordance reads as a dead click. The row
-                // itself still advances `row_y` via `entry_row_height`,
-                // keeping this pass in lockstep with the renderer.
-                if *header_on && !*header_hidden {
-                    // T4 (bora-79l, P3): the header's trailing 3-cell "+"
-                    // (create worktree in THIS section's context) — the
-                    // same affordance the Flat/Repo repo headers carry
-                    // (`worktree_new_hit_areas_from_headers`). It rides
-                    // `project_rows` as its own target rather than the
-                    // shared `worktree_new_hit_areas` vec because the
-                    // dispatcher resolves `project_row_areas` FIRST, so a
-                    // full-row `Section` area would otherwise swallow the
-                    // click before the shared vec is ever consulted.
-                    // Pushed BEFORE that area: `project_row_target_at`
-                    // takes the first match, so inside the + cells the +
-                    // wins and everywhere else on the row the Section
-                    // behavior (collapse via caret, press suppression)
-                    // is exactly as before — the same precedence the
-                    // PaneDotsRow dot cells use against the block card.
-                    // The target keys on the section's (repo, branch) —
-                    // the branch_group pair, never `ws_idx` — so T6's
-                    // same-branch section merge re-keys nothing. No
-                    // emission without git identity + branch: the row
-                    // renders, but there is no repo to create in.
-                    if body.width >= 3 {
-                        if let Some((repo_identity, branch)) =
-                            app.workspaces.get(*ws_idx).and_then(|ws| {
-                                Some((ws.git_space()?.repo_identity.clone(), ws.branch()?))
-                            })
-                        {
-                            project_rows.push(ProjectRowHitArea {
-                                rect: Rect::new(body.x + body.width - 3, row_y, 3, 1),
-                                target: ProjectRowTarget::SectionNew {
-                                    repo_identity,
-                                    branch,
-                                },
-                            });
-                        }
-                    }
-                    project_rows.push(ProjectRowHitArea {
-                        rect: Rect::new(body.x, row_y, body.width, 1),
-                        target: ProjectRowTarget::Section {
-                            ws_idx: *ws_idx,
-                            checkout_key: checkout_key.clone(),
-                            collapse_key: collapse_key.clone(),
-                        },
-                    });
-                }
-                // No `WorkspaceCardArea` here (P2, bora-79l T1): the branch
-                // line is not the workspace's representation — the
-                // `PaneDotsRow` block right below carries the card now, and
-                // with it every workspace-scoped affordance (click-to-switch,
-                // right-click menu, press/drag, selection fill).
-            }
-            WorkspaceListEntry::SectionHeader { collapse_key, .. } => {
-                project_rows.push(ProjectRowHitArea {
-                    rect: Rect::new(body.x, row_y, body.width, 1),
-                    target: ProjectRowTarget::Band {
-                        collapse_key: collapse_key.clone(),
-                    },
-                });
-            }
-            WorkspaceListEntry::SectionItem {
-                kind,
-                label,
-                ws_idx,
-                ..
-            } => {
-                project_rows.push(ProjectRowHitArea {
-                    rect: Rect::new(body.x, row_y, body.width, 1),
-                    target: ProjectRowTarget::SectionItem {
-                        kind,
-                        label: label.clone(),
-                        ws_idx: *ws_idx,
-                    },
-                });
-            }
-            // The block IS the workspace's card (P2, bora-79l T1): ONE
-            // `WorkspaceCardArea` spanning BOTH lines (l1 name + l2 dots),
-            // full body width — every workspace-scoped affordance
-            // (click-to-switch, right-click menu, press/drag-reorder,
-            // selection fill) keys off `cards`, so they all moved here
-            // together from the `SectionRow` above. The dots stay
-            // first-class: each keeps its own 1-cell `ProjectRowHitArea`
-            // at the SAME column `render_workspace_list`'s `PaneDotsRow`
-            // arm draws it — both take their columns from the one layout
-            // function for the row's shape (`pane_dots_columns`, or
-            // `pane_dots_inline_layout` for the Folders inline row), so
-            // they cannot drift — and the input dispatcher resolves
-            // `project_row_areas` BEFORE `workspace_card_areas`, so inside
-            // a dot's own cell the dot wins over the block.
+            // The block IS the workspace's card: ONE `WorkspaceCardArea`
+            // spanning the block's rows (1 in the Folders inline shape, 2
+            // in the dots-on shape), full body width — every
+            // workspace-scoped affordance (click-to-switch, right-click
+            // menu, press/drag-reorder, selection fill) keys off `cards`.
             WorkspaceListEntry::PaneDotsRow {
                 ws_idx,
-                name,
                 dots,
                 inline,
+                ..
             } => {
                 let card_height = if *dots && !*inline { 2 } else { 1 };
                 cards.push(crate::app::state::WorkspaceCardArea {
@@ -3239,46 +2047,6 @@ fn workspace_list_areas_for_entries(
                     rect: Rect::new(body.x, row_y, body.width, card_height),
                     indented: true,
                 });
-                // T6 6b: no dots, no per-dot hit area — there is nothing
-                // for a dot to be hit-tested against.
-                if *dots {
-                    if let Some(ws) = app.workspaces.get(*ws_idx) {
-                        // Inline (Folders): the dots live ON the name row.
-                        let (dots_row_y, columns) = if *inline {
-                            let (_display, columns) = pane_dots_inline_layout(name, ws, body.width);
-                            (row_y, columns)
-                        } else {
-                            (row_y.saturating_add(1), pane_dots_columns(ws, body.width))
-                        };
-                        for (_pane_id, number, column) in columns {
-                            project_rows.push(ProjectRowHitArea {
-                                rect: Rect::new(body.x + column, dots_row_y, 1, 1),
-                                target: ProjectRowTarget::Pane {
-                                    ws_idx: *ws_idx,
-                                    pane_id: project_view::pane_address(ws, number),
-                                },
-                            });
-                        }
-                    }
-                }
-            }
-            WorkspaceListEntry::PrRow { number, ws_idx, .. } => {
-                // A row whose repo has no open workspace carries no `ws_idx`
-                // and gets no hit area: there is nothing to name as the
-                // worktree's repo, and guessing (e.g. the active workspace,
-                // which is what the right panel's menu does) would create the
-                // worktree in whatever repo happened to be focused. The row
-                // still advances `row_y` below via `entry_row_height`, so the
-                // three lockstep passes stay in agreement either way.
-                if let Some(ws_idx) = ws_idx {
-                    project_rows.push(ProjectRowHitArea {
-                        rect: Rect::new(body.x, row_y, body.width, 1),
-                        target: ProjectRowTarget::OpenPr {
-                            ws_idx: *ws_idx,
-                            number: *number,
-                        },
-                    });
-                }
             }
             WorkspaceListEntry::Workspace {
                 ws_idx, indented, ..
@@ -3294,42 +2062,34 @@ fn workspace_list_areas_for_entries(
         row_y = row_y.saturating_add(needed);
     }
 
-    (cards, headers, project_rows)
+    (cards, headers)
 }
 
-/// The whole geometry pass, once: workspace cards, group headers, and
-/// Project-view row hit areas. `render`/`compute_view` MUST use this rather
-/// than calling the two narrower wrappers below in sequence — each of those
-/// rebuilds the entry list and re-walks every row, and this runs per render,
-/// per pane, per attached client (AGENTS.md, "Multiplicative performance
-/// paths").
+/// The whole geometry pass, once: workspace cards and group headers.
+/// `render`/`compute_view` MUST use this rather than calling the narrower
+/// wrappers below in sequence — each of those rebuilds the entry list and
+/// re-walks every row, and this runs per render, per pane, per attached
+/// client (AGENTS.md, "Multiplicative performance paths").
 pub(crate) fn compute_workspace_list_areas_all(
     app: &AppState,
     area: Rect,
 ) -> (
     Vec<crate::app::state::WorkspaceCardArea>,
     Vec<crate::app::state::GroupHeaderCardArea>,
-    Vec<ProjectRowHitArea>,
 ) {
     let ws_area = workspace_list_rect(area, app.sidebar_section_split);
     if ws_area == Rect::default() {
-        return (Vec::new(), Vec::new(), Vec::new());
+        return (Vec::new(), Vec::new());
     }
 
     let metrics = workspace_list_scroll_metrics(app, ws_area);
     let body = workspace_list_body_rect(app, ws_area, should_show_scrollbar(metrics));
     if body.width == 0 || body.height == 0 {
-        return (Vec::new(), Vec::new(), Vec::new());
+        return (Vec::new(), Vec::new());
     }
 
     let entries = workspace_list_entries(app);
-    workspace_list_areas_for_entries(
-        &entries,
-        app,
-        app.workspace_scroll,
-        body,
-        app.sidebar_project.row_gap,
-    )
+    workspace_list_areas_for_entries(&entries, app.workspace_scroll, body)
 }
 
 pub(crate) fn compute_workspace_list_areas(
@@ -3339,8 +2099,7 @@ pub(crate) fn compute_workspace_list_areas(
     Vec<crate::app::state::WorkspaceCardArea>,
     Vec<crate::app::state::GroupHeaderCardArea>,
 ) {
-    let (cards, headers, _project_rows) = compute_workspace_list_areas_all(app, area);
-    (cards, headers)
+    compute_workspace_list_areas_all(app, area)
 }
 
 pub(crate) fn compute_workspace_card_areas(
@@ -3724,12 +2483,9 @@ fn render_workspace_list(
     // printed none). Indented child rows consult this so they never repeat
     // a branch the header directly above them already shows.
     let mut parent_branch: Option<String> = None;
-    // (T7, divergence A: the `parts.diff` ride-along this loop tracked for
-    // l1's diff slot died with the slot — the flag now gates only the
-    // `SectionRow` header cluster, read directly in that arm.)
 
     for (entry_idx, entry) in entries.iter().enumerate().skip(scroll) {
-        let needed = entry_row_height(entry, &entries, entry_idx, app.sidebar_project.row_gap);
+        let needed = entry_row_height(entry, &entries, entry_idx);
         if row_y.saturating_add(needed) > body.y + body.height {
             break;
         }
@@ -4058,219 +2814,6 @@ fn render_workspace_list(
                     );
                 }
             }
-            WorkspaceListEntry::ProjectRow {
-                name,
-                live,
-                total,
-                collapse_key,
-                ..
-            } => {
-                // R3, refined: the band is its top pad + text row — fill
-                // both and draw the text below the pad. The rows below
-                // the band belong to `project_view_trailing_gap`'s plain
-                // separator now, so `band_end` stops at the text row.
-                // `project_band_top_pad` is the shared anchor
-                // `entry_row_height` and the hit-area pass also read.
-                let top_pad = project_band_top_pad(&entries, entry_idx);
-                let text_y = row_y.saturating_add(top_pad);
-                let band_end = row_y
-                    .saturating_add(1)
-                    .saturating_add(top_pad)
-                    .min(list_bottom);
-                if row_y < list_bottom {
-                    // Slightly-lighter-than-background row fill (owner's
-                    // ask, item 3c): `p.surface0` is the smallest lightness
-                    // step up from `sidebar_bg` (which every built-in theme
-                    // sets to `Color::Reset`, i.e. whatever the terminal's
-                    // own background is — roughly `panel_bg` by design
-                    // intent) that isn't already claimed by another row
-                    // state in this file: `p.surface1` is the drag-preview
-                    // fill (`Workspace`/`BranchHeader`-fold arms above) and
-                    // `p.active_row_bg`/`p.selection_bg` are the
-                    // active/cursor fills — reusing any of those here would
-                    // make a plain project header look like one of those
-                    // states. This background also now carries the visual
-                    // weight `project_row_line`'s name span dropped BOLD
-                    // for (item 6), and after R3 it is what makes the pad
-                    // rows read as part of the header rather than as a gap.
-                    let buf = frame.buffer_mut();
-                    for y in row_y..band_end {
-                        for x in body.x..body.x + body.width {
-                            buf[(x, y)].set_style(Style::default().bg(p.surface0));
-                        }
-                    }
-                }
-                if text_y < list_bottom {
-                    let collapsed = app.collapsed_space_keys.contains(collapse_key);
-                    frame.render_widget(
-                        Paragraph::new(project_row_line(
-                            name, *live, *total, collapsed, p, body.width,
-                        )),
-                        Rect::new(body.x, text_y, body.width, 1),
-                    );
-                }
-            }
-            WorkspaceListEntry::WorktreeRow {
-                repo,
-                branch,
-                ahead,
-                behind,
-                pr,
-                collapse_key,
-                unopened,
-                ..
-            } => {
-                if row_y < list_bottom {
-                    let collapsed = app.collapsed_space_keys.contains(collapse_key);
-                    frame.render_widget(
-                        Paragraph::new(worktree_row_line(
-                            repo.as_deref(),
-                            branch,
-                            *ahead,
-                            *behind,
-                            *pr,
-                            collapsed,
-                            *unopened,
-                            p,
-                            body.width,
-                        )),
-                        Rect::new(body.x, row_y, body.width, 1),
-                    );
-                }
-            }
-            WorkspaceListEntry::SectionHeader {
-                kind,
-                done,
-                total,
-                name,
-                ..
-            } => {
-                if row_y < list_bottom {
-                    frame.render_widget(
-                        Paragraph::new(section_header_line(
-                            kind,
-                            *done,
-                            *total,
-                            name.as_deref(),
-                            p,
-                            body.width,
-                        )),
-                        Rect::new(body.x, row_y, body.width, 1),
-                    );
-                }
-            }
-            WorkspaceListEntry::SectionItem {
-                kind,
-                label,
-                detail,
-                running,
-                ..
-            } => {
-                if row_y < list_bottom {
-                    frame.render_widget(
-                        Paragraph::new(section_item_line(
-                            kind,
-                            label,
-                            detail.as_deref(),
-                            *running,
-                            p,
-                            body.width,
-                        )),
-                        Rect::new(body.x, row_y, body.width, 1),
-                    );
-                }
-            }
-            WorkspaceListEntry::SectionRow {
-                ws_idx,
-                header_on,
-                header_hidden,
-                show_diff,
-                diff,
-                ..
-            } => {
-                // (T7, divergence A: this arm no longer tracks the
-                // `parts.diff` switch for the paired `PaneDotsRow` — l1
-                // lost its diff slot; the flag is read below for the
-                // header's own cluster only.)
-                // T3 (bora-79l): the header line renders only when the
-                // model's switch is ON and the same-branch exception has
-                if *header_on && !*header_hidden && row_y < list_bottom {
-                    if let Some(ws) = app.workspaces.get(*ws_idx) {
-                        let is_worktree = ws
-                            .worktree_space()
-                            .is_some_and(|space| space.is_linked_worktree);
-                        let branch = ws.branch();
-                        let (ahead, behind) = ws.git_ahead_behind().unwrap_or((0, 0));
-                        // 6a: the `+N −M` slot is the GROUP's summed
-                        // change set (folded at emission over every
-                        // member, `SectionRow::diff`'s doc), gated by the
-                        // section model's `parts.diff` — never a single
-                        // member's numbers wearing the group's header.
-                        let diff = if *show_diff { *diff } else { None };
-                        let pr = ws
-                            .cached_check_status
-                            .as_ref()
-                            .and_then(|status| status.pr.as_ref())
-                            .map(|pr| {
-                                let tone = match pr.state.to_ascii_uppercase().as_str() {
-                                    "MERGED" => PrChipTone::Merged,
-                                    "DRAFT" => PrChipTone::Draft,
-                                    "CLOSED" => PrChipTone::Closed,
-                                    _ => PrChipTone::Open,
-                                };
-                                (pr.number, tone)
-                            });
-                        let checks = ws
-                            .cached_check_status
-                            .as_ref()
-                            .and_then(|status| crate::workspace::checks_rollup(&status.checks));
-                        let glyphs = crate::config::project_glyphs(app.sidebar_project.glyph_style);
-                        // T4 (bora-79l, P3): the header's "+" overlay —
-                        // the Flat/Repo affordance convention (3 cells,
-                        // trailing edge, overlay1, `mouse_capture`-gated).
-                        // Unlike the Flat/Repo headers, whose content
-                        // rarely reaches the edge, this row's state
-                        // cluster pins FLUSH right (T7 divergence B), so
-                        // the cluster's width budget is shrunk by the
-                        // reserve instead of letting the glyph overwrite
-                        // cluster cells — `section_row_line`'s own rule
-                        // ("the cluster never loses a cell") extended to
-                        // the +. Painted only when the hit area would be
-                        // emitted (git identity + branch resolve): a
-                        // glyph with no action is a dead affordance.
-                        let plus_w = if app.mouse_capture
-                            && body.width >= 3
-                            && ws.git_space().is_some()
-                            && ws.branch().is_some()
-                        {
-                            3
-                        } else {
-                            0
-                        };
-                        frame.render_widget(
-                            Paragraph::new(section_row_line(
-                                is_worktree,
-                                branch.as_deref(),
-                                diff,
-                                ahead,
-                                behind,
-                                pr,
-                                checks,
-                                &glyphs,
-                                p,
-                                body.width - plus_w,
-                            )),
-                            Rect::new(body.x, row_y, body.width, 1),
-                        );
-                        if plus_w > 0 {
-                            frame.render_widget(
-                                Paragraph::new(" + ").style(Style::default().fg(p.overlay1)),
-                                Rect::new(body.x + body.width - 3, row_y, 3, 1),
-                            );
-                        }
-                    }
-                }
-            }
             WorkspaceListEntry::PaneDotsRow {
                 ws_idx,
                 name,
@@ -4320,7 +2863,7 @@ fn render_workspace_list(
                     // bar alone doesn't separate it — fill it with
                     // `active_row_bg` too. `inline` is the Folders shape
                     // (`folders_view_entries` is the only `inline: true`
-                    // emitter), so Project view's 2-line blocks keep the
+                    // emitter), so a 2-line split block keeps the
                     // GC3 marker-only statement.
                     let buf = frame.buffer_mut();
                     for y in row_y..row_y.saturating_add(block_height) {
@@ -4457,22 +3000,6 @@ fn render_workspace_list(
                             }
                         }
                     }
-                }
-            }
-            WorkspaceListEntry::PrRow {
-                number,
-                title,
-                is_draft,
-                checks,
-                ..
-            } => {
-                if row_y < list_bottom {
-                    frame.render_widget(
-                        Paragraph::new(pr_row_line(
-                            *number, title, *is_draft, *checks, p, body.width,
-                        )),
-                        Rect::new(body.x, row_y, body.width, 1),
-                    );
                 }
             }
             WorkspaceListEntry::Workspace {
@@ -5066,7 +3593,6 @@ fn render_sidebar_toggle(
 
 #[cfg(test)]
 mod tests {
-    use super::project_view::{CHECKS, COMMANDS, NOTES, PULL_REQUESTS, TODOS};
     use super::*;
     use crate::{detect::Agent, layout::PaneId, workspace::Workspace};
     use ratatui::{backend::TestBackend, layout::Direction, Terminal};
@@ -6622,8 +5148,8 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
     #[test]
     fn view_mode_toggle_rect_is_right_aligned_and_sized_to_label() {
         let area = Rect::new(0, 0, 40, 5);
-        let rect = view_mode_toggle_rect(area, crate::config::ViewMode::Project);
-        let label = crate::config::ViewMode::Project.as_str();
+        let rect = view_mode_toggle_rect(area, crate::config::ViewMode::Folders);
+        let label = crate::config::ViewMode::Folders.as_str();
         assert_eq!(rect.height, 1, "one row tall");
         assert_eq!(rect.y, area.y, "sits on the area's top row");
         assert_eq!(
@@ -6655,7 +5181,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
         // title and the view-mode toggle when it only meant to drop the
         // title. The toggle is restored; the title stays gone.
         let mut app = AppState::test_new();
-        app.view_mode = crate::config::ViewMode::Project;
+        app.view_mode = crate::config::ViewMode::Folders;
         app.workspaces = vec![Workspace::test_new("alpha")];
 
         let runtimes = crate::terminal::TerminalRuntimeRegistry::new();
@@ -6677,7 +5203,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
         );
         let top_row = row_text(buffer, 0, area.width);
         assert!(
-            top_row.trim_end().ends_with("project"),
+            top_row.trim_end().ends_with("folders"),
             "current view-mode name renders right-aligned on the list's top margin row: {top_row:?}"
         );
     }
@@ -7327,8 +5853,8 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
         let entries = workspace_list_entries(&app);
 
         // No repo grouping, no branch brackets: each row is a `PaneDotsRow`
-        // block (real per-pane dots), the same shape Project view uses,
-        // never the single-status `Workspace` row.
+        // block (real per-pane dots), never the single-status
+        // `Workspace` row.
         assert_eq!(
             entries,
             vec![
@@ -8545,7 +7071,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
             name: "g".into(),
             collapse_key: "k".into(),
         }];
-        assert_eq!(entry_row_height(&entries[0], &entries, 0, 0), 1);
+        assert_eq!(entry_row_height(&entries[0], &entries, 0), 1);
     }
 
     #[test]
@@ -8558,7 +7084,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
             last: false,
             ws_idx: None,
         }];
-        assert_eq!(entry_row_height(&entries[0], &entries, 0, 0), 1);
+        assert_eq!(entry_row_height(&entries[0], &entries, 0), 1);
     }
 
     #[test]
@@ -8576,8 +7102,8 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
             },
         ];
         // Every workspace is a single row: name + inline dots.
-        assert_eq!(entry_row_height(&entries[0], &entries, 0, 0), 1);
-        assert_eq!(entry_row_height(&entries[1], &entries, 1, 0), 1);
+        assert_eq!(entry_row_height(&entries[0], &entries, 0), 1);
+        assert_eq!(entry_row_height(&entries[1], &entries, 1), 1);
     }
 
     // Characterization: pins the lockstep entries system for a git repo group
@@ -8613,14 +7139,8 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
                 WorkspaceListEntry::BranchHeader { .. } => "BranchHeader",
                 WorkspaceListEntry::Workspace { .. } => "Workspace",
                 WorkspaceListEntry::HiddenHeader { .. } => "HiddenHeader",
-                WorkspaceListEntry::ProjectRow { .. }
-                | WorkspaceListEntry::WorktreeRow { .. }
-                | WorkspaceListEntry::SectionRow { .. }
-                | WorkspaceListEntry::SectionHeader { .. }
-                | WorkspaceListEntry::SectionItem { .. }
-                | WorkspaceListEntry::PrRow { .. }
-                | WorkspaceListEntry::PaneDotsRow { .. } => {
-                    panic!("repo-view fixture must never emit a project-view entry")
+                WorkspaceListEntry::PaneDotsRow { .. } => {
+                    panic!("repo-view fixture must never emit a pane-dots entry")
                 }
             })
             .collect();
@@ -8633,7 +7153,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
         let total_height: u16 = entries
             .iter()
             .enumerate()
-            .map(|(idx, entry)| entry_row_height(entry, &entries, idx, 0))
+            .map(|(idx, entry)| entry_row_height(entry, &entries, idx))
             .sum();
         assert_eq!(total_height, 4, "1+1+1+1 rows for the pinned sequence");
 
@@ -8665,17 +7185,11 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
                 | WorkspaceListEntry::ProjectHeader { .. } => expected_header_ys.push(y),
                 WorkspaceListEntry::BranchHeader { .. } => {}
                 WorkspaceListEntry::HiddenHeader { .. } => {}
-                WorkspaceListEntry::ProjectRow { .. }
-                | WorkspaceListEntry::WorktreeRow { .. }
-                | WorkspaceListEntry::SectionRow { .. }
-                | WorkspaceListEntry::SectionHeader { .. }
-                | WorkspaceListEntry::SectionItem { .. }
-                | WorkspaceListEntry::PrRow { .. }
-                | WorkspaceListEntry::PaneDotsRow { .. } => {
-                    panic!("repo-view fixture must never emit a project-view entry")
+                WorkspaceListEntry::PaneDotsRow { .. } => {
+                    panic!("repo-view fixture must never emit a pane-dots entry")
                 }
             }
-            y += entry_row_height(entry, &entries, idx, 0);
+            y += entry_row_height(entry, &entries, idx);
         }
         assert_eq!(y - body.y, total_height);
         assert_eq!(
@@ -8748,7 +7262,8 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
     // Exhaustive counterpart to `workspace_list_lockstep_passes_agree_for_git_repo_group`:
     // that test pins ONE shape (a git repo group producing ProjectHeader +
     // Workspace only). This test instead builds a fixture that forces every
-    // `WorkspaceListEntry` variant to appear at least once -- GroupHeader (a
+    // remaining `WorkspaceListEntry` variant to appear at least once --
+    // GroupHeader (a
     // user visual group), ProjectHeader + Workspace (a git repo group),
     // BranchHeader both folded (`ws_idx: Some`, a single auto-named branch
     // member) and plain (`ws_idx: None`, two members on one branch), and
@@ -8757,7 +7272,11 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
     // pristine fixture, so the lockstep contract is checked against
     // pathological internal state, not just tidy ones.
     //
-    // The THREE lockstep passes named at sidebar.rs:703-705 are
+    // (`PaneDotsRow` is emitted only by the Folders view, so this Repo-view
+    // fixture cannot produce one; its match arms keep the compiler-checked
+    // exhaustiveness instead, and the Folders tests cover the variant.)
+    //
+    // The THREE lockstep passes named at `entry_row_height`'s doc are
     // `workspace_list_visible_count` (visible-count pass),
     // `compute_workspace_list_areas` (geometry pass), and
     // `render_workspace_list` (render pass); all three MUST consume exactly
@@ -8864,14 +7383,8 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
                     }
                 }
                 WorkspaceListEntry::HiddenHeader { .. } => seen.hidden_header = true,
-                WorkspaceListEntry::ProjectRow { .. }
-                | WorkspaceListEntry::WorktreeRow { .. }
-                | WorkspaceListEntry::SectionRow { .. }
-                | WorkspaceListEntry::SectionHeader { .. }
-                | WorkspaceListEntry::SectionItem { .. }
-                | WorkspaceListEntry::PrRow { .. }
-                | WorkspaceListEntry::PaneDotsRow { .. } => {
-                    panic!("repo-view fixture must never emit a project-view entry")
+                WorkspaceListEntry::PaneDotsRow { .. } => {
+                    panic!("repo-view fixture must never emit a pane-dots entry")
                 }
             }
         }
@@ -8904,7 +7417,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
         let total_height: u16 = entries
             .iter()
             .enumerate()
-            .map(|(idx, entry)| entry_row_height(entry, &entries, idx, 0))
+            .map(|(idx, entry)| entry_row_height(entry, &entries, idx))
             .sum();
 
         // --- Pass 2: visible-count. An exact-fit body shows every entry; one
@@ -8960,17 +7473,11 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
                 WorkspaceListEntry::HiddenHeader { .. } => {
                     expected_headers.push(("hidden:".to_string(), y))
                 }
-                WorkspaceListEntry::ProjectRow { .. }
-                | WorkspaceListEntry::WorktreeRow { .. }
-                | WorkspaceListEntry::SectionRow { .. }
-                | WorkspaceListEntry::SectionHeader { .. }
-                | WorkspaceListEntry::SectionItem { .. }
-                | WorkspaceListEntry::PrRow { .. }
-                | WorkspaceListEntry::PaneDotsRow { .. } => {
-                    panic!("repo-view fixture must never emit a project-view entry")
+                WorkspaceListEntry::PaneDotsRow { .. } => {
+                    panic!("repo-view fixture must never emit a pane-dots entry")
                 }
             }
-            y += entry_row_height(entry, &entries, idx, 0);
+            y += entry_row_height(entry, &entries, idx);
         }
         assert_eq!(y - body.y, total_height);
         assert_eq!(
@@ -9009,14 +7516,8 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
                 WorkspaceListEntry::ProjectHeader { name, .. } => name.clone(),
                 WorkspaceListEntry::BranchHeader { label, .. } => label.clone(),
                 WorkspaceListEntry::HiddenHeader { .. } => "Hidden".to_string(),
-                WorkspaceListEntry::ProjectRow { .. }
-                | WorkspaceListEntry::WorktreeRow { .. }
-                | WorkspaceListEntry::SectionRow { .. }
-                | WorkspaceListEntry::SectionHeader { .. }
-                | WorkspaceListEntry::SectionItem { .. }
-                | WorkspaceListEntry::PrRow { .. }
-                | WorkspaceListEntry::PaneDotsRow { .. } => {
-                    panic!("repo-view fixture must never emit a project-view entry")
+                WorkspaceListEntry::PaneDotsRow { .. } => {
+                    panic!("repo-view fixture must never emit a pane-dots entry")
                 }
             };
             let actual = row_text(terminal.backend().buffer(), y, exact.width);
@@ -9024,7 +7525,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
                 actual.contains(&expected_substr),
                 "entry {idx} ({entry:?}) expected {expected_substr:?} at row {y}, got {actual:?}"
             );
-            y += entry_row_height(entry, &entries, idx, 0);
+            y += entry_row_height(entry, &entries, idx);
         }
 
         // Invariants gate for the state used above, so later field additions
@@ -9147,1031 +7648,11 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
         );
     }
 
-    // ── Project-view row painters + geometry (bora-49p.3) ────────────────
+    // ── Pane-dots painters + geometry (bora-49p.3) ───────────────────────
 
     fn line_text(line: &Line<'_>) -> String {
         line.spans.iter().map(|s| s.content.as_ref()).collect()
     }
-
-    #[test]
-    fn project_row_line_right_aligns_counter_and_fits_width() {
-        let p = Palette::catppuccin();
-        let width = 42;
-        // Before this fix `project_row_line` took no `collapsed` param and
-        // never drew a chevron; the width invariant only had one shape to
-        // hold. A collapsed group now gets a chevron back (owner's ask,
-        // item 3b) that eats into the name's own budget rather than
-        // padding out the fixed width, so the invariant is asserted in
-        // BOTH states here. T7 (bora-79l, divergence F): the title starts
-        // with the 1-column gutter (` CNB`, ALVO_CAPTURE row 01) — fica
-        // vermelho se o nome voltar à coluna 0.
-        let expanded = line_text(&project_row_line("CNB", 3, 4, false, &p, width));
-        assert_eq!(display_width(&expanded), width as usize);
-        // bora-c1h G1: the hexagon is gone — the gutter, then the group
-        // name, underlined.
-        assert!(expanded.starts_with(" CNB"));
-        assert!(
-            !expanded.contains('⬢'),
-            "no hexagon on the group header: {expanded:?}"
-        );
-        assert!(expanded.ends_with("3/4"));
-
-        let collapsed = line_text(&project_row_line("CNB", 3, 4, true, &p, width));
-        assert_eq!(
-            display_width(&collapsed),
-            width as usize,
-            "the width invariant holds with the caret too: {collapsed:?}"
-        );
-        assert!(
-            collapsed.starts_with(" ▸ CNB"),
-            "a collapsed group gets its caret back, after the gutter: {collapsed:?}"
-        );
-        assert!(collapsed.ends_with("3/4"));
-    }
-
-    #[test]
-    fn project_row_line_has_no_separator_rule_before_the_counter() {
-        // Ground-truth re-approval: the approved mock's `.g` rule draws no
-        // ruler at all — Solo #11's dash-fill was a deviation from the
-        // approved design, not the source of truth. The gap between the
-        // name and the counter is now plain space, still padded to width.
-        let p = Palette::catppuccin();
-        let width = 30;
-        let text = line_text(&project_row_line("CNB", 1, 4, false, &p, width));
-
-        assert_eq!(display_width(&text), width as usize, "row: {text:?}");
-        assert_eq!(
-            text.chars().filter(|&c| c == '─').count(),
-            0,
-            "no ruler on the group header: {text:?}"
-        );
-        assert!(text.trim_end().ends_with("1/4"));
-    }
-
-    #[test]
-    fn section_header_ruler_fills_exact_width_to_the_counter_column() {
-        let p = Palette::catppuccin();
-        let width = 40;
-        let text = line_text(&section_header_line(&COMMANDS, 1, 3, None, &p, width));
-
-        // Row is loaded exactly to `width`, not merely "wide enough" — a
-        // leader/counter budget mismatch shows up as drift here. T7
-        // (bora-79l): the leader is the same `·` the branch headers use
-        // and the counter sits FLUSH against its last dot (ALVO_CAPTURE
-        // row 31: ` ≡ COMANDO ·····0/1`) — fica vermelho se voltar o
-        // `─` ruler, o indent de 4, ou o espaço antes do contador.
-        assert_eq!(display_width(&text), width as usize, "row: {text:?}");
-        assert!(text.trim_end().ends_with("1/3"));
-        let dot_run = text.chars().filter(|&c| c == '·').count();
-        assert!(dot_run > 0, "dotted leader must exist: {text:?}");
-        let prefix = " ≡ COMANDO ";
-        let counter = "1/3";
-        let expected_dots = width as usize - display_width(prefix) - display_width(counter);
-        assert_eq!(dot_run, expected_dots, "row: {text:?}");
-    }
-
-    #[test]
-    fn section_header_checks_glyph_differs_from_commands() {
-        let p = Palette::catppuccin();
-        let commands = line_text(&section_header_line(&COMMANDS, 0, 2, None, &p, 30));
-        let checks = line_text(&section_header_line(&CHECKS, 2, 2, None, &p, 30));
-
-        // T7 (bora-79l): this pinned that the two bands' glyphs differed
-        // (≡ vs ✓). ALVO_CAPTURE rows 31/33 pin `≡` for BOTH — the ✓ was
-        // an old rollup echo — so the pin flips: fica vermelho se CHECKS
-        // voltar a um glifo próprio (ou COMANDO perder o label novo);
-        // as linhas continuam distintas pelos labels.
-        assert!(commands.starts_with(" ≡ COMANDO"));
-        assert!(checks.starts_with(" ≡ CHECKS"));
-        assert_ne!(commands, checks);
-    }
-    #[test]
-    // T7 (bora-79l): counter flush against the `·` leader now — fica
-    // vermelho se o contador voltar com espaço à frente (` 2`).
-    fn section_header_notes_shows_plain_count_not_a_progress_ratio() {
-        let p = Palette::catppuccin();
-        let notes = line_text(&section_header_line(&NOTES, 0, 2, None, &p, 30));
-        let todos = line_text(&section_header_line(&TODOS, 1, 3, None, &p, 30));
-
-        assert!(notes.contains("NOTES"));
-        assert!(
-            notes.trim_end().ends_with("·2"),
-            "doc count flush against the leader, no slash: {notes:?}"
-        );
-        assert!(
-            !notes.contains("0/2"),
-            "NOTES is not a progress bar: {notes:?}"
-        );
-        assert!(todos.contains("TODOS"));
-        assert!(todos.trim_end().ends_with("1/3"));
-    }
-
-    #[test]
-    fn worktree_row_omits_repo_name_when_single_repo_project() {
-        let p = Palette::catppuccin();
-        let text = line_text(&worktree_row_line(
-            None, "main", 0, 0, None, false, false, &p, 40,
-        ));
-
-        assert_eq!(text, "  ▾ main");
-    }
-
-    #[test]
-    fn worktree_row_shows_repo_name_when_project_spans_repos() {
-        let p = Palette::catppuccin();
-        let text = line_text(&worktree_row_line(
-            Some("cnb_landing_page"),
-            "main",
-            0,
-            0,
-            None,
-            false,
-            false,
-            &p,
-            40,
-        ));
-
-        assert_eq!(text, "  ▾ cnb_landing_page  main");
-    }
-
-    #[test]
-    fn worktree_row_truncates_branch_without_overlapping_the_pr_badge() {
-        let p = Palette::catppuccin();
-        let width = 40;
-        let long_branch = "feature/very-long-branch-name-that-does-not-fit";
-        let text = line_text(&worktree_row_line(
-            Some("cnb_landing_page"),
-            long_branch,
-            0,
-            0,
-            Some(128),
-            false,
-            false,
-            &p,
-            width,
-        ));
-
-        assert!(
-            display_width(&text) <= width as usize,
-            "row must respect its width budget, got {text:?}"
-        );
-        assert!(
-            text.contains('…'),
-            "long branch must be truncated: {text:?}"
-        );
-        assert!(
-            text.trim_end().ends_with("#128"),
-            "PR badge must survive truncation intact: {text:?}"
-        );
-        assert!(
-            !text.contains(long_branch),
-            "full untruncated branch must not appear: {text:?}"
-        );
-    }
-
-    #[test]
-    fn worktree_row_unopened_renders_dimmed_branch() {
-        let p = Palette::catppuccin();
-        let normal = worktree_row_line(None, "main", 0, 0, None, false, false, &p, 40);
-        let unopened = worktree_row_line(None, "main", 0, 0, None, false, true, &p, 40);
-
-        let normal_style = normal
-            .spans
-            .iter()
-            .find(|s| s.content.as_ref() == "main")
-            .expect("normal row has a branch span")
-            .style;
-        let unopened_style = unopened
-            .spans
-            .iter()
-            .find(|s| s.content.as_ref() == "main")
-            .expect("unopened row has a branch span")
-            .style;
-
-        assert!(!normal_style.add_modifier.contains(Modifier::DIM));
-        assert!(unopened_style.add_modifier.contains(Modifier::DIM));
-    }
-
-    #[test]
-    fn section_item_line_shows_bullet_label_and_right_aligned_detail() {
-        let p = Palette::catppuccin();
-        let running = line_text(&section_item_line(
-            &COMMANDS,
-            "dev",
-            Some(":5173"),
-            true,
-            &p,
-            40,
-        ));
-        let idle = line_text(&section_item_line(&COMMANDS, "test", None, false, &p, 40));
-
-        assert!(running.trim_start().starts_with('●'));
-        assert!(running.trim_end().ends_with(":5173"));
-        assert!(idle.trim_start().starts_with('·'));
-    }
-
-    #[test]
-    fn checks_row_line_marks_failures_with_a_red_cross() {
-        let p = Palette::catppuccin();
-        let failing = section_item_line(&CHECKS, "clippy", None, false, &p, 40);
-        let text = line_text(&failing);
-
-        assert!(
-            text.trim_start().starts_with('✗'),
-            "a failing CHECKS row must read as a failure, got {text:?}"
-        );
-        assert!(text.contains("clippy"));
-        let bullet = failing
-            .spans
-            .iter()
-            .find(|s| s.content.as_ref() == "✗")
-            .expect("checks row has a ✗ bullet");
-        assert_eq!(bullet.style.fg, Some(p.red));
-    }
-
-    // ── bora-c1h: v3 section row (G1-G5) ────────────────────────────────
-
-    fn unicode_glyphs() -> crate::config::ProjectGlyphs {
-        crate::config::project_glyphs(crate::config::sidebar::SidebarGlyphStyle::Unicode)
-    }
-
-    #[test]
-    fn project_row_line_has_no_hexagon_and_is_underlined() {
-        let p = Palette::catppuccin();
-        let line = project_row_line("Bora", 1, 2, false, &p, 40);
-        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-        assert!(!text.contains('⬢'), "G1: no hexagon glyph: {text:?}");
-        let name_span = line
-            .spans
-            .iter()
-            .find(|s| s.content.as_ref() == "Bora")
-            .expect("name span must render verbatim");
-        assert!(
-            name_span.style.add_modifier.contains(Modifier::UNDERLINED),
-            "G1: the group name must be underlined: {:?}",
-            name_span.style
-        );
-        // Item 6: before this fix the header was BOLD | UNDERLINED. It now
-        // claims ITALIC | UNDERLINED — ITALIC is the header's own
-        // face-selection channel, uncontested by `section_row_line`'s
-        // branch label (which owns BOLD|ITALIC for its own distinct face).
-        // BOLD is deliberately dropped: the row's own slightly-lighter
-        // background (item 3c) carries the emphasis instead, per the
-        // owner's own call ("I don't think we even need the Bold if we had
-        // the background").
-        assert!(
-            name_span.style.add_modifier.contains(Modifier::ITALIC),
-            "the header claims the plain-italic face channel: {:?}",
-            name_span.style
-        );
-        assert!(
-            !name_span.style.add_modifier.contains(Modifier::BOLD),
-            "BOLD must stay off — the row's own background supplies the emphasis now: {:?}",
-            name_span.style
-        );
-        assert_eq!(
-            name_span.style.fg,
-            Some(p.mauve),
-            "ground-truth re-approval: the group header accent is mauve: {:?}",
-            name_span.style
-        );
-        assert!(text.contains("1/2"), "count stays right-aligned: {text:?}");
-    }
-
-    #[test]
-    fn section_row_line_declares_the_branch_without_name_or_chevron() {
-        // Attribution (T3, bora-79l): this was
-        // `section_row_line_shows_bright_uppercase_name_and_dim_branch` —
-        // it pinned the UPPERCASE repo-name slot at `p.text` BOLD and a
-        // BOLD|ITALIC|DIM branch riding the Ghostty font-selection
-        // channel. The declared-branch header removed the name slot by
-        // assignment (the workspace's name lives on its `PaneDotsRow`;
-        // the P1 double-print dies here), so the row's only text is the
-        // branch label: overlay1 + BOLD, no DIM, no ITALIC — the
-        // font-selection channel is retired with the slot that used it.
-        let p = Palette::catppuccin();
-        let glyphs = unicode_glyphs();
-        let line = section_row_line(
-            false,
-            Some("feature/x"),
-            None,
-            0,
-            0,
-            None,
-            None,
-            &glyphs,
-            &p,
-            60,
-        );
-        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-        assert!(
-            !text.contains("FEATURE-X") && !text.chars().any(char::is_uppercase),
-            "no name slot, nothing uppercase — the header declares a branch: {text:?}"
-        );
-        assert!(
-            text.contains("feature/x"),
-            "the branch label is the row's whole text: {text:?}"
-        );
-        assert!(
-            !text.contains('▾') && !text.contains('▸'),
-            "no chevron — collapse belongs to the folder (ProjectRow): {text:?}"
-        );
-        let branch_span = line
-            .spans
-            .iter()
-            .find(|s| s.content.as_ref().contains("feature/x"))
-            .expect("branch span");
-        assert_eq!(
-            branch_span.style.fg,
-            Some(p.overlay1),
-            "the label is overlay1 — recessive without DIM tricks: {branch_span:?}"
-        );
-        assert!(
-            branch_span.style.add_modifier.contains(Modifier::BOLD),
-            "the label is BOLD: {branch_span:?}"
-        );
-        assert!(
-            !branch_span.style.add_modifier.contains(Modifier::DIM | Modifier::ITALIC),
-            "no DIM, no ITALIC — the font-selection channel died with the name slot: {branch_span:?}"
-        );
-    }
-
-    #[test]
-    fn section_row_line_marks_worktree_checkouts_with_hilbert_glyph_main_gets_none() {
-        let p = Palette::catppuccin();
-        let glyphs = unicode_glyphs();
-        let worktree = line_text(&section_row_line(
-            true,
-            Some("fix/x"),
-            None,
-            0,
-            0,
-            None,
-            None,
-            &glyphs,
-            &p,
-            60,
-        ));
-        let main = line_text(&section_row_line(
-            false,
-            Some("main"),
-            None,
-            0,
-            0,
-            None,
-            None,
-            &glyphs,
-            &p,
-            60,
-        ));
-        assert!(
-            worktree.contains('⌗'),
-            "G4: worktree sections get ⌗: {worktree:?}"
-        );
-        assert!(!main.contains('⌗'), "G4: main checkouts get no ⌗: {main:?}");
-        assert!(
-            !worktree.contains("##"),
-            "G4: no condensed ## prefix: {worktree:?}"
-        );
-    }
-
-    #[test]
-    fn section_row_line_cluster_never_zero_widths_the_branch() {
-        // Attribution (T3): was `..._never_zero_widths_the_name` — the
-        // budget priority survives (cluster reserved in full first, the
-        // label ellipsizes into whatever is left), only the thing that
-        // truncates changed: the branch label, since the name slot is
-        // gone. The `✱`/`±` dirty/staged glyph assertions retired with
-        // the glyphs themselves — the numeric `+N −M` diff subsumes them.
-        let p = Palette::catppuccin();
-        let glyphs = unicode_glyphs();
-        let line = section_row_line(
-            false,
-            Some("feature/very-long-branch-name-too"),
-            Some((916, 2)),
-            3,
-            5,
-            Some((74, PrChipTone::Open)),
-            Some(crate::workspace::ChecksRollup::Failing),
-            &glyphs,
-            &p,
-            40,
-        );
-        let text = line_text(&line);
-        assert!(
-            text.contains("+916 −2"),
-            "diff numbers survive truncation: {text:?}"
-        );
-        assert!(
-            text.contains("↑3"),
-            "ahead glyph survives truncation: {text:?}"
-        );
-        assert!(
-            text.contains("↓5"),
-            "behind glyph survives truncation: {text:?}"
-        );
-        assert!(
-            text.contains("PR74"),
-            "PR chip survives truncation: {text:?}"
-        );
-        assert!(
-            text.contains('✗'),
-            "checks glyph survives truncation: {text:?}"
-        );
-        assert!(
-            display_width(&text) <= 40,
-            "row must not exceed the given width: {text:?}"
-        );
-    }
-
-    #[test]
-    fn section_row_line_pins_the_state_cluster_to_the_right_edge() {
-        let p = Palette::catppuccin();
-        let glyphs = unicode_glyphs();
-        // A short label leaves slack: the declared header floats the
-        // cluster right on a dotted leader, so the row must fill to
-        // `width` and end on the cluster.
-        let line = section_row_line(false, Some("ws"), None, 3, 0, None, None, &glyphs, &p, 40);
-        let text = line_text(&line);
-        assert_eq!(
-            display_width(&text),
-            40,
-            "a row with a cluster fills to the right edge: {text:?}"
-        );
-        assert!(
-            text.ends_with("↑3"),
-            "the cluster is the last thing on the row: {text:?}"
-        );
-        // No cluster: no leader, no padding, the row stays short.
-        let plain = line_text(&section_row_line(
-            false,
-            Some("ws"),
-            None,
-            0,
-            0,
-            None,
-            None,
-            &glyphs,
-            &p,
-            40,
-        ));
-        assert!(
-            display_width(&plain) < 40 && !plain.contains('·'),
-            "a clusterless row is not padded and draws no leader: {plain:?}"
-        );
-    }
-
-    #[test]
-    fn section_row_line_cluster_is_all_gray_per_r1() {
-        // Attribution (T3): was `..._ahead_green_behind_and_dirty_and_
-        // staged_yellow`. The owner's R1 color budget (2026-08-27)
-        // reassigns every git-plumbing hue to gray — green means
-        // "answered/ready" (a pane state), and the old yellow
-        // behind/dirty/staged markers competed with the one red that
-        // matters (a failing check). The dirty/staged `✱`/`±` glyphs are
-        // gone entirely, subsumed by the numeric diff.
-        let p = Palette::catppuccin();
-        let glyphs = unicode_glyphs();
-        let line = section_row_line(
-            false,
-            Some("main"),
-            Some((4, 2)),
-            1,
-            1,
-            None,
-            None,
-            &glyphs,
-            &p,
-            60,
-        );
-        let find = |glyph: &str| {
-            line.spans
-                .iter()
-                .find(|s| s.content.as_ref().contains(glyph))
-                .unwrap_or_else(|| panic!("expected a span containing {glyph:?}: {line:?}"))
-        };
-        assert_eq!(find("+4").style.fg, Some(p.overlay1), "diff is gray");
-        assert_eq!(find("↑1").style.fg, Some(p.overlay1), "ahead is gray");
-        assert_eq!(find("↓1").style.fg, Some(p.overlay1), "behind is gray");
-        assert!(
-            !line_text(&line).contains('✱') && !line_text(&line).contains('±'),
-            "the dirty/staged glyphs are subsumed by the numeric diff"
-        );
-    }
-
-    #[test]
-    // T7 (bora-79l): the checks-glyph span is trimmed to bare `✓/✗/●`
-    // (push_cluster owns all cluster spacing now) — fica vermelho se o
-    // glifo voltar com espaço colado ao span.
-    fn pr_chip_prints_gray_checks_glyph_keeps_rollup() {
-        // Attribution (T3): was `pr_chip_follows_github_state_colors` —
-        // merged purple / closed red / draft dim / open rollup-colored.
-        // R1 kills every one of those: the chip is a counter, and
-        // counters never shout; the ONLY colored thing in the cluster is
-        // the checks glyph, still owned by `checks_rollup_glyph` (the
-        // red-on-failing rule itself is pinned by
-        // `section_row_line_red_only_on_a_real_check_failure` below).
-        let p = Palette::catppuccin();
-        let glyphs = unicode_glyphs();
-        let chip_color = |tone: PrChipTone, checks: Option<crate::workspace::ChecksRollup>| {
-            let line = section_row_line(
-                false,
-                Some("main"),
-                None,
-                0,
-                0,
-                Some((7, tone)),
-                checks,
-                &glyphs,
-                &p,
-                60,
-            );
-            let chip = line
-                .spans
-                .iter()
-                .find(|s| s.content.as_ref().contains("PR7"))
-                .expect("chip span");
-            let has_checks_glyph = line
-                .spans
-                .iter()
-                .any(|s| matches!(s.content.as_ref(), "✓" | "✗" | "●"));
-            (chip.style.fg, has_checks_glyph)
-        };
-        use crate::workspace::ChecksRollup::*;
-        assert_eq!(
-            chip_color(PrChipTone::Open, Some(Passing)),
-            (Some(p.overlay1), true),
-            "open + CI green: gray chip, checks glyph kept"
-        );
-        assert_eq!(
-            chip_color(PrChipTone::Open, Some(Failing)),
-            (Some(p.overlay1), true),
-            "open + CI failing: gray chip, red ✗ carried by the glyph"
-        );
-        assert_eq!(
-            chip_color(PrChipTone::Open, None),
-            (Some(p.overlay1), false),
-            "open + unknown CI: gray chip, no glyph to color"
-        );
-        assert_eq!(
-            chip_color(PrChipTone::Merged, Some(Failing)),
-            (Some(p.overlay1), false),
-            "merged: gray chip, stale CI glyph suppressed"
-        );
-        assert_eq!(
-            chip_color(PrChipTone::Draft, None),
-            (Some(p.overlay1), false),
-            "draft: gray chip"
-        );
-        assert_eq!(
-            chip_color(PrChipTone::Closed, Some(Passing)),
-            (Some(p.overlay1), false),
-            "closed: gray chip — red is a failing check's alone"
-        );
-    }
-
-    #[test]
-    fn section_row_line_branch_ellipsizes_when_the_cluster_is_wide() {
-        // Attribution (T3): was `..._name_wins_in_full_the_branch_
-        // ellipsizes` — with the name slot gone there is no name/branch
-        // priority left to pin; what survives is the truncation ORDER
-        // itself: the cluster is reserved in full, the branch label
-        // ellipsizes into the remainder (`spike/m0-ambie…` is the mock's
-        // own example), never the reverse.
-        let p = Palette::catppuccin();
-        let glyphs = unicode_glyphs();
-        let branch = "feature/add-a-very-long-descriptive-branch-name";
-        let line = section_row_line(
-            false,
-            Some(branch),
-            Some((916, 2)),
-            2,
-            1,
-            None,
-            None,
-            &glyphs,
-            &p,
-            45,
-        );
-        let text = line_text(&line);
-        assert!(
-            text.contains('…'),
-            "a row this tight must truncate something: {text:?}"
-        );
-        assert!(
-            !text.contains(branch),
-            "the branch is the one that ellipsizes: {text:?}"
-        );
-        assert!(
-            text.contains("+916 −2"),
-            "the cluster never loses a cell to the label: {text:?}"
-        );
-        assert!(
-            display_width(&text) <= 45,
-            "row must respect its width budget: {text:?}"
-        );
-    }
-
-    #[test]
-    fn section_row_line_caps_a_huge_ahead_behind_count_display() {
-        // Item 2: the owner's real `rails/rails` fork sits ~99485 commits
-        // behind. An unbounded integer in the fixed-width state cluster
-        // pushes the whole cluster past the row's right edge.
-        let p = Palette::catppuccin();
-        let glyphs = unicode_glyphs();
-        let width = 56;
-        let line = section_row_line(
-            false,
-            Some("main"),
-            None,
-            1,
-            99485,
-            None,
-            None,
-            &glyphs,
-            &p,
-            width,
-        );
-        let text = line_text(&line);
-        assert!(
-            display_width(&text) <= width as usize,
-            "the whole row, including the cluster, must fit width: {text:?}"
-        );
-        assert!(
-            text.contains("99+"),
-            "a huge count must be capped, not spelled out: {text:?}"
-        );
-        assert!(
-            !text.contains("99485"),
-            "the raw huge number must never render: {text:?}"
-        );
-        assert!(
-            text.ends_with(&format!("{}99+", glyphs.behind)),
-            "the capped cluster must still be fully present at the right edge: {text:?}"
-        );
-    }
-
-    #[test]
-    fn section_row_line_worktree_marker_reads_as_its_own_element() {
-        // Item 3, carried over T3's slot reorder: the marker must read as
-        // a marker, not a glyph glued onto the branch (`⌗⎇main`).
-        let p = Palette::catppuccin();
-        let glyphs = unicode_glyphs();
-        let text = line_text(&section_row_line(
-            true,
-            Some("muiraquita"),
-            None,
-            0,
-            0,
-            None,
-            None,
-            &glyphs,
-            &p,
-            60,
-        ));
-        assert!(
-            text.contains("⌗ ⎇ muiraquita"),
-            "marker, branch glyph and label each keep their own cell: {text:?}"
-        );
-        assert!(
-            !text.contains("⌗\u{2387}"),
-            "the marker must never glue onto the branch glyph: {text:?}"
-        );
-    }
-
-    #[test]
-    fn section_row_line_leader_only_exists_with_a_cluster() {
-        // Fica vermelho se o leader pontilhado pintar sem cluster, ou
-        // deixar de pintar quando há um cluster a alcançar.
-        let p = Palette::catppuccin();
-        let glyphs = unicode_glyphs();
-        let with_cluster =
-            section_row_line(false, Some("main"), None, 2, 0, None, None, &glyphs, &p, 60);
-        let with_text = line_text(&with_cluster);
-        assert!(
-            with_text.contains('·'),
-            "a cluster gets a dotted leader: {with_text:?}"
-        );
-        let leader = with_cluster
-            .spans
-            .iter()
-            .find(|s| s.content.contains('·'))
-            .expect("leader span");
-        assert_eq!(
-            leader.style.fg,
-            Some(p.surface1),
-            "the leader is surface1 — the band ruler's connective colour: {leader:?}"
-        );
-        let without = line_text(&section_row_line(
-            false,
-            Some("main"),
-            None,
-            0,
-            0,
-            None,
-            None,
-            &glyphs,
-            &p,
-            60,
-        ));
-        assert!(
-            !without.contains('·'),
-            "no cluster, no leader — nothing to lead to: {without:?}"
-        );
-    }
-
-    #[test]
-    fn section_row_line_worktree_marker_is_overlay1_never_mauve() {
-        // Fica vermelho se ⌗ aparecer num checkout main, ou se o marcador
-        // voltar ao mauve — R1 reserva o mauve para o ProjectRow.
-        let p = Palette::catppuccin();
-        let glyphs = unicode_glyphs();
-        let line = section_row_line(true, Some("fix/x"), None, 0, 0, None, None, &glyphs, &p, 60);
-        let marker = line
-            .spans
-            .iter()
-            .find(|s| s.content.as_ref().contains('⌗'))
-            .expect("marker span");
-        assert_eq!(
-            marker.style.fg,
-            Some(p.overlay1),
-            "R1: the marker is overlay1, not mauve: {marker:?}"
-        );
-        assert!(
-            !marker.style.add_modifier.contains(Modifier::BOLD),
-            "R1: the marker carries no extra emphasis: {marker:?}"
-        );
-        let main = line_text(&section_row_line(
-            false,
-            Some("main"),
-            None,
-            0,
-            0,
-            None,
-            None,
-            &glyphs,
-            &p,
-            60,
-        ));
-        assert!(
-            !main.contains('⌗'),
-            "only a linked worktree carries the marker: {main:?}"
-        );
-    }
-
-    #[test]
-    // T7 (bora-79l): the failing glyph span is bare `✗` now (separator
-    // spaces are their own spans) — fica vermelho se voltar a carregar o
-    // espaço dentro do span.
-    fn section_row_line_red_only_on_a_real_check_failure() {
-        // Fica vermelho se qualquer coisa além de uma falha real de check
-        // pintar de vermelho — behind, diff, ou o chip PR42 (R1).
-        let p = Palette::catppuccin();
-        let glyphs = unicode_glyphs();
-        let failing = section_row_line(
-            false,
-            Some("main"),
-            None,
-            0,
-            0,
-            None,
-            Some(crate::workspace::ChecksRollup::Failing),
-            &glyphs,
-            &p,
-            60,
-        );
-        let failing_glyph = failing
-            .spans
-            .iter()
-            .find(|s| s.content.as_ref() == "✗")
-            .expect("failing checks glyph");
-        assert_eq!(
-            failing_glyph.style.fg,
-            Some(p.red),
-            "a real failing check is the cluster's one red: {failing_glyph:?}"
-        );
-        // Everything loud at once — wide diff, far behind, a CLOSED PR —
-        // and not a single red cell anywhere.
-        let noisy = section_row_line(
-            false,
-            Some("main"),
-            Some((916, 2)),
-            0,
-            5,
-            Some((42, PrChipTone::Closed)),
-            None,
-            &glyphs,
-            &p,
-            60,
-        );
-        assert!(
-            noisy.spans.iter().all(|s| s.style.fg != Some(p.red)),
-            "behind/diff/PR42 never paint red: {:?}",
-            line_text(&noisy)
-        );
-        let chip = noisy
-            .spans
-            .iter()
-            .find(|s| s.content.as_ref().contains("PR42"))
-            .expect("chip span");
-        assert_eq!(
-            chip.style.fg,
-            Some(p.overlay1),
-            "the PR chip stays gray even CLOSED: {chip:?}"
-        );
-    }
-
-    #[test]
-    // T7 (bora-79l): collapsed starts ` ▸` after the F gutter — fica
-    // vermelho se o caret voltar à coluna 0.
-    fn project_row_line_group_header_has_no_chevron_or_ruler() {
-        // Item 4 (bora-c1h) established: the approved mock's `.g` rule
-        // draws neither a chevron nor a ruler when EXPANDED — the
-        // per-workspace `SectionRow` below already owns the `▾`/`▸`
-        // disclosure glyph, and Solo #11's dash-fill was a deviation from
-        // the approved design. The owner's later ask (item 3b) restores
-        // the caret for the CLOSED case only, since a collapsed group
-        // shows nothing else beneath it to carry that affordance — the
-        // ruler stays gone in both states.
-        let p = Palette::catppuccin();
-        let expanded = line_text(&project_row_line("CNB", 1, 4, false, &p, 30));
-        assert!(
-            !expanded.starts_with('▾') && !expanded.starts_with('▸'),
-            "an expanded group header draws no chevron: {expanded:?}"
-        );
-        assert_eq!(
-            expanded.chars().filter(|&c| c == '─').count(),
-            0,
-            "the group header draws no ruler: {expanded:?}"
-        );
-
-        let collapsed = line_text(&project_row_line("CNB", 1, 4, true, &p, 30));
-        assert!(
-            collapsed.starts_with(" ▸"),
-            "a closed group header gets its caret back, after the T7 \
-             gutter column: {collapsed:?}"
-        );
-        assert_eq!(
-            collapsed.chars().filter(|&c| c == '─').count(),
-            0,
-            "still no ruler when collapsed: {collapsed:?}"
-        );
-    }
-
-    #[test]
-    fn row_gap_appears_after_a_workspaces_pane_dots_row_only() {
-        // Attribution: before this fix a workspace could emit N `PaneRow`s,
-        // so the gap only applied after the LAST sibling `PaneRow` of a
-        // block. `PaneDotsRow` replaced the whole per-workspace block with
-        // exactly ONE 2-line block (bora-79l F2's l1/l2 split). T7
-        // (bora-79l, divergence C) then narrowed the gap to BRANCH GROUPS.
-        // 6a keeps the rule in the group shape: the LAST member block of
-        // a group separates from the next group's header. Fica vermelho
-        // se o gap voltar a disparar entre quaisquer dois blocos (ou
-        // deixar de disparar entre grupos diferentes): as alturas abaixo
-        // mudariam de 3/2 para 2/3.
-        let entries = vec![
-            WorkspaceListEntry::SectionRow {
-                ws_idx: 0,
-                checkout_key: "k1".into(),
-                collapse_key: "wsec:0".into(),
-                header_on: true,
-                header_hidden: false,
-                show_diff: true,
-                branch_group: "g1".into(),
-                diff: None,
-            },
-            WorkspaceListEntry::PaneDotsRow {
-                dots: true,
-                inline: false,
-                ws_idx: 0,
-                name: "ws0".into(),
-            },
-            WorkspaceListEntry::SectionRow {
-                ws_idx: 1,
-                checkout_key: "k2".into(),
-                collapse_key: "wsec:1".into(),
-                header_on: true,
-                header_hidden: false,
-                show_diff: true,
-                branch_group: "g2".into(),
-                diff: None,
-            },
-            WorkspaceListEntry::PaneDotsRow {
-                dots: true,
-                inline: false,
-                ws_idx: 1,
-                name: "ws1".into(),
-            },
-        ];
-        let row_gap = 1;
-        assert_eq!(
-            entry_row_height(&entries[0], &entries, 0, row_gap),
-            1,
-            "SectionRow itself never carries the gap"
-        );
-        assert_eq!(
-            entry_row_height(&entries[1], &entries, 1, row_gap),
-            3,
-            "a PaneDotsRow (base height 2) followed by a DIFFERENT branch \
-             group's SectionRow gets +row_gap: {entries:?}"
-        );
-        assert_eq!(
-            entry_row_height(&entries[2], &entries, 2, row_gap),
-            1,
-            "SectionRow itself never carries the gap"
-        );
-        assert_eq!(
-            entry_row_height(&entries[3], &entries, 3, row_gap),
-            2,
-            "the LAST PaneDotsRow in the list gets no trailing gap (base height 2 only)"
-        );
-    }
-
-    #[test]
-    fn row_gap_glues_member_blocks_of_one_branch_group() {
-        // T7 (bora-79l, divergence C) + 6a: dentro de uma mesma branch os
-        // blocos das workspaces membros são contíguos DEBAIXO da header
-        // única do grupo — o branco separa apenas o fim de um grupo do
-        // próximo header (ALVO_CAPTURE rows 04-07 coladas sob a header
-        // `⎇ main`, row 08 em branco). Fica vermelho se membros do mesmo
-        // grupo ganharem uma linha em branco entre si, se grupos
-        // diferentes colarem, ou se uma header OCULTA (exceção
-        // sections-empilhadas) voltar a dobrar o branco.
-        let entries = vec![
-            WorkspaceListEntry::SectionRow {
-                ws_idx: 0,
-                checkout_key: "k1".into(),
-                collapse_key: "wsec:0".into(),
-                header_on: true,
-                header_hidden: false,
-                show_diff: true,
-                branch_group: "same".into(),
-                diff: None,
-            },
-            WorkspaceListEntry::PaneDotsRow {
-                dots: true,
-                inline: false,
-                ws_idx: 0,
-                name: "ws0".into(),
-            },
-            // 6a: the second member of the SAME group — no SectionRow of
-            // its own anymore, just the block glued under the header.
-            WorkspaceListEntry::PaneDotsRow {
-                dots: true,
-                inline: false,
-                ws_idx: 1,
-                name: "ws1".into(),
-            },
-            WorkspaceListEntry::SectionRow {
-                ws_idx: 2,
-                checkout_key: "k3".into(),
-                collapse_key: "wsec:2".into(),
-                header_on: true,
-                header_hidden: false,
-                show_diff: true,
-                branch_group: "other".into(),
-                diff: None,
-            },
-            WorkspaceListEntry::PaneDotsRow {
-                dots: true,
-                inline: false,
-                ws_idx: 2,
-                name: "ws2".into(),
-            },
-            // A group whose header is HIDDEN (the stacked-sections
-            // same-branch exception): the hidden header's own row is the
-            // separator, so the block above it gets no gap — a gap there
-            // was the double blank the owner pointed at.
-            WorkspaceListEntry::SectionRow {
-                ws_idx: 3,
-                checkout_key: "k4".into(),
-                collapse_key: "wsec:3".into(),
-                header_on: true,
-                header_hidden: true,
-                show_diff: true,
-                branch_group: "third".into(),
-                diff: None,
-            },
-            WorkspaceListEntry::PaneDotsRow {
-                dots: true,
-                inline: false,
-                ws_idx: 3,
-                name: "ws3".into(),
-            },
-        ];
-        let heights: Vec<u16> = (0..entries.len())
-            .map(|idx| entry_row_height(&entries[idx], &entries, idx, 1))
-            .collect();
-        assert_eq!(
-            heights,
-            vec![1, 2, 3, 1, 2, 1, 2],
-            "member blocks of one group glue (2), the LAST block before a \
-             NEW group's VISIBLE header separates (3), and a HIDDEN next \
-             header's own row already separates (2): {entries:?}"
-        );
-    }
-
     #[test]
     fn pane_dots_columns_are_one_per_pane_spaced_two_apart() {
         let mut ws = Workspace::test_new("ita-principal");
@@ -10264,127 +7745,14 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
     }
 
     #[test]
-    fn pane_dots_row_is_a_two_line_block_name_then_dots() {
-        // G1's own "workspace vira bloco de 2 linhas": entry_row_height's
-        // base for `PaneDotsRow` is 2 now, and the render arm draws the
-        // name on l1 and the dots on l2 (row_y + 1) — never both on one
-        // line, the old single-line row's shape.
-        let mut app = AppState::test_new();
-        app.view_mode = crate::config::ViewMode::Project;
-        let mut ws = Workspace::test_new("main");
-        ws.test_split(Direction::Vertical);
-        app.workspaces = vec![ws];
-        app.ensure_test_terminals();
-        let pane = app.workspaces[0].tabs[0].root_pane;
-        let terminal_id = app.workspaces[0].tabs[0].panes[&pane]
-            .attached_terminal_id
-            .clone();
-        let terminal = app.terminals.get_mut(&terminal_id).unwrap();
-        terminal.detected_agent = Some(Agent::Claude);
-        terminal.state = AgentState::Blocked;
-
-        let entries = workspace_list_entries(&app);
-        let pane_dots_idx = entries
-            .iter()
-            .position(|e| matches!(e, WorkspaceListEntry::PaneDotsRow { .. }))
-            .expect("Project view must emit a PaneDotsRow for an open workspace");
-        assert_eq!(
-            entry_row_height(&entries[pane_dots_idx], &entries, pane_dots_idx, 0),
-            2,
-            "a PaneDotsRow's own content is 2 rows tall"
-        );
-
-        let area = Rect::new(0, 0, 30, 10);
-        let runtimes = crate::terminal::TerminalRuntimeRegistry::new();
-        let mut terminal_backend =
-            Terminal::new(TestBackend::new(area.width, area.height)).expect("test terminal");
-        terminal_backend
-            .draw(|frame| render_workspace_list(&app, &runtimes, frame, area, false))
-            .expect("workspace list should render");
-
-        let (_cards, _headers, project_rows) = compute_workspace_list_areas_all(&app, area);
-        let pane_hit = project_rows
-            .iter()
-            .find(|a| matches!(a.target, ProjectRowTarget::Pane { .. }))
-            .expect("one dot hit area for the single pane");
-        let l2_y = pane_hit.rect.y;
-        let l1_y = l2_y.saturating_sub(1);
-
-        let buffer = terminal_backend.backend().buffer();
-        let l1 = row_text(buffer, l1_y, area.width);
-        let l2 = row_text(buffer, l2_y, area.width);
-        assert!(l1.contains("main"), "l1 carries the name: {l1:?}");
-        assert!(
-            !l1.contains('◆'),
-            "l1 carries no state glyph even for a Blocked pane: {l1:?}"
-        );
-        assert!(
-            !l2.contains("main"),
-            "l2 carries no name, only dots: {l2:?}"
-        );
-        assert!(l2.contains('◆'), "l2 carries the pane's state dot: {l2:?}");
-    }
-
-    #[test]
-    fn pane_dots_row_hit_areas_land_on_the_rendered_dots_own_columns() {
-        // Third lockstep consumer (`pane_dots_columns`'s doc): render and
-        // hit-test must derive the SAME dot columns/identities, or a click
-        // would silently focus the wrong pane. This proves it end to end —
-        // render the real row, then check each hit area's rect against the
-        // ACTUAL rendered glyph at that column, not against re-derived
-        // arithmetic that could drift the same way twice.
-        let mut app = AppState::test_new();
-        app.view_mode = crate::config::ViewMode::Project;
-        let mut ws = Workspace::test_new("ita-principal");
-        ws.test_split(Direction::Vertical);
-        app.workspaces = vec![ws];
-
-        let area = Rect::new(0, 0, 30, 10);
-        let runtimes = crate::terminal::TerminalRuntimeRegistry::new();
-        let mut terminal =
-            Terminal::new(TestBackend::new(area.width, area.height)).expect("test terminal");
-        terminal
-            .draw(|frame| render_workspace_list(&app, &runtimes, frame, area, false))
-            .expect("workspace list should render");
-
-        let (_cards, _headers, project_rows) = compute_workspace_list_areas_all(&app, area);
-        let mut pane_hits: Vec<_> = project_rows
-            .iter()
-            .filter(|a| matches!(a.target, ProjectRowTarget::Pane { .. }))
-            .collect();
-        assert_eq!(pane_hits.len(), 2, "one hit area per pane: {pane_hits:?}");
-        pane_hits.sort_by_key(|a| a.rect.x);
-
-        let buffer = terminal.backend().buffer();
-        for hit in &pane_hits {
-            let cell = &buffer[(hit.rect.x, hit.rect.y)];
-            assert_ne!(
-                cell.symbol(),
-                " ",
-                "the hit area at {:?} must land on the rendered dot glyph, not blank space: {cell:?}",
-                hit.rect
-            );
-        }
-        // Columns are distinct and 2 cells apart (dot + separating space),
-        // matching `pane_dots_columns`'s own arithmetic — proven here
-        // against the RENDER's actual output, not by re-deriving the
-        // formula a second time.
-        assert_eq!(
-            pane_hits[1].rect.x - pane_hits[0].rect.x,
-            2,
-            "dots sit 2 columns apart: {pane_hits:?}"
-        );
-    }
-
-    #[test]
     fn folders_view_workspace_with_two_panes_emits_dots_for_both() {
         // Owner's rulings, in order: Folders shows a workspace's REAL
         // per-pane state, one dot per pane (not one status per workspace),
         // and name + dots share ONE line (2026-08-31 — "não era pra ter
-        // duas linhas"). Mirrors
-        // `pane_dots_row_hit_areas_land_on_the_rendered_dots_own_columns`'s
-        // style: hit areas are pinned against the RENDERED buffer, never
-        // against re-derived arithmetic.
+        // duas linhas"). The dots' columns are pinned against the RENDERED
+        // buffer via `pane_dots_inline_layout` — the same layout fn the
+        // render arm takes its columns from — never against re-derived
+        // arithmetic that could drift the same way twice.
         let mut app = AppState::test_new();
         app.view_mode = crate::config::ViewMode::Folders;
         let mut ws = Workspace::test_new("multi-pane");
@@ -10399,7 +7767,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
             .draw(|frame| render_workspace_list(&app, &runtimes, frame, area, false))
             .expect("workspace list should render");
 
-        let (cards, _headers, project_rows) = compute_workspace_list_areas_all(&app, area);
+        let (cards, _headers) = compute_workspace_list_areas_all(&app, area);
         assert_eq!(
             cards.len(),
             1,
@@ -10411,108 +7779,35 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
         );
         let name_row = cards[0].rect.y;
 
-        let mut pane_hits: Vec<_> = project_rows
-            .iter()
-            .filter(|a| matches!(a.target, ProjectRowTarget::Pane { .. }))
-            .collect();
+        let (_display, columns) =
+            pane_dots_inline_layout("multi-pane", &app.workspaces[0], area.width);
         assert_eq!(
-            pane_hits.len(),
+            columns.len(),
             2,
-            "Folders must show one dot per pane, not one status per workspace: {pane_hits:?}"
+            "Folders must show one dot per pane, not one status per workspace: {columns:?}"
         );
-        pane_hits.sort_by_key(|a| a.rect.x);
 
         let buffer = terminal.backend().buffer();
         // The name renders on the same row the dots land on.
-        let row_text: String = (0..area.width)
+        let row: String = (0..area.width)
             .map(|x| buffer[(x, name_row)].symbol().to_owned())
             .collect();
         assert!(
-            row_text.contains("multi-pane"),
-            "the name shares the dots' row: {row_text:?}"
+            row.contains("multi-pane"),
+            "the name shares the dots' row: {row:?}"
         );
-        for hit in &pane_hits {
-            assert_eq!(
-                hit.rect.y, name_row,
-                "inline: every dot hit area sits ON the name row: {hit:?}"
-            );
-            let cell = &buffer[(hit.rect.x, hit.rect.y)];
+        for (_pane_id, _number, column) in &columns {
+            let cell = &buffer[(area.x + column, name_row)];
             assert_ne!(
                 cell.symbol(),
                 " ",
-                "each dot hit area must land on a rendered glyph, not blank space: {cell:?}"
+                "each dot column must land on a rendered glyph, not blank space: {cell:?}"
             );
         }
         assert_eq!(
-            pane_hits[1].rect.x - pane_hits[0].rect.x,
+            columns[1].2 - columns[0].2,
             2,
-            "dots sit 2 columns apart after the name: {pane_hits:?}"
-        );
-    }
-
-    #[test]
-    fn pane_dots_row_card_rect_is_pinned_to_the_rendered_block_rows() {
-        // P2, bora-79l T1: the workspace card's rect is pinned against
-        // the RENDERED buffer (same rule as the dot-columns test above),
-        // never against re-derived arithmetic that could drift the same
-        // way twice. l1 is the row the renderer actually drew the name
-        // on, l2 the row the dot glyph lands on, the card covers exactly
-        // those two rows, and the branch line above carries no card.
-        // Goes red if the card moves off the block (wrong emitting row,
-        // height 1, or a SectionRow-card regression).
-        let mut app = AppState::test_new();
-        app.view_mode = crate::config::ViewMode::Project;
-        let mut ws = Workspace::test_new("ita-principal");
-        ws.test_split(Direction::Vertical);
-        app.workspaces = vec![ws];
-
-        let area = Rect::new(0, 0, 30, 10);
-        let runtimes = crate::terminal::TerminalRuntimeRegistry::new();
-        let mut terminal =
-            Terminal::new(TestBackend::new(area.width, area.height)).expect("test terminal");
-        terminal
-            .draw(|frame| render_workspace_list(&app, &runtimes, frame, area, false))
-            .expect("workspace list should render");
-
-        let (cards, _headers, project_rows) = compute_workspace_list_areas_all(&app, area);
-        let card = cards
-            .iter()
-            .find(|c| c.ws_idx == 0)
-            .expect("the PaneDotsRow block must be the workspace's card");
-        let dot_hit = project_rows
-            .iter()
-            .find(|a| matches!(a.target, ProjectRowTarget::Pane { .. }))
-            .expect("one dot hit area for the single pane");
-        let section_hit = project_rows
-            .iter()
-            .find(|a| matches!(a.target, ProjectRowTarget::Section { .. }))
-            .expect("the SectionRow keeps its own hit area");
-
-        let buffer = terminal.backend().buffer();
-        let l1 = (section_hit.rect.y + 1..area.y + area.height)
-            .find(|&y| row_text(buffer, y, area.width).contains("ita-principal"))
-            .expect("the name line must render below the branch line");
-        // The dot hit's own column must land on a rendered glyph (the
-        // 9224 test proves this in depth; re-proven here because this
-        // test's l2 IS that row).
-        assert_ne!(
-            buffer[(dot_hit.rect.x, dot_hit.rect.y)].symbol(),
-            " ",
-            "the dot hit must land on the rendered dot glyph"
-        );
-        assert_eq!(card.rect.y, l1, "the card starts on the name row");
-        assert_eq!(card.rect.height, 2, "the card spans BOTH rows of the block");
-        assert_eq!(
-            card.rect.y + 1,
-            dot_hit.rect.y,
-            "the card's second row is the dots row"
-        );
-        assert!(
-            section_hit.rect.y < card.rect.y,
-            "the branch line sits above the block and carries no card: \
-             section at {:?}, card at {:?}",
-            section_hit.rect,
-            card.rect
+            "dots sit 2 columns apart after the name: {columns:?}"
         );
     }
 
@@ -10633,126 +7928,17 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
     }
 
     #[test]
-    fn pane_dots_row_never_draws_the_pane_row_connector() {
-        // The owner's repeated "rabinho" complaint (item 4): `╰ ` was
-        // drawn ONLY by `pane_row_line`, called ONLY from the now-dead
-        // `PaneRow` arm (grep confirms `╰ ` — the bare, dash-less form —
-        // appears nowhere else in this file; `╰── `, 4 cells with dashes,
-        // is the unrelated Flat/Repo bracket-rail glyph, never reachable
-        // in Project view at all). `pane_dots_row_line` never builds that
-        // span, so the connector disappears as a pure consequence of
-        // `PaneRow` no longer being emitted here — not because anything
-        // strips it out. This renders the real row (not a hand-built
-        // `Line`) to prove it end to end, in the spirit of
-        // `ui::sidebar::capture`'s instrument (a sibling file this task
-        // does not own, so this test builds its own minimal render
-        // instead of extending that module).
-        let mut app = AppState::test_new();
-        app.view_mode = crate::config::ViewMode::Project;
-        let mut ws = Workspace::test_new("ita-principal");
-        ws.test_split(Direction::Vertical);
-        app.workspaces = vec![ws];
-
-        let area = Rect::new(0, 0, 30, 10);
-        let runtimes = crate::terminal::TerminalRuntimeRegistry::new();
-        let mut terminal =
-            Terminal::new(TestBackend::new(area.width, area.height)).expect("test terminal");
-        terminal
-            .draw(|frame| render_workspace_list(&app, &runtimes, frame, area, false))
-            .expect("workspace list should render");
-
-        let buffer = terminal.backend().buffer();
-        for y in 0..area.height {
-            let text = row_text(buffer, y, area.width);
-            assert!(
-                !text.contains('╰'),
-                "no row in Project view may draw the old pane-row connector: {text:?} at row {y}"
-            );
-        }
-    }
-
-    /// Common fixture for the T2 (bora-79l) end-to-end dot tests: one
-    /// Project-view workspace whose single root pane sits in the given
-    /// `(state, seen)`, already attached to a test terminal.
-    fn pane_dots_block_fixture(state: AgentState, seen: bool) -> AppState {
-        let mut app = AppState::test_new();
-        app.view_mode = crate::config::ViewMode::Project;
-        let mut ws = Workspace::test_new("alvo-ws");
-        ws.test_split(Direction::Vertical);
-        app.workspaces = vec![ws];
-        app.ensure_test_terminals();
-        let pane = app.workspaces[0].tabs[0].root_pane;
-        let terminal_id = app.workspaces[0].tabs[0].panes[&pane]
-            .attached_terminal_id
-            .clone();
-        let terminal = app.terminals.get_mut(&terminal_id).unwrap();
-        terminal.detected_agent = Some(Agent::Claude);
-        terminal.state = state;
-        app.workspaces[0].tabs[0].panes.get_mut(&pane).unwrap().seen = seen;
-        app
-    }
-
-    #[test]
-    fn pane_dots_spinner_frame_advances_between_animation_ticks() {
-        // P5 regression lock (T2 contract item 5): the pane dot SPINS while
-        // the agent works — the Project-view arm must keep consuming
-        // `app.spinner_tick` exactly like the other modes' arms do.
-        // Deterministic by construction: the SAME AppState re-rendered with
-        // only `spinner_tick` advanced, no wall clock anywhere. Fica vermelho
-        // se o braço parar de consumir o tick (a bolinha congelada da
-        // regressão P5) — os dois renders seriam byte-idênticos.
-        let mut app = pane_dots_block_fixture(AgentState::Working, true);
-        let area = Rect::new(0, 0, 30, 10);
-        let runtimes = crate::terminal::TerminalRuntimeRegistry::new();
-        let render_dot = |app: &AppState| -> String {
-            let mut terminal =
-                Terminal::new(TestBackend::new(area.width, area.height)).expect("test terminal");
-            terminal
-                .draw(|frame| render_workspace_list(app, &runtimes, frame, area, false))
-                .expect("workspace list should render");
-            let (_cards, _headers, project_rows) = compute_workspace_list_areas_all(app, area);
-            let hit = project_rows
-                .iter()
-                .find(|a| matches!(a.target, ProjectRowTarget::Pane { .. }))
-                .expect("one dot hit area for the single pane");
-            terminal.backend().buffer()[(hit.rect.x, hit.rect.y)]
-                .symbol()
-                .to_string()
-        };
-
-        app.spinner_tick = 0;
-        let frame_a = render_dot(&app);
-        // Two animation ticks (= 2 × SPINNER_TICK_STEP = 10) provably cross
-        // a glyph boundary of `spinner_frame`'s divisor 8; a single tick
-        // (5) can land inside the same glyph cell, which is why the
-        // deterministic form advances two.
-        app.spinner_tick += 2 * crate::app::SPINNER_TICK_STEP;
-        let frame_b = render_dot(&app);
-        assert_ne!(
-            frame_a, frame_b,
-            "fica vermelho se o spinner não girar entre ticks: {frame_a:?} == {frame_b:?}"
-        );
-        assert_ne!(frame_a, " ", "the dot cell holds a glyph, not blank space");
-    }
-
-    #[test]
-    fn pane_dots_name_is_never_dimmed_and_takes_the_dot_color_when_it_lights() {
+    fn folders_pane_dots_name_is_never_dimmed_and_takes_the_dot_color_when_it_lights() {
         // T2 contract item 1: "NUNCA esmaecido/dim — inclusive com painel
-        // parado (a parte importante não some)". Renders the real block
-        // under every reachable (state, seen) combo and pins the name
-        // cells' fg AND the absence of DIM on the RENDERED buffer — not on
-        // a hand-built Line.
+        // parado (a parte importante não some)". Renders the real Folders
+        // inline row under every reachable (state, seen) combo and pins the
+        // name cells' fg AND the absence of DIM on the RENDERED buffer —
+        // not on a hand-built Line.
         //
-        // R3/R1 re-attribution (owner's inventory 2026-08-28): was
-        // `..._stays_overlay1_and_undimmed_in_every_pane_state`, which
-        // pinned overlay1 in EVERY state. The tint arrived in two steps the
-        // same day: yellow for `Blocked`+unseen first, then the owner's R5b
-        // color ruling settled it ("super importante... bloqueado =
-        // vermelho"; "pronto... tem que ficar amarela a letra também") —
-        // the name takes the DOT's hue whenever the dot lights: RED for
-        // Blocked+unseen (parado, esperando VOCÊ), YELLOW for Idle+unseen
-        // (pronto, vem ler), overlay1 otherwise. The DIM half of the
-        // contract is untouched and still asserted across all six combos.
+        // R5b (owner's color ruling, 2026-08-28): the name takes the DOT's
+        // hue whenever the dot lights: RED for Blocked+unseen (parado,
+        // esperando VOCÊ), YELLOW for Idle+unseen (pronto, vem ler), white
+        // for an unseen plain shell, overlay1 otherwise.
         let p = Palette::catppuccin();
         for (state, seen) in [
             (AgentState::Working, true),
@@ -10763,7 +7949,21 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
             (AgentState::Unknown, true),
             (AgentState::Unknown, false),
         ] {
-            let app = pane_dots_block_fixture(state, seen);
+            let mut app = AppState::test_new();
+            app.view_mode = crate::config::ViewMode::Folders;
+            let mut ws = Workspace::test_new("alvo-ws");
+            ws.test_split(Direction::Vertical);
+            app.workspaces = vec![ws];
+            app.ensure_test_terminals();
+            let pane = app.workspaces[0].tabs[0].root_pane;
+            let terminal_id = app.workspaces[0].tabs[0].panes[&pane]
+                .attached_terminal_id
+                .clone();
+            let terminal = app.terminals.get_mut(&terminal_id).unwrap();
+            terminal.detected_agent = Some(Agent::Claude);
+            terminal.state = state;
+            app.workspaces[0].tabs[0].panes.get_mut(&pane).unwrap().seen = seen;
+
             let area = Rect::new(0, 0, 30, 10);
             let runtimes = crate::terminal::TerminalRuntimeRegistry::new();
             let mut terminal =
@@ -10771,21 +7971,17 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
             terminal
                 .draw(|frame| render_workspace_list(&app, &runtimes, frame, area, false))
                 .expect("workspace list should render");
-            let (_cards, _headers, project_rows) = compute_workspace_list_areas_all(&app, area);
-            let hit = project_rows
-                .iter()
-                .find(|a| matches!(a.target, ProjectRowTarget::Pane { .. }))
-                .expect("one dot hit area for the single pane");
-            let l1_y = hit.rect.y.saturating_sub(1);
+            let (cards, _headers) = compute_workspace_list_areas_all(&app, area);
+            let name_y = cards[0].rect.y;
 
             let buffer = terminal.backend().buffer();
-            let l1 = row_text(buffer, l1_y, area.width);
-            let name_col = l1
+            let row = row_text(buffer, name_y, area.width);
+            let name_col = row
                 .find(|c: char| !c.is_whitespace())
-                .unwrap_or_else(|| panic!("l1 must carry the name: {l1:?}"));
+                .unwrap_or_else(|| panic!("the row must carry the name: {row:?}"));
             let name_len = "alvo-ws".len();
             for x in name_col..name_col + name_len {
-                let cell = &buffer[(x as u16, l1_y)];
+                let cell = &buffer[(x as u16, name_y)];
                 let expected_fg = if matches!(state, AgentState::Blocked) && !seen {
                     p.red
                 } else if matches!(state, AgentState::Idle) && !seen {
@@ -10802,416 +7998,14 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
                     "R5b: o nome segue a bolinha — vermelho em Blocked+unseen \
                      (parado, esperando VOCÊ), amarelo em Idle+unseen \
                      (pronto, vem ler), overlay1 no resto — {state:?}+seen=\
-                     {seen} (col {x}): {l1:?}"
+                     {seen} (col {x}): {row:?}"
                 );
                 assert!(
                     !cell.modifier.contains(Modifier::DIM),
-                    "fica vermelho se o nome esmaecer em {state:?}+seen={seen}: {l1:?}"
+                    "fica vermelho se o nome esmaecer em {state:?}+seen={seen}: {row:?}"
                 );
             }
         }
-    }
-
-    #[test]
-    fn pane_dots_dots_start_at_the_rendered_name_column() {
-        // T2 contract item 2: as bolinhas ficam na MESMA coluna do nome
-        // (col 3), na l2 — anchored against the RENDERED buffer, not
-        // against re-derived arithmetic that could drift the same way
-        // twice: the first non-blank column of l2 must be EXACTLY the
-        // first non-blank column of l1, and the dot hit-rect must land on
-        // that same column. Fica vermelho se as bolinhas deslocarem da
-        // coluna do nome (ex.: ancorarem na largura renderizada do nome ou
-        // no canto direito da linha).
-        let app = pane_dots_block_fixture(AgentState::Blocked, true);
-        let area = Rect::new(0, 0, 30, 10);
-        let runtimes = crate::terminal::TerminalRuntimeRegistry::new();
-        let mut terminal =
-            Terminal::new(TestBackend::new(area.width, area.height)).expect("test terminal");
-        terminal
-            .draw(|frame| render_workspace_list(&app, &runtimes, frame, area, false))
-            .expect("workspace list should render");
-        let (_cards, _headers, project_rows) = compute_workspace_list_areas_all(&app, area);
-        let hit = project_rows
-            .iter()
-            .find(|a| matches!(a.target, ProjectRowTarget::Pane { .. }))
-            .expect("one dot hit area for the single pane");
-
-        let buffer = terminal.backend().buffer();
-        let l1 = row_text(buffer, hit.rect.y.saturating_sub(1), area.width);
-        let l2 = row_text(buffer, hit.rect.y, area.width);
-        let name_col = l1
-            .find(|c: char| !c.is_whitespace())
-            .expect("l1 carries the name");
-        let dot_col = l2
-            .find(|c: char| !c.is_whitespace())
-            .expect("l2 carries the dot glyph");
-        assert_eq!(
-            dot_col, name_col,
-            "fica vermelho se a bolinha sair da coluna do nome: l1 {l1:?} vs l2 {l2:?}"
-        );
-        assert_eq!(
-            hit.rect.x, dot_col as u16,
-            "the hit-rect lands on that same rendered column: {l2:?}"
-        );
-    }
-
-    #[test]
-    fn pane_dots_name_line_carries_no_diff_even_with_a_change_set() {
-        // T7 (bora-79l, divergence A) killed T2's contract item 1 by
-        // assignment: nenhuma PaneDotsRow l1 carrega `+N −M` — o diff vive
-        // só no cluster da header (ALVO_CAPTURE row 27 vs row 28: a header
-        // carrega `+916 −2`, a l1 é `hotfix` puro). Fica vermelho se o diff
-        // voltar à l1 (a render arm voltando a passá-lo ou o builder o
-        // aceitando de novo).
-        let p = Palette::catppuccin();
-        let text = line_text(&pane_dots_name_line("hotfix", false, false, false, &p, 40));
-        assert_eq!(
-            text.trim_end(),
-            "   hotfix",
-            "l1 is exactly the indent + the name, nothing beside it: {text:?}"
-        );
-
-        // End to end: a workspace WITH a cached change set still renders a
-        // bare l1 — the numbers belong to the SectionRow header's cluster.
-        let mut app = pane_dots_block_fixture(AgentState::Idle, true);
-        app.workspaces[0].cached_change_set = Some(crate::workspace::WorkspaceChangeSet {
-            sections: vec![crate::workspace::ChangeSection {
-                kind: crate::workspace::ChangeSectionKind::Unstaged,
-                files: vec![crate::workspace::ChangedFile {
-                    path: "src/sidebar.rs".to_string(),
-                    added: Some(916),
-                    removed: Some(2),
-                    status: crate::workspace::ChangeStatus::Modified,
-                }],
-            }],
-            base_ref: None,
-        });
-        let area = Rect::new(0, 0, 40, 10);
-        let runtimes = crate::terminal::TerminalRuntimeRegistry::new();
-        let mut terminal =
-            Terminal::new(TestBackend::new(area.width, area.height)).expect("test terminal");
-        terminal
-            .draw(|frame| render_workspace_list(&app, &runtimes, frame, area, false))
-            .expect("workspace list should render");
-        let (_cards, _headers, project_rows) = compute_workspace_list_areas_all(&app, area);
-        let hit = project_rows
-            .iter()
-            .find(|a| matches!(a.target, ProjectRowTarget::Pane { .. }))
-            .expect("one dot hit area for the single pane");
-        let buffer = terminal.backend().buffer();
-        let l1 = row_text(buffer, hit.rect.y.saturating_sub(1), area.width);
-        assert!(
-            l1.contains("alvo-ws") && !l1.contains("+916"),
-            "fica vermelho se a l1 renderizada carregar o diff: {l1:?}"
-        );
-    }
-
-    #[test]
-    fn project_view_geometry_emits_one_hit_area_per_row_with_correct_targets() {
-        let entries = vec![
-            WorkspaceListEntry::ProjectRow {
-                name: "cnb".into(),
-                collapse_key: "proj:cnb".into(),
-                live: 1,
-                total: 2,
-                declared: true,
-            },
-            WorkspaceListEntry::SectionRow {
-                ws_idx: 0,
-                checkout_key: "checkout:1".into(),
-                collapse_key: "wsec:0".into(),
-                diff: None,
-                header_on: true,
-                header_hidden: false,
-                show_diff: true,
-                branch_group: "g".into(),
-            },
-            WorkspaceListEntry::SectionHeader {
-                name: None,
-                kind: &COMMANDS,
-                collapse_key: "sec:1".into(),
-                done: 1,
-                total: 3,
-            },
-            WorkspaceListEntry::SectionItem {
-                kind: &COMMANDS,
-                label: "dev".into(),
-                detail: Some(":5173".into()),
-                running: true,
-                ws_idx: Some(0),
-            },
-        ];
-        let body = Rect::new(0, 0, 30, 20);
-        let app = AppState::test_new();
-
-        let (cards, headers, project_rows) =
-            workspace_list_areas_for_entries(&entries, &app, 0, body, 0);
-
-        // Attribution (P2, bora-79l T1): this asserted first
-        // `cards.is_empty()` (no row emitted a card), then one card on the
-        // `SectionRow`. The card's owner moved again — onto the
-        // `PaneDotsRow` block — so a `SectionRow`-only fixture is back to
-        // no cards: this fixture has no `PaneDotsRow`, and the branch line
-        // must NOT emit a card anymore. `section_row_pushes…`'s successor
-        // below pins the block-side card.
-        assert!(
-            cards.is_empty(),
-            "SectionRow must not push a workspace card — the PaneDotsRow \
-             block owns it now (P2): {cards:?}"
-        );
-        assert!(
-            headers.is_empty(),
-            "Project-view rows are not group headers"
-        );
-        assert_eq!(project_rows.len(), entries.len());
-        // R3 re-attribution: rows are no longer uniformly 1 tall, so the
-        // walk accumulates real row spans instead of assuming `body.y + i`.
-        // HEIGHTS stay independently restated (`expected_entry_height` —
-        // the AGENTS.md owner rule); the Y ADVANCE is the production
-        // `entry_row_height`, because trailing gap rows (after a
-        // PaneDotsRow block or after a project band) belong to no hit area,
-        // and this walk exists to catch overlap/skip — not to restate the
-        // gap rules a third time.
-        let mut expected_y = body.y;
-        for (i, area) in project_rows.iter().enumerate() {
-            let expected_height = expected_entry_height(&entries, i);
-            assert_eq!(
-                area.rect.height, expected_height,
-                "row {i} must claim exactly the rows it owns"
-            );
-            assert_eq!(area.rect.y, expected_y, "rows must not overlap or skip");
-            expected_y += entry_row_height(&entries[i], &entries, i, 0);
-        }
-        assert_eq!(
-            project_rows[0].target,
-            ProjectRowTarget::Project {
-                collapse_key: "proj:cnb".into()
-            }
-        );
-        assert_eq!(
-            project_rows[1].target,
-            ProjectRowTarget::Section {
-                ws_idx: 0,
-                checkout_key: "checkout:1".into(),
-                collapse_key: "wsec:0".into(),
-            }
-        );
-        assert_eq!(
-            project_rows[2].target,
-            ProjectRowTarget::Band {
-                collapse_key: "sec:1".into()
-            }
-        );
-        assert_eq!(
-            project_rows[3].target,
-            ProjectRowTarget::SectionItem {
-                kind: &COMMANDS,
-                label: "dev".into(),
-                ws_idx: Some(0),
-            }
-        );
-    }
-
-    #[test]
-    fn project_view_geometry_unopened_worktree_targets_open_worktree() {
-        let entries = vec![WorkspaceListEntry::WorktreeRow {
-            checkout_key: "checkout:2".into(),
-            repo: Some("cnb_hono".into()),
-            branch: "main".into(),
-            ahead: 0,
-            behind: 0,
-            pr: None,
-            collapse_key: "wt:2".into(),
-            unopened: true,
-        }];
-        let app = AppState::test_new();
-        let (_, _, project_rows) =
-            workspace_list_areas_for_entries(&entries, &app, 0, Rect::new(0, 0, 30, 10), 0);
-
-        assert_eq!(
-            project_rows[0].target,
-            ProjectRowTarget::OpenWorktree {
-                checkout_key: "checkout:2".into()
-            }
-        );
-    }
-
-    #[test]
-    fn pr_row_height_is_one() {
-        let entry = WorkspaceListEntry::PrRow {
-            number: 1,
-            title: "t".into(),
-            url: "u".into(),
-            head_ref: "h".into(),
-            is_draft: false,
-            checks: None,
-            ws_idx: None,
-        };
-        assert_eq!(entry_row_height(&entry, &[], 0, 0), 1);
-    }
-
-    #[test]
-    fn pr_checks_glyph_matches_rollup_and_reuses_the_checks_palette() {
-        let p = Palette::catppuccin();
-        assert!(
-            pr_checks_glyph(None, &p).is_none(),
-            "None rollup shows no trailing glyph"
-        );
-        let (glyph, style) = pr_checks_glyph(Some(crate::workspace::ChecksRollup::Passing), &p)
-            .expect("Passing must show a glyph");
-        assert_eq!(glyph, " ✓");
-        assert_eq!(style.fg, Some(p.green));
-        let (glyph, style) = pr_checks_glyph(Some(crate::workspace::ChecksRollup::Failing), &p)
-            .expect("Failing must show a glyph");
-        assert_eq!(glyph, " ✗");
-        assert_eq!(style.fg, Some(p.red));
-        let (glyph, style) = pr_checks_glyph(Some(crate::workspace::ChecksRollup::Pending), &p)
-            .expect("Pending must show a glyph");
-        assert_eq!(glyph, " ●");
-        assert_eq!(style.fg, Some(p.yellow));
-    }
-
-    #[test]
-    fn pr_row_line_marks_draft_and_shows_number_title_and_checks_glyph() {
-        let p = Palette::catppuccin();
-        let draft = line_text(&pr_row_line(
-            12,
-            "wip: thing",
-            true,
-            Some(crate::workspace::ChecksRollup::Pending),
-            &p,
-            40,
-        ));
-        assert!(draft.contains("#12"), "{draft:?}");
-        assert!(draft.contains("wip: thing"), "{draft:?}");
-        let live = line_text(&pr_row_line(
-            13,
-            "ready: thing",
-            false,
-            Some(crate::workspace::ChecksRollup::Failing),
-            &p,
-            40,
-        ));
-        assert!(live.contains("#13"), "{live:?}");
-        assert!(live.contains("ready: thing"), "{live:?}");
-        assert!(live.contains('✗'), "{live:?}");
-    }
-
-    #[test]
-    fn pane_dots_row_block_is_the_workspace_card_and_the_branch_line_is_not() {
-        // P2, bora-79l T1 — successor of
-        // `section_row_pushes_workspace_card_area_matching_its_hit_area`
-        // (same fixture, attribution flip): the `WorkspaceCardArea` — what
-        // right-click, drag-reorder, press and selection painting all key
-        // off — moved from the branch line to the workspace's own 2-row
-        // block. Goes red if the card is deleted from the `PaneDotsRow`
-        // arm, if its rect stops covering BOTH rows, or if the `SectionRow`
-        // arm regresses to pushing its own card again.
-        let entries = vec![
-            WorkspaceListEntry::SectionRow {
-                ws_idx: 5,
-                checkout_key: "checkout:5".into(),
-                collapse_key: "wsec:5".into(),
-                diff: None,
-                header_on: true,
-                header_hidden: false,
-                show_diff: true,
-                branch_group: "g".into(),
-            },
-            WorkspaceListEntry::PaneDotsRow {
-                dots: true,
-                inline: false,
-                ws_idx: 5,
-                name: "agent".into(),
-            },
-        ];
-        let body = Rect::new(0, 0, 30, 20);
-        let app = AppState::test_new();
-
-        let (cards, _headers, project_rows) =
-            workspace_list_areas_for_entries(&entries, &app, 0, body, 0);
-
-        let section_hit = project_rows
-            .iter()
-            .find(|a| matches!(&a.target, ProjectRowTarget::Section { ws_idx, .. } if *ws_idx == 5))
-            .expect("SectionRow must still get its ProjectRowHitArea");
-        assert_eq!(
-            cards,
-            vec![crate::app::state::WorkspaceCardArea {
-                ws_idx: 5,
-                rect: Rect::new(section_hit.rect.x, section_hit.rect.y + 1, body.width, 2),
-                indented: true,
-            }],
-            "exactly one card, covering the PaneDotsRow's TWO rows (l1 name \
-             + l2 dots) at full body width — never the branch line above"
-        );
-    }
-
-    #[test]
-    fn pane_dots_row_block_paints_selection_on_both_rows_and_the_active_bar_at_the_border() {
-        // P2, bora-79l T1 — successor of
-        // `section_row_paints_selection_and_active_backgrounds` (same
-        // fixture, attribution flip): the selection fill and the active
-        // bar live on the workspace's own 2-row block now. Goes red if the
-        // `PaneDotsRow` render arm stops filling BOTH rows on selection,
-        // stops drawing the active bar, or the `SectionRow` arm regresses
-        // to painting the branch line.
-        let mut app = AppState::test_new();
-        app.view_mode = crate::config::ViewMode::Project;
-        app.workspaces = vec![Workspace::test_new("alpha"), Workspace::test_new("beta")];
-        app.active = Some(0);
-        app.selected = 1;
-        app.mode = Mode::Navigate;
-
-        let runtimes = crate::terminal::TerminalRuntimeRegistry::new();
-        let area = Rect::new(0, 0, 30, 20);
-        let mut terminal =
-            Terminal::new(TestBackend::new(area.width, area.height)).expect("test terminal");
-        terminal
-            .draw(|frame| render_workspace_list(&app, &runtimes, frame, area, true))
-            .expect("workspace list should render");
-
-        let (cards, _, _) = compute_workspace_list_areas_all(&app, area);
-        let active_card = cards
-            .iter()
-            .find(|c| c.ws_idx == 0)
-            .expect("the active workspace's PaneDotsRow block must push a card");
-        let selected_card = cards
-            .iter()
-            .find(|c| c.ws_idx == 1)
-            .expect("the cursored workspace's PaneDotsRow block must push a card");
-
-        let buffer = terminal.backend().buffer();
-        // Selection fills BOTH rows of the block — l1 and l2, no hole.
-        for y in [selected_card.rect.y, selected_card.rect.y + 1] {
-            assert_eq!(
-                buffer[(selected_card.rect.x, y)].bg,
-                workspace_selection_background(&app.palette, false),
-                "the navigate-mode cursor must fill row {y} of the block (l1 AND l2)"
-            );
-        }
-        // The active (but not cursored) workspace gets the blue bar at the
-        // block's left border on both rows instead of a fill.
-        for y in [active_card.rect.y, active_card.rect.y + 1] {
-            assert_eq!(
-                buffer[(active_card.rect.x, y)].symbol(),
-                "▎",
-                "the active block's left border carries the bar on row {y}"
-            );
-            assert_eq!(
-                buffer[(active_card.rect.x, y)].fg,
-                app.palette.accent,
-                "the bar is the accent colour on row {y}"
-            );
-        }
-        // The branch line above the cursored block stays unpainted — the
-        // workspace affordances left it (decision 7).
-        let branch_row = selected_card.rect.y.saturating_sub(1);
-        assert_eq!(
-            buffer[(selected_card.rect.x, branch_row)].bg,
-            Color::Reset,
-            "the SectionRow branch line must not paint the workspace selection anymore"
-        );
     }
 
     #[test]
@@ -11276,47 +8070,6 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
             app.palette.active_row_bg,
             "the folder header row must stay unfilled"
         );
-    }
-
-    #[test]
-    fn project_view_active_block_keeps_marker_only_fill() {
-        // Scope guard for the Folders active-row fill (owner ask,
-        // 2026-09-01): Project view's 2-line blocks keep the GC3
-        // marker-only statement — the bar draws, no background lands on
-        // the active block.
-        let mut app = AppState::test_new();
-        app.palette = crate::app::state::Palette::catppuccin();
-        app.view_mode = crate::config::ViewMode::Project;
-        app.workspaces = vec![Workspace::test_new("alpha")];
-        app.active = Some(0);
-
-        let runtimes = crate::terminal::TerminalRuntimeRegistry::new();
-        let area = Rect::new(0, 0, 30, 20);
-        let mut terminal =
-            Terminal::new(TestBackend::new(area.width, area.height)).expect("test terminal");
-        terminal
-            .draw(|frame| render_workspace_list(&app, &runtimes, frame, area, false))
-            .expect("workspace list should render");
-
-        let (cards, _, _) = compute_workspace_list_areas_all(&app, area);
-        let active_card = cards
-            .iter()
-            .find(|c| c.ws_idx == 0)
-            .expect("the active PaneDotsRow block must push a card");
-
-        let buffer = terminal.backend().buffer();
-        for y in [active_card.rect.y, active_card.rect.y + 1] {
-            assert_eq!(
-                buffer[(active_card.rect.x, y)].symbol(),
-                "▎",
-                "the active block's border carries the bar on row {y}"
-            );
-            assert_ne!(
-                buffer[(active_card.rect.x, y)].bg,
-                app.palette.active_row_bg,
-                "Project view keeps GC3: no active-row fill on row {y}"
-            );
-        }
     }
 
     #[test]
@@ -11388,329 +8141,6 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
             buffer[(label_x, area.y)].fg,
             app.palette.red,
             "a blocked unseen pane turns the counter red"
-        );
-    }
-
-    #[test]
-    fn project_row_background_is_slightly_lighter_than_sidebar_bg() {
-        // Item 3c: the project header row now fills its whole width with
-        // `p.surface0`, a lightness step up from the (typically `Reset`)
-        // sidebar background — visual weight that replaces the BOLD
-        // dropped from the name span (item 6).
-        let mut app = AppState::test_new();
-        app.view_mode = crate::config::ViewMode::Project;
-        app.workspaces = vec![Workspace::test_new("alpha")];
-
-        let runtimes = crate::terminal::TerminalRuntimeRegistry::new();
-        let area = Rect::new(0, 0, 30, 10);
-        let mut terminal =
-            Terminal::new(TestBackend::new(area.width, area.height)).expect("test terminal");
-        terminal
-            .draw(|frame| render_workspace_list(&app, &runtimes, frame, area, false))
-            .expect("workspace list should render");
-
-        let (_, _, project_rows) = compute_workspace_list_areas_all(&app, area);
-        let project_row = project_rows
-            .iter()
-            .find(|a| matches!(&a.target, ProjectRowTarget::Project { .. }))
-            .expect("an implicit ProjectRow must render for orphan workspaces");
-        let buffer = terminal.backend().buffer();
-        assert_eq!(
-            buffer[(project_row.rect.x, project_row.rect.y)].bg,
-            app.palette.surface0,
-            "the project header row fills with surface0: {:?}",
-            buffer[(project_row.rect.x, project_row.rect.y)]
-        );
-        // R5 (owner's second ruling, 2026-08-28): the band owns top pad +
-        // text only; the row BELOW the band is the plain gap — default
-        // background, and the band fill must not reach it.
-        let gap_y = project_row.rect.y + project_row.rect.height;
-        assert_eq!(
-            buffer[(project_row.rect.x, gap_y)].bg,
-            Color::Reset,
-            "the row below the band is the plain separator, not band fill: {:?}",
-            buffer[(project_row.rect.x, gap_y)]
-        );
-    }
-
-    #[test]
-    fn project_view_geometry_pr_row_without_ws_idx_gets_no_hit_area_but_advances_row_y() {
-        // The PrRow must not desync the geometry pass for rows after it. A
-        // row whose repo has no open workspace carries `ws_idx: None` and
-        // stays un-clickable — originally because no `ProjectRowTarget`
-        // variant existed at all, now because there is nothing to name as
-        // the worktree's repo. Either way its row_y span still counts.
-        let entries = vec![
-            WorkspaceListEntry::SectionHeader {
-                name: None,
-                kind: &PULL_REQUESTS,
-                collapse_key: "sec:prs:proj".into(),
-                done: 0,
-                total: 1,
-            },
-            WorkspaceListEntry::PrRow {
-                number: 42,
-                title: "fix thing".into(),
-                url: "https://github.com/owner/repo/pull/42".into(),
-                head_ref: "fix/thing".into(),
-                is_draft: false,
-                checks: Some(crate::workspace::ChecksRollup::Passing),
-                ws_idx: None,
-            },
-            WorkspaceListEntry::SectionRow {
-                ws_idx: 0,
-                checkout_key: "checkout:1".into(),
-                collapse_key: "wsec:0".into(),
-                diff: None,
-                header_on: true,
-                header_hidden: false,
-                show_diff: true,
-                branch_group: "g".into(),
-            },
-        ];
-        let body = Rect::new(0, 0, 30, 20);
-        let app = AppState::test_new();
-
-        let (cards, headers, project_rows) =
-            workspace_list_areas_for_entries(&entries, &app, 0, body, 0);
-
-        // Attribution (P2, bora-79l T1): the SectionRow here used to push
-        // the one card — its ownership moved to the `PaneDotsRow` block,
-        // which this fixture doesn't emit, so cards are empty again. The
-        // point of the test is unchanged: the ws_idx-less PrRow advances
-        // `row_y` (SectionRow lands 2 rows down) without ever producing a
-        // hit area of its own.
-        assert!(
-            cards.is_empty(),
-            "no card: the PrRow has no ws_idx and the SectionRow no longer \
-             owns one (P2): {cards:?}"
-        );
-        assert!(headers.is_empty());
-        assert_eq!(
-            project_rows.len(),
-            2,
-            "the SectionHeader and SectionRow get hit areas, the ws_idx-less PrRow does not: {project_rows:?}"
-        );
-        assert_eq!(project_rows[0].rect.y, body.y, "SectionHeader at row 0");
-        assert_eq!(
-            project_rows[1].rect.y,
-            body.y + 2,
-            "SectionRow must land 2 rows down — the PrRow's own row_y span \
-             still counted even though it produced no hit area"
-        );
-        assert_eq!(
-            project_rows[1].target,
-            ProjectRowTarget::Section {
-                ws_idx: 0,
-                checkout_key: "checkout:1".into(),
-                collapse_key: "wsec:0".into(),
-            }
-        );
-    }
-
-    #[test]
-    fn project_view_geometry_pr_row_with_ws_idx_targets_open_pr() {
-        // The clickable half: a PR row whose repo has an open workspace gets
-        // an `OpenPr` hit area carrying that workspace and the PR number —
-        // the pair `request_open_pr_worktree` consumes. Without this the row
-        // would render and silently do nothing, which is worse than no row.
-        let entries = vec![WorkspaceListEntry::PrRow {
-            number: 42,
-            title: "fix thing".into(),
-            url: "https://github.com/owner/repo/pull/42".into(),
-            head_ref: "fix/thing".into(),
-            is_draft: false,
-            checks: None,
-            ws_idx: Some(3),
-        }];
-        let body = Rect::new(0, 0, 30, 20);
-        let app = AppState::test_new();
-
-        let (_, _, project_rows) = workspace_list_areas_for_entries(&entries, &app, 0, body, 0);
-
-        assert_eq!(project_rows.len(), 1, "{project_rows:?}");
-        assert_eq!(project_rows[0].rect.y, body.y);
-        assert_eq!(
-            project_rows[0].target,
-            ProjectRowTarget::OpenPr {
-                ws_idx: 3,
-                number: 42
-            }
-        );
-    }
-
-    #[test]
-    fn section_row_emits_plus_area_before_the_section_area_keyed_by_branch_group() {
-        // T4 (bora-79l, P3): a visible SectionRow emits a 3-cell
-        // `SectionNew` hit area at the row's trailing edge, carrying the
-        // section's (repo_identity, branch) — the branch-group pair, never
-        // a ws_idx (T6 re-keys nothing). Fica vermelho se:
-        // - a emissão sumir (Project view fica sem +, o wiring inexistente
-        //   de novo);
-        // - a área vier DEPOIS da Section (project_row_target_at pega a
-        //   primeira — o clique no + cairia no toggle de collapse);
-        // - o par vier trocado/ausente (a criação miraria outro repo).
-        let entries = vec![WorkspaceListEntry::SectionRow {
-            ws_idx: 0,
-            checkout_key: "checkout:1".into(),
-            collapse_key: "wsec:0".into(),
-            diff: None,
-            header_on: true,
-            header_hidden: false,
-            show_diff: true,
-            branch_group: "g".into(),
-        }];
-        let body = Rect::new(2, 5, 30, 20);
-        let mut app = AppState::test_new();
-        app.workspaces = vec![git_space_member_on_branch("proj", "key-p", false, "main")];
-
-        let (_, _, project_rows) = workspace_list_areas_for_entries(&entries, &app, 0, body, 0);
-
-        assert_eq!(
-            project_rows.len(),
-            2,
-            "the + and the full-row Section area, nothing else: {project_rows:?}"
-        );
-        assert_eq!(
-            project_rows[0].target,
-            ProjectRowTarget::SectionNew {
-                repo_identity: "key-p".into(),
-                branch: "main".into(),
-            },
-            "the + comes FIRST so first-match hit-testing wins inside its cells"
-        );
-        assert_eq!(
-            project_rows[0].rect,
-            Rect::new(body.x + body.width - 3, body.y, 3, 1),
-            "same 3-cell trailing-edge convention as the Flat/Repo headers"
-        );
-        assert_eq!(
-            project_rows[1].target,
-            ProjectRowTarget::Section {
-                ws_idx: 0,
-                checkout_key: "checkout:1".into(),
-                collapse_key: "wsec:0".into(),
-            },
-            "the full-row Section area is still emitted — moving areas never \
-             drops one (AGENTS.md binding rule)"
-        );
-    }
-
-    #[test]
-    fn section_row_hidden_header_emits_no_plus_area() {
-        // A hidden header paints nothing (T3's same-branch exception / model
-        // switch) — a + on an invisible row would be a dead glyph AND a
-        // dead click. Fica vermelho se o + passar a pintar/emitir em rows
-        // ocultas.
-        let entries = vec![WorkspaceListEntry::SectionRow {
-            ws_idx: 0,
-            checkout_key: "checkout:1".into(),
-            collapse_key: "wsec:0".into(),
-            diff: None,
-            header_on: true,
-            header_hidden: true,
-            show_diff: true,
-            branch_group: "g".into(),
-        }];
-        let body = Rect::new(0, 0, 30, 20);
-        let mut app = AppState::test_new();
-        app.workspaces = vec![git_space_member_on_branch("proj", "key-p", false, "main")];
-
-        let (_, _, project_rows) = workspace_list_areas_for_entries(&entries, &app, 0, body, 0);
-
-        assert!(
-            project_rows.is_empty(),
-            "hidden header: no Section, no + — the row only advances row_y: {project_rows:?}"
-        );
-    }
-
-    #[test]
-    fn section_row_without_git_identity_emits_no_plus_area() {
-        // No git space (or no branch) → there is no repo to create a
-        // worktree in: the Section area survives untouched, the + does not
-        // render as a dead affordance. Fica vermelho se o + começar a
-        // existir pra sections sem repo.
-        let entries = vec![WorkspaceListEntry::SectionRow {
-            ws_idx: 0,
-            checkout_key: "checkout:1".into(),
-            collapse_key: "wsec:0".into(),
-            diff: None,
-            header_on: true,
-            header_hidden: false,
-            show_diff: true,
-            branch_group: "ws-no-space:x".into(),
-        }];
-        let body = Rect::new(0, 0, 30, 20);
-        let mut app = AppState::test_new();
-        app.workspaces = vec![Workspace::test_new("plain")];
-
-        let (_, _, project_rows) = workspace_list_areas_for_entries(&entries, &app, 0, body, 0);
-
-        assert_eq!(project_rows.len(), 1, "{project_rows:?}");
-        assert!(
-            matches!(project_rows[0].target, ProjectRowTarget::Section { .. }),
-            "Section stays; only the + is withheld"
-        );
-    }
-
-    #[test]
-    fn section_row_plus_paints_under_mouse_capture_and_reserves_cluster_budget() {
-        // T4 (bora-79l, P3): with mouse capture the SectionRow paints the
-        // Flat/Repo-convention " + " at its trailing edge; the cluster's
-        // budget shrinks by those 3 cells instead of being overwritten
-        // (T7 divergence B's flush-right cluster stays intact, just pinned
-        // 3 cells earlier). Without capture the row renders exactly as
-        // before — no glyph, full-width cluster. Fica vermelho se o +
-        // pintar sem captura, sumir com ela, ou comer o cluster.
-        let render = |mouse_capture: bool| -> String {
-            let mut app = AppState::test_new();
-            app.view_mode = crate::config::ViewMode::Project;
-            app.mouse_capture = mouse_capture;
-            app.workspaces = vec![git_space_member_on_branch("proj", "key-p", false, "main")];
-            app.active = Some(0);
-            app.mode = Mode::Terminal;
-            let runtimes = crate::terminal::TerminalRuntimeRegistry::new();
-            let mut terminal = Terminal::new(TestBackend::new(30, 8)).expect("test terminal");
-            terminal
-                .draw(|frame| {
-                    render_workspace_list(&app, &runtimes, frame, Rect::new(0, 0, 30, 8), false)
-                })
-                .expect("workspace list should render");
-            let buffer = terminal.backend().buffer();
-            (0..8)
-                .map(|y| row_text(buffer, y, 30))
-                .collect::<Vec<_>>()
-                .join("\n")
-        };
-
-        let with_plus = render(true);
-        assert!(
-            with_plus.contains('\u{2387}'),
-            "the section header renders: {with_plus:?}"
-        );
-        let header_row = with_plus
-            .lines()
-            .find(|line| line.contains('\u{2387}'))
-            .expect("header row");
-        assert!(
-            header_row.trim_end().ends_with('+'),
-            "the + rides the trailing edge, Flat/Repo convention: {header_row:?}"
-        );
-
-        let without_plus = render(false);
-        assert!(
-            !without_plus.contains(" + "),
-            "no mouse capture, no glyph: {without_plus:?}"
-        );
-        let bare_header = without_plus
-            .lines()
-            .find(|line| line.contains('\u{2387}'))
-            .expect("header row");
-        assert!(
-            !bare_header.trim_end().ends_with('+'),
-            "capture-off renders the row exactly as before (the P4-A fixture \
-             shape — cluster-less rows stay as short as their content): \
-             {bare_header:?}"
         );
     }
 }

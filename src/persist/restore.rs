@@ -12,7 +12,6 @@ use crate::layout::{Node, PaneId, TileLayout};
 use crate::pane::{PaneLaunchEnv, PaneState};
 use crate::render_signal::RenderSignal;
 use crate::terminal::{TerminalId, TerminalRuntime, TerminalState};
-use crate::ui::sidebar::sections::{Section, SectionChild, SectionKind};
 use crate::workspace::Workspace;
 
 use super::snapshot::{
@@ -415,7 +414,6 @@ fn restore_workspace(
     (
         Some(Workspace {
             id: workspace_id,
-            project: snap.project.clone(),
             custom_name: snap.custom_name.clone(),
             identity_cwd: snap.identity_cwd.clone(),
             cached_identity_cwd: snap.identity_cwd.clone(),
@@ -927,51 +925,6 @@ fn collect_ids_inner(node: &Node, ids: &mut Vec<PaneId>) {
     }
 }
 
-/// Reconciles a project's saved mountable layout (`persist::projects::
-/// Project::layout`) against the checkouts that are actually live in this
-/// session right now (epic bora-79l, F7 gate G3). Matching key is
-/// `SectionChild::Workspace::checkout` — a workspace whose checkout is
-/// still live keeps its section (identified by the section's pinned `id`,
-/// never by its position in the list) and its place in the saved order;
-/// its `name` is refreshed to whatever the live workspace is called today
-/// (names are user-editable, checkouts are not — see `sections`'s module
-/// doc). A child whose checkout is no longer live is dropped. Non-`Branch`
-/// sections (comando/checks/livre) pass through untouched: reconciliation
-/// only concerns workspace placement, never the declared checks/commands
-/// bands or the empty mountable slot.
-///
-/// Called at the mutation site — `app::api::projects::
-/// handle_project_section_create`/`handle_project_section_update` (epic
-/// bora-79l.10, pass 6b) — never at every render nor in the background:
-/// a stale saved section is cleaned up exactly when the user next mutates
-/// the layout, not on a schedule.
-pub fn reconcile_section_layout(
-    saved: &[Section],
-    live_checkouts: &HashMap<String, String>,
-) -> Vec<Section> {
-    saved
-        .iter()
-        .cloned()
-        .map(|mut section| {
-            if section.kind == SectionKind::Branch {
-                section.children.retain_mut(|child| match child {
-                    SectionChild::Workspace { name, checkout } => {
-                        match live_checkouts.get(checkout.as_str()) {
-                            Some(live_name) => {
-                                name.clone_from(live_name);
-                                true
-                            }
-                            None => false,
-                        }
-                    }
-                    SectionChild::Item { .. } => true,
-                });
-            }
-            section
-        })
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1066,94 +1019,6 @@ mod tests {
         };
 
         assert_eq!(restored_worktree_space_membership(Some(membership)), None);
-    }
-
-    #[test]
-    fn reconcile_section_layout_keeps_live_workspaces_in_saved_section_and_order() {
-        let saved = vec![
-            Section {
-                id: "sec-branch-a".to_string(),
-                kind: SectionKind::Branch,
-                name: None,
-                header_on: true,
-                parts: crate::ui::sidebar::sections::SectionParts::default(),
-                children: vec![
-                    SectionChild::Workspace {
-                        name: "old-main".to_string(),
-                        checkout: "main".to_string(),
-                    },
-                    SectionChild::Workspace {
-                        name: "stale".to_string(),
-                        checkout: "gone".to_string(),
-                    },
-                ],
-            },
-            Section {
-                id: "sec-branch-b".to_string(),
-                kind: SectionKind::Branch,
-                name: None,
-                header_on: false,
-                parts: crate::ui::sidebar::sections::SectionParts::default(),
-                children: vec![SectionChild::Workspace {
-                    name: "feature-x".to_string(),
-                    checkout: "feature-x".to_string(),
-                }],
-            },
-            Section {
-                id: "sec-checks".to_string(),
-                kind: SectionKind::Checks,
-                name: None,
-                header_on: true,
-                parts: crate::ui::sidebar::sections::SectionParts::default(),
-                children: vec![SectionChild::Item {
-                    label: "clippy".to_string(),
-                    failing: false,
-                }],
-            },
-        ];
-        let live = HashMap::from([
-            ("main".to_string(), "main".to_string()),
-            ("feature-x".to_string(), "feature-x-renamed".to_string()),
-        ]);
-
-        let reconciled = reconcile_section_layout(&saved, &live);
-
-        assert_eq!(
-            reconciled.len(),
-            3,
-            "reconciliation never adds or removes sections"
-        );
-        assert_eq!(
-            reconciled[0].id, "sec-branch-a",
-            "section identity is the pinned id, not derived from position"
-        );
-        assert_eq!(
-            reconciled[0].children,
-            vec![SectionChild::Workspace {
-                name: "main".to_string(),
-                checkout: "main".to_string(),
-            }],
-            "the checkout no longer live is dropped; the live one keeps its slot"
-        );
-        assert_eq!(reconciled[1].id, "sec-branch-b");
-        assert_eq!(
-            reconciled[1].children,
-            vec![SectionChild::Workspace {
-                name: "feature-x-renamed".to_string(),
-                checkout: "feature-x".to_string(),
-            }],
-            "checkout is the match key; the display name refreshes to the live \
-             workspace's current name"
-        );
-        assert_eq!(
-            reconciled[2], saved[2],
-            "non-branch sections pass through untouched"
-        );
-    }
-
-    #[test]
-    fn reconcile_section_layout_of_an_empty_saved_layout_is_a_noop() {
-        assert_eq!(reconcile_section_layout(&[], &HashMap::new()), Vec::new());
     }
 
     #[test]
@@ -1353,7 +1218,6 @@ mod tests {
                 }],
                 active_tab: 0,
                 visual_group: None,
-                project: None,
             }],
             active: Some(0),
             selected: 0,
@@ -1451,7 +1315,6 @@ mod tests {
                 }],
                 active_tab: 0,
                 visual_group: None,
-                project: None,
             }],
             active: Some(0),
             selected: 0,
@@ -1563,7 +1426,6 @@ mod tests {
                 ],
                 active_tab: 3,
                 visual_group: None,
-                project: None,
             }],
             active: Some(0),
             selected: 0,
@@ -1630,7 +1492,6 @@ mod tests {
             }],
             active_tab: 0,
             visual_group: None,
-            project: None,
         };
         let mut next_public_pane_number = 1;
 
@@ -1681,7 +1542,6 @@ mod tests {
                 }],
                 active_tab: 0,
                 visual_group: None,
-                project: None,
             }],
             active: Some(0),
             selected: 0,
@@ -1827,76 +1687,6 @@ mod tests {
         let _ = runtime.try_send_bytes(bytes::Bytes::from_static(b"exit\n"));
     }
 
-    #[tokio::test]
-    async fn restore_carries_workspace_project_binding() {
-        let cwd = std::env::current_dir().unwrap();
-        let snapshot = SessionSnapshot {
-            version: super::super::snapshot::SNAPSHOT_VERSION,
-            workspaces: vec![WorkspaceSnapshot {
-                id: Some("wbeta".into()),
-                custom_name: None,
-                identity_cwd: cwd.clone(),
-                worktree_space: None,
-                public_pane_numbers: HashMap::new(),
-                next_public_pane_number: 0,
-                public_tab_numbers: Vec::new(),
-                next_public_tab_number: 0,
-                tabs: vec![TabSnapshot {
-                    custom_name: None,
-                    layout: LayoutSnapshot::Pane(0),
-                    panes: HashMap::from([(
-                        0,
-                        super::super::snapshot::PaneSnapshot {
-                            cwd,
-                            label: None,
-                            agent_name: None,
-                            managed_agent_kind: None,
-                            agent_session: None,
-                            launch_argv: None,
-                        },
-                    )]),
-                    zoomed: false,
-                    focused: Some(0),
-                    root_pane: Some(0),
-                }],
-                active_tab: 0,
-                visual_group: None,
-                project: Some("beta".into()),
-            }],
-            active: Some(0),
-            selected: 0,
-            sidebar_width: None,
-            sidebar_section_split: None,
-            collapsed_space_keys: Default::default(),
-            right_panel_width: None,
-            right_panel_collapsed: None,
-            view_mode: Default::default(),
-        };
-        let (events, _event_rx) = mpsc::channel(4);
-
-        let (workspaces, _terminals, _runtimes) = restore(
-            &snapshot,
-            None,
-            24,
-            80,
-            0,
-            test_restore_shell(),
-            crate::config::ShellModeConfig::NonLogin,
-            false,
-            events,
-            Arc::new(Notify::new()),
-            Arc::new(RenderSignal::new()),
-        );
-
-        let workspace = workspaces.first().expect("workspace should restore");
-        assert_eq!(
-            workspace.project(),
-            Some("beta"),
-            "the project binding in the snapshot must survive restore_workspace's rebuild of \
-             Workspace, not just the WorkspaceSnapshot DTO round trip"
-        );
-    }
-
     fn snapshot_with_saved_pane_history() -> (SessionSnapshot, SessionHistorySnapshot) {
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
         let mut panes = HashMap::new();
@@ -1950,7 +1740,6 @@ mod tests {
                 }],
                 active_tab: 0,
                 visual_group: None,
-                project: None,
             }],
             active: Some(0),
             selected: 0,

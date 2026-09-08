@@ -89,7 +89,6 @@ fn view_mode_index(mode: ViewMode) -> usize {
         ViewMode::Flat => 0,
         ViewMode::Folders => 1,
         ViewMode::Repo => 2,
-        ViewMode::Project => 3,
     }
 }
 
@@ -97,8 +96,7 @@ fn view_mode_for_index(idx: usize) -> ViewMode {
     match idx {
         0 => ViewMode::Flat,
         1 => ViewMode::Folders,
-        2 => ViewMode::Repo,
-        _ => ViewMode::Project,
+        _ => ViewMode::Repo,
     }
 }
 

@@ -13,20 +13,14 @@ mod status;
 #[cfg(test)]
 pub(super) mod test_support;
 
-// Test-only re-export: production code reads the sentinel through
-// `WorkspaceCheckStatus::is_not_applicable`.
-#[cfg(test)]
-pub(crate) use self::check_status::NOT_APPLICABLE_ERROR;
-pub(crate) use self::discovery::automatic_workspace_label;
-
 #[cfg(test)]
 pub(crate) use self::check_status::PrSummary;
+pub(crate) use self::discovery::automatic_workspace_label;
 pub use self::{
     branches::{fetch_local_branches, RepoBranch, RepoBranches},
     change_set::{ChangeSectionKind, ChangeStatus, WorkspaceChangeSet},
     check_status::{
-        checks_counts, checks_rollup, fetch_check_status, CheckRun, ChecksRollup,
-        WorkspaceCheckStatus,
+        checks_rollup, fetch_check_status, CheckRun, ChecksRollup, WorkspaceCheckStatus,
     },
     discovery::{
         derive_label_from_cwd, fallback_label_from_cwd, git_branch, git_space_metadata,
@@ -39,11 +33,6 @@ pub use self::{
         git_status_snapshot_for_cwd_with_demand, GitStatusCacheEntry, GitStatusRefreshDemand,
     },
 };
-
-/// Test-support: the sidebar capture fixture names these via
-/// `crate::workspace::`; no production consumer exists yet.
-#[cfg(test)]
-pub use self::change_set::{ChangeSection, ChangedFile};
 
 #[cfg(test)]
 pub(super) use self::status::git_ahead_behind;

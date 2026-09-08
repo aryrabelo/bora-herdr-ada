@@ -34,7 +34,6 @@ impl App {
             Ok(tip_seq) => tip_seq,
             Err(err) => return encode_error(id, "scratchpad_write_failed", err.to_string()),
         };
-        self.state.refresh_project_todos_notes(&params.project);
         self.emit_event(EventEnvelope {
             event: EventKind::ScratchpadChanged,
             data: EventData::ScratchpadChanged {
@@ -73,7 +72,6 @@ impl App {
                 }
             };
         let section = ScratchpadSectionInfo::from(section);
-        self.state.refresh_project_todos_notes(&params.project);
         self.emit_event(EventEnvelope {
             event: EventKind::ScratchpadChanged,
             data: EventData::ScratchpadChanged {
@@ -168,23 +166,6 @@ mod tests {
             },
         );
         serde_json::from_str(&response).unwrap()
-    }
-
-    #[test]
-    fn scratchpad_write_refreshes_the_sidebar_notes_snapshot() {
-        // Epic bora-s3y acceptance: a doc written through the verb appears
-        // in the NOTES section's data without a render-path store read.
-        let _isolated = IsolatedDirs::new("scratchpad-sidebar-refresh");
-        let mut app = test_app();
-        write_doc(&mut app, "cnb", "plan", vec![draft("Goals", "g")]);
-        write_doc(&mut app, "cnb", "decisions", vec![draft("Store", "JSONL")]);
-
-        let notes = app
-            .state
-            .project_notes
-            .get("cnb")
-            .expect("scratchpad.write must refresh the sidebar snapshot");
-        assert_eq!(notes, &vec!["decisions".to_string(), "plan".to_string()]);
     }
 
     #[test]
