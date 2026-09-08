@@ -40,6 +40,7 @@ Bora is a fork of [herdr](https://github.com/ogulcancelik/herdr). This changelog
 ### Removed
 
 - `.bora.toml`/`.bora/settings.toml` support is gone from core: the per-repo command menu (`[[commands]]`), worktree provisioning (setup script, file copy/symlink, `[ports]` allocation, `bora worktree create --no-setup`), the `bora workspace run` subcommand, and the Project view's COMMANDS band all came from these two files, and all of it is removed end to end. Replaced by the local plugin `aryrabelo/bora-local-commands` — install it with `bora plugin link ~/Sites/bora-team/bora-local-commands` to get the command menu and provisioning back outside core.
+- `projects.yml` no longer accepts `defaults.commands` (the `all`/list scope that narrowed which `.bora.toml` commands a project surfaced) or a project's `sections.commands` selection list, and `kind: comando` is no longer a valid section kind. These keys were the Project-view side of the removal above and have nothing left to name. **Migration: delete them from `~/.config/bora/projects.yml` before upgrading.** The projects file is parsed with `deny_unknown_fields` and a malformed file loads as an EMPTY store rather than raising, so a leftover key costs you every project group in the sidebar with no error on screen — the symptom is Project view suddenly showing nothing grouped.
 
 ## [0.45.5] - 2026-08-25
 
