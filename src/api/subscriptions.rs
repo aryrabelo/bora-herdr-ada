@@ -212,6 +212,10 @@ impl ActiveSubscription {
                 event_kind: crate::api::schema::EventKind::PaneResultReported,
                 last_sequence: 0,
             })),
+            Subscription::ChannelMessage {} => Ok(Self::Event(ActiveEventSubscription {
+                event_kind: crate::api::schema::EventKind::ChannelMessage,
+                last_sequence: 0,
+            })),
             Subscription::PaneOutputMatched {
                 pane_id,
                 source,
@@ -702,6 +706,36 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    /// The blind spot a mutation run found: dropping the arm is caught by
+    /// `cli::events`, but wiring it to the WRONG `EventKind` was not caught
+    /// anywhere — a `channel.message` subscriber would silently receive some other
+    /// event with no error on any side. This file is the one Frente 2 touches that
+    /// conflicts on the 0.9.0 merge, so that is exactly the resolution mistake to
+    /// guard. Comparing against the wire string, not the variant, checks the thing
+    /// a client actually asks for.
+    #[test]
+    fn channel_message_subscription_uses_the_matching_event_kind() {
+        let event_hub = EventHub::default();
+        let (api_tx, _api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let subscription = ActiveSubscription::new(
+            Subscription::ChannelMessage {},
+            "test",
+            0,
+            &api_tx,
+            &event_hub,
+        )
+        .expect("channel message subscription");
+
+        let ActiveSubscription::Event(active) = subscription else {
+            panic!("channel.message must resolve to a plain event subscription");
+        };
+        assert_eq!(
+            active.event_kind.dot_name(),
+            "channel.message",
+            "the arm's EventKind must match the subscription's own wire name"
+        );
     }
 
     #[test]

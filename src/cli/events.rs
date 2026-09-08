@@ -35,6 +35,7 @@ const DEFAULT_EVENT_NAMES: &[&str] = &[
     "pane.exited",
     "pane.agent_detected",
     "pane.result_reported",
+    "channel.message",
     "layout.updated",
 ];
 
@@ -205,10 +206,12 @@ fn pane_without_subscribe_error(pane_id: Option<&str>, subscriptions: &[String])
     }
 }
 
-/// Maps a wire event name to its `Subscription`. The 25 parameterless
-/// variants map directly; the pane-scoped three require `--pane` (and
+/// Maps a wire event name to its `Subscription`. The parameterless variants
+/// map directly; the three pane-scoped ones require `--pane` (and
 /// `pane.output_matched` additionally needs a match expression this verb
-/// does not expose).
+/// does not expose). The count lives in `DEFAULT_EVENT_NAMES` and its one
+/// guard test, never restated here — this comment said 25 while the set held
+/// 26 for exactly as long as it took a reviewer to notice.
 fn subscription_for_name(name: &str, pane_id: Option<&str>) -> Result<Subscription, String> {
     if matches!(
         name,
@@ -258,6 +261,7 @@ fn subscription_for_name(name: &str, pane_id: Option<&str>) -> Result<Subscripti
         "pane.exited" => Subscription::PaneExited {},
         "pane.agent_detected" => Subscription::PaneAgentDetected {},
         "pane.result_reported" => Subscription::PaneResultReported {},
+        "channel.message" => Subscription::ChannelMessage {},
         "layout.updated" => Subscription::LayoutUpdated {},
         other => return Err(format!("unknown event: {other}")),
     };
@@ -333,9 +337,29 @@ fn print_events_help() {
 mod tests {
     use super::*;
 
+    /// An event the server emits but no client can subscribe to is the bug this
+    /// guards: `channel.message` is emitted (`EventKind::ChannelMessage`) and must
+    /// stay expressible as a `Subscription`. If a merge resolution drops the
+    /// variant, `subscription_for_name` falls into its `unknown event` arm and this
+    /// goes red instead of the capability disappearing in silence.
+    #[test]
+    fn channel_message_is_subscribable_by_name() {
+        let subscription = subscription_for_name("channel.message", None)
+            .expect("channel.message must subscribe without --pane");
+        assert_eq!(
+            serde_json::to_value(&subscription).unwrap(),
+            serde_json::json!({ "type": "channel.message" })
+        );
+        assert!(
+            DEFAULT_EVENT_NAMES.contains(&"channel.message"),
+            "channel.message must reach the default stream, like every other \
+             parameterless event"
+        );
+    }
+
     #[test]
     fn events_default_names_map_to_parameterless_wire_variants() {
-        assert_eq!(DEFAULT_EVENT_NAMES.len(), 25);
+        assert_eq!(DEFAULT_EVENT_NAMES.len(), 26);
         for name in DEFAULT_EVENT_NAMES {
             let subscription = subscription_for_name(name, None)
                 .unwrap_or_else(|err| panic!("{name} must map without --pane: {err}"));
@@ -456,7 +480,7 @@ mod tests {
             serde_json::json!([{ "type": "pane.scroll_changed", "pane_id": "p1" }])
         );
         let defaults = build_subscriptions(&[], Some("p1")).unwrap();
-        assert_eq!(defaults.len(), 25);
+        assert_eq!(defaults.len(), DEFAULT_EVENT_NAMES.len());
     }
 
     #[derive(Default)]
