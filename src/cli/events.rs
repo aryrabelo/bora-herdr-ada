@@ -205,7 +205,7 @@ fn pane_without_subscribe_error(pane_id: Option<&str>, subscriptions: &[String])
     }
 }
 
-/// Maps a wire event name to its `Subscription`. The 30 parameterless
+/// Maps a wire event name to its `Subscription`. The 25 parameterless
 /// variants map directly; the pane-scoped three require `--pane` (and
 /// `pane.output_matched` additionally needs a match expression this verb
 /// does not expose).

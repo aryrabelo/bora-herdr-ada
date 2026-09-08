@@ -35,13 +35,15 @@ const MAX_CHANNEL_HISTORY_LINES: u32 = 1000;
 /// semantics, matching `agent prompt`'s default); `--when-idle` is the
 /// opt-in for hold-until-idle — v4 panes were told messages are
 /// "deferred while the target is busy", the opposite of what the runtime
-/// now does by default. Channel scope (join `--scope-write`/
+/// now does by default. v6: channel scope (join `--scope-write`/
 /// `--scope-read`, the `.scope.json` sidecar, `channel_scope_briefing`)
-/// was removed entirely (ceo-bora#271); the version is not bumped for
-/// that alone since the base `CHANNEL_PROTOCOL` text below never
-/// mentioned scope — only the dynamically-appended per-pane suffix did,
-/// and no pane is ever briefed with it again.
-const CHANNEL_PROTOCOL_VERSION: u32 = 5;
+/// was removed entirely (ceo-bora#271). The base text below never
+/// mentioned scope, but a v5 pane with a recorded scope entry received the
+/// per-pane suffix telling it to confine writes to declared directories
+/// and ask before touching anything else — a rule the runtime no longer
+/// records or enforces — and its persisted v5 stamp would otherwise
+/// satisfy the gate forever. The bump re-briefs every pane once, scope-free.
+const CHANNEL_PROTOCOL_VERSION: u32 = 6;
 
 /// Injected once per pane into every channel it joins or is already a
 /// member of — see `App::send_channel_protocol`. Teaches an LLM agent, in

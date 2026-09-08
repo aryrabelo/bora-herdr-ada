@@ -3218,8 +3218,8 @@ fn render_workspace_list(
                         .map(|s| display_width(s.content.as_ref()))
                         .sum::<usize>()
                 };
-                // Identity badges: registered/detected agent name, joined
-                // `#`-channels, and the "safe to close" collectible mark.
+                // Identity badges: registered/detected agent name and joined
+                // `#`-channels.
                 // Purely in-memory or already-cached lookups — nothing here
                 // touches disk.
                 let agent_suffix = agent_badge.map(|name| format!(" @{name}"));
