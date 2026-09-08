@@ -67,6 +67,63 @@ These instructions are layered.
 - **Layout changes must force a repaint, not just a re-render.** Any `AppState` mutation that reflows pane content (sidebar/right-panel toggle, or anything else that changes pane column/row allocation) without changing the outer terminal's `(cols, rows)` must explicitly signal a full repaint to every attached client. Both transport encoders (`ClientRenderState::TerminalAnsi`'s `BlitEncoder` and the default `SemanticFrame` client's local `BlitEncoder`) decide full-vs-diff repaint purely from whether the outer frame's dimensions changed; a layout change alone never trips that check, so the diff/scroll-shift path runs against already-reflowed content and desyncs the physical terminal from the encoder's model until an unrelated full redraw happens to fire. Route new layout-affecting mutations through `AppState::request_full_repaint()` (sets `force_full_repaint`, bridged into per-client `ClientRenderState::request_repaint()` in `HeadlessServer::render_and_stream`, and carried over the wire on `FrameData.force_full_repaint` for `SemanticFrame` clients) instead of assuming a dimension check will catch it. (learned 2026-08-13, binding: this exact gap caused a persistent, reproducible flicker — sidebar toggle open→close would desync the terminal until a workspace switch forced a full redraw — that survived two earlier throughput-focused render fixes because neither touched the full-repaint decision itself.)
   **Switching workspace and switching tab are in scope and were missed for months.** The rule above was written from the sidebar-toggle case and named only "sidebar/right-panel toggle", so the two mutations that reflow the ENTIRE terminal area — `AppState::switch_workspace` and `switch_workspace_tab` in `src/app/actions.rs` — went unrouted, and the bug reached the owner as "I have to click a workspace two to five times to switch". Every click worked: `self.active` changed, `workspace.focus` was logged each time, and three log lines 82ms apart for the same workspace id is what a user retrying a click that appears to do nothing looks like. Diagnosing it from the code alone is close to impossible, because the state transition is correct; the evidence that cracked it was the server log showing repeated successful focus events for one workspace, which says the input path is fine and the output path is not. Note the irony recorded in the original rule — a workspace switch was what accidentally repaired the sidebar-toggle desync — which is exactly why nobody suspected that a workspace switch had the same defect. When adding any mutation that changes which panes occupy the terminal area, assume it is in scope and gate the repaint on an actual change so re-selecting what is already active stays free. `toggle_zoom` and `close_pane` are the two remaining unrouted candidates; they are filed rather than fixed because there is no observed report for them and they may be covered by per-pane resize instead. (learned 2026-08-25, binding.)
 
+### Prior art before building
+
+Before any non-trivial feature reaches Rust, prove nobody already does it
+well. The order matters: **grill the idea first**, until the destination is
+sharp — a prior-art search run against a fuzzy destination returns everything
+and decides nothing — then sweep these four shelves and write down what each
+one returned, **including the searches that returned nothing**, because a
+measured absence is a finding and the next session will otherwise search
+again:
+
+1. **GitHub at large** — is there a project that already solves this? Name
+   stars, last commit, and licence, and say explicitly whether it solves it
+   for a runtime like ours or for one we do not have (tmux, wezterm, a bare
+   shell). A project whose whole design assumes tmux is a design reference,
+   not a dependency.
+2. **herdr plugins** — <https://herdr.dev/plugins/>, but the searchable
+   directory is the GitHub topic `herdr-plugin` (**1040 repos**, measured
+   2026-09-08 as 41 above 50★ + 65 in 11..50 + 538 in 1..10 + 396 at 0★, and
+   the bands sum to the total — an earlier note here said ~250 and was wrong by
+   4x); the site listing is a 30-minute auto-refresh with **no review of any
+   kind**, so treat it as an index, never as a vetting signal. Sweep it in star
+   bands, because GitHub's repo search caps a page at 100 and code search at 50
+   and the low-star bands overflow silently. A plugin that already does it
+   beats a core patch, and a core patch that could have been a plugin is fork
+   merge-conflict surface bought for nothing (see Fork merge friction). Before
+   concluding a feature must be core, check the plugin ceiling against the
+   code: a plugin CAN hold a long-lived connection (`[[startup]]` is spawned
+   detached and awaited without timeout, `src/app/api/plugins/runtime.rs`) and
+   CAN draw in its own pane (`[[panes]]`), but CANNOT declare a sidebar
+   band/view (`REGISTRY` is `const` in-binary and each band carries a compiled
+   `push: fn(...)`) and CANNOT inject a workspace row the server does not
+   have — its only sidebar channel is decorating an existing row with a
+   metadata token.
+3. **pi packages** — `https://pi.dev/packages?name=<term>`, one query per
+   term. `omp` is of the pi lineage, so a pi package frequently runs on omp.
+4. **omp plugins** — <https://github.com/topics/omp-plugin>. omp is the
+   primary coding harness here, so a fleet/orchestration answer may belong
+   there rather than inside bora at all.
+
+Adoption has a **security gate**, not only a feature gate. For every
+third-party candidate worth considering, state who maintains it, what it
+executes at install and at runtime, which credential/socket/network it
+reaches, and whether the code is auditable at the size it is. For a
+herdr/bora plugin the bar is higher than it looks: the trust boundary is
+INSTALL, not call — an enabled plugin receives `HERDR_SOCKET_PATH` and
+therefore the reach of the entire CLI, unattended, at every server start (see
+the plugin trust-boundary rule under Code Conventions). "Popular" is not an
+audit.
+
+The result of the sweep is written where the decision lives — the map ticket,
+an ADR, or this file — never left in a chat.
+
+(learned 2026-09-07, binding, owner instruction: *"temos que saber no GitHub
+se não tem alguém que já faz isso bem, depois da gente fazer o grilling e
+entender o que a gente quer"*, with the three plugin shelves and the security
+requirement named in the same breath.)
+
 ### Multiplicative performance paths
 
 Treat work reachable from view computation, rendering, background-pane resizing,
@@ -135,6 +192,38 @@ classes, and how to resolve them, so the next sync is cheap:
   2026-05/06). The fork uses `${{ github.token }}` and `github-actions[bot]` (41898282)
   everywhere — on merges, swap any reintroduced KANGAL reference back, and keep the
   example text in the pre-release-audit prompts free of it.
+
+- **The pending 0.9.0 sync is a client rewrite, not a sync — size it before starting.**
+  Every figure here is measured from the last merged upstream commit `2c042bb2`
+  (2026-08-20, what `build_info.rs` declares) to upstream tip `8be4cf76` (2026-09-09).
+  The tip moves daily — it moved twice while this note was being written, and an
+  earlier draft's figures were already wrong by the time it was reviewed — so
+  re-derive rather than trust: `git rev-list --count 2c042bb2..upstream/master` and
+  `git diff --numstat 2c042bb2..upstream/master -- <path>` produce every number below.
+  At that tip: **107 commits** and **115 new `src/` files** ahead, at version `0.9.0`.
+  Upstream moved the entire TUI into a `src/client/shell/*` + `src/client/endpoint/*`
+  layer — completing the Runtime/client boundary migration this file asks new work to
+  respect — deleting **3102 lines** from `src/ui/sidebar.rs` and **1220** from
+  `src/app/state.rs`. That is the "upstream blocks conflicting wholesale where the fork
+  moved code" trap at its worst, because the fork's `sidebar.rs` is 334 KB against an
+  upstream file that is being emptied: git cannot align them, so expect one huge
+  conflict whose "ours" side is empty, and resolve it by taking `ours` and porting the
+  genuine upstream delta by hand. Consequence for planning: do NOT land fork work in
+  `src/ui/sidebar.rs` or `src/app/state.rs` ahead of this merge — it is guaranteed
+  rework. Channels and the chat view are safe by contrast: `src/app/api/channels.rs`,
+  `src/persist/channels.rs`, `src/app/input/chat.rs`, `src/ui/chat.rs` and
+  `src/api/schema/channels.rs` are all **absent upstream**, so the merge brings no
+  competing implementation and no conflict in them. The fork's `Subscription` enum is
+  upstream's 27 variants plus exactly two, dropping none — and where those two SIT is
+  the load-bearing fact, not that there are two: `pane.result_reported` and
+  `channel.message` are inserted at positions 24 and 25 of 29, ahead of a four-variant
+  tail (`pane.output_matched`, `pane.agent_status_changed`, `pane.scroll_changed`,
+  `layout.updated`) that is identical to upstream's own last four. That shared tail
+  gives a 3-way merge unambiguous context on both sides of the insertion, and upstream
+  added **zero** `Subscription` variants across those 107 commits, so the region is
+  uncontested. Anchor a new fork variant beside those two rather than after the tail;
+  appending past the tail is what would put both sides on the same line. Full analysis
+  in `.local/prd/channel-identity-and-subscribe.md`.
 
 Every upstream sync also updates `UPSTREAM_HERDR_VERSION`/`UPSTREAM_HERDR_COMMIT` in
 `src/build_info.rs` to the merged upstream tip, in the same commit as the merge — see
@@ -282,6 +371,38 @@ server:
 ```bash
 env -u HERDR_SOCKET_PATH -u HERDR_CLIENT_SOCKET_PATH cargo run -- <command>
 ```
+
+**Trialling a third-party plugin: `--session` is NOT isolation, and two clones
+are NOT two builds.** Three facts measured 2026-09-07 while running the
+`herdr-mirror` plugin against a second machine, each of which silently
+invalidates the obvious safety plan:
+
+- **The plugin registry is global per NAMESPACE, not per session.**
+  `registry_path()` is `config_dir().join("plugins.json")`
+  (`src/persist/plugin_registry.rs`) and a named session only moves the *data*
+  dir (`src/session.rs`), never `config_dir()`. So `plugin link` inside
+  `bora --session throwaway` writes into the registry the LIVE session reads,
+  and its `[[startup]]`/event hooks then run in the live server. Isolation
+  requires `HERDR_NAMESPACE=<name>` on every command; verify by hashing
+  `~/.config/bora/plugins.json` before and after. Also clear
+  `HERDR_ENV`/`HERDR_SOCKET_PATH` from the environment: the first blocks a
+  nested bora (`src/main.rs`) and the second makes `--session` a no-op
+  (`src/session.rs`).
+- **`CARGO_TARGET_DIR` is set globally on this machine (`~/.cargo/target`), so
+  two clones of the same crate share one `target/release/<bin>`.** Building
+  clone B overwrites clone A's binary with no warning, and a trial that
+  believes it is exercising the fork can be measuring upstream. Pass an
+  explicit `--target-dir` per clone, and prove which build you have by probing
+  the binary for a symbol only one side contains — not by its path.
+- **There is no `bora server start`.** `bora server` runs headless in the
+  foreground; the daemon is otherwise spawned only by the TUI launch path
+  (`spawn_server_daemon`, `src/server/autodetect.rs`), and a plain CLI verb
+  does NOT start one — it fails with `server_not_running` and stops. On a
+  headless remote host the equivalent is
+  `nohup bora server </dev/null >/dev/null 2>&1 &`, which is exactly what
+  `build_server_daemon_command` does. Non-interactive SSH also drops
+  `~/.local/bin` from `PATH`, so anything naming the binary remotely needs an
+  absolute path.
 
 ### Rules-review gate
 
