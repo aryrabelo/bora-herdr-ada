@@ -17,7 +17,7 @@ concurrency:
 
 jobs:
   flake-check:
-    if: github.repository == 'herdrdev/herdr'
+    if: github.repository == 'aryrabelo/bora-herdr-ada'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -41,7 +41,7 @@ jobs:
           nix flake check --all-systems --no-build --print-build-logs
 
   build:
-    if: github.repository == 'herdrdev/herdr'
+    if: github.repository == 'aryrabelo/bora-herdr-ada'
     permissions:
       contents: read
     strategy:
@@ -188,7 +188,7 @@ jobs:
           path: ${{ matrix.name }}
 
   validate-release-inputs:
-    if: github.repository == 'herdrdev/herdr'
+    if: github.repository == 'aryrabelo/bora-herdr-ada'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -220,7 +220,7 @@ jobs:
 
   release:
     needs: [build, flake-check, validate-release-inputs]
-    if: github.repository == 'herdrdev/herdr'
+    if: github.repository == 'aryrabelo/bora-herdr-ada'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -250,7 +250,7 @@ jobs:
 
   close-released-issues:
     needs: release
-    if: github.repository == 'herdrdev/herdr'
+    if: github.repository == 'aryrabelo/bora-herdr-ada'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     continue-on-error: true
@@ -388,7 +388,7 @@ jobs:
 
   update-latest-json:
     needs: release
-    if: github.repository == 'herdrdev/herdr'
+    if: github.repository == 'aryrabelo/bora-herdr-ada'
     runs-on: ubuntu-latest
     concurrency:
       group: docs-publish-main

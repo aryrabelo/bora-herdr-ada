@@ -2,7 +2,7 @@
 set -eu
 
 BIN="bora"
-MANIFEST_URL="https://raw.githubusercontent.com/aryrabelo/bora-herdr-ada/main/website/latest.json"
+MANIFEST_URL="https://raw.githubusercontent.com/aryrabelo/bora-herdr-ada/main/distribution/latest.json"
 INSTALL_DIR="${HERDR_INSTALL_DIR:-$HOME/.local/bin}"
 
 main() {

@@ -17,7 +17,7 @@ test-one filter:
 [script("powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File")]
 [windows]
 test-one filter:
-    cargo nextest run --locked --bin herdr "{{filter}}" --status-level fail --final-status-level fail --failure-output final --success-output never
+    cargo nextest run --locked --bin bora "{{filter}}" --status-level fail --final-status-level fail --failure-output final --success-output never
 
 # Enforce deterministic UI hot-path architecture boundaries
 ui-hot-path-architecture-test:

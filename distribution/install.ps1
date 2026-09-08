@@ -225,13 +225,13 @@ function Invoke-CurlDownload {
     $parsedUri = $null
     if (-not [System.Uri]::TryCreate($Uri, [System.UriKind]::Absolute, [ref]$parsedUri) -or
         $parsedUri.Scheme -notin @("http", "https")) {
-        throw "Herdr download URL must use HTTP or HTTPS: $Uri"
+        throw "bora download URL must use HTTP or HTTPS: $Uri"
     }
 
     $curl = Get-Command curl.exe -CommandType Application -ErrorAction SilentlyContinue |
         Select-Object -First 1
     if ($null -eq $curl) {
-        throw "Herdr installation requires curl.exe, which is included with supported Windows versions."
+        throw "bora installation requires curl.exe, which is included with supported Windows versions."
     }
 
     $arguments = @(
@@ -734,9 +734,9 @@ if ($useLocalPackage) {
 
     if ([string]::IsNullOrWhiteSpace($ManifestUrl)) {
         $ManifestUrl = if ($Channel -eq "preview") {
-            "https://raw.githubusercontent.com/aryrabelo/bora-herdr-ada/main/website/preview.json"
+            "https://raw.githubusercontent.com/aryrabelo/bora-herdr-ada/main/distribution/preview.json"
         } else {
-            "https://raw.githubusercontent.com/aryrabelo/bora-herdr-ada/main/website/latest.json"
+            "https://raw.githubusercontent.com/aryrabelo/bora-herdr-ada/main/distribution/latest.json"
         }
     }
 

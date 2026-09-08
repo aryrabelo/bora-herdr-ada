@@ -10,7 +10,7 @@ concurrency:
 
 jobs:
   check-contributor:
-    if: github.repository == 'herdrdev/herdr'
+    if: github.repository == 'aryrabelo/bora-herdr-ada'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -113,7 +113,7 @@ jobs:
                 per_page: 100,
               });
               if (comments.some(comment =>
-                comment.user?.id === KANGAL_USER_ID && comment.body?.includes(marker))) {
+                comment.user?.id === GATE_BOT_USER_ID && comment.body?.includes(marker))) {
                 core.info(`AI reviews already requested for PR #${pullNumber}`);
                 return;
               }

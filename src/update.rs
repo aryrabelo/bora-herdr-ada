@@ -23,9 +23,9 @@ use interprocess::local_socket::traits::Stream as _;
 use serde::{Deserialize, Deserializer};
 
 const STABLE_UPDATE_MANIFEST_URL: &str =
-    "https://raw.githubusercontent.com/aryrabelo/bora-herdr-ada/main/website/latest.json";
+    "https://raw.githubusercontent.com/aryrabelo/bora-herdr-ada/main/distribution/latest.json";
 const PREVIEW_UPDATE_MANIFEST_URL: &str =
-    "https://raw.githubusercontent.com/aryrabelo/bora-herdr-ada/main/website/preview.json";
+    "https://raw.githubusercontent.com/aryrabelo/bora-herdr-ada/main/distribution/preview.json";
 const HOMEBREW_FORMULA_API_URL: &str = "https://formulae.brew.sh/api/formula/herdr.json";
 const HERDR_UPDATE_COMMAND: &str = "bora update";
 const HOMEBREW_UPDATE_COMMAND: &str = "brew update && brew upgrade herdr";

@@ -216,6 +216,7 @@ impl App {
                     &source_checkout_path,
                     &path,
                     number,
+                    params.trust_repository,
                 ),
                 None => crate::worktree::run_worktree_add_command(
                     &source_checkout_path,

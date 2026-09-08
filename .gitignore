@@ -44,3 +44,6 @@ graphify-out/
 
 # Stale lock left behind when a bd invocation is interrupted.
 .beads.gate.lock
+
+# Local usina dispatch/scope artifacts (per-worktree agent bookkeeping)
+/.usina-*

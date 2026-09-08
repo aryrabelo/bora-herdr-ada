@@ -146,6 +146,16 @@ class ReviewRulesEndToEnd(unittest.TestCase):
         self.commit("chore: move and edit manifest")
         self.assert_flags("distribution/latest.json")
 
+    def test_hand_authored_file_renamed_into_generated_path_is_flagged(self) -> None:
+        # The R100 exemption is for relocating generated output; a file that
+        # was never generated does not become exempt by being moved there.
+        self.write("notes.json", '{"version": "0.19.0"}\n')
+        self.commit("docs: notes")
+        (self.repo / "distribution").mkdir()
+        self.git("mv", "notes.json", "distribution/latest.json")
+        self.commit("chore: move notes over the manifest")
+        self.assert_flags("distribution/latest.json")
+
     # ── #[allow] justification ──────────────────────────────────────────
 
     def test_bare_allow_attribute_is_flagged(self) -> None:

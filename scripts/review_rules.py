@@ -37,6 +37,10 @@ GENERATED_PATH_PREFIXES = (
 GENERATED_PATH_EXACT = (
     "distribution/latest.json",
     "distribution/preview.json",
+    # Pre-0.8.x-sync locations; kept so a relocation of generated output is
+    # recognized as such rather than as a hand-authored file moving in.
+    "website/latest.json",
+    "website/preview.json",
 )
 
 PACKAGE_SECTION_RE = re.compile(r"^\s*\[package\]\s*$")
@@ -180,11 +184,24 @@ def check_version_bump(changed_paths: list[str], base_cargo_toml: str | None, he
     return []
 
 
+def is_generated_path(path: str) -> bool:
+    return path.startswith(GENERATED_PATH_PREFIXES) or path in GENERATED_PATH_EXACT
+
+
+def parse_rename_sources(text: str) -> dict[str, str]:
+    """Map new path -> old path for the rename entries of `git diff --name-status`."""
+    sources: dict[str, str] = {}
+    for line in text.splitlines():
+        parts = line.split("\t")
+        if len(parts) == 3 and parts[0].startswith("R"):
+            sources[parts[2]] = parts[1]
+    return sources
+
+
 def check_generated_paths(changed_paths: list[str]) -> list[Finding]:
     findings = []
     for path in changed_paths:
-        is_generated = path.startswith(GENERATED_PATH_PREFIXES) or path in GENERATED_PATH_EXACT
-        if is_generated:
+        if is_generated_path(path):
             findings.append(
                 Finding(
                     severity="critical",
@@ -288,11 +305,19 @@ def read_git_file(sha: str, path: str) -> str | None:
 
 
 def run_all_checks(base_sha: str, head_sha: str) -> list[Finding]:
-    name_status = parse_name_status(run_git(["diff", "--name-status", f"{base_sha}...{head_sha}"]))
+    name_status_text = run_git(["diff", "--name-status", f"{base_sha}...{head_sha}"])
+    name_status = parse_name_status(name_status_text)
+    rename_sources = parse_rename_sources(name_status_text)
     changed_paths = [path for _status, path in name_status]
-    # A pure rename (R100) moves generated output without editing it; only
-    # content changes are hand-edits the generated-path rule exists to catch.
-    edited_paths = [path for status, path in name_status if status != "R100"]
+    # A pure rename (R100) of generated output to a new generated location
+    # moves it without editing it. A hand-authored file renamed INTO a
+    # generated location is still a hand-edit, so the source must also be
+    # generated for the exemption to apply.
+    edited_paths = [
+        path
+        for status, path in name_status
+        if not (status == "R100" and is_generated_path(rename_sources.get(path, "")))
+    ]
 
     findings: list[Finding] = []
     findings += check_version_bump(changed_paths, read_git_file(base_sha, "Cargo.toml"), read_git_file(head_sha, "Cargo.toml"))

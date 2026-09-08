@@ -433,16 +433,13 @@ fn resolve_pull_request_head(
 pub(crate) fn build_pr_branch_fetch_command(
     source_checkout: &Path,
     head_ref_name: &str,
+    trust_repository: bool,
 ) -> WorktreeCommand {
+    let mut args = repository_git_args(source_checkout, trust_repository);
+    args.extend(["fetch", "origin", head_ref_name].map(str::to_string));
     WorktreeCommand {
         program: "git".to_string(),
-        args: vec![
-            "-C".to_string(),
-            source_checkout.display().to_string(),
-            "fetch".to_string(),
-            "origin".to_string(),
-            head_ref_name.to_string(),
-        ],
+        args,
     }
 }
 
@@ -452,20 +449,21 @@ pub(crate) fn build_worktree_add_tracking_branch_command(
     repo_root: &Path,
     path: &Path,
     branch: &str,
+    trust_repository: bool,
 ) -> WorktreeCommand {
+    let mut args = repository_git_args(repo_root, trust_repository);
+    args.extend([
+        "worktree".to_string(),
+        "add".to_string(),
+        "--track".to_string(),
+        "-b".to_string(),
+        branch.to_string(),
+        path.display().to_string(),
+        format!("origin/{branch}"),
+    ]);
     WorktreeCommand {
         program: "git".to_string(),
-        args: vec![
-            "-C".to_string(),
-            repo_root.display().to_string(),
-            "worktree".to_string(),
-            "add".to_string(),
-            "--track".to_string(),
-            "-b".to_string(),
-            branch.to_string(),
-            path.display().to_string(),
-            format!("origin/{branch}"),
-        ],
+        args,
     }
 }
 
@@ -480,19 +478,20 @@ pub(crate) fn pr_fork_branch_name(pr_number: u64) -> String {
 pub(crate) fn build_pr_fork_fetch_command(
     source_checkout: &Path,
     pr_number: u64,
+    trust_repository: bool,
 ) -> WorktreeCommand {
+    let mut args = repository_git_args(source_checkout, trust_repository);
+    args.extend([
+        "fetch".to_string(),
+        "origin".to_string(),
+        format!(
+            "+refs/pull/{pr_number}/head:{}",
+            pr_fork_branch_name(pr_number)
+        ),
+    ]);
     WorktreeCommand {
         program: "git".to_string(),
-        args: vec![
-            "-C".to_string(),
-            source_checkout.display().to_string(),
-            "fetch".to_string(),
-            "origin".to_string(),
-            format!(
-                "+refs/pull/{pr_number}/head:{}",
-                pr_fork_branch_name(pr_number)
-            ),
-        ],
+        args,
     }
 }
 
@@ -504,6 +503,7 @@ pub(crate) fn run_worktree_add_for_pull_request(
     source_checkout: &Path,
     path: &Path,
     pr_number: u64,
+    trust_repository: bool,
 ) -> Result<(), String> {
     let head = resolve_pull_request_head(source_checkout, pr_number)?;
     let local_branch = if head.is_cross_repository {
@@ -515,7 +515,9 @@ pub(crate) fn run_worktree_add_for_pull_request(
     // that worktree instead of failing to add a second one for the same branch.
     // When it is the requested path, treat as done so the caller attaches and
     // focuses the existing checkout; otherwise report where it lives.
-    if let Some(existing) = existing_worktree_path_on_branch(source_checkout, &local_branch)? {
+    if let Some(existing) =
+        existing_worktree_path_on_branch(source_checkout, &local_branch, trust_repository)?
+    {
         return if canonical_or_original(&existing) == canonical_or_original(path) {
             Ok(())
         } else {
@@ -526,27 +528,37 @@ pub(crate) fn run_worktree_add_for_pull_request(
         };
     }
     if head.is_cross_repository {
-        run_worktree_command(&build_pr_fork_fetch_command(source_checkout, pr_number))?;
+        run_worktree_command(&build_pr_fork_fetch_command(
+            source_checkout,
+            pr_number,
+            trust_repository,
+        ))?;
         return run_worktree_command(&build_worktree_add_existing_branch_command(
             source_checkout,
             path,
             &local_branch,
-            false,
+            trust_repository,
         ));
     }
     run_worktree_command(&build_pr_branch_fetch_command(
         source_checkout,
         &head.head_ref_name,
+        trust_repository,
     ))?;
-    let command = if local_branch_exists(source_checkout, &head.head_ref_name, false)? {
+    let command = if local_branch_exists(source_checkout, &head.head_ref_name, trust_repository)? {
         build_worktree_add_existing_branch_command(
             source_checkout,
             path,
             &head.head_ref_name,
-            false,
+            trust_repository,
         )
     } else {
-        build_worktree_add_tracking_branch_command(source_checkout, path, &head.head_ref_name)
+        build_worktree_add_tracking_branch_command(
+            source_checkout,
+            path,
+            &head.head_ref_name,
+            trust_repository,
+        )
     };
     run_worktree_command(&command)
 }
@@ -557,8 +569,9 @@ pub(crate) fn run_worktree_add_for_pull_request(
 fn existing_worktree_path_on_branch(
     source_checkout: &Path,
     branch: &str,
+    trust_repository: bool,
 ) -> Result<Option<PathBuf>, String> {
-    Ok(list_existing_worktrees(source_checkout, false)?
+    Ok(list_existing_worktrees(source_checkout, trust_repository)?
         .into_iter()
         .find(|entry| entry.branch.as_deref() == Some(branch))
         .map(|entry| entry.path))
@@ -1400,11 +1413,26 @@ prunable stale
 
     #[test]
     fn pr_branch_fetch_command_fetches_head_from_origin() {
-        let command = build_pr_branch_fetch_command(Path::new("/repo/herdr"), "feature/pr-head");
+        let command =
+            build_pr_branch_fetch_command(Path::new("/repo/herdr"), "feature/pr-head", false);
         assert_eq!(command.program, "git");
         assert_eq!(
             command.args,
             vec!["-C", "/repo/herdr", "fetch", "origin", "feature/pr-head"]
+        );
+        let trusted =
+            build_pr_branch_fetch_command(Path::new("/repo/herdr"), "feature/pr-head", true);
+        assert_eq!(
+            trusted.args,
+            vec![
+                "-c",
+                "safe.directory=/repo/herdr",
+                "-C",
+                "/repo/herdr",
+                "fetch",
+                "origin",
+                "feature/pr-head"
+            ]
         );
     }
 
@@ -1414,6 +1442,7 @@ prunable stale
             Path::new("/repo/herdr"),
             Path::new("/w/herdr/pr-42"),
             "feature/pr-head",
+            false,
         );
         assert_eq!(command.program, "git");
         assert_eq!(
@@ -1434,7 +1463,7 @@ prunable stale
 
     #[test]
     fn pr_fork_fetch_command_force_fetches_pull_ref_into_local_branch() {
-        let command = build_pr_fork_fetch_command(Path::new("/repo/herdr"), 42);
+        let command = build_pr_fork_fetch_command(Path::new("/repo/herdr"), 42, false);
         assert_eq!(command.program, "git");
         assert_eq!(
             command.args,
@@ -1519,16 +1548,18 @@ prunable stale
         let add = build_worktree_add_new_branch_command(&repo, &checkout, branch, "HEAD", false);
         run_worktree_command(&add).unwrap();
 
-        let found = existing_worktree_path_on_branch(&repo, branch)
+        let found = existing_worktree_path_on_branch(&repo, branch, false)
             .unwrap()
             .expect("worktree on branch should be found");
         assert_eq!(
             canonical_or_original(&found),
             canonical_or_original(&checkout)
         );
-        assert!(existing_worktree_path_on_branch(&repo, "no/such-branch")
-            .unwrap()
-            .is_none());
+        assert!(
+            existing_worktree_path_on_branch(&repo, "no/such-branch", false)
+                .unwrap()
+                .is_none()
+        );
 
         let remove = build_worktree_remove_command(&repo, &checkout, false, false);
         run_worktree_command(&remove).unwrap();

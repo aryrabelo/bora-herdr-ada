@@ -1,3 +1,0 @@
-#!/bin/sh
-echo 'gh removido do pane pela usina: use os verbos usina ou curl com $GH_TOKEN (token do perfil gh da rota, usina-config). gh direto sai.' >&2
-exit 127
