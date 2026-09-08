@@ -192,6 +192,27 @@ classes, and how to resolve them, so the next sync is cheap:
   2026-05/06). The fork uses `${{ github.token }}` and `github-actions[bot]` (41898282)
   everywhere — on merges, swap any reintroduced KANGAL reference back, and keep the
   example text in the pre-release-audit prompts free of it.
+- **Upstream's contributor-intake gate has no fork identity either, and pointing it at
+  this fork locks the fork owner out.** `.github/workflows/pr-gate.yml` guards itself
+  with `if: github.repository == '<repo>'` and closes any PR whose author is absent from
+  `.github/APPROVED_CONTRIBUTORS`. Both that list and `.github/MAINTAINERS` are inherited
+  from upstream verbatim — 69 names and 3 names respectively, all upstream
+  (`ogulcancelik`, `Pimpmuckl`, `kangal-bot` and the rest), with no fork identity — so
+  retargeting the guard at the fork makes the fork's own owner read as an unapproved
+  contributor. The failure is silent in code review and total at runtime: measured
+  2026-09-08, PR #26 opened while the guard still
+  said `herdrdev/herdr` and its gate run was `skipped`; PR #28 opened five minutes after
+  `1faee64b` retargeted it and its run was `success` — meaning it closed a green,
+  docs-only PR from the repository owner. Reopening does not recover it: `reopened` is one
+  of the workflow's own triggers and the reopen is honored only when the actor passes
+  `isVerifiedMaintainer`, which reads `.github/MAINTAINERS` — the same list that omits the
+  fork. So a fork with an active gate and an inherited list has no path to merge at all.
+  Never retarget that guard without adding the fork identity to `.github/MAINTAINERS` in
+  the same commit (`APPROVED_CONTRIBUTORS` alone prevents the initial close but not the
+  re-close on reopen), or leave it pointed at `herdrdev/herdr` and accept that the fork
+  runs no intake gate — which is the honest default for a single-owner fork. Same family
+  as the kangal rule above: an upstream identity mechanism inherited with no counterpart
+  here, where the inherited half is the half that decides. (learned 2026-09-08, binding.)
 
 - **The pending 0.9.0 sync is a client rewrite, not a sync — size it before starting.**
   Every figure here is measured from the last merged upstream commit `8a6d6973`
