@@ -592,7 +592,7 @@ pub struct KeysConfig {
     pub toggle_sidebar: BindingConfig,
     /// Toggle right panel collapse. Default: "prefix+g"
     pub toggle_right_panel: BindingConfig,
-    /// Cycle the sidebar view mode: flat -> repo -> project -> flat.
+    /// Cycle the sidebar view mode: flat -> folders -> repo -> flat.
     /// Default: "prefix+shift+v"
     pub cycle_view_mode: BindingConfig,
     /// Optional indexed shortcuts expanded over number keys 1-9.

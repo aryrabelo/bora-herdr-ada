@@ -623,7 +623,7 @@
           "key": "keys.cycle_view_mode",
           "type": "string",
           "default": "unset",
-          "description": "Keybinding that cycles the sidebar view mode: flat -> folders -> repo -> project -> flat. Same thing the view-mode label on the sidebar's workspace header toggles when clicked."
+          "description": "Keybinding that cycles the sidebar view mode: flat -> folders -> repo -> flat. Same thing the view-mode label on the sidebar's workspace header toggles when clicked."
         },
         {
           "key": "keys.chat",

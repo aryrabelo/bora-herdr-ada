@@ -3626,7 +3626,7 @@ mod tests {
     #[test]
     fn plugin_action_context_global_action_appears_in_every_menu_kind() {
         // bora-1e9: "Global actions should be available from every menu,
-        // since that is what Global means" — checked across all 8
+        // since that is what Global means" — checked across all 7
         // variants, including RepoPr/RepoIssue, which map to Global for
         // lack of a dedicated context (see plugin_menu_context).
         let plugins = plugin_registry_with(test_plugin_action(

@@ -199,8 +199,25 @@ struct RawSessionSnapshot {
     right_panel_width: Option<u16>,
     #[serde(default)]
     right_panel_collapsed: Option<bool>,
-    #[serde(default)]
+    /// Tolerant on purpose: an unrecognized value falls back to the default
+    /// instead of failing the whole document. `RawSessionSnapshot` is the
+    /// restore boundary, so a strict parse here costs the operator every
+    /// workspace, tab and pane — measured when `ViewMode::Project` was
+    /// retired (ceo-bora#270): a session last saved in that view failed to
+    /// parse entirely. The same hazard applies in the other direction, to a
+    /// snapshot written by a newer bora that knows a view this build does
+    /// not, which is why the fallback is on the field rather than on one
+    /// retired name.
+    #[serde(default, deserialize_with = "view_mode_or_default")]
     view_mode: crate::config::ViewMode,
+}
+
+fn view_mode_or_default<'de, D>(deserializer: D) -> Result<crate::config::ViewMode, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw = serde_json::Value::deserialize(deserializer)?;
+    Ok(serde_json::from_value(raw).unwrap_or_default())
 }
 
 fn migrate_snapshot(raw: RawSessionSnapshot) -> Result<SessionSnapshot, String> {
@@ -659,6 +676,56 @@ mod tests {
         }"#;
         let restored = parse_snapshot(json).unwrap();
         assert_eq!(restored.view_mode, crate::config::ViewMode::Repo);
+    }
+
+    #[test]
+    fn snapshot_naming_an_unknown_view_mode_keeps_the_session() {
+        // A session last saved under a view this build does not know —
+        // `"project"`, retired in ceo-bora#270, or a value a newer bora
+        // writes — must lose only the view, never the workspaces. Strict
+        // deserialization here failed the WHOLE document: measured before
+        // the fallback, this input returned
+        // `unknown variant `project`, expected one of `flat`, `folders`,
+        // `repo`` and the operator lost every workspace, tab and pane.
+        for unknown in ["project", "some_future_view"] {
+            let json = format!(
+                r#"{{
+                    "version": 3,
+                    "workspaces": [{{
+                        "id": "wkeep",
+                        "custom_name": "keep-me",
+                        "identity_cwd": "/tmp/keep",
+                        "tabs": [{{
+                            "layout": {{ "Pane": 0 }},
+                            "panes": {{ "0": {{ "cwd": "/tmp/keep" }} }},
+                            "zoomed": false,
+                            "focused": 0,
+                            "root_pane": 0
+                        }}],
+                        "active_tab": 0
+                    }}],
+                    "active": 0,
+                    "selected": 0,
+                    "view_mode": "{unknown}"
+                }}"#
+            );
+
+            let restored = parse_snapshot(&json)
+                .unwrap_or_else(|err| panic!("{unknown} must not discard the session: {err}"));
+
+            assert_eq!(restored.workspaces.len(), 1, "{unknown}");
+            assert_eq!(
+                restored.workspaces[0].custom_name.as_deref(),
+                Some("keep-me"),
+                "{unknown}"
+            );
+            assert_eq!(restored.workspaces[0].tabs[0].panes.len(), 1, "{unknown}");
+            assert_eq!(
+                restored.view_mode,
+                crate::config::ViewMode::default(),
+                "{unknown} falls back to the default view"
+            );
+        }
     }
 
     #[test]
