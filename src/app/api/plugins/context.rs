@@ -203,19 +203,6 @@ impl App {
                     context.focused_pane_id = Some(pane_id.clone());
                     context
                 }),
-            EventData::GithubPrsRefreshed { .. } | EventData::GithubIssuesRefreshed { .. } => {
-                empty_plugin_context(correlation_id)
-            }
-            EventData::GithubPrOpened { workspace_ids, .. } => workspace_ids
-                .first()
-                .and_then(|workspace_id| {
-                    self.plugin_context_for_workspace_id(workspace_id, correlation_id)
-                })
-                .unwrap_or_else(|| {
-                    let mut context = empty_plugin_context(correlation_id);
-                    context.workspace_id = workspace_ids.first().cloned();
-                    context
-                }),
             EventData::QueuedPromptDelivered {
                 target_pane,
                 workspace_id,
@@ -257,21 +244,6 @@ impl App {
                 .position(|ws| {
                     ws.visual_group.is_none()
                         && ws.custom_name.as_deref() == Some(format!("#{channel}").as_str())
-                })
-                .map(|ws_idx| self.plugin_context_for_workspace(ws_idx, correlation_id))
-                .unwrap_or_else(|| empty_plugin_context(correlation_id)),
-            // Project = channel: a project slug's default channel is
-            // `#<slug>`, so the project's hooks run with that channel
-            // workspace as context — the same resolution as
-            // `ChannelMessage` above, keyed off the event's project slug.
-            EventData::TodoChanged { project, .. }
-            | EventData::ScratchpadChanged { project, .. } => self
-                .state
-                .workspaces
-                .iter()
-                .position(|ws| {
-                    ws.visual_group.is_none()
-                        && ws.custom_name.as_deref() == Some(format!("#{project}").as_str())
                 })
                 .map(|ws_idx| self.plugin_context_for_workspace(ws_idx, correlation_id))
                 .unwrap_or_else(|| empty_plugin_context(correlation_id)),

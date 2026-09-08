@@ -7,10 +7,7 @@ use std::time::Instant;
 
 use crate::detect::{Agent, AgentState};
 use crate::layout::PaneId;
-use crate::workspace::{
-    GitStatusCacheEntry, RepoBranches, RepoIssues, RepoOpenPrs, WorkspaceCheckStatus,
-    WorkspaceGitStatus,
-};
+use crate::workspace::{GitStatusCacheEntry, WorkspaceGitStatus};
 
 #[derive(Debug)]
 pub struct ApiWorktreeAddRequest {
@@ -182,33 +179,11 @@ pub enum AppEvent {
     /// Background `gh pr create` for a worktree completed; Ok carries the PR URL.
     WorktreeOpenPrFinished {
         branch: String,
-        repo_identity: Option<String>,
         result: Result<String, String>,
     },
     /// Background sync (pull --ff-only + push) of a workspace branch completed.
     WorktreeSyncFinished {
         branch: String,
         result: Result<(), String>,
-    },
-    /// Background `gh pr view` for a workspace branch completed.
-    #[allow(dead_code)] // sent by start_checks_fetch (slice 4 trigger)
-    WorkspaceChecksRefreshed {
-        workspace_id: String,
-        result: WorkspaceCheckStatus,
-    },
-    /// Background `gh pr list` for a repo completed.
-    RepoPrsRefreshed {
-        repo_identity: String,
-        result: RepoOpenPrs,
-    },
-    /// Background `gh issue list` for a repo completed.
-    RepoIssuesRefreshed {
-        repo_identity: String,
-        result: RepoIssues,
-    },
-    /// Background `git for-each-ref` for a repo completed.
-    RepoBranchesRefreshed {
-        repo_identity: String,
-        result: RepoBranches,
     },
 }

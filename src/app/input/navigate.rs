@@ -416,11 +416,6 @@ impl App {
                 self.state.request_full_repaint();
                 leave_navigate_mode(&mut self.state);
             }
-            NavigateAction::ToggleRightPanel => {
-                self.state.right_panel_collapsed = !self.state.right_panel_collapsed;
-                self.state.request_full_repaint();
-                leave_navigate_mode(&mut self.state);
-            }
             NavigateAction::CycleViewMode => {
                 self.state.view_mode = self.state.view_mode.cycle();
                 self.state.mark_session_dirty();
@@ -1107,28 +1102,6 @@ impl App {
         Ok(())
     }
 
-    /// Open a diff viewer for a file clicked in the right panel.
-    /// Tries gitui first; falls back to `git diff | less` if gitui is not installed.
-    pub(super) fn open_right_panel_diff(&mut self, path: String) {
-        // ponytail: probe gitui existence without adding `which` dep
-        let has_gitui = std::process::Command::new("gitui")
-            .arg("--version")
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .is_ok();
-        let command = if has_gitui {
-            "gitui".to_string()
-        } else {
-            // Single-quote the path to handle spaces; strip existing quotes
-            let safe = path.replace('\'', "'\\''");
-            format!("git diff -- '{safe}' | less -R")
-        };
-        if let Err(err) = self.spawn_pane_command(&command, Vec::new()) {
-            tracing::warn!("right panel diff: failed to open: {err}");
-        }
-    }
-
     pub(crate) fn spawn_overlay_argv_command(
         &mut self,
         argv: &[String],
@@ -1461,7 +1434,6 @@ pub(crate) enum NavigateAction {
     ResizePaneUp,
     ResizePaneRight,
     ToggleSidebar,
-    ToggleRightPanel,
     CycleViewMode,
     CyclePaneNext,
     CyclePanePrevious,
@@ -1613,7 +1585,6 @@ fn non_indexed_action_for_key(
         (&kb.resize_pane_up, NavigateAction::ResizePaneUp),
         (&kb.resize_pane_right, NavigateAction::ResizePaneRight),
         (&kb.toggle_sidebar, NavigateAction::ToggleSidebar),
-        (&kb.toggle_right_panel, NavigateAction::ToggleRightPanel),
         (&kb.cycle_view_mode, NavigateAction::CycleViewMode),
         (&kb.reload_config, NavigateAction::ReloadConfig),
         (
@@ -1872,12 +1843,6 @@ pub(super) fn execute_navigate_action_in_context(
         }
         NavigateAction::ToggleSidebar => {
             state.sidebar_collapsed = !state.sidebar_collapsed;
-            state.request_full_repaint();
-            leave_navigate_mode(state);
-        }
-        NavigateAction::ToggleRightPanel => {
-            // ponytail: wire keybind in config when user demand exists
-            state.right_panel_collapsed = !state.right_panel_collapsed;
             state.request_full_repaint();
             leave_navigate_mode(state);
         }

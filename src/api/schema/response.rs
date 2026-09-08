@@ -16,11 +16,9 @@ use super::plugins::{
     InstalledPluginInfo, PluginActionInfo, PluginCommandLogInfo, PluginInvocationContext,
     PluginPaneInfo,
 };
-use super::scratchpads::{ScratchpadHitInfo, ScratchpadSectionInfo};
 use super::server::ServerCapabilities;
 use super::session::SessionSnapshot;
 use super::tabs::TabInfo;
-use super::todos::TodoInfo;
 use super::workspaces::WorkspaceInfo;
 use super::worktrees::{WorktreeInfo, WorktreeSourceInfo};
 
@@ -282,12 +280,6 @@ pub enum ResponseResult {
         diagnostics: Vec<String>,
     },
     Ok {},
-    GithubPullsList {
-        repos: Vec<super::github::GithubRepoPrs>,
-    },
-    GithubIssuesList {
-        repos: Vec<super::github::GithubRepoIssues>,
-    },
     ChannelCreated {
         channel: ChannelSummary,
     },
@@ -359,37 +351,6 @@ pub enum ResponseResult {
         question_seq: u64,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reply: Option<ChannelMessage>,
-    },
-    /// `todo.create` result: the persisted todo — its `seq` is the cursor
-    /// a follower replays from (`persist::todos::read_since`).
-    TodoCreated {
-        todo: TodoInfo,
-    },
-    /// `todo.complete` result: the todo after the flip.
-    TodoCompleted {
-        todo: TodoInfo,
-    },
-    /// `todo.list` result: every live todo, or only the actionable ones
-    /// when the verb was called with `actionable: true`.
-    TodoList {
-        todos: Vec<TodoInfo>,
-    },
-    /// `scratchpad.write` result: `tip_seq` is the doc's new tip (0 when
-    /// the write left an empty doc) — the cursor followers resume from.
-    ScratchpadWritten {
-        doc: String,
-        tip_seq: u64,
-    },
-    /// `scratchpad.append_section` result: the persisted section — its
-    /// `seq` is the cursor a follower replays from.
-    ScratchpadSectionAppended {
-        doc: String,
-        section: ScratchpadSectionInfo,
-    },
-    /// `scratchpad.find` result: section hits across every doc in the
-    /// project, ordered by doc name then seq.
-    ScratchpadFound {
-        hits: Vec<ScratchpadHitInfo>,
     },
 }
 

@@ -440,8 +440,6 @@ impl App {
             Method::ChannelJoin(ChannelJoinParams {
                 name,
                 pane: candidate.pane_id.clone(),
-                scope_write: None,
-                scope_read: None,
             }),
         );
         self.state.chat.prompt = None;

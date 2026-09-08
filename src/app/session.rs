@@ -49,8 +49,6 @@ impl App {
                 self.state.sidebar_width,
                 self.state.sidebar_section_split,
                 self.state.collapsed_space_keys.clone(),
-                self.state.right_panel_width,
-                self.state.right_panel_collapsed,
                 self.state.view_mode,
             );
             let history = self.persist_pane_history.then(|| {

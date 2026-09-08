@@ -242,15 +242,7 @@ fn channel_command() -> Command {
             Command::new("join")
                 .about("Add a pane living outside a #channel to its member set")
                 .arg(required("name", "NAME"))
-                .arg(option("pane", "ID").help("Pane to add; defaults to $HERDR_PANE_ID"))
-                .arg(
-                    repeatable_option("scope-write", "DIR")
-                        .help("Directory the pane may write; also grants read (repeatable)"),
-                )
-                .arg(
-                    repeatable_option("scope-read", "DIR")
-                        .help("Directory the pane may read (repeatable; accepts DIR,DIR)"),
-                ),
+                .arg(option("pane", "ID").help("Pane to add; defaults to $HERDR_PANE_ID")),
         )
         .subcommand(
             Command::new("leave")
@@ -1533,12 +1525,11 @@ mod tests {
     /// `run_channel_command` in `src/cli.rs` dispatches these subcommands and
     /// these flags on top of them; this spec's `channel_command()` is a
     /// hand-maintained mirror used only to generate `--help`. Five feature
-    /// commits (2026-08-15 to 08-19) added `note`, `ask`, `send --to`,
-    /// `send --reply-to`, and `join --scope-write`/`--scope-read` to the real
-    /// dispatcher without updating this file, so `--help` silently fell
-    /// behind what the binary actually accepts. This test pins the full
-    /// dispatcher surface so the next drift fails here instead of in a
-    /// confused user's terminal.
+    /// commits (2026-08-15 to 08-19) added `note`, `ask`, `send --to`, and
+    /// `send --reply-to` to the real dispatcher without updating this file,
+    /// so `--help` silently fell behind what the binary actually accepts.
+    /// This test pins the full dispatcher surface so the next drift fails
+    /// here instead of in a confused user's terminal.
     #[test]
     fn channel_command_covers_full_dispatcher_surface() {
         let cmd = super::command();
@@ -1574,14 +1565,5 @@ mod tests {
             "channel ask spec is missing --timeout, accepted by parse_channel_ask_flags \
              in src/cli.rs"
         );
-
-        let join = command_path(&cmd, &["channel", "join"]);
-        for option in ["scope-write", "scope-read"] {
-            assert!(
-                has_option(join, option),
-                "channel join spec is missing --{option}, accepted by \
-                 parse_channel_join_flags in src/cli.rs"
-            );
-        }
     }
 }

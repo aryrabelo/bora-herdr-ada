@@ -1136,30 +1136,6 @@ pub(super) fn apply_context_menu_action(
                 };
             }
         }
-        (ContextMenuKind::RepoPr { ws_idx, number, .. }, Some("Open in worktree")) => {
-            state.request_open_pr_worktree = Some((ws_idx, number));
-            leave_modal(state);
-        }
-        (ContextMenuKind::RepoPr { url, .. }, Some("Open in browser")) => {
-            state.request_open_url = Some(url);
-            leave_modal(state);
-        }
-        (ContextMenuKind::RepoPr { url, .. }, Some("Copy URL")) => {
-            state.request_clipboard_write = Some(url.into_bytes());
-            leave_modal(state);
-        }
-        (ContextMenuKind::RepoIssue { number, url, .. }, Some("Run with bora-flow")) => {
-            state.request_flow_run = Some(crate::app::state::FlowRunRequest { number, url });
-            leave_modal(state);
-        }
-        (ContextMenuKind::RepoIssue { url, .. }, Some("Open in browser")) => {
-            state.request_open_url = Some(url);
-            leave_modal(state);
-        }
-        (ContextMenuKind::RepoIssue { url, .. }, Some("Copy URL")) => {
-            state.request_clipboard_write = Some(url.into_bytes());
-            leave_modal(state);
-        }
         (
             ContextMenuKind::Workspace { ws_idx, .. }
             | ContextMenuKind::GitWorkspace { ws_idx, .. },
@@ -1534,8 +1510,8 @@ impl App {
                 leave_modal(&mut self.state);
             }
             (
-                ContextMenuKind::Workspace { ws_idx, .. }
-                | ContextMenuKind::GitWorkspace { ws_idx, .. },
+                ContextMenuKind::Workspace { ws_idx: _, .. }
+                | ContextMenuKind::GitWorkspace { ws_idx: _, .. },
                 Some("Refresh status"),
             ) => {
                 // Force a fresh agent detection probe on every pane and make
@@ -1553,11 +1529,6 @@ impl App {
                 }
                 self.mark_git_status_refresh_due(now);
                 self.start_git_status_refresh_if_due(now);
-                if let Some(workspace_id) =
-                    self.state.workspaces.get(ws_idx).map(|ws| ws.id.clone())
-                {
-                    self.start_checks_fetch(&workspace_id);
-                }
                 leave_modal(&mut self.state);
             }
             (
@@ -1783,31 +1754,6 @@ impl App {
                         Mode::Navigate
                     };
                 }
-            }
-            (ContextMenuKind::RepoPr { ws_idx, number, .. }, Some("Open in worktree")) => {
-                self.state.request_open_pr_worktree = Some((ws_idx, number));
-                leave_modal(&mut self.state);
-            }
-            (ContextMenuKind::RepoPr { url, .. }, Some("Open in browser")) => {
-                self.state.request_open_url = Some(url);
-                leave_modal(&mut self.state);
-            }
-            (ContextMenuKind::RepoPr { url, .. }, Some("Copy URL")) => {
-                self.state.request_clipboard_write = Some(url.into_bytes());
-                leave_modal(&mut self.state);
-            }
-            (ContextMenuKind::RepoIssue { number, url, .. }, Some("Run with bora-flow")) => {
-                self.state.request_flow_run =
-                    Some(crate::app::state::FlowRunRequest { number, url });
-                leave_modal(&mut self.state);
-            }
-            (ContextMenuKind::RepoIssue { url, .. }, Some("Open in browser")) => {
-                self.state.request_open_url = Some(url);
-                leave_modal(&mut self.state);
-            }
-            (ContextMenuKind::RepoIssue { url, .. }, Some("Copy URL")) => {
-                self.state.request_clipboard_write = Some(url.into_bytes());
-                leave_modal(&mut self.state);
             }
             (
                 ContextMenuKind::Workspace { ws_idx, .. }
@@ -3290,174 +3236,6 @@ mod tests {
         assert_eq!(state.request_sync_workspace_git, Some(0));
     }
 
-    fn repo_pr_menu() -> ContextMenuState {
-        let kind = ContextMenuKind::RepoPr {
-            ws_idx: 0,
-            number: 42,
-            url: "https://github.com/owner/proj/pull/42".into(),
-            head_ref: "fix/focus".into(),
-        };
-        ContextMenuState {
-            items: build_context_menu_items(&kind, &[], &[], &Default::default()),
-            kind,
-            x: 0,
-            y: 0,
-            list: MenuListState::new(0),
-        }
-    }
-
-    #[test]
-    fn repo_pr_context_menu_actions_set_request_fields() {
-        let menu = repo_pr_menu();
-        assert_eq!(
-            menu.items,
-            [
-                "Open in worktree",
-                crate::app::state::CONTEXT_MENU_SEPARATOR,
-                "Open in browser",
-                "Copy URL",
-            ]
-        );
-
-        let mut terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
-
-        let mut state = state_with_workspaces(&["proj"]);
-        let idx = |label: &str| {
-            repo_pr_menu()
-                .items
-                .iter()
-                .position(|item| item == label)
-                .expect("menu item")
-        };
-
-        apply_context_menu_action(
-            &mut state,
-            &mut terminal_runtimes,
-            repo_pr_menu(),
-            idx("Open in worktree"),
-        );
-        assert_eq!(state.request_open_pr_worktree, Some((0, 42)));
-        assert_ne!(state.mode, Mode::ContextMenu, "menu closed after action");
-
-        let mut state = state_with_workspaces(&["proj"]);
-        apply_context_menu_action(
-            &mut state,
-            &mut terminal_runtimes,
-            repo_pr_menu(),
-            idx("Open in browser"),
-        );
-        assert_eq!(
-            state.request_open_url.as_deref(),
-            Some("https://github.com/owner/proj/pull/42")
-        );
-
-        let mut state = state_with_workspaces(&["proj"]);
-        apply_context_menu_action(
-            &mut state,
-            &mut terminal_runtimes,
-            repo_pr_menu(),
-            idx("Copy URL"),
-        );
-        assert_eq!(
-            state.request_clipboard_write.as_deref(),
-            Some("https://github.com/owner/proj/pull/42".as_bytes())
-        );
-    }
-
-    fn repo_issue_menu_with_flow(flow_available: bool) -> ContextMenuState {
-        let kind = ContextMenuKind::RepoIssue {
-            number: 12,
-            url: "https://github.com/owner/proj/issues/12".into(),
-            flow_available,
-        };
-        ContextMenuState {
-            items: build_context_menu_items(&kind, &[], &[], &Default::default()),
-            kind,
-            x: 0,
-            y: 0,
-            list: MenuListState::new(0),
-        }
-    }
-
-    fn repo_issue_menu() -> ContextMenuState {
-        repo_issue_menu_with_flow(false)
-    }
-
-    #[test]
-    fn repo_issue_context_menu_actions_set_request_fields() {
-        let menu = repo_issue_menu();
-        assert_eq!(menu.items, ["Open in browser", "Copy URL"]);
-
-        let mut terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
-        let idx = |label: &str| {
-            repo_issue_menu()
-                .items
-                .iter()
-                .position(|item| item == label)
-                .expect("menu item")
-        };
-
-        let mut state = state_with_workspaces(&["proj"]);
-        apply_context_menu_action(
-            &mut state,
-            &mut terminal_runtimes,
-            repo_issue_menu(),
-            idx("Open in browser"),
-        );
-        assert_eq!(
-            state.request_open_url.as_deref(),
-            Some("https://github.com/owner/proj/issues/12")
-        );
-        assert_ne!(state.mode, Mode::ContextMenu, "menu closed after action");
-
-        let mut state = state_with_workspaces(&["proj"]);
-        apply_context_menu_action(
-            &mut state,
-            &mut terminal_runtimes,
-            repo_issue_menu(),
-            idx("Copy URL"),
-        );
-        assert_eq!(
-            state.request_clipboard_write.as_deref(),
-            Some("https://github.com/owner/proj/issues/12".as_bytes())
-        );
-        assert_ne!(state.mode, Mode::ContextMenu, "menu closed after action");
-    }
-
-    #[test]
-    fn repo_issue_context_menu_offers_flow_run_only_when_template_resolves() {
-        assert_eq!(
-            repo_issue_menu_with_flow(true).items,
-            [
-                "Run with bora-flow",
-                crate::app::state::CONTEXT_MENU_SEPARATOR,
-                "Open in browser",
-                "Copy URL",
-            ]
-        );
-        assert_eq!(
-            repo_issue_menu_with_flow(false).items,
-            ["Open in browser", "Copy URL"]
-        );
-
-        let mut terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
-        let mut state = state_with_workspaces(&["proj"]);
-        let menu = repo_issue_menu_with_flow(true);
-        let idx = menu
-            .items
-            .iter()
-            .position(|item| item == "Run with bora-flow")
-            .expect("menu item");
-        apply_context_menu_action(&mut state, &mut terminal_runtimes, menu, idx);
-        assert_eq!(
-            state.request_flow_run,
-            Some(crate::app::state::FlowRunRequest {
-                number: 12,
-                url: "https://github.com/owner/proj/issues/12".into(),
-            })
-        );
-        assert_ne!(state.mode, Mode::ContextMenu, "menu closed after action");
-    }
 
     #[test]
     fn plugin_action_context_selection_sets_request_plugin_action() {

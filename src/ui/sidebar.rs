@@ -38,32 +38,6 @@ const WORKSPACE_LIST_TOP_MARGIN_ROWS: u16 = 1;
 /// See `entry_row_height`'s `PaneDotsRow` arm.
 const WORKSPACE_LIST_ROW_GAP: u16 = 1;
 
-/// Glyph + style for a resolved `ChecksRollup` value, shared by
-/// `checks_badge` (worktree/branch PR badges) so the CHECKS palette
-/// never drifts between surfaces.
-fn checks_rollup_glyph(
-    rollup: crate::workspace::ChecksRollup,
-    p: &Palette,
-) -> (&'static str, Style) {
-    use crate::workspace::ChecksRollup;
-    match rollup {
-        ChecksRollup::Passing => (" ✓", Style::default().fg(p.green)),
-        ChecksRollup::Failing => (" ✗", Style::default().fg(p.red)),
-        ChecksRollup::Pending => (" ●", Style::default().fg(p.yellow)),
-    }
-}
-
-/// Glyph + style for a PR's rolled-up check status, shown after the PR badge.
-fn checks_badge(
-    checks: &[crate::workspace::CheckRun],
-    p: &Palette,
-) -> Option<(&'static str, Style)> {
-    Some(checks_rollup_glyph(
-        crate::workspace::checks_rollup(checks)?,
-        p,
-    ))
-}
-
 pub(crate) struct AgentPanelEntry {
     pub ws_idx: usize,
     pub tab_idx: usize,
@@ -2574,33 +2548,6 @@ fn render_workspace_list(
                                 Style::default().fg(p.red),
                             ));
                         }
-                        // PR badge for the folded first-branch workspace (the
-                        // next entry), mirroring the branch-header badge.
-                        if let Some(WorkspaceListEntry::Workspace { ws_idx, .. }) =
-                            entries.get(entry_idx + 1)
-                        {
-                            if let Some(cs) = app
-                                .workspaces
-                                .get(*ws_idx)
-                                .and_then(|w| w.cached_check_status.as_ref())
-                            {
-                                if let Some(pr) = cs.pr.as_ref() {
-                                    let pr_color = match pr.state.as_str() {
-                                        "MERGED" => p.mauve,
-                                        "CLOSED" => p.red,
-                                        _ => p.green,
-                                    };
-                                    spans.push(Span::styled(" ", Style::default()));
-                                    spans.push(Span::styled(
-                                        format!("#{}", pr.number),
-                                        Style::default().fg(pr_color),
-                                    ));
-                                    if let Some((glyph, style)) = checks_badge(&cs.checks, p) {
-                                        spans.push(Span::styled(glyph, style));
-                                    }
-                                }
-                            }
-                        }
                     }
                     if collapsed {
                         let (state, seen) = space_aggregate_display_state(app, collapse_key);
@@ -2747,30 +2694,6 @@ fn render_workspace_list(
                                 format!(" {}", format_idle_age(age)),
                                 Style::default().fg(idle_age_color(Some(age), p)),
                             ));
-                        }
-                    } else if let Some(WorkspaceListEntry::Workspace { ws_idx, .. }) =
-                        entries.get(entry_idx + 1)
-                    {
-                        if let Some(cs) = app
-                            .workspaces
-                            .get(*ws_idx)
-                            .and_then(|w| w.cached_check_status.as_ref())
-                        {
-                            if let Some(pr) = cs.pr.as_ref() {
-                                let pr_color = match pr.state.as_str() {
-                                    "MERGED" => p.mauve,
-                                    "CLOSED" => p.red,
-                                    _ => p.green,
-                                };
-                                spans.push(Span::styled(" ", Style::default()));
-                                spans.push(Span::styled(
-                                    format!("#{}", pr.number),
-                                    Style::default().fg(pr_color),
-                                ));
-                                if let Some((glyph, style)) = checks_badge(&cs.checks, p) {
-                                    spans.push(Span::styled(glyph, style));
-                                }
-                            }
                         }
                     }
                     // Truncate the branch label to the width left after the
@@ -3307,8 +3230,6 @@ fn render_workspace_list(
                     None => None,
                 };
                 let channel_width = channel_suffix.as_deref().map(display_width).unwrap_or(0);
-                let collectible_suffix = (ws.cached_collectible == Some(true)).then_some(" ✓");
-                let collectible_width = collectible_suffix.map(display_width).unwrap_or(0);
                 let avail = (body.width as usize).saturating_sub(
                     prefix_width
                         + dots_width
@@ -3316,8 +3237,7 @@ fn render_workspace_list(
                         + idle_width
                         + token_width
                         + agent_width
-                        + channel_width
-                        + collectible_width,
+                        + channel_width,
                 );
                 let label = truncate_end(&full_label, avail);
                 line1.extend(dot_spans);
@@ -3328,12 +3248,6 @@ fn render_workspace_list(
                 }
                 if let Some(channel) = channel_suffix {
                     line1.push(Span::styled(channel, Style::default().fg(p.teal)));
-                }
-                if let Some(marker) = collectible_suffix {
-                    line1.push(Span::styled(
-                        marker,
-                        Style::default().fg(p.overlay0).add_modifier(Modifier::DIM),
-                    ));
                 }
                 if !token_spans.is_empty() {
                     line1.push(Span::raw(" "));
@@ -3706,7 +3620,7 @@ mod tests {
     }
 
     #[test]
-    fn workspace_row_renders_agent_channel_and_collectible_badges() {
+    fn workspace_row_renders_agent_and_channel_badges() {
         let mut app = crate::app::state::AppState::test_new();
         let workspace = Workspace::test_new("worktree-branch");
         let root_pane = workspace.tabs[0].root_pane;
@@ -3721,7 +3635,6 @@ mod tests {
             .unwrap()
             .set_agent_name("planner".into());
         app.workspaces[0].cached_channels = vec!["eng".into()];
-        app.workspaces[0].cached_collectible = Some(true);
         app.active = Some(0);
 
         let area = Rect::new(0, 0, 60, 10);
@@ -3742,10 +3655,6 @@ mod tests {
         assert!(
             full_text.contains("#eng"),
             "row should show joined channel: {full_text:?}"
-        );
-        assert!(
-            full_text.contains('✓'),
-            "row should show collectible marker: {full_text:?}"
         );
     }
 
@@ -4776,47 +4685,6 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
             0,
             "ProjectHeader has no chevron; GroupHeader (visual groups) does: {text:?}"
         );
-    }
-
-    #[test]
-    fn render_branch_bracket_shows_pr_badge() {
-        // A workspace whose branch has an open PR shows a `#<number>` badge on
-        // the branch bracket header.
-        let mut app = AppState::test_new();
-        let mut ws = git_space_member("main", "key-pr", false);
-        ws.cached_git_branch = Some("feature".into());
-        ws.cached_check_status = Some(crate::workspace::WorkspaceCheckStatus {
-            pr: Some(crate::workspace::PrSummary {
-                number: 42,
-                title: "feat: thing".into(),
-                state: "OPEN".into(),
-                url: "https://example.com/pr/42".into(),
-                mergeable: None,
-            }),
-            checks: vec![],
-            error: None,
-        });
-        app.workspaces = vec![ws];
-        app.active = Some(0);
-        app.mode = Mode::Terminal;
-
-        let runtimes = crate::terminal::TerminalRuntimeRegistry::new();
-        let mut terminal = Terminal::new(TestBackend::new(24, 12)).expect("test terminal");
-        terminal
-            .draw(|frame| {
-                render_workspace_list(&app, &runtimes, frame, Rect::new(0, 0, 24, 12), false)
-            })
-            .expect("workspace list should render");
-
-        let text = terminal
-            .backend()
-            .buffer()
-            .content()
-            .iter()
-            .map(ratatui::buffer::Cell::symbol)
-            .collect::<String>();
-
-        assert!(text.contains("#42"), "PR badge present: {text:?}");
     }
 
     #[test]

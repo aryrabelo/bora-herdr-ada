@@ -509,8 +509,6 @@ fn api_method_name(method: &Method) -> &'static str {
         Method::PluginPaneOpen(_) => "plugin.pane.open",
         Method::PluginPaneFocus(_) => "plugin.pane.focus",
         Method::PluginPaneClose(_) => "plugin.pane.close",
-        Method::GithubPullsList(_) => "github.pulls.list",
-        Method::GithubIssuesList(_) => "github.issues.list",
         Method::ChannelCreate(_) => "channel.create",
         Method::ChannelOpen(_) => "channel.open",
         Method::ChannelList(_) => "channel.list",
@@ -521,12 +519,6 @@ fn api_method_name(method: &Method) -> &'static str {
         Method::ChannelLeave(_) => "channel.leave",
         Method::ChannelNote(_) => "channel.note",
         Method::ChannelAsk(_) => "channel.ask",
-        Method::TodoCreate(_) => "todo.create",
-        Method::TodoComplete(_) => "todo.complete",
-        Method::TodoList(_) => "todo.list",
-        Method::ScratchpadWrite(_) => "scratchpad.write",
-        Method::ScratchpadAppendSection(_) => "scratchpad.append_section",
-        Method::ScratchpadFind(_) => "scratchpad.find",
     }
 }
 

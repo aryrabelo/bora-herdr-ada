@@ -788,73 +788,6 @@
               "type": "object"
             },
             {
-              "properties": {
-                "repo_identity": {
-                  "type": "string"
-                },
-                "type": {
-                  "const": "github_prs_refreshed",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type",
-                "repo_identity"
-              ],
-              "type": "object"
-            },
-            {
-              "description": "Fires once when bora's own `gh pr create` succeeds for a worktree.\nDoes not cover PRs opened outside bora, e.g. a `gh` run inside an\nagent pane.",
-              "properties": {
-                "branch": {
-                  "type": "string"
-                },
-                "repo_identity": {
-                  "description": "Repository the PR belongs to (`GitSpaceMetadata::repo_identity` of the\ninitiating workspace). `workspace_ids` is scoped to this repository.",
-                  "type": [
-                    "string",
-                    "null"
-                  ]
-                },
-                "type": {
-                  "const": "github_pr_opened",
-                  "type": "string"
-                },
-                "url": {
-                  "type": "string"
-                },
-                "workspace_ids": {
-                  "items": {
-                    "type": "string"
-                  },
-                  "type": "array"
-                }
-              },
-              "required": [
-                "type",
-                "branch",
-                "url",
-                "workspace_ids"
-              ],
-              "type": "object"
-            },
-            {
-              "properties": {
-                "repo_identity": {
-                  "type": "string"
-                },
-                "type": {
-                  "const": "github_issues_refreshed",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type",
-                "repo_identity"
-              ],
-              "type": "object"
-            },
-            {
               "description": "A `when_idle`-deferred agent prompt was drained and successfully\ninjected into its target. Terminal, matching `queue_id` from the\noriginal `agent.prompt` deferred receipt.",
               "properties": {
                 "from_pane": {
@@ -976,54 +909,6 @@
                 "text"
               ],
               "type": "object"
-            },
-            {
-              "description": "A todo was created or flipped to done in a project's shared todo\nlog (`todo.create` / `todo.complete`), emitted right after the\ndurable append. `todo` is the full appended snapshot — one line of\nthe JSONL log — so a follower needs no re-read. A no-op complete\n(already done) appends nothing and emits nothing.",
-              "properties": {
-                "project": {
-                  "type": "string"
-                },
-                "todo": {
-                  "$ref": "#/schemas/event/$defs/TodoInfo"
-                },
-                "type": {
-                  "const": "todo_changed",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type",
-                "project",
-                "todo"
-              ],
-              "type": "object"
-            },
-            {
-              "description": "A scratchpad doc changed (`scratchpad.write` replace or\n`scratchpad.append_section`), emitted right after the durable\nwrite. `seq` is the doc's new tip — the appended section's seq, or\nthe replace's new tip — the cursor a follower resumes from via\n`persist::scratchpads::read_since`.",
-              "properties": {
-                "doc": {
-                  "type": "string"
-                },
-                "project": {
-                  "type": "string"
-                },
-                "seq": {
-                  "format": "uint64",
-                  "minimum": 0,
-                  "type": "integer"
-                },
-                "type": {
-                  "const": "scratchpad_changed",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type",
-                "project",
-                "doc",
-                "seq"
-              ],
-              "type": "object"
             }
           ]
         },
@@ -1057,14 +942,9 @@
             "layout_updated",
             "pane_result_reported",
             "agent_prompted",
-            "github_prs_refreshed",
-            "github_pr_opened",
-            "github_issues_refreshed",
             "queued_prompt_delivered",
             "queued_prompt_dropped",
-            "channel_message",
-            "todo_changed",
-            "scratchpad_changed"
+            "channel_message"
           ],
           "type": "string"
         },
@@ -1413,60 +1293,6 @@
             "agent_status"
           ],
           "type": "object"
-        },
-        "TodoInfo": {
-          "description": "Wire mirror of `persist::todos::Todo`: the five contract fields plus\nthe store's `id`/`seq`. `seq` is the follower's replay cursor\n(`persist::todos::read_since`).",
-          "properties": {
-            "assignee": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "blockers": {
-              "items": {
-                "format": "uint64",
-                "minimum": 0,
-                "type": "integer"
-              },
-              "type": "array"
-            },
-            "id": {
-              "format": "uint64",
-              "minimum": 0,
-              "type": "integer"
-            },
-            "origin": {
-              "type": "string"
-            },
-            "seq": {
-              "format": "uint64",
-              "minimum": 0,
-              "type": "integer"
-            },
-            "state": {
-              "$ref": "#/schemas/event/$defs/TodoStateInfo"
-            },
-            "title": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "id",
-            "seq",
-            "title",
-            "state",
-            "origin"
-          ],
-          "type": "object"
-        },
-        "TodoStateInfo": {
-          "description": "Wire mirror of `persist::todos::TodoState`.",
-          "enum": [
-            "open",
-            "done"
-          ],
-          "type": "string"
         },
         "WorkspaceInfo": {
           "properties": {
@@ -2206,26 +2032,6 @@
             "pane": {
               "description": "Public pane id to add. The CLI defaults it to `$HERDR_PANE_ID`.",
               "type": "string"
-            },
-            "scope_read": {
-              "description": "Directories `pane` may read only, beyond its write dirs.",
-              "items": {
-                "type": "string"
-              },
-              "type": [
-                "array",
-                "null"
-              ]
-            },
-            "scope_write": {
-              "description": "Directories `pane` may write in this channel. Write implies read —\ndo not also list a write dir under `scope_read`. `Some` (even\n`Some(vec![])` combined with an empty `scope_read`) replaces any\nprior scope entry for `pane` wholesale; `None` on both leaves an\nexisting entry untouched. See CANAL-ESCOPO.md Shape 2.",
-              "items": {
-                "type": "string"
-              },
-              "type": [
-                "array",
-                "null"
-              ]
             }
           },
           "required": [
@@ -2818,28 +2624,6 @@
           "required": [
             "match_event"
           ],
-          "type": "object"
-        },
-        "GithubIssuesListParams": {
-          "properties": {
-            "repo_identity": {
-              "type": [
-                "string",
-                "null"
-              ]
-            }
-          },
-          "type": "object"
-        },
-        "GithubPullsListParams": {
-          "properties": {
-            "repo_identity": {
-              "type": [
-                "string",
-                "null"
-              ]
-            }
-          },
           "type": "object"
         },
         "IntegrationInstallParams": {
@@ -4411,85 +4195,6 @@
           ],
           "type": "string"
         },
-        "ScratchpadAppendSectionParams": {
-          "description": "`scratchpad.append_section`: append one section to the doc, creating\nthe doc on first use.",
-          "properties": {
-            "body": {
-              "type": "string"
-            },
-            "doc": {
-              "type": "string"
-            },
-            "project": {
-              "type": "string"
-            },
-            "title": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "project",
-            "doc",
-            "title",
-            "body"
-          ],
-          "type": "object"
-        },
-        "ScratchpadDraftParams": {
-          "description": "One section supplied to `scratchpad.write` — a markdown heading\n(`title`) plus its `body`. The store assigns each section its `seq`.",
-          "properties": {
-            "body": {
-              "type": "string"
-            },
-            "title": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "title",
-            "body"
-          ],
-          "type": "object"
-        },
-        "ScratchpadFindParams": {
-          "description": "`scratchpad.find`: case-insensitive substring search over section\ntitles and bodies across every doc in the project. An empty query is\nrejected at the verb layer (it would match every section).",
-          "properties": {
-            "project": {
-              "type": "string"
-            },
-            "query": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "project",
-            "query"
-          ],
-          "type": "object"
-        },
-        "ScratchpadWriteParams": {
-          "description": "`scratchpad.write`: create or replace the doc wholesale — `sections`\nbecomes the whole doc. Followers' cursors stay valid: the replacement's\nseqs continue from the current tip rather than restarting at 1.",
-          "properties": {
-            "doc": {
-              "type": "string"
-            },
-            "project": {
-              "type": "string"
-            },
-            "sections": {
-              "items": {
-                "$ref": "#/schemas/request/$defs/ScratchpadDraftParams"
-              },
-              "type": "array"
-            }
-          },
-          "required": [
-            "project",
-            "doc",
-            "sections"
-          ],
-          "type": "object"
-        },
         "ServerLiveHandoffParams": {
           "properties": {
             "expected_protocol": {
@@ -4901,66 +4606,6 @@
                 "type"
               ],
               "type": "object"
-            },
-            {
-              "properties": {
-                "type": {
-                  "const": "github.prs_refreshed",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type"
-              ],
-              "type": "object"
-            },
-            {
-              "properties": {
-                "type": {
-                  "const": "github.pr_opened",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type"
-              ],
-              "type": "object"
-            },
-            {
-              "properties": {
-                "type": {
-                  "const": "github.issues_refreshed",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type"
-              ],
-              "type": "object"
-            },
-            {
-              "properties": {
-                "type": {
-                  "const": "todo.changed",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type"
-              ],
-              "type": "object"
-            },
-            {
-              "properties": {
-                "type": {
-                  "const": "scratchpad.changed",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type"
-              ],
-              "type": "object"
             }
           ]
         },
@@ -5059,79 +4704,6 @@
             "bottom-right"
           ],
           "type": "string"
-        },
-        "TodoCompleteParams": {
-          "description": "`todo.complete`: flip one todo to `done`. Completing an already-done\ntodo is a clean no-op (no new append, no event), never an error.",
-          "properties": {
-            "id": {
-              "format": "uint64",
-              "minimum": 0,
-              "type": "integer"
-            },
-            "project": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "project",
-            "id"
-          ],
-          "type": "object"
-        },
-        "TodoCreateParams": {
-          "description": "`todo.create`: append a todo to the project's shared log. `origin`\nrecords where the todo came from (e.g. `beads:bora-s3y`, `mcp`,\n`channel:#eng`) — free text, interpreted by writers, never the store.\n`blockers` are ids of other todos that must reach `done` before this\none is actionable; every id must name a live todo at create time (the\nverb layer checks — the store deliberately does not).",
-          "properties": {
-            "assignee": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "blockers": {
-              "items": {
-                "format": "uint64",
-                "minimum": 0,
-                "type": "integer"
-              },
-              "type": [
-                "array",
-                "null"
-              ]
-            },
-            "origin": {
-              "type": "string"
-            },
-            "project": {
-              "type": "string"
-            },
-            "title": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "project",
-            "title",
-            "origin"
-          ],
-          "type": "object"
-        },
-        "TodoListParams": {
-          "description": "`todo.list`: every live todo in the project, or only the actionable\nones (`actionable: true`) — open todos whose blockers are all done.",
-          "properties": {
-            "actionable": {
-              "type": [
-                "boolean",
-                "null"
-              ]
-            },
-            "project": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "project"
-          ],
-          "type": "object"
         },
         "WorkspaceCreateParams": {
           "properties": {
@@ -6937,38 +6509,6 @@
         {
           "properties": {
             "method": {
-              "const": "github.pulls.list",
-              "type": "string"
-            },
-            "params": {
-              "$ref": "#/schemas/request/$defs/GithubPullsListParams"
-            }
-          },
-          "required": [
-            "method",
-            "params"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "method": {
-              "const": "github.issues.list",
-              "type": "string"
-            },
-            "params": {
-              "$ref": "#/schemas/request/$defs/GithubIssuesListParams"
-            }
-          },
-          "required": [
-            "method",
-            "params"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "method": {
               "const": "channel.create",
               "type": "string"
             },
@@ -7134,102 +6674,6 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/ChannelAskParams"
-            }
-          },
-          "required": [
-            "method",
-            "params"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "method": {
-              "const": "todo.create",
-              "type": "string"
-            },
-            "params": {
-              "$ref": "#/schemas/request/$defs/TodoCreateParams"
-            }
-          },
-          "required": [
-            "method",
-            "params"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "method": {
-              "const": "todo.complete",
-              "type": "string"
-            },
-            "params": {
-              "$ref": "#/schemas/request/$defs/TodoCompleteParams"
-            }
-          },
-          "required": [
-            "method",
-            "params"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "method": {
-              "const": "todo.list",
-              "type": "string"
-            },
-            "params": {
-              "$ref": "#/schemas/request/$defs/TodoListParams"
-            }
-          },
-          "required": [
-            "method",
-            "params"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "method": {
-              "const": "scratchpad.write",
-              "type": "string"
-            },
-            "params": {
-              "$ref": "#/schemas/request/$defs/ScratchpadWriteParams"
-            }
-          },
-          "required": [
-            "method",
-            "params"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "method": {
-              "const": "scratchpad.append_section",
-              "type": "string"
-            },
-            "params": {
-              "$ref": "#/schemas/request/$defs/ScratchpadAppendSectionParams"
-            }
-          },
-          "required": [
-            "method",
-            "params"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "method": {
-              "const": "scratchpad.find",
-              "type": "string"
-            },
-            "params": {
-              "$ref": "#/schemas/request/$defs/ScratchpadFindParams"
             }
           },
           "required": [
@@ -8645,73 +8089,6 @@
               "type": "object"
             },
             {
-              "properties": {
-                "repo_identity": {
-                  "type": "string"
-                },
-                "type": {
-                  "const": "github_prs_refreshed",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type",
-                "repo_identity"
-              ],
-              "type": "object"
-            },
-            {
-              "description": "Fires once when bora's own `gh pr create` succeeds for a worktree.\nDoes not cover PRs opened outside bora, e.g. a `gh` run inside an\nagent pane.",
-              "properties": {
-                "branch": {
-                  "type": "string"
-                },
-                "repo_identity": {
-                  "description": "Repository the PR belongs to (`GitSpaceMetadata::repo_identity` of the\ninitiating workspace). `workspace_ids` is scoped to this repository.",
-                  "type": [
-                    "string",
-                    "null"
-                  ]
-                },
-                "type": {
-                  "const": "github_pr_opened",
-                  "type": "string"
-                },
-                "url": {
-                  "type": "string"
-                },
-                "workspace_ids": {
-                  "items": {
-                    "type": "string"
-                  },
-                  "type": "array"
-                }
-              },
-              "required": [
-                "type",
-                "branch",
-                "url",
-                "workspace_ids"
-              ],
-              "type": "object"
-            },
-            {
-              "properties": {
-                "repo_identity": {
-                  "type": "string"
-                },
-                "type": {
-                  "const": "github_issues_refreshed",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type",
-                "repo_identity"
-              ],
-              "type": "object"
-            },
-            {
               "description": "A `when_idle`-deferred agent prompt was drained and successfully\ninjected into its target. Terminal, matching `queue_id` from the\noriginal `agent.prompt` deferred receipt.",
               "properties": {
                 "from_pane": {
@@ -8833,54 +8210,6 @@
                 "text"
               ],
               "type": "object"
-            },
-            {
-              "description": "A todo was created or flipped to done in a project's shared todo\nlog (`todo.create` / `todo.complete`), emitted right after the\ndurable append. `todo` is the full appended snapshot — one line of\nthe JSONL log — so a follower needs no re-read. A no-op complete\n(already done) appends nothing and emits nothing.",
-              "properties": {
-                "project": {
-                  "type": "string"
-                },
-                "todo": {
-                  "$ref": "#/schemas/success_response/$defs/TodoInfo"
-                },
-                "type": {
-                  "const": "todo_changed",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type",
-                "project",
-                "todo"
-              ],
-              "type": "object"
-            },
-            {
-              "description": "A scratchpad doc changed (`scratchpad.write` replace or\n`scratchpad.append_section`), emitted right after the durable\nwrite. `seq` is the doc's new tip — the appended section's seq, or\nthe replace's new tip — the cursor a follower resumes from via\n`persist::scratchpads::read_since`.",
-              "properties": {
-                "doc": {
-                  "type": "string"
-                },
-                "project": {
-                  "type": "string"
-                },
-                "seq": {
-                  "format": "uint64",
-                  "minimum": 0,
-                  "type": "integer"
-                },
-                "type": {
-                  "const": "scratchpad_changed",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type",
-                "project",
-                "doc",
-                "seq"
-              ],
-              "type": "object"
             }
           ]
         },
@@ -8929,114 +8258,11 @@
             "layout_updated",
             "pane_result_reported",
             "agent_prompted",
-            "github_prs_refreshed",
-            "github_pr_opened",
-            "github_issues_refreshed",
             "queued_prompt_delivered",
             "queued_prompt_dropped",
-            "channel_message",
-            "todo_changed",
-            "scratchpad_changed"
+            "channel_message"
           ],
           "type": "string"
-        },
-        "GithubIssueInfo": {
-          "properties": {
-            "number": {
-              "format": "uint64",
-              "minimum": 0,
-              "type": "integer"
-            },
-            "title": {
-              "type": "string"
-            },
-            "url": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "number",
-            "title",
-            "url"
-          ],
-          "type": "object"
-        },
-        "GithubPullInfo": {
-          "properties": {
-            "head_ref_name": {
-              "type": "string"
-            },
-            "is_draft": {
-              "type": "boolean"
-            },
-            "number": {
-              "format": "uint64",
-              "minimum": 0,
-              "type": "integer"
-            },
-            "title": {
-              "type": "string"
-            },
-            "url": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "number",
-            "title",
-            "url",
-            "head_ref_name",
-            "is_draft"
-          ],
-          "type": "object"
-        },
-        "GithubRepoIssues": {
-          "properties": {
-            "error": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "issues": {
-              "items": {
-                "$ref": "#/schemas/success_response/$defs/GithubIssueInfo"
-              },
-              "type": "array"
-            },
-            "repo_identity": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "repo_identity",
-            "issues"
-          ],
-          "type": "object"
-        },
-        "GithubRepoPrs": {
-          "properties": {
-            "error": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "prs": {
-              "items": {
-                "$ref": "#/schemas/success_response/$defs/GithubPullInfo"
-              },
-              "type": "array"
-            },
-            "repo_identity": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "repo_identity",
-            "prs"
-          ],
-          "type": "object"
         },
         "InstalledPluginInfo": {
           "properties": {
@@ -11844,44 +11070,6 @@
             },
             {
               "properties": {
-                "repos": {
-                  "items": {
-                    "$ref": "#/schemas/success_response/$defs/GithubRepoPrs"
-                  },
-                  "type": "array"
-                },
-                "type": {
-                  "const": "github_pulls_list",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type",
-                "repos"
-              ],
-              "type": "object"
-            },
-            {
-              "properties": {
-                "repos": {
-                  "items": {
-                    "$ref": "#/schemas/success_response/$defs/GithubRepoIssues"
-                  },
-                  "type": "array"
-                },
-                "type": {
-                  "const": "github_issues_list",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type",
-                "repos"
-              ],
-              "type": "object"
-            },
-            {
-              "properties": {
                 "channel": {
                   "$ref": "#/schemas/success_response/$defs/ChannelSummary"
                 },
@@ -12110,164 +11298,8 @@
                 "question_seq"
               ],
               "type": "object"
-            },
-            {
-              "description": "`todo.create` result: the persisted todo — its `seq` is the cursor\na follower replays from (`persist::todos::read_since`).",
-              "properties": {
-                "todo": {
-                  "$ref": "#/schemas/success_response/$defs/TodoInfo"
-                },
-                "type": {
-                  "const": "todo_created",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type",
-                "todo"
-              ],
-              "type": "object"
-            },
-            {
-              "description": "`todo.complete` result: the todo after the flip.",
-              "properties": {
-                "todo": {
-                  "$ref": "#/schemas/success_response/$defs/TodoInfo"
-                },
-                "type": {
-                  "const": "todo_completed",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type",
-                "todo"
-              ],
-              "type": "object"
-            },
-            {
-              "description": "`todo.list` result: every live todo, or only the actionable ones\nwhen the verb was called with `actionable: true`.",
-              "properties": {
-                "todos": {
-                  "items": {
-                    "$ref": "#/schemas/success_response/$defs/TodoInfo"
-                  },
-                  "type": "array"
-                },
-                "type": {
-                  "const": "todo_list",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type",
-                "todos"
-              ],
-              "type": "object"
-            },
-            {
-              "description": "`scratchpad.write` result: `tip_seq` is the doc's new tip (0 when\nthe write left an empty doc) — the cursor followers resume from.",
-              "properties": {
-                "doc": {
-                  "type": "string"
-                },
-                "tip_seq": {
-                  "format": "uint64",
-                  "minimum": 0,
-                  "type": "integer"
-                },
-                "type": {
-                  "const": "scratchpad_written",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type",
-                "doc",
-                "tip_seq"
-              ],
-              "type": "object"
-            },
-            {
-              "description": "`scratchpad.append_section` result: the persisted section — its\n`seq` is the cursor a follower replays from.",
-              "properties": {
-                "doc": {
-                  "type": "string"
-                },
-                "section": {
-                  "$ref": "#/schemas/success_response/$defs/ScratchpadSectionInfo"
-                },
-                "type": {
-                  "const": "scratchpad_section_appended",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type",
-                "doc",
-                "section"
-              ],
-              "type": "object"
-            },
-            {
-              "description": "`scratchpad.find` result: section hits across every doc in the\nproject, ordered by doc name then seq.",
-              "properties": {
-                "hits": {
-                  "items": {
-                    "$ref": "#/schemas/success_response/$defs/ScratchpadHitInfo"
-                  },
-                  "type": "array"
-                },
-                "type": {
-                  "const": "scratchpad_found",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type",
-                "hits"
-              ],
-              "type": "object"
             }
           ]
-        },
-        "ScratchpadHitInfo": {
-          "description": "Wire mirror of `persist::scratchpads::ScratchpadHit`: which doc, which\nsection.",
-          "properties": {
-            "doc": {
-              "type": "string"
-            },
-            "section": {
-              "$ref": "#/schemas/success_response/$defs/ScratchpadSectionInfo"
-            }
-          },
-          "required": [
-            "doc",
-            "section"
-          ],
-          "type": "object"
-        },
-        "ScratchpadSectionInfo": {
-          "description": "Wire mirror of `persist::scratchpads::ScratchpadSection`.",
-          "properties": {
-            "body": {
-              "type": "string"
-            },
-            "seq": {
-              "format": "uint64",
-              "minimum": 0,
-              "type": "integer"
-            },
-            "title": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "seq",
-            "title",
-            "body"
-          ],
-          "type": "object"
         },
         "ServerCapabilities": {
           "properties": {
@@ -12399,60 +11431,6 @@
             "agent_status"
           ],
           "type": "object"
-        },
-        "TodoInfo": {
-          "description": "Wire mirror of `persist::todos::Todo`: the five contract fields plus\nthe store's `id`/`seq`. `seq` is the follower's replay cursor\n(`persist::todos::read_since`).",
-          "properties": {
-            "assignee": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "blockers": {
-              "items": {
-                "format": "uint64",
-                "minimum": 0,
-                "type": "integer"
-              },
-              "type": "array"
-            },
-            "id": {
-              "format": "uint64",
-              "minimum": 0,
-              "type": "integer"
-            },
-            "origin": {
-              "type": "string"
-            },
-            "seq": {
-              "format": "uint64",
-              "minimum": 0,
-              "type": "integer"
-            },
-            "state": {
-              "$ref": "#/schemas/success_response/$defs/TodoStateInfo"
-            },
-            "title": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "id",
-            "seq",
-            "title",
-            "state",
-            "origin"
-          ],
-          "type": "object"
-        },
-        "TodoStateInfo": {
-          "description": "Wire mirror of `persist::todos::TodoState`.",
-          "enum": [
-            "open",
-            "done"
-          ],
-          "type": "string"
         },
         "WorkspaceInfo": {
           "properties": {

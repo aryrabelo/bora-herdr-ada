@@ -690,25 +690,6 @@ pub struct WorktreeNewHitArea {
     pub rect: Rect,
 }
 
-/// Which tab the Create worktree modal is showing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum WorktreeCreateTab {
-    #[default]
-    Github,
-    Branch,
-    Name,
-}
-
-/// Filter query + selection index for one of the modal's derived lists
-/// (GitHub picks, local branches). The entries themselves are derived at
-/// render/input time from the repo caches, so only the query and cursor live
-/// here.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct WorktreeListPick {
-    pub query: String,
-    pub selected: usize,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorktreeCreateState {
     pub source_workspace_id: String,
@@ -721,37 +702,6 @@ pub struct WorktreeCreateState {
     pub checkout_path: std::path::PathBuf,
     pub error: Option<String>,
     pub creating: bool,
-    /// Which tab is active in the Create worktree modal.
-    pub active_tab: WorktreeCreateTab,
-    /// Repo identity (`GitSpaceMetadata.repo_identity`) used to key the
-    /// `repo_open_prs` / `repo_issues` / `repo_branches` caches for this modal.
-    pub repo_identity: String,
-    /// Query + selection for the GitHub tab's merged PR/issue list.
-    pub github_pick: WorktreeListPick,
-    /// Query + selection for the Branch tab's local-branch list.
-    pub branch_pick: WorktreeListPick,
-}
-
-/// Whether a GitHub pick row is a pull request or an issue.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum GithubPickKind {
-    Pr,
-    Issue,
-}
-
-/// A row in the Create worktree modal's GitHub tab — derived by merging the
-/// repo's cached open PRs (first) and issues (second).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GithubPickEntry {
-    pub kind: GithubPickKind,
-    pub number: u64,
-    pub title: String,
-    pub url: String,
-    /// PR head branch, when known (PRs only).
-    pub head_ref: Option<String>,
-    /// Whether selecting the row does anything. Issue rows are disabled when
-    /// no `[flow]` command is configured.
-    pub enabled: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -912,16 +862,6 @@ pub struct ViewState {
     pub toast_hit_area: Rect,
     pub pane_infos: Vec<PaneInfo>,
     pub split_borders: Vec<SplitBorder>,
-    pub right_panel_rect: Rect,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum RightPanelTab {
-    #[default]
-    Changes,
-    Checks,
-    Issues,
-    PullRequests,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1335,26 +1275,7 @@ pub enum ContextMenuKind {
         has_manual_label: bool,
         right_click_passthrough: bool,
     },
-    /// An open PR row in the right panel's `PullRequests` tab — not the
-    /// sidebar; the sidebar has no PR row variant. Built at exactly one site
-    /// (`src/app/input/mouse.rs`, the `RightPanelTab::PullRequests` arm), so
-    /// `ws_idx` is whatever workspace is active at click time, which is only
-    /// coincidentally a workspace of the PR's repo. `request_open_pr_worktree`
-    /// consumes the pair, and "Open in worktree" is therefore already a
-    /// working right-click PR action.
-    RepoPr {
-        ws_idx: usize,
-        number: u64,
-        url: String,
-        head_ref: String,
-    },
-    /// An issue row in the right-panel Issues tab. `flow_available` is
-    /// resolved at menu-open time from the global `[flow]` config template.
-    RepoIssue {
-        number: u64,
-        url: String,
-        flow_available: bool,
-    },
+
 }
 
 /// Right-click context menu state.
@@ -1574,25 +1495,9 @@ pub fn build_context_menu_items(
             // The sidebar no longer prints the `@<id>` badge on a pane row
             // (Ary's call: the id is reference material, not something you
             // read every frame), so this is where you get it when you do
-            // need it — the same shape as RepoPr's "Copy URL".
+            // need it.
             v.push("Copy pane ID".to_string());
             v.push("Close pane".to_string());
-            v
-        }
-        ContextMenuKind::RepoPr { .. } => vec![
-            "Open in worktree".to_string(),
-            sep(),
-            "Open in browser".to_string(),
-            "Copy URL".to_string(),
-        ],
-        ContextMenuKind::RepoIssue { flow_available, .. } => {
-            let mut v = Vec::new();
-            if *flow_available {
-                v.push("Run with bora-flow".to_string());
-                v.push(sep());
-            }
-            v.push("Open in browser".to_string());
-            v.push("Copy URL".to_string());
             v
         }
     };
@@ -1622,15 +1527,6 @@ fn plugin_menu_context(kind: &ContextMenuKind) -> crate::api::schema::PluginActi
         ContextMenuKind::GroupHeader { .. } => Ctx::Global,
         ContextMenuKind::Tab { .. } => Ctx::Tab,
         ContextMenuKind::Pane { .. } => Ctx::Pane,
-        // No PluginActionContext variant models a PR/issue row (only
-        // Global | Workspace | Tab | Pane | Selection exist). RepoPr's own
-        // doc comment warns `ws_idx` is "only coincidentally" the PR's
-        // workspace, so mapping to Workspace would be misleading; Global —
-        // the same general-purpose surface GroupHeader uses — is the
-        // honest fallback: a plugin wanting a PR/issue action declares
-        // `contexts = ["global"]`.
-        ContextMenuKind::RepoPr { .. } => Ctx::Global,
-        ContextMenuKind::RepoIssue { .. } => Ctx::Global,
     }
 }
 
@@ -1675,92 +1571,6 @@ impl ContextMenuState {
         &self.items
     }
 }
-
-impl AppState {
-    /// Resolve the effective flow command template for the active
-    /// workspace's repo: the global `[flow]` config template. `None` means
-    /// the "Run with bora-flow" action is unavailable.
-    pub(crate) fn repo_issue_flow_template(&self) -> Option<String> {
-        crate::app::flow::resolve_flow_template(self.flow_command_template.as_deref())
-    }
-
-    /// Merged GitHub picks for the Create worktree modal: open PRs first, then
-    /// issues, filtered by the GitHub tab query (case-insensitive over
-    /// `#<number>` and title). Empty when no modal is open. Issue rows are only
-    /// enabled when a `[flow]` command is configured.
-    pub(crate) fn create_worktree_github_entries(&self) -> Vec<GithubPickEntry> {
-        let Some(create) = self.worktree_create.as_ref() else {
-            return Vec::new();
-        };
-        let query = create.github_pick.query.trim().to_lowercase();
-        let matches = |number: u64, title: &str| {
-            query.is_empty()
-                || format!("#{number}").contains(&query)
-                || title.to_lowercase().contains(&query)
-        };
-        let issues_enabled = self.repo_issue_flow_template().is_some();
-        let mut entries = Vec::new();
-        if let Some(prs) = self.repo_open_prs.get(&create.repo_identity) {
-            for pr in &prs.prs {
-                if matches(pr.number, &pr.title) {
-                    entries.push(GithubPickEntry {
-                        kind: GithubPickKind::Pr,
-                        number: pr.number,
-                        title: pr.title.clone(),
-                        url: pr.url.clone(),
-                        head_ref: Some(pr.head_ref_name.clone()),
-                        enabled: true,
-                    });
-                }
-            }
-        }
-        if let Some(issues) = self.repo_issues.get(&create.repo_identity) {
-            for issue in &issues.issues {
-                if matches(issue.number, &issue.title) {
-                    entries.push(GithubPickEntry {
-                        kind: GithubPickKind::Issue,
-                        number: issue.number,
-                        title: issue.title.clone(),
-                        url: issue.url.clone(),
-                        head_ref: None,
-                        enabled: issues_enabled,
-                    });
-                }
-            }
-        }
-        entries
-    }
-
-    /// Local branches for the Create worktree modal's Branch tab, filtered by
-    /// the Branch tab query (case-insensitive substring over the name). Empty
-    /// when no modal is open or the branch cache is unpopulated.
-    pub(crate) fn create_worktree_branch_entries(&self) -> Vec<crate::workspace::RepoBranch> {
-        let Some(create) = self.worktree_create.as_ref() else {
-            return Vec::new();
-        };
-        let query = create.branch_pick.query.trim().to_lowercase();
-        self.repo_branches
-            .get(&create.repo_identity)
-            .map(|branches| {
-                branches
-                    .branches
-                    .iter()
-                    .filter(|b| query.is_empty() || b.name.to_lowercase().contains(&query))
-                    .cloned()
-                    .collect()
-            })
-            .unwrap_or_default()
-    }
-}
-
-/// A request to run the configured flow command for a GitHub issue, set by
-/// the Issues tab context menu and drained by the App event loop.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FlowRunRequest {
-    pub number: u64,
-    pub url: String,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToastKind {
     NeedsAttention,
@@ -1981,12 +1791,6 @@ pub struct AppState {
     /// other deferred App-owned action (dagr's old dedicated flag is gone —
     /// dagr is just another plugin action now).
     pub request_plugin_action: Option<String>,
-    /// Set when UI interaction asked to open a PR in a new worktree:
-    /// (representative workspace index of the repo group, PR number).
-    pub request_open_pr_worktree: Option<(usize, u64)>,
-    /// Set when UI interaction asked to run the configured flow command for
-    /// a GitHub issue; drained by App to spawn the flow pane.
-    pub request_flow_run: Option<FlowRunRequest>,
     /// Set when UI interaction asked to open the chat view; drained by App,
     /// which fetches channel data through the JSON API (mouse handlers stay
     /// side-effect-light).
@@ -2007,9 +1811,7 @@ pub struct AppState {
     pub chat: ChatViewState,
     pub worktree_remove: Option<WorktreeRemoveState>,
     pub worktree_directory: std::path::PathBuf,
-    /// Global `[flow]` command template from config.toml; see
-    /// `repo_issue_flow_template`.
-    pub flow_command_template: Option<String>,
+
     /// `[agents.commands]` overrides from config.toml, keyed by canonical
     /// agent id; `agent start` uses these to pick the executable it types
     /// into the target pane instead of the built-in canonical one.
@@ -2070,21 +1872,6 @@ pub struct AppState {
     pub sidebar_collapsed_mode: crate::config::SidebarCollapsedModeConfig,
     /// Ratio of sidebar height allocated to the workspaces section.
     pub sidebar_section_split: f32,
-    pub right_panel_collapsed: bool,
-    pub right_panel_width: u16,
-    pub right_panel_min_width: u16,
-    pub right_panel_max_width: u16,
-    pub right_panel_active_tab: RightPanelTab,
-    pub right_panel_scroll: u16,
-    pub right_panel_selected_file: Option<(crate::workspace::ChangeSectionKind, String)>,
-    /// Set by mouse click on a file row; drained by App to spawn gitui/diff pane.
-    pub right_panel_diff_requested: bool,
-    /// Set when Checks tab is activated; drained by App to call start_checks_fetch.
-    pub right_panel_checks_requested: bool,
-    /// Set when Issues tab is activated; drained by App to call start_issues_fetch.
-    pub right_panel_issues_requested: bool,
-    /// Set when the PRs tab is activated; drained by App to call start_open_prs_fetch.
-    pub right_panel_prs_requested: bool,
     pub agent_panel_sort: AgentPanelSort,
     pub status_indicators: crate::config::StatusIndicatorStyle,
     /// Transient session-wide projection override for the built-in Agents view.
@@ -2204,29 +1991,6 @@ pub struct AppState {
     pub(crate) host_mouse_pixels: Option<crate::input::mouse::HostPixels>,
     /// Set when a persisted session snapshot would change.
     pub session_dirty: bool,
-    /// Cached open PRs authored by the current user, keyed by repo identity
-    /// (`GitSpaceMetadata.repo_identity`). Written by the periodic background
-    /// refresh; read by UI/API surfaces in later phases.
-    pub repo_open_prs: std::collections::HashMap<String, crate::workspace::RepoOpenPrs>,
-    /// Cached open issues relevant to the current user, keyed by repo identity
-    /// (`GitSpaceMetadata.repo_identity`). Written by on-demand background
-    /// fetches; read by UI/API surfaces in later phases.
-    pub repo_issues: std::collections::HashMap<String, crate::workspace::RepoIssues>,
-    /// Repo identities with an issues fetch currently in flight. Guards
-    /// against overlapping fetches from rapid tab toggling and lets the
-    /// Issues tab render a loading state; cleared on `RepoIssuesRefreshed`.
-    pub issues_fetch_in_flight: std::collections::HashSet<String>,
-    /// Repo identities with an on-demand open-PR fetch currently in flight.
-    /// Guards against overlapping fetches and lets the Create worktree modal's
-    /// GitHub tab render a loading state; cleared on `RepoPrsRefreshed`.
-    pub prs_fetch_in_flight: std::collections::HashSet<String>,
-    /// Cached local branches per repo identity
-    /// (`GitSpaceMetadata.repo_identity`). Written by on-demand background
-    /// fetches; read by the Create worktree modal's Branch tab.
-    pub repo_branches: std::collections::HashMap<String, crate::workspace::RepoBranches>,
-    /// Repo identities with a branch fetch currently in flight. Guards against
-    /// overlapping fetches; cleared on `RepoBranchesRefreshed`.
-    pub branches_fetch_in_flight: std::collections::HashSet<String>,
     /// Terminal runtimes that should be shut down by the app/runtime layer
     /// after state has detached their terminal metadata.
     pub(crate) terminal_runtime_shutdowns: Vec<crate::terminal::TerminalId>,
@@ -2512,8 +2276,6 @@ impl AppState {
             request_client_config_reload: false,
             request_clipboard_write: None,
             request_open_url: None,
-            request_open_pr_worktree: None,
-            request_flow_run: None,
             request_open_create_worktree: None,
             creating_new_tab: false,
             requested_new_tab_name: None,
@@ -2524,7 +2286,6 @@ impl AppState {
             worktree_open: None,
             worktree_remove: None,
             worktree_directory: std::path::PathBuf::from("/tmp/herdr-worktrees"),
-            flow_command_template: None,
             agent_commands: crate::config::AgentsConfig::default(),
             collapsed_space_keys: std::collections::HashSet::new(),
             hidden_space_keys: std::collections::HashMap::new(),
@@ -2561,7 +2322,6 @@ impl AppState {
                 toast_hit_area: Rect::default(),
                 pane_infos: Vec::new(),
                 split_borders: Vec::new(),
-                right_panel_rect: Rect::default(),
             },
             chat: ChatViewState::default(),
             request_open_chat: false,
@@ -2596,17 +2356,6 @@ impl AppState {
             sidebar_collapsed: false,
             sidebar_collapsed_mode: crate::config::SidebarCollapsedModeConfig::Compact,
             sidebar_section_split: 0.5,
-            right_panel_collapsed: true,
-            right_panel_width: 30,
-            right_panel_min_width: 20,
-            right_panel_max_width: 50,
-            right_panel_active_tab: RightPanelTab::default(),
-            right_panel_scroll: 0,
-            right_panel_selected_file: None,
-            right_panel_diff_requested: false,
-            right_panel_checks_requested: false,
-            right_panel_issues_requested: false,
-            right_panel_prs_requested: false,
             agent_panel_sort: AgentPanelSort::Spaces,
             status_indicators: crate::config::StatusIndicatorStyle::Dots,
             agent_view_override: None,
@@ -2694,12 +2443,6 @@ impl AppState {
             host_cell_size: crate::kitty_graphics::HostCellSize::default(),
             host_mouse_pixels: None,
             session_dirty: false,
-            repo_open_prs: std::collections::HashMap::new(),
-            repo_issues: std::collections::HashMap::new(),
-            issues_fetch_in_flight: std::collections::HashSet::new(),
-            prs_fetch_in_flight: std::collections::HashSet::new(),
-            repo_branches: std::collections::HashMap::new(),
-            branches_fetch_in_flight: std::collections::HashSet::new(),
             terminal_runtime_shutdowns: Vec::new(),
             force_full_repaint: false,
         }
@@ -3037,11 +2780,6 @@ impl AppState {
                         assert_live_pane(source_pane_id, "context menu source pane");
                     }
                 }
-                ContextMenuKind::RepoPr { ws_idx, .. } => {
-                    assert_workspace_index(ws_idx, "context menu repo pr")
-                }
-                // No index to check — the menu carries only the issue number/URL.
-                ContextMenuKind::RepoIssue { .. } => {}
                 // No workspace index to check — a group header carries only keys.
                 ContextMenuKind::GroupHeader { .. } => {}
             }
@@ -3587,9 +3325,8 @@ mod tests {
     #[test]
     fn plugin_action_context_global_action_appears_in_every_menu_kind() {
         // bora-1e9: "Global actions should be available from every menu,
-        // since that is what Global means" — checked across all 7
-        // variants, including RepoPr/RepoIssue, which map to Global for
-        // lack of a dedicated context (see plugin_menu_context).
+        // since that is what Global means" — checked across all menu
+        // variants (see plugin_menu_context).
         let plugins = plugin_registry_with(test_plugin_action(
             "example.tool",
             true,
@@ -3625,17 +3362,6 @@ mod tests {
                 source_pane_id: None,
                 has_manual_label: false,
                 right_click_passthrough: false,
-            },
-            ContextMenuKind::RepoPr {
-                ws_idx: 0,
-                number: 1,
-                url: "https://example.com/pr/1".to_string(),
-                head_ref: "feature".to_string(),
-            },
-            ContextMenuKind::RepoIssue {
-                number: 1,
-                url: "https://example.com/issues/1".to_string(),
-                flow_available: false,
             },
         ];
         for kind in kinds {

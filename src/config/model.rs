@@ -58,52 +58,6 @@ fn default_update_channel_for_build(is_windows: bool, is_preview: bool) -> Updat
     }
 }
 
-#[derive(Debug, Clone, Copy, Deserialize)]
-#[serde(default)]
-pub struct GithubConfig {
-    /// Enable background GitHub data fetches (open PRs, issues) via the gh
-    /// CLI. Default: true.
-    pub enabled: bool,
-    /// Seconds between periodic background open-PR refreshes. Default: 120.
-    /// `0` falls back to the default interval.
-    pub refresh_interval_secs: u64,
-}
-
-impl Default for GithubConfig {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            refresh_interval_secs: 120,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, Deserialize)]
-#[serde(default)]
-pub struct ChecksConfig {
-    /// Seconds between periodic background PR/CI check-status refreshes
-    /// (sidebar CHECKS section, PR badges). Default: 30. `0` falls back to
-    /// the default interval.
-    pub refresh_interval_secs: u64,
-}
-
-impl Default for ChecksConfig {
-    fn default() -> Self {
-        Self {
-            refresh_interval_secs: 30,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
-#[serde(default)]
-pub struct FlowConfig {
-    /// Shell command template used to run a flow for a GitHub issue from the
-    /// Issues tab. Placeholders: `{issue}` = `owner/repo#N`, `{number}` = N,
-    /// `{url}` = issue URL, `{repo}` = absolute repo checkout path. `None`
-    /// disables the action.
-    pub command: Option<String>,
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
 #[serde(rename_all = "lowercase")]
@@ -447,9 +401,6 @@ pub struct Config {
     pub session: SessionConfig,
     pub server: ServerConfig,
     pub update: UpdateConfig,
-    pub github: GithubConfig,
-    pub checks: ChecksConfig,
-    pub flow: FlowConfig,
     pub keys: KeysConfig,
     pub ui: UiConfig,
     pub worktrees: WorktreesConfig,
@@ -589,8 +540,6 @@ pub struct KeysConfig {
     pub resize_pane_right: BindingConfig,
     /// Toggle sidebar collapse. Default: "prefix+b"
     pub toggle_sidebar: BindingConfig,
-    /// Toggle right panel collapse. Default: "prefix+g"
-    pub toggle_right_panel: BindingConfig,
     /// Cycle the sidebar view mode: flat -> folders -> repo -> flat.
     /// Default: "prefix+shift+v"
     pub cycle_view_mode: BindingConfig,
@@ -727,8 +676,6 @@ pub(crate) struct KeysConfigOverlay {
     #[serde(skip_serializing_if = "Option::is_none")]
     toggle_sidebar: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    toggle_right_panel: Option<BindingConfig>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     cycle_view_mode: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     indexed: Option<IndexedKeysConfig>,
@@ -813,7 +760,6 @@ impl<'de> Deserialize<'de> for KeysConfig {
         apply_field!(resize_pane_up);
         apply_field!(resize_pane_right);
         apply_field!(toggle_sidebar);
-        apply_field!(toggle_right_panel);
         apply_field!(cycle_view_mode);
         apply_field!(indexed);
         apply_field!(command);
@@ -920,7 +866,6 @@ impl KeysConfig {
         copy_effective_action_field!(resize_pane_up, keybinds.resize_pane_up);
         copy_effective_action_field!(resize_pane_right, keybinds.resize_pane_right);
         copy_effective_action_field!(toggle_sidebar, keybinds.toggle_sidebar);
-        copy_effective_action_field!(toggle_right_panel, keybinds.toggle_right_panel);
         copy_effective_action_field!(cycle_view_mode, keybinds.cycle_view_mode);
         copy_user_field!(indexed);
 
@@ -1281,7 +1226,6 @@ impl Default for KeysConfig {
             resize_pane_up: BindingConfig::empty(),
             resize_pane_right: BindingConfig::empty(),
             toggle_sidebar: BindingConfig::one("prefix+b"),
-            toggle_right_panel: BindingConfig::one("prefix+shift+b"),
             cycle_view_mode: BindingConfig::one("prefix+shift+v"),
             indexed: IndexedKeysConfig::default(),
             command: Vec::new(),
@@ -1549,75 +1493,6 @@ manifest_check = false
             without_update_channel.update.channel,
             default_update_channel()
         );
-    }
-
-    #[test]
-    fn github_config_defaults_and_parses() {
-        let default_config = Config::default();
-        assert!(default_config.github.enabled);
-        assert_eq!(default_config.github.refresh_interval_secs, 120);
-
-        let toml = r#"
-[github]
-enabled = false
-refresh_interval_secs = 300
-"#;
-        let config: Config = toml::from_str(toml).unwrap();
-        assert!(!config.github.enabled);
-        assert_eq!(config.github.refresh_interval_secs, 300);
-    }
-
-    #[test]
-    fn github_config_partial_section_keeps_other_defaults() {
-        let toml = r#"
-[github]
-refresh_interval_secs = 60
-"#;
-        let config: Config = toml::from_str(toml).unwrap();
-        assert!(config.github.enabled);
-        assert_eq!(config.github.refresh_interval_secs, 60);
-    }
-
-    #[test]
-    fn checks_config_refresh_interval_defaults_and_overrides() {
-        let default_config = Config::default();
-        assert_eq!(default_config.checks.refresh_interval_secs, 30);
-
-        let toml = r#"
-[checks]
-refresh_interval_secs = 90
-"#;
-        let config: Config = toml::from_str(toml).unwrap();
-        assert_eq!(config.checks.refresh_interval_secs, 90);
-
-        // `0` parses through; the app layer maps it back to the default.
-        let config: Config = toml::from_str("[checks]\nrefresh_interval_secs = 0\n").unwrap();
-        assert_eq!(config.checks.refresh_interval_secs, 0);
-    }
-
-    #[test]
-    fn flow_config_defaults_and_parses() {
-        let default_config = Config::default();
-        assert!(default_config.flow.command.is_none());
-
-        let toml = r#"
-[flow]
-command = "bora-flow run {issue} --repo {repo}"
-"#;
-        let config: Config = toml::from_str(toml).unwrap();
-        assert_eq!(
-            config.flow.command.as_deref(),
-            Some("bora-flow run {issue} --repo {repo}")
-        );
-    }
-
-    #[test]
-    fn flow_config_empty_section_keeps_defaults() {
-        let toml = r#"
-[flow]
-"#;
-        let config: Config = toml::from_str(toml).unwrap();
-        assert!(config.flow.command.is_none());
     }
 
     #[test]

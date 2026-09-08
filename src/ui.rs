@@ -22,7 +22,6 @@ mod navigator;
 mod onboarding;
 mod panes;
 mod release_notes;
-pub(crate) mod right_panel;
 mod scrollbar;
 mod settings;
 pub(crate) mod sidebar;
@@ -57,7 +56,6 @@ pub(crate) use self::release_notes::{
     RELEASE_NOTES_MODAL_SIZE,
 };
 use self::release_notes::{render_product_announcement_overlay, render_release_notes_overlay};
-use self::right_panel::render_right_panel;
 pub(crate) use self::scrollbar::{
     pane_scrollbar_rect, release_notes_scrollbar_rect, scrollbar_offset_from_drag_row,
     scrollbar_offset_from_row, scrollbar_thumb_grab_offset, should_show_scrollbar,
@@ -74,12 +72,11 @@ pub(crate) use self::tab_surface::{
 use self::tabs::render_tab_bar;
 pub(crate) use self::{
     dialogs::{
-        confirm_close_button_rects, confirm_close_popup_rect, create_worktree_list_row_rect,
-        create_worktree_list_start, create_worktree_list_visible_rows, create_worktree_tab_rects,
-        new_linked_worktree_button_rects, new_linked_worktree_inner_rect,
-        open_existing_worktree_button_rects, open_existing_worktree_inner_rect,
-        open_existing_worktree_max_visible_rows, open_existing_worktree_visible_start,
-        remove_worktree_button_rects, remove_worktree_popup_rect, rename_button_rects,
+        confirm_close_button_rects, confirm_close_popup_rect, new_linked_worktree_button_rects,
+        new_linked_worktree_inner_rect, open_existing_worktree_button_rects,
+        open_existing_worktree_inner_rect, open_existing_worktree_max_visible_rows,
+        open_existing_worktree_visible_start, remove_worktree_button_rects,
+        remove_worktree_popup_rect, rename_button_rects,
     },
     settings::{
         settings_button_rects, settings_popup_height, settings_show_primary_action,
@@ -266,24 +263,8 @@ fn compute_view_internal(
         app.sidebar_width
             .clamp(app.sidebar_min_width, app.sidebar_max_width)
     };
-    let right_w = if app.right_panel_collapsed {
-        0
-    } else {
-        app.right_panel_width
-            .clamp(app.right_panel_min_width, app.right_panel_max_width)
-    };
-    let [sidebar_area, main_area, right_panel_area] = if right_w > 0 {
-        Layout::horizontal([
-            Constraint::Length(sidebar_w),
-            Constraint::Min(1),
-            Constraint::Length(right_w),
-        ])
-        .areas(area)
-    } else {
-        let [sidebar_area, main_area] =
-            Layout::horizontal([Constraint::Length(sidebar_w), Constraint::Min(1)]).areas(area);
-        [sidebar_area, main_area, Rect::default()]
-    };
+    let [sidebar_area, main_area] =
+        Layout::horizontal([Constraint::Length(sidebar_w), Constraint::Min(1)]).areas(area);
 
     let (tab_bar_rect, terminal_area) = app
         .active
@@ -376,7 +357,6 @@ fn compute_view_internal(
         toast_hit_area,
         pane_infos,
         split_borders,
-        right_panel_rect: right_panel_area,
     };
     app.sync_copy_mode_search_geometry();
 }
@@ -444,7 +424,6 @@ fn compute_mobile_view(
         toast_hit_area,
         pane_infos,
         split_borders,
-        right_panel_rect: Rect::default(),
     };
     app.sync_copy_mode_search_geometry();
 }
@@ -476,11 +455,6 @@ pub fn render_with_runtime_registry(
         render_tab_surface(app, terminal_runtimes, app.view.tab_surface(), frame);
     } else {
         render_empty(app, frame, terminal_area);
-    }
-    if app.view.layout != ViewLayout::Mobile && !app.right_panel_collapsed {
-        render_right_panel(app, frame, app.view.right_panel_rect);
-    } else if app.view.layout != ViewLayout::Mobile && app.right_panel_collapsed {
-        right_panel::render_right_panel_collapsed_toggle(app, frame, terminal_area);
     }
 
     // Ambient notifications sit above panes, but below interactive overlays.

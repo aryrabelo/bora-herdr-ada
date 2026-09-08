@@ -2661,14 +2661,6 @@ impl AppState {
                 ws.cached_git_space = result.space;
                 changed = true;
             }
-            if ws.cached_change_set != result.change_set {
-                ws.cached_change_set = result.change_set;
-                changed = true;
-            }
-            if result.demand.ahead_behind && ws.cached_collectible != result.collectible {
-                ws.cached_collectible = result.collectible;
-                changed = true;
-            }
         }
         changed
     }
@@ -2903,17 +2895,6 @@ impl AppState {
                 let _ = cache_updates;
                 Vec::new()
             }
-            AppEvent::WorkspaceChecksRefreshed {
-                workspace_id,
-                result,
-            } => {
-                let _ = workspace_id;
-                let _ = result;
-                Vec::new()
-            }
-            AppEvent::RepoPrsRefreshed { .. } => Vec::new(),
-            AppEvent::RepoIssuesRefreshed { .. } => Vec::new(),
-            AppEvent::RepoBranchesRefreshed { .. } => Vec::new(),
             AppEvent::WorktreeAddFinished(_) => Vec::new(),
             AppEvent::WorktreeRemoveFinished(_) => Vec::new(),
             AppEvent::WorktreeMergeToMainFinished { .. } => Vec::new(),
@@ -4157,8 +4138,6 @@ mod tests {
                 branch: Some("main".into()),
                 ahead_behind: Some((2, 1)),
                 space: None,
-                change_set: None,
-                collectible: None,
             }],
         );
 
@@ -4188,8 +4167,6 @@ mod tests {
                 branch: Some("main".into()),
                 ahead_behind: Some((0, 1)),
                 space: None,
-                change_set: None,
-                collectible: None,
             }],
         );
 
@@ -4221,8 +4198,6 @@ mod tests {
                 branch: Some("new".into()),
                 ahead_behind: None,
                 space: None,
-                change_set: None,
-                collectible: None,
             }],
         );
 
@@ -4250,8 +4225,6 @@ mod tests {
                 branch: None,
                 ahead_behind: None,
                 space: None,
-                change_set: None,
-                collectible: None,
             }],
         );
 
@@ -4287,8 +4260,6 @@ mod tests {
                     repo_root: "/other/repo".into(),
                     is_linked_worktree: false,
                 }),
-                change_set: None,
-                collectible: None,
             }],
         );
 

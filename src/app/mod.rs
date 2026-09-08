@@ -15,7 +15,6 @@ pub(crate) use api_helpers::limit_snapshot_lines;
 mod channel_membership;
 mod config_io;
 mod creation;
-pub(crate) mod flow;
 mod git_refresh;
 mod ids;
 mod input;
@@ -92,12 +91,6 @@ const GIT_REMOTE_STATUS_REFRESH_INTERVAL: Duration = Duration::from_millis(1500)
 /// refresh pipeline's threading, but still off the render path.
 const CHANNEL_MEMBERSHIP_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
 const GIT_REPO_DISCOVERY_REFRESH_INTERVAL: Duration = Duration::from_secs(5 * 60);
-/// Default period between background PR/CI check-status refreshes;
-/// overridable via `[checks] refresh_interval_secs`.
-const CHECKS_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
-/// Default period between background open-PR refreshes; overridable via
-/// `[github] refresh_interval_secs`.
-const OPEN_PRS_REFRESH_INTERVAL: Duration = Duration::from_secs(120);
 const AUTO_UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(30 * 60);
 const PENDING_AGENT_RESUME_THEME_WAIT: Duration = Duration::from_millis(750);
 /// How long a target must be continuously observed away from `Working`
@@ -178,14 +171,6 @@ pub(crate) struct OverlayPaneState {
     temp_files: Vec<std::path::PathBuf>,
 }
 
-/// Why a requested Issues-tab flow run was not dispatched.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum FlowRunSkip {
-    NoActiveWorkspace,
-    NoGitMetadata,
-    TemplateNotConfigured,
-}
-
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct PaneClickState {
     pane_id: crate::layout::PaneId,
@@ -254,19 +239,6 @@ pub struct App {
     pub(crate) last_git_remote_status_refresh: Instant,
     pub(crate) last_channel_membership_refresh: Instant,
     pub(crate) last_git_repo_discovery_refresh: Instant,
-    pub(crate) last_checks_refresh: Instant,
-    pub(crate) last_open_prs_refresh: Instant,
-    /// True while a background open-PR refresh batch is running; cleared when
-    /// all its per-repo results have arrived.
-    pub(crate) open_prs_refresh_in_flight: bool,
-    /// Per-repo results still expected from the in-flight open-PR batch.
-    pub(crate) open_prs_refresh_results_pending: usize,
-    /// `[github] enabled` — gates all background GitHub data fetches.
-    pub(crate) github_fetch_enabled: bool,
-    /// `[github] refresh_interval_secs` as a Duration.
-    pub(crate) github_refresh_interval: Duration,
-    /// `[checks] refresh_interval_secs` as a Duration.
-    pub(crate) checks_refresh_interval: Duration,
     pub(crate) git_refresh_in_flight: bool,
     pub(crate) git_refresh_due_after_in_flight: bool,
     pub(crate) git_identity_refresh_requested: bool,
@@ -385,26 +357,6 @@ fn auto_updates_enabled(no_session: bool) -> bool {
 
 fn background_update_check_enabled(no_session: bool, check_enabled: bool) -> bool {
     auto_updates_enabled(no_session) && check_enabled
-}
-
-/// `[github] refresh_interval_secs` as a Duration; `0` falls back to the
-/// default so a misconfigured value cannot schedule gh on every git tick.
-fn github_refresh_interval_from_config(config: &Config) -> Duration {
-    if config.github.refresh_interval_secs == 0 {
-        OPEN_PRS_REFRESH_INTERVAL
-    } else {
-        Duration::from_secs(config.github.refresh_interval_secs)
-    }
-}
-
-/// `[checks] refresh_interval_secs` as a Duration; `0` falls back to the
-/// default so a misconfigured value cannot schedule gh on every git tick.
-fn checks_refresh_interval_from_config(config: &Config) -> Duration {
-    if config.checks.refresh_interval_secs == 0 {
-        CHECKS_REFRESH_INTERVAL
-    } else {
-        Duration::from_secs(config.checks.refresh_interval_secs)
-    }
 }
 
 fn load_plugin_registry(no_session: bool) -> crate::app::state::InstalledPluginRegistry {
@@ -736,8 +688,6 @@ impl App {
             request_clipboard_write: None,
             request_open_url: None,
             request_plugin_action: None,
-            request_open_pr_worktree: None,
-            request_flow_run: None,
             request_open_chat: false,
             request_open_create_worktree: None,
             creating_new_tab: false,
@@ -748,7 +698,6 @@ impl App {
             worktree_open: None,
             worktree_remove: None,
             worktree_directory,
-            flow_command_template: config.flow.command.clone(),
             agent_commands: config.agents.clone(),
             collapsed_space_keys,
             hidden_space_keys: std::collections::HashMap::new(),
@@ -795,7 +744,6 @@ impl App {
                 toast_hit_area: Rect::default(),
                 pane_infos: Vec::new(),
                 split_borders: Vec::new(),
-                right_panel_rect: Rect::default(),
             },
             drag: None,
             workspace_presses: HashMap::new(),
@@ -825,18 +773,6 @@ impl App {
             sidebar_collapsed: config.ui.sidebar_start_collapsed,
             sidebar_collapsed_mode: config.ui.sidebar_collapsed_mode,
             sidebar_section_split,
-            // ponytail: promote to UiConfig when user demand exists
-            right_panel_collapsed: true,
-            right_panel_width: 30,
-            right_panel_min_width: 20,
-            right_panel_max_width: 50,
-            right_panel_active_tab: state::RightPanelTab::default(),
-            right_panel_scroll: 0,
-            right_panel_selected_file: None,
-            right_panel_diff_requested: false,
-            right_panel_checks_requested: false,
-            right_panel_issues_requested: false,
-            right_panel_prs_requested: false,
             agent_panel_sort,
             status_indicators: config.ui.status_indicators,
             agent_view_override: None,
@@ -915,12 +851,6 @@ impl App {
             host_cell_size: crate::kitty_graphics::HostCellSize::default(),
             host_mouse_pixels: None,
             session_dirty: false,
-            repo_open_prs: HashMap::new(),
-            repo_issues: HashMap::new(),
-            issues_fetch_in_flight: std::collections::HashSet::new(),
-            prs_fetch_in_flight: std::collections::HashSet::new(),
-            repo_branches: HashMap::new(),
-            branches_fetch_in_flight: std::collections::HashSet::new(),
             terminal_runtime_shutdowns: Vec::new(),
             force_full_repaint: false,
         };
@@ -958,8 +888,6 @@ impl App {
                 .get(idx)
                 .and_then(|ws| ws.focused_pane_id().map(|pane_id| (idx, pane_id)))
         });
-        let github_refresh_interval = github_refresh_interval_from_config(config);
-        let checks_refresh_interval = checks_refresh_interval_from_config(config);
 
         let mut app = Self {
             config_diagnostic_deadline: None,
@@ -982,21 +910,6 @@ impl App {
             last_git_remote_status_refresh: Instant::now() - GIT_REMOTE_STATUS_REFRESH_INTERVAL,
             last_channel_membership_refresh: Instant::now() - CHANNEL_MEMBERSHIP_REFRESH_INTERVAL,
             last_git_repo_discovery_refresh: Instant::now(),
-            // checked_sub: the interval is user-configurable and subtracting a
-            // huge Duration from Instant::now() would panic.
-            last_checks_refresh: Instant::now()
-                .checked_sub(checks_refresh_interval)
-                .unwrap_or_else(Instant::now),
-            // checked_sub: the interval is user-configurable and subtracting a
-            // huge Duration from Instant::now() would panic.
-            last_open_prs_refresh: Instant::now()
-                .checked_sub(github_refresh_interval)
-                .unwrap_or_else(Instant::now),
-            open_prs_refresh_in_flight: false,
-            open_prs_refresh_results_pending: 0,
-            github_fetch_enabled: config.github.enabled,
-            github_refresh_interval,
-            checks_refresh_interval,
             git_refresh_in_flight: false,
             git_refresh_due_after_in_flight: false,
             git_identity_refresh_requested: false,
@@ -1546,12 +1459,6 @@ impl App {
             app.state.sidebar_section_split = split;
         }
         app.state.collapsed_space_keys = snapshot.collapsed_space_keys.clone();
-        if let Some(width) = snapshot.right_panel_width {
-            app.state.right_panel_width = width;
-        }
-        if let Some(collapsed) = snapshot.right_panel_collapsed {
-            app.state.right_panel_collapsed = collapsed;
-        }
         app.state.view_mode = snapshot.view_mode;
         app.state.mode = if app.state.active.is_some() {
             state::Mode::Terminal
@@ -1762,16 +1669,6 @@ impl App {
                 if let Err(message) = self.invoke_plugin_action_from_ui(action_id, "sidebar") {
                     tracing::warn!(%message, "failed to invoke plugin action from context menu");
                 }
-                needs_render = true;
-            }
-
-            if let Some((ws_idx, number)) = self.state.request_open_pr_worktree.take() {
-                self.start_pr_worktree_create(ws_idx, number);
-                needs_render = true;
-            }
-
-            if let Some(request) = self.state.request_flow_run.take() {
-                self.start_flow_run(request);
                 needs_render = true;
             }
 
@@ -2363,24 +2260,6 @@ impl App {
                 crate::worktree::expand_tilde_absolute_path(&config.worktrees.directory);
         }
 
-        if !invalid_section("github") {
-            // No armed deadline to adjust: the open-PR refresh uses a
-            // last+interval throttle, so disabling simply skips future fetches
-            // and re-enabling picks the schedule back up.
-            self.github_fetch_enabled = config.github.enabled;
-            self.github_refresh_interval = github_refresh_interval_from_config(config);
-        }
-
-        if !invalid_section("checks") {
-            // Same last+interval throttle as the open-PR refresh: the new
-            // value applies to the next due check.
-            self.checks_refresh_interval = checks_refresh_interval_from_config(config);
-        }
-
-        if !invalid_section("flow") {
-            self.state.flow_command_template = config.flow.command.clone();
-        }
-
         if !invalid_section("agents") {
             self.state.agent_commands = config.agents.clone();
         }
@@ -2427,84 +2306,6 @@ impl App {
             diagnostics,
         }
     }
-
-    /// Build the `agent.start` params for a flow run, or report why the run
-    /// cannot proceed. Pure over `&self` so the dispatch payload is testable
-    /// without spawning a PTY. `{repo}`/cwd use the stable repo checkout
-    /// root, not any pane's live cwd.
-    fn prepare_flow_agent_start(
-        &self,
-        request: &state::FlowRunRequest,
-    ) -> Result<String, FlowRunSkip> {
-        let ws_idx = self.state.active.ok_or(FlowRunSkip::NoActiveWorkspace)?;
-        let ws = self
-            .state
-            .workspaces
-            .get(ws_idx)
-            .ok_or(FlowRunSkip::NoActiveWorkspace)?;
-        let git_space = ws.git_space().ok_or(FlowRunSkip::NoGitMetadata)?;
-
-        let template = flow::resolve_flow_template(self.state.flow_command_template.as_deref())
-            .ok_or(FlowRunSkip::TemplateNotConfigured)?;
-
-        let repo_path = git_space.repo_root.display().to_string();
-        let context = flow::FlowCommandContext {
-            issue_ref: flow::issue_ref_from_repo_identity(&git_space.repo_identity, request.number),
-            number: request.number,
-            url: request.url.clone(),
-            repo_path,
-        };
-        let command = flow::render_flow_command(&template, &context);
-        Ok(command)
-    }
-
-    /// Run the configured flow command for a GitHub issue in a new agent
-    /// pane of the active workspace. The pane inherits the session env, so
-    /// the spawned process can drive this Herdr session via the JSON API.
-    fn start_flow_run(&mut self, request: state::FlowRunRequest) {
-        let command = match self.prepare_flow_agent_start(&request) {
-            Ok(command) => command,
-            Err(FlowRunSkip::NoActiveWorkspace) => {
-                tracing::warn!("flow run requested without an active workspace; skipping");
-                return;
-            }
-            Err(FlowRunSkip::NoGitMetadata) => {
-                tracing::warn!("flow run requested without git workspace metadata; skipping");
-                self.state.toast = Some(state::ToastNotification {
-                    kind: state::ToastKind::NeedsAttention,
-                    title: "cannot run bora-flow".to_string(),
-                    context: "workspace git metadata is not ready yet".to_string(),
-                    position: None,
-                    target: None,
-                });
-                return;
-            }
-            Err(FlowRunSkip::TemplateNotConfigured) => {
-                tracing::warn!("no flow command template configured; skipping flow run");
-                self.state.toast = Some(state::ToastNotification {
-                    kind: state::ToastKind::NeedsAttention,
-                    title: "flow command not configured".to_string(),
-                    context: "configure [flow] command to run bora-flow".to_string(),
-                    position: None,
-                    target: None,
-                });
-                return;
-            }
-        };
-        // ponytail: bora-flow's pane-spawn path used the pre-redesign agent-start
-        // API, which the upstream sync removed. Surface "unavailable" instead of
-        // spawning until flow-run is re-ported onto upstream's pane primitives.
-        tracing::warn!(
-            %command,
-            "bora-flow spawning disabled pending re-port onto upstream agent-start API"
-        );
-        self.state.toast = Some(state::ToastNotification {
-            kind: state::ToastKind::NeedsAttention,
-            title: "bora-flow unavailable".to_string(),
-            context: "flow spawning is disabled after the upstream sync; it will return in a future update".to_string(),
-            position: None,
-            target: None,
-        });
     }
 }
 
@@ -3316,231 +3117,11 @@ mod tests {
                 branch: Some("render-dirty-test".into()),
                 ahead_behind: Some((1, 0)),
                 space: None,
-                change_set: None,
-                collectible: None,
             }],
             cache_updates: Vec::new(),
         });
 
         assert!(app.render_dirty.is_pending());
-    }
-
-    fn test_git_space(repo_identity: &str) -> crate::workspace::GitSpaceMetadata {
-        crate::workspace::GitSpaceMetadata {
-            key: repo_identity.to_string(),
-            repo_identity: repo_identity.to_string(),
-            checkout_key: repo_identity.to_string(),
-            repo_name: "repo".to_string(),
-            repo_root: std::path::PathBuf::from("/tmp/repo"),
-            is_linked_worktree: false,
-        }
-    }
-
-    #[test]
-    fn repo_prs_event_updates_cache_and_clears_in_flight_batch() {
-        let mut app = test_app();
-        app.open_prs_refresh_in_flight = true;
-        app.open_prs_refresh_results_pending = 2;
-        app.render_dirty.take();
-
-        app.handle_internal_event(AppEvent::RepoPrsRefreshed {
-            repo_identity: "github.com/owner/repo".into(),
-            result: crate::workspace::RepoOpenPrs {
-                prs: vec![crate::workspace::OpenPr {
-                    number: 42,
-                    title: "feat: widget".into(),
-                    url: "https://github.com/owner/repo/pull/42".into(),
-                    head_ref_name: "feat/widget".into(),
-                    is_draft: false,
-                    mergeable: None,
-                    checks: None,
-                }],
-                error: None,
-            },
-        });
-
-        assert!(app.open_prs_refresh_in_flight);
-        assert_eq!(app.open_prs_refresh_results_pending, 1);
-        assert!(app.render_dirty.is_pending());
-        let cached = &app.state.repo_open_prs["github.com/owner/repo"];
-        assert_eq!(cached.prs.len(), 1);
-        assert_eq!(cached.prs[0].number, 42);
-        assert!(cached.error.is_none());
-
-        app.handle_internal_event(AppEvent::RepoPrsRefreshed {
-            repo_identity: "github.com/owner/other".into(),
-            result: crate::workspace::RepoOpenPrs {
-                prs: Vec::new(),
-                error: Some("gh CLI not found".into()),
-            },
-        });
-
-        assert!(!app.open_prs_refresh_in_flight);
-        assert_eq!(app.open_prs_refresh_results_pending, 0);
-        assert_eq!(
-            app.state.repo_open_prs["github.com/owner/other"]
-                .error
-                .as_deref(),
-            Some("gh CLI not found")
-        );
-    }
-
-    #[test]
-    fn repo_issues_event_updates_cache() {
-        let mut app = test_app();
-        app.render_dirty.take();
-
-        app.handle_internal_event(AppEvent::RepoIssuesRefreshed {
-            repo_identity: "github.com/owner/repo".into(),
-            result: crate::workspace::RepoIssues {
-                issues: vec![crate::workspace::RepoIssue {
-                    number: 12,
-                    title: "bug: crash".into(),
-                    url: "https://github.com/owner/repo/issues/12".into(),
-                }],
-                error: None,
-            },
-        });
-
-        assert!(app.render_dirty.is_pending());
-        let cached = &app.state.repo_issues["github.com/owner/repo"];
-        assert_eq!(cached.issues.len(), 1);
-        assert_eq!(cached.issues[0].number, 12);
-    }
-
-    #[test]
-    fn issues_fetch_skipped_when_github_disabled() {
-        let mut app = test_app();
-        app.github_fetch_enabled = false;
-
-        app.start_issues_fetch(
-            "github.com/owner/repo".into(),
-            std::path::PathBuf::from("/nonexistent"),
-        );
-
-        assert!(app.state.issues_fetch_in_flight.is_empty());
-    }
-
-    #[test]
-    fn issues_fetch_in_flight_guard_dedupes_and_clears_on_event() {
-        let mut app = test_app();
-        let identity = "github.com/owner/repo".to_string();
-        let cwd = std::path::PathBuf::from("/nonexistent/bora-issues-fetch-test");
-
-        app.start_issues_fetch(identity.clone(), cwd.clone());
-        assert!(app.state.issues_fetch_in_flight.contains(&identity));
-
-        // A second request for the same repo while the first is pending is a
-        // no-op: only the first fetch delivers a result event.
-        app.start_issues_fetch(identity.clone(), cwd);
-
-        let first = app.event_rx.blocking_recv().expect("fetch result event");
-        assert!(matches!(first, AppEvent::RepoIssuesRefreshed { .. }));
-        std::thread::sleep(Duration::from_millis(200));
-        assert!(
-            matches!(
-                app.event_rx.try_recv(),
-                Err(tokio::sync::mpsc::error::TryRecvError::Empty)
-            ),
-            "deduplicated second call must not spawn another fetch"
-        );
-
-        // Delivering the result clears the guard so later requests fetch again.
-        app.handle_internal_event(first);
-        assert!(!app.state.issues_fetch_in_flight.contains(&identity));
-    }
-
-    #[test]
-    fn prs_fetch_in_flight_guard_dedupes_and_clears_on_event() {
-        let mut app = test_app();
-        let identity = "github.com/owner/repo".to_string();
-        let cwd = std::path::PathBuf::from("/nonexistent/bora-prs-fetch-test");
-
-        app.start_open_prs_fetch(identity.clone(), cwd.clone());
-        assert!(app.state.prs_fetch_in_flight.contains(&identity));
-
-        // A second request for the same repo while the first is pending is a
-        // no-op: only the first fetch delivers a result event.
-        app.start_open_prs_fetch(identity.clone(), cwd);
-
-        let first = app.event_rx.blocking_recv().expect("fetch result event");
-        assert!(matches!(first, AppEvent::RepoPrsRefreshed { .. }));
-        std::thread::sleep(Duration::from_millis(200));
-        assert!(
-            matches!(
-                app.event_rx.try_recv(),
-                Err(tokio::sync::mpsc::error::TryRecvError::Empty)
-            ),
-            "deduplicated second call must not spawn another fetch"
-        );
-
-        // Delivering the result clears the guard without corrupting the batch
-        // flag (never set for this on-demand fetch).
-        app.handle_internal_event(first);
-        assert!(!app.state.prs_fetch_in_flight.contains(&identity));
-        assert!(!app.open_prs_refresh_in_flight);
-    }
-
-    #[test]
-    fn open_prs_refresh_skipped_when_github_disabled() {
-        let mut app = test_app();
-        app.github_fetch_enabled = false;
-        let before = app.last_open_prs_refresh;
-
-        app.start_open_prs_refresh_if_due(Instant::now());
-
-        assert_eq!(app.last_open_prs_refresh, before);
-        assert!(!app.open_prs_refresh_in_flight);
-    }
-
-    #[test]
-    fn open_prs_refresh_throttled_until_interval_elapses() {
-        let mut app = test_app();
-        let now = Instant::now();
-        app.last_open_prs_refresh = now;
-
-        app.start_open_prs_refresh_if_due(now + Duration::from_secs(1));
-        assert_eq!(app.last_open_prs_refresh, now);
-
-        // Due once the configured interval has elapsed (no workspaces, so no
-        // batch is spawned, but the throttle timestamp advances).
-        let due_at = now + app.github_refresh_interval;
-        app.start_open_prs_refresh_if_due(due_at);
-        assert_eq!(app.last_open_prs_refresh, due_at);
-        assert!(!app.open_prs_refresh_in_flight);
-    }
-
-    #[test]
-    fn open_prs_refresh_skipped_while_batch_in_flight() {
-        let mut app = test_app();
-        app.open_prs_refresh_in_flight = true;
-        let before = app.last_open_prs_refresh;
-
-        app.start_open_prs_refresh_if_due(Instant::now() + app.github_refresh_interval);
-
-        assert_eq!(app.last_open_prs_refresh, before);
-    }
-
-    #[test]
-    fn open_prs_refresh_jobs_dedupe_workspaces_by_repo_identity() {
-        let mut app = test_app();
-        let mut ws_a = Workspace::test_new("a");
-        ws_a.cached_git_space = Some(test_git_space("github.com/owner/repo"));
-        let mut ws_b = Workspace::test_new("b");
-        ws_b.cached_git_space = Some(test_git_space("github.com/owner/repo"));
-        let mut ws_c = Workspace::test_new("c");
-        ws_c.cached_git_space = Some(test_git_space("github.com/owner/other"));
-        // No git space (e.g. non-git workspace): contributes no job.
-        let ws_d = Workspace::test_new("d");
-        app.state.workspaces.extend([ws_a, ws_b, ws_c, ws_d]);
-
-        let jobs = app.open_prs_refresh_jobs();
-
-        let identities: Vec<&str> = jobs.iter().map(|(identity, _)| identity.as_str()).collect();
-        assert_eq!(
-            identities,
-            vec!["github.com/owner/repo", "github.com/owner/other"]
-        );
     }
 
     #[test]
@@ -4175,203 +3756,7 @@ mod tests {
     }
 
     #[test]
-    fn github_refresh_interval_zero_falls_back_to_default() {
-        let config = Config::default();
-        assert_eq!(
-            github_refresh_interval_from_config(&config),
-            OPEN_PRS_REFRESH_INTERVAL
-        );
 
-        let config: Config =
-            toml::from_str("[github]\nrefresh_interval_secs = 0\n").expect("valid config");
-        assert_eq!(
-            github_refresh_interval_from_config(&config),
-            OPEN_PRS_REFRESH_INTERVAL
-        );
-
-        let config: Config =
-            toml::from_str("[github]\nrefresh_interval_secs = 300\n").expect("valid config");
-        assert_eq!(
-            github_refresh_interval_from_config(&config),
-            Duration::from_secs(300)
-        );
-    }
-
-    #[test]
-    fn reload_config_updates_github_settings() {
-        let _guard = config_env_lock().lock();
-        let path = temp_config_path("reload-config-github");
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(
-            &path,
-            "[github]\nenabled = false\nrefresh_interval_secs = 300\n",
-        )
-        .unwrap();
-        std::env::set_var(crate::config::CONFIG_PATH_ENV_VAR, &path);
-
-        let mut app = test_app();
-        assert!(app.github_fetch_enabled);
-        assert_eq!(app.github_refresh_interval, OPEN_PRS_REFRESH_INTERVAL);
-
-        let report = app.reload_config();
-
-        assert_eq!(report.status, crate::config::ConfigReloadStatus::Applied);
-        assert!(!app.github_fetch_enabled);
-        assert_eq!(app.github_refresh_interval, Duration::from_secs(300));
-
-        std::env::remove_var(crate::config::CONFIG_PATH_ENV_VAR);
-        let _ = std::fs::remove_dir_all(path.parent().unwrap());
-    }
-
-    #[test]
-    fn checks_refresh_interval_zero_falls_back_to_default() {
-        let config = Config::default();
-        assert_eq!(
-            checks_refresh_interval_from_config(&config),
-            CHECKS_REFRESH_INTERVAL
-        );
-
-        let config: Config =
-            toml::from_str("[checks]\nrefresh_interval_secs = 0\n").expect("valid config");
-        assert_eq!(
-            checks_refresh_interval_from_config(&config),
-            CHECKS_REFRESH_INTERVAL
-        );
-
-        let config: Config =
-            toml::from_str("[checks]\nrefresh_interval_secs = 90\n").expect("valid config");
-        assert_eq!(
-            checks_refresh_interval_from_config(&config),
-            Duration::from_secs(90)
-        );
-    }
-
-    #[test]
-    fn reload_config_updates_checks_refresh_interval() {
-        let _guard = config_env_lock().lock();
-        let path = temp_config_path("reload-config-checks");
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, "[checks]\nrefresh_interval_secs = 90\n").unwrap();
-        std::env::set_var(crate::config::CONFIG_PATH_ENV_VAR, &path);
-
-        let mut app = test_app();
-        assert_eq!(app.checks_refresh_interval, CHECKS_REFRESH_INTERVAL);
-
-        let report = app.reload_config();
-
-        assert_eq!(report.status, crate::config::ConfigReloadStatus::Applied);
-        assert_eq!(app.checks_refresh_interval, Duration::from_secs(90));
-
-        std::env::remove_var(crate::config::CONFIG_PATH_ENV_VAR);
-        let _ = std::fs::remove_dir_all(path.parent().unwrap());
-    }
-
-    #[test]
-    fn reload_config_updates_flow_template() {
-        let _guard = config_env_lock().lock();
-        let path = temp_config_path("reload-config-flow");
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, "[flow]\ncommand = \"bora-flow run {issue}\"\n").unwrap();
-        std::env::set_var(crate::config::CONFIG_PATH_ENV_VAR, &path);
-
-        let mut app = test_app();
-        assert!(app.state.flow_command_template.is_none());
-
-        let report = app.reload_config();
-
-        assert_eq!(report.status, crate::config::ConfigReloadStatus::Applied);
-        assert_eq!(
-            app.state.flow_command_template.as_deref(),
-            Some("bora-flow run {issue}")
-        );
-
-        std::env::remove_var(crate::config::CONFIG_PATH_ENV_VAR);
-        let _ = std::fs::remove_dir_all(path.parent().unwrap());
-    }
-
-    #[test]
-    fn flow_run_without_template_shows_needs_attention_toast() {
-        let mut app = test_app();
-        app.state.workspaces.push(Workspace::test_new("one"));
-        app.state.active = Some(0);
-        let mut git_space = test_git_space("github.com/owner/repo");
-        // A repo root that resolves to nothing, so only the (unset) global
-        // template participates in resolution.
-        git_space.repo_root = std::path::PathBuf::from("/nonexistent/bora-flow-run-test");
-        app.state.workspaces[0].cached_git_space = Some(git_space);
-
-        app.start_flow_run(state::FlowRunRequest {
-            number: 12,
-            url: "https://github.com/owner/repo/issues/12".into(),
-        });
-
-        let toast = app.state.toast.as_ref().expect("toast");
-        assert_eq!(toast.kind, state::ToastKind::NeedsAttention);
-        assert_eq!(toast.title, "flow command not configured");
-        assert_eq!(toast.context, "configure [flow] command to run bora-flow");
-    }
-
-    #[test]
-    fn flow_run_without_git_metadata_shows_needs_attention_toast() {
-        let mut app = test_app();
-        app.state.workspaces.push(Workspace::test_new("one"));
-        app.state.active = Some(0);
-        app.state.flow_command_template = Some("bora-flow run {issue}".into());
-
-        app.start_flow_run(state::FlowRunRequest {
-            number: 12,
-            url: "https://github.com/owner/repo/issues/12".into(),
-        });
-
-        let toast = app.state.toast.as_ref().expect("toast");
-        assert_eq!(toast.kind, state::ToastKind::NeedsAttention);
-        assert_eq!(toast.title, "cannot run bora-flow");
-        assert_eq!(toast.context, "workspace git metadata is not ready yet");
-    }
-
-    #[test]
-    fn flow_run_renders_command_but_reports_unavailable() {
-        let mut app = test_app();
-        app.state.workspaces.push(Workspace::test_new("one"));
-        app.state.active = Some(0);
-        let mut git_space = test_git_space("github.com/owner/repo");
-        git_space.repo_root = std::path::PathBuf::from("/nonexistent/bora-flow-params-test");
-        app.state.workspaces[0].cached_git_space = Some(git_space);
-        app.state.flow_command_template = Some("bora-flow run {issue} --repo {repo}".into());
-
-        let request = state::FlowRunRequest {
-            number: 12,
-            url: "https://github.com/owner/repo/issues/12".into(),
-        };
-        let command = app
-            .prepare_flow_agent_start(&request)
-            .expect("flow command renders");
-        assert_eq!(
-            command,
-            "bora-flow run 'owner/repo#12' --repo '/nonexistent/bora-flow-params-test'"
-        );
-
-        // Spawning is disabled after the upstream agent-start redesign: a valid
-        // flow request surfaces an "unavailable" toast instead of starting.
-        app.start_flow_run(request);
-        let toast = app.state.toast.as_ref().expect("toast");
-        assert_eq!(toast.kind, state::ToastKind::NeedsAttention);
-        assert_eq!(toast.title, "bora-flow unavailable");
-    }
-
-    #[test]
-    fn flow_run_without_active_workspace_is_a_quiet_no_op() {
-        let mut app = test_app();
-
-        app.start_flow_run(state::FlowRunRequest {
-            number: 12,
-            url: "https://github.com/owner/repo/issues/12".into(),
-        });
-
-        assert!(app.state.toast.is_none());
-    }
-
-    #[test]
     fn reload_config_requests_client_reload_for_host_cursor_only_change() {
         let _guard = config_env_lock().lock();
         let path = temp_config_path("reload-config-host-cursor");
@@ -7552,10 +6937,6 @@ last_pane = "prefix+tab"
             checkout_path: "/repo/herdr-generated-branch".into(),
             error: None,
             creating: false,
-            active_tab: crate::app::state::WorktreeCreateTab::Name,
-            repo_identity: String::new(),
-            github_pick: crate::app::state::WorktreeListPick::default(),
-            branch_pick: crate::app::state::WorktreeListPick::default(),
         });
 
         app.route_client_events(
