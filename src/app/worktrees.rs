@@ -669,7 +669,6 @@ impl App {
         }
     }
 
-
     pub(crate) fn handle_worktree_remove_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Esc => {

@@ -3236,7 +3236,6 @@ mod tests {
         assert_eq!(state.request_sync_workspace_git, Some(0));
     }
 
-
     #[test]
     fn plugin_action_context_selection_sets_request_plugin_action() {
         // bora-1e9: selecting a plugin-contributed menu item must resolve

@@ -58,7 +58,6 @@ fn default_update_channel_for_build(is_windows: bool, is_preview: bool) -> Updat
     }
 }
 
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum ToastDelivery {

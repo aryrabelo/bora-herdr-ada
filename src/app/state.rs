@@ -1275,7 +1275,6 @@ pub enum ContextMenuKind {
         has_manual_label: bool,
         right_click_passthrough: bool,
     },
-
 }
 
 /// Right-click context menu state.

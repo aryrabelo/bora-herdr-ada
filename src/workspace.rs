@@ -493,7 +493,7 @@ impl Workspace {
                 cached_git_branch: git_branch(&initial_cwd),
                 cached_git_ahead_behind: None,
                 cached_git_space,
- 
+
                 cached_channels: Vec::new(),
                 worktree_space,
                 metadata_tokens: crate::metadata_tokens::MetadataTokens::default(),
@@ -1381,7 +1381,7 @@ impl Workspace {
             cached_git_branch: git_branch(&identity_cwd),
             cached_git_ahead_behind: None,
             cached_git_space: None,
- 
+
             cached_channels: Vec::new(),
             worktree_space: None,
             metadata_tokens: crate::metadata_tokens::MetadataTokens::default(),
