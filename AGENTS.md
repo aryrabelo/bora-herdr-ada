@@ -83,10 +83,12 @@ again:
    shell). A project whose whole design assumes tmux is a design reference,
    not a dependency.
 2. **herdr plugins** — <https://herdr.dev/plugins/>, but the searchable
-   directory is the GitHub topic `herdr-plugin` (~250 repos, measured
-   2026-09-07); the site listing is a 30-minute auto-refresh with **no review
-   of any kind**, so treat it as an index, never as a vetting signal. Sweep it
-   in star bands, because GitHub's code search caps at 50 results per query
+   directory is the GitHub topic `herdr-plugin` (**1040 repos**, measured
+   2026-09-08 as 41 above 50★ + 65 in 11..50 + 538 in 1..10 + 396 at 0★, and
+   the bands sum to the total — an earlier note here said ~250 and was wrong by
+   4x); the site listing is a 30-minute auto-refresh with **no review of any
+   kind**, so treat it as an index, never as a vetting signal. Sweep it in star
+   bands, because GitHub's repo search caps a page at 100 and code search at 50
    and the low-star bands overflow silently. A plugin that already does it
    beats a core patch, and a core patch that could have been a plugin is fork
    merge-conflict surface bought for nothing (see Fork merge friction). Before
@@ -190,6 +192,27 @@ classes, and how to resolve them, so the next sync is cheap:
   2026-05/06). The fork uses `${{ github.token }}` and `github-actions[bot]` (41898282)
   everywhere — on merges, swap any reintroduced KANGAL reference back, and keep the
   example text in the pre-release-audit prompts free of it.
+
+- **The pending 0.9.0 sync is a client rewrite, not a sync — size it before starting.**
+  Measured 2026-09-08: last merged upstream commit is `2c042bb2` (2026-08-20, what
+  `build_info.rs` declares), upstream tip `68c7b78e` is **105 commits** and **117 new
+  `src/` files** ahead, at version `0.9.0`. Upstream moved the entire TUI into a
+  `src/client/shell/*` + `src/client/endpoint/*` layer — completing the Runtime/client
+  boundary migration this file asks new work to respect — which drains
+  `src/ui/sidebar.rs` by **3324 lines** and `src/app/state.rs` by **1320**. That is the
+  "upstream blocks conflicting wholesale where the fork moved code" trap at its worst,
+  because the fork's `sidebar.rs` is 482 KB against an upstream file that is being
+  emptied: git cannot align them, so expect one huge conflict whose "ours" side is
+  empty, and resolve it by taking `ours` and porting the genuine upstream delta by
+  hand. Consequence for planning: do NOT land fork work in `src/ui/sidebar.rs` or
+  `src/app/state.rs` ahead of this merge — it is guaranteed rework. Channels and the
+  chat view are safe by contrast: `src/app/api/channels.rs`, `src/persist/channels.rs`,
+  `src/app/input/chat.rs`, `src/ui/chat.rs` and `src/api/schema/channels.rs` are all
+  **absent upstream**, so the merge brings no competing implementation and no conflict
+  in them. Upstream's `Subscription` enum has 27 variants to the fork's 33 (the six
+  extras are `pane.result_reported`, three `github.*`, `todo.changed`,
+  `scratchpad.changed`, all appended at the end), so appending another fork variant
+  stays a small conflict. Full analysis in `.local/prd/channel-identity-and-subscribe.md`.
 
 Every upstream sync also updates `UPSTREAM_HERDR_VERSION`/`UPSTREAM_HERDR_COMMIT` in
 `src/build_info.rs` to the merged upstream tip, in the same commit as the merge — see
