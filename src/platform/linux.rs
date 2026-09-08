@@ -1230,11 +1230,11 @@ mod tests {
 
         let test_path = match cleanup.old_path.as_ref() {
             Some(path) => {
-                let mut paths = vec![temp_dir.clone()];
+                let mut paths = vec![temp_dir];
                 paths.extend(std::env::split_paths(path));
                 std::env::join_paths(paths).expect("test path should be valid")
             }
-            None => temp_dir.clone().into_os_string(),
+            None => temp_dir.into_os_string(),
         };
         unsafe {
             std::env::set_var("PATH", test_path);

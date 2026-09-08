@@ -125,6 +125,27 @@ class ReviewRulesEndToEnd(unittest.TestCase):
         self.commit("docs: tweak")
         self.assert_flags("docs/versions/0.19.md")
 
+    def test_pure_rename_of_generated_output_is_not_a_hand_edit(self) -> None:
+        # An upstream sync moved website/latest.json to distribution/ without
+        # touching its content; git reports R100 and the guard must stay quiet.
+        (self.repo / "website").mkdir(exist_ok=True)
+        self.write("website/latest.json", '{"version": "0.19.0"}\n')
+        self.commit("chore: publish manifest")
+        (self.repo / "distribution").mkdir()
+        self.git("mv", "website/latest.json", "distribution/latest.json")
+        self.commit("chore: move manifest")
+        self.assert_clean()
+
+    def test_rename_that_also_edits_generated_output_is_flagged(self) -> None:
+        (self.repo / "website").mkdir(exist_ok=True)
+        self.write("website/latest.json", '{"version": "0.19.0"}\n')
+        self.commit("chore: publish manifest")
+        (self.repo / "distribution").mkdir()
+        self.git("mv", "website/latest.json", "distribution/latest.json")
+        self.write("distribution/latest.json", '{"version": "0.19.0", "edited": true}\n')
+        self.commit("chore: move and edit manifest")
+        self.assert_flags("distribution/latest.json")
+
     # ── #[allow] justification ──────────────────────────────────────────
 
     def test_bare_allow_attribute_is_flagged(self) -> None:

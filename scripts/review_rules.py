@@ -288,11 +288,15 @@ def read_git_file(sha: str, path: str) -> str | None:
 
 
 def run_all_checks(base_sha: str, head_sha: str) -> list[Finding]:
-    changed_paths = [path for _status, path in parse_name_status(run_git(["diff", "--name-status", f"{base_sha}...{head_sha}"]))]
+    name_status = parse_name_status(run_git(["diff", "--name-status", f"{base_sha}...{head_sha}"]))
+    changed_paths = [path for _status, path in name_status]
+    # A pure rename (R100) moves generated output without editing it; only
+    # content changes are hand-edits the generated-path rule exists to catch.
+    edited_paths = [path for status, path in name_status if status != "R100"]
 
     findings: list[Finding] = []
     findings += check_version_bump(changed_paths, read_git_file(base_sha, "Cargo.toml"), read_git_file(head_sha, "Cargo.toml"))
-    findings += check_generated_paths(changed_paths)
+    findings += check_generated_paths(edited_paths)
 
     added_by_path = parse_added_lines(run_git(["diff", "--unified=0", f"{base_sha}...{head_sha}"]))
     rs_added = {path: lines for path, lines in added_by_path.items() if path.endswith(".rs")}
