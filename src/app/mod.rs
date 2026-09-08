@@ -218,9 +218,6 @@ pub struct App {
     pub(crate) no_session: bool,
     pub(crate) input_rx: Option<mpsc::Receiver<crate::raw_input::RawInputEvent>>,
     pub(crate) last_terminal_size: Option<(u16, u16)>,
-    /// Last time workspace declared-command caches were refreshed from the
-    /// throttled loader (bora-55c.3); gates the tick to once per second.
-    pub(crate) last_commands_refresh: Option<Instant>,
     pub(crate) config_diagnostic_deadline: Option<Instant>,
     pub(crate) toast_deadline: Option<Instant>,
     pub(crate) copy_feedback_deadline: Option<Instant>,
@@ -743,8 +740,6 @@ impl App {
             request_flow_run: None,
             request_open_chat: false,
             request_open_create_worktree: None,
-            pending_bora_command: None,
-            bora_port_override: None,
             creating_new_tab: false,
             requested_new_tab_name: None,
             pending_workspace_create_cwd: None,
@@ -1046,7 +1041,6 @@ impl App {
             no_session,
             input_rx: None,
             last_terminal_size: terminal::size().ok(),
-            last_commands_refresh: None,
             render_notify,
             render_dirty,
             full_redraw_pending: false,
@@ -1816,11 +1810,6 @@ impl App {
                 needs_render = true;
             }
 
-            if let Some(bora_cmd) = self.state.pending_bora_command.take() {
-                self.execute_bora_command(bora_cmd);
-                needs_render = true;
-            }
-
             if self.ensure_default_workspace() {
                 needs_render = true;
             }
@@ -2441,10 +2430,8 @@ impl App {
 
     /// Build the `agent.start` params for a flow run, or report why the run
     /// cannot proceed. Pure over `&self` so the dispatch payload is testable
-    /// without spawning a PTY. Template resolution reads `.bora.toml` from
-    /// `Workspace::bora_config_root()` — the same root the Issues context
-    /// menu used to decide the item's visibility — and `{repo}`/cwd use the
-    /// stable repo checkout root, not any pane's live cwd.
+    /// without spawning a PTY. `{repo}`/cwd use the stable repo checkout
+    /// root, not any pane's live cwd.
     fn prepare_flow_agent_start(
         &self,
         request: &state::FlowRunRequest,
@@ -2457,16 +2444,8 @@ impl App {
             .ok_or(FlowRunSkip::NoActiveWorkspace)?;
         let git_space = ws.git_space().ok_or(FlowRunSkip::NoGitMetadata)?;
 
-        let per_repo = ws
-            .bora_config_root()
-            .and_then(crate::bora_config::load_bora_config)
-            .and_then(|config| config.flow)
-            .and_then(|flow| flow.command);
-        let template = flow::resolve_flow_template(
-            per_repo.as_deref(),
-            self.state.flow_command_template.as_deref(),
-        )
-        .ok_or(FlowRunSkip::TemplateNotConfigured)?;
+        let template = flow::resolve_flow_template(self.state.flow_command_template.as_deref())
+            .ok_or(FlowRunSkip::TemplateNotConfigured)?;
 
         let repo_path = git_space.repo_root.display().to_string();
         let context = flow::FlowCommandContext {
@@ -2526,80 +2505,6 @@ impl App {
             position: None,
             target: None,
         });
-    }
-
-    fn execute_bora_command(&mut self, cmd: state::PendingBoraCommand) {
-        // Substitute $BORA_PORT / ${BORA_PORT} in the command string.
-        let command = if let Some(port) = cmd.port {
-            cmd.command
-                .replace("$BORA_PORT", &port.to_string())
-                .replace("${BORA_PORT}", &port.to_string())
-        } else {
-            cmd.command
-        };
-
-        match cmd.mode {
-            crate::bora_config::BoraCommandMode::Shell => {
-                let (env, cwd) = self.custom_command_env();
-                let mut proc = std::process::Command::new("/bin/sh");
-                proc.arg("-lc")
-                    .arg(&command)
-                    .stdin(std::process::Stdio::null())
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null());
-                proc.envs(env);
-                if let Some(port) = cmd.port {
-                    proc.env("BORA_PORT", port.to_string());
-                }
-                if let Some(cwd) = cwd {
-                    proc.current_dir(cwd);
-                }
-                if let Err(err) = proc.spawn() {
-                    self.state.toast = Some(state::ToastNotification {
-                        kind: state::ToastKind::NeedsAttention,
-                        title: "bora command failed".to_string(),
-                        context: err.to_string(),
-                        position: None,
-                        target: None,
-                    });
-                }
-            }
-            crate::bora_config::BoraCommandMode::Pane => {
-                self.state.selected = cmd.ws_idx;
-                self.state.active = Some(cmd.ws_idx);
-                self.state.bora_port_override = cmd.port;
-                if let Err(err) = self.spawn_pane_command(&command, vec![]) {
-                    self.state.toast = Some(state::ToastNotification {
-                        kind: state::ToastKind::NeedsAttention,
-                        title: "bora command failed".to_string(),
-                        context: err.to_string(),
-                        position: None,
-                        target: None,
-                    });
-                } else {
-                    self.tag_launched_command_pane_label(cmd.label);
-                }
-                self.state.bora_port_override = None;
-            }
-        }
-    }
-
-    fn tag_launched_command_pane_label(&mut self, label: Option<String>) {
-        let Some(label) = label else {
-            return;
-        };
-        let Some(ws_idx) = self.state.active else {
-            return;
-        };
-        let Some(ws) = self.state.workspaces.get_mut(ws_idx) else {
-            return;
-        };
-        let Some(pane_id) = ws.focused_pane_id() else {
-            return;
-        };
-        if let Some(pane) = ws.pane_state_mut(pane_id) {
-            pane.command_label = Some(label);
-        }
     }
 }
 
@@ -4390,8 +4295,8 @@ mod tests {
         app.state.workspaces.push(Workspace::test_new("one"));
         app.state.active = Some(0);
         let mut git_space = test_git_space("github.com/owner/repo");
-        // A repo root that cannot hold a stray `.bora.toml`, so only the
-        // (unset) global template participates in resolution.
+        // A repo root that resolves to nothing, so only the (unset) global
+        // template participates in resolution.
         git_space.repo_root = std::path::PathBuf::from("/nonexistent/bora-flow-run-test");
         app.state.workspaces[0].cached_git_space = Some(git_space);
 
@@ -7565,8 +7470,6 @@ last_pane = "prefix+tab"
             x: 2,
             y: 2,
             list: state::MenuListState::new(close_idx),
-            bora_commands: vec![],
-            bora_port: None,
         });
         app.state.mode = Mode::ContextMenu;
 
@@ -7607,8 +7510,6 @@ last_pane = "prefix+tab"
             x: 2,
             y: 2,
             list: state::MenuListState::new(refresh_idx),
-            bora_commands: vec![],
-            bora_port: None,
         };
         app.state.mode = Mode::ContextMenu;
 
@@ -8041,65 +7942,5 @@ last_pane = "prefix+tab"
             .check_agent_prompt_rate_limit("w1:p9", "w1:p8", later)
             .is_ok());
         assert_eq!(app.agent_prompt_rate_limits.len(), 1);
-    }
-
-    #[test]
-    fn pane_command_label_tags_the_launched_pane() {
-        let mut app = test_app();
-        let mut workspace = Workspace::test_new("test");
-        workspace.test_split(ratatui::layout::Direction::Horizontal);
-        let focused_pane = workspace.focused_pane_id().unwrap();
-        app.state.workspaces = vec![workspace];
-        app.state.active = Some(0);
-        app.state.selected = 0;
-        app.state.mode = Mode::Terminal;
-
-        // A fresh pane is untagged until a command launches it.
-        assert!(app.state.workspaces[0]
-            .pane_state(focused_pane)
-            .unwrap()
-            .command_label
-            .is_none());
-
-        // execute_bora_command's Pane arm calls this right after the spawn.
-        app.tag_launched_command_pane_label(Some("run-web".to_string()));
-
-        assert_eq!(
-            app.state.workspaces[0]
-                .pane_state(focused_pane)
-                .unwrap()
-                .command_label
-                .clone(),
-            Some("run-web".to_string())
-        );
-    }
-
-    #[test]
-    fn fire_and_forget_shell_commands_spawn_no_tagged_pane() {
-        let mut app = test_app();
-        let workspace = Workspace::test_new("test");
-        let existing_pane = workspace.focused_pane_id().unwrap();
-        app.state.workspaces = vec![workspace];
-        app.state.active = Some(0);
-        app.state.selected = 0;
-        app.state.mode = Mode::Terminal;
-
-        app.execute_bora_command(crate::app::state::PendingBoraCommand {
-            ws_idx: 0,
-            command: "true".to_string(),
-            mode: crate::bora_config::BoraCommandMode::Shell,
-            port: None,
-            label: None,
-        });
-
-        // Shell is fire-and-forget: no pane was spawned, so neither the
-        // pre-existing pane nor any new pane carries the command's tag.
-        let ws = &app.state.workspaces[0];
-        assert_eq!(ws.panes.len(), 1);
-        assert!(ws
-            .pane_state(existing_pane)
-            .unwrap()
-            .command_label
-            .is_none());
     }
 }

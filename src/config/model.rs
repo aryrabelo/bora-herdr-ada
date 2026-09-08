@@ -101,8 +101,7 @@ pub struct FlowConfig {
     /// Shell command template used to run a flow for a GitHub issue from the
     /// Issues tab. Placeholders: `{issue}` = `owner/repo#N`, `{number}` = N,
     /// `{url}` = issue URL, `{repo}` = absolute repo checkout path. `None`
-    /// disables the action. A repo can override this via `[flow]` in its
-    /// `.bora.toml`.
+    /// disables the action.
     pub command: Option<String>,
 }
 

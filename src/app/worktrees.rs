@@ -780,7 +780,6 @@ impl App {
                     path,
                     api_request: None,
                     result,
-                    setup: crate::bora_settings::SetupStatus::Skipped,
                 },
             )));
         });
@@ -823,7 +822,6 @@ impl App {
                 pr: None,
                 focus: true,
                 label: None,
-                no_setup: false,
             },
         );
         if let Some(message) = immediate_api_error_message(immediate_response.as_deref()) {
@@ -872,7 +870,6 @@ impl App {
                 pr: None,
                 focus: true,
                 label: None,
-                no_setup: false,
             }),
         );
         if let Some(message) = immediate_api_error_message(immediate_response.as_deref()) {
@@ -1220,6 +1217,10 @@ impl App {
             Ok(()) => {
                 tracing::info!(checkout_path = %create.checkout_path.display(), "git worktree add completed");
                 crate::worktree::copy_worktree_includes(
+                    &create.source_repo_root,
+                    &create.checkout_path,
+                );
+                crate::worktree::ensure_context_dir(
                     &create.source_repo_root,
                     &create.checkout_path,
                 );
@@ -2951,7 +2952,6 @@ mod tests {
             path: checkout.clone(),
             api_request: None,
             result: Ok(()),
-            setup: crate::bora_settings::SetupStatus::Skipped,
         });
 
         assert_eq!(
@@ -3051,7 +3051,6 @@ mod tests {
             path: checkout.clone(),
             api_request: None,
             result: Ok(()),
-            setup: crate::bora_settings::SetupStatus::Skipped,
         });
 
         assert_eq!(app.state.workspaces.len(), 2);

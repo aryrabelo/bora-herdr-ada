@@ -5349,10 +5349,6 @@
                 "null"
               ]
             },
-            "no_setup": {
-              "default": false,
-              "type": "boolean"
-            },
             "path": {
               "type": [
                 "string",
@@ -10789,16 +10785,6 @@
               "properties": {
                 "root_pane": {
                   "$ref": "#/schemas/success_response/$defs/PaneInfo"
-                },
-                "setup": {
-                  "default": "",
-                  "type": "string"
-                },
-                "setup_error": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
                 },
                 "tab": {
                   "$ref": "#/schemas/success_response/$defs/TabInfo"

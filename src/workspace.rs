@@ -239,12 +239,6 @@ pub struct Workspace {
     pub(crate) cached_change_set: Option<WorkspaceChangeSet>,
     /// Cached PR + CI check status for the workspace branch.
     pub(crate) cached_check_status: Option<WorkspaceCheckStatus>,
-    /// Declared repo commands (`wt [scripts.run.*]` + deprecated
-    /// `.bora.toml [[commands]]`), branch-filtered, refreshed on the runtime
-    /// tick (bora-55c.3). The sidebar COMMANDS band reads ONLY this — the
-    /// throttled loader never runs from render. `None` = not refreshed yet
-    /// or nothing declared.
-    pub(crate) cached_commands: Option<Vec<crate::bora_config::BoraCommand>>,
     /// `#`-channels this workspace has a pane explicitly joined into (not
     /// counting the channel's own home workspace, whose name already shows
     /// it). Refreshed periodically alongside git status, never in render.
@@ -330,7 +324,6 @@ impl Workspace {
             cached_git_space,
             cached_change_set: None,
             cached_check_status: None,
-            cached_commands: None,
             cached_channels: Vec::new(),
             cached_collectible: None,
             worktree_space,
@@ -539,7 +532,6 @@ impl Workspace {
                 cached_git_space,
                 cached_change_set: None,
                 cached_check_status: None,
-                cached_commands: None,
                 cached_channels: Vec::new(),
                 cached_collectible: None,
                 worktree_space,
@@ -1289,16 +1281,6 @@ impl Workspace {
         self.worktree_space.as_ref()
     }
 
-    /// Repo root that owns this workspace's `.bora.toml`: the parent repo
-    /// root for worktree-space members, else the git space's repo root.
-    /// Single source of truth for every `.bora.toml` lookup so menu-time and
-    /// run-time resolution can never disagree.
-    pub fn bora_config_root(&self) -> Option<&std::path::Path> {
-        self.worktree_space()
-            .map(|space| space.repo_root.as_path())
-            .or_else(|| self.git_space().map(|space| space.repo_root.as_path()))
-    }
-
     #[cfg(test)]
     pub fn refresh_git_ahead_behind(&mut self) {
         let cwd = self.resolved_identity_cwd();
@@ -1440,7 +1422,6 @@ impl Workspace {
             cached_git_space: None,
             cached_change_set: None,
             cached_check_status: None,
-            cached_commands: None,
             cached_channels: Vec::new(),
             cached_collectible: None,
             worktree_space: None,

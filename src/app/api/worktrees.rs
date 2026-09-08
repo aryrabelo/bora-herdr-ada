@@ -1233,7 +1233,6 @@ mod tests {
                 respond_to,
             }),
             result: Ok(()),
-            setup: crate::bora_settings::SetupStatus::Skipped,
         });
 
         let response = response_rx
@@ -2149,7 +2148,6 @@ mod tests {
                     path: Some(checkout.display().to_string()),
                     label: None,
                     focus: false,
-                    no_setup: false,
                 }),
             },
             respond_to,

@@ -1349,8 +1349,7 @@ pub enum ContextMenuKind {
         head_ref: String,
     },
     /// An issue row in the right-panel Issues tab. `flow_available` is
-    /// resolved at menu-open time from the per-repo `.bora.toml` `[flow]`
-    /// override and the global `[flow]` config template.
+    /// resolved at menu-open time from the global `[flow]` config template.
     RepoIssue {
         number: u64,
         url: String,
@@ -1365,8 +1364,6 @@ pub struct ContextMenuState {
     pub y: u16,
     pub list: MenuListState,
     pub items: Vec<String>,
-    pub bora_commands: Vec<crate::bora_config::BoraCommand>,
-    pub bora_port: Option<u16>,
 }
 
 /// Menu separator: rendered as a dim line, not selectable.
@@ -1680,24 +1677,11 @@ impl ContextMenuState {
 }
 
 impl AppState {
-    /// Resolve the effective flow command template for the active workspace's
-    /// repo: the `.bora.toml` `[flow]` override wins over the global `[flow]`
-    /// config template. `None` means the "Run with bora-flow" action is
-    /// unavailable. Reads `.bora.toml` per call, matching the workspace
-    /// context menu's per-click `.bora.toml` read.
+    /// Resolve the effective flow command template for the active
+    /// workspace's repo: the global `[flow]` config template. `None` means
+    /// the "Run with bora-flow" action is unavailable.
     pub(crate) fn repo_issue_flow_template(&self) -> Option<String> {
-        let per_repo = self
-            .active
-            .and_then(|idx| self.workspaces.get(idx))
-            .and_then(|ws| {
-                crate::bora_config::load_bora_config(ws.bora_config_root()?)?
-                    .flow?
-                    .command
-            });
-        crate::app::flow::resolve_flow_template(
-            per_repo.as_deref(),
-            self.flow_command_template.as_deref(),
-        )
+        crate::app::flow::resolve_flow_template(self.flow_command_template.as_deref())
     }
 
     /// Merged GitHub picks for the Create worktree modal: open PRs first, then
@@ -1775,17 +1759,6 @@ impl AppState {
 pub struct FlowRunRequest {
     pub number: u64,
     pub url: String,
-}
-
-#[derive(Debug, Clone)]
-pub struct PendingBoraCommand {
-    pub ws_idx: usize,
-    pub command: String,
-    pub mode: crate::bora_config::BoraCommandMode,
-    pub port: Option<u16>,
-    /// Label of the originating bora command, so the Pane arm can tag the
-    /// spawned pane. None for shell-mode runs (fire-and-forget, uncounted).
-    pub label: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2022,9 +1995,6 @@ pub struct AppState {
     /// modal for a repo (by `repo_identity`); drained by App to trigger fetches
     /// and open the modal so the mouse handler stays side-effect-light.
     pub request_open_create_worktree: Option<String>,
-    pub pending_bora_command: Option<PendingBoraCommand>,
-    /// Transient port override consumed by custom_command_env for pane commands.
-    pub bora_port_override: Option<u16>,
     pub creating_new_tab: bool,
     pub requested_new_tab_name: Option<String>,
     pub pending_workspace_create_cwd: Option<std::path::PathBuf>,
@@ -2037,8 +2007,8 @@ pub struct AppState {
     pub chat: ChatViewState,
     pub worktree_remove: Option<WorktreeRemoveState>,
     pub worktree_directory: std::path::PathBuf,
-    /// Global `[flow]` command template from config.toml. Repos can override
-    /// it via `[flow]` in their `.bora.toml`; see `repo_issue_flow_template`.
+    /// Global `[flow]` command template from config.toml; see
+    /// `repo_issue_flow_template`.
     pub flow_command_template: Option<String>,
     /// `[agents.commands]` overrides from config.toml, keyed by canonical
     /// agent id; `agent start` uses these to pick the executable it types
@@ -2545,8 +2515,6 @@ impl AppState {
             request_open_pr_worktree: None,
             request_flow_run: None,
             request_open_create_worktree: None,
-            pending_bora_command: None,
-            bora_port_override: None,
             creating_new_tab: false,
             requested_new_tab_name: None,
             pending_workspace_create_cwd: None,
@@ -3381,8 +3349,6 @@ mod tests {
             x: 0,
             y: 0,
             list: MenuListState::new(0),
-            bora_commands: vec![],
-            bora_port: None,
         };
 
         assert_eq!(
@@ -3425,8 +3391,6 @@ mod tests {
             x: 0,
             y: 0,
             list: MenuListState::new(0),
-            bora_commands: vec![],
-            bora_port: None,
         };
 
         assert_eq!(
@@ -3468,8 +3432,6 @@ mod tests {
             x: 0,
             y: 0,
             list: MenuListState::new(0),
-            bora_commands: vec![],
-            bora_port: None,
         };
         assert_eq!(
             menu.items().iter().map(String::as_str).collect::<Vec<_>>(),
@@ -3541,8 +3503,7 @@ mod tests {
     #[test]
     fn plugin_action_context_matching_action_appears_in_menu() {
         // bora-1e9: an enabled plugin action declaring the menu's own
-        // context must appear, appended after a separator the same way
-        // `custom_commands` already does.
+        // context must appear, appended after a separator.
         let plugins = plugin_registry_with(test_plugin_action(
             "example.tool",
             true,

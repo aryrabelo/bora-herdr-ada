@@ -2,8 +2,7 @@
 //! Issues tab "Run with bora-flow" action.
 //!
 //! Herdr stays agnostic of the external flow orchestrator's CLI: the shell
-//! command template configured in `config.toml` (global) or a repo's
-//! `.bora.toml` (per-repo override) is the only coupling.
+//! command template configured in `config.toml` is the only coupling.
 
 /// Values substituted into a flow command template.
 pub(crate) struct FlowCommandContext {
@@ -36,20 +35,13 @@ pub(crate) fn render_flow_command(template: &str, ctx: &FlowCommandContext) -> S
         .replace("{repo}", &shell_quote(&ctx.repo_path))
 }
 
-/// Resolve the effective flow command template: the per-repo `.bora.toml`
-/// override wins over the global `[flow]` config; blank templates count as
-/// unset and disable the action.
-pub(crate) fn resolve_flow_template(
-    per_repo: Option<&str>,
-    global: Option<&str>,
-) -> Option<String> {
-    let pick = |value: Option<&str>| {
-        value
-            .map(str::trim)
-            .filter(|template| !template.is_empty())
-            .map(str::to_string)
-    };
-    pick(per_repo).or_else(|| pick(global))
+/// Resolve the effective flow command template from the global `[flow]`
+/// config; a blank template counts as unset and disables the action.
+pub(crate) fn resolve_flow_template(global: Option<&str>) -> Option<String> {
+    global
+        .map(str::trim)
+        .filter(|template| !template.is_empty())
+        .map(str::to_string)
 }
 
 /// Derive the `{issue}` value (`owner/repo#N`) from a repo identity of the
@@ -127,28 +119,20 @@ mod tests {
     }
 
     #[test]
-    fn resolve_prefers_per_repo_over_global() {
+    fn resolve_returns_global_template() {
         assert_eq!(
-            resolve_flow_template(Some("repo-cmd {issue}"), Some("global-cmd {issue}")),
-            Some("repo-cmd {issue}".to_string())
-        );
-        assert_eq!(
-            resolve_flow_template(None, Some("global-cmd {issue}")),
+            resolve_flow_template(Some("global-cmd {issue}")),
             Some("global-cmd {issue}".to_string())
         );
-        assert_eq!(resolve_flow_template(None, None), None);
+        assert_eq!(resolve_flow_template(None), None);
     }
 
     #[test]
-    fn resolve_treats_blank_templates_as_unset() {
-        assert_eq!(resolve_flow_template(Some("  "), None), None);
+    fn resolve_treats_blank_template_as_unset() {
+        assert_eq!(resolve_flow_template(Some("  ")), None);
         assert_eq!(
-            resolve_flow_template(Some(""), Some("global {issue}")),
+            resolve_flow_template(Some("  global {issue}  ")),
             Some("global {issue}".to_string())
-        );
-        assert_eq!(
-            resolve_flow_template(Some("  repo {issue}  "), None),
-            Some("repo {issue}".to_string())
         );
     }
 

@@ -866,6 +866,89 @@ pub(crate) fn copy_worktree_includes(repo_root: &Path, checkout_path: &Path) {
         }
     }
 }
+
+/// Absolute git common dir for `repo_root` (shared by all linked worktrees).
+/// Falls back to `repo_root/.git` when git cannot be queried.
+fn git_common_dir(repo_root: &Path) -> PathBuf {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args(["rev-parse", "--path-format=absolute", "--git-common-dir"])
+        .output();
+    if let Ok(output) = output {
+        if output.status.success() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let dir = stdout.trim();
+            if !dir.is_empty() {
+                return PathBuf::from(dir);
+            }
+        }
+    }
+    repo_root.join(".git")
+}
+
+/// Create `.context/` in a freshly created worktree checkout and ensure
+/// `.context/` is git-excluded via the shared `<git common dir>/info/exclude`.
+/// Always-on per-worktree hygiene (relocated from the retired
+/// `.bora/settings.toml` provisioning path, bora #272): independent of any
+/// per-repo config file, run unconditionally on every worktree creation.
+pub(crate) fn ensure_context_dir(repo_root: &Path, checkout_path: &Path) {
+    let context_dir = checkout_path.join(".context");
+    if let Err(err) = std::fs::create_dir_all(&context_dir) {
+        tracing::warn!(path = %context_dir.display(), "worktree: create .context failed: {err}");
+    }
+    let exclude_path = git_common_dir(repo_root).join("info").join("exclude");
+    ensure_exclude_line(&exclude_path, ".context/");
+}
+
+/// Append `line` to the git exclude file if not already present (idempotent).
+fn ensure_exclude_line(exclude_path: &Path, line: &str) {
+    let existing = match std::fs::read_to_string(exclude_path) {
+        Ok(content) => content,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
+        // Unreadable (non-UTF-8 bytes, permissions, ...): refuse to touch it.
+        // We cannot tell whether `line` is already there, and the operator's
+        // hand-written ignore rules are worth far more than one excluded
+        // `.context/` dir.
+        Err(err) => {
+            tracing::warn!(path = %exclude_path.display(), "worktree: read exclude failed, leaving it untouched: {err}");
+            return;
+        }
+    };
+    if existing
+        .lines()
+        .any(|existing_line| existing_line.trim() == line)
+    {
+        return;
+    }
+    if let Some(parent) = exclude_path.parent() {
+        if let Err(err) = std::fs::create_dir_all(parent) {
+            tracing::warn!(path = %parent.display(), "worktree: create exclude dir failed: {err}");
+            return;
+        }
+    }
+    let mut addition = String::new();
+    if !existing.is_empty() && !existing.ends_with('\n') {
+        addition.push('\n');
+    }
+    addition.push_str(line);
+    addition.push('\n');
+    // Append rather than rewrite: several bora processes can create worktrees
+    // in the same repo concurrently and share this one exclude file. A
+    // read-modify-write would drop a sibling's line; an append at worst leaves
+    // a duplicate `.context/`, which git ignores just the same.
+    let write = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(exclude_path)
+        .and_then(|mut file| {
+            use std::io::Write;
+            file.write_all(addition.as_bytes())
+        });
+    if let Err(err) = write {
+        tracing::warn!(path = %exclude_path.display(), "worktree: write exclude failed: {err}");
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1467,5 +1550,70 @@ prunable stale
 
         let _ = std::fs::remove_dir_all(src);
         let _ = std::fs::remove_dir_all(dst);
+    }
+
+    #[test]
+    fn ensure_context_dir_creates_dir_and_excludes_once() {
+        let repo = create_committed_repo("context-dir");
+        let checkout = unique_temp_path("context-dir-wt");
+        std::fs::create_dir_all(&checkout).unwrap();
+
+        ensure_context_dir(&repo, &checkout);
+        assert!(checkout.join(".context").is_dir());
+
+        let exclude = git_common_dir(&repo).join("info").join("exclude");
+        let count = |path: &Path| {
+            std::fs::read_to_string(path)
+                .unwrap()
+                .lines()
+                .filter(|line| line.trim() == ".context/")
+                .count()
+        };
+        assert_eq!(count(&exclude), 1);
+
+        // Idempotent on a second call.
+        ensure_context_dir(&repo, &checkout);
+        assert_eq!(count(&exclude), 1);
+
+        let _ = std::fs::remove_dir_all(&repo);
+        let _ = std::fs::remove_dir_all(&checkout);
+    }
+
+    #[test]
+    fn ensure_exclude_line_leaves_unreadable_file_untouched() {
+        let dir = unique_temp_path("exclude-non-utf8");
+        std::fs::create_dir_all(&dir).unwrap();
+        let exclude = dir.join("exclude");
+        let original: &[u8] = b"*.log\n\xff\xfe\n";
+        std::fs::write(&exclude, original).unwrap();
+
+        ensure_exclude_line(&exclude, ".context/");
+
+        assert_eq!(std::fs::read(&exclude).unwrap(), original);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ensure_exclude_line_appends_once_preserving_content() {
+        let dir = unique_temp_path("exclude-append");
+        std::fs::create_dir_all(&dir).unwrap();
+        let exclude = dir.join("exclude");
+        // No trailing newline: the appended line must not glue onto it.
+        std::fs::write(&exclude, "*.log\nbuild/").unwrap();
+
+        ensure_exclude_line(&exclude, ".context/");
+        assert_eq!(
+            std::fs::read_to_string(&exclude).unwrap(),
+            "*.log\nbuild/\n.context/\n"
+        );
+
+        ensure_exclude_line(&exclude, ".context/");
+        assert_eq!(
+            std::fs::read_to_string(&exclude).unwrap(),
+            "*.log\nbuild/\n.context/\n"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

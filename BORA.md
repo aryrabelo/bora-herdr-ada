@@ -14,17 +14,9 @@ stock `herdr` install (brew/mise) instead of overwriting it.
   manifest keyed on the `π  /` status bar (working = braille spinner / `⟦esc⟧`).
   See commit `fix(detect): recognize omp (oh-my-pi) as a first-class agent`.
 
-- **Sidebar "Programs" launcher.** The workspace-list sidebar shows a fixed
-  band above the "new"/"menu" footer: one row per pane-mode `.bora.toml`
-  `[[commands]]` entry for the active workspace's branch, plus an always-on
-  "+ run command…" row that opens a free-text prompt (reuses the
-  rename-modal text-input pattern; `Mode::LaunchProgramPrompt`). Clicking an
-  entry runs the same `PendingBoraCommand` path the right-click context menu
-  already used, so external editors/tools (Helix via `hx .`, `gitui`, `bd
-  ready`) configured in `.bora.toml` are one click away instead of only
-  reachable through the workspace context menu. See
-  `src/app/input/mouse.rs` (`MouseAction::LaunchProgram*`), `src/ui/sidebar.rs`
-  (`sidebar_programs_band_rect`), and this repo's own `.bora.toml`.
+- **Worktree creation auto-provisions `.context/`.** Every worktree bora
+  creates gets a `.context/` scratch dir for notes and handoffs, git-excluded
+  centrally rather than per worktree. See "Worktree creation" below.
 
 ## Branch layout
 
@@ -149,129 +141,30 @@ tag; `.github/workflows/release.yml` builds the four `bora-*` binaries
   `herdr`. The `HERDR_*` env var names (including `HERDR_CONFIG_PATH`) are
   unchanged for plugin/agent compatibility.
 
-## Workspace configuration — `.bora/settings.toml`
+## Worktree creation
 
-Per-project workspace configuration, modeled on Conductor's
-`.conductor/settings.toml`. Lives at the repo root in `.bora/settings.toml` and
-is read when a worktree/workspace is created. It supersedes the legacy
-`.worktreeinclude` (which still works as a fallback when the file is absent or
-has no `[files]` section). Unrelated to the separate `.bora.toml` config.
+Two provisioning steps run on every worktree bora creates. Both are
+unconditional — no per-repo config file is involved (`src/worktree.rs`).
 
-### Isolation contract
-
-Each workspace is an isolated place for one agent to work:
-
-- Code changes stay on that workspace's branch (one branch per workspace).
-- File edits happen in that workspace's own working tree.
-- Setup and run scripts execute from the workspace directory, with
-  workspace-specific environment variables (see the env table below).
-- App processes can bind a stable, workspace-specific `BORA_PORT`.
-- Notes and handoffs live in the workspace's `.context/` folder, auto-created on
-  provisioning and never committed. It is git-ignored by appending a `.context/`
-  line to the shared `.git/info/exclude`.
+- **`.worktreeinclude` file copy.** When the source repo root holds a
+  `.worktreeinclude`, every non-empty, non-`#` line is read as a path relative
+  to that root and copied into the new checkout, creating parent directories as
+  needed. A line whose source is not a regular file is skipped, and a failed
+  copy is logged without failing creation. It is a copy, not a link, so later
+  edits to the root file are not visible in the worktree.
+- **`.context/` scratch dir.** Created in the new checkout, and excluded from
+  git by appending a `.context/` line to `<git common dir>/info/exclude`.
+  Repeated calls add nothing; two worktree creations racing in the same repo
+  can leave a duplicate line, which git ignores just the same.
 
 > [!NOTE]
-> Worktrees created off a shared `.git` all read the **same**
-> `.git/info/exclude`. Any copied or symlinked meta file whose name is excluded
-> there stays excluded in every worktree — no per-worktree `.gitignore`
-> juggling. This is why `.context/` is excluded once, centrally.
+> Worktrees created off a shared `.git` all read the **same** `info/exclude`.
+> Anything excluded there stays excluded in every worktree, which is why
+> `.context/` is excluded once, centrally, instead of through a per-worktree
+> `.gitignore`.
 
-### `[scripts]`
-
-```toml
-# .bora/settings.toml
-[scripts]
-# Runs once in the new worktree right after creation, before any agent is
-# launched in it. A non-zero exit is surfaced as setup: "failed" in the
-# `worktree create --json` result — creation does not silently continue.
-setup = """
-pnpm install
-cp "$BORA_ROOT_PATH/.env" .env
-pnpm run build
-"""
-
-# The project's dev command, executed by `bora workspace run`.
-run = "pnpm dev --port $BORA_PORT"
-
-# concurrent (default): every workspace may run `run` simultaneously, each on
-#                       its own $BORA_PORT.
-# exclusive:            starting `run` in one workspace stops the previous run
-#                       (tracked via a pidfile at .git/info/bora-run.pid).
-run_mode = "concurrent"
-```
-
-### `[files]` — copy vs symlink
-
-```toml
-[files]
-# copy: snapshot taken at creation time (the legacy .worktreeinclude behavior).
-#       Edits made to the root copy afterwards are NOT reflected in the worktree.
-copy = ["CLAUDE.md", ".env.example"]
-
-# symlink: a live view into the root checkout. The worktree entry is a symlink
-#          whose target is the absolute path in the root repo, so later edits in
-#          the root are visible immediately in every workspace.
-symlink = [".claude", ".claude-plugin", "docs", "harness.toml", "hooks", "Plans.md"]
-```
-
-Semantics:
-
-- **copy** = snapshot at creation. **symlink** = live view into the root
-  checkout (target is an absolute path into `BORA_ROOT_PATH`).
-- Existing paths in the worktree are **never overwritten** — a conflicting entry
-  is logged and skipped. Missing sources are skipped too.
-- **Precedence:** `.bora/settings.toml [files]` wins over `.worktreeinclude`.
-  When `[files]` is present it fully governs file provisioning; when it is
-  absent, `.worktreeinclude` is used and every listed entry is treated as
-  `copy`. `.worktreeinclude` continues to work unchanged for projects without a
-  settings file.
-
-### Injected environment variables
-
-Injected into both `setup` and `run` scripts:
-
-| Variable | Value |
-|---|---|
-| `BORA_ROOT_PATH` | Main repo checkout path |
-| `BORA_WORKSPACE_PATH` | This worktree's path |
-| `BORA_WORKSPACE_ID` | The worktree directory name |
-| `BORA_BRANCH` | The workspace branch (empty if unknown) |
-| `BORA_PORT` | Stable per-branch port (only set when allocatable) |
-
-`BORA_PORT` is resolved through a single function, so a workspace always sees one
-port regardless of which surface asks — the `[[commands]]` UI, the `setup`/`run`
-scripts, and `bora workspace run` all agree.
-
-Resolution precedence:
-
-1. If `.bora/settings.toml` defines `[ports]` (`base`/`max`, default
-   `4100`–`4199`), the **stable persisted allocator** is used: a port is
-   allocated once per branch and kept forever. New workspaces take the lowest
-   free port among `base + k*step` (for `k = 0, 1, 2, ...`) within the range;
-   when the range is exhausted `BORA_PORT` is not set. `step` defaults to `1`
-   (contiguous ports); `0` is treated as `1`. Assignments persist in
-   `.git/info/bora-ports.json` (`{"<branch>": <port>}`).
-
-   ```toml
-   [ports]
-   base = 4100
-   step = 10   # optional; reserve a block of ports per workspace
-   max  = 4199
-   ```
-
-2. Otherwise, if legacy `.bora.toml` defines `[ports]`, its **index-based
-   scheme** is used for compatibility: `base + index * per_worktree`, where
-   `index` is the workspace's position among branch-sorted worktrees.
-
-3. Otherwise, if `.bora/settings.toml` exists but has no `[ports]`, the
-   persisted allocator is used with the default `4100`–`4199` range. With
-   neither config present, `BORA_PORT` is not set.
-
-### CLI
-
-- `bora worktree create` gains `--no-setup` to skip the setup script. The
-  `--json` output includes a `setup` field: `"ok"`, `"failed"`, or `"skipped"`
-  (skipped when `--no-setup` is passed or no setup script is configured).
-- `bora workspace run [--cwd PATH]` executes the `run` script in a workspace,
-  respecting `run_mode`. With `run_mode = "exclusive"`, starting a run stops the
-  previous one, tracked via a pidfile at `.git/info/bora-run.pid`.
+Per-project setup scripts, copy/symlink file provisioning, per-workspace port
+allocation and the `[[commands]]` menu are not core surface. They live in the
+plugin [`aryrabelo/bora-local-commands`](https://github.com/aryrabelo/bora-local-commands),
+which hooks `worktree.created` for provisioning and contributes the command
+menu. `docs/next/CHANGELOG.md` records what left core and how to migrate.
