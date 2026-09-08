@@ -44,3 +44,11 @@ graphify-out/
 
 # Stale lock left behind when a bd invocation is interrupted.
 .beads.gate.lock
+
+# Per-pane north/scratch notes written by `north-note`. They are session
+# artifacts of whoever happens to be driving a pane, never repo content —
+# and without this entry a `git add -A` stages them, which is how
+# `foninholandia` ended up with them TRACKED (measured 2026-09-07).
+# Ignoring only stops that recurring; anything already tracked still needs
+# `git rm --cached`, as the commit beside this one does.
+/scratch/
