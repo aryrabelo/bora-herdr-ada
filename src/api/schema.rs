@@ -4,16 +4,13 @@ pub mod agents;
 pub mod channels;
 pub mod common;
 pub mod events;
-pub mod github;
 pub mod integrations;
 pub mod panes;
 pub mod plugins;
 pub mod response;
-pub mod scratchpads;
 pub mod server;
 pub mod session;
 pub mod tabs;
-pub mod todos;
 pub mod workspaces;
 pub mod worktrees;
 
@@ -21,16 +18,13 @@ pub use agents::*;
 pub use channels::*;
 pub use common::*;
 pub use events::*;
-pub use github::*;
 pub use integrations::*;
 pub use panes::*;
 pub use plugins::*;
 pub use response::*;
-pub use scratchpads::*;
 pub use server::*;
 pub use session::*;
 pub use tabs::*;
-pub use todos::*;
 pub use workspaces::*;
 pub use worktrees::*;
 
@@ -252,10 +246,6 @@ pub enum Method {
     PluginPaneFocus(PluginPaneFocusParams),
     #[serde(rename = "plugin.pane.close")]
     PluginPaneClose(PluginPaneCloseParams),
-    #[serde(rename = "github.pulls.list")]
-    GithubPullsList(GithubPullsListParams),
-    #[serde(rename = "github.issues.list")]
-    GithubIssuesList(GithubIssuesListParams),
     #[serde(rename = "channel.create")]
     ChannelCreate(ChannelCreateParams),
     #[serde(rename = "channel.open")]
@@ -278,18 +268,6 @@ pub enum Method {
     ChannelNote(ChannelNoteParams),
     #[serde(rename = "channel.ask")]
     ChannelAsk(ChannelAskParams),
-    #[serde(rename = "todo.create")]
-    TodoCreate(TodoCreateParams),
-    #[serde(rename = "todo.complete")]
-    TodoComplete(TodoCompleteParams),
-    #[serde(rename = "todo.list")]
-    TodoList(TodoListParams),
-    #[serde(rename = "scratchpad.write")]
-    ScratchpadWrite(ScratchpadWriteParams),
-    #[serde(rename = "scratchpad.append_section")]
-    ScratchpadAppendSection(ScratchpadAppendSectionParams),
-    #[serde(rename = "scratchpad.find")]
-    ScratchpadFind(ScratchpadFindParams),
 }
 
 #[cfg(test)]

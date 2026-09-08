@@ -1330,8 +1330,6 @@ impl HeadlessServer {
             self.app.state.sidebar_width,
             self.app.state.sidebar_section_split,
             self.app.state.collapsed_space_keys.clone(),
-            self.app.state.right_panel_width,
-            self.app.state.right_panel_collapsed,
             self.app.state.view_mode,
         );
 
@@ -7215,8 +7213,6 @@ next_tab = ""
                 branch: None,
                 ahead_behind: None,
                 space: None,
-                change_set: None,
-                collectible: None,
             }],
             cache_updates: Vec::new(),
         });
@@ -7243,8 +7239,6 @@ next_tab = ""
                 branch: Some("changed".into()),
                 ahead_behind: None,
                 space: None,
-                change_set: None,
-                collectible: None,
             }],
             cache_updates: Vec::new(),
         });

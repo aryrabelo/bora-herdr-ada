@@ -10,10 +10,8 @@ mod pane_graphics;
 mod panes;
 pub(crate) mod plugins;
 mod responses;
-mod scratchpads;
 mod session;
 mod tabs;
-mod todos;
 mod workspaces;
 mod worktrees;
 
@@ -156,79 +154,6 @@ impl App {
         } = ev
         {
             self.handle_git_status_refreshed(results, cache_updates);
-            self.start_checks_refresh_if_due(Instant::now());
-            self.start_open_prs_refresh_if_due(Instant::now());
-            return Vec::new();
-        }
-
-        if let AppEvent::WorkspaceChecksRefreshed {
-            workspace_id,
-            result,
-        } = ev
-        {
-            if let Some(ws) = self
-                .state
-                .workspaces
-                .iter_mut()
-                .find(|ws| ws.id == workspace_id)
-            {
-                ws.cached_check_status = Some(result);
-                self.render_dirty.request_generic();
-                self.render_notify.notify_one();
-            }
-            return Vec::new();
-        }
-
-        if let AppEvent::RepoPrsRefreshed {
-            repo_identity,
-            result,
-        } = ev
-        {
-            if self.open_prs_refresh_in_flight {
-                self.open_prs_refresh_results_pending =
-                    self.open_prs_refresh_results_pending.saturating_sub(1);
-                if self.open_prs_refresh_results_pending == 0 {
-                    self.open_prs_refresh_in_flight = false;
-                }
-            }
-            self.state.prs_fetch_in_flight.remove(&repo_identity);
-            self.state
-                .repo_open_prs
-                .insert(repo_identity.clone(), result);
-            self.render_dirty.request_generic();
-            self.render_notify.notify_one();
-            self.emit_event(crate::api::schema::EventEnvelope {
-                event: crate::api::schema::EventKind::GithubPrsRefreshed,
-                data: crate::api::schema::EventData::GithubPrsRefreshed { repo_identity },
-            });
-            return Vec::new();
-        }
-
-        if let AppEvent::RepoIssuesRefreshed {
-            repo_identity,
-            result,
-        } = ev
-        {
-            self.state.issues_fetch_in_flight.remove(&repo_identity);
-            self.state.repo_issues.insert(repo_identity.clone(), result);
-            self.render_dirty.request_generic();
-            self.render_notify.notify_one();
-            self.emit_event(crate::api::schema::EventEnvelope {
-                event: crate::api::schema::EventKind::GithubIssuesRefreshed,
-                data: crate::api::schema::EventData::GithubIssuesRefreshed { repo_identity },
-            });
-            return Vec::new();
-        }
-
-        if let AppEvent::RepoBranchesRefreshed {
-            repo_identity,
-            result,
-        } = ev
-        {
-            self.state.branches_fetch_in_flight.remove(&repo_identity);
-            self.state.repo_branches.insert(repo_identity, result);
-            self.render_dirty.request_generic();
-            self.render_notify.notify_one();
             return Vec::new();
         }
 
@@ -288,13 +213,8 @@ impl App {
             return Vec::new();
         }
 
-        if let AppEvent::WorktreeOpenPrFinished {
-            branch,
-            repo_identity,
-            result,
-        } = ev
-        {
-            self.handle_worktree_open_pr_finished(branch, repo_identity, result);
+        if let AppEvent::WorktreeOpenPrFinished { branch, result, .. } = ev {
+            self.handle_worktree_open_pr_finished(branch, result);
             return Vec::new();
         }
 
@@ -1314,12 +1234,6 @@ impl App {
             Method::PluginPaneClose(params) => {
                 return self.handle_plugin_pane_close(request.id, params);
             }
-            Method::GithubPullsList(params) => {
-                return self.handle_github_pulls_list(request.id, params);
-            }
-            Method::GithubIssuesList(params) => {
-                return self.handle_github_issues_list(request.id, params);
-            }
             Method::ChannelCreate(params) => {
                 return self.handle_channel_create(request.id, params);
             }
@@ -1347,20 +1261,6 @@ impl App {
             }
             Method::ChannelAsk(params) => {
                 return self.handle_channel_ask_question(request.id, params);
-            }
-            Method::TodoCreate(params) => return self.handle_todo_create(request.id, params),
-            Method::TodoComplete(params) => {
-                return self.handle_todo_complete(request.id, params);
-            }
-            Method::TodoList(params) => return self.handle_todo_list(request.id, params),
-            Method::ScratchpadWrite(params) => {
-                return self.handle_scratchpad_write(request.id, params);
-            }
-            Method::ScratchpadAppendSection(params) => {
-                return self.handle_scratchpad_append_section(request.id, params);
-            }
-            Method::ScratchpadFind(params) => {
-                return self.handle_scratchpad_find(request.id, params);
             }
             _ => {
                 return responses::encode_error(
@@ -1453,78 +1353,6 @@ impl App {
         if let Some(sound) = sound.to_sound() {
             crate::sound::play(sound, &self.state.sound);
         }
-    }
-
-    fn handle_github_pulls_list(
-        &mut self,
-        id: String,
-        params: crate::api::schema::GithubPullsListParams,
-    ) -> String {
-        use crate::api::schema::{GithubPullInfo, GithubRepoPrs, ResponseResult};
-
-        let repos: Vec<GithubRepoPrs> = self
-            .state
-            .repo_open_prs
-            .iter()
-            .filter(|(identity, _)| {
-                params
-                    .repo_identity
-                    .as_ref()
-                    .is_none_or(|filter| *identity == filter)
-            })
-            .map(|(identity, cached)| GithubRepoPrs {
-                repo_identity: identity.clone(),
-                prs: cached
-                    .prs
-                    .iter()
-                    .map(|pr| GithubPullInfo {
-                        number: pr.number,
-                        title: pr.title.clone(),
-                        url: pr.url.clone(),
-                        head_ref_name: pr.head_ref_name.clone(),
-                        is_draft: pr.is_draft,
-                    })
-                    .collect(),
-                error: cached.error.clone(),
-            })
-            .collect();
-
-        responses::encode_success(id, ResponseResult::GithubPullsList { repos })
-    }
-
-    fn handle_github_issues_list(
-        &mut self,
-        id: String,
-        params: crate::api::schema::GithubIssuesListParams,
-    ) -> String {
-        use crate::api::schema::{GithubIssueInfo, GithubRepoIssues, ResponseResult};
-
-        let repos: Vec<GithubRepoIssues> = self
-            .state
-            .repo_issues
-            .iter()
-            .filter(|(identity, _)| {
-                params
-                    .repo_identity
-                    .as_ref()
-                    .is_none_or(|filter| *identity == filter)
-            })
-            .map(|(identity, cached)| GithubRepoIssues {
-                repo_identity: identity.clone(),
-                issues: cached
-                    .issues
-                    .iter()
-                    .map(|issue| GithubIssueInfo {
-                        number: issue.number,
-                        title: issue.title.clone(),
-                        url: issue.url.clone(),
-                    })
-                    .collect(),
-                error: cached.error.clone(),
-            })
-            .collect();
-
-        responses::encode_success(id, ResponseResult::GithubIssuesList { repos })
     }
 
     pub(crate) fn api_notification_rate_limited(&self, now: Instant) -> bool {
@@ -2535,149 +2363,5 @@ mod tests {
             app.state.toast.as_ref().map(|toast| toast.context.as_str()),
             Some("__herdr_original__ · 1")
         );
-    }
-
-    fn github_test_app() -> App {
-        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
-        App::new(
-            &crate::config::Config::default(),
-            true,
-            None,
-            api_rx,
-            crate::api::EventHub::default(),
-        )
-    }
-
-    #[test]
-    fn github_pulls_list_returns_all_cached_repos() {
-        let mut app = github_test_app();
-        app.state.repo_open_prs.insert(
-            "github.com/owner/repo".into(),
-            crate::workspace::RepoOpenPrs {
-                prs: vec![crate::workspace::OpenPr {
-                    number: 42,
-                    title: "fix focus".into(),
-                    url: "https://github.com/owner/repo/pull/42".into(),
-                    head_ref_name: "fix/focus".into(),
-                    is_draft: false,
-                    mergeable: None,
-                    checks: None,
-                }],
-                error: None,
-            },
-        );
-        app.state.repo_open_prs.insert(
-            "github.com/owner/other".into(),
-            crate::workspace::RepoOpenPrs {
-                prs: Vec::new(),
-                error: Some("gh CLI not found".into()),
-            },
-        );
-
-        let response = app.handle_api_request(crate::api::schema::Request {
-            id: "req1".into(),
-            method: crate::api::schema::Method::GithubPullsList(
-                crate::api::schema::GithubPullsListParams::default(),
-            ),
-        });
-        let value: serde_json::Value = serde_json::from_str(&response).unwrap();
-        assert_eq!(value["result"]["type"], "github_pulls_list");
-        let repos = value["result"]["repos"].as_array().unwrap();
-        assert_eq!(repos.len(), 2);
-    }
-
-    #[test]
-    fn github_pulls_list_filters_by_repo_identity() {
-        let mut app = github_test_app();
-        app.state.repo_open_prs.insert(
-            "github.com/owner/repo".into(),
-            crate::workspace::RepoOpenPrs {
-                prs: vec![crate::workspace::OpenPr {
-                    number: 42,
-                    title: "fix focus".into(),
-                    url: "https://github.com/owner/repo/pull/42".into(),
-                    head_ref_name: "fix/focus".into(),
-                    is_draft: false,
-                    mergeable: None,
-                    checks: None,
-                }],
-                error: None,
-            },
-        );
-        app.state.repo_open_prs.insert(
-            "github.com/owner/other".into(),
-            crate::workspace::RepoOpenPrs {
-                prs: Vec::new(),
-                error: None,
-            },
-        );
-
-        let response = app.handle_api_request(crate::api::schema::Request {
-            id: "req2".into(),
-            method: crate::api::schema::Method::GithubPullsList(
-                crate::api::schema::GithubPullsListParams {
-                    repo_identity: Some("github.com/owner/repo".into()),
-                },
-            ),
-        });
-        let value: serde_json::Value = serde_json::from_str(&response).unwrap();
-        let repos = value["result"]["repos"].as_array().unwrap();
-        assert_eq!(repos.len(), 1);
-        assert_eq!(repos[0]["repo_identity"], "github.com/owner/repo");
-        assert_eq!(repos[0]["prs"][0]["number"], 42);
-    }
-
-    #[test]
-    fn github_pulls_list_empty_when_no_cache() {
-        let mut app = github_test_app();
-        let response = app.handle_api_request(crate::api::schema::Request {
-            id: "req3".into(),
-            method: crate::api::schema::Method::GithubPullsList(
-                crate::api::schema::GithubPullsListParams::default(),
-            ),
-        });
-        let value: serde_json::Value = serde_json::from_str(&response).unwrap();
-        assert!(value["result"]["repos"].as_array().unwrap().is_empty());
-    }
-
-    #[test]
-    fn github_issues_list_returns_cached_repos() {
-        let mut app = github_test_app();
-        app.state.repo_issues.insert(
-            "github.com/owner/repo".into(),
-            crate::workspace::RepoIssues {
-                issues: vec![crate::workspace::RepoIssue {
-                    number: 7,
-                    title: "bug: first".into(),
-                    url: "https://github.com/owner/repo/issues/7".into(),
-                }],
-                error: None,
-            },
-        );
-
-        let response = app.handle_api_request(crate::api::schema::Request {
-            id: "req4".into(),
-            method: crate::api::schema::Method::GithubIssuesList(
-                crate::api::schema::GithubIssuesListParams::default(),
-            ),
-        });
-        let value: serde_json::Value = serde_json::from_str(&response).unwrap();
-        assert_eq!(value["result"]["type"], "github_issues_list");
-        let repos = value["result"]["repos"].as_array().unwrap();
-        assert_eq!(repos.len(), 1);
-        assert_eq!(repos[0]["issues"][0]["number"], 7);
-    }
-
-    #[test]
-    fn github_issues_list_empty_when_no_cache() {
-        let mut app = github_test_app();
-        let response = app.handle_api_request(crate::api::schema::Request {
-            id: "req5".into(),
-            method: crate::api::schema::Method::GithubIssuesList(
-                crate::api::schema::GithubIssuesListParams::default(),
-            ),
-        });
-        let value: serde_json::Value = serde_json::from_str(&response).unwrap();
-        assert!(value["result"]["repos"].as_array().unwrap().is_empty());
     }
 }

@@ -539,9 +539,9 @@ pub struct FrameData {
     pub graphics: Vec<u8>,
     /// True when the receiving client must repaint every cell from scratch
     /// instead of diffing against its previously rendered frame. Set when a
-    /// layout change (e.g. sidebar/right-panel toggle) reflows pane content
-    /// without changing the outer terminal size, so encoders that key off
-    /// dimension changes alone would otherwise miss it.
+    /// layout change (e.g. sidebar toggle) reflows pane content without
+    /// changing the outer terminal size, so encoders that key off dimension
+    /// changes alone would otherwise miss it.
     pub force_full_repaint: bool,
 }
 

@@ -614,12 +614,6 @@
           "description": "Modifier combo for agent shortcuts 1-9. Unset by default."
         },
         {
-          "key": "keys.toggle_right_panel",
-          "type": "string",
-          "default": "unset",
-          "description": "Keybinding that toggles the right panel (Changes / Checks / Issues / PRs) open or closed."
-        },
-        {
           "key": "keys.cycle_view_mode",
           "type": "string",
           "default": "unset",
@@ -1251,48 +1245,6 @@
           "type": "string",
           "default": "\"~/.herdr/worktrees\"",
           "description": "Root directory under which Herdr creates <repo>/<branch-slug> checkouts."
-        }
-      ]
-    },
-    {
-      "id": "github",
-      "title": "GitHub",
-      "keys": [
-        {
-          "key": "github.enabled",
-          "type": "boolean",
-          "default": "true",
-          "description": "Enable background GitHub data fetches (open PRs, issues) via the gh CLI."
-        },
-        {
-          "key": "github.refresh_interval_secs",
-          "type": "integer",
-          "default": "120",
-          "description": "Seconds between periodic background open-PR refreshes. 0 falls back to the default interval."
-        }
-      ]
-    },
-    {
-      "id": "checks",
-      "title": "Checks",
-      "keys": [
-        {
-          "key": "checks.refresh_interval_secs",
-          "type": "integer",
-          "default": "30",
-          "description": "Seconds between periodic background PR/CI check-status refreshes, feeding the sidebar CHECKS section and the PR badges. 0 falls back to the default interval."
-        }
-      ]
-    },
-    {
-      "id": "flow",
-      "title": "Flow",
-      "keys": [
-        {
-          "key": "flow.command",
-          "type": "string",
-          "default": "unset",
-          "description": "Shell command template used to run a flow for a GitHub issue from the Issues tab. Placeholders: {issue} = owner/repo#N, {number} = N, {url} = issue URL, {repo} = absolute repo checkout path. Unset disables the action; a repo can override via [flow] in its .bora.toml."
         }
       ]
     },

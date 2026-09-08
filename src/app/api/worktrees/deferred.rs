@@ -399,17 +399,6 @@ impl App {
                     create.error = Some(err.clone());
                 }
             }
-            // The sidebar's "open PR in worktree" action has no modal and
-            // drops its responder after dispatch, so surface the failure as
-            // a toast.
-            if api.id == crate::app::worktrees::TUI_WORKTREE_CREATE_FROM_PR_REQUEST_ID {
-                let title = "open PR in worktree failed";
-                self.show_worktree_op_toast(
-                    crate::app::state::ToastKind::NeedsAttention,
-                    title,
-                    err.clone(),
-                );
-            }
             Self::send_api_response(
                 api.respond_to,
                 encode_error(api.id, "worktree_create_failed", err),

@@ -36,11 +36,6 @@ const DEFAULT_EVENT_NAMES: &[&str] = &[
     "pane.agent_detected",
     "pane.result_reported",
     "layout.updated",
-    "github.prs_refreshed",
-    "github.pr_opened",
-    "github.issues_refreshed",
-    "todo.changed",
-    "scratchpad.changed",
 ];
 
 const EVENTS_USAGE: &str =
@@ -210,7 +205,7 @@ fn pane_without_subscribe_error(pane_id: Option<&str>, subscriptions: &[String])
     }
 }
 
-/// Maps a wire event name to its `Subscription`. The 30 parameterless
+/// Maps a wire event name to its `Subscription`. The 25 parameterless
 /// variants map directly; the pane-scoped three require `--pane` (and
 /// `pane.output_matched` additionally needs a match expression this verb
 /// does not expose).
@@ -264,11 +259,6 @@ fn subscription_for_name(name: &str, pane_id: Option<&str>) -> Result<Subscripti
         "pane.agent_detected" => Subscription::PaneAgentDetected {},
         "pane.result_reported" => Subscription::PaneResultReported {},
         "layout.updated" => Subscription::LayoutUpdated {},
-        "github.prs_refreshed" => Subscription::GithubPrsRefreshed {},
-        "github.pr_opened" => Subscription::GithubPrOpened {},
-        "github.issues_refreshed" => Subscription::GithubIssuesRefreshed {},
-        "todo.changed" => Subscription::TodoChanged {},
-        "scratchpad.changed" => Subscription::ScratchpadChanged {},
         other => return Err(format!("unknown event: {other}")),
     };
     Ok(parameterless)
@@ -345,7 +335,7 @@ mod tests {
 
     #[test]
     fn events_default_names_map_to_parameterless_wire_variants() {
-        assert_eq!(DEFAULT_EVENT_NAMES.len(), 30);
+        assert_eq!(DEFAULT_EVENT_NAMES.len(), 25);
         for name in DEFAULT_EVENT_NAMES {
             let subscription = subscription_for_name(name, None)
                 .unwrap_or_else(|err| panic!("{name} must map without --pane: {err}"));
@@ -466,7 +456,7 @@ mod tests {
             serde_json::json!([{ "type": "pane.scroll_changed", "pane_id": "p1" }])
         );
         let defaults = build_subscriptions(&[], Some("p1")).unwrap();
-        assert_eq!(defaults.len(), 30);
+        assert_eq!(defaults.len(), 25);
     }
 
     #[derive(Default)]

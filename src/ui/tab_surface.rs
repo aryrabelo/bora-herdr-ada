@@ -302,44 +302,28 @@ mod tests {
         assert!(!app.view.split_borders.is_empty());
         assert!(frame.cursor.is_some());
         assert_eq!(frame.hyperlinks, vec![uri.to_owned()]);
-        // Golden updated 2026-08-26 for the RESTORATION of the sidebar's
-        // clickable view-mode label, attributed rather than bumped. The 2026-08-25
-        // round below removed two things at once — the ` spaces` title and the
-        // view-mode name that shared its row — but only the title was meant to
-        // go; losing the label left no mouse affordance for cycling
-        // Flat/Repo/Project at all. The label is back on that row, right-aligned,
-        // and the title stays gone.
+        // Golden updated 2026-09-08 for the removal of the right panel
+        // (ceo-bora#269/#271): every visible symbol and every cell's fg/bg/
+        // modifier over the full 106x20 frame are byte-identical to the
+        // pre-removal golden (verified cell-by-cell against the
+        // pre-#271 build, not just eyeballed) except exactly ONE cell —
+        // row 19, column 105, the frame's bottom-right corner:
         //
-        // Probed row-by-row (same probe and fixture as the 2026-08-25 round,
-        // sidebar columns 0..26 of all 20 rows). Rows 01 through 19 are
-        // byte-identical to the previous golden; row 00 is the only change:
+        //   before  r19c105 sym="«" fg=40661126 bg=0 mod=0
+        //   after   r19c105 sym="┘" fg=42579194 bg=0 mod=0
         //
-        //   2026-08-25 before  row 00 | spaces              repo│|
-        //   2026-08-25 after   row 00 |                         │|
-        //   2026-08-26 now     row 00 |                     repo│|
-        //
-        // So this row is the pre-2026-08-25 state minus the word ` spaces`,
-        // which is exactly the intended net effect of the two rounds together.
-        // `repo` occupies columns 21..24 — `view_mode_toggle_rect` sizes itself
-        // to the label and right-aligns it, so it claims only those cells and
-        // the rest of row 00 still serves the drag-reorder "drop above the first
-        // card" indicator (see `WORKSPACE_LIST_TOP_MARGIN_ROWS`); the two share
-        // the row rather than one needing a row of its own.
-        //
-        // Footer row 19 (`new                menu«│`) is byte-identical, so
-        // `menu` still ends at column 23 with `«` free at 24. The doubled `◰` on
-        // the workspace row predates all three rounds (workspace-type glyph
-        // followed by agent glyph). This fixture runs in Repo view, which is why
-        // this round's much larger Project-view changes — per-workspace
-        // selection/active backgrounds, the project header's background and
-        // collapsed-only caret, dimmed row metadata — do NOT appear in this
-        // digest at all: they are unreachable from a Repo-view frame. Every other
-        // assertion in this test still holds, and the mobile characterization
-        // below is unchanged (the mobile switcher keeps its own `spaces` title in
-        // `ui/mobile.rs`).
+        // That `«` was `render_right_panel_collapsed_toggle`'s affordance
+        // glyph, pinned to the terminal's trailing edge when the (always
+        // collapsed-by-default) right panel was present; it painted over
+        // the split pane's own bottom-right border corner. With the right
+        // panel gone, that cell now correctly shows the pane border's `┘`
+        // instead — the intended, structural consequence of the removal,
+        // not a regression. Every other assertion in this test still
+        // holds, and the mobile characterization below is unchanged (the
+        // mobile switcher never touched the right panel).
         assert_eq!(
             frame_digest(&frame),
-            "2933439f27425345a295fb154f007b18218494ca5343a2292062c809ae38b72b"
+            "75ac84022fa669dd4d83d335d549f436b6f2887ee0ddccff6dadc04045aa7279"
         );
     }
 

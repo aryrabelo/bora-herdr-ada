@@ -12,7 +12,7 @@ use super::widgets::{
     render_modal_header, render_modal_shell, render_panel_shell, ActionButtonSpec,
 };
 use crate::app::{
-    state::{GithubPickKind, WorktreeCreateState, WorktreeCreateTab, WorktreeOpenState},
+    state::{WorktreeCreateState, WorktreeOpenState},
     AppState, Mode,
 };
 use crate::terminal::TerminalRuntimeRegistry;
@@ -182,45 +182,6 @@ pub(crate) fn new_linked_worktree_button_rects(inner: Rect) -> (Rect, Rect) {
     (rects[0], rects[1])
 }
 
-/// The three tab label rects (GitHub / Branch / Name) in the modal tab strip
-/// (inner row index 2). Shared by render and mouse hit-testing.
-pub(crate) fn create_worktree_tab_rects(inner: Rect) -> [Rect; 3] {
-    let y = inner.y + 2;
-    let third = inner.width / 3;
-    [
-        Rect::new(inner.x, y, third, 1),
-        Rect::new(inner.x + third, y, third, 1),
-        Rect::new(
-            inner.x + third * 2,
-            y,
-            inner.width.saturating_sub(third * 2),
-            1,
-        ),
-    ]
-}
-
-/// Number of list rows visible in the modal body on the GitHub/Branch tabs.
-pub(crate) fn create_worktree_list_visible_rows(inner: Rect) -> usize {
-    usize::from(inner.height.saturating_sub(7))
-}
-
-/// First entry index shown, scrolled so `selected` stays visible.
-pub(crate) fn create_worktree_list_start(selected: usize, len: usize, max_rows: usize) -> usize {
-    if len <= max_rows || max_rows == 0 {
-        0
-    } else {
-        selected
-            .min(len.saturating_sub(1))
-            .saturating_sub(max_rows.saturating_sub(1))
-    }
-}
-
-/// Rect for the `visible_idx`-th visible list row in the modal body (rows start
-/// at inner row index 5, below the header/project/tabs/separator/filter).
-pub(crate) fn create_worktree_list_row_rect(inner: Rect, visible_idx: usize) -> Rect {
-    Rect::new(inner.x, inner.y + 5 + visible_idx as u16, inner.width, 1)
-}
-
 pub(crate) fn remove_worktree_popup_rect(area: Rect) -> Option<Rect> {
     centered_popup_rect(area, 72, 10)
 }
@@ -363,37 +324,7 @@ pub(super) fn render_new_linked_worktree_overlay(app: &AppState, frame: &mut Fra
         Rect::new(inner.x, inner.y + 1, inner.width, 1),
     );
 
-    // Tab strip: three equal segments, active one highlighted.
-    let tab_rects = create_worktree_tab_rects(inner);
-    for (rect, (label, tab)) in tab_rects.iter().zip([
-        ("GitHub", WorktreeCreateTab::Github),
-        ("Branch", WorktreeCreateTab::Branch),
-        ("Name", WorktreeCreateTab::Name),
-    ]) {
-        let active = create.active_tab == tab;
-        let style = if active {
-            Style::default()
-                .fg(panel_contrast_fg(p))
-                .bg(p.accent)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(p.overlay0).bg(p.surface0)
-        };
-        frame.render_widget(Clear, *rect);
-        frame.render_widget(Paragraph::new(format!(" {label}")).style(style), *rect);
-    }
-
-    // Separator under the tab strip.
-    frame.render_widget(
-        Paragraph::new("─".repeat(inner.width as usize)).style(Style::default().fg(p.surface1)),
-        Rect::new(inner.x, inner.y + 3, inner.width, 1),
-    );
-
-    match create.active_tab {
-        WorktreeCreateTab::Name => render_create_worktree_name_body(app, create, frame, inner),
-        WorktreeCreateTab::Github => render_create_worktree_github_body(app, create, frame, inner),
-        WorktreeCreateTab::Branch => render_create_worktree_branch_body(app, create, frame, inner),
-    }
+    render_create_worktree_name_body(app, create, frame, inner);
 
     // Status line above the buttons.
     let status_rect = Rect::new(
@@ -449,13 +380,13 @@ fn render_create_worktree_name_body(
     let p = &app.palette;
     frame.render_widget(
         Paragraph::new(" branch").style(Style::default().fg(p.overlay0)),
-        Rect::new(inner.x, inner.y + 4, inner.width, 1),
+        Rect::new(inner.x, inner.y + 2, inner.width, 1),
     );
-    let input_rect = Rect::new(inner.x, inner.y + 5, inner.width, 1);
+    let input_rect = Rect::new(inner.x, inner.y + 3, inner.width, 1);
     render_name_input_field(app, frame, input_rect);
     frame.render_widget(
         Paragraph::new(" checkout").style(Style::default().fg(p.overlay0)),
-        Rect::new(inner.x, inner.y + 6, inner.width, 1),
+        Rect::new(inner.x, inner.y + 4, inner.width, 1),
     );
     frame.render_widget(
         Paragraph::new(truncate_end(
@@ -463,154 +394,8 @@ fn render_create_worktree_name_body(
             inner.width as usize,
         ))
         .style(Style::default().fg(p.subtext0)),
-        Rect::new(inner.x, inner.y + 7, inner.width, 1),
+        Rect::new(inner.x, inner.y + 5, inner.width, 1),
     );
-}
-
-fn render_create_worktree_filter(
-    app: &AppState,
-    frame: &mut Frame,
-    rect: Rect,
-    query: &str,
-    placeholder: &str,
-) {
-    let p = &app.palette;
-    frame.render_widget(Clear, rect);
-    let (text, fg) = if query.is_empty() {
-        (format!(" {placeholder}█"), p.overlay0)
-    } else {
-        (format!(" {query}█"), p.text)
-    };
-    frame.render_widget(
-        Paragraph::new(truncate_end(&text, rect.width as usize))
-            .style(Style::default().fg(fg).bg(p.surface0)),
-        rect,
-    );
-}
-
-fn render_create_worktree_github_body(
-    app: &AppState,
-    create: &WorktreeCreateState,
-    frame: &mut Frame,
-    inner: Rect,
-) {
-    let p = &app.palette;
-    render_create_worktree_filter(
-        app,
-        frame,
-        Rect::new(inner.x, inner.y + 4, inner.width, 1),
-        &create.github_pick.query,
-        "filter prs & issues",
-    );
-    let entries = app.create_worktree_github_entries();
-    if entries.is_empty() {
-        let loading = app.prs_fetch_in_flight.contains(&create.repo_identity)
-            || (!app.repo_open_prs.contains_key(&create.repo_identity)
-                && !app.repo_issues.contains_key(&create.repo_identity));
-        let msg = if !create.github_pick.query.is_empty() {
-            " no matches"
-        } else if loading {
-            " loading…"
-        } else {
-            " no open prs or issues"
-        };
-        frame.render_widget(
-            Paragraph::new(msg).style(Style::default().fg(p.overlay0)),
-            create_worktree_list_row_rect(inner, 0),
-        );
-        return;
-    }
-    let max_rows = create_worktree_list_visible_rows(inner);
-    let selected = create.github_pick.selected.min(entries.len() - 1);
-    let start = create_worktree_list_start(selected, entries.len(), max_rows);
-    for (visible_idx, entry) in entries.iter().skip(start).take(max_rows).enumerate() {
-        let is_selected = start + visible_idx == selected;
-        let kind = match entry.kind {
-            GithubPickKind::Pr => "PR",
-            GithubPickKind::Issue => "issue",
-        };
-        let mut label = format!(" #{}  {} · {}", entry.number, entry.title, kind);
-        if !entry.enabled {
-            label.push_str("  (set [flow] to enable)");
-        }
-        let marker = if is_selected { "›" } else { " " };
-        let style = if is_selected {
-            Style::default()
-                .fg(if entry.enabled { p.text } else { p.overlay0 })
-                .bg(p.surface0)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(if entry.enabled {
-                p.subtext0
-            } else {
-                p.overlay0
-            })
-        };
-        frame.render_widget(
-            Paragraph::new(truncate_end(
-                &format!("{marker}{label}"),
-                inner.width as usize,
-            ))
-            .style(style),
-            create_worktree_list_row_rect(inner, visible_idx),
-        );
-    }
-}
-
-fn render_create_worktree_branch_body(
-    app: &AppState,
-    create: &WorktreeCreateState,
-    frame: &mut Frame,
-    inner: Rect,
-) {
-    let p = &app.palette;
-    render_create_worktree_filter(
-        app,
-        frame,
-        Rect::new(inner.x, inner.y + 4, inner.width, 1),
-        &create.branch_pick.query,
-        "filter branches",
-    );
-    let entries = app.create_worktree_branch_entries();
-    if entries.is_empty() {
-        let loading = !app.repo_branches.contains_key(&create.repo_identity);
-        let msg = if !create.branch_pick.query.is_empty() {
-            " no matches"
-        } else if loading {
-            " loading…"
-        } else {
-            " no local branches"
-        };
-        frame.render_widget(
-            Paragraph::new(msg).style(Style::default().fg(p.overlay0)),
-            create_worktree_list_row_rect(inner, 0),
-        );
-        return;
-    }
-    let max_rows = create_worktree_list_visible_rows(inner);
-    let selected = create.branch_pick.selected.min(entries.len() - 1);
-    let start = create_worktree_list_start(selected, entries.len(), max_rows);
-    for (visible_idx, branch) in entries.iter().skip(start).take(max_rows).enumerate() {
-        let is_selected = start + visible_idx == selected;
-        let marker = if is_selected { "›" } else { " " };
-        let current = if branch.is_current { "  (current)" } else { "" };
-        let style = if is_selected {
-            Style::default()
-                .fg(p.text)
-                .bg(p.surface0)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(p.subtext0)
-        };
-        frame.render_widget(
-            Paragraph::new(truncate_end(
-                &format!("{marker} {}{current}", branch.name),
-                inner.width as usize,
-            ))
-            .style(style),
-            create_worktree_list_row_rect(inner, visible_idx),
-        );
-    }
 }
 
 pub(super) fn render_remove_worktree_overlay(app: &AppState, frame: &mut Frame, area: Rect) {
@@ -1183,10 +968,6 @@ mod tests {
                     .into(),
             ),
             creating: false,
-            active_tab: crate::app::state::WorktreeCreateTab::Name,
-            repo_identity: String::new(),
-            github_pick: crate::app::state::WorktreeListPick::default(),
-            branch_pick: crate::app::state::WorktreeListPick::default(),
         });
 
         let mut terminal =
@@ -1271,10 +1052,6 @@ mod tests {
             checkout_path: "/repo/.worktrees/herdr/foo".into(),
             error: None,
             creating: false,
-            active_tab: crate::app::state::WorktreeCreateTab::Name,
-            repo_identity: String::new(),
-            github_pick: crate::app::state::WorktreeListPick::default(),
-            branch_pick: crate::app::state::WorktreeListPick::default(),
         });
 
         let mut terminal =
@@ -1391,10 +1168,9 @@ mod tests {
     #[test]
     fn new_worktree_overlay_anchors_the_host_cursor_to_the_input_caret() {
         let popup = super::new_linked_worktree_inner_rect(WORKTREE_AREA).expect("popup fits");
-        // Fork layout: header 0, project 1, tab strip 2, separator 3,
-        // "branch" label 4, branch input 5 (upstream's flat dialog put it at +2).
-        let input = Rect::new(popup.x, popup.y + 5, popup.width, 1);
-
+        // Layout: header 0, project 1, "branch" label 2, branch input 3
+        // (tab strip removed alongside GitHub/Branch tabs).
+        let input = Rect::new(popup.x, popup.y + 3, popup.width, 1);
         assert_eq!(
             worktree_overlay_caret(""),
             Position::new(input.x + 1, input.y)

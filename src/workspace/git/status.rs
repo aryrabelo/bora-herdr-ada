@@ -4,7 +4,6 @@ use std::time::{Duration, Instant};
 use crate::workspace::{GitSpaceMetadata, WorkspaceGitStatusSnapshot};
 
 use super::{
-    change_set::{ChangeSectionKind, WorkspaceChangeSet},
     config::{deps_current, read_config, stamp, upstream_full_ref, ConfigCtx, FileDep},
     discovery::{
         automatic_workspace_label, canonicalize_best_effort_path, fallback_label_from_cwd,
@@ -36,10 +35,6 @@ pub struct GitStatusCacheEntry {
     pub fingerprint: Option<GitStatusFingerprint>,
     pub retry_after: Option<Instant>,
     pub snapshot: WorkspaceGitStatusSnapshot,
-    /// `(head_sha, default_branch_sha, head_is_ancestor)` from the last
-    /// `collectible` computation — `merge-base --is-ancestor` is the
-    /// expensive part, so it's only re-run when either sha moves.
-    pub collectible_ancestor: Option<(String, String, bool)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -126,8 +121,6 @@ pub fn git_status_snapshot_for_cwd_with_demand(
             branch: None,
             ahead_behind: None,
             space: None,
-            change_set: None,
-            collectible: None,
         };
         return (
             snapshot.clone(),
@@ -135,7 +128,6 @@ pub fn git_status_snapshot_for_cwd_with_demand(
                 fingerprint: None,
                 retry_after: Some(Instant::now() + Duration::from_secs(30)),
                 snapshot,
-                collectible_ancestor: None,
             }),
         );
     };
@@ -154,8 +146,6 @@ pub fn git_status_snapshot_for_cwd_with_demand(
             branch,
             ahead_behind: None,
             space: Some(space),
-            change_set: None,
-            collectible: None,
         };
         return (
             snapshot.clone(),
@@ -163,7 +153,6 @@ pub fn git_status_snapshot_for_cwd_with_demand(
                 fingerprint: Some(fingerprint),
                 retry_after: None,
                 snapshot,
-                collectible_ancestor: None,
             }),
         );
     }
@@ -175,8 +164,6 @@ pub fn git_status_snapshot_for_cwd_with_demand(
                 branch: None,
                 ahead_behind: None,
                 space: Some(space),
-                change_set: None,
-                collectible: None,
             },
             None,
         );
@@ -184,19 +171,11 @@ pub fn git_status_snapshot_for_cwd_with_demand(
     let branch = fingerprint.branch_name().map(str::to_string);
 
     if let Some(cached) = cached.filter(|entry| entry.fingerprint.as_ref() == Some(&fingerprint)) {
-        let (collectible, collectible_ancestor) = collectible_for(
-            &space,
-            fingerprint.head_oid(),
-            cached.snapshot.change_set.as_ref(),
-            cached.collectible_ancestor.as_ref(),
-        );
         let snapshot = WorkspaceGitStatusSnapshot {
             auto_label,
             branch,
             ahead_behind: cached.snapshot.ahead_behind,
             space: Some(space),
-            change_set: cached.snapshot.change_set.clone(),
-            collectible,
         };
         return (
             snapshot.clone(),
@@ -204,30 +183,19 @@ pub fn git_status_snapshot_for_cwd_with_demand(
                 fingerprint: Some(fingerprint),
                 retry_after: None,
                 snapshot,
-                collectible_ancestor,
             }),
         );
     }
 
-    let upstream_full_ref = fingerprint.upstream.as_ref().map(|u| u.full_ref.as_str());
     let ahead_behind = fingerprint
         .head_oid()
         .zip(fingerprint.upstream_oid())
         .and_then(|(head_oid, upstream_oid)| git_ahead_behind_between(cwd, head_oid, upstream_oid));
-    let change_set = super::change_set::compute_change_set(cwd, upstream_full_ref);
-    let (collectible, collectible_ancestor) = collectible_for(
-        &space,
-        fingerprint.head_oid(),
-        change_set.as_ref(),
-        cached.and_then(|entry| entry.collectible_ancestor.as_ref()),
-    );
     let snapshot = WorkspaceGitStatusSnapshot {
         auto_label,
         branch,
         ahead_behind,
         space: Some(space),
-        change_set,
-        collectible,
     };
     (
         snapshot.clone(),
@@ -235,52 +203,8 @@ pub fn git_status_snapshot_for_cwd_with_demand(
             fingerprint: Some(fingerprint),
             retry_after: None,
             snapshot,
-            collectible_ancestor,
         }),
     )
-}
-
-/// `(collectible, collectible_ancestor)` for a workspace's git space. `None`
-/// for anything but a linked worktree with a resolvable `HEAD` oid and
-/// default branch — the sidebar only ever shows the marker for a worktree
-/// that's safe to close.
-fn collectible_for(
-    space: &GitSpaceMetadata,
-    head_oid: Option<&str>,
-    change_set: Option<&WorkspaceChangeSet>,
-    prev: Option<&(String, String, bool)>,
-) -> (Option<bool>, Option<(String, String, bool)>) {
-    if !space.is_linked_worktree {
-        return (None, None);
-    }
-    let Some(head_oid) = head_oid else {
-        return (None, None);
-    };
-    let prev_ref =
-        prev.map(|(head, default, ancestor)| (head.as_str(), default.as_str(), *ancestor));
-    let Some((head, default, ancestor)) =
-        super::collectible::compute(&space.repo_root, head_oid, prev_ref)
-    else {
-        return (None, None);
-    };
-    (
-        Some(ancestor && working_tree_is_clean(change_set)),
-        Some((head, default, ancestor)),
-    )
-}
-
-/// A worktree is clean when neither its unstaged nor staged sections carry
-/// any file — commits ahead of upstream (the `Committed` section) don't
-/// count against "safe to close": they'll be gone once the branch merges.
-fn working_tree_is_clean(change_set: Option<&WorkspaceChangeSet>) -> bool {
-    change_set.is_some_and(|change_set| {
-        change_set.sections.iter().all(|section| {
-            !matches!(
-                section.kind,
-                ChangeSectionKind::Unstaged | ChangeSectionKind::Staged
-            ) || section.files.is_empty()
-        })
-    })
 }
 
 #[cfg(test)]
@@ -554,10 +478,7 @@ mod tests {
                 branch: Some("main".into()),
                 ahead_behind: Some((2, 1)),
                 space: git_space_metadata(&root),
-                change_set: None,
-                collectible: None,
             },
-            collectible_ancestor: None,
         };
 
         let (snapshot, update) = git_status_snapshot_for_cwd(&root, Some(&cached));
@@ -582,10 +503,7 @@ mod tests {
                 branch: Some("main".into()),
                 ahead_behind: Some((4, 0)),
                 space: git_space_metadata(&root),
-                change_set: None,
-                collectible: None,
             },
-            collectible_ancestor: None,
         };
         std::fs::write(root.join(".git/HEAD"), "ref: refs/heads/feature\n").unwrap();
         std::fs::write(
@@ -620,10 +538,7 @@ mod tests {
                 branch: Some("main".into()),
                 ahead_behind: Some((0, 3)),
                 space: git_space_metadata(&root),
-                change_set: None,
-                collectible: None,
             },
-            collectible_ancestor: None,
         };
         std::fs::write(root.join(".git/config"), "").unwrap();
 
@@ -692,73 +607,6 @@ mod tests {
             snapshot.auto_label,
             checkout.file_name().unwrap().to_str().unwrap()
         );
-
-        std::fs::remove_dir_all(base).unwrap();
-    }
-
-    /// Linked worktree branched off a tracked-file base commit, so a test can
-    /// dirty the working tree (modify the tracked file) without also moving
-    /// `HEAD` off the default branch.
-    fn repo_with_worktree_and_tracked_file(name: &str) -> (PathBuf, PathBuf, PathBuf) {
-        let base = temp_test_dir(name);
-        let repo = base.join("repo");
-        let checkout = base.join("checkout");
-        run_git(
-            &base,
-            &["init", "--quiet", "-b", "main", repo.to_str().unwrap()],
-        );
-        run_git(&repo, &["config", "user.email", "herdr@example.invalid"]);
-        run_git(&repo, &["config", "user.name", "Herdr Test"]);
-        std::fs::write(repo.join("file.txt"), "hello\n").unwrap();
-        run_git(&repo, &["add", "file.txt"]);
-        run_git(&repo, &["commit", "--quiet", "-m", "initial"]);
-        run_git(
-            &repo,
-            &[
-                "worktree",
-                "add",
-                "--quiet",
-                "-b",
-                "feature",
-                checkout.to_str().unwrap(),
-                "HEAD",
-            ],
-        );
-        (base, repo, checkout)
-    }
-
-    #[test]
-    fn collectible_marks_clean_worktree_merged_into_default_branch() {
-        let (base, _repo, checkout) =
-            repo_with_worktree_and_tracked_file("collectible-clean-merged");
-
-        let (snapshot, _) = git_status_snapshot_for_cwd(&checkout, None);
-
-        assert_eq!(snapshot.collectible, Some(true));
-
-        std::fs::remove_dir_all(base).unwrap();
-    }
-
-    #[test]
-    fn collectible_stays_false_when_worktree_has_unmerged_commits() {
-        let (base, _repo, checkout) = repo_with_worktree_and_tracked_file("collectible-unmerged");
-        run_git(&checkout, &["commit", "--allow-empty", "-m", "wip"]);
-
-        let (snapshot, _) = git_status_snapshot_for_cwd(&checkout, None);
-
-        assert_eq!(snapshot.collectible, Some(false));
-
-        std::fs::remove_dir_all(base).unwrap();
-    }
-
-    #[test]
-    fn collectible_stays_false_when_merged_worktree_has_dirty_changes() {
-        let (base, _repo, checkout) = repo_with_worktree_and_tracked_file("collectible-dirty");
-        std::fs::write(checkout.join("file.txt"), "hello\nmore\n").unwrap();
-
-        let (snapshot, _) = git_status_snapshot_for_cwd(&checkout, None);
-
-        assert_eq!(snapshot.collectible, Some(false));
 
         std::fs::remove_dir_all(base).unwrap();
     }

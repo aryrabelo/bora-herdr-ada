@@ -422,10 +422,7 @@ fn restore_workspace(
             cached_git_branch: crate::workspace::git_branch(&snap.identity_cwd),
             cached_git_ahead_behind: None,
             cached_git_space,
-            cached_change_set: None,
-            cached_check_status: None,
             cached_channels: Vec::new(),
-            cached_collectible: None,
             worktree_space,
             metadata_tokens: crate::metadata_tokens::MetadataTokens::default(),
             metadata_token_sequences: HashMap::new(),
@@ -1223,8 +1220,6 @@ mod tests {
             sidebar_width: None,
             sidebar_section_split: None,
             collapsed_space_keys: Default::default(),
-            right_panel_width: None,
-            right_panel_collapsed: None,
             view_mode: Default::default(),
         };
         let (events, _event_rx) = mpsc::channel(4);
@@ -1320,8 +1315,6 @@ mod tests {
             sidebar_width: None,
             sidebar_section_split: None,
             collapsed_space_keys: Default::default(),
-            right_panel_width: None,
-            right_panel_collapsed: None,
             view_mode: Default::default(),
         };
         let (events, _event_rx) = mpsc::channel(4);
@@ -1431,8 +1424,6 @@ mod tests {
             sidebar_width: None,
             sidebar_section_split: None,
             collapsed_space_keys: Default::default(),
-            right_panel_width: None,
-            right_panel_collapsed: None,
             view_mode: Default::default(),
         };
         let (events, _event_rx) = mpsc::channel(4);
@@ -1547,8 +1538,6 @@ mod tests {
             sidebar_width: None,
             sidebar_section_split: None,
             collapsed_space_keys: Default::default(),
-            right_panel_width: None,
-            right_panel_collapsed: None,
             view_mode: Default::default(),
         };
         let (events, _event_rx) = mpsc::channel(4);
@@ -1745,8 +1734,6 @@ mod tests {
             sidebar_width: Some(26),
             sidebar_section_split: Some(0.5),
             collapsed_space_keys: Default::default(),
-            right_panel_width: None,
-            right_panel_collapsed: None,
             view_mode: Default::default(),
         };
         (snapshot, history)
