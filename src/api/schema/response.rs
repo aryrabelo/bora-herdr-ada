@@ -16,7 +16,6 @@ use super::plugins::{
     InstalledPluginInfo, PluginActionInfo, PluginCommandLogInfo, PluginInvocationContext,
     PluginPaneInfo,
 };
-use super::projects::ProjectSummary;
 use super::scratchpads::{ScratchpadHitInfo, ScratchpadSectionInfo};
 use super::server::ServerCapabilities;
 use super::session::SessionSnapshot;
@@ -364,28 +363,6 @@ pub enum ResponseResult {
         question_seq: u64,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reply: Option<ChannelMessage>,
-    },
-    ProjectList {
-        projects: Vec<ProjectSummary>,
-    },
-    ProjectCreated {
-        project: ProjectSummary,
-    },
-    ProjectUpdated {
-        project: ProjectSummary,
-    },
-    ProjectMemberAdded {
-        project: ProjectSummary,
-    },
-    ProjectMemberRemoved {
-        project: ProjectSummary,
-    },
-    /// `project.section_create` result, and also `project.section_update`'s
-    /// (see `app::sections::update_section`) — both land on exactly one
-    /// section and hand back its id, whether freshly created, addressed by
-    /// `section_id`, or materialized by `checkout`.
-    ProjectSectionCreate {
-        section_id: String,
     },
     /// `todo.create` result: the persisted todo — its `seq` is the cursor
     /// a follower replays from (`persist::todos::read_since`).

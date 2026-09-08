@@ -63,7 +63,6 @@ pub(crate) use self::scrollbar::{
     scrollbar_offset_from_row, scrollbar_thumb_grab_offset, should_show_scrollbar,
 };
 use self::settings::render_settings_overlay;
-pub(crate) use self::sidebar::project_view::ORPHANS_COLLAPSE_KEY;
 use self::sidebar::{render_sidebar, render_sidebar_collapsed};
 use self::status::{
     copy_feedback_rect, render_config_diagnostic, render_copy_feedback, render_toast_notification,
@@ -96,7 +95,7 @@ pub(crate) use self::{
         workspace_drop_indicator_row, workspace_group_chevron_rect, workspace_list_entries,
         workspace_list_entries_expanded, workspace_list_rect, workspace_list_scroll_metrics,
         workspace_list_scrollbar_rect, workspace_parent_group_state, AgentPanelEntry,
-        SectionDescriptor, WorkspaceListEntry,
+        WorkspaceListEntry,
     },
 };
 
@@ -304,14 +303,13 @@ fn compute_view_internal(
         app.agent_panel_scroll = 0;
     }
 
-    let (workspace_card_areas, workspace_group_header_areas, project_row_areas) =
-        if app.sidebar_collapsed {
-            (Vec::new(), Vec::new(), Vec::new())
-        } else {
-            // One pass for all three outputs: this runs per render, per pane,
-            // per attached client.
-            compute_workspace_list_areas_all(app, sidebar_area)
-        };
+    let (workspace_card_areas, workspace_group_header_areas) = if app.sidebar_collapsed {
+        (Vec::new(), Vec::new())
+    } else {
+        // One pass for both outputs: this runs per render, per pane,
+        // per attached client.
+        compute_workspace_list_areas_all(app, sidebar_area)
+    };
 
     let tab_bar_view = app
         .active
@@ -364,7 +362,6 @@ fn compute_view_internal(
         sidebar_rect: sidebar_area,
         workspace_card_areas,
         workspace_group_header_areas,
-        project_row_areas,
         worktree_new_hit_areas,
         tab_bar_rect,
         tab_hit_areas: tab_bar_view.tab_hit_areas,
@@ -433,7 +430,6 @@ fn compute_mobile_view(
         sidebar_rect: Rect::default(),
         workspace_card_areas: Vec::new(),
         workspace_group_header_areas: Vec::new(),
-        project_row_areas: Vec::new(),
         worktree_new_hit_areas: Vec::new(),
         tab_bar_rect: Rect::default(),
         tab_hit_areas: Vec::new(),
@@ -522,8 +518,7 @@ pub fn render_with_runtime_registry(
         | Mode::RenameTab
         | Mode::RenamePane
         | Mode::SetWorkspaceGroup
-        | Mode::RenameGroup
-        | Mode::ProjectNameInput => render_rename_overlay(app, frame, frame.area()),
+        | Mode::RenameGroup => render_rename_overlay(app, frame, frame.area()),
         Mode::NewLinkedWorktree => render_new_linked_worktree_overlay(app, frame, frame.area()),
         Mode::OpenExistingWorktree => {
             render_open_existing_worktree_overlay(app, frame, frame.area())

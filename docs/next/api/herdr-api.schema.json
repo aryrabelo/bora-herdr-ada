@@ -4395,168 +4395,6 @@
             }
           ]
         },
-        "ProjectCreateParams": {
-          "description": "`project.create`: adds a new, empty project (no members) at `slug`.\nErrors `project_exists` when `slug` is already taken — this is never a\nsilent overwrite; use `project.update` to change an existing project's\n`name`/`channel`, and `project.member_add` to populate its members.",
-          "properties": {
-            "auto_join": {
-              "description": "bora-1le.1: opts every member of this project out of auto-join when\n`Some(false)`. Omitted (or `Some(true)`) keeps the default: an agent\nstarted in a member workspace auto-joins `channel`.",
-              "type": [
-                "boolean",
-                "null"
-              ]
-            },
-            "channel": {
-              "description": "Explicit channel override; omitted falls back to `\"#\" + slug` — see\n`persist::projects::Project::effective_channel`.",
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "name": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "slug": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "slug"
-          ],
-          "type": "object"
-        },
-        "ProjectMemberAddParams": {
-          "description": "`project.member_add`: idempotent on `dir` — an exact string match\nagainst an existing member's `dir` (the same key `project.member_remove`\nmatches on) updates that member's `worktrees` scope in place rather than\nappending a duplicate row. Errors `project_not_found` when `slug` does\nnot exist.",
-          "properties": {
-            "dir": {
-              "type": "string"
-            },
-            "slug": {
-              "type": "string"
-            },
-            "worktrees": {
-              "$ref": "#/schemas/request/$defs/WorktreesScope",
-              "default": "all"
-            }
-          },
-          "required": [
-            "slug",
-            "dir"
-          ],
-          "type": "object"
-        },
-        "ProjectMemberRemoveParams": {
-          "description": "`project.member_remove`: errors `project_member_not_found` (naming\n`slug` and `dir`) when `dir` is not a member of `slug`, so a caller\nnever thinks it removed something it did not. Errors `project_not_found`\nwhen `slug` does not exist at all.",
-          "properties": {
-            "dir": {
-              "type": "string"
-            },
-            "slug": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "slug",
-            "dir"
-          ],
-          "type": "object"
-        },
-        "ProjectSectionCreateParams": {
-          "description": "`project.section_create`: appends a new\n[`crate::ui::sidebar::sections::Section`] to `slug`'s mountable\n`layout:` (epic bora-79l, T6 pass 6b — see `app::sections::\ncreate_section`). `name` is used verbatim when given; omitted, the\nsection gets a random two-word display name rather than a bare `None`\nheader. Errors `project_not_found` when `slug` does not exist.",
-          "properties": {
-            "kind": {
-              "$ref": "#/schemas/request/$defs/SectionKind"
-            },
-            "name": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "slug": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "slug",
-            "kind"
-          ],
-          "type": "object"
-        },
-        "ProjectSectionUpdateParams": {
-          "description": "`project.section_update`: applies `header_on`/`dots`/`diff` (each\n`None` leaves that field untouched) to one section of `slug`'s\n`layout:`, addressed either by its pinned `section_id` or by\n`checkout` — see `app::sections::update_section`. Addressing by\n`checkout` MATERIALIZES a fresh Branch section carrying that checkout\nwhen `slug` declares no layout yet (or none of its sections name that\ncheckout), which is what makes the toggle work against a real\n`projects.yml` with no `layout:` today. Errors `project_not_found`\nwhen `slug` does not exist, `project_section_target_invalid` when\nneither `section_id` nor `checkout` is given, and\n`project_section_not_found` when `section_id` names a section that\ndoes not exist.",
-          "properties": {
-            "checkout": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "diff": {
-              "type": [
-                "boolean",
-                "null"
-              ]
-            },
-            "dots": {
-              "type": [
-                "boolean",
-                "null"
-              ]
-            },
-            "header_on": {
-              "type": [
-                "boolean",
-                "null"
-              ]
-            },
-            "section_id": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "slug": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "slug"
-          ],
-          "type": "object"
-        },
-        "ProjectUpdateParams": {
-          "description": "`project.update`: replaces `name`, `channel`, and `auto_join` wholesale\nwith whatever this request carries — a full replacement of exactly\nthose fields, not a partial \"only touch what's `Some`\" patch. Omitting\n`name`/`channel` clears them back to unset; omitting `auto_join` resets\nit back to its default (`true`) — none of the three mean \"leave\nunchanged\". Never touches `members` — that is `project.member_add`/\n`project.member_remove`'s job — nor `orchestrator`/`sections`, which\nhave no verb yet in this bead. Errors `project_not_found` when `slug`\ndoes not exist.",
-          "properties": {
-            "auto_join": {
-              "type": [
-                "boolean",
-                "null"
-              ]
-            },
-            "channel": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "name": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "slug": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "slug"
-          ],
-          "type": "object"
-        },
         "ReadFormat": {
           "enum": [
             "text",
@@ -4651,31 +4489,6 @@
             "sections"
           ],
           "type": "object"
-        },
-        "SectionKind": {
-          "description": "Derives `schemars::JsonSchema` in addition to the file-schema traits\nbecause `api::schema::projects::ProjectSectionCreateParams` (the\n`project.section_create` wire shape) reuses this type directly rather\nthan mirroring it — the same pattern `persist::projects::WorktreesScope`\nalready uses for `api::schema::projects::ProjectMemberInfo`.",
-          "oneOf": [
-            {
-              "const": "branch",
-              "description": "Session blocks: children are [`SectionChild::Workspace`] entries.",
-              "type": "string"
-            },
-            {
-              "const": "comando",
-              "description": "Declared-command band: children are [`SectionChild::Item`] entries.",
-              "type": "string"
-            },
-            {
-              "const": "checks",
-              "description": "CI-check band: children are [`SectionChild::Item`] entries.",
-              "type": "string"
-            },
-            {
-              "const": "livre",
-              "description": "The empty, mountable slot — hidden until something is dropped in.",
-              "type": "string"
-            }
-          ]
         },
         "ServerLiveHandoffParams": {
           "properties": {
@@ -5468,23 +5281,6 @@
           ],
           "type": "object"
         },
-        "WorkspaceSetProjectParams": {
-          "properties": {
-            "project": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "workspace_id": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "workspace_id"
-          ],
-          "type": "object"
-        },
         "WorkspaceTarget": {
           "properties": {
             "workspace_id": {
@@ -5650,14 +5446,6 @@
             "workspace_id"
           ],
           "type": "object"
-        },
-        "WorktreesScope": {
-          "description": "Derives `schemars::JsonSchema` in addition to the file-schema traits\nbecause `api::schema::projects::ProjectMemberInfo` (the `project.list`\nwire shape) reuses this type directly rather than mirroring it — the\nsame pattern `ResponseResult::ConfigReload` already uses for\n`config::ConfigReloadStatus`.",
-          "enum": [
-            "all",
-            "this"
-          ],
-          "type": "string"
         }
       },
       "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -5958,22 +5746,6 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/WorkspaceSetGroupParams"
-            }
-          },
-          "required": [
-            "method",
-            "params"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "method": {
-              "const": "workspace.set_project",
-              "type": "string"
-            },
-            "params": {
-              "$ref": "#/schemas/request/$defs/WorkspaceSetProjectParams"
             }
           },
           "required": [
@@ -7366,118 +7138,6 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/ChannelAskParams"
-            }
-          },
-          "required": [
-            "method",
-            "params"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "method": {
-              "const": "project.list",
-              "type": "string"
-            },
-            "params": {
-              "$ref": "#/schemas/request/$defs/EmptyParams"
-            }
-          },
-          "required": [
-            "method",
-            "params"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "method": {
-              "const": "project.create",
-              "type": "string"
-            },
-            "params": {
-              "$ref": "#/schemas/request/$defs/ProjectCreateParams"
-            }
-          },
-          "required": [
-            "method",
-            "params"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "method": {
-              "const": "project.update",
-              "type": "string"
-            },
-            "params": {
-              "$ref": "#/schemas/request/$defs/ProjectUpdateParams"
-            }
-          },
-          "required": [
-            "method",
-            "params"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "method": {
-              "const": "project.member_add",
-              "type": "string"
-            },
-            "params": {
-              "$ref": "#/schemas/request/$defs/ProjectMemberAddParams"
-            }
-          },
-          "required": [
-            "method",
-            "params"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "method": {
-              "const": "project.member_remove",
-              "type": "string"
-            },
-            "params": {
-              "$ref": "#/schemas/request/$defs/ProjectMemberRemoveParams"
-            }
-          },
-          "required": [
-            "method",
-            "params"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "method": {
-              "const": "project.section_create",
-              "type": "string"
-            },
-            "params": {
-              "$ref": "#/schemas/request/$defs/ProjectSectionCreateParams"
-            }
-          },
-          "required": [
-            "method",
-            "params"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "method": {
-              "const": "project.section_update",
-              "type": "string"
-            },
-            "params": {
-              "$ref": "#/schemas/request/$defs/ProjectSectionUpdateParams"
             }
           },
           "required": [
@@ -10956,110 +10616,6 @@
             }
           ]
         },
-        "ProjectMemberInfo": {
-          "properties": {
-            "dir": {
-              "type": "string"
-            },
-            "resolution": {
-              "$ref": "#/schemas/success_response/$defs/ProjectMemberResolution"
-            },
-            "worktrees": {
-              "$ref": "#/schemas/success_response/$defs/WorktreesScope"
-            }
-          },
-          "required": [
-            "dir",
-            "worktrees",
-            "resolution"
-          ],
-          "type": "object"
-        },
-        "ProjectMemberResolution": {
-          "description": "Wire shape of `persist::projects::MemberResolution`.",
-          "oneOf": [
-            {
-              "properties": {
-                "checkout_key": {
-                  "type": "string"
-                },
-                "repo_identity": {
-                  "type": "string"
-                },
-                "status": {
-                  "const": "resolved",
-                  "type": "string"
-                },
-                "subdir": {
-                  "description": "Empty when the member dir *is* the checkout root.",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "status",
-                "repo_identity",
-                "checkout_key",
-                "subdir"
-              ],
-              "type": "object"
-            },
-            {
-              "properties": {
-                "dir": {
-                  "type": "string"
-                },
-                "reason": {
-                  "type": "string"
-                },
-                "status": {
-                  "const": "unresolved",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "status",
-                "dir",
-                "reason"
-              ],
-              "type": "object"
-            }
-          ]
-        },
-        "ProjectSummary": {
-          "description": "`project.list`'s per-project entry, and the `project` payload every\nother `project.*` verb returns: the parsed project plus each member's\nRESOLVED identity (via `persist::projects::Member::resolve`), so a\ncaller never has to redo git discovery itself.",
-          "properties": {
-            "auto_join": {
-              "description": "Effective `auto_join` (bora-1le.1) — always present, resolved from\n`Project::auto_join`'s own default, so a caller never has to\nre-derive it either.",
-              "type": "boolean"
-            },
-            "channel": {
-              "description": "Always present: `channel` override, or `\"#\" + slug` — see\n`persist::projects::Project::effective_channel`. A caller never has\nto re-derive the default.",
-              "type": "string"
-            },
-            "members": {
-              "items": {
-                "$ref": "#/schemas/success_response/$defs/ProjectMemberInfo"
-              },
-              "type": "array"
-            },
-            "name": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "slug": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "slug",
-            "channel",
-            "auto_join",
-            "members"
-          ],
-          "type": "object"
-        },
         "QueuedAgentPromptDropReason": {
           "description": "Why a queued (`when_idle`-deferred) agent prompt never reached its target.\nCarried on `EventData::QueuedPromptDropped` so a sender that only sees the\n`deferred` receipt can still learn the terminal outcome.",
           "oneOf": [
@@ -12570,106 +12126,6 @@
               "type": "object"
             },
             {
-              "properties": {
-                "projects": {
-                  "items": {
-                    "$ref": "#/schemas/success_response/$defs/ProjectSummary"
-                  },
-                  "type": "array"
-                },
-                "type": {
-                  "const": "project_list",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type",
-                "projects"
-              ],
-              "type": "object"
-            },
-            {
-              "properties": {
-                "project": {
-                  "$ref": "#/schemas/success_response/$defs/ProjectSummary"
-                },
-                "type": {
-                  "const": "project_created",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type",
-                "project"
-              ],
-              "type": "object"
-            },
-            {
-              "properties": {
-                "project": {
-                  "$ref": "#/schemas/success_response/$defs/ProjectSummary"
-                },
-                "type": {
-                  "const": "project_updated",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type",
-                "project"
-              ],
-              "type": "object"
-            },
-            {
-              "properties": {
-                "project": {
-                  "$ref": "#/schemas/success_response/$defs/ProjectSummary"
-                },
-                "type": {
-                  "const": "project_member_added",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type",
-                "project"
-              ],
-              "type": "object"
-            },
-            {
-              "properties": {
-                "project": {
-                  "$ref": "#/schemas/success_response/$defs/ProjectSummary"
-                },
-                "type": {
-                  "const": "project_member_removed",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type",
-                "project"
-              ],
-              "type": "object"
-            },
-            {
-              "description": "`project.section_create` result, and also `project.section_update`'s\n(see `app::sections::update_section`) — both land on exactly one\nsection and hand back its id, whether freshly created, addressed by\n`section_id`, or materialized by `checkout`.",
-              "properties": {
-                "section_id": {
-                  "type": "string"
-                },
-                "type": {
-                  "const": "project_section_create",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type",
-                "section_id"
-              ],
-              "type": "object"
-            },
-            {
               "description": "`todo.create` result: the persisted todo — its `seq` is the cursor\na follower replays from (`persist::todos::read_since`).",
               "properties": {
                 "todo": {
@@ -13190,14 +12646,6 @@
             "source_checkout_path"
           ],
           "type": "object"
-        },
-        "WorktreesScope": {
-          "description": "Derives `schemars::JsonSchema` in addition to the file-schema traits\nbecause `api::schema::projects::ProjectMemberInfo` (the `project.list`\nwire shape) reuses this type directly rather than mirroring it — the\nsame pattern `ResponseResult::ConfigReload` already uses for\n`config::ConfigReloadStatus`.",
-          "enum": [
-            "all",
-            "this"
-          ],
-          "type": "string"
         }
       },
       "$schema": "https://json-schema.org/draft/2020-12/schema",

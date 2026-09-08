@@ -28,11 +28,9 @@ use self::git::git_ahead_behind;
 use self::git::git_status_cache_key_for_space;
 #[cfg(test)]
 pub(crate) use self::git::PrSummary;
-#[cfg(test)]
-pub(crate) use self::git::NOT_APPLICABLE_ERROR;
 pub use self::{
     git::{
-        checks_counts, checks_rollup, derive_label_from_cwd, fallback_label_from_cwd, git_branch,
+        checks_rollup, derive_label_from_cwd, fallback_label_from_cwd, git_branch,
         git_space_metadata, git_status_cache_key, ChangeSectionKind, ChangeStatus, CheckRun,
         ChecksRollup, GitSpaceMetadata, GitStatusCacheEntry, GitStatusRefreshDemand, RepoBranches,
         RepoIssues, RepoOpenPrs, WorkspaceChangeSet, WorkspaceCheckStatus,
@@ -40,10 +38,6 @@ pub use self::{
     tab::{NewPane, Tab},
 };
 
-/// Test-support re-export: only the sidebar capture fixture names these
-/// types through `crate::workspace::`; no production consumer exists yet.
-#[cfg(test)]
-pub use self::git::{ChangeSection, ChangedFile};
 pub(crate) use self::{
     git::{
         fetch_local_branches, fetch_my_issues, fetch_my_open_prs,
@@ -225,12 +219,6 @@ pub(crate) fn reserve_workspace_ids(workspaces: &[Workspace]) {
 pub struct Workspace {
     /// Stable public workspace identity, independent of display order.
     pub id: String,
-    /// The `projects.yml` slug this workspace was created under, when it was
-    /// created from a project context. `None` means "derive my project from my
-    /// directory", which is the pre-existing behaviour and stays the default —
-    /// a directory can be declared by several projects, so a derivation alone
-    /// cannot answer which one owns this workspace.
-    pub project: Option<String>,
     /// User-provided override. If set, auto-derived identity stops updating.
     pub custom_name: Option<String>,
     /// Fallback workspace identity source for tests, old snapshots, or missing runtimes.
@@ -332,7 +320,6 @@ impl Workspace {
             .map(|space| worktree_space_from_git_space(space, &identity_cwd));
         Self {
             id,
-            project: None,
             custom_name: label,
             identity_cwd: identity_cwd.clone(),
             cached_identity_cwd: identity_cwd.clone(),
@@ -542,7 +529,6 @@ impl Workspace {
         Ok((
             Self {
                 id,
-                project: None,
                 custom_name: None,
                 identity_cwd: initial_cwd.clone(),
                 cached_identity_cwd: initial_cwd.clone(),
@@ -1207,29 +1193,6 @@ impl Workspace {
         };
     }
 
-    /// The `projects.yml` slug this workspace is explicitly bound to, or
-    /// `None` when the project should be derived from the workspace's
-    /// directory (`project_view_entries`'s fallback pass).
-    pub fn project(&self) -> Option<&str> {
-        self.project.as_deref()
-    }
-
-    /// Bind (or clear, with `None`) the explicit `projects.yml` slug this
-    /// workspace belongs to. Logged at the same level/shape as
-    /// `logging::workspace_renamed` so a rebinding is visible in the server
-    /// log — the primary tool for debugging misgrouped workspaces.
-    pub fn set_project(&mut self, project: Option<String>) {
-        self.project = project;
-        tracing::info!(
-            event = "workspace.project",
-            subsystem = "workspace",
-            outcome = "ok",
-            workspace_id = self.id.as_str(),
-            project = self.project.as_deref().unwrap_or("<none>"),
-            "workspace project binding changed"
-        );
-    }
-
     #[cfg(test)]
     pub fn resolved_identity_cwd(&self) -> Option<PathBuf> {
         Some(self.identity_cwd.clone())
@@ -1324,14 +1287,6 @@ impl Workspace {
 
     pub fn worktree_space(&self) -> Option<&WorktreeSpaceMembership> {
         self.worktree_space.as_ref()
-    }
-    /// The dir string `projects.yml` `Member.dir` comparisons use for this
-    /// workspace: the checkout path when it lives in a linked worktree, else
-    /// the identity cwd — the same idiom the COMMANDS port resolution uses.
-    pub fn project_member_dir(&self) -> String {
-        self.worktree_space()
-            .map(|space| space.checkout_path.display().to_string())
-            .unwrap_or_else(|| self.identity_cwd.display().to_string())
     }
 
     /// Repo root that owns this workspace's `.bora.toml`: the parent repo
@@ -1475,7 +1430,6 @@ impl Workspace {
         public_pane_numbers.insert(tab.root_pane, 1);
         Self {
             id: generate_workspace_id(),
-            project: None,
             custom_name: Some(name.to_string()),
             identity_cwd: identity_cwd.clone(),
             cached_identity_cwd: identity_cwd.clone(),

@@ -124,9 +124,9 @@ fn mobile_agents_block_height(app: &AppState) -> usize {
 
 /// Mobile switcher space entries: workspaces only. The mobile switcher renders
 /// no visual-group header rows, so hit-test and row math must use the same
-/// header-free list as the render loop. 6a: in Project view the workspace's
-/// representation is its `PaneDotsRow` block (the `SectionRow` is the branch
-/// group's container, representative only) — the block list IS the workspace
+/// header-free list as the render loop. A grouped workspace's
+/// representation is its `PaneDotsRow` block (the group header is a
+/// container, representative only) — the block list IS the workspace
 /// list now.
 fn mobile_space_entries(app: &AppState) -> Vec<WorkspaceListEntry> {
     workspace_list_entries_expanded(app)
@@ -690,10 +690,9 @@ fn render_mobile_switcher_content(
             WorkspaceListEntry::Workspace {
                 ws_idx, indented, ..
             } => (*ws_idx, *indented),
-            // 6a: the Project-view workspace's representation is its own
-            // `PaneDotsRow` block — flat, the same as a top-level
-            // Flat-view workspace (the branch group's `SectionRow` is a
-            // container, not a card).
+            // A grouped workspace's representation is its own `PaneDotsRow`
+            // block — flat, the same as a top-level Flat-view workspace
+            // (the group header is a container, not a card).
             WorkspaceListEntry::PaneDotsRow { ws_idx, .. } => (*ws_idx, false),
             _ => continue,
         };

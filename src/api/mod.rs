@@ -32,7 +32,6 @@ pub(crate) fn request_changes_ui(request: &Request) -> bool {
             | Method::WorkspaceMoveBlock(_)
             | Method::WorkspaceReportMetadata(_)
             | Method::WorkspaceSetGroup(_)
-            | Method::WorkspaceSetProject(_)
             | Method::WorkspaceClose(_)
             | Method::WorktreeCreate(_)
             | Method::WorktreeOpen(_)

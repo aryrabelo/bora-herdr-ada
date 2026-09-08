@@ -50,7 +50,6 @@ impl App {
                 Err(err) => return encode_error(id, "todo_create_failed", err.to_string()),
             };
         let todo = TodoInfo::from(todo);
-        self.state.refresh_project_todos_notes(&params.project);
         self.emit_event(EventEnvelope {
             event: EventKind::TodoChanged,
             data: EventData::TodoChanged {
@@ -99,7 +98,6 @@ impl App {
             Err(err) => return encode_error(id, "todo_complete_failed", err.to_string()),
         };
         let todo = TodoInfo::from(todo);
-        self.state.refresh_project_todos_notes(&params.project);
         if was_open {
             self.emit_event(EventEnvelope {
                 event: EventKind::TodoChanged,
@@ -174,31 +172,6 @@ mod tests {
             },
         );
         serde_json::from_str(&response).unwrap()
-    }
-
-    #[test]
-    fn todo_create_refreshes_the_sidebar_todos_snapshot() {
-        // Epic bora-s3y acceptance, end to end: a todo created through the
-        // verb is visible in the TODOS section's data with the correct n/m
-        // without any store read on the render path.
-        let _isolated = IsolatedDirs::new("todo-sidebar-refresh");
-        let mut app = test_app();
-        // Sequential creates in one store allocate ids 1, 2, 3.
-        create(&mut app, "cnb", "first", None);
-        create(&mut app, "cnb", "second", None);
-        create(&mut app, "cnb", "third", Some(vec![1]));
-
-        let summary = app
-            .state
-            .project_todos
-            .get("cnb")
-            .expect("todo.create must refresh the sidebar snapshot");
-        assert_eq!((summary.done, summary.total), (0, 3));
-        assert_eq!(
-            summary.actionable,
-            vec!["first".to_string(), "second".to_string()],
-            "the blocked todo is excluded from the section's actionable rows"
-        );
     }
 
     #[test]

@@ -205,13 +205,12 @@ pub enum SidebarCollapsedModeConfig {
 /// folders (and nothing else): no repo auto-grouping, no branch brackets,
 /// and the `@wNpN` pane badge is always suppressed, so a row is just its
 /// name — like `Flat` with drag-in folders. `Repo` groups workspaces under
-/// repo headers and is the historical default. `Project` is the
-/// projects.yml-backed entry model.
+/// repo headers and is the historical default.
 ///
 /// Deliberately backward compatible with the retired
 /// `group_workspaces_by_repo` boolean: this type's `Deserialize` impl
 /// accepts a bare bool (`true` -> `Repo`, `false` -> `Flat`) in addition to
-/// the `"flat"`/`"repo"`/`"project"` strings, and `UiConfig::view_mode`
+/// the `"flat"`/`"folders"`/`"repo"` strings, and `UiConfig::view_mode`
 /// carries `#[serde(alias = "group_workspaces_by_repo")]` so the old key
 /// still works. A config that sets BOTH keys at once is a genuine
 /// ambiguity and fails to parse rather than silently picking one.
@@ -221,17 +220,15 @@ pub enum ViewMode {
     Folders,
     #[default]
     Repo,
-    Project,
 }
 
 impl ViewMode {
-    /// Flat -> Folders -> Repo -> Project -> Flat.
+    /// Flat -> Folders -> Repo -> Flat.
     pub fn cycle(self) -> ViewMode {
         match self {
             ViewMode::Flat => ViewMode::Folders,
             ViewMode::Folders => ViewMode::Repo,
-            ViewMode::Repo => ViewMode::Project,
-            ViewMode::Project => ViewMode::Flat,
+            ViewMode::Repo => ViewMode::Flat,
         }
     }
 
@@ -240,7 +237,6 @@ impl ViewMode {
             ViewMode::Flat => "flat",
             ViewMode::Folders => "folders",
             ViewMode::Repo => "repo",
-            ViewMode::Project => "project",
         }
     }
 }
@@ -273,10 +269,9 @@ impl<'de> Deserialize<'de> for ViewMode {
                 "flat" => Ok(ViewMode::Flat),
                 "folders" => Ok(ViewMode::Folders),
                 "repo" => Ok(ViewMode::Repo),
-                "project" => Ok(ViewMode::Project),
                 other => Err(de::Error::unknown_variant(
                     other,
-                    &["flat", "folders", "repo", "project"],
+                    &["flat", "folders", "repo"],
                 )),
             },
         }
@@ -597,7 +592,7 @@ pub struct KeysConfig {
     pub toggle_sidebar: BindingConfig,
     /// Toggle right panel collapse. Default: "prefix+g"
     pub toggle_right_panel: BindingConfig,
-    /// Cycle the sidebar view mode: flat -> repo -> project -> flat.
+    /// Cycle the sidebar view mode: flat -> folders -> repo -> flat.
     /// Default: "prefix+shift+v"
     pub cycle_view_mode: BindingConfig,
     /// Optional indexed shortcuts expanded over number keys 1-9.
@@ -1046,8 +1041,7 @@ pub struct UiConfig {
     /// list with no grouping (repo, channel, and visual groups all
     /// dissolve); `folders` is a flat list that honors only user-defined
     /// `visual_group` folders (no repo grouping, no branch, no pane badge);
-    /// `repo` groups workspaces under repo headers (default); `project` is
-    /// the projects.yml-backed entry model. Default: repo.
+    /// `repo` groups workspaces under repo headers (default).
     ///
     /// Deliberately backward compatible with the retired
     /// `group_workspaces_by_repo` boolean via a serde alias plus a
@@ -1793,8 +1787,9 @@ tab_bar_right_separator = " · "
         let config: Config = toml::from_str("[ui]\ngroup_workspaces_by_repo = true\n").unwrap();
         assert_eq!(config.ui.view_mode, ViewMode::Repo);
 
-        let config: Config = toml::from_str("[ui]\nview_mode = \"project\"\n").unwrap();
-        assert_eq!(config.ui.view_mode, ViewMode::Project);
+        // The retired "project" string now takes the generic
+        // unknown-variant error path — no back-compat shim (issue #270).
+        assert!(toml::from_str::<Config>("[ui]\nview_mode = \"project\"\n").is_err());
 
         // Field absent entirely -> Repo, matching the retired bool's own
         // default (`group_workspaces_by_repo` defaulted to `true`).

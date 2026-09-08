@@ -14,20 +14,8 @@ pub struct WorkspaceCheckStatus {
 
 /// The `error` value `legacy_check_status` uses for
 /// `ProviderOutcome::NotApplicable`, preserved verbatim from the pre-provider
-/// `fetch_check_status` so existing consumers keep their behavior. Consumers
-/// that must distinguish "the provider does not apply here" from a real
-/// failure compare against this sentinel (see
-/// `WorkspaceCheckStatus::is_not_applicable`).
+/// `fetch_check_status` so existing consumers keep their behavior.
 pub(crate) const NOT_APPLICABLE_ERROR: &str = "no PR for this branch";
-
-impl WorkspaceCheckStatus {
-    /// True when the provider reported not-applicable (no PR for this branch)
-    /// rather than a failure — the legacy mapping carries that outcome as the
-    /// `NOT_APPLICABLE_ERROR` sentinel error.
-    pub fn is_not_applicable(&self) -> bool {
-        self.error.as_deref() == Some(NOT_APPLICABLE_ERROR)
-    }
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PrSummary {
@@ -45,14 +33,6 @@ pub struct CheckRun {
     pub conclusion: Option<String>,
 }
 
-impl CheckRun {
-    /// True when this run hard-failed. Derived from `run_state` so the
-    /// failing set can never drift from the rollup's.
-    pub fn is_failing(&self) -> bool {
-        run_state(&self.status, self.conclusion.as_deref()) == ChecksRollup::Failing
-    }
-}
-
 /// Aggregate state of a PR's checks, mirroring the statusline rollup rules.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChecksRollup {
@@ -63,8 +43,7 @@ pub enum ChecksRollup {
 
 /// The single owner of "one check's `(status, conclusion)` means this state".
 ///
-/// Every consumer derives from this: `CheckRun::is_failing`, `checks_rollup`,
-/// `checks_counts`, the sidebar CHECKS rows, and `open_prs`'s
+/// Every consumer derives from this: `checks_rollup` and `open_prs`'s
 /// `statusCheckRollup` reduction. An earlier version of this module owned only
 /// the *failing* set and let each caller infer the rest, with a doc comment
 /// promising the consumers "can never drift apart"; they drifted the moment a
@@ -126,20 +105,6 @@ pub fn checks_rollup(checks: &[CheckRun]) -> Option<ChecksRollup> {
             .iter()
             .map(|run| run_state(&run.status, run.conclusion.as_deref())),
     )
-}
-
-/// `(passing, total)` over check runs, following `checks_rollup`'s rules: a run
-/// passes when `run_state` calls it `Passing` (`NEUTRAL`/`SKIPPED` count,
-/// still-running and unrecognised runs do not).
-/// `passing == total` exactly when `checks_rollup` returns `Passing`, so the
-/// sidebar's `n/m` and its rollup glyph always agree — both now derive from
-/// `run_state`, so that invariant is structural rather than a promise.
-pub fn checks_counts(checks: &[CheckRun]) -> (usize, usize) {
-    let passing = checks
-        .iter()
-        .filter(|run| run_state(&run.status, run.conclusion.as_deref()) == ChecksRollup::Passing)
-        .count();
-    (passing, checks.len())
 }
 
 // ── JSON parsing ─────────────────────────────────────────────────────────────
@@ -382,76 +347,6 @@ mod tests {
     }
 
     #[test]
-    fn counts_unrecognised_and_null_conclusions_do_not_count_as_passing() {
-        let checks = [
-            run("COMPLETED", Some("SUCCESS")),
-            run("COMPLETED", None),
-            run("COMPLETED", Some("SOME_FUTURE_CONCLUSION")),
-        ];
-        assert_eq!(checks_counts(&checks), (1, 3));
-    }
-
-    #[test]
-    fn counts_and_rollup_agree_on_every_status_conclusion_pair() {
-        // The module doc claims `passing == total` exactly when the rollup is
-        // Passing. That was a promise in prose while the two functions computed
-        // it separately; both now derive from `run_state`, and this asserts the
-        // invariant over the whole cross product rather than trusting it.
-        let statuses = ["COMPLETED", "QUEUED", "IN_PROGRESS", "SOME_FUTURE_STATUS"];
-        let conclusions = [
-            None,
-            Some("SUCCESS"),
-            Some("NEUTRAL"),
-            Some("SKIPPED"),
-            Some("FAILURE"),
-            Some("ERROR"),
-            Some("TIMED_OUT"),
-            Some("CANCELLED"),
-            Some("ACTION_REQUIRED"),
-            Some("STARTUP_FAILURE"),
-            Some("SOME_FUTURE_CONCLUSION"),
-        ];
-        for status in statuses {
-            for conclusion in conclusions {
-                let checks = [run(status, conclusion)];
-                let (passing, total) = checks_counts(&checks);
-                let rollup = checks_rollup(&checks);
-                assert_eq!(
-                    passing == total,
-                    rollup == Some(ChecksRollup::Passing),
-                    "({status}, {conclusion:?}): counts said {passing}/{total} but rollup said {rollup:?}"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn is_failing_matches_the_rollup_failing_set_exactly() {
-        // `CheckRun::is_failing` drives the sidebar's one-row-per-failing-check
-        // list while `checks_rollup` drives the glyph beside it. They read the
-        // same data on the same screen, so a disagreement is a visible bug.
-        for status in ["COMPLETED", "QUEUED", "IN_PROGRESS", "SOME_FUTURE_STATUS"] {
-            for conclusion in [
-                None,
-                Some("SUCCESS"),
-                Some("NEUTRAL"),
-                Some("SKIPPED"),
-                Some("FAILURE"),
-                Some("STARTUP_FAILURE"),
-                Some("SOME_FUTURE_CONCLUSION"),
-            ] {
-                let one = run(status, conclusion);
-                let failing = one.is_failing();
-                assert_eq!(
-                    failing,
-                    checks_rollup(std::slice::from_ref(&one)) == Some(ChecksRollup::Failing),
-                    "({status}, {conclusion:?})"
-                );
-            }
-        }
-    }
-
-    #[test]
     fn parse_status_context_items_from_external_ci() {
         let json = r#"{
             "number": 7,
@@ -653,103 +548,5 @@ mod tests {
         let pr = status.pr.unwrap();
         assert_eq!(pr.state, "CLOSED");
         assert_eq!(status.checks[0].conclusion.as_deref(), Some("NEUTRAL"));
-    }
-
-    #[test]
-    fn counts_empty_is_zero_zero() {
-        assert_eq!(checks_counts(&[]), (0, 0));
-    }
-
-    #[test]
-    fn counts_mixed_conclusions() {
-        let checks = [
-            run("COMPLETED", Some("SUCCESS")),
-            run("COMPLETED", Some("FAILURE")),
-            run("IN_PROGRESS", None),
-            run("COMPLETED", Some("NEUTRAL")),
-            run("COMPLETED", Some("SKIPPED")),
-        ];
-        // 3 passing (SUCCESS, NEUTRAL, SKIPPED) out of 5; the failing and the
-        // still-running check are not passing.
-        assert_eq!(checks_counts(&checks), (3, 5));
-    }
-
-    #[test]
-    fn counts_pending_runs_are_not_passing() {
-        let checks = [run("COMPLETED", Some("SUCCESS")), run("QUEUED", None)];
-        assert_eq!(checks_counts(&checks), (1, 2));
-    }
-
-    #[test]
-    fn counts_hard_fail_conclusions_are_not_passing() {
-        for c in [
-            "FAILURE",
-            "ERROR",
-            "TIMED_OUT",
-            "CANCELLED",
-            "ACTION_REQUIRED",
-            "STARTUP_FAILURE",
-        ] {
-            assert_eq!(checks_counts(&[run("COMPLETED", Some(c))]), (0, 1), "{c}");
-        }
-    }
-
-    #[test]
-    fn counts_legacy_status_context_shapes() {
-        // External CI arrives as StatusContext items, which the parser maps to
-        // COMPLETED + conclusion (or IN_PROGRESS + None while pending).
-        let json = r#"{
-            "number": 7,
-            "title": "t",
-            "state": "OPEN",
-            "url": "https://github.com/o/r/pull/7",
-            "statusCheckRollup": [
-                {"__typename": "StatusContext", "context": "ci/circleci: build", "state": "SUCCESS"},
-                {"__typename": "StatusContext", "context": "ci/circleci: deploy", "state": "PENDING"},
-                {"__typename": "StatusContext", "context": "ci/circleci: lint", "state": "FAILURE"}
-            ]
-        }"#;
-        let status = parse_gh_pr_json(json).unwrap();
-        assert_eq!(checks_counts(&status.checks), (1, 3));
-    }
-
-    #[test]
-    fn counts_agree_with_rollup_passing_iff_all_pass() {
-        // The sidebar shows `n/m` and the rollup glyph side by side; they must
-        // never disagree about "all green".
-        let cases: Vec<Vec<CheckRun>> = vec![
-            vec![],
-            vec![run("COMPLETED", Some("SUCCESS"))],
-            vec![
-                run("COMPLETED", Some("SUCCESS")),
-                run("COMPLETED", Some("FAILURE")),
-            ],
-            vec![run("COMPLETED", Some("SUCCESS")), run("IN_PROGRESS", None)],
-            vec![
-                run("COMPLETED", Some("NEUTRAL")),
-                run("COMPLETED", Some("SKIPPED")),
-            ],
-        ];
-        for checks in cases {
-            let (passing, total) = checks_counts(&checks);
-            assert_eq!(
-                checks_rollup(&checks) == Some(ChecksRollup::Passing),
-                passing == total && total > 0,
-                "{checks:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn not_applicable_sentinel_distinguishes_no_pr_from_real_errors() {
-        let not_applicable = legacy_check_status(ProviderOutcome::NotApplicable);
-        assert!(not_applicable.is_not_applicable());
-        let error = legacy_check_status(ProviderOutcome::Error("boom".to_string()));
-        assert!(!error.is_not_applicable());
-        let rows = legacy_check_status(ProviderOutcome::Rows {
-            pr: None,
-            checks: Vec::new(),
-        });
-        assert!(!rows.is_not_applicable());
     }
 }

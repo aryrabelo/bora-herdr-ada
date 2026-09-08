@@ -9,7 +9,6 @@ mod layouts;
 mod pane_graphics;
 mod panes;
 pub(crate) mod plugins;
-mod projects;
 mod responses;
 mod scratchpads;
 mod session;
@@ -202,25 +201,6 @@ impl App {
                 event: crate::api::schema::EventKind::GithubPrsRefreshed,
                 data: crate::api::schema::EventData::GithubPrsRefreshed { repo_identity },
             });
-            return Vec::new();
-        }
-
-        if let AppEvent::RepoWorktreesRefreshed {
-            repo_identity,
-            result,
-        } = ev
-        {
-            if self.worktree_inventory_refresh_in_flight {
-                self.worktree_inventory_refresh_results_pending = self
-                    .worktree_inventory_refresh_results_pending
-                    .saturating_sub(1);
-                if self.worktree_inventory_refresh_results_pending == 0 {
-                    self.worktree_inventory_refresh_in_flight = false;
-                }
-            }
-            self.state.worktree_inventory.insert(repo_identity, result);
-            self.render_dirty.request_generic();
-            self.render_notify.notify_one();
             return Vec::new();
         }
 
@@ -1160,9 +1140,6 @@ impl App {
             Method::WorkspaceSetGroup(params) => {
                 return self.handle_workspace_set_group(request.id, params);
             }
-            Method::WorkspaceSetProject(params) => {
-                return self.handle_workspace_set_project(request.id, params);
-            }
             Method::WorkspaceClose(target) => {
                 return self.handle_workspace_close(request.id, target)
             }
@@ -1370,25 +1347,6 @@ impl App {
             }
             Method::ChannelAsk(params) => {
                 return self.handle_channel_ask_question(request.id, params);
-            }
-            Method::ProjectList(params) => return self.handle_project_list(request.id, params),
-            Method::ProjectCreate(params) => {
-                return self.handle_project_create(request.id, params);
-            }
-            Method::ProjectUpdate(params) => {
-                return self.handle_project_update(request.id, params);
-            }
-            Method::ProjectMemberAdd(params) => {
-                return self.handle_project_member_add(request.id, params);
-            }
-            Method::ProjectMemberRemove(params) => {
-                return self.handle_project_member_remove(request.id, params);
-            }
-            Method::ProjectSectionCreate(params) => {
-                return self.handle_project_section_create(request.id, params);
-            }
-            Method::ProjectSectionUpdate(params) => {
-                return self.handle_project_section_update(request.id, params);
             }
             Method::TodoCreate(params) => return self.handle_todo_create(request.id, params),
             Method::TodoComplete(params) => {
@@ -1640,28 +1598,6 @@ pub(super) mod test_support {
         #[cfg(not(windows))]
         {
             "/usr/bin/true"
-        }
-    }
-
-    /// A shell that blocks on stdin instead of exiting, for tests whose
-    /// workspace must still exist on a LATER request.
-    ///
-    /// [`exiting_test_command`] is right for a test that asserts inside the
-    /// same request that created the pane. It is wrong for one that creates a
-    /// workspace, issues another request, and then expects the first workspace
-    /// to still be there: the process is already gone, so the pane and its
-    /// now-empty workspace get reaped in between, and the second request fails
-    /// with something unrelated-looking (`channel_not_found`, for a channel
-    /// workspace) that reads like a product bug.
-    pub(crate) fn long_running_test_command() -> &'static str {
-        #[cfg(windows)]
-        {
-            // Reads stdin and blocks, like `cat`.
-            "C:\\Windows\\System32\\more.com"
-        }
-        #[cfg(not(windows))]
-        {
-            "/bin/cat"
         }
     }
 

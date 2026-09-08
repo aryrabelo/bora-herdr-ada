@@ -623,7 +623,7 @@
           "key": "keys.cycle_view_mode",
           "type": "string",
           "default": "unset",
-          "description": "Keybinding that cycles the sidebar view mode: flat -> folders -> repo -> project -> flat. Same thing the view-mode label on the sidebar's workspace header toggles when clicked."
+          "description": "Keybinding that cycles the sidebar view mode: flat -> folders -> repo -> flat. Same thing the view-mode label on the sidebar's workspace header toggles when clicked."
         },
         {
           "key": "keys.chat",
@@ -846,22 +846,6 @@
           "description": "Complete Agent-row overrides keyed by strict canonical agent id. Agents without an override use ui.sidebar.agents.rows."
         },
         {
-          "key": "ui.sidebar.project.glyph_style",
-          "type": "enum",
-          "default": "unicode",
-          "description": "Glyph set for the Project view state cluster (branch/ahead/behind/dirty/staged/PR icons). unicode works on any terminal; nerd_font uses private-use-area glyphs that need a patched font (Ghostty ships one built-in).",
-          "values": [
-            "unicode",
-            "nerd_font"
-          ]
-        },
-        {
-          "key": "ui.sidebar.project.row_gap",
-          "type": "integer",
-          "default": "1",
-          "description": "Blank terminal rows between workspace blocks in the Project sidebar view. Set to 0 to pack rows."
-        },
-        {
           "key": "ui.sidebar.spaces.row_gap",
           "type": "integer",
           "default": "0",
@@ -883,12 +867,11 @@
           "key": "ui.view_mode",
           "type": "enum",
           "default": "\"repo\"",
-          "description": "How the sidebar groups workspaces. \"repo\" groups them by repository (the default). \"flat\" shows one flat list that can be freely drag-reordered — repo, channel, and visual groups all dissolve, and switching back regroups automatically. \"folders\" is a flat list too, but honors only your user-defined visual_group folders — no repo grouping, no branch brackets, and the @wNpN pane badge is suppressed. \"project\" groups them by declared project (projects.yml). Replaces the retired boolean ui.group_workspaces_by_repo, which is still accepted as an alias: false means \"flat\", true means \"repo\".",
+          "description": "How the sidebar groups workspaces. \"repo\" groups them by repository (the default). \"flat\" shows one flat list that can be freely drag-reordered — repo, channel, and visual groups all dissolve, and switching back regroups automatically. \"folders\" is a flat list too, but honors only your user-defined visual_group folders — no repo grouping, no branch brackets, and the @wNpN pane badge is suppressed. Replaces the retired boolean ui.group_workspaces_by_repo, which is still accepted as an alias: false means \"flat\", true means \"repo\".",
           "values": [
             "flat",
             "folders",
-            "repo",
-            "project"
+            "repo"
           ]
         },
         {

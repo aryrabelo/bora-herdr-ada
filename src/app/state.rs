@@ -25,36 +25,6 @@ pub(crate) struct PopupPaneState {
     pub height: Option<crate::popup_size::PopupSize>,
 }
 
-/// One on-disk worktree, canonicalized ONCE at refresh time (bora-qdi).
-/// `checkout_key` is computed the same way a `Workspace`'s own
-/// `GitSpaceMetadata.checkout_key` is (`workspace::git::discovery`'s
-/// derivation: canonicalize the checkout path, stringify it) —
-/// on the background thread that lists it
-/// (`App::start_worktree_inventory_refresh_if_due`, `src/app/runtime.rs`),
-/// never on the render path, so `ui::sidebar::project_view` (which must stay
-/// I/O-free — "Multiplicative performance paths", AGENTS.md) compares it as
-/// a plain string against `Workspace.git_space().checkout_key` with no
-/// filesystem call of its own and no chance of drifting from the real key.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct InventoryWorktree {
-    pub checkout_key: String,
-    pub branch: Option<String>,
-    pub is_bare: bool,
-    pub is_prunable: bool,
-}
-
-/// Background `git worktree list` result for one repo (bora-qdi). Mirrors
-/// `crate::workspace::RepoOpenPrs`'s shape: the worktrees found on disk plus
-/// an `error` so a failed listing renders as a visible failure rather than
-/// silently no unopened rows. Written by
-/// `App::start_worktree_inventory_refresh_if_due` (`src/app/runtime.rs`);
-/// read by `ui::sidebar::project_view` from `AppState::worktree_inventory`.
-#[derive(Clone, Debug, PartialEq, Eq, Default)]
-pub(crate) struct RepoWorktreeInventory {
-    pub worktrees: Vec<InventoryWorktree>,
-    pub error: Option<String>,
-}
-
 // ---------------------------------------------------------------------------
 // Selection autoscroll types
 // ---------------------------------------------------------------------------
@@ -712,74 +682,6 @@ pub struct GroupHeaderCardArea {
     pub rect: Rect,
 }
 
-/// Layout area for one Project-view row. `target` says what a click means, so
-/// hit-testing never re-derives it from the row's position — the geometry pass
-/// is the single source of truth, and a click at an offset row cannot land on
-/// the wrong thing.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ProjectRowHitArea {
-    pub rect: Rect,
-    pub target: ProjectRowTarget,
-}
-
-/// What a Project-view row does when clicked.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ProjectRowTarget {
-    /// Toggle the project's collapse state.
-    Project { collapse_key: String },
-    /// Open an on-disk worktree that has no workspace yet.
-    OpenWorktree { checkout_key: String },
-    /// Toggle a COMMANDS/CHECKS band header (`WorkspaceListEntry::SectionHeader`).
-    Band { collapse_key: String },
-    /// Toggle a workspace's own section — one full section per workspace,
-    /// main checkout or worktree alike (bora-c1h, `WorkspaceListEntry::SectionRow`).
-    /// `checkout_key` names the git checkout for the bora-uqv
-    /// `ProjectMemberTargets` right-click menu (resolved directly, no more
-    /// `wt:`-prefix stripping); `ws_idx` is the workspace this section is
-    /// for; `collapse_key` (`wsec:{ws_idx}`) toggles only its own panes.
-    Section {
-        ws_idx: usize,
-        checkout_key: String,
-        collapse_key: String,
-    },
-    /// T4 (bora-79l, P3): the SectionRow header's trailing 3-cell "+" —
-    /// create a worktree+workspace in THIS section's context. Carries the
-    /// section's `(repo_identity, branch)` — the branch_group pair, not a
-    /// `ws_idx` — so T6's same-branch section merge re-keys nothing here:
-    /// the drain resolves a live source workspace from the pair. Emitted
-    /// BEFORE the full-row `Section` area of the same row, so
-    /// `project_row_target_at`'s first-match resolves the "+" inside its
-    /// own 3 cells (the same precedence the PaneDotsRow dot cells already
-    /// use against the block card).
-    SectionNew {
-        repo_identity: String,
-        branch: String,
-    },
-    /// Activate a row inside a band (run a command, open a check).
-    /// Activate a row inside a band: run a command (COMMANDS rows carry
-    /// the workspace to launch into), open a check/todo/doc (not wired).
-    SectionItem {
-        kind: &'static crate::ui::SectionDescriptor,
-        label: String,
-        ws_idx: Option<usize>,
-    },
-    /// Focus one pane of a multi-pane workspace.
-    Pane { ws_idx: usize, pane_id: String },
-    /// Open a PR from the project-level PULL REQUESTS band in a new worktree.
-    ///
-    /// `ws_idx` is a representative workspace of the PR's repo, resolved once
-    /// when the band is built — NOT the active workspace. It exists only to
-    /// name which repo the worktree is created in: `start_pr_worktree_create`
-    /// turns it into the `workspace_id` of a `WorktreeCreate` call. Resolving
-    /// it per render would be a workspace scan per row per pane per client,
-    /// which the render path forbids.
-    ///
-    /// This is the same destination `ContextMenuKind::RepoPr`'s
-    /// "Open in worktree" reaches, so a sidebar PR row and a right-click on
-    /// the right panel's PR list do the same thing by construction.
-    OpenPr { ws_idx: usize, number: u64 },
-}
-
 /// Layout area for the "+" (create worktree) affordance on a repo header row
 /// in the sidebar workspace list.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -996,9 +898,6 @@ pub struct ViewState {
     pub sidebar_rect: Rect,
     pub workspace_card_areas: Vec<WorkspaceCardArea>,
     pub workspace_group_header_areas: Vec<GroupHeaderCardArea>,
-    /// Project-view row hit areas, refreshed by the geometry pass. Empty in
-    /// the Flat and Repo views.
-    pub project_row_areas: Vec<ProjectRowHitArea>,
     pub worktree_new_hit_areas: Vec<WorktreeNewHitArea>,
     pub tab_bar_rect: Rect,
     pub tab_hit_areas: Vec<Rect>,
@@ -1043,10 +942,6 @@ pub enum Mode {
     /// being renamed lives in `AppState::rename_group_target`. On confirm,
     /// every workspace in that group is moved to the new name.
     RenameGroup,
-    /// User is typing a project name (creating or renaming a project in
-    /// `projects.yml`). What the name is for lives in
-    /// `AppState::project_name_target`.
-    ProjectNameInput,
     /// User is typing an arbitrary shell command from the sidebar Programs
     /// launcher's "+ run command…" row.
     NewLinkedWorktree,
@@ -1428,31 +1323,6 @@ pub enum ContextMenuKind {
         collapse_key: String,
         hidden: bool,
     },
-    /// A Project-view group header row: a declared project (`slug: Some`) or
-    /// the synthetic `Ungrouped` orphans bucket (`slug: None`). `collapse_key`
-    /// doubles as the Hide key, same as `GroupHeader`. Its plugin-action
-    /// context is `Global`, same surface as `GroupHeader`.
-    ProjectHeader {
-        slug: Option<String>,
-        collapse_key: String,
-        hidden: bool,
-    },
-    /// The orphan-workspace picker opened by "Add workspaces…" on a
-    /// ProjectHeader menu. `orphans` are the candidate member dirs, aligned
-    /// with the menu items by index; `slug` is the project to file the pick
-    /// into, or `None` when the picker came from Ungrouped and the target
-    /// project is chosen in the follow-up `ProjectMemberTargets` menu.
-    ProjectOrphanPicker {
-        slug: Option<String>,
-        orphans: Vec<String>,
-    },
-    /// The per-dir project membership menu (Add to <slug> / New project… /
-    /// Remove), opened from a Project-view worktree/checkout row or from the
-    /// orphan picker. `member_dir` is the exact string `projects.yml`
-    /// `Member.dir` comparisons use (see `ProjectAssemblyContext::for_dir`).
-    ProjectMemberTargets {
-        member_dir: String,
-    },
     Tab {
         ws_idx: usize,
         tab_idx: usize,
@@ -1501,21 +1371,10 @@ pub struct ContextMenuState {
 
 /// Menu separator: rendered as a dim line, not selectable.
 pub const CONTEXT_MENU_SEPARATOR: &str = "─";
-/// What the `ProjectNameInput` modal writes on confirm.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ProjectNameTarget {
-    /// Set `name:` on the existing project `slug` in `projects.yml`.
-    Rename { slug: String },
-    /// Create a new project named as typed; `member_dir`, when present (the
-    /// row the menu was opened from), becomes its first member.
-    New { member_dir: Option<String> },
-}
 
 pub fn build_context_menu_items(
     kind: &ContextMenuKind,
     workspaces: &[crate::workspace::Workspace],
-    view_mode: crate::config::ViewMode,
-    assembly_items: &[String],
     custom_commands: &[String],
     installed_plugins: &InstalledPluginRegistry,
 ) -> Vec<String> {
@@ -1555,11 +1414,7 @@ pub fn build_context_menu_items(
                 "Refresh status".to_string(),
                 sep(),
             ];
-            if view_mode == crate::config::ViewMode::Project {
-                v.extend(assembly_items.iter().cloned());
-            } else {
-                push_groups(&mut v);
-            }
+            push_groups(&mut v);
             if !custom_commands.is_empty() {
                 v.push(sep());
                 v.extend(custom_commands.iter().cloned());
@@ -1585,11 +1440,7 @@ pub fn build_context_menu_items(
                 "Refresh status".to_string(),
                 sep(),
             ];
-            if view_mode == crate::config::ViewMode::Project {
-                v.extend(assembly_items.iter().cloned());
-            } else {
-                push_groups(&mut v);
-            }
+            push_groups(&mut v);
             if !custom_commands.is_empty() {
                 v.push(sep());
                 v.extend(custom_commands.iter().cloned());
@@ -1614,11 +1465,7 @@ pub fn build_context_menu_items(
                 "Refresh status".to_string(),
                 sep(),
             ];
-            if view_mode == crate::config::ViewMode::Project {
-                v.extend(assembly_items.iter().cloned());
-            } else {
-                push_groups(&mut v);
-            }
+            push_groups(&mut v);
             if !custom_commands.is_empty() {
                 v.push(sep());
                 v.extend(custom_commands.iter().cloned());
@@ -1646,11 +1493,7 @@ pub fn build_context_menu_items(
                 "Expand".to_string(),
                 sep(),
             ];
-            if view_mode == crate::config::ViewMode::Project {
-                v.extend(assembly_items.iter().cloned());
-            } else {
-                push_groups(&mut v);
-            }
+            push_groups(&mut v);
             if !custom_commands.is_empty() {
                 v.push(sep());
                 v.extend(custom_commands.iter().cloned());
@@ -1677,11 +1520,7 @@ pub fn build_context_menu_items(
                 "Collapse".to_string(),
                 sep(),
             ];
-            if view_mode == crate::config::ViewMode::Project {
-                v.extend(assembly_items.iter().cloned());
-            } else {
-                push_groups(&mut v);
-            }
+            push_groups(&mut v);
             if !custom_commands.is_empty() {
                 v.push(sep());
                 v.extend(custom_commands.iter().cloned());
@@ -1705,28 +1544,6 @@ pub fn build_context_menu_items(
                 ]
             }
         }
-        ContextMenuKind::ProjectHeader { hidden, .. } => {
-            // The assembly lead (Add workspaces… / New project… / Rename
-            // project…) is computed at the call site from a fresh
-            // projects.yml read; this builder owns only the shared
-            // Hide/Unhide tail, same shape as GroupHeader.
-            let mut v = assembly_items.to_vec();
-            v.push(sep());
-            if *hidden {
-                v.push("Unhide".to_string());
-            } else {
-                v.push("Hide 5m".to_string());
-                v.push("Hide 10m".to_string());
-                v.push("Hide 15m".to_string());
-                v.push("Hide 30m".to_string());
-            }
-            v
-        }
-        // Picker/follow-up kinds: every item is computed at the call site
-        // (orphan dirs, membership resolved against a fresh projects.yml
-        // read); the builder has nothing to add.
-        ContextMenuKind::ProjectOrphanPicker { .. }
-        | ContextMenuKind::ProjectMemberTargets { .. } => assembly_items.to_vec(),
         ContextMenuKind::Tab { .. } => {
             vec![
                 "New tab".to_string(),
@@ -1806,12 +1623,6 @@ fn plugin_menu_context(kind: &ContextMenuKind) -> crate::api::schema::PluginActi
         // Now any enabled plugin action declaring `contexts = ["global"]`
         // lands here through the ordinary mechanism below, dagr included.
         ContextMenuKind::GroupHeader { .. } => Ctx::Global,
-        // The project-assembly surfaces are the same general-purpose
-        // surface as GroupHeader: a project header, an orphan picker, and a
-        // membership menu are all places a global plugin action makes sense.
-        ContextMenuKind::ProjectHeader { .. } => Ctx::Global,
-        ContextMenuKind::ProjectOrphanPicker { .. } => Ctx::Global,
-        ContextMenuKind::ProjectMemberTargets { .. } => Ctx::Global,
         ContextMenuKind::Tab { .. } => Ctx::Tab,
         ContextMenuKind::Pane { .. } => Ctx::Pane,
         // No PluginActionContext variant models a PR/issue row (only
@@ -2211,12 +2022,6 @@ pub struct AppState {
     /// modal for a repo (by `repo_identity`); drained by App to trigger fetches
     /// and open the modal so the mouse handler stays side-effect-light.
     pub request_open_create_worktree: Option<String>,
-    /// Set when a Project-view SectionRow's "+" was clicked (T4, bora-79l):
-    /// `(repo_identity, branch)` of the clicked section — the branch-group
-    /// pair, resolved to a source workspace only at drain time so a stale
-    /// area after a re-render degrades to a no-op instead of creating in the
-    /// wrong repo. Drained by App into `start_section_worktree_create`.
-    pub request_section_worktree_create: Option<(String, String)>,
     pub pending_bora_command: Option<PendingBoraCommand>,
     /// Transient port override consumed by custom_command_env for pane commands.
     pub bora_port_override: Option<u16>,
@@ -2224,10 +2029,6 @@ pub struct AppState {
     pub requested_new_tab_name: Option<String>,
     pub pending_workspace_create_cwd: Option<std::path::PathBuf>,
     pub rename_pane_target: Option<PaneId>,
-    /// What the `Mode::ProjectNameInput` modal acts on: rename of an
-    /// existing project or creation of a new one (whose first member may be
-    /// the dir the menu was opened from). `None` unless that mode is active.
-    pub project_name_target: Option<ProjectNameTarget>,
     /// The existing visual-group name being renamed by the
     /// `Mode::RenameGroup` modal. `None` unless that mode is active.
     pub rename_group_target: Option<String>,
@@ -2299,19 +2100,6 @@ pub struct AppState {
     pub sidebar_collapsed_mode: crate::config::SidebarCollapsedModeConfig,
     /// Ratio of sidebar height allocated to the workspaces section.
     pub sidebar_section_split: f32,
-    /// `projects.yml`, refreshed from the tick (never from render — the entry
-    /// builder runs on a multiplicative path and must not touch the disk).
-    /// The sidebar is its only reader; right-click, the editor, and MCP are
-    /// the writers.
-    pub projects: crate::persist::projects::ProjectsStore,
-    /// Sidebar TODOS snapshot per project slug (bora-s3y.3), refreshed by
-    /// `refresh_project_todos_notes` — called from the todo/scratchpad verb
-    /// handlers after every mutation and when projects (re)load. Render only
-    /// reads it: the stores are never touched on the render path.
-    pub project_todos: std::collections::HashMap<String, crate::persist::todos::TodosSummary>,
-    /// Sidebar NOTES snapshot per project slug: scratchpad doc names, same
-    /// refresh discipline as `project_todos`.
-    pub project_notes: std::collections::HashMap<String, Vec<String>>,
     pub right_panel_collapsed: bool,
     pub right_panel_width: u16,
     pub right_panel_min_width: u16,
@@ -2333,8 +2121,6 @@ pub struct AppState {
     pub agent_view_override: Option<crate::api::schema::AgentViewSetParams>,
     pub sidebar_agents: crate::config::AgentsSidebarConfig,
     pub sidebar_spaces: crate::config::SpacesSidebarConfig,
-    /// Project-view row_gap + glyph style (bora-c1h), mirrors sidebar_agents/sidebar_spaces.
-    pub sidebar_project: crate::config::ProjectSidebarConfig,
     pub next_agent_state_change_seq: u64,
     /// Capture mouse input for Herdr's own mouse UI. When false, Herdr only
     /// captures mouse while the focused pane app requests mouse reporting.
@@ -2452,15 +2238,6 @@ pub struct AppState {
     /// (`GitSpaceMetadata.repo_identity`). Written by the periodic background
     /// refresh; read by UI/API surfaces in later phases.
     pub repo_open_prs: std::collections::HashMap<String, crate::workspace::RepoOpenPrs>,
-    /// Cached `git worktree list` result per repo identity
-    /// (`GitSpaceMetadata.repo_identity`), for the Project view's unopened
-    /// worktree rows (bora-qdi). Written by
-    /// `App::start_worktree_inventory_refresh_if_due`'s throttled background
-    /// thread (`src/app/runtime.rs`), once per repo that some declared
-    /// project member resolves to with `WorktreesScope::All`. Read only by
-    /// `ui::sidebar::project_view::push_project_group`, which performs no
-    /// I/O of its own on the render path.
-    pub(crate) worktree_inventory: std::collections::HashMap<String, RepoWorktreeInventory>,
     /// Cached open issues relevant to the current user, keyed by repo identity
     /// (`GitSpaceMetadata.repo_identity`). Written by on-demand background
     /// fetches; read by UI/API surfaces in later phases.
@@ -2497,19 +2274,6 @@ impl AppState {
 
     pub(crate) fn request_full_repaint(&mut self) {
         self.force_full_repaint = true;
-    }
-    /// Reload the sidebar's TODOS/NOTES snapshots for `slug` from the stores
-    /// (bora-s3y.3). Callers: the six todo/scratchpad verb handlers
-    /// (post-mutation) and the projects reload path — never render, so the
-    /// two store reads stay off the multiplicative path.
-    pub(crate) fn refresh_project_todos_notes(&mut self, slug: &str) {
-        let todos = crate::persist::todos::read_todos(slug).unwrap_or_default();
-        self.project_todos.insert(
-            slug.to_string(),
-            crate::persist::todos::TodosSummary::from_todos(&todos),
-        );
-        let notes = crate::persist::scratchpads::list_docs(slug).unwrap_or_default();
-        self.project_notes.insert(slug.to_string(), notes);
     }
 
     /// Sidebar hide key for a single workspace (non-persisted presentation state).
@@ -2781,14 +2545,12 @@ impl AppState {
             request_open_pr_worktree: None,
             request_flow_run: None,
             request_open_create_worktree: None,
-            request_section_worktree_create: None,
             pending_bora_command: None,
             bora_port_override: None,
             creating_new_tab: false,
             requested_new_tab_name: None,
             pending_workspace_create_cwd: None,
             rename_pane_target: None,
-            project_name_target: None,
             rename_group_target: None,
             worktree_create: None,
             worktree_open: None,
@@ -2817,7 +2579,6 @@ impl AppState {
                 sidebar_rect: Rect::default(),
                 workspace_card_areas: Vec::new(),
                 workspace_group_header_areas: Vec::new(),
-                project_row_areas: Vec::new(),
                 worktree_new_hit_areas: Vec::new(),
                 tab_bar_rect: Rect::default(),
                 tab_hit_areas: Vec::new(),
@@ -2867,15 +2628,6 @@ impl AppState {
             sidebar_collapsed: false,
             sidebar_collapsed_mode: crate::config::SidebarCollapsedModeConfig::Compact,
             sidebar_section_split: 0.5,
-            // Mirrors the agent-manifest idiom in `App::new`: unit tests get an
-            // inert store so `test_new()` never reads the operator's real
-            // `~/.config/bora/projects.yml`.
-            #[cfg(not(test))]
-            projects: crate::persist::projects::ProjectsStore::load(),
-            #[cfg(test)]
-            projects: crate::persist::projects::ProjectsStore::empty(),
-            project_todos: std::collections::HashMap::new(),
-            project_notes: std::collections::HashMap::new(),
             right_panel_collapsed: true,
             right_panel_width: 30,
             right_panel_min_width: 20,
@@ -2892,7 +2644,6 @@ impl AppState {
             agent_view_override: None,
             sidebar_agents: crate::config::AgentsSidebarConfig::default(),
             sidebar_spaces: crate::config::SpacesSidebarConfig::default(),
-            sidebar_project: crate::config::ProjectSidebarConfig::default(),
             next_agent_state_change_seq: 0,
             mouse_capture: true,
             copy_on_select: true,
@@ -2976,7 +2727,6 @@ impl AppState {
             host_mouse_pixels: None,
             session_dirty: false,
             repo_open_prs: std::collections::HashMap::new(),
-            worktree_inventory: std::collections::HashMap::new(),
             repo_issues: std::collections::HashMap::new(),
             issues_fetch_in_flight: std::collections::HashSet::new(),
             prs_fetch_in_flight: std::collections::HashSet::new(),
@@ -3326,11 +3076,6 @@ impl AppState {
                 ContextMenuKind::RepoIssue { .. } => {}
                 // No workspace index to check — a group header carries only keys.
                 ContextMenuKind::GroupHeader { .. } => {}
-                // No workspace index to check — the project-assembly kinds
-                // carry only slugs, keys, and dirs.
-                ContextMenuKind::ProjectHeader { .. }
-                | ContextMenuKind::ProjectOrphanPicker { .. }
-                | ContextMenuKind::ProjectMemberTargets { .. } => {}
             }
         }
     }
@@ -3631,14 +3376,7 @@ mod tests {
             hidden: false,
         };
         let menu = ContextMenuState {
-            items: build_context_menu_items(
-                &kind,
-                &[],
-                crate::config::ViewMode::Repo,
-                &[],
-                &[],
-                &Default::default(),
-            ),
+            items: build_context_menu_items(&kind, &[], &[], &Default::default()),
             kind,
             x: 0,
             y: 0,
@@ -3682,14 +3420,7 @@ mod tests {
             hidden: false,
         };
         let menu = ContextMenuState {
-            items: build_context_menu_items(
-                &kind,
-                &[],
-                crate::config::ViewMode::Repo,
-                &[],
-                &[],
-                &Default::default(),
-            ),
+            items: build_context_menu_items(&kind, &[], &[], &Default::default()),
             kind,
             x: 0,
             y: 0,
@@ -3732,14 +3463,7 @@ mod tests {
             hidden: false,
         };
         let menu = ContextMenuState {
-            items: build_context_menu_items(
-                &kind,
-                &[],
-                crate::config::ViewMode::Repo,
-                &[],
-                &[],
-                &Default::default(),
-            ),
+            items: build_context_menu_items(&kind, &[], &[], &Default::default()),
             kind,
             x: 0,
             y: 0,
@@ -3829,14 +3553,7 @@ mod tests {
             ws_idx: 0,
             hidden: false,
         };
-        let items = build_context_menu_items(
-            &kind,
-            &[],
-            crate::config::ViewMode::Repo,
-            &[],
-            &[],
-            &plugins,
-        );
+        let items = build_context_menu_items(&kind, &[], &[], &plugins);
         assert!(
             items.iter().any(|item| item == "Do it"),
             "matching-context action must appear: {items:?}"
@@ -3857,14 +3574,7 @@ mod tests {
             ws_idx: 0,
             hidden: false,
         };
-        let items = build_context_menu_items(
-            &kind,
-            &[],
-            crate::config::ViewMode::Repo,
-            &[],
-            &[],
-            &plugins,
-        );
+        let items = build_context_menu_items(&kind, &[], &[], &plugins);
         assert!(
             !items.iter().any(|item| item == "Do it"),
             "non-matching-context action must not appear: {items:?}"
@@ -3881,14 +3591,7 @@ mod tests {
             ws_idx: 0,
             hidden: false,
         };
-        let items = build_context_menu_items(
-            &kind,
-            &[],
-            crate::config::ViewMode::Repo,
-            &[],
-            &[],
-            &plugins,
-        );
+        let items = build_context_menu_items(&kind, &[], &[], &plugins);
         assert!(
             !items.iter().any(|item| item == "Do it"),
             "empty contexts must never match: {items:?}"
@@ -3913,14 +3616,7 @@ mod tests {
             ws_idx: 0,
             hidden: false,
         };
-        let items = build_context_menu_items(
-            &kind,
-            &[],
-            crate::config::ViewMode::Repo,
-            &[],
-            &[],
-            &plugins,
-        );
+        let items = build_context_menu_items(&kind, &[], &[], &plugins);
         assert!(
             !items.iter().any(|item| item == "Do it"),
             "disabled plugin must contribute nothing: {items:?}"
@@ -3982,14 +3678,7 @@ mod tests {
             },
         ];
         for kind in kinds {
-            let items = build_context_menu_items(
-                &kind,
-                &[],
-                crate::config::ViewMode::Repo,
-                &[],
-                &[],
-                &plugins,
-            );
+            let items = build_context_menu_items(&kind, &[], &[], &plugins);
             assert!(
                 items.iter().any(|item| item == "Do it"),
                 "Global action must appear for {kind:?}: {items:?}"

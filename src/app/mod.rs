@@ -23,7 +23,6 @@ pub(crate) mod pane_graphics;
 mod popup;
 mod runtime;
 mod runtime_mutations;
-mod sections;
 mod session;
 pub mod state;
 mod tab_bar_status;
@@ -99,11 +98,6 @@ const CHECKS_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 /// Default period between background open-PR refreshes; overridable via
 /// `[github] refresh_interval_secs`.
 const OPEN_PRS_REFRESH_INTERVAL: Duration = Duration::from_secs(120);
-/// Cadence for `App::start_worktree_inventory_refresh_if_due` (bora-qdi): a
-/// local `git worktree list` per declared repo, not a config knob — the
-/// feature is optional (a project only opts in via `worktrees: all`), so a
-/// tunable interval nobody asked for is dead weight.
-const WORKTREE_INVENTORY_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 const AUTO_UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(30 * 60);
 const PENDING_AGENT_RESUME_THEME_WAIT: Duration = Duration::from_millis(750);
 /// How long a target must be continuously observed away from `Working`
@@ -276,14 +270,6 @@ pub struct App {
     pub(crate) github_refresh_interval: Duration,
     /// `[checks] refresh_interval_secs` as a Duration.
     pub(crate) checks_refresh_interval: Duration,
-    /// Last time a background worktree-inventory batch was started (bora-qdi).
-    pub(crate) last_worktree_inventory_refresh: Instant,
-    /// True while a background worktree-inventory refresh batch is running;
-    /// cleared when all its per-repo results have arrived (bora-qdi).
-    pub(crate) worktree_inventory_refresh_in_flight: bool,
-    /// Per-repo results still expected from the in-flight worktree-inventory
-    /// batch.
-    pub(crate) worktree_inventory_refresh_results_pending: usize,
     pub(crate) git_refresh_in_flight: bool,
     pub(crate) git_refresh_due_after_in_flight: bool,
     pub(crate) git_identity_refresh_requested: bool,
@@ -722,15 +708,7 @@ impl App {
         let (theme_palette, theme_name) = resolve_effective_theme(&theme_runtime, None);
 
         let mut state = AppState {
-            // Same reason as `agent_manifest_summaries` above: unit tests must
-            // not read the operator's real `~/.config/bora/projects.yml`.
-            #[cfg(not(test))]
-            projects: crate::persist::projects::ProjectsStore::load(),
-            #[cfg(test)]
-            projects: crate::persist::projects::ProjectsStore::empty(),
             rename_group_target: None,
-            project_todos: std::collections::HashMap::new(),
-            project_notes: std::collections::HashMap::new(),
             terminals: std::collections::HashMap::new(),
             direct_attach_resize_locks: std::collections::HashSet::new(),
             pane_id_aliases: std::collections::HashMap::new(),
@@ -765,14 +743,12 @@ impl App {
             request_flow_run: None,
             request_open_chat: false,
             request_open_create_worktree: None,
-            request_section_worktree_create: None,
             pending_bora_command: None,
             bora_port_override: None,
             creating_new_tab: false,
             requested_new_tab_name: None,
             pending_workspace_create_cwd: None,
             rename_pane_target: None,
-            project_name_target: None,
             worktree_create: None,
             worktree_open: None,
             worktree_remove: None,
@@ -810,7 +786,6 @@ impl App {
                 sidebar_rect: Rect::default(),
                 workspace_card_areas: Vec::new(),
                 workspace_group_header_areas: Vec::new(),
-                project_row_areas: Vec::new(),
                 worktree_new_hit_areas: Vec::new(),
                 tab_bar_rect: Rect::default(),
                 tab_hit_areas: Vec::new(),
@@ -872,7 +847,6 @@ impl App {
             agent_view_override: None,
             sidebar_agents: config.ui.sidebar.agents.clone(),
             sidebar_spaces: config.ui.sidebar.spaces.clone(),
-            sidebar_project: config.ui.sidebar.project,
             next_agent_state_change_seq: 0,
             mouse_capture: config.ui.mouse_capture,
             copy_on_select: config.ui.copy_on_select,
@@ -947,7 +921,6 @@ impl App {
             host_mouse_pixels: None,
             session_dirty: false,
             repo_open_prs: HashMap::new(),
-            worktree_inventory: HashMap::new(),
             repo_issues: HashMap::new(),
             issues_fetch_in_flight: std::collections::HashSet::new(),
             prs_fetch_in_flight: std::collections::HashSet::new(),
@@ -1026,15 +999,6 @@ impl App {
                 .unwrap_or_else(Instant::now),
             open_prs_refresh_in_flight: false,
             open_prs_refresh_results_pending: 0,
-            // checked_sub: the interval is fixed (bora-qdi has no config
-            // knob), but Instant::now() at process start is always large
-            // enough for this to never underflow in practice; checked_sub
-            // stays defensive rather than assume that.
-            last_worktree_inventory_refresh: Instant::now()
-                .checked_sub(WORKTREE_INVENTORY_REFRESH_INTERVAL)
-                .unwrap_or_else(Instant::now),
-            worktree_inventory_refresh_in_flight: false,
-            worktree_inventory_refresh_results_pending: 0,
             github_fetch_enabled: config.github.enabled,
             github_refresh_interval,
             checks_refresh_interval,
@@ -1812,14 +1776,6 @@ impl App {
                 needs_render = true;
             }
 
-            // T4 (bora-79l): a Project-view SectionRow's "+" creates a
-            // worktree+workspace scoped to that section's (repo, branch) —
-            // the same deferred worktree.create path the PR row reaches.
-            if let Some((repo_identity, branch)) = self.state.request_section_worktree_create.take()
-            {
-                self.start_section_worktree_create(&repo_identity, &branch);
-                needs_render = true;
-            }
             if let Some(request) = self.state.request_flow_run.take() {
                 self.start_flow_run(request);
                 needs_render = true;
@@ -2329,7 +2285,6 @@ impl App {
                 self.state.status_indicators = config.ui.status_indicators;
                 self.state.sidebar_agents = config.ui.sidebar.agents.clone();
                 self.state.sidebar_spaces = config.ui.sidebar.spaces.clone();
-                self.state.sidebar_project = config.ui.sidebar.project;
                 self.state.agent_panel_scroll = 0;
                 self.state.accent = crate::config::parse_color(&config.ui.accent);
                 if !self.state.local_sound_playback && self.state.sound != config.ui.sound {
@@ -2910,8 +2865,7 @@ impl App {
             | Mode::RenameTab
             | Mode::RenamePane
             | Mode::SetWorkspaceGroup
-            | Mode::RenameGroup
-            | Mode::ProjectNameInput => {
+            | Mode::RenameGroup => {
                 self.handle_rename_key_via_api(key_event);
             }
             Mode::NewLinkedWorktree => {
@@ -7603,14 +7557,7 @@ last_pane = "prefix+tab"
             ws_idx: 1,
             hidden: false,
         };
-        let items = state::build_context_menu_items(
-            &kind,
-            &[],
-            crate::config::ViewMode::Repo,
-            &[],
-            &[],
-            &app.state.installed_plugins,
-        );
+        let items = state::build_context_menu_items(&kind, &[], &[], &app.state.installed_plugins);
         let close_idx = items.iter().position(|i| i == "Close").unwrap();
         app.state.context_menu = Some(state::ContextMenuState {
             items,
@@ -7652,14 +7599,7 @@ last_pane = "prefix+tab"
             ws_idx: 0,
             hidden: false,
         };
-        let items = state::build_context_menu_items(
-            &kind,
-            &[],
-            crate::config::ViewMode::Repo,
-            &[],
-            &[],
-            &app.state.installed_plugins,
-        );
+        let items = state::build_context_menu_items(&kind, &[], &[], &app.state.installed_plugins);
         let refresh_idx = items.iter().position(|i| i == "Refresh status").unwrap();
         let menu = state::ContextMenuState {
             items,

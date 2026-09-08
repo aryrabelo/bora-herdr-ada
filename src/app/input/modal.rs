@@ -510,21 +510,13 @@ pub(super) fn leave_modal(state: &mut AppState) {
     }
 }
 
-/// The pane's addressable id, in the exact `wNpN` (no-colon) form the
-/// sidebar prints (`ui::sidebar::project_view::pane_address`) — deliberately
-/// NOT `workspace::public_pane_id_for_number`'s colon form, which is a
-/// different, equally "public" representation of the same pane. Reusing the
-/// sidebar's own formatter means the string this copies to the clipboard is
-/// exactly what the user has already seen printed on screen.
+/// The pane's addressable id, in the exact `wNpN` (no-colon) form —
+/// deliberately NOT `workspace::public_pane_id_for_number`'s colon form,
+/// which is a different, equally "public" representation of the same pane.
+/// Copying this form means the string on the clipboard is the one callers
+/// like `bora agent read` already accept.
 ///
-/// Known layering residual (flagged in review, not fixed here): this reaches
-/// from the input layer into a UI-module formatter for what is really a
-/// plain data format. The real fix is hoisting `pane_address` to sit next to
-/// `workspace::public_pane_id_for_number` in the workspace layer, so the
-/// sidebar and this menu both call one shared function instead of one
-/// reaching into the other's module.
-///
-/// This also leans on the pane-id resolver accepting the colonless form
+/// This leans on the pane-id resolver accepting the colonless form
 /// interchangeably with the colon form (verified against a live server:
 /// `bora agent read w6Jp1` and `w6J:p1` both resolve today). If that
 /// resolver ever becomes colon-strict, this silently starts copying a
@@ -541,7 +533,11 @@ fn pane_public_address(
 ) -> Option<String> {
     let ws = workspaces.get(ws_idx)?;
     let number = ws.public_pane_number(pane_id)?;
-    Some(crate::ui::sidebar::project_view::pane_address(ws, number))
+    Some(format!(
+        "{}p{}",
+        ws.id,
+        crate::workspace::encode_public_number(number)
+    ))
 }
 
 /// Minutes for a "Hide Nm" context-menu label.
@@ -690,33 +686,11 @@ pub(super) fn apply_rename_action(state: &mut AppState, action: ModalAction) {
                         apply_group_rename(state, &old, &new_name);
                     }
                 }
-                Mode::ProjectNameInput => {
-                    if let Some(target) = state.project_name_target.take() {
-                        let name = new_name.trim();
-                        if !name.is_empty() {
-                            match target {
-                                crate::app::state::ProjectNameTarget::Rename { slug } => {
-                                    if let Err(err) = rename_project(&slug, name) {
-                                        tracing::warn!(err = ?err, "project rename failed");
-                                    }
-                                }
-                                crate::app::state::ProjectNameTarget::New { member_dir } => {
-                                    if let Err(err) =
-                                        create_project_with_optional_member(name, member_dir)
-                                    {
-                                        tracing::warn!(err = ?err, "project create failed");
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
                 _ => {}
             }
             state.creating_new_tab = false;
             state.pending_workspace_create_cwd = None;
             state.rename_pane_target = None;
-            state.project_name_target = None;
             state.rename_group_target = None;
             state.name_input.clear();
             state.name_input_replace_on_type = false;
@@ -731,7 +705,6 @@ pub(super) fn apply_rename_action(state: &mut AppState, action: ModalAction) {
             state.requested_new_tab_name = None;
             state.pending_workspace_create_cwd = None;
             state.rename_pane_target = None;
-            state.project_name_target = None;
             state.rename_group_target = None;
             state.name_input.clear();
             state.name_input_replace_on_type = false;
@@ -1001,151 +974,6 @@ pub(super) fn apply_context_menu_action(
             }
             leave_modal(state);
         }
-        // ── Project assembly (bora-uqv) ─────────────────────────────
-        (
-            ContextMenuKind::Workspace { ws_idx, .. }
-            | ContextMenuKind::GitWorkspace { ws_idx, .. },
-            Some(item_str),
-        ) if item_str.starts_with("Add to ") => {
-            let Some(slug) = slug_from_add_to_label(&item_str["Add to ".len()..]) else {
-                leave_modal(state);
-                return;
-            };
-            if let Some(dir) = state
-                .workspaces
-                .get(ws_idx)
-                .map(crate::workspace::Workspace::project_member_dir)
-            {
-                if let Err(err) = add_member(&slug, &dir) {
-                    tracing::warn!(err = ?err, "project member_add failed");
-                }
-            }
-            leave_modal(state);
-        }
-        (
-            ContextMenuKind::Workspace { ws_idx, .. }
-            | ContextMenuKind::GitWorkspace { ws_idx, .. },
-            Some("New project\u{2026}"),
-        ) => {
-            if let Some(dir) = state
-                .workspaces
-                .get(ws_idx)
-                .map(crate::workspace::Workspace::project_member_dir)
-            {
-                open_new_project_prompt(state, Some(dir));
-            } else {
-                leave_modal(state);
-            }
-        }
-        (
-            ContextMenuKind::Workspace { ws_idx, .. }
-            | ContextMenuKind::GitWorkspace { ws_idx, .. },
-            Some("Remove"),
-        ) => {
-            if let Some(dir) = state
-                .workspaces
-                .get(ws_idx)
-                .map(crate::workspace::Workspace::project_member_dir)
-            {
-                remove_membership_direct(&dir);
-            }
-            leave_modal(state);
-        }
-        (ContextMenuKind::ProjectHeader { slug, .. }, Some("Add workspaces\u{2026}")) => {
-            let orphans = orphan_member_dirs(state);
-            if orphans.is_empty() {
-                leave_modal(state);
-            } else {
-                let items = orphans
-                    .iter()
-                    .map(|dir| format!("\u{ff0b} {dir}"))
-                    .collect();
-                follow_up_menu(
-                    state,
-                    ContextMenuKind::ProjectOrphanPicker { slug, orphans },
-                    items,
-                    menu.x,
-                    menu.y,
-                );
-            }
-        }
-        (ContextMenuKind::ProjectHeader { .. }, Some("New project\u{2026}")) => {
-            open_new_project_prompt(state, None);
-        }
-        (
-            ContextMenuKind::ProjectHeader {
-                slug: Some(slug), ..
-            },
-            Some("Rename project\u{2026}"),
-        ) => {
-            let prefill = projects::load_projects_file_fresh()
-                .ok()
-                .and_then(|file| {
-                    file.projects
-                        .get(&slug)
-                        .map(|project| project.name.clone().unwrap_or_else(|| slug.clone()))
-                })
-                .unwrap_or_else(|| slug.clone());
-            open_project_name_input(
-                state,
-                crate::app::state::ProjectNameTarget::Rename { slug },
-                prefill,
-                false,
-            );
-        }
-        (ContextMenuKind::ProjectOrphanPicker { slug, orphans }, Some(_)) => {
-            match (slug, orphans.get(idx).cloned()) {
-                (Some(slug), Some(dir)) => {
-                    if let Err(err) = add_member(&slug, &dir) {
-                        tracing::warn!(err = ?err, "project member_add failed");
-                    }
-                    leave_modal(state);
-                }
-                (None, Some(dir)) => {
-                    let items = assembly_items_for_dir(&dir);
-                    follow_up_menu(
-                        state,
-                        ContextMenuKind::ProjectMemberTargets { member_dir: dir },
-                        items,
-                        menu.x,
-                        menu.y,
-                    );
-                }
-                _ => leave_modal(state),
-            }
-        }
-        (ContextMenuKind::ProjectMemberTargets { member_dir }, Some(item_str))
-            if item_str.starts_with("Add to ") =>
-        {
-            let Some(slug) = slug_from_add_to_label(&item_str["Add to ".len()..]) else {
-                leave_modal(state);
-                return;
-            };
-            if let Err(err) = add_member(&slug, &member_dir) {
-                tracing::warn!(err = ?err, "project member_add failed");
-            }
-            leave_modal(state);
-        }
-        (ContextMenuKind::ProjectMemberTargets { member_dir }, Some("New project\u{2026}")) => {
-            open_new_project_prompt(state, Some(member_dir));
-        }
-        (ContextMenuKind::ProjectMemberTargets { member_dir }, Some("Remove")) => {
-            remove_membership_direct(&member_dir);
-            leave_modal(state);
-        }
-        // bora-79l.10 T6b: section-control items ("Header: …", "PART …",
-        // "Nova section: …") are intentionally UNHANDLED here. Unlike
-        // membership, their write path (materializing/mutating a
-        // `Project.layout` entry) is owned by the `project.section_*`
-        // API handler, not by this offline direct-write shim — duplicating
-        // that logic here would drift the moment the handler's semantics
-        // change. They fall to the `_` arm below (menu closes, no-op);
-        // the real wiring is `apply_context_menu_action_via_api`'s
-        // `dispatch_section_toggle`/`dispatch_section_create`, exercised
-        // by `mouse.rs`'s `project_view_section_row_and_pane_dots_row_menus_
-        // gain_section_controls_bora_79l_10`, and the pure decision logic
-        // (`section_toggle_update_params`/`section_create_kind`) is unit
-        // tested directly in `section_menu_tests` below.
         (
             ContextMenuKind::Workspace { ws_idx, .. }
             | ContextMenuKind::GitWorkspace { ws_idx, .. },
@@ -1597,50 +1425,6 @@ impl App {
                     apply_group_rename(&mut self.state, &old, &new_name);
                 }
             }
-            Mode::ProjectNameInput => {
-                if let Some(target) = self.state.project_name_target.take() {
-                    let name = new_name.trim().to_string();
-                    if !name.is_empty() {
-                        match target {
-                            crate::app::state::ProjectNameTarget::Rename { slug } => {
-                                self.runtime_project_update(
-                                    "tui.project.update",
-                                    crate::api::schema::ProjectUpdateParams {
-                                        slug,
-                                        name: Some(name),
-                                        channel: None,
-                                        auto_join: None,
-                                    },
-                                );
-                            }
-                            crate::app::state::ProjectNameTarget::New { member_dir } => {
-                                let slug = projects::load_projects_file_fresh()
-                                    .map(|file| unique_project_slug(&file, &slug_from_name(&name)))
-                                    .unwrap_or_else(|_| slug_from_name(&name));
-                                self.runtime_project_create(
-                                    "tui.project.create",
-                                    crate::api::schema::ProjectCreateParams {
-                                        slug: slug.clone(),
-                                        name: Some(name),
-                                        channel: None,
-                                        auto_join: None,
-                                    },
-                                );
-                                if let Some(dir) = member_dir {
-                                    self.runtime_project_member_add(
-                                        "tui.project.member_add",
-                                        crate::api::schema::ProjectMemberAddParams {
-                                            slug,
-                                            dir,
-                                            worktrees: WorktreesScope::All,
-                                        },
-                                    );
-                                }
-                            }
-                        }
-                    }
-                }
-            }
             _ => {}
         }
 
@@ -1865,218 +1649,6 @@ impl App {
                     ws.visual_group = None;
                     self.state.mark_session_dirty();
                 }
-                leave_modal(&mut self.state);
-            }
-            // ── Project assembly (bora-uqv) ─────────────────────────
-            (
-                ContextMenuKind::Workspace { ws_idx, .. }
-                | ContextMenuKind::GitWorkspace { ws_idx, .. },
-                Some(item_str),
-            ) if item_str.starts_with("Add to ") => {
-                let Some(slug) = slug_from_add_to_label(&item_str["Add to ".len()..]) else {
-                    leave_modal(&mut self.state);
-                    return;
-                };
-                if let Some(dir) = self
-                    .state
-                    .workspaces
-                    .get(ws_idx)
-                    .map(crate::workspace::Workspace::project_member_dir)
-                {
-                    self.runtime_project_member_add(
-                        "tui.project.member_add",
-                        crate::api::schema::ProjectMemberAddParams {
-                            slug,
-                            dir,
-                            worktrees: WorktreesScope::All,
-                        },
-                    );
-                }
-                leave_modal(&mut self.state);
-            }
-            (
-                ContextMenuKind::Workspace { ws_idx, .. }
-                | ContextMenuKind::GitWorkspace { ws_idx, .. },
-                Some("New project\u{2026}"),
-            ) => {
-                if let Some(dir) = self
-                    .state
-                    .workspaces
-                    .get(ws_idx)
-                    .map(crate::workspace::Workspace::project_member_dir)
-                {
-                    open_new_project_prompt(&mut self.state, Some(dir));
-                } else {
-                    leave_modal(&mut self.state);
-                }
-            }
-            (
-                ContextMenuKind::Workspace { ws_idx, .. }
-                | ContextMenuKind::GitWorkspace { ws_idx, .. },
-                Some("Remove"),
-            ) => {
-                if let Some(dir) = self
-                    .state
-                    .workspaces
-                    .get(ws_idx)
-                    .map(crate::workspace::Workspace::project_member_dir)
-                {
-                    if let Ok(file) = projects::load_projects_file_fresh() {
-                        let ctx = ProjectAssemblyContext::for_dir(&file, &dir);
-                        if let Some(slug) = ctx.current_project_slug {
-                            self.runtime_project_member_remove(
-                                "tui.project.member_remove",
-                                crate::api::schema::ProjectMemberRemoveParams { slug, dir },
-                            );
-                        }
-                    }
-                }
-                leave_modal(&mut self.state);
-            }
-            (ContextMenuKind::ProjectHeader { slug, .. }, Some("Add workspaces\u{2026}")) => {
-                let orphans = orphan_member_dirs(&self.state);
-                if orphans.is_empty() {
-                    leave_modal(&mut self.state);
-                } else {
-                    let items = orphans
-                        .iter()
-                        .map(|dir| format!("\u{ff0b} {dir}"))
-                        .collect();
-                    follow_up_menu(
-                        &mut self.state,
-                        ContextMenuKind::ProjectOrphanPicker { slug, orphans },
-                        items,
-                        menu.x,
-                        menu.y,
-                    );
-                }
-            }
-            (ContextMenuKind::ProjectHeader { .. }, Some("New project\u{2026}")) => {
-                open_new_project_prompt(&mut self.state, None);
-            }
-            (
-                ContextMenuKind::ProjectHeader {
-                    slug: Some(slug), ..
-                },
-                Some("Rename project\u{2026}"),
-            ) => {
-                let prefill = projects::load_projects_file_fresh()
-                    .ok()
-                    .and_then(|file| {
-                        file.projects
-                            .get(&slug)
-                            .map(|project| project.name.clone().unwrap_or_else(|| slug.clone()))
-                    })
-                    .unwrap_or_else(|| slug.clone());
-                open_project_name_input(
-                    &mut self.state,
-                    crate::app::state::ProjectNameTarget::Rename { slug },
-                    prefill,
-                    false,
-                );
-            }
-            (ContextMenuKind::ProjectOrphanPicker { slug, orphans }, Some(_)) => {
-                match (slug, orphans.get(idx).cloned()) {
-                    (Some(slug), Some(dir)) => {
-                        self.runtime_project_member_add(
-                            "tui.project.member_add",
-                            crate::api::schema::ProjectMemberAddParams {
-                                slug,
-                                dir,
-                                worktrees: WorktreesScope::All,
-                            },
-                        );
-                        leave_modal(&mut self.state);
-                    }
-                    (None, Some(dir)) => {
-                        let items = assembly_items_for_dir(&dir);
-                        follow_up_menu(
-                            &mut self.state,
-                            ContextMenuKind::ProjectMemberTargets { member_dir: dir },
-                            items,
-                            menu.x,
-                            menu.y,
-                        );
-                    }
-                    _ => leave_modal(&mut self.state),
-                }
-            }
-            (ContextMenuKind::ProjectMemberTargets { member_dir }, Some(item_str))
-                if item_str.starts_with("Add to ") =>
-            {
-                let Some(slug) = slug_from_add_to_label(&item_str["Add to ".len()..]) else {
-                    leave_modal(&mut self.state);
-                    return;
-                };
-                self.runtime_project_member_add(
-                    "tui.project.member_add",
-                    crate::api::schema::ProjectMemberAddParams {
-                        slug,
-                        dir: member_dir,
-                        worktrees: WorktreesScope::All,
-                    },
-                );
-                leave_modal(&mut self.state);
-            }
-            (ContextMenuKind::ProjectMemberTargets { member_dir }, Some("New project\u{2026}")) => {
-                open_new_project_prompt(&mut self.state, Some(member_dir));
-            }
-            (ContextMenuKind::ProjectMemberTargets { member_dir }, Some("Remove")) => {
-                if let Ok(file) = projects::load_projects_file_fresh() {
-                    let ctx = ProjectAssemblyContext::for_dir(&file, &member_dir);
-                    if let Some(slug) = ctx.current_project_slug {
-                        self.runtime_project_member_remove(
-                            "tui.project.member_remove",
-                            crate::api::schema::ProjectMemberRemoveParams {
-                                slug,
-                                dir: member_dir,
-                            },
-                        );
-                    }
-                }
-                leave_modal(&mut self.state);
-            }
-            // ── Section controls (bora-79l.10 T6b) ───────────────────
-            (
-                ContextMenuKind::Workspace { ws_idx, .. }
-                | ContextMenuKind::GitWorkspace { ws_idx, .. },
-                Some(item_str),
-            ) if section_toggle_field(item_str).is_some() => {
-                if let Some(checkout_key) = self
-                    .state
-                    .workspaces
-                    .get(ws_idx)
-                    .map(crate::workspace::Workspace::project_member_dir)
-                {
-                    self.dispatch_section_toggle(&checkout_key, item_str);
-                }
-                leave_modal(&mut self.state);
-            }
-            (
-                ContextMenuKind::Workspace { ws_idx, .. }
-                | ContextMenuKind::GitWorkspace { ws_idx, .. },
-                Some(item_str),
-            ) if section_create_kind(item_str).is_some() => {
-                if let Some(checkout_key) = self
-                    .state
-                    .workspaces
-                    .get(ws_idx)
-                    .map(crate::workspace::Workspace::project_member_dir)
-                {
-                    self.dispatch_section_create(&checkout_key, item_str);
-                }
-                leave_modal(&mut self.state);
-            }
-            (ContextMenuKind::ProjectMemberTargets { member_dir }, Some(item_str))
-                if section_toggle_field(item_str).is_some() =>
-            {
-                self.dispatch_section_toggle(&member_dir, item_str);
-                leave_modal(&mut self.state);
-            }
-            (ContextMenuKind::ProjectMemberTargets { member_dir }, Some(item_str))
-                if section_create_kind(item_str).is_some() =>
-            {
-                self.dispatch_section_create(&member_dir, item_str);
                 leave_modal(&mut self.state);
             }
             (
@@ -2355,47 +1927,6 @@ impl App {
             _ => leave_modal(&mut self.state),
         }
     }
-
-    /// Sends the negation of the checkout's current declared toggle state —
-    /// re-resolved fresh from `self.state.projects` here, at click time,
-    /// never trusted from whatever the menu showed when it opened. Always
-    /// addresses by `checkout` too, so the handler materializes the Branch
-    /// section when the project declares none yet (bora-79l.10 T6b).
-    fn dispatch_section_toggle(&mut self, checkout_key: &str, item: &str) {
-        let (Some(field), Some(ctx)) = (
-            section_toggle_field(item),
-            resolve_section_menu_context(&self.state.projects, checkout_key),
-        ) else {
-            return;
-        };
-        let params = section_toggle_update_params(field, &ctx, checkout_key);
-        self.dispatch_runtime_mutation(
-            "tui.project.section_update",
-            crate::api::schema::Method::ProjectSectionUpdate(params),
-        );
-    }
-
-    /// Creates a new section of the "Nova section: …" item's kind on the
-    /// checkout's owning project — `name: None` lets the handler mint the
-    /// random two-word name (bora-79l.10 T6b).
-    fn dispatch_section_create(&mut self, checkout_key: &str, item: &str) {
-        let (Some(kind), Some(ctx)) = (
-            section_create_kind(item),
-            resolve_section_menu_context(&self.state.projects, checkout_key),
-        ) else {
-            return;
-        };
-        self.dispatch_runtime_mutation(
-            "tui.project.section_create",
-            crate::api::schema::Method::ProjectSectionCreate(
-                crate::api::schema::ProjectSectionCreateParams {
-                    slug: ctx.slug,
-                    kind,
-                    name: None,
-                },
-            ),
-        );
-    }
 }
 
 fn cancel_rename_modal(state: &mut AppState) {
@@ -2403,7 +1934,6 @@ fn cancel_rename_modal(state: &mut AppState) {
     state.requested_new_tab_name = None;
     state.pending_workspace_create_cwd = None;
     state.rename_pane_target = None;
-    state.project_name_target = None;
     state.rename_group_target = None;
     state.name_input.clear();
     state.name_input_replace_on_type = false;
@@ -2422,1086 +1952,6 @@ impl AppState {
         }
         let idx = (row - rect.y - 1) as usize;
         global_menu_actions(self).get(idx).copied()
-    }
-}
-
-// ── Project assembly menu (bora-49p.5, wired by bora-uqv) ───────────────
-//
-// The right-click menu for a Project-view row that edits `projects.yml`
-// membership. bora-49p.5 built this decision logic and left it deliberately
-// unwired (state.rs belonged to a sibling bead); bora-uqv wired it into
-// `ContextMenuKind` — `ProjectHeader` (group header), `ProjectOrphanPicker`
-// ("Add workspaces…"), `ProjectMemberTargets` (checkout row / follow-up),
-// and the assembly section spliced into Workspace/GitWorkspace menus in
-// Project view. What each item writes still lives here, in two flavors
-// mirroring every other menu: the direct path (cfg(test) — file writes
-// through `update_projects_file`) and the live path (`project.*` verbs via
-// `dispatch_runtime_mutation`). Membership is always resolved against the
-// file read FRESH (`load_projects_file_fresh`), never a cached
-// `ProjectsStore` value; the store's tick poll (`runtime.rs`
-// `reload_if_changed`) picks the write up for the next frame.
-
-use crate::persist::projects::{self, WorktreesScope};
-#[cfg(test)]
-use crate::persist::projects::{Member, Project};
-
-/// One Project-view row's membership, resolved at the moment the assembly
-/// menu would open. `member_dir` is the exact string stored as `Member.dir`
-/// in `projects.yml` — the same representation `ProjectRowTarget::OpenWorktree`
-/// already carries as `checkout_key`, compared by plain string equality just
-/// like `app::api::projects::handle_project_member_add`/`_remove` do; never
-/// re-resolved through git discovery here.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ProjectAssemblyContext {
-    pub member_dir: String,
-    /// `Some(slug)` when `member_dir` is already a declared member of that
-    /// project; `None` for a workspace/worktree with no project yet.
-    pub current_project_slug: Option<String>,
-}
-
-impl ProjectAssemblyContext {
-    /// Resolves `dir`'s membership against the CURRENT `projects.yml`
-    /// content (`file`) — caller's responsibility to have read it fresh via
-    /// `projects::load_projects_file_fresh`, never a cached `ProjectsStore`
-    /// value, matching every other `project.*` writer's own rule.
-    pub(crate) fn for_dir(file: &projects::ProjectsFile, dir: &str) -> Self {
-        let current_project_slug = file
-            .projects
-            .iter()
-            .find(|(_, project)| project.members.iter().any(|member| member.dir == dir))
-            .map(|(slug, _)| slug.clone());
-        Self {
-            member_dir: dir.to_string(),
-            current_project_slug,
-        }
-    }
-}
-
-/// Assembly-menu item labels for `ctx`. `known_projects` is every
-/// `(slug, display label)` currently in `projects.yml`, in the order the
-/// `Add to <label>` items should offer them. The label is the project's
-/// display `name`, falling back to the slug: the owner renamed a project's
-/// name to "wayfinder" and the menus kept saying "muiraquita" — the menu
-/// speaks the name the operator chose, the slug stays plumbing.
-/// Membership is the only thing gating item presence: `Remove` only
-/// when `ctx.current_project_slug` is `Some` (there is a project to remove
-/// from); `Add to <label>` / `"New project…"` only when it is `None`.
-/// "New project…" never writes from here — every dispatch path routes it to
-/// the `ProjectNameInput` prompt instead.
-pub(crate) fn project_assembly_menu_items(
-    ctx: &ProjectAssemblyContext,
-    known_projects: &[(String, String)],
-) -> Vec<String> {
-    let mut items = Vec::new();
-    if ctx.current_project_slug.is_none() {
-        for (_, label) in known_projects {
-            items.push(format!("Add to {label}"));
-        }
-        items.push("New project\u{2026}".to_string());
-    } else {
-        items.push("Remove".to_string());
-    }
-    items
-}
-
-/// The slug behind an `Add to {label}` item: match by display `name`
-/// first, then by bare slug (unnamed projects, and items built before a
-/// name existed). Reads `projects.yml` FRESH — the same source the
-/// emitter labeled from — so label and resolution cannot disagree about a
-/// project renamed between the menu opening and the click. `None` = the
-/// label names nothing that exists anymore; the dispatch sites close the
-/// menu without writing.
-pub(crate) fn slug_from_add_to_label(label: &str) -> Option<String> {
-    let file = projects::load_projects_file_fresh().ok()?;
-    if let Some((slug, _)) = file
-        .projects
-        .iter()
-        .find(|(_, project)| project.name.as_deref() == Some(label))
-    {
-        return Some(slug.clone());
-    }
-    file.projects.contains_key(label).then(|| label.to_string())
-}
-
-/// `project_assembly_menu_items` for one dir, resolving membership fresh.
-/// An unreadable file degrades to just "New project…" — the one item that
-/// needs nothing from disk.
-pub(crate) fn workspace_assembly_items(
-    workspaces: &[crate::workspace::Workspace],
-    ws_idx: usize,
-) -> Vec<String> {
-    let Some(ws) = workspaces.get(ws_idx) else {
-        return Vec::new();
-    };
-    assembly_items_for_dir(&ws.project_member_dir())
-}
-
-/// The assembly items a Project-view workspace row splices into its context
-/// menu: membership resolved against `projects.yml` read FRESH, never the
-/// cached `ProjectsStore`.
-pub(crate) fn assembly_items_for_dir(member_dir: &str) -> Vec<String> {
-    let Ok(file) = projects::load_projects_file_fresh() else {
-        return vec!["New project\u{2026}".to_string()];
-    };
-    let ctx = ProjectAssemblyContext::for_dir(&file, member_dir);
-    let known: Vec<(String, String)> = file
-        .projects
-        .iter()
-        .map(|(slug, project)| {
-            let label = project.name.clone().unwrap_or_else(|| slug.clone());
-            (slug.clone(), label)
-        })
-        .collect();
-    project_assembly_menu_items(&ctx, &known)
-}
-/// Why a file-level assembly write could not be applied.
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg(test)]
-pub(crate) enum ProjectAssemblyError {
-    /// `update_projects_file`'s own mutation rule rejected the write (e.g.
-    /// unknown project) — the file was NOT touched.
-    Rejected(String),
-    /// Reading or writing `projects.yml` itself failed.
-    Io(String),
-}
-
-#[allow(dead_code)] // see the module note above
-#[cfg(test)]
-impl From<projects::ProjectsUpdateError<String>> for ProjectAssemblyError {
-    fn from(err: projects::ProjectsUpdateError<String>) -> Self {
-        match err {
-            projects::ProjectsUpdateError::Mutate(message) => Self::Rejected(message),
-            projects::ProjectsUpdateError::Load(message)
-            | projects::ProjectsUpdateError::Save(message) => Self::Io(message),
-        }
-    }
-}
-
-#[cfg(test)]
-pub(crate) fn add_member(slug: &str, dir: &str) -> Result<(), ProjectAssemblyError> {
-    let slug = slug.to_string();
-    let dir = dir.to_string();
-    projects::update_projects_file(move |file| {
-        let Some(project) = file.projects.get_mut(&slug) else {
-            return Err(format!("project {slug:?} not found"));
-        };
-        match project.members.iter_mut().find(|member| member.dir == dir) {
-            Some(existing) => existing.worktrees = WorktreesScope::All,
-            None => project.members.push(Member {
-                dir: dir.clone(),
-                worktrees: WorktreesScope::All,
-                template: None,
-            }),
-        }
-        Ok(())
-    })
-    .map(|_| ())
-    .map_err(ProjectAssemblyError::from)
-}
-
-#[cfg(test)]
-pub(crate) fn remove_member(slug: &str, dir: &str) -> Result<(), ProjectAssemblyError> {
-    let slug = slug.to_string();
-    let dir = dir.to_string();
-    projects::update_projects_file(move |file| {
-        let Some(project) = file.projects.get_mut(&slug) else {
-            return Err(format!("project {slug:?} not found"));
-        };
-        let before = project.members.len();
-        project.members.retain(|member| member.dir != dir);
-        if project.members.len() == before {
-            return Err(format!("project {slug:?} has no member dir {dir:?}"));
-        }
-        Ok(())
-    })
-    .map(|_| ())
-    .map_err(ProjectAssemblyError::from)
-}
-
-/// Slugifies a typed project name exactly as `slug_from_dir` slugifies a
-/// basename.
-pub(crate) fn slug_from_name(name: &str) -> String {
-    let slug: String = name
-        .trim()
-        .to_lowercase()
-        .chars()
-        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
-        .collect();
-    if slug.is_empty() {
-        "project".to_string()
-    } else {
-        slug
-    }
-}
-
-/// `base`, or `base-2`, `base-3`, … — the first slug not already taken in
-/// `file`. The slug is the internal key; the typed name stays the display.
-pub(crate) fn unique_project_slug(file: &projects::ProjectsFile, base: &str) -> String {
-    if !file.projects.contains_key(base) {
-        return base.to_string();
-    }
-    for n in 2.. {
-        let candidate = format!("{base}-{n}");
-        if !file.projects.contains_key(&candidate) {
-            return candidate;
-        }
-    }
-    unreachable!("u32 slug counter cannot wrap")
-}
-
-/// Creates a project named `name`, with `member_dir` (when present) as its
-/// first member — the direct-path (cfg(test)) half of the
-/// `ProjectNameInput` confirm; the live path sends `project.create` +
-/// `project.member_add` verbs instead. The slug is `slug_from_name(name)`
-/// made unique against the CURRENT file.
-#[cfg(test)]
-pub(crate) fn create_project_with_optional_member(
-    name: &str,
-    member_dir: Option<String>,
-) -> Result<String, ProjectAssemblyError> {
-    let name = name.to_string();
-    let mut slug_out = String::new();
-    projects::update_projects_file(|file| {
-        let slug = unique_project_slug(file, &slug_from_name(&name));
-        file.projects.insert(
-            slug.clone(),
-            Project {
-                name: Some(name.clone()),
-                channel: None,
-                members: member_dir
-                    .iter()
-                    .map(|dir| Member {
-                        dir: dir.clone(),
-                        worktrees: WorktreesScope::All,
-                        template: None,
-                    })
-                    .collect(),
-                orchestrator: None,
-                sections: None,
-                layout: None,
-                auto_join: true,
-            },
-        );
-        slug_out = slug;
-        Ok::<(), String>(())
-    })
-    .map_err(ProjectAssemblyError::from)?;
-    Ok(slug_out)
-}
-
-/// Renames a project's display name (`name:` in `projects.yml`) — the
-/// direct-path half of the `Rename` confirm.
-#[cfg(test)]
-pub(crate) fn rename_project(slug: &str, name: &str) -> Result<(), ProjectAssemblyError> {
-    let slug = slug.to_string();
-    let name = name.to_string();
-    projects::update_projects_file(move |file| {
-        let Some(project) = file.projects.get_mut(&slug) else {
-            return Err(format!("project {slug:?} not found"));
-        };
-        project.name = Some(name.clone());
-        Ok(())
-    })
-    .map(|_| ())
-    .map_err(ProjectAssemblyError::from)
-}
-
-/// Opens the project name prompt (create or rename, per `target`) with
-/// `prefill` in the input. `replace_on_type` selects the suggestion so
-/// typing overwrites it — the same convention as the new-workspace dialog.
-pub(crate) fn open_project_name_input(
-    state: &mut AppState,
-    target: crate::app::state::ProjectNameTarget,
-    prefill: String,
-    replace_on_type: bool,
-) {
-    state.pending_workspace_create_cwd = None;
-    state.rename_pane_target = None;
-    state.name_input = prefill;
-    state.name_input_replace_on_type = replace_on_type;
-    state.project_name_target = Some(target);
-    state.mode = Mode::ProjectNameInput;
-}
-
-/// Member dirs of workspaces no declared project claims (exact `Member.dir`
-/// equality, the same representation the menu itself writes). Candidates
-/// for the "Add workspaces…" picker, in sidebar order.
-pub(crate) fn orphan_member_dirs(state: &AppState) -> Vec<String> {
-    let Ok(file) = projects::load_projects_file_fresh() else {
-        return Vec::new();
-    };
-    state
-        .workspaces
-        .iter()
-        .map(crate::workspace::Workspace::project_member_dir)
-        .filter(|dir| {
-            !file
-                .projects
-                .values()
-                .any(|project| project.members.iter().any(|member| &member.dir == dir))
-        })
-        .collect()
-}
-/// Opens the new-project prompt, prefilled with `member_dir`'s basename
-/// (empty input when the menu came from a group header, where there is no
-/// dir to suggest one). Shared by every dispatch path — opening the prompt
-/// is local state, never a runtime mutation.
-pub(crate) fn open_new_project_prompt(state: &mut AppState, member_dir: Option<String>) {
-    let prefill = member_dir
-        .as_deref()
-        .and_then(|dir| std::path::Path::new(dir).file_name())
-        .and_then(|name| name.to_str())
-        .unwrap_or_default()
-        .to_string();
-    open_project_name_input(
-        state,
-        crate::app::state::ProjectNameTarget::New { member_dir },
-        prefill,
-        true,
-    );
-}
-
-/// The follow-up menu state after a pick that opens another menu (the
-/// orphan picker, or the project-target menu after it): same position,
-/// fresh items, cursor back at the top.
-pub(crate) fn follow_up_menu(
-    state: &mut AppState,
-    kind: ContextMenuKind,
-    items: Vec<String>,
-    x: u16,
-    y: u16,
-) {
-    state.context_menu = Some(ContextMenuState {
-        items,
-        kind,
-        x,
-        y,
-        list: crate::app::state::MenuListState::new(0),
-        bora_commands: vec![],
-        bora_port: None,
-    });
-}
-
-/// Direct-path (cfg(test)) "Remove": resolves the dir's current project
-/// against `projects.yml` read fresh and removes it. A dir with no project
-/// is a no-op — the menu only shows "Remove" to members.
-#[cfg(test)]
-pub(super) fn remove_membership_direct(member_dir: &str) {
-    if let Ok(file) = projects::load_projects_file_fresh() {
-        let ctx = ProjectAssemblyContext::for_dir(&file, member_dir);
-        if let Some(slug) = ctx.current_project_slug {
-            if let Err(err) = remove_member(&slug, member_dir) {
-                tracing::warn!(err = ?err, "project member_remove failed");
-            }
-        }
-    }
-}
-
-// ── Section-control menu items (bora-79l.10 pass 6b, T6b) ───────────────
-//
-// Bead bora-79l.7 (F5) was supposed to land the section controls on a
-// Project-view row's right-click menu and did not — both the branch header
-// row (`SectionRow` -> `ContextMenuKind::ProjectMemberTargets`) and the
-// workspace's own block (`PaneDotsRow` -> `Workspace`/`GitWorkspace`) stop
-// at whatever they already offer today. Unlike the membership items above,
-// this deliberately resolves against `self.projects` — the `ProjectsStore`
-// `App::poll_projects_store` keeps in sync — never a synchronous disk
-// read: the pass 6b design note names it as the runtime source of truth
-// for `Project.layout`, and there is no separate in-memory copy to drift.
-// `SectionMenuContext` is `None` for a checkout with no owning project —
-// a bare checkout has no section to control, so neither row splices
-// anything in that case.
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct SectionMenuContext {
-    pub slug: String,
-    /// The checkout's DECLARED section id, when `Project.layout` already
-    /// has one. `None` means a toggle must MATERIALIZE a Branch section —
-    /// `checkout: Some(checkout_key)` on the update request is what tells
-    /// the handler to do that (bora-79l.10's binding contract).
-    pub section_id: Option<String>,
-    pub header_on: bool,
-    pub dots: bool,
-    pub diff: bool,
-}
-
-pub(crate) fn resolve_section_menu_context(
-    projects: &projects::ProjectsStore,
-    checkout_key: &str,
-) -> Option<SectionMenuContext> {
-    let slug =
-        ProjectAssemblyContext::for_dir(projects.current(), checkout_key).current_project_slug?;
-    let section =
-        crate::app::sections::declared_section_for_checkout(projects, &slug, checkout_key);
-    Some(SectionMenuContext {
-        slug,
-        section_id: section.map(|s| s.id.clone()),
-        header_on: section.is_none_or(|s| s.header_on),
-        dots: section.is_none_or(|s| s.parts.dots),
-        diff: section.is_none_or(|s| s.parts.diff),
-    })
-}
-
-fn on_off(value: bool) -> &'static str {
-    if value {
-        "ON"
-    } else {
-        "OFF"
-    }
-}
-
-/// The section-control items to splice into a Project-view row menu: three
-/// toggles reflecting the CURRENT declared state, then the four
-/// section-create items. Pure formatting — no IO, so a caller without a
-/// live `ProjectsStore` (a test) can hand it a fixture `ctx` directly.
-pub(crate) fn section_control_menu_items(ctx: &SectionMenuContext) -> Vec<String> {
-    vec![
-        crate::app::state::CONTEXT_MENU_SEPARATOR.to_string(),
-        format!("Header: {}", on_off(ctx.header_on)),
-        format!("PART bolinhas: {}", on_off(ctx.dots)),
-        format!("PART diff: {}", on_off(ctx.diff)),
-        crate::app::state::CONTEXT_MENU_SEPARATOR.to_string(),
-        "Nova section: BRANCH".to_string(),
-        "Nova section: COMANDO".to_string(),
-        "Nova section: CHECKS".to_string(),
-        "Nova section: LIVRE".to_string(),
-    ]
-}
-
-/// `section_control_menu_items`, resolved straight from `checkout_key` —
-/// the call-site convenience both of `mouse.rs`'s right-click sites use.
-/// Empty when the checkout has no owning project.
-pub(crate) fn section_menu_items_for_checkout(
-    projects: &projects::ProjectsStore,
-    checkout_key: &str,
-) -> Vec<String> {
-    resolve_section_menu_context(projects, checkout_key)
-        .map(|ctx| section_control_menu_items(&ctx))
-        .unwrap_or_default()
-}
-
-/// Which `ProjectSectionUpdateParams` field a clicked toggle item negates.
-/// Matches exactly the labels `section_control_menu_items` emits — the
-/// current ON/OFF suffix does not matter, only which toggle it names.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SectionToggleField {
-    Header,
-    Dots,
-    Diff,
-}
-
-pub(crate) fn section_toggle_field(item: &str) -> Option<SectionToggleField> {
-    match item {
-        "Header: ON" | "Header: OFF" => Some(SectionToggleField::Header),
-        "PART bolinhas: ON" | "PART bolinhas: OFF" => Some(SectionToggleField::Dots),
-        "PART diff: ON" | "PART diff: OFF" => Some(SectionToggleField::Diff),
-        _ => None,
-    }
-}
-
-/// The `project.section_update` request a toggle click sends: always
-/// addressed by BOTH `section_id` (when one is already declared) and
-/// `checkout` (so the handler can MATERIALIZE the section when it is not)
-/// — never the current value, always its negation. One request, never a
-/// create-then-update chain.
-pub(crate) fn section_toggle_update_params(
-    field: SectionToggleField,
-    ctx: &SectionMenuContext,
-    checkout_key: &str,
-) -> crate::api::schema::ProjectSectionUpdateParams {
-    let mut params = crate::api::schema::ProjectSectionUpdateParams {
-        slug: ctx.slug.clone(),
-        section_id: ctx.section_id.clone(),
-        checkout: Some(checkout_key.to_string()),
-        header_on: None,
-        dots: None,
-        diff: None,
-    };
-    match field {
-        SectionToggleField::Header => params.header_on = Some(!ctx.header_on),
-        SectionToggleField::Dots => params.dots = Some(!ctx.dots),
-        SectionToggleField::Diff => params.diff = Some(!ctx.diff),
-    }
-    params
-}
-
-/// Which `SectionKind` a "Nova section: …" item creates. The four items
-/// `section_control_menu_items` emits map onto the four distinct
-/// `crate::ui::sidebar::sections::SectionKind` variants — exhaustive over
-/// the model, not just the menu.
-pub(crate) fn section_create_kind(item: &str) -> Option<crate::ui::sidebar::sections::SectionKind> {
-    use crate::ui::sidebar::sections::SectionKind;
-    match item {
-        "Nova section: BRANCH" => Some(SectionKind::Branch),
-        "Nova section: COMANDO" => Some(SectionKind::Comando),
-        "Nova section: CHECKS" => Some(SectionKind::Checks),
-        "Nova section: LIVRE" => Some(SectionKind::Livre),
-        _ => None,
-    }
-}
-
-#[cfg(test)]
-mod section_menu_tests {
-    use super::*;
-
-    fn ctx(header_on: bool, dots: bool, diff: bool) -> SectionMenuContext {
-        SectionMenuContext {
-            slug: "alpha".to_string(),
-            section_id: Some("sec-1".to_string()),
-            header_on,
-            dots,
-            diff,
-        }
-    }
-
-    #[test]
-    fn header_toggle_sends_the_negation_never_the_current_value() {
-        let on = ctx(true, true, true);
-        let params =
-            section_toggle_update_params(SectionToggleField::Header, &on, "/repo/checkout");
-        assert_eq!(params.slug, "alpha");
-        assert_eq!(params.section_id.as_deref(), Some("sec-1"));
-        assert_eq!(params.checkout.as_deref(), Some("/repo/checkout"));
-        assert_eq!(
-            params.header_on,
-            Some(false),
-            "must send the negation of the current ON state, not ON again"
-        );
-        assert_eq!(params.dots, None);
-        assert_eq!(params.diff, None);
-
-        let off = ctx(false, true, true);
-        let params_off =
-            section_toggle_update_params(SectionToggleField::Header, &off, "/repo/checkout");
-        assert_eq!(
-            params_off.header_on,
-            Some(true),
-            "must send the negation of the current OFF state, not OFF again"
-        );
-    }
-
-    #[test]
-    fn dots_and_diff_toggles_each_negate_only_their_own_field() {
-        let context = ctx(true, true, false);
-        let dots_params =
-            section_toggle_update_params(SectionToggleField::Dots, &context, "/repo/checkout");
-        assert_eq!(dots_params.dots, Some(false));
-        assert_eq!(dots_params.header_on, None);
-        assert_eq!(dots_params.diff, None);
-
-        let diff_params =
-            section_toggle_update_params(SectionToggleField::Diff, &context, "/repo/checkout");
-        assert_eq!(
-            diff_params.diff,
-            Some(true),
-            "diff was OFF, must negate to ON"
-        );
-        assert_eq!(diff_params.header_on, None);
-        assert_eq!(diff_params.dots, None);
-    }
-
-    #[test]
-    fn toggle_field_recognizes_both_on_and_off_label_spellings() {
-        assert_eq!(
-            section_toggle_field("Header: ON"),
-            Some(SectionToggleField::Header)
-        );
-        assert_eq!(
-            section_toggle_field("Header: OFF"),
-            Some(SectionToggleField::Header)
-        );
-        assert_eq!(
-            section_toggle_field("PART bolinhas: ON"),
-            Some(SectionToggleField::Dots)
-        );
-        assert_eq!(
-            section_toggle_field("PART diff: OFF"),
-            Some(SectionToggleField::Diff)
-        );
-        assert_eq!(section_toggle_field("Nova section: BRANCH"), None);
-        assert_eq!(section_toggle_field("Rename"), None);
-    }
-
-    #[test]
-    fn the_four_create_items_map_to_four_distinct_section_kinds() {
-        use crate::ui::sidebar::sections::SectionKind;
-        assert_eq!(
-            section_create_kind("Nova section: BRANCH"),
-            Some(SectionKind::Branch)
-        );
-        assert_eq!(
-            section_create_kind("Nova section: COMANDO"),
-            Some(SectionKind::Comando)
-        );
-        assert_eq!(
-            section_create_kind("Nova section: CHECKS"),
-            Some(SectionKind::Checks)
-        );
-        assert_eq!(
-            section_create_kind("Nova section: LIVRE"),
-            Some(SectionKind::Livre)
-        );
-        assert_eq!(section_create_kind("Nova section: NOPE"), None);
-    }
-
-    #[test]
-    fn section_control_menu_items_reflects_declared_off_state() {
-        let context = ctx(false, false, true);
-        let items = section_control_menu_items(&context);
-        assert!(items.contains(&"Header: OFF".to_string()));
-        assert!(items.contains(&"PART bolinhas: OFF".to_string()));
-        assert!(items.contains(&"PART diff: ON".to_string()));
-        assert!(items.contains(&"Nova section: BRANCH".to_string()));
-        assert!(items.contains(&"Nova section: COMANDO".to_string()));
-        assert!(items.contains(&"Nova section: CHECKS".to_string()));
-        assert!(items.contains(&"Nova section: LIVRE".to_string()));
-    }
-
-    /// The builder writes the labels and the two recognizers re-declare
-    /// them as literals — three independent lists that a typo silently
-    /// desynchronizes into a menu item that does nothing at all. Assert
-    /// the loop closes: every emitted item is claimed by exactly one
-    /// recognizer, for BOTH ON and OFF spellings of the toggles.
-    #[test]
-    fn every_emitted_item_is_claimed_by_exactly_one_recognizer() {
-        for context in [ctx(true, true, true), ctx(false, false, false)] {
-            for item in section_control_menu_items(&context) {
-                if item == crate::app::state::CONTEXT_MENU_SEPARATOR {
-                    continue;
-                }
-                let toggle = section_toggle_field(&item).is_some();
-                let create = section_create_kind(&item).is_some();
-                assert!(
-                    toggle ^ create,
-                    "menu item {item:?} must be claimed by exactly one \
-                     recognizer (toggle={toggle}, create={create}) — an \
-                     unclaimed item renders and then does nothing"
-                );
-            }
-        }
-    }
-}
-
-#[cfg(test)]
-mod project_assembly_menu_tests {
-    use super::*;
-    use crate::config::IsolatedDirs;
-
-    fn seed_project(slug: &str, members: &[&str]) {
-        let slug = slug.to_string();
-        let members: Vec<String> = members.iter().map(ToString::to_string).collect();
-        projects::update_projects_file::<String>(move |file| {
-            file.projects.insert(
-                slug.clone(),
-                Project {
-                    name: None,
-                    channel: None,
-                    members: members
-                        .iter()
-                        .map(|dir| Member {
-                            dir: dir.clone(),
-                            worktrees: WorktreesScope::All,
-                            template: None,
-                        })
-                        .collect(),
-                    orchestrator: None,
-                    sections: None,
-                    layout: None,
-                    auto_join: true,
-                },
-            );
-            Ok(())
-        })
-        .unwrap();
-    }
-
-    #[test]
-    fn context_for_a_declared_member_carries_its_project_slug() {
-        let _isolated = IsolatedDirs::new("assembly-menu-context-member");
-        seed_project("cnb", &["/repo/cnb"]);
-
-        let file = projects::load_projects_file_fresh().unwrap();
-        let ctx = ProjectAssemblyContext::for_dir(&file, "/repo/cnb");
-
-        assert_eq!(ctx.current_project_slug.as_deref(), Some("cnb"));
-    }
-
-    #[test]
-    fn context_for_an_unmatched_workspace_has_no_project() {
-        let _isolated = IsolatedDirs::new("assembly-menu-context-unmatched");
-        seed_project("cnb", &["/repo/cnb"]);
-
-        let file = projects::load_projects_file_fresh().unwrap();
-        let ctx = ProjectAssemblyContext::for_dir(&file, "/repo/other");
-
-        assert_eq!(ctx.current_project_slug, None);
-    }
-
-    #[test]
-    fn menu_items_are_gated_on_membership_never_shown_in_both_cases() {
-        let member = ProjectAssemblyContext {
-            member_dir: "/repo/cnb".into(),
-            current_project_slug: Some("cnb".into()),
-        };
-        let unmatched = ProjectAssemblyContext {
-            member_dir: "/repo/other".into(),
-            current_project_slug: None,
-        };
-        let known = vec![("cnb".to_string(), "cnb".to_string())];
-
-        let member_items = project_assembly_menu_items(&member, &known);
-        let unmatched_items = project_assembly_menu_items(&unmatched, &known);
-
-        assert!(member_items.contains(&"Remove".to_string()));
-        assert!(!unmatched_items.contains(&"Remove".to_string()));
-
-        assert!(unmatched_items.contains(&"Add to cnb".to_string()));
-        assert!(!member_items.contains(&"Add to cnb".to_string()));
-    }
-
-    #[test]
-    fn add_to_items_speak_the_display_name_and_resolve_back_to_the_slug() {
-        // The owner renamed a project whose slug stayed "muiraquita" to the
-        // display name "wayfinder"; the menu kept offering "Add to
-        // muiraquita" — the slug is plumbing, the label is the operator's
-        seed_project("muiraquita", &[]);
-        seed_project("bare", &[]);
-        projects::update_projects_file::<String>(move |file| {
-            file.projects.get_mut("muiraquita").expect("seeded").name =
-                Some("wayfinder".to_string());
-            Ok(())
-        })
-        .unwrap();
-
-        let items = assembly_items_for_dir("/repo/other");
-        assert!(
-            items.contains(&"Add to wayfinder".to_string()),
-            "named project is offered by display name: {items:?}"
-        );
-        assert!(
-            items.contains(&"Add to bare".to_string()),
-            "unnamed project falls back to its slug: {items:?}"
-        );
-        assert_eq!(
-            slug_from_add_to_label("wayfinder").as_deref(),
-            Some("muiraquita"),
-            "display name resolves back to the slug"
-        );
-        assert_eq!(
-            slug_from_add_to_label("bare").as_deref(),
-            Some("bare"),
-            "bare slug still resolves (unnamed projects)"
-        );
-        assert_eq!(slug_from_add_to_label("ghost"), None);
-    }
-
-    #[test]
-    fn add_to_project_action_persists_a_new_member_to_projects_yml() {
-        let _isolated = IsolatedDirs::new("assembly-menu-add-to-project");
-        seed_project("cnb", &[]);
-        let ctx = ProjectAssemblyContext {
-            member_dir: "/repo/cnb-worktree".into(),
-            current_project_slug: None,
-        };
-
-        add_member("cnb", &ctx.member_dir).unwrap();
-
-        let file = projects::load_projects_file_fresh().unwrap();
-        let project = file.projects.get("cnb").expect("project still present");
-        assert!(project
-            .members
-            .iter()
-            .any(|m| m.dir == "/repo/cnb-worktree"));
-    }
-
-    #[test]
-    fn remove_action_deletes_the_member_and_persists() {
-        let _isolated = IsolatedDirs::new("assembly-menu-remove");
-        seed_project("cnb", &["/repo/cnb"]);
-        let ctx = ProjectAssemblyContext {
-            member_dir: "/repo/cnb".into(),
-            current_project_slug: Some("cnb".into()),
-        };
-
-        remove_member("cnb", &ctx.member_dir).unwrap();
-
-        let file = projects::load_projects_file_fresh().unwrap();
-        assert!(file.projects.get("cnb").unwrap().members.is_empty());
-    }
-
-    #[test]
-    fn remove_without_a_project_in_context_is_rejected_before_any_write() {
-        let _isolated = IsolatedDirs::new("assembly-menu-remove-guard");
-        // The dispatch arms guard on `current_project_slug` before calling
-        // `remove_member`; at the file level, removing a dir no project
-        // claims is a mutation rejection and touches nothing.
-        seed_project("cnb", &["/repo/cnb"]);
-        let result = remove_member("cnb", "/repo/absent");
-
-        assert!(matches!(result, Err(ProjectAssemblyError::Rejected(_))));
-        let file = projects::load_projects_file_fresh().unwrap();
-        assert_eq!(file.projects["cnb"].members.len(), 1);
-    }
-
-    #[test]
-    fn new_project_action_creates_a_project_slugified_from_the_member_dir() {
-        let _isolated = IsolatedDirs::new("assembly-menu-new-project");
-        let ctx = ProjectAssemblyContext {
-            member_dir: "/repo/arycast".into(),
-            current_project_slug: None,
-        };
-
-        let slug = create_project_with_optional_member("Arycast", Some(ctx.member_dir)).unwrap();
-
-        let file = projects::load_projects_file_fresh().unwrap();
-        let project = file.projects.get(&slug).expect("project created");
-        assert_eq!(slug, "arycast");
-        assert_eq!(project.name.as_deref(), Some("Arycast"));
-        assert_eq!(project.members[0].dir, "/repo/arycast");
-    }
-
-    #[test]
-    fn rename_project_writes_the_display_name() {
-        let _isolated = IsolatedDirs::new("assembly-menu-rename");
-        seed_project("cnb", &["/repo/cnb"]);
-
-        rename_project("cnb", "CNB Team").unwrap();
-
-        let file = projects::load_projects_file_fresh().unwrap();
-        assert_eq!(file.projects["cnb"].name.as_deref(), Some("CNB Team"));
-    }
-
-    #[test]
-    fn unique_slug_falls_back_to_a_dash_suffix() {
-        let _isolated = IsolatedDirs::new("assembly-menu-unique-slug");
-        seed_project("arycast", &[]);
-
-        let file = projects::load_projects_file_fresh().unwrap();
-        assert_eq!(unique_project_slug(&file, "arycast"), "arycast-2");
-        assert_eq!(unique_project_slug(&file, "fresh"), "fresh");
-    }
-
-    fn menu_fixture(kind: ContextMenuKind, items: &[&str]) -> ContextMenuState {
-        ContextMenuState {
-            kind,
-            x: 0,
-            y: 0,
-            list: crate::app::state::MenuListState::new(0),
-            items: items.iter().map(ToString::to_string).collect(),
-            bora_commands: vec![],
-            bora_port: None,
-        }
-    }
-
-    fn cloned_menu(menu: &ContextMenuState) -> ContextMenuState {
-        menu_fixture(
-            menu.kind.clone(),
-            &menu.items.iter().map(String::as_str).collect::<Vec<_>>(),
-        )
-    }
-
-    #[test]
-    fn project_view_row_menu_splices_assembly_and_drops_visual_group_items() {
-        let kind = ContextMenuKind::Workspace {
-            ws_idx: 0,
-            hidden: false,
-        };
-        let project_items = crate::app::state::build_context_menu_items(
-            &kind,
-            &[],
-            crate::config::ViewMode::Project,
-            &["Add to alpha".to_string()],
-            &[],
-            &Default::default(),
-        );
-        assert!(project_items.iter().any(|item| item == "Add to alpha"));
-        assert!(!project_items.iter().any(|item| item == "New group\u{2026}"));
-
-        let repo_items = crate::app::state::build_context_menu_items(
-            &kind,
-            &[],
-            crate::config::ViewMode::Repo,
-            &[],
-            &[],
-            &Default::default(),
-        );
-        assert!(repo_items.iter().any(|item| item == "New group\u{2026}"));
-        assert!(!repo_items.iter().any(|item| item == "Add to alpha"));
-    }
-
-    #[test]
-    fn add_to_from_a_row_menu_persists_membership_and_the_store_picks_it_up() {
-        let _isolated = IsolatedDirs::new("assembly-dispatch-add-to");
-        let mut state = super::super::state_with_workspaces(&["b"]);
-        let dir = state.workspaces[0].project_member_dir();
-        seed_project("alpha", &[]);
-        let mut runtimes = crate::terminal::TerminalRuntimeRegistry::new();
-        // A store on the REAL path (test_new's `ProjectsStore::empty()` is
-        // deliberately inert): this is the store the tick poll would refresh.
-        let mut store = projects::ProjectsStore::load();
-
-        apply_context_menu_action(
-            &mut state,
-            &mut runtimes,
-            menu_fixture(
-                ContextMenuKind::Workspace {
-                    ws_idx: 0,
-                    hidden: false,
-                },
-                &["Add to alpha"],
-            ),
-            0,
-        );
-
-        let file = projects::load_projects_file_fresh().unwrap();
-        assert!(file.projects["alpha"].members.iter().any(|m| m.dir == dir));
-        // The tick poll is how the live sidebar learns about the write —
-        // prove it observes the file change without a restart.
-        assert_eq!(store.reload_if_changed(), Ok(true));
-    }
-
-    #[test]
-    fn new_project_from_a_header_opens_the_prompt_and_confirm_creates() {
-        let _isolated = IsolatedDirs::new("assembly-dispatch-new-project");
-        let mut state = super::super::state_with_workspaces(&["b"]);
-        let mut runtimes = crate::terminal::TerminalRuntimeRegistry::new();
-
-        apply_context_menu_action(
-            &mut state,
-            &mut runtimes,
-            menu_fixture(
-                ContextMenuKind::ProjectHeader {
-                    slug: None,
-                    collapse_key: "proj:__orphans__".into(),
-                    hidden: false,
-                },
-                &["New project\u{2026}"],
-            ),
-            0,
-        );
-        assert_eq!(state.mode, Mode::ProjectNameInput);
-
-        state.name_input = "My Group".to_string();
-        apply_rename_action(&mut state, ModalAction::Save);
-
-        let file = projects::load_projects_file_fresh().unwrap();
-        let project = file.projects.get("my-group").expect("slugified from name");
-        assert_eq!(project.name.as_deref(), Some("My Group"));
-        assert!(project.members.is_empty());
-    }
-
-    #[test]
-    fn rename_project_from_a_header_writes_the_display_name() {
-        let _isolated = IsolatedDirs::new("assembly-dispatch-rename");
-        let mut state = super::super::state_with_workspaces(&["b"]);
-        seed_project("alpha", &[]);
-        let mut runtimes = crate::terminal::TerminalRuntimeRegistry::new();
-
-        apply_context_menu_action(
-            &mut state,
-            &mut runtimes,
-            menu_fixture(
-                ContextMenuKind::ProjectHeader {
-                    slug: Some("alpha".into()),
-                    collapse_key: "proj:alpha".into(),
-                    hidden: false,
-                },
-                &["Rename project\u{2026}"],
-            ),
-            0,
-        );
-        assert_eq!(state.mode, Mode::ProjectNameInput);
-        // A project with no `name:` prefills with the slug, so an untouched
-        // confirm is an identity rename, never a wipe.
-        assert_eq!(state.name_input, "alpha");
-
-        state.name_input = "Alpha Team".to_string();
-        apply_rename_action(&mut state, ModalAction::Save);
-
-        let file = projects::load_projects_file_fresh().unwrap();
-        assert_eq!(file.projects["alpha"].name.as_deref(), Some("Alpha Team"));
-    }
-
-    #[test]
-    fn orphan_picker_lists_only_orphans_and_files_the_pick() {
-        let _isolated = IsolatedDirs::new("assembly-dispatch-orphan-picker");
-        let mut state = super::super::state_with_workspaces(&["a", "b"]);
-        // test_new shares one identity_cwd across workspaces; distinct dirs
-        // are the whole point of this fixture.
-        state.workspaces[0].identity_cwd = "/tmp/assembly-member".into();
-        state.workspaces[1].identity_cwd = "/tmp/assembly-orphan".into();
-        let member_dir = state.workspaces[0].project_member_dir();
-        let orphan_dir = state.workspaces[1].project_member_dir();
-        seed_project("alpha", &[&member_dir]);
-        let mut runtimes = crate::terminal::TerminalRuntimeRegistry::new();
-
-        apply_context_menu_action(
-            &mut state,
-            &mut runtimes,
-            menu_fixture(
-                ContextMenuKind::ProjectHeader {
-                    slug: None,
-                    collapse_key: "proj:__orphans__".into(),
-                    hidden: false,
-                },
-                &["Add workspaces\u{2026}"],
-            ),
-            0,
-        );
-        let picker = state.context_menu.take().expect("orphan picker open");
-        let ContextMenuKind::ProjectOrphanPicker {
-            slug: None,
-            orphans,
-        } = &picker.kind
-        else {
-            panic!("expected the orphan picker, got {:?}", picker.kind);
-        };
-        assert_eq!(orphans, &vec![orphan_dir.clone()]);
-
-        apply_context_menu_action(&mut state, &mut runtimes, cloned_menu(&picker), 0);
-        let targets = state.context_menu.take().expect("targets menu open");
-        assert!(
-            matches!(&targets.kind, ContextMenuKind::ProjectMemberTargets { member_dir } if *member_dir == orphan_dir)
-        );
-        assert!(targets.items.iter().any(|item| item == "Add to alpha"));
-
-        let apply = cloned_menu(&targets);
-        let idx = apply
-            .items
-            .iter()
-            .position(|item| item == "Add to alpha")
-            .unwrap();
-        apply_context_menu_action(&mut state, &mut runtimes, apply, idx);
-        let file = projects::load_projects_file_fresh().unwrap();
-        assert!(file.projects["alpha"]
-            .members
-            .iter()
-            .any(|m| m.dir == orphan_dir));
-    }
-
-    #[test]
-    fn remove_from_a_member_row_deletes_membership() {
-        let _isolated = IsolatedDirs::new("assembly-dispatch-remove");
-        let mut state = super::super::state_with_workspaces(&["a"]);
-        let dir = state.workspaces[0].project_member_dir();
-        seed_project("alpha", &[&dir]);
-        let mut runtimes = crate::terminal::TerminalRuntimeRegistry::new();
-
-        apply_context_menu_action(
-            &mut state,
-            &mut runtimes,
-            menu_fixture(
-                ContextMenuKind::Workspace {
-                    ws_idx: 0,
-                    hidden: false,
-                },
-                &["Remove"],
-            ),
-            0,
-        );
-
-        let file = projects::load_projects_file_fresh().unwrap();
-        assert!(file.projects["alpha"].members.is_empty());
     }
 }
 
@@ -3704,14 +2154,8 @@ mod tests {
             collapse_key: "vg:g1".into(),
             hidden: false,
         };
-        let items = build_context_menu_items(
-            &kind,
-            &state.workspaces,
-            state.view_mode,
-            &[],
-            &[],
-            &state.installed_plugins,
-        );
+        let items =
+            build_context_menu_items(&kind, &state.workspaces, &[], &state.installed_plugins);
         let idx = items
             .iter()
             .position(|i| i == "Rename group\u{2026}")
@@ -4372,14 +2816,7 @@ mod tests {
             collapsed: false,
             hidden: false,
         };
-        let items = build_context_menu_items(
-            &kind,
-            &[],
-            crate::config::ViewMode::Repo,
-            &[],
-            &[],
-            &Default::default(),
-        );
+        let items = build_context_menu_items(&kind, &[], &[], &Default::default());
         let close_idx = items
             .iter()
             .position(|i| i == "Close workspace")
@@ -4436,14 +2873,7 @@ mod tests {
             right_click_passthrough: false,
         };
         let menu = ContextMenuState {
-            items: build_context_menu_items(
-                &kind,
-                &[],
-                crate::config::ViewMode::Repo,
-                &[],
-                &[],
-                &Default::default(),
-            ),
+            items: build_context_menu_items(&kind, &[], &[], &Default::default()),
             kind,
             x: 0,
             y: 0,
@@ -4480,14 +2910,7 @@ mod tests {
             right_click_passthrough: false,
         };
         let menu = ContextMenuState {
-            items: build_context_menu_items(
-                &kind,
-                &[],
-                crate::config::ViewMode::Repo,
-                &[],
-                &[],
-                &Default::default(),
-            ),
+            items: build_context_menu_items(&kind, &[], &[], &Default::default()),
             kind,
             x: 0,
             y: 0,
@@ -4539,14 +2962,7 @@ mod tests {
             right_click_passthrough: false,
         };
         let menu = ContextMenuState {
-            items: build_context_menu_items(
-                &kind,
-                &[],
-                crate::config::ViewMode::Repo,
-                &[],
-                &[],
-                &Default::default(),
-            ),
+            items: build_context_menu_items(&kind, &[], &[], &Default::default()),
             kind,
             x: 0,
             y: 0,
@@ -4583,14 +2999,7 @@ mod tests {
             right_click_passthrough: false,
         };
         ContextMenuState {
-            items: build_context_menu_items(
-                &kind,
-                &[],
-                crate::config::ViewMode::Repo,
-                &[],
-                &[],
-                &Default::default(),
-            ),
+            items: build_context_menu_items(&kind, &[], &[], &Default::default()),
             kind,
             x: 0,
             y: 0,
@@ -4616,9 +3025,11 @@ mod tests {
         // covered.
         let mut state = state_with_workspaces(&["main"]);
         let pane_id = state.workspaces[0].tabs[0].root_pane;
-        let expected = crate::ui::sidebar::project_view::pane_address(
-            &state.workspaces[0],
-            state.workspaces[0].public_pane_number(pane_id).unwrap(),
+        let ws = &state.workspaces[0];
+        let expected = format!(
+            "{}p{}",
+            ws.id,
+            crate::workspace::encode_public_number(ws.public_pane_number(pane_id).unwrap())
         );
         let menu = pane_menu(0, 0, pane_id);
         let idx = copy_pane_id_idx(&menu);
@@ -4683,11 +3094,11 @@ mod tests {
         // single-path test would not show it.
         let mut state = state_with_workspaces(&["main"]);
         let direct_pane_id = state.workspaces[0].tabs[0].root_pane;
-        let expected = crate::ui::sidebar::project_view::pane_address(
-            &state.workspaces[0],
-            state.workspaces[0]
-                .public_pane_number(direct_pane_id)
-                .unwrap(),
+        let ws = &state.workspaces[0];
+        let expected = format!(
+            "{}p{}",
+            ws.id,
+            crate::workspace::encode_public_number(ws.public_pane_number(direct_pane_id).unwrap())
         );
         let mut terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
         let direct_menu = pane_menu(0, 0, direct_pane_id);
@@ -4722,14 +3133,7 @@ mod tests {
             tab_idx: 0,
         };
         let menu = ContextMenuState {
-            items: build_context_menu_items(
-                &kind,
-                &[],
-                crate::config::ViewMode::Repo,
-                &[],
-                &[],
-                &Default::default(),
-            ),
+            items: build_context_menu_items(&kind, &[], &[], &Default::default()),
             kind,
             x: 0,
             y: 0,
@@ -4768,14 +3172,7 @@ mod tests {
             right_click_passthrough: false,
         };
         let mut menu = ContextMenuState {
-            items: build_context_menu_items(
-                &kind,
-                &[],
-                crate::config::ViewMode::Repo,
-                &[],
-                &[],
-                &Default::default(),
-            ),
+            items: build_context_menu_items(&kind, &[], &[], &Default::default()),
             kind,
             x: 0,
             y: 0,
@@ -4820,14 +3217,7 @@ mod tests {
             hidden: false,
         };
         let menu = ContextMenuState {
-            items: build_context_menu_items(
-                &kind,
-                &[],
-                crate::config::ViewMode::Repo,
-                &[],
-                &[],
-                &Default::default(),
-            ),
+            items: build_context_menu_items(&kind, &[], &[], &Default::default()),
             kind,
             x: 0,
             y: 0,
@@ -4867,14 +3257,7 @@ mod tests {
             hidden: false,
         };
         let menu = ContextMenuState {
-            items: build_context_menu_items(
-                &kind,
-                &[],
-                crate::config::ViewMode::Repo,
-                &[],
-                &[],
-                &Default::default(),
-            ),
+            items: build_context_menu_items(&kind, &[], &[], &Default::default()),
             kind,
             x: 0,
             y: 0,
@@ -4913,14 +3296,7 @@ mod tests {
             hidden: false,
         };
         let menu = ContextMenuState {
-            items: build_context_menu_items(
-                &kind,
-                &[],
-                crate::config::ViewMode::Repo,
-                &[],
-                &[],
-                &Default::default(),
-            ),
+            items: build_context_menu_items(&kind, &[], &[], &Default::default()),
             kind,
             x: 0,
             y: 0,
@@ -4959,14 +3335,7 @@ mod tests {
             hidden: false,
         };
         let menu = ContextMenuState {
-            items: build_context_menu_items(
-                &kind,
-                &[],
-                crate::config::ViewMode::Repo,
-                &[],
-                &[],
-                &Default::default(),
-            ),
+            items: build_context_menu_items(&kind, &[], &[], &Default::default()),
             kind,
             x: 0,
             y: 0,
@@ -4993,14 +3362,7 @@ mod tests {
             head_ref: "fix/focus".into(),
         };
         ContextMenuState {
-            items: build_context_menu_items(
-                &kind,
-                &[],
-                crate::config::ViewMode::Repo,
-                &[],
-                &[],
-                &Default::default(),
-            ),
+            items: build_context_menu_items(&kind, &[], &[], &Default::default()),
             kind,
             x: 0,
             y: 0,
@@ -5075,14 +3437,7 @@ mod tests {
             flow_available,
         };
         ContextMenuState {
-            items: build_context_menu_items(
-                &kind,
-                &[],
-                crate::config::ViewMode::Repo,
-                &[],
-                &[],
-                &Default::default(),
-            ),
+            items: build_context_menu_items(&kind, &[], &[], &Default::default()),
             kind,
             x: 0,
             y: 0,
@@ -5217,14 +3572,7 @@ mod tests {
             hidden: false,
         };
         let menu = ContextMenuState {
-            items: build_context_menu_items(
-                &kind,
-                &[],
-                crate::config::ViewMode::Repo,
-                &[],
-                &[],
-                &plugins,
-            ),
+            items: build_context_menu_items(&kind, &[], &[], &plugins),
             kind,
             x: 0,
             y: 0,

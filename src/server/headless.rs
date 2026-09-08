@@ -4868,13 +4868,8 @@ impl HeadlessServer {
         if self.has_app_client() {
             self.app.start_git_status_refresh_if_due(now);
         }
-        // Project view grouping reads this store; the poll itself lives in
-        // one shared helper (`App::poll_projects_store`) so the two tick
-        // paths cannot drift — the headless path shipped without it once
-        // and projects written while the server ran never grouped.
-        changed |= self.app.poll_projects_store();
-        // Every spinner animation (the Project view working dot among
-        // them) advances on this tick. It lives in the shared
+        // Every spinner animation advances on this tick. It lives in
+        // the shared
         // `App::tick_animation` helper so both tick paths advance it —
         // the headless path shipped without it once and every spinner
         // froze at one frame in server mode, the only mode most
@@ -5413,66 +5408,10 @@ mod tests {
     mod pane_graphics_tests;
 
     #[test]
-    fn headless_tick_reloads_projects_file_written_after_boot() {
-        // The exact production path: the server boots (store loaded, file
-        // absent), then a `project.*` verb writes `projects.yml` while the
-        // server is already running. The next scheduled tick must pick the
-        // write up — before `App::poll_projects_store` was shared, the
-        // headless tick never polled and runtime project writes never
-        // grouped in the Project view.
-        let _isolated = crate::config::IsolatedDirs::new("headless-projects-poll");
-        let mut server = test_headless_server();
-        server.app.state.projects = crate::persist::projects::ProjectsStore::load();
-        assert!(server.app.state.projects.current().projects.is_empty());
-
-        let write = |slug: &str| {
-            let mut file = crate::persist::projects::ProjectsFile::default();
-            file.projects.insert(
-                slug.to_string(),
-                crate::persist::projects::Project {
-                    name: None,
-                    channel: None,
-                    members: Vec::new(),
-                    orchestrator: None,
-                    sections: None,
-                    layout: None,
-                    auto_join: true,
-                },
-            );
-            crate::persist::projects::write_projects_file(&file).expect("write projects.yml");
-        };
-
-        write("late");
-        assert!(
-            server.handle_scheduled_tasks_headless(Instant::now(), false),
-            "a store reload must mark the frame dirty so clients re-render"
-        );
-        assert!(server
-            .app
-            .state
-            .projects
-            .current()
-            .projects
-            .contains_key("late"));
-
-        // Two-sided: the poll is not a one-shot. A second post-boot write
-        // must be picked up by a later tick too.
-        write("later");
-        server.handle_scheduled_tasks_headless(Instant::now(), false);
-
-        let projects = &server.app.state.projects.current().projects;
-        assert!(projects.contains_key("later"));
-        assert!(
-            !projects.contains_key("late"),
-            "the store reflects the current file, not an append of stale slugs"
-        );
-    }
-
-    #[test]
     fn headless_tick_advances_spinner_and_rearms_animation() {
         // The spinner tick lives in the shared `App::tick_animation`
-        // helper (same drift family as the projects poll above): before
-        // the helper, the headless path never advanced `spinner_tick`,
+        // helper: before the helper, the headless path never advanced
+        // `spinner_tick`,
         // so every spinner froze at one frame in server mode.
         let mut server = test_headless_server();
         let ws = crate::workspace::Workspace::test_new("spin");
