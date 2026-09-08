@@ -214,9 +214,16 @@ classes, and how to resolve them, so the next sync is cheap:
   `src/persist/channels.rs`, `src/app/input/chat.rs`, `src/ui/chat.rs` and
   `src/api/schema/channels.rs` are all **absent upstream**, so the merge brings no
   competing implementation and no conflict in them. The fork's `Subscription` enum is
-  upstream's 27 variants plus exactly two appended at the end (`pane.result_reported`,
-  `channel.message`), dropping none, so appending another fork variant stays a small
-  conflict. Full analysis in `.local/prd/channel-identity-and-subscribe.md`.
+  upstream's 27 variants plus exactly two, dropping none — and where those two SIT is
+  the load-bearing fact, not that there are two: `pane.result_reported` and
+  `channel.message` are inserted at positions 24 and 25 of 29, ahead of a four-variant
+  tail (`pane.output_matched`, `pane.agent_status_changed`, `pane.scroll_changed`,
+  `layout.updated`) that is identical to upstream's own last four. That shared tail
+  gives a 3-way merge unambiguous context on both sides of the insertion, and upstream
+  added **zero** `Subscription` variants across those 107 commits, so the region is
+  uncontested. Anchor a new fork variant beside those two rather than after the tail;
+  appending past the tail is what would put both sides on the same line. Full analysis
+  in `.local/prd/channel-identity-and-subscribe.md`.
 
 Every upstream sync also updates `UPSTREAM_HERDR_VERSION`/`UPSTREAM_HERDR_COMMIT` in
 `src/build_info.rs` to the merged upstream tip, in the same commit as the merge — see
