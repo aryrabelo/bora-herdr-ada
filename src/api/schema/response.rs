@@ -74,10 +74,6 @@ pub enum ResponseResult {
         tab: TabInfo,
         root_pane: PaneInfo,
         worktree: WorktreeInfo,
-        #[serde(default)]
-        setup: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        setup_error: Option<String>,
     },
     WorktreeOpened {
         workspace: WorkspaceInfo,

@@ -453,24 +453,6 @@ impl App {
         self.start_git_status_refresh_if_due(now);
         self.refresh_channel_membership_if_due(now);
 
-        // bora-55c.3: refresh each workspace's declared-command cache so the
-        // COMMANDS band reads pure state. Gated to 1s — the loader's own
-        // probe-throttle window, so tighter polling buys nothing; on a hit
-        // this is one Mutex lock + fingerprint compare per repo.
-        if self
-            .last_commands_refresh
-            .is_none_or(|last| now >= last + std::time::Duration::from_secs(1))
-        {
-            for ws in &mut self.state.workspaces {
-                let commands = crate::bora_config::workspace_commands(ws);
-                ws.cached_commands = if commands.is_empty() {
-                    None
-                } else {
-                    Some(commands)
-                };
-            }
-            self.last_commands_refresh = Some(now);
-        }
 
         if self
             .next_auto_update_check

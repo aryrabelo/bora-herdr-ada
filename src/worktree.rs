@@ -866,6 +866,66 @@ pub(crate) fn copy_worktree_includes(repo_root: &Path, checkout_path: &Path) {
         }
     }
 }
+
+/// Absolute git common dir for `repo_root` (shared by all linked worktrees).
+/// Falls back to `repo_root/.git` when git cannot be queried.
+fn git_common_dir(repo_root: &Path) -> PathBuf {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args(["rev-parse", "--path-format=absolute", "--git-common-dir"])
+        .output();
+    if let Ok(output) = output {
+        if output.status.success() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let dir = stdout.trim();
+            if !dir.is_empty() {
+                return PathBuf::from(dir);
+            }
+        }
+    }
+    repo_root.join(".git")
+}
+
+/// Create `.context/` in a freshly created worktree checkout and ensure
+/// `.context/` is git-excluded via the shared `<git common dir>/info/exclude`.
+/// Always-on per-worktree hygiene (relocated from the retired
+/// `.bora/settings.toml` provisioning path, bora #272): independent of any
+/// per-repo config file, run unconditionally on every worktree creation.
+pub(crate) fn ensure_context_dir(repo_root: &Path, checkout_path: &Path) {
+    let context_dir = checkout_path.join(".context");
+    if let Err(err) = std::fs::create_dir_all(&context_dir) {
+        tracing::warn!(path = %context_dir.display(), "worktree: create .context failed: {err}");
+    }
+    let exclude_path = git_common_dir(repo_root).join("info").join("exclude");
+    ensure_exclude_line(&exclude_path, ".context/");
+}
+
+/// Append `line` to the git exclude file if not already present (idempotent).
+fn ensure_exclude_line(exclude_path: &Path, line: &str) {
+    let existing = std::fs::read_to_string(exclude_path).unwrap_or_default();
+    if existing
+        .lines()
+        .any(|existing_line| existing_line.trim() == line)
+    {
+        return;
+    }
+    if let Some(parent) = exclude_path.parent() {
+        if let Err(err) = std::fs::create_dir_all(parent) {
+            tracing::warn!(path = %parent.display(), "worktree: create exclude dir failed: {err}");
+            return;
+        }
+    }
+    let mut content = existing;
+    if !content.is_empty() && !content.ends_with('\n') {
+        content.push('\n');
+    }
+    content.push_str(line);
+    content.push('\n');
+    if let Err(err) = std::fs::write(exclude_path, content) {
+        tracing::warn!(path = %exclude_path.display(), "worktree: write exclude failed: {err}");
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1467,5 +1527,32 @@ prunable stale
 
         let _ = std::fs::remove_dir_all(src);
         let _ = std::fs::remove_dir_all(dst);
+    }
+
+    #[test]
+    fn ensure_context_dir_creates_dir_and_excludes_once() {
+        let repo = create_committed_repo("context-dir");
+        let checkout = unique_temp_path("context-dir-wt");
+        std::fs::create_dir_all(&checkout).unwrap();
+
+        ensure_context_dir(&repo, &checkout);
+        assert!(checkout.join(".context").is_dir());
+
+        let exclude = git_common_dir(&repo).join("info").join("exclude");
+        let count = |path: &Path| {
+            std::fs::read_to_string(path)
+                .unwrap()
+                .lines()
+                .filter(|line| line.trim() == ".context/")
+                .count()
+        };
+        assert_eq!(count(&exclude), 1);
+
+        // Idempotent on a second call.
+        ensure_context_dir(&repo, &checkout);
+        assert_eq!(count(&exclude), 1);
+
+        let _ = std::fs::remove_dir_all(&repo);
+        let _ = std::fs::remove_dir_all(&checkout);
     }
 }

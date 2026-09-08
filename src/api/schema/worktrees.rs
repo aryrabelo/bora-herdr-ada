@@ -26,8 +26,6 @@ pub struct WorktreeCreateParams {
     pub label: Option<String>,
     #[serde(default)]
     pub focus: bool,
-    #[serde(default)]
-    pub no_setup: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, Default)]

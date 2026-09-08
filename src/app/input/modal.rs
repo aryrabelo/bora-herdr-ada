@@ -878,8 +878,6 @@ pub(super) fn apply_context_menu_action(
 ) {
     let item_owned = menu.items.get(idx).cloned();
     let item = item_owned.as_deref();
-    let bora_commands = menu.bora_commands;
-    let bora_port = menu.bora_port;
     match (menu.kind, item) {
         (ContextMenuKind::GitWorkspace { ws_idx, .. }, Some("New worktree")) => {
             state.request_new_linked_worktree = Some(ws_idx);
@@ -1217,24 +1215,6 @@ pub(super) fn apply_context_menu_action(
             state.hidden_space_keys.remove(&collapse_key);
             leave_modal(state);
         }
-        (
-            ContextMenuKind::Workspace { ws_idx, .. }
-            | ContextMenuKind::GitWorkspace { ws_idx, .. },
-            Some(label),
-        ) if bora_commands.iter().any(|c| c.label == label) => {
-            let cmd = bora_commands
-                .iter()
-                .find(|c| c.label == label)
-                .expect("guard guarantees match");
-            state.pending_bora_command = Some(crate::app::state::PendingBoraCommand {
-                ws_idx,
-                command: cmd.command.clone(),
-                mode: cmd.mode.clone(),
-                label: Some(cmd.label.clone()),
-                port: bora_port,
-            });
-            leave_modal(state);
-        }
         (kind, Some(label))
             if crate::app::state::plugin_menu_action_id(&kind, label, &state.installed_plugins)
                 .is_some() =>
@@ -1528,8 +1508,6 @@ impl App {
     pub(crate) fn apply_context_menu_action_via_api(&mut self, menu: ContextMenuState, idx: usize) {
         let item_owned = menu.items.get(idx).cloned();
         let item = item_owned.as_deref();
-        let bora_commands = menu.bora_commands;
-        let bora_port = menu.bora_port;
         match (menu.kind, item) {
             (ContextMenuKind::GitWorkspace { ws_idx, .. }, Some("New worktree")) => {
                 self.state.request_new_linked_worktree = Some(ws_idx);
@@ -1886,24 +1864,6 @@ impl App {
                 self.state.hidden_space_keys.remove(&collapse_key);
                 leave_modal(&mut self.state);
             }
-            (
-                ContextMenuKind::Workspace { ws_idx, .. }
-                | ContextMenuKind::GitWorkspace { ws_idx, .. },
-                Some(label),
-            ) if bora_commands.iter().any(|c| c.label == label) => {
-                let cmd = bora_commands
-                    .iter()
-                    .find(|c| c.label == label)
-                    .expect("guard guarantees match");
-                self.state.pending_bora_command = Some(crate::app::state::PendingBoraCommand {
-                    ws_idx,
-                    command: cmd.command.clone(),
-                    mode: cmd.mode.clone(),
-                    label: Some(cmd.label.clone()),
-                    port: bora_port,
-                });
-                leave_modal(&mut self.state);
-            }
             (kind, Some(label))
                 if crate::app::state::plugin_menu_action_id(
                     &kind,
@@ -2166,8 +2126,6 @@ mod tests {
             x: 0,
             y: 0,
             list: MenuListState::new(0),
-            bora_commands: vec![],
-            bora_port: None,
         };
         let mut runtimes = crate::terminal::TerminalRuntimeRegistry::new();
         apply_context_menu_action(&mut state, &mut runtimes, menu, idx);
@@ -2827,8 +2785,6 @@ mod tests {
             x: 0,
             y: 0,
             list: MenuListState::new(0),
-            bora_commands: vec![],
-            bora_port: None,
         };
         let mut terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
 
@@ -2878,8 +2834,6 @@ mod tests {
             x: 0,
             y: 0,
             list: MenuListState::new(0),
-            bora_commands: vec![],
-            bora_port: None,
         };
         let idx = menu
             .items()
@@ -2915,8 +2869,6 @@ mod tests {
             x: 0,
             y: 0,
             list: MenuListState::new(0),
-            bora_commands: vec![],
-            bora_port: None,
         };
         let idx = menu
             .items()
@@ -2967,8 +2919,6 @@ mod tests {
             x: 0,
             y: 0,
             list: MenuListState::new(0),
-            bora_commands: vec![],
-            bora_port: None,
         };
         let idx = menu
             .items()
@@ -3004,8 +2954,6 @@ mod tests {
             x: 0,
             y: 0,
             list: MenuListState::new(0),
-            bora_commands: vec![],
-            bora_port: None,
         }
     }
 
@@ -3138,8 +3086,6 @@ mod tests {
             x: 0,
             y: 0,
             list: MenuListState::new(0),
-            bora_commands: vec![],
-            bora_port: None,
         };
         let idx = menu
             .items()
@@ -3177,8 +3123,6 @@ mod tests {
             x: 0,
             y: 0,
             list: MenuListState::new(0),
-            bora_commands: vec![],
-            bora_port: None,
         };
         let close_idx = menu
             .items()
@@ -3222,8 +3166,6 @@ mod tests {
             x: 0,
             y: 0,
             list: MenuListState::new(0),
-            bora_commands: vec![],
-            bora_port: None,
         };
         assert!(menu.items().iter().any(|i| i.as_str() == "Merge to main"));
         let merge_idx = menu
@@ -3262,8 +3204,6 @@ mod tests {
             x: 0,
             y: 0,
             list: MenuListState::new(0),
-            bora_commands: vec![],
-            bora_port: None,
         };
         assert!(menu.items().iter().any(|i| i.as_str() == "Open PR"));
         let pr_idx = menu
@@ -3301,8 +3241,6 @@ mod tests {
             x: 0,
             y: 0,
             list: MenuListState::new(0),
-            bora_commands: vec![],
-            bora_port: None,
         };
         assert!(menu.items().iter().any(|i| i.as_str() == "Sync"));
         let sync_idx = menu
@@ -3340,8 +3278,6 @@ mod tests {
             x: 0,
             y: 0,
             list: MenuListState::new(0),
-            bora_commands: vec![],
-            bora_port: None,
         };
         assert!(menu.items().iter().any(|i| i.as_str() == "Sync"));
         let sync_idx = menu
@@ -3367,8 +3303,6 @@ mod tests {
             x: 0,
             y: 0,
             list: MenuListState::new(0),
-            bora_commands: vec![],
-            bora_port: None,
         }
     }
 
@@ -3442,8 +3376,6 @@ mod tests {
             x: 0,
             y: 0,
             list: MenuListState::new(0),
-            bora_commands: vec![],
-            bora_port: None,
         }
     }
 
@@ -3577,8 +3509,6 @@ mod tests {
             x: 0,
             y: 0,
             list: MenuListState::new(0),
-            bora_commands: vec![],
-            bora_port: None,
         };
         let idx = menu
             .items()

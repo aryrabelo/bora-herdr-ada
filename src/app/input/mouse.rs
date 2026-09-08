@@ -616,8 +616,6 @@ impl AppState {
                                 x: mouse.column,
                                 y: mouse.row,
                                 list: MenuListState::new(0),
-                                bora_commands: vec![],
-                                bora_port: None,
                             });
                             self.mode = Mode::ContextMenu;
                         }
@@ -646,8 +644,6 @@ impl AppState {
                                 x: mouse.column,
                                 y: mouse.row,
                                 list: MenuListState::new(0),
-                                bora_commands: vec![],
-                                bora_port: None,
                             });
                             self.mode = Mode::ContextMenu;
                         }
@@ -1423,41 +1419,10 @@ impl AppState {
                             ws_idx: idx,
                             hidden,
                         });
-                    // Load .bora.toml commands for workspace context menus.
-                    let (bora_labels, bora_commands, bora_port) = if matches!(
-                        kind,
-                        ContextMenuKind::Workspace { .. } | ContextMenuKind::GitWorkspace { .. }
-                    ) {
-                        let ws = &self.workspaces[idx];
-                        let filtered = crate::bora_config::workspace_commands(ws);
-                        if filtered.is_empty() {
-                            (vec![], vec![], None)
-                        } else {
-                            let labels: Vec<String> =
-                                filtered.iter().map(|c| c.label.clone()).collect();
-                            let branch = ws.cached_git_branch.as_deref();
-                            let checkout_path = ws
-                                .worktree_space()
-                                .map(|s| s.checkout_path.as_path())
-                                .unwrap_or(&ws.identity_cwd);
-                            let key = branch.map(str::to_string).unwrap_or_else(|| {
-                                checkout_path
-                                    .file_name()
-                                    .map(|name| name.to_string_lossy().into_owned())
-                                    .unwrap_or_default()
-                            });
-                            let port = ws.bora_config_root().and_then(|root| {
-                                crate::bora_settings::resolve_port(root, checkout_path, &key)
-                            });
-                            (labels, filtered, port)
-                        }
-                    } else {
-                        (vec![], vec![], None)
-                    };
                     let items = build_context_menu_items(
                         &kind,
                         &self.workspaces,
-                        &bora_labels,
+                        &[],
                         &self.installed_plugins,
                     );
                     self.context_menu = Some(ContextMenuState {
@@ -1466,8 +1431,6 @@ impl AppState {
                         x: mouse.column,
                         y: mouse.row,
                         list: MenuListState::new(0),
-                        bora_commands,
-                        bora_port,
                     });
                     self.mode = Mode::ContextMenu;
                 } else if let Some(header) = self
@@ -1499,8 +1462,6 @@ impl AppState {
                         x: mouse.column,
                         y: mouse.row,
                         list: MenuListState::new(0),
-                        bora_commands: vec![],
-                        bora_port: None,
                     });
                     self.mode = Mode::ContextMenu;
                 }
@@ -1525,8 +1486,6 @@ impl AppState {
                         x: mouse.column,
                         y: mouse.row,
                         list: MenuListState::new(0),
-                        bora_commands: vec![],
-                        bora_port: None,
                     });
                     self.mode = Mode::ContextMenu;
                 }
@@ -1574,8 +1533,6 @@ impl AppState {
                         x: mouse.column,
                         y: mouse.row,
                         list: MenuListState::new(0),
-                        bora_commands: vec![],
-                        bora_port: None,
                     });
                     self.mode = Mode::ContextMenu;
                 }
@@ -3794,8 +3751,6 @@ mod tests {
             x: 2,
             y: 2,
             list: MenuListState::new(0),
-            bora_commands: vec![],
-            bora_port: None,
         });
         app.state.mode = Mode::ContextMenu;
 
@@ -4099,8 +4054,6 @@ mod tests {
             x: 2,
             y: 2,
             list: MenuListState::new(close_idx),
-            bora_commands: vec![],
-            bora_port: None,
         });
         app.state.mode = Mode::ContextMenu;
         handle_context_menu_key(
@@ -4148,8 +4101,6 @@ mod tests {
             x: 2,
             y: 2,
             list: MenuListState::new(close_idx as usize),
-            bora_commands: vec![],
-            bora_port: None,
         });
         app.state.mode = Mode::ContextMenu;
 
@@ -4206,8 +4157,6 @@ mod tests {
             x: 2,
             y: 2,
             list: MenuListState::new(1),
-            bora_commands: vec![],
-            bora_port: None,
         });
         app.state.mode = Mode::ContextMenu;
 

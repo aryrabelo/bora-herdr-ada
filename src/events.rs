@@ -33,7 +33,6 @@ pub struct WorktreeAddResult {
     pub path: std::path::PathBuf,
     pub api_request: Option<ApiWorktreeAddRequest>,
     pub result: Result<(), String>,
-    pub setup: crate::bora_settings::SetupStatus,
 }
 
 #[derive(Debug)]

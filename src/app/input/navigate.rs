@@ -935,9 +935,6 @@ impl App {
                 }
             }
         }
-        if let Some(port) = self.state.bora_port_override {
-            env.push(("BORA_PORT".to_string(), port.to_string()));
-        }
         (env, cwd)
     }
 
