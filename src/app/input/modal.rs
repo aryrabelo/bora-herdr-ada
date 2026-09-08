@@ -843,12 +843,15 @@ pub(crate) fn handle_resize_key(state: &mut AppState, raw_key: TerminalKey) {
 }
 
 pub(super) fn open_confirm_close(state: &mut AppState) {
-    state.mode = Mode::ConfirmClose;
+    state.begin_workspace_close_confirmation(state.selected);
 }
 
 #[cfg(test)]
 pub(super) fn confirm_close_accept(state: &mut AppState) {
-    state.close_selected_workspace();
+    if let Some(ws_idx) = state.take_confirmed_workspace_close_index() {
+        state.selected = ws_idx;
+        state.close_selected_workspace();
+    }
     if state.workspaces.is_empty() {
         state.mode = Mode::Navigate;
     } else {
@@ -857,6 +860,7 @@ pub(super) fn confirm_close_accept(state: &mut AppState) {
 }
 
 pub(super) fn confirm_close_cancel(state: &mut AppState) {
+    state.confirm_close_workspace_id = None;
     state.mode = Mode::Navigate;
 }
 
@@ -1400,9 +1404,8 @@ impl App {
     }
 
     pub(super) fn confirm_close_accept_via_api(&mut self) {
-        let ws_idx = self.state.selected;
-        if ws_idx < self.state.workspaces.len() {
-            self.close_workspace_idx_via_api(ws_idx);
+        if let Some(ws_idx) = self.state.take_confirmed_workspace_close_index() {
+            self.close_workspace_idx_with_group_via_api(ws_idx);
         }
         self.state.mode = if self.state.active.is_some() {
             Mode::Terminal
@@ -1609,7 +1612,7 @@ impl App {
                 if self.state.confirm_close {
                     open_confirm_close(&mut self.state);
                 } else {
-                    self.close_workspace_idx_via_api(ws_idx);
+                    self.close_workspace_idx_with_group_via_api(ws_idx);
                     self.state.mode = Mode::Navigate;
                 }
             }
@@ -2652,8 +2655,8 @@ mod tests {
     #[test]
     fn confirm_close_keyboard_actions_are_direct_not_focused() {
         let mut state = state_with_workspaces(&["a", "b"]);
-        state.mode = Mode::ConfirmClose;
         state.selected = 1;
+        open_confirm_close(&mut state);
 
         handle_confirm_close_key(
             &mut state,
@@ -2662,7 +2665,7 @@ mod tests {
         assert_eq!(state.mode, Mode::Navigate);
         assert_eq!(state.workspaces.len(), 2);
 
-        state.mode = Mode::ConfirmClose;
+        open_confirm_close(&mut state);
         handle_confirm_close_key(
             &mut state,
             KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()),
@@ -2673,7 +2676,6 @@ mod tests {
     #[test]
     fn confirm_close_for_linked_worktree_closes_workspace_only() {
         let mut state = state_with_workspaces(&["main", "issue"]);
-        state.mode = Mode::ConfirmClose;
         state.selected = 1;
         state.workspaces[1].worktree_space = Some(crate::workspace::WorktreeSpaceMembership {
             key: "repo-key".into(),
@@ -2683,6 +2685,7 @@ mod tests {
             is_linked_worktree: true,
         });
 
+        open_confirm_close(&mut state);
         handle_confirm_close_key(
             &mut state,
             KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()),
@@ -2695,7 +2698,7 @@ mod tests {
     }
 
     #[test]
-    fn context_menu_close_parent_workspace_confirms_then_closes_only_it() {
+    fn context_menu_close_group_opens_group_close_confirmation() {
         let mut state = state_with_workspaces(&["main", "issue"]);
         state.active = Some(0);
         state.selected = 1;
@@ -2741,59 +2744,8 @@ mod tests {
 
         confirm_close_accept(&mut state);
 
-        assert_eq!(state.workspaces.len(), 1);
-        assert_eq!(state.workspaces[0].display_name(), "issue");
-        assert_eq!(state.mode, Mode::Terminal);
-    }
-
-    #[test]
-    fn context_menu_close_last_pane_of_parent_closes_only_it() {
-        let mut state = state_with_workspaces(&["main", "issue"]);
-        state.active = Some(0);
-        state.selected = 1;
-        state.workspaces[0].worktree_space = Some(crate::workspace::WorktreeSpaceMembership {
-            key: "repo-key".into(),
-            label: "herdr".into(),
-            repo_root: "/repo/herdr".into(),
-            checkout_path: "/repo/herdr".into(),
-            is_linked_worktree: false,
-        });
-        state.workspaces[1].worktree_space = Some(crate::workspace::WorktreeSpaceMembership {
-            key: "repo-key".into(),
-            label: "herdr".into(),
-            repo_root: "/repo/herdr".into(),
-            checkout_path: "/repo/herdr-issue".into(),
-            is_linked_worktree: true,
-        });
-        let pane_id = state.workspaces[0].tabs[0].root_pane;
-        let kind = ContextMenuKind::Pane {
-            ws_idx: 0,
-            tab_idx: 0,
-            pane_id,
-            source_pane_id: None,
-            has_manual_label: false,
-            right_click_passthrough: false,
-        };
-        let menu = ContextMenuState {
-            items: build_context_menu_items(&kind, &[], &[], &Default::default()),
-            kind,
-            x: 0,
-            y: 0,
-            list: MenuListState::new(0),
-        };
-        let idx = menu
-            .items()
-            .iter()
-            .position(|item| item.as_str() == "Close pane")
-            .expect("close pane item");
-        let mut terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
-
-        apply_context_menu_action(&mut state, &mut terminal_runtimes, menu, idx);
-
-        assert_eq!(state.selected, 0);
-        assert_ne!(state.mode, Mode::ConfirmClose);
-        assert_eq!(state.workspaces.len(), 1);
-        assert_eq!(state.workspaces[0].display_name(), "issue");
+        assert!(state.workspaces.is_empty());
+        assert_eq!(state.mode, Mode::Navigate);
     }
 
     #[test]
@@ -2876,9 +2828,8 @@ mod tests {
         apply_context_menu_action(&mut state, &mut terminal_runtimes, menu, idx);
 
         assert_eq!(state.selected, 0);
-        assert_ne!(state.mode, Mode::ConfirmClose);
-        assert_eq!(state.workspaces.len(), 1);
-        assert_eq!(state.workspaces[0].display_name(), "issue");
+        assert_eq!(state.mode, Mode::ConfirmClose);
+        assert_eq!(state.workspaces.len(), 2);
     }
 
     fn pane_menu(
@@ -3015,7 +2966,51 @@ mod tests {
         );
     }
     #[test]
-    fn api_context_menu_close_last_tab_of_parent_closes_only_it() {
+    fn api_confirm_close_accept_closes_parent_worktree_group() {
+        let mut app = app_with_test_workspaces(&["main", "issue"]);
+        mark_worktree_space_member(&mut app.state, 0, "repo-key");
+        mark_worktree_space_member(&mut app.state, 1, "repo-key");
+        app.state.selected = 0;
+        open_confirm_close(&mut app.state);
+
+        app.handle_confirm_close_key_via_api(KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()));
+
+        assert!(app.state.workspaces.is_empty());
+        assert_eq!(app.state.mode, Mode::Navigate);
+        assert_eq!(app.event_hub.events_after(0).len(), 2);
+    }
+
+    #[test]
+    fn api_confirm_close_accept_keeps_the_original_workspace_target() {
+        let mut app = app_with_test_workspaces(&["main", "issue", "other"]);
+        mark_worktree_space_member(&mut app.state, 0, "repo-key");
+        mark_worktree_space_member(&mut app.state, 1, "repo-key");
+        app.state.selected = 0;
+        open_confirm_close(&mut app.state);
+
+        app.focus_workspace_idx_via_api(2);
+        assert_eq!(app.state.selected, 2);
+        assert_eq!(app.state.mode, Mode::ConfirmClose);
+
+        app.handle_confirm_close_key_via_api(KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()));
+
+        assert_eq!(app.state.workspaces.len(), 1);
+        assert_eq!(app.state.workspaces[0].display_name(), "other");
+        assert_eq!(
+            app.event_hub
+                .events_after(0)
+                .iter()
+                .filter(|(_, event)| matches!(
+                    event.event,
+                    crate::api::schema::EventKind::WorkspaceClosed
+                ))
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn api_context_menu_close_tab_last_parent_group_workspace_keeps_confirmation_mode() {
         let mut app = app_with_test_workspaces(&["main", "issue"]);
         mark_worktree_space_member(&mut app.state, 0, "repo-key");
         mark_worktree_space_member(&mut app.state, 1, "repo-key");
@@ -3041,13 +3036,12 @@ mod tests {
 
         app.apply_context_menu_action_via_api(menu, idx);
         assert_eq!(app.state.selected, 0);
-        assert_ne!(app.state.mode, Mode::ConfirmClose);
-        assert_eq!(app.state.workspaces.len(), 1);
-        assert_eq!(app.state.workspaces[0].display_name(), "issue");
+        assert_eq!(app.state.mode, Mode::ConfirmClose);
+        assert_eq!(app.state.workspaces.len(), 2);
     }
 
     #[test]
-    fn api_context_menu_enter_close_last_pane_of_parent_closes_only_it() {
+    fn api_context_menu_enter_close_pane_last_parent_group_pane_keeps_confirmation_mode() {
         let mut app = app_with_test_workspaces(&["main", "issue"]);
         mark_worktree_space_member(&mut app.state, 0, "repo-key");
         mark_worktree_space_member(&mut app.state, 1, "repo-key");
@@ -3081,9 +3075,8 @@ mod tests {
         app.handle_context_menu_key_via_api(KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()));
 
         assert_eq!(app.state.selected, 0);
-        assert_ne!(app.state.mode, Mode::ConfirmClose);
-        assert_eq!(app.state.workspaces.len(), 1);
-        assert_eq!(app.state.workspaces[0].display_name(), "issue");
+        assert_eq!(app.state.mode, Mode::ConfirmClose);
+        assert_eq!(app.state.workspaces.len(), 2);
         assert!(app.state.context_menu.is_none());
     }
 

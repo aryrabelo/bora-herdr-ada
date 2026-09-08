@@ -7,10 +7,17 @@ test:
     just ui-hot-path-architecture-test
     just integration-assets-test
     just plugin-marketplace-test
+    just docs-contract-test
 
 # Run one nextest filter, e.g. `just test-one codex_stale_working`
+[unix]
 test-one filter:
     cargo nextest run --locked "{{filter}}" --status-level fail --final-status-level fail --failure-output final --success-output never
+
+[script("powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File")]
+[windows]
+test-one filter:
+    cargo nextest run --locked --bin herdr "{{filter}}" --status-level fail --final-status-level fail --failure-output final --success-output never
 
 # Enforce deterministic UI hot-path architecture boundaries
 ui-hot-path-architecture-test:
@@ -76,6 +83,7 @@ windows-lint:
 [unix]
 check: ci
     python3 -m unittest scripts.test_agent_detection_manifest_check scripts.test_changelog scripts.test_config_reference_check scripts.test_docs_translation_parity scripts.test_hermes_integration_asset scripts.test_independent_review scripts.test_package_windows_conpty scripts.test_preview scripts.test_review_rules scripts.test_review_rules_e2e scripts.test_unix_installer scripts.test_vendor_libghostty_vt scripts.test_vendor_portable_pty
+    just docs-contract-test
     @echo "docs reminder: if this changes user-facing behavior, make sure the relevant release docs are updated or called out before release."
 
 [script("powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File")]
@@ -132,9 +140,9 @@ bench-release-smoke:
     cargo build --release --locked
     scripts/release_perf_smoke.sh "${CARGO_TARGET_DIR:-target}/release/bora"
 
-# Build the website and documentation
-website-build:
-    cd website && bun install --frozen-lockfile && bun run build
+# Test public documentation snapshot and release lifecycle tooling
+docs-contract-test:
+    bun test scripts/docs/*.test.ts
 
 # Test bundled agent integration assets
 integration-assets-test:
@@ -170,10 +178,11 @@ prebuilt-ghostty: build-libghostty-vt-prebuilt
 
 # Check that release docs and changelog have been finalized from docs/next before release
 release-docs-check:
-    python3 scripts/agent_detection_manifest_check.py --require-website
+    python3 scripts/agent_detection_manifest_check.py --require-all-published
     python3 scripts/config_reference_check.py
-    node website/scripts/docs-versions.mjs check
-    node website/scripts/docs-preview.mjs check
+    node scripts/docs/versions.mjs check
+    node scripts/docs/preview.mjs check
+    just docs-contract-test
     @test -f docs/next/README.md
     @test -f docs/next/README.zh-CN.md
     @test -f docs/next/README.pt-BR.md
@@ -183,7 +192,7 @@ release-docs-check:
     }
     @for file in CONFIGURATION.md INTEGRATIONS.md SOCKET_API.md; do \
         if [ -e "$file" ]; then \
-            echo "error: $file was replaced by website docs; remove the root copy"; \
+            echo "error: $file was replaced by technical docs; remove the root copy"; \
             exit 1; \
         fi; \
     done
@@ -205,8 +214,6 @@ release-docs-check:
         fi; \
     done
     python3 scripts/docs_translation_parity.py --docs-root docs/next/website/src/content/docs
-    just website-build
-    cd website && bun run build:draft
 
 # Validate release docs, render scaling, and end-to-end CPU before release preparation
 pre-release-check:
@@ -284,7 +291,7 @@ release-publish version:
     fi
     git tag -a v{{version}} -m "v{{version}}"
     git push origin v{{version}}
-    @echo "v{{version}} released — GitHub Actions building binaries and updating website/latest.json"
+    @echo "v{{version}} released — GitHub Actions building binaries and updating distribution/latest.json"
 
 # Prepare, verify, tag, push, and trigger the GitHub Release workflow (usage: just release 0.1.1)
 release version:

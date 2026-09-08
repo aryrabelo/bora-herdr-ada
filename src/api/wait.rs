@@ -874,8 +874,7 @@ pub(super) fn wait_for_event(
 
     // events.wait is check-or-wait: a pane agent-status match must observe the
     // CURRENT state at wait start (via a pane.get probe), not only transitions
-    // emitted after the wait begins. Agent-status matches additionally get
-    // ActiveSubscription's mid-wait pane_not_found detection below.
+    // emitted after the wait begins.
     if let crate::api::schema::EventMatch::PaneAgentStatusChanged {
         pane_id,
         agent_status,
@@ -911,19 +910,30 @@ pub(super) fn wait_for_event(
                 return Ok(Some(encode_error_body(response.id, response.error)));
             }
         }
+    }
 
+    if matches!(
+        params.match_event,
+        crate::api::schema::EventMatch::PaneAgentStatusChanged { .. }
+    ) {
         let subscription = match event_match_subscription(&request_id, params.match_event) {
             Ok(subscription) => subscription,
             Err(response) => return Ok(Some(encode_error_body(response.id, response.error))),
         };
-        let mut active =
-            match ActiveSubscription::new(subscription, &request_id, 0, api_tx, event_hub) {
-                Ok(active) => active,
-                Err(mut response) => {
-                    response.id = request_id;
-                    return Ok(Some(encode_error_body(response.id, response.error)));
-                }
-            };
+        let mut active = match ActiveSubscription::new(
+            subscription,
+            &request_id,
+            0,
+            api_tx,
+            event_hub,
+            event_hub.current_sequence(),
+        ) {
+            Ok(active) => active,
+            Err(mut response) => {
+                response.id = request_id;
+                return Ok(Some(encode_error_body(response.id, response.error)));
+            }
+        };
         loop {
             if should_stop_connection(stream, running)? {
                 return Ok(None);

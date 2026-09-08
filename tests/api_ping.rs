@@ -992,6 +992,9 @@ fn new_terminal_cwd_follow_ignores_nonleader_group_member_cwd() {
     // hijacking the pane's follow cwd. This helper is a plain `sleep`, so the
     // pane stays on the leader's cwd. Upstream still expects `helper_cwd` here;
     // keep this expectation when syncing.
+    //
+    // Regression for issue #3270: the foreground group leader's cwd is
+    // authoritative; the backgrounded helper's chdir must not override it.
     assert_eq!(
         pane["result"]["pane"]["foreground_cwd"],
         base.display().to_string()
@@ -1517,6 +1520,12 @@ fn events_subscribe_streams_pane_split_and_close_events() {
     let ack = reader.read_json_line(Duration::from_secs(2));
     assert_eq!(ack["id"], "sub_life_b");
     assert_eq!(ack["result"]["type"], "subscription_started");
+    assert!(
+        reader
+            .try_read_json_line(Duration::from_millis(250))
+            .is_none(),
+        "new subscription must not replay the root pane creation"
+    );
 
     let split = send_request(
         &socket_path,

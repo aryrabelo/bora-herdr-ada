@@ -370,3 +370,41 @@ test("omp: session reports carry the lifecycle source", async () => {
   expect(sessionReports.at(-1)?.params?.session_start_source).toBe("resume");
 });
 
+// Upstream #2851/#3122: an `agent_end` carrying `willContinue: true` means OMP
+// already scheduled an automatic continuation, so it is not a settle and must
+// not publish idle. Only the real terminal end settles the pane.
+test("omp: agent_end with willContinue keeps the pane working", async () => {
+  jest.useFakeTimers();
+  // Module-loading boundary: env + node:net mock must be applied before the
+  // asset binds them at load, so this import is intentionally dynamic.
+  const mod = await import("./omp/herdr-agent-state.ts");
+  const handlers = new Map<string, (...args: unknown[]) => void>();
+  const pi = {
+    on: (name: string, cb: (...args: unknown[]) => void) => {
+      handlers.set(name, cb);
+    },
+    events: {
+      on: (name: string, cb: (...args: unknown[]) => void) => {
+        handlers.set(`events:${name}`, cb);
+      },
+    },
+  };
+  mod.default(pi);
+  const fire = (name: string, ...args: unknown[]) => handlers.get(name)?.(...args);
+
+  fire("session_start", { reason: "startup" }, { hasUI: true, mode: "tui" });
+  await flush();
+  fire("agent_start", {}, {});
+  await flush();
+  expect(reportedStates.at(-1)).toBe("working");
+
+  fire("agent_end", { messages: [], willContinue: true });
+  jest.advanceTimersByTime(200); // well past the idle debounce
+  await flush();
+  expect(reportedStates.at(-1)).toBe("working");
+
+  fire("agent_end", { messages: [] });
+  jest.advanceTimersByTime(200);
+  await flush();
+  expect(reportedStates.at(-1)).toBe("idle");
+});

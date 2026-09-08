@@ -6,6 +6,8 @@ pub struct WorktreeListParams {
     pub workspace_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
+    #[serde(default, skip_serializing_if = "super::is_false")]
+    pub trust_repository: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, Default)]
@@ -26,6 +28,8 @@ pub struct WorktreeCreateParams {
     pub label: Option<String>,
     #[serde(default)]
     pub focus: bool,
+    #[serde(default, skip_serializing_if = "super::is_false")]
+    pub trust_repository: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, Default)]
@@ -42,6 +46,8 @@ pub struct WorktreeOpenParams {
     pub label: Option<String>,
     #[serde(default)]
     pub focus: bool,
+    #[serde(default, skip_serializing_if = "super::is_false")]
+    pub trust_repository: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -49,6 +55,8 @@ pub struct WorktreeRemoveParams {
     pub workspace_id: String,
     #[serde(default)]
     pub force: bool,
+    #[serde(default, skip_serializing_if = "super::is_false")]
+    pub trust_repository: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
