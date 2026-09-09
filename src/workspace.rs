@@ -329,7 +329,7 @@ impl Workspace {
     /// Creates a workspace whose first pane runs `argv` instead of a shell.
     /// Fork-only convenience used by git-space derivation tests.
     #[cfg(test)]
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)] // mirrors `Tab::new_argv_command`'s parameter list on purpose
     pub fn new_argv_command(
         initial_cwd: PathBuf,
         rows: u16,

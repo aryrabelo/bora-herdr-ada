@@ -431,7 +431,16 @@ model's opinion, so unlike the old gate they are not advisory.
 Two rules already have their own dedicated, more thorough checkers and are
 deliberately *not* duplicated here: `unwrap()` in production is
 `clippy::unwrap_used`, and root-vs-`docs/next` changelog divergence is
-`scripts/changelog.py check-history-sync`. When a rule is ambiguous on a given
+`scripts/changelog.py check-history-sync`. Generated output that arrives through a merge is exempt when its blob at HEAD is
+byte-identical to a non-first parent of a merge commit in `base..head`
+(`merge_inherited_paths`): an upstream sync brings herdr's release-CI output
+(`docs/versions/<v>/`) untouched, and that is inherited, not hand-edited — while
+any local edit on top changes the blob and fires again. The fork's own
+`docs/preview/` snapshot is kept as `ours` on a sync for the same reason: Preview CI
+owns it and regenerates it from `docs/next` on the next run. (learned 2026-09-09,
+binding: the 0.9.0 merge hit 107 criticals on paths nobody had edited.)
+
+When a rule is ambiguous on a given
 diff, the checker does not flag it — mass false positives are what make a team
 learn to ignore a gate.
 

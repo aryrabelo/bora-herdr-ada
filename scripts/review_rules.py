@@ -198,10 +198,10 @@ def parse_rename_sources(text: str) -> dict[str, str]:
     return sources
 
 
-def check_generated_paths(changed_paths: list[str]) -> list[Finding]:
+def check_generated_paths(changed_paths: list[str], inherited: set[str] = frozenset()) -> list[Finding]:
     findings = []
     for path in changed_paths:
-        if is_generated_path(path):
+        if is_generated_path(path) and path not in inherited:
             findings.append(
                 Finding(
                     severity="critical",
@@ -210,6 +210,47 @@ def check_generated_paths(changed_paths: list[str]) -> list[Finding]:
                 )
             )
     return findings
+
+
+def tree_blobs(sha: str, paths: list[str]) -> dict[str, str]:
+    """Map path -> blob id at `sha` for the given paths (missing paths omitted)."""
+    if not paths:
+        return {}
+    out = run_git(["ls-tree", "-r", "-z", sha, "--", *paths])
+    blobs: dict[str, str] = {}
+    for entry in out.split("\0"):
+        if not entry:
+            continue
+        meta, _tab, path = entry.partition("\t")
+        blobs[path] = meta.split(" ")[2]
+    return blobs
+
+
+def merge_inherited_paths(base_sha: str, head_sha: str, paths: list[str]) -> set[str]:
+    """Generated paths whose HEAD content arrived unchanged through a merge.
+
+    An upstream sync merges herdr's release-CI output (`docs/versions/<v>/`,
+    `docs/preview/`) into the fork; nobody hand-edited it, it was generated on
+    the other side of the merge. A path is inherited when its blob at HEAD is
+    byte-identical to its blob at a non-first parent of some merge commit in
+    `base..head`. Any local edit on top of the merged file changes the blob and
+    loses the exemption, so a hand-edit smuggled in beside a sync still fires.
+    """
+    candidates = [path for path in paths if is_generated_path(path)]
+    if not candidates:
+        return set()
+    parents: list[str] = []
+    for line in run_git(["rev-list", "--merges", "--parents", f"{base_sha}..{head_sha}"]).splitlines():
+        parents.extend(line.split()[2:])
+    if not parents:
+        return set()
+    head_blobs = tree_blobs(head_sha, candidates)
+    inherited: set[str] = set()
+    for parent in parents:
+        for path, blob in tree_blobs(parent, candidates).items():
+            if head_blobs.get(path) == blob:
+                inherited.add(path)
+    return inherited
 
 
 def check_allow_justification(
@@ -321,7 +362,9 @@ def run_all_checks(base_sha: str, head_sha: str) -> list[Finding]:
 
     findings: list[Finding] = []
     findings += check_version_bump(changed_paths, read_git_file(base_sha, "Cargo.toml"), read_git_file(head_sha, "Cargo.toml"))
-    findings += check_generated_paths(edited_paths)
+    findings += check_generated_paths(
+        edited_paths, merge_inherited_paths(base_sha, head_sha, edited_paths)
+    )
 
     added_by_path = parse_added_lines(run_git(["diff", "--unified=0", f"{base_sha}...{head_sha}"]))
     rs_added = {path: lines for path, lines in added_by_path.items() if path.endswith(".rs")}

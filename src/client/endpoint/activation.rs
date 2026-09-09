@@ -14,6 +14,8 @@ use protocol::*;
 const ACTIVATION_TIMEOUT: Duration = Duration::from_secs(5);
 
 impl PendingEndpointActivation {
+    // Upstream signature: the activation takes every collaborator it wires
+    // (shell, registry, transport, clocks) explicitly instead of a context struct.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn begin(
         shell: &crate::client::shell::ClientShellState,
