@@ -114,6 +114,7 @@ fn grouped_worktrees_render_parent_branch_and_indented_child() {
             label: "repo".into(),
             is_linked_worktree: true,
         }),
+        visual_group: None,
         focused: false,
         agent_status: AgentStatus::Idle,
     });
@@ -203,10 +204,11 @@ fn workspace_click_waits_for_release_and_drag_reorders_by_stable_id() {
     })]);
     assert!(drag.repaint);
     assert!(matches!(
-        state.chrome_drag,
+        &state.chrome_drag,
         Some(ClientChromeDrag::Workspace {
-            ref source_workspace_id,
+            source_workspace_id,
             target: Some((None, _)),
+            ..
         }) if source_workspace_id == "ws_1"
     ));
     let frame = state.compose(106, 24).expect("workspace drop indicator");

@@ -167,7 +167,6 @@ pub enum ViewMode {
 
 impl ViewMode {
     /// Flat -> Folders -> Repo -> Flat.
-    #[allow(dead_code)] // view-mode cycling keybind, re-wired by ceo-bora#275
     pub fn cycle(self) -> ViewMode {
         match self {
             ViewMode::Flat => ViewMode::Folders,

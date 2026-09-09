@@ -1031,6 +1031,11 @@ pub struct ClientShellWorkspace {
     pub git_ahead_behind: Option<(usize, usize)>,
     pub tokens: Vec<(String, String)>,
     pub worktree: Option<ClientShellWorktree>,
+    /// User-defined Folders-view group (`workspace.set_group`). Server-side
+    /// fact, mirrors `WorkspaceInfo.visual_group`; presentation of it
+    /// (which `ViewMode` honors it) is a client decision.
+    #[serde(default)]
+    pub visual_group: Option<String>,
     pub focused: bool,
     #[serde(deserialize_with = "deserialize_client_shell_agent_status")]
     pub agent_status: crate::api::schema::AgentStatus,
@@ -2678,6 +2683,7 @@ mod tests {
                 git_ahead_behind: None,
                 tokens: Vec::new(),
                 worktree: None,
+                visual_group: None,
                 focused: true,
                 agent_status: crate::api::schema::AgentStatus::Idle,
             }],

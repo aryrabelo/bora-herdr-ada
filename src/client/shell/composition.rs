@@ -127,6 +127,7 @@ impl ClientShellState {
             Some(ClientChromeDrag::Workspace {
                 source_workspace_id,
                 target,
+                ..
             }) => (
                 Some(source_workspace_id.as_str()),
                 target.as_ref().map(|(_, row)| *row),

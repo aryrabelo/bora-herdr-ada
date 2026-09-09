@@ -64,6 +64,13 @@ pub(super) fn render_settings_overlay(
             .bg(palette.panel_bg)
             .add_modifier(Modifier::BOLD),
     );
+    put_right_text(
+        buffer,
+        Rect::new(inner.x, inner.y, inner.width.saturating_sub(1), 1),
+        inner.y,
+        &crate::build_info::fork_version_display(),
+        Style::default().fg(palette.overlay0).bg(palette.panel_bg),
+    );
 
     let integration_badge = integration_updates_available
         || settings
