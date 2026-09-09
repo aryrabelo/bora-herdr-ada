@@ -219,10 +219,10 @@ pub(crate) fn render_sidebar(
             .saturating_sub(WORKSPACE_HEADER_ROWS + 1),
     );
     hits.workspace_body = body;
-    if config.view_mode == crate::config::ViewMode::Folders {
+    if state.view_mode == crate::config::ViewMode::Folders {
         render_folders_workspace_list(buffer, body, snapshot, config, state, hits);
     } else {
-        let entries = match config.view_mode {
+        let entries = match state.view_mode {
             // Flat: one row per workspace in workspace-vec order, no
             // grouping at all -- repo brackets and worktree auto-grouping
             // both dissolve while this is selected.

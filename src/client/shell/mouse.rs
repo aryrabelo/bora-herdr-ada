@@ -484,30 +484,62 @@ impl ClientShellState {
         let collapsed_groups = self
             .collapsed_groups_for_endpoint(&self.active_endpoint_id)
             .unwrap_or(&empty_collapsed_groups);
-        let entries = render::workspace_entries(snapshot, collapsed_groups);
         let last_hit = self
             .hits
             .workspaces
             .iter()
             .rev()
             .find(|hit| hit.endpoint_id == self.active_endpoint_id)?;
-        let last_position = entries.iter().position(|entry| {
-            snapshot
-                .workspaces
-                .get(entry.index)
-                .is_some_and(|workspace| workspace.workspace_id == last_hit.workspace_id)
-        })?;
-        let next = entries.get(last_position + 1);
-        if !next.is_some_and(|entry| entry.indented) {
-            let before = next.and_then(|entry| {
+        if self.view_mode == crate::config::ViewMode::Folders {
+            let entries = render::sidebar::folders_entries(snapshot, collapsed_groups);
+            let last_position = entries.iter().position(|entry| {
+                matches!(entry, render::sidebar::FoldersRow::Workspace { index, .. }
+                    if snapshot.workspaces.get(*index).is_some_and(|workspace| workspace.workspace_id == last_hit.workspace_id))
+            })?;
+            let next = entries.get(last_position + 1);
+            let next_is_grouped_member = matches!(
+                next,
+                Some(render::sidebar::FoldersRow::Workspace { in_group: true, .. })
+            );
+            if !next_is_grouped_member {
+                // The next visible workspace row (skipping past a bare
+                // GroupHeader to its first member, if any) is the real
+                // insertion point; only an empty/collapsed group or the
+                // true end of the list falls back to appending at the end.
+                let before = entries[last_position + 1..]
+                    .iter()
+                    .find_map(|entry| match entry {
+                        render::sidebar::FoldersRow::Workspace { index, .. } => snapshot
+                            .workspaces
+                            .get(*index)
+                            .map(|workspace| workspace.workspace_id.clone()),
+                        render::sidebar::FoldersRow::GroupHeader { .. } => None,
+                    });
+                let row = last_hit.rect.bottom();
+                if row < self.hits.new_workspace.y {
+                    slots.push((before, row));
+                }
+            }
+        } else {
+            let entries = render::workspace_entries(snapshot, collapsed_groups);
+            let last_position = entries.iter().position(|entry| {
                 snapshot
                     .workspaces
                     .get(entry.index)
-                    .map(|workspace| workspace.workspace_id.clone())
-            });
-            let row = last_hit.rect.bottom();
-            if row < self.hits.new_workspace.y {
-                slots.push((before, row));
+                    .is_some_and(|workspace| workspace.workspace_id == last_hit.workspace_id)
+            })?;
+            let next = entries.get(last_position + 1);
+            if !next.is_some_and(|entry| entry.indented) {
+                let before = next.and_then(|entry| {
+                    snapshot
+                        .workspaces
+                        .get(entry.index)
+                        .map(|workspace| workspace.workspace_id.clone())
+                });
+                let row = last_hit.rect.bottom();
+                if row < self.hits.new_workspace.y {
+                    slots.push((before, row));
+                }
             }
         }
         slots
@@ -522,7 +554,7 @@ impl ClientShellState {
     /// join that group instead of reordering. Returns `None` outside
     /// `ViewMode::Folders`, or when the pointer is over neither.
     fn folders_join_target_at(&self, point: (u16, u16)) -> Option<String> {
-        if self.config.view_mode != crate::config::ViewMode::Folders {
+        if self.view_mode != crate::config::ViewMode::Folders {
             return None;
         }
         if let Some((_, collapse_key)) = self

@@ -9,6 +9,37 @@ fn folders_config() -> ClientShellConfig {
 fn folders_snapshot() -> ClientShellSnapshot {
     let mut projected = snapshot();
     projected.workspaces[0].visual_group = Some("alpha".into());
+    // A second pane on ws_1 with a Working agent, so the Folders dots row
+    // for ws_1 carries two DIFFERENT glyphs/colors: this is what the
+    // "pane_dots" half of the test below actually exercises. The first
+    // pane ("pane_1", from `snapshot()`) has no agent entry, so it stays
+    // `AgentStatus::Unknown`.
+    projected.panes.push(ClientShellPane {
+        pane_id: "pane_1b".into(),
+        workspace_id: "ws_1".into(),
+        tab_id: "tab_1".into(),
+        label: None,
+        cwd: Some("/repo".into()),
+        foreground_cwd: Some("/repo".into()),
+        focused: false,
+        right_click_passthrough: false,
+    });
+    projected.agents.push(ClientShellAgent {
+        pane_id: "pane_1b".into(),
+        workspace_id: "ws_1".into(),
+        tab_id: "tab_1".into(),
+        name: None,
+        display_agent: None,
+        agent: None,
+        title: None,
+        terminal_title: None,
+        terminal_title_stripped: None,
+        agent_status: AgentStatus::Working,
+        state_change_seq: 0,
+        state_labels: Vec::new(),
+        tokens: Vec::new(),
+        focused: false,
+    });
     let mut second = projected.workspaces[0].clone();
     second.workspace_id = "ws_2".into();
     second.number = 2;
@@ -31,7 +62,7 @@ fn folders_view_renders_group_header_and_pane_dots_row() {
     let mut state = ClientShellState::new(folders_config());
     state.set_snapshot(Box::new(folders_snapshot()));
     state.set_pane_surface(surface());
-    state.compose(106, 24).expect("folders layout");
+    let frame = state.compose(106, 24).expect("folders layout");
 
     assert_eq!(state.hits.folders_group_headers.len(), 1);
     assert_eq!(state.hits.folders_group_headers[0].1, "vg:alpha");
@@ -47,6 +78,46 @@ fn folders_view_renders_group_header_and_pane_dots_row() {
     assert!(ids.contains(&"ws_1".to_string()));
     assert!(ids.contains(&"ws_2".to_string()));
     assert!(ids.contains(&"ws_3".to_string()));
+
+    // ws_1 has two panes with different agent statuses (pane_1: no agent
+    // -> Unknown "·"; pane_1b: Working -> the shared spinner glyph). Both
+    // dots must actually render, right-aligned on ws_1's own row, in
+    // `snapshot.panes` order -- proving the row really reads per-PANE
+    // state off `snapshot.agents`, not a single workspace-level status.
+    let ws1_rect = state
+        .hits
+        .workspaces
+        .iter()
+        .find(|hit| hit.workspace_id == "ws_1")
+        .expect("ws_1 row")
+        .rect;
+    let palette = &state.config.palette;
+    let unknown_style = (
+        crate::client::shell::status_icon(AgentStatus::Unknown, state.config.status_indicators),
+        crate::protocol::color_to_u32(crate::client::shell::status_color(
+            AgentStatus::Unknown,
+            palette,
+        )),
+    );
+    let working_style = (
+        crate::client::shell::status_icon(AgentStatus::Working, state.config.status_indicators),
+        crate::protocol::color_to_u32(crate::client::shell::status_color(
+            AgentStatus::Working,
+            palette,
+        )),
+    );
+    // Two dots, one separating space: columns right.saturating_sub(3) and
+    // right.saturating_sub(1).
+    let first_dot_x = ws1_rect.right().saturating_sub(3);
+    let second_dot_x = ws1_rect.right().saturating_sub(1);
+    let first_cell =
+        &frame.cells[ws1_rect.y as usize * frame.width as usize + first_dot_x as usize];
+    let second_cell =
+        &frame.cells[ws1_rect.y as usize * frame.width as usize + second_dot_x as usize];
+    assert_eq!(first_cell.symbol, unknown_style.0);
+    assert_eq!(first_cell.fg, unknown_style.1);
+    assert_eq!(second_cell.symbol, working_style.0);
+    assert_eq!(second_cell.fg, working_style.1);
 }
 
 #[test]
@@ -185,7 +256,10 @@ fn folders_mode_drag_outside_header_still_reorders() {
 #[test]
 fn cycle_view_mode_action_cycles_flat_folders_repo_flat() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(folders_snapshot()));
+    state.set_pane_surface(surface());
     assert_eq!(state.view_mode, crate::config::ViewMode::Repo);
+
     let mut outcome = ClientShellInput::default();
     state.record_binding(
         crate::input::KeybindMatch::Action(crate::input::KeybindAction::CycleViewMode),
@@ -201,6 +275,12 @@ fn cycle_view_mode_action_cycles_flat_folders_repo_flat() {
         &mut outcome,
     );
     assert_eq!(state.view_mode, crate::config::ViewMode::Folders);
+    // Regression lock: cycling must actually change what `compose()`
+    // renders, not just the `view_mode` field. This is only true if the
+    // renderer reads the live `state.view_mode` and not
+    // `config.view_mode` (which never moves once cycled).
+    state.compose(106, 24).expect("folders render after cycle");
+    assert_eq!(state.hits.folders_group_headers.len(), 1);
 
     let mut outcome = ClientShellInput::default();
     state.record_binding(
@@ -256,8 +336,23 @@ fn repo_view_mode_matches_default_rendering() {
         .expect("explicit repo frame");
 
     assert_eq!(default_frame, explicit_frame);
+    // Independent signal beyond the two-frame equality above (which alone
+    // would also pass if both dispatches were equally broken): assert the
+    // Repo-specific content directly. `indented: true` is a hit shape
+    // ONLY `workspace_entries`' worktree auto-grouping ever produces --
+    // `render_folders_workspace_list` always pushes `indented: false` and
+    // never touches `hits.folders_group_headers` is Folders-only, so its
+    // absence here proves this render never took the Folders branch.
     assert_eq!(
         default_state.hits.workspaces.len(),
         explicit_state.hits.workspaces.len()
     );
+    assert!(default_state.hits.workspaces.iter().any(|hit| hit.indented));
+    assert!(explicit_state
+        .hits
+        .workspaces
+        .iter()
+        .any(|hit| hit.indented));
+    assert!(default_state.hits.folders_group_headers.is_empty());
+    assert!(explicit_state.hits.folders_group_headers.is_empty());
 }
