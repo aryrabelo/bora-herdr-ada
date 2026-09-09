@@ -209,6 +209,32 @@ pub(crate) fn render_sidebar(
             .fg(palette.overlay0)
             .add_modifier(Modifier::BOLD),
     );
+    // Aggregate attention badge (ceo-bora#302): right-aligned on the same
+    // header row as " spaces" so `WORKSPACE_HEADER_ROWS` -- and therefore
+    // `body`/`hits.workspace_body` below -- keeps its layout untouched.
+    let (waiting, blocked) = attention::attention_counts(snapshot, config.idle_attention_seconds);
+    if waiting > 0 {
+        let badge = format!("{waiting} waiting");
+        let badge_width = display_width(&badge);
+        // " spaces" is 7 columns; keep at least one blank column between it
+        // and the badge, otherwise the header is too narrow to say both.
+        if workspace_area.width >= badge_width.saturating_add(8) {
+            put_text(
+                buffer,
+                workspace_area.right().saturating_sub(badge_width),
+                workspace_area.y,
+                badge_width,
+                &badge,
+                Style::default()
+                    .fg(if blocked > 0 {
+                        palette.red
+                    } else {
+                        palette.yellow
+                    })
+                    .add_modifier(Modifier::BOLD),
+            );
+        }
+    }
 
     let body = Rect::new(
         workspace_area.x,
@@ -830,98 +856,63 @@ fn folders_row_gap(entries: &[FoldersRow], index: usize, row_gap: u16) -> u16 {
     }
 }
 
-/// One status per pane in `workspace_id`, ordered as `snapshot.panes`
-/// lists them. No new server field: this reuses the same
-/// `agent_status`/`status_icon`/`status_color` mapping the collapsed
-/// sidebar and agent panel already read off `snapshot.agents`. A pane with
-/// no matching agent (a plain shell) renders `AgentStatus::Unknown`.
+/// One `(status, idle_seconds)` pair per pane in `workspace_id`, ordered as
+/// `snapshot.panes` lists them. The status reuses the same `agent_status`
+/// mapping the collapsed sidebar and agent panel already read off
+/// `snapshot.agents` -- a pane with no matching agent (a plain shell) is
+/// `AgentStatus::Unknown` -- and `idle_seconds` comes straight off the pane
+/// the server already ships. Thresholding those seconds into a color is a
+/// paint-time decision, made by `attention::pane_attention_color`
+/// (ceo-bora#302), never here.
 fn workspace_pane_dot_states(
     snapshot: &ClientShellSnapshot,
     workspace_id: &str,
-) -> Vec<crate::api::schema::AgentStatus> {
+) -> Vec<(crate::api::schema::AgentStatus, Option<u64>)> {
     snapshot
         .panes
         .iter()
         .filter(|pane| pane.workspace_id == workspace_id)
         .map(|pane| {
-            snapshot
+            let status = snapshot
                 .agents
                 .iter()
                 .find(|agent| agent.pane_id == pane.pane_id)
                 .map(|agent| agent.agent_status)
-                .unwrap_or(crate::api::schema::AgentStatus::Unknown)
+                .unwrap_or(crate::api::schema::AgentStatus::Unknown);
+            (status, pane.idle_seconds)
         })
         .collect()
 }
 
+/// Columns reserved on row 0 of a Folders workspace entry for its pane dots:
+/// `dots * 2 - 1` cells (`○ ○`) plus one separating column before the text,
+/// or 0 when there are no dots at all (no panes, or `ui.hide_pane_badges`).
+/// Derived from the dot data itself, so the text rect and the dot strip can
+/// never disagree about where the boundary sits.
+fn folders_dots_reserved_width(dots: usize) -> u16 {
+    if dots == 0 {
+        return 0;
+    }
+    ((dots * 2 - 1).min(u16::MAX as usize) as u16).saturating_add(1)
+}
+
 /// Owner's ruling (2026-08-31): name and dots share ONE row, `name ○ ○`,
-/// dots right-aligned. Name styling mirrors `render_workspace_rows`'
-/// `workspace_style` so a Folders row reads like any other sidebar row.
-fn render_folders_workspace_row(
+/// dots right-aligned -- which, now that a Folders entry renders its full
+/// `[ui.sidebar.spaces].rows` template, means row 0 of that entry. The glyph
+/// stays `status_icon`; only the color ramps with pane attention
+/// (ceo-bora#302), so a pane silent past `ui.idle_attention_seconds` turns
+/// yellow and a blocked one red.
+fn render_folders_pane_dots(
     buffer: &mut Buffer,
     rect: Rect,
-    workspace: &ClientShellWorkspace,
-    dots: &[crate::api::schema::AgentStatus],
+    dots: &[(crate::api::schema::AgentStatus, Option<u64>)],
     indicators: crate::config::StatusIndicatorStyle,
-    selected: bool,
-    dragged: bool,
+    idle_attention_seconds: u64,
     palette: &Palette,
 ) {
-    let background = if selected {
-        Some(palette.selection_bg)
-    } else if dragged {
-        Some(palette.surface1)
-    } else if workspace.focused {
-        Some(palette.active_row_bg)
-    } else {
-        None
-    };
-    if let Some(background) = background {
-        for y in rect.y..rect.bottom() {
-            for x in rect.x..rect.right() {
-                buffer[(x, y)].set_bg(background);
-            }
-        }
-    }
-    let dot_glyphs = dots
-        .iter()
-        .map(|status| {
-            (
-                status_icon(*status, indicators),
-                status_color(*status, palette),
-            )
-        })
-        .collect::<Vec<_>>();
-    let dots_width = if dot_glyphs.is_empty() {
-        0
-    } else {
-        (dot_glyphs.len() * 2 - 1) as u16
-    };
-    let reserved = dots_width.saturating_add(u16::from(!dot_glyphs.is_empty()));
-    let name_x = rect.x.saturating_add(1);
-    let name_width = rect.right().saturating_sub(reserved).saturating_sub(name_x);
-    let highlighted = workspace.focused || dragged;
-    let name_style = Style::default()
-        .fg(if highlighted {
-            palette.text
-        } else {
-            palette.subtext0
-        })
-        .add_modifier(if highlighted {
-            Modifier::BOLD
-        } else {
-            Modifier::empty()
-        });
-    put_text(
-        buffer,
-        name_x,
-        rect.y,
-        name_width,
-        &workspace.label,
-        name_style,
-    );
+    let dots_width = folders_dots_reserved_width(dots.len()).saturating_sub(1);
     let mut dot_x = rect.right().saturating_sub(dots_width);
-    for (index, (glyph, color)) in dot_glyphs.iter().enumerate() {
+    for (index, (status, idle_seconds)) in dots.iter().enumerate() {
         if index > 0 {
             dot_x = dot_x.saturating_add(1);
         }
@@ -930,8 +921,15 @@ fn render_folders_workspace_row(
             dot_x,
             rect.y,
             rect.right(),
-            glyph,
-            Style::default().fg(*color).add_modifier(Modifier::BOLD),
+            status_icon(*status, indicators),
+            Style::default()
+                .fg(attention::pane_attention_color(
+                    *status,
+                    *idle_seconds,
+                    idle_attention_seconds,
+                    palette,
+                ))
+                .add_modifier(Modifier::BOLD),
         );
     }
 }
@@ -952,7 +950,33 @@ pub(in crate::client::shell) fn render_folders_workspace_list(
 ) {
     let palette = &config.palette;
     let entries = folders_entries(snapshot, state.collapsed_groups);
-    let row_heights = vec![1u16; entries.len()];
+    // Row heights computed ONCE and reused by both the scroll-metrics pass
+    // below and the render loop (lockstep: a second computation is a second
+    // chance to disagree). A workspace row is as tall as its resolved
+    // `[ui.sidebar.spaces].rows` template -- the same template Flat/Repo
+    // render, ceo-bora#302 -- and a group header is always one row. Pane
+    // dots share row 0, so they cost width, never height.
+    let row_heights = entries
+        .iter()
+        .map(|entry| match entry {
+            FoldersRow::GroupHeader { .. } => 1,
+            FoldersRow::Workspace { index, .. } => snapshot
+                .workspaces
+                .get(*index)
+                .map(|workspace| {
+                    workspace_rows(
+                        workspace,
+                        displayed_workspace_status(snapshot, workspace, state.collapsed_groups),
+                        false,
+                        &config.spaces,
+                    )
+                    .len()
+                    .max(1)
+                    .min(u16::MAX as usize) as u16
+                })
+                .unwrap_or(1),
+        })
+        .collect::<Vec<_>>();
     let gaps = (0..entries.len())
         .map(|index| folders_row_gap(&entries, index, config.spaces.row_gap))
         .collect::<Vec<_>>();
@@ -993,9 +1017,14 @@ pub(in crate::client::shell) fn render_folders_workspace_list(
         if y >= body.bottom() {
             break;
         }
-        let rect = Rect::new(body.x, y, content_width, 1);
+        let row_height = row_heights
+            .get(position)
+            .copied()
+            .unwrap_or(1)
+            .min(body.height);
         match entry {
             FoldersRow::GroupHeader { name, collapse_key } => {
+                let rect = Rect::new(body.x, y, content_width, 1);
                 let collapsed = state.collapsed_groups.contains(collapse_key);
                 let chevron = if collapsed { "▸" } else { "▾" };
                 let x = put_segment(
@@ -1024,19 +1053,64 @@ pub(in crate::client::shell) fn render_folders_workspace_list(
                 let Some(workspace) = snapshot.workspaces.get(*index) else {
                     continue;
                 };
-                let dots = workspace_pane_dot_states(snapshot, &workspace.workspace_id);
+                if y.saturating_add(row_height) > body.bottom() {
+                    break;
+                }
+                let rect = Rect::new(body.x, y, content_width, row_height);
+                // `hide_pane_badges` suppresses the dots outright: no dot
+                // states are computed and the whole row width goes to text.
+                let dots = if config.hide_pane_badges {
+                    Vec::new()
+                } else {
+                    workspace_pane_dot_states(snapshot, &workspace.workspace_id)
+                };
+                let reserved = folders_dots_reserved_width(dots.len());
                 let selected = state.selected_workspace_id == Some(workspace.workspace_id.as_str());
                 let dragged = state.dragged_workspace_id == Some(workspace.workspace_id.as_str());
-                render_folders_workspace_row(
+                // Highlight spans every row of the entry, dot strip
+                // included -- same shape as the Flat/Repo loop above.
+                if selected {
+                    buffer.set_style(rect, Style::default().bg(palette.selection_bg));
+                } else if dragged {
+                    buffer.set_style(rect, Style::default().bg(palette.surface1));
+                } else if workspace.focused {
+                    buffer.set_style(rect, Style::default().bg(palette.active_row_bg));
+                }
+                let status =
+                    displayed_workspace_status(snapshot, workspace, state.collapsed_groups);
+                let rows = workspace_rows(workspace, status, false, &config.spaces);
+                render_workspace_rows(
                     buffer,
-                    rect,
+                    Rect::new(
+                        rect.x,
+                        rect.y,
+                        rect.width.saturating_sub(reserved),
+                        row_height,
+                    ),
                     workspace,
-                    &dots,
+                    status,
                     config.status_indicators,
+                    &WorkspaceEntry {
+                        index: *index,
+                        indented: false,
+                        last_child: false,
+                    },
+                    rows,
+                    true,
                     selected,
                     dragged,
                     palette,
                 );
+                if !dots.is_empty() {
+                    render_folders_pane_dots(
+                        buffer,
+                        rect,
+                        &dots,
+                        config.status_indicators,
+                        config.idle_attention_seconds,
+                        palette,
+                    );
+                }
                 hits.workspaces.push(WorkspaceHit {
                     rect,
                     endpoint_id: ClientEndpointId::Local,
@@ -1047,7 +1121,7 @@ pub(in crate::client::shell) fn render_folders_workspace_list(
             }
         }
         let gap = gaps.get(position).copied().unwrap_or(0);
-        y = y.saturating_add(1 + gap);
+        y = y.saturating_add(row_height + gap);
     }
     if show_scrollbar {
         let track = Rect::new(body.right().saturating_sub(1), body.y, 1, body.height);

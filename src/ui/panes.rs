@@ -962,6 +962,46 @@ mod tests {
     }
 
     #[test]
+    fn pane_border_renderer_shows_public_pane_id_only_when_enabled() {
+        // ceo-bora#302: `ui.show_pane_ids_on_pane_borders` is what makes two
+        // panes running the same agent distinguishable, so prove the id
+        // actually reaches the rendered border row -- not just the label
+        // helper -- and that it stays off by default.
+        fn border_row(app: &AppState, ws: &Workspace) -> String {
+            let mut terminal =
+                ratatui::Terminal::new(ratatui::backend::TestBackend::new(30, 3)).unwrap();
+            terminal
+                .draw(|frame| render_view_pane_borders(app, ws, &[], frame))
+                .unwrap();
+            let buffer = terminal.backend().buffer();
+            (0..30).map(|x| buffer[(x, 0)].symbol()).collect::<String>()
+        }
+
+        let mut app = AppState::test_new();
+        app.view.terminal_area = Rect::new(0, 0, 30, 3);
+        let ws = Workspace::test_new("test");
+        let pane_id = ws.tabs[0].root_pane;
+        app.view.pane_infos = vec![PaneInfo {
+            id: pane_id,
+            rect: Rect::new(0, 0, 30, 3),
+            inner_rect: Rect::default(),
+            scrollbar_rect: None,
+            borders: Borders::ALL,
+            is_focused: false,
+        }];
+        let public_id = ws
+            .public_pane_number(pane_id)
+            .map(|number| crate::workspace::public_pane_id_for_number(&ws.id, number))
+            .expect("root pane has a public number");
+
+        app.show_pane_ids_on_pane_borders = false;
+        assert!(!border_row(&app, &ws).contains(&public_id));
+
+        app.show_pane_ids_on_pane_borders = true;
+        assert!(border_row(&app, &ws).contains(&public_id));
+    }
+
+    #[test]
     fn default_horizontal_split_uses_one_shared_divider_column() {
         let mut workspace = Workspace::test_new("test");
         let root = workspace.tabs[0].root_pane;

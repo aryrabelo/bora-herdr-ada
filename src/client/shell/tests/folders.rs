@@ -6,6 +6,56 @@ fn folders_config() -> ClientShellConfig {
     ClientShellConfig::from_config(&config)
 }
 
+/// Folders mode driven by an explicit `[ui.sidebar.spaces]` template, parsed
+/// from the same TOML a user would write (ceo-bora#302's example config), so
+/// the test exercises the real deserialization path and not a hand-built
+/// token vec.
+fn folders_config_from_toml(extra: &str) -> ClientShellConfig {
+    let config = toml::from_str::<Config>(&format!(
+        r#"
+[ui]
+view_mode = "folders"
+{extra}
+
+[ui.sidebar.spaces]
+rows = [["state_icon", "workspace", "$frota"], ["branch", "git_status"]]
+"#
+    ))
+    .expect("folders row-template config");
+    ClientShellConfig::from_config(&config)
+}
+
+/// The text a workspace row occupies on one of its rows, clipped to the row's
+/// own hit rect so assertions read what a user sees in that row.
+fn row_slice(frame: &crate::protocol::FrameData, rect: Rect, row: u16) -> String {
+    let y = rect.y.saturating_add(row);
+    let start = y as usize * frame.width as usize + rect.x as usize;
+    frame.cells[start..start + rect.width as usize]
+        .iter()
+        .map(|cell| cell.symbol.as_str())
+        .collect()
+}
+
+fn workspace_rect(state: &ClientShellState, workspace_id: &str) -> Rect {
+    state
+        .hits
+        .workspaces
+        .iter()
+        .find(|hit| hit.workspace_id == workspace_id)
+        .expect("workspace row")
+        .rect
+}
+
+/// How many leading characters of `label` actually made it onto the rendered
+/// row. Read off the buffer only, so a wider text rect is observable without
+/// re-deriving the layout math the renderer used.
+fn rendered_label_len(row: &str, label: &str) -> usize {
+    (0..=label.chars().count())
+        .rev()
+        .find(|count| row.contains(&label.chars().take(*count).collect::<String>()))
+        .unwrap_or_default()
+}
+
 fn folders_snapshot() -> ClientShellSnapshot {
     let mut projected = snapshot();
     projected.workspaces[0].visual_group = Some("alpha".into());
@@ -452,4 +502,144 @@ fn repo_view_mode_matches_default_rendering() {
         .any(|hit| hit.indented));
     assert!(default_state.hits.folders_group_headers.is_empty());
     assert!(explicit_state.hits.folders_group_headers.is_empty());
+}
+
+/// A Folders workspace renders its full `[ui.sidebar.spaces].rows` template,
+/// not just its label (ceo-bora#302): two configured rows must produce two
+/// rendered lines, custom `$frota` token included.
+#[test]
+fn folders_row_renders_every_configured_template_row() {
+    let mut state = ClientShellState::new(folders_config_from_toml(""));
+    let mut projected = folders_snapshot();
+    projected.workspaces[0].label = "ws-one".into();
+    projected.workspaces[0].branch = Some("feat/attn".into());
+    projected.workspaces[0].git_ahead_behind = Some((2, 1));
+    projected.workspaces[0].tokens = vec![("frota".into(), "pp".into())];
+    state.set_snapshot(Box::new(projected));
+    state.set_pane_surface(surface());
+    let frame = state.compose(106, 24).expect("folders layout");
+
+    let rect = workspace_rect(&state, "ws_1");
+    assert_eq!(rect.height, 2, "two configured rows must reserve two lines");
+    let first = row_slice(&frame, rect, 0);
+    let second = row_slice(&frame, rect, 1);
+    assert!(
+        first.contains("ws-one"),
+        "row 0 should carry the workspace token: {first:?}"
+    );
+    assert!(
+        first.contains("pp"),
+        "row 0 should carry the custom $frota token: {first:?}"
+    );
+    assert!(
+        second.contains("feat/attn"),
+        "row 1 should carry the branch token: {second:?}"
+    );
+    assert!(
+        second.contains("↑2") && second.contains("↓1"),
+        "row 1 should carry the git_status token: {second:?}"
+    );
+}
+
+/// Dots stay on row 0 of a multi-row Folders entry, and their color ramps
+/// with pane attention: a pane silent past `ui.idle_attention_seconds` goes
+/// yellow, a `Blocked` one goes red (ceo-bora#302).
+#[test]
+fn folders_pane_dots_ramp_with_attention_on_row_zero() {
+    let mut state =
+        ClientShellState::new(folders_config_from_toml("idle_attention_seconds = 300\n"));
+    let mut projected = folders_snapshot();
+    projected.workspaces[0].tokens = vec![("frota".into(), "pp".into())];
+    // pane_1 has no agent (Unknown) but has been silent for 900s -> waiting
+    // -> yellow. pane_1b is Blocked with no idle time at all -> red.
+    projected.panes[0].idle_seconds = Some(900);
+    let blocked = projected
+        .agents
+        .iter_mut()
+        .find(|agent| agent.pane_id == "pane_1b")
+        .expect("second pane agent");
+    blocked.agent_status = AgentStatus::Blocked;
+    state.set_snapshot(Box::new(projected));
+    state.set_pane_surface(surface());
+    let frame = state.compose(106, 24).expect("folders layout");
+
+    let rect = workspace_rect(&state, "ws_1");
+    assert_eq!(rect.height, 2, "the template still drives the row height");
+    let palette = &state.config.palette;
+    let first_dot = &frame.cells
+        [rect.y as usize * frame.width as usize + rect.right().saturating_sub(3) as usize];
+    let second_dot = &frame.cells
+        [rect.y as usize * frame.width as usize + rect.right().saturating_sub(1) as usize];
+    assert_eq!(
+        first_dot.symbol,
+        crate::client::shell::status_icon(AgentStatus::Unknown, state.config.status_indicators)
+    );
+    assert_eq!(
+        first_dot.fg,
+        crate::protocol::color_to_u32(palette.yellow),
+        "an idle-past-threshold pane dot is yellow"
+    );
+    assert_eq!(
+        second_dot.symbol,
+        crate::client::shell::status_icon(AgentStatus::Blocked, state.config.status_indicators)
+    );
+    assert_eq!(
+        second_dot.fg,
+        crate::protocol::color_to_u32(palette.red),
+        "a blocked pane dot is red"
+    );
+    // Row 1 keeps the whole width: the dots never repeat below row 0.
+    let second_row = row_slice(&frame, rect, 1);
+    assert!(
+        !second_row.contains(crate::client::shell::status_icon(
+            AgentStatus::Blocked,
+            state.config.status_indicators
+        )),
+        "dots belong to row 0 only: {second_row:?}"
+    );
+}
+
+/// `ui.hide_pane_badges` suppresses the dot strip outright, handing the
+/// reserved columns back to the row text (ceo-bora#302).
+#[test]
+fn folders_hide_pane_badges_drops_the_dot_strip() {
+    let long_label = "workspace-with-a-really-long-name-that-needs-every-column";
+    let mut shown_state = ClientShellState::new(folders_config_from_toml(""));
+    let mut projected = folders_snapshot();
+    projected.workspaces[0].label = long_label.into();
+    projected.workspaces[0].tokens = vec![("frota".into(), "pp".into())];
+    shown_state.set_snapshot(Box::new(projected.clone()));
+    shown_state.set_pane_surface(surface());
+    let shown_frame = shown_state.compose(106, 24).expect("folders layout");
+
+    let mut hidden_state =
+        ClientShellState::new(folders_config_from_toml("hide_pane_badges = true\n"));
+    hidden_state.set_snapshot(Box::new(projected));
+    hidden_state.set_pane_surface(surface());
+    let hidden_frame = hidden_state.compose(106, 24).expect("folders layout");
+
+    let shown_rect = workspace_rect(&shown_state, "ws_1");
+    let hidden_rect = workspace_rect(&hidden_state, "ws_1");
+    let shown_row = row_slice(&shown_frame, shown_rect, 0);
+    let hidden_row = row_slice(&hidden_frame, hidden_rect, 0);
+    let unknown_dot = crate::client::shell::status_icon(
+        AgentStatus::Unknown,
+        hidden_state.config.status_indicators,
+    );
+    let working_dot = crate::client::shell::status_icon(
+        AgentStatus::Working,
+        hidden_state.config.status_indicators,
+    );
+    assert!(
+        shown_row.ends_with(&format!("{unknown_dot} {working_dot}")),
+        "with badges on, the row ends in the dot strip: {shown_row:?}"
+    );
+    assert!(
+        !hidden_row.contains(&format!("{unknown_dot} {working_dot}")),
+        "with badges hidden, no dot strip is painted at all: {hidden_row:?}"
+    );
+    assert!(
+        rendered_label_len(&hidden_row, long_label) > rendered_label_len(&shown_row, long_label),
+        "hiding the badges hands the reserved columns back to the text: {hidden_row:?} vs {shown_row:?}"
+    );
 }

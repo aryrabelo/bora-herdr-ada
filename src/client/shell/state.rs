@@ -92,9 +92,6 @@ pub(crate) struct ClientShellConfig {
     /// ceo-bora#302): `0` disables. Presentation-side comparison against the
     /// server-side `ClientShellPane.idle_seconds` fact.
     pub(super) idle_attention_seconds: u64,
-    /// Lead each split pane border with its public pane id
-    /// (`ui.show_pane_ids_on_pane_borders`, ceo-bora#302).
-    pub(super) show_pane_ids_on_pane_borders: bool,
     pub(super) status_indicators: crate::config::StatusIndicatorStyle,
     pub(super) sound_enabled: bool,
     pub(super) toast_delivery: crate::config::ToastDelivery,

@@ -131,7 +131,6 @@ impl ClientShellConfig {
             agent_panel_sort: config.ui.agent_panel_sort,
             hide_pane_badges: config.ui.hide_pane_badges,
             idle_attention_seconds: config.ui.idle_attention_seconds,
-            show_pane_ids_on_pane_borders: config.ui.show_pane_ids_on_pane_borders,
             status_indicators: config.ui.status_indicators,
             sound_enabled: config.ui.sound.enabled,
             toast_delivery: config.ui.toast.delivery,
@@ -337,7 +336,6 @@ impl ClientShellConfig {
                 self.agent_panel_sort = ui.agent_panel_sort;
                 self.hide_pane_badges = ui.hide_pane_badges;
                 self.idle_attention_seconds = ui.idle_attention_seconds;
-                self.show_pane_ids_on_pane_borders = ui.show_pane_ids_on_pane_borders;
                 self.status_indicators = ui.status_indicators;
                 self.sound_enabled = ui.sound.enabled;
                 self.toast_delivery = ui.toast.delivery;
