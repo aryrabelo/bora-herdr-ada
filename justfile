@@ -111,15 +111,19 @@ upstream-drift:
 build:
     cargo build --release --locked
 
-# Build release and point ~/.local/bin/bora at it. Prints the version it just
+# Build release and COPY it to ~/.local/bin/bora. Prints the version it just
 # installed, because the failure mode this recipe exists to prevent is a stale
-# binary hiding behind a symlink that looks fine. Run `just bootstrap` once per
-# machine afterwards for the fork's default plugins and keybind.
+# binary hiding behind a path that looks fine. A copy, not a symlink: this
+# machine pins one shared cargo target dir, so a symlink into it is rewritten
+# by any `cargo build --release` from any worktree (an agent's WIP build broke
+# every CLI call with protocol_mismatch that way). Run `just bootstrap` once
+# per machine afterwards for the fork's default plugins and keybind.
 [unix]
 install:
     cargo build --release --locked
     mkdir -p ~/.local/bin
-    ln -sfn "$(cargo metadata --format-version 1 --no-deps | sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p')/release/bora" ~/.local/bin/bora
+    rm -f ~/.local/bin/bora
+    install -m 755 "$(cargo metadata --format-version 1 --no-deps | sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p')/release/bora" ~/.local/bin/bora
     @echo "installed: $(~/.local/bin/bora --version)"
 
 # Non-gating full-render scaling profile for background workspaces and active panes
