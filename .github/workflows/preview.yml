@@ -445,7 +445,7 @@ jobs:
             git pull --rebase "$remote" main
             node scripts/docs/preview.mjs check
             node scripts/docs/versions.mjs check
-            (cd website && bun run build)
+            (cd website && bun install --frozen-lockfile && bun run build)
             if git push "$remote" HEAD:main; then
               exit 0
             fi
