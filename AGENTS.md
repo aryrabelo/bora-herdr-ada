@@ -335,19 +335,21 @@ just check              # formatting check + cargo nextest + maintenance script 
 Run `just check` before committing unless Can explicitly accepts narrower validation. Do not bypass failing checks; fix the failure or explain exactly why a narrower check is enough.
 
 **A fix is not in the operator's hands until `just install` runs, and a running
-`bora` keeps the old binary.** `~/.local/bin/bora` is a symlink to
-`target/release/bora`, so it always looks correctly installed no matter how old
-that file is — which means a stale binary is invisible from the outside and a
-report of "your change did nothing" can be true of the binary and false of the
-tree. `just install` builds release, refreshes the symlink, and prints the
-version it just installed for exactly that reason: the version string is the
-only cheap proof of what is actually on `PATH`. Because the symlink resolves to
-a file that Cargo replaces, an already-running `bora` holds the previous inode
-and keeps running the old code until it is restarted. When asking someone to
-verify a fix, ask for `bora --version` first. (learned 2026-08-25, binding: a
-repaint fix was reported as ineffective while the installed binary was ten
-minor versions behind the tree, and the same stale binary had earlier been
-suspected of *causing* a regression that shipped after it was built.)
+`bora` keeps the old binary.** `~/.local/bin/bora` is a plain file that
+`just install` overwrites with a copy of the release build (since 2026-09-09 —
+it was a symlink into the target dir before, see below), so it always looks
+correctly installed no matter how old it is — which means a stale binary is
+invisible from the outside and a report of "your change did nothing" can be
+true of the binary and false of the tree. `just install` builds release, copies
+it, and prints the version it just installed for exactly that reason: the
+version string is the only cheap proof of what is actually on `PATH`. Because
+`install(1)` replaces the file, an already-running `bora` holds the previous
+inode and keeps running the old code until it is restarted or handed off. When
+asking someone to verify a fix, ask for `bora --version` first. (learned
+2026-08-25, binding: a repaint fix was reported as ineffective while the
+installed binary was ten minor versions behind the tree, and the same stale
+binary had earlier been suspected of *causing* a regression that shipped after
+it was built.)
   **The same trap has a second mechanism: `[build] target-dir` in `~/.cargo/config.toml`.**
   This machine pins a single shared target dir (`/Users/aryrabelo/.cargo/target`, set in
   config.toml — NOT as an environment variable), so the install recipe's
@@ -357,28 +359,39 @@ suspected of *causing* a regression that shipped after it was built.)
   0.45.39, and the tree was provably merged. The recipe now resolves the real location
   through `cargo metadata`'s `target_directory`, which honors both the env var and
   config.toml. If `bora --version` ever disagrees with `Cargo.toml`, compare
-  `readlink ~/.local/bin/bora` against `cargo metadata --no-deps` before suspecting the
+  `cargo metadata --no-deps` against the file you installed before suspecting the
   build. (learned 2026-09-09, binding.)
+  **And a third, which is why the install is a COPY and not a symlink: the shared
+  target dir means every worktree writes the SAME `release/bora`.** With the symlink
+  form, an agent running `cargo build --release` in `worktrees/<x>/` — told, correctly,
+  never to `just install` from there — replaced the installed 0.46.1 (wire protocol 24)
+  with its WIP 0.46.2 (protocol 25) in place, and every CLI call on the machine failed
+  with `protocol_mismatch` for 40 minutes while the server itself was perfectly healthy;
+  `bora agent prompt` was among the casualties, so the orchestrator could not even tell
+  the agent to stop. A copy decouples `PATH` from whatever built last. The rule for
+  agents in worktrees follows: any release build there uses `--target-dir target`
+  (inside the worktree), never the machine default, and proof-of-work binaries are
+  invoked by path. (learned 2026-09-09, binding.)
 
 **After landing a change, you can put the running server on the new build
 yourself: `just install && bora server live-handoff`.** `live-handoff` hands
 the running headless server over to the freshly installed binary without
 killing panes or sessions, so the stale-binary trap above does not have to
 wait on a human restart. Run `bora --version` after the handoff — the swap is
-only proven when the reported version matches the tree you just built.
-(learned 2026-09-01, binding, owner instruction.)
+only proven when the reported version matches the tree you just built. Note
+that a wire `PROTOCOL_VERSION` bump is the one thing the handoff does not
+cover: the already-attached TUI client keeps the old protocol and must be
+reopened. (learned 2026-09-01, binding, owner instruction.)
 
-**`just install` run from a linked worktree pins `PATH` to a directory built to
-be deleted, and harvesting that worktree makes `bora` vanish entirely.** The
-recipe symlinks `~/.local/bin/bora` to `$(pwd)/target/release/bora`, so
-installing from `bora.worktrees/<x>/` and later removing that worktree leaves a
-dangling symlink: `which bora` still prints a path, and the shell answers
-`command not found`. The running server is unaffected — its socket stays live
-and its panes keep working — so the symptom reads as "bora stopped working"
-while only the CLI is gone. Recovery is `just install` from the main checkout,
-which repoints the symlink; no server restart is needed. Prefer installing from
-the main checkout for that reason. (learned 2026-09-04, binding: harvesting the
-`agente/112` worktree after its merge broke the operator's `bora` command.)
+**Prefer `just install` from the main checkout, never from a linked worktree.**
+Before the copy-based recipe, installing from `bora.worktrees/<x>/` symlinked
+`PATH` to a directory built to be deleted, and harvesting that worktree left
+`which bora` printing a path the shell answered `command not found` for, while
+the server kept running — the symptom read as "bora stopped working" with only
+the CLI gone. The copy removes the dangling-link failure, but a worktree
+install still puts an unmerged tree on the operator's `PATH`, so the
+preference stands. (learned 2026-09-04, binding: harvesting the `agente/112`
+worktree after its merge broke the operator's `bora` command.)
 
 **`just check`/`just lint` only lint the host target you run them on and cannot compile target-gated Rust from a macOS box; only CI's `ubuntu-latest` leg lints that code.** Two separate gating shapes hide code from a macOS run, and the second one is easy to miss: whole-file `#![cfg(not(target_os = "macos"))]` test files — derive the list, never copy it from here: `grep -rlE '^#!\[cfg\(.*not\(target_os = "macos"\)' src tests` (measured 2026-09-03 as four files; after the 0.9.0 sync it is two, `tests/auto_detect.rs` and `tests/cli.rs`, gated as `all(unix, not(target_os = "macos"))` — which is why the recipe's grep is a regex on the inner `not(target_os = "macos")` and not a fixed string, the earlier `-F` form went silent on that spelling). An incomplete list here is worse than none, because a test inside an unlisted file reads as "passing on macOS" when it was never compiled: an assertion in `api_ping.rs` was written, committed, reported green by a macOS `just check`, and first EXECUTED in `check (ubuntu-latest)`, where it failed — its author never had a way to run it, and platform modules excluded by an **outer** `#[cfg(target_os = ...)]` on their `mod` declaration in `src/platform/mod.rs` (`src/platform/linux.rs`, `src/platform/windows.rs`) — including their `#[cfg(test)] mod tests`. A green `just check` on macOS is not proof any of it is clean; `lint` prints a reminder naming all four files, and that reminder is a to-verify list, not noise. (learned 2026-08-13, binding: clippy failures in Linux-only-gated test files reached CI invisibly from a macOS `just check` this way. Reasserted 2026-08-22, binding: it happened again, and worse — `9a2db191` left `std::sync::{Mutex, OnceLock}` unused in `src/platform/linux.rs`'s test module and CI stayed red across three commits, because the reminder only grepped for the whole-file inner attribute and never mentioned the platform modules at all. The `lint` recipe now lists them explicitly. Cross-compiling to verify locally DOES work, and the earlier claim here that it does not was wrong: `LIBGHOSTTY_VT_PREBUILT=prebuilt/libghostty-vt-aarch64-macos.a cargo check --target <triple> --all-targets` runs in ~15s and exits 0 on both `x86_64-unknown-linux-gnu` and `x86_64-pc-windows-msvc` from an aarch64 macOS host. The env var bypasses the vendored libghostty-vt build script (which is what needs zig 0.15.2 while mise resolves 0.16.0), and `cargo check` never links, so the macOS-only static archive is never a problem. `--all-targets` is the load-bearing half: it compiles the `#[cfg(test)] mod tests` inside the platform modules, which is precisely what a macOS `just check` cannot see. Do this before pushing any change that touches `src/platform/`; CI is a 3-minute confirmation, not the only verifier. (learned 2026-09-03, binding: a one-line missing trait import — `.is_char_device()` needs `std::os::unix::fs::FileTypeExt` — survived the author, a `just check` exit 0 on macOS, AND an adversarial reviewer who cross-checked the WINDOWS target and found a genuine defect there, then died in `check (ubuntu-latest)` after a 3-minute wait. Checking one non-host target proves nothing about the others: check every triple the release builds.))
 
