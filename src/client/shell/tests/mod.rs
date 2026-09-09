@@ -37,6 +37,7 @@ pub(super) fn snapshot() -> ClientShellSnapshot {
             git_ahead_behind: None,
             tokens: Vec::new(),
             worktree: None,
+            visual_group: None,
             focused: true,
             agent_status: AgentStatus::Idle,
         }],
@@ -215,6 +216,7 @@ mod chrome_context;
 mod copy;
 mod endpoint_requests;
 mod endpoints;
+mod folders;
 #[path = "input.rs"]
 mod input_domain;
 mod keybindings_settings;

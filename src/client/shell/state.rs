@@ -77,6 +77,11 @@ pub(crate) struct ClientShellConfig {
     pub(super) mobile_width_threshold: u16,
     pub(super) tab_bar_position: TabBarPositionConfig,
     pub(super) hide_tab_bar_when_single_tab: bool,
+    /// Config-file default for the sidebar workspace list layout
+    /// (Flat/Folders/Repo). The live, possibly cycled value lives on
+    /// `ClientShellState::view_mode`; this is only the fallback a reload
+    /// restores when the user has not cycled it this session.
+    pub(super) view_mode: crate::config::ViewMode,
     pub(super) spaces: SpacesSidebarConfig,
     pub(super) agents: crate::config::AgentsSidebarConfig,
     pub(super) agent_panel_sort: crate::config::AgentPanelSortConfig,
@@ -141,6 +146,9 @@ pub(super) enum ClientMobileTarget {
 pub(super) struct ShellHitMap {
     pub(super) machines: Vec<MachineHit>,
     pub(super) workspaces: Vec<WorkspaceHit>,
+    /// Folders view only: `(rect, collapse_key)` for each group-header row
+    /// — click toggles collapse, drop joins the group.
+    pub(super) folders_group_headers: Vec<(Rect, String)>,
     pub(super) workspace_body: Rect,
     pub(super) workspace_scrollbar: Rect,
     pub(super) workspace_scroll_metrics: Option<crate::pane::ScrollMetrics>,
@@ -266,6 +274,10 @@ pub(super) enum ClientChromeDrag {
     Workspace {
         source_workspace_id: String,
         target: Option<(Option<String>, u16)>,
+        /// Folders view only: pointer is over a group header or a grouped
+        /// member's row, so dropping joins this group instead of
+        /// reordering. Takes precedence over `target` at drop time.
+        join_group: Option<String>,
     },
     PaneSplit {
         hit: PaneSplitHit,
@@ -900,6 +912,8 @@ pub(crate) struct ClientShellState {
     pub(super) graphics_cell_size: crate::kitty_graphics::HostCellSize,
     pub(super) popup_terminal_id: Option<String>,
     pub(super) sidebar_collapsed: bool,
+    pub(super) view_mode: crate::config::ViewMode,
+    pub(super) view_mode_manual: bool,
     pub(super) sidebar_collapsed_manual: bool,
     pub(super) sidebar_width: u16,
     pub(super) sidebar_width_manual: bool,
@@ -1015,6 +1029,7 @@ impl ClientShellState {
         let sidebar_collapsed = preferences
             .sidebar_collapsed
             .unwrap_or(config.sidebar_start_collapsed);
+        let view_mode = preferences.view_mode.unwrap_or(config.view_mode);
         let (min_width, max_width) = crate::config::validated_sidebar_bounds(
             config.sidebar_min_width,
             config.sidebar_max_width,
@@ -1054,6 +1069,8 @@ impl ClientShellState {
             },
             popup_terminal_id: None,
             sidebar_collapsed,
+            view_mode,
+            view_mode_manual: preferences.view_mode.is_some(),
             sidebar_collapsed_manual: preferences.sidebar_collapsed.is_some(),
             sidebar_width,
             sidebar_width_manual: preferences.sidebar_width.is_some(),

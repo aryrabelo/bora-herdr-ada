@@ -18,6 +18,13 @@ impl ClientShellState {
                 outcome.resize = true;
                 self.persist_chrome_preferences(outcome);
             }
+            crate::input::KeybindMatch::Action(crate::input::KeybindAction::CycleViewMode) => {
+                self.view_mode = self.view_mode.cycle();
+                self.view_mode_manual = true;
+                self.reveal_focused_workspace = true;
+                outcome.repaint = true;
+                self.persist_chrome_preferences(outcome);
+            }
             crate::input::KeybindMatch::Action(action) => {
                 if matches!(
                     action,

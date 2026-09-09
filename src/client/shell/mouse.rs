@@ -472,42 +472,96 @@ impl ClientShellState {
         {
             return None;
         }
+        let snapshot = self.snapshot.as_deref()?;
+        // A linked-worktree workspace is never a valid `before` target:
+        // `workspace_move_method` only resolves `before_workspace_id`
+        // against non-linked-worktree `roots`, so a slot pointing at one
+        // silently no-ops on drop (P2, cubic PR #30 review). Folders rows
+        // never set `indented`, so the Repo-mode "skip indented" filter
+        // above cannot exclude them there the way it does for Repo.
         let mut slots = self
             .hits
             .workspaces
             .iter()
-            .filter(|hit| hit.endpoint_id == self.active_endpoint_id && !hit.indented)
+            .filter(|hit| {
+                hit.endpoint_id == self.active_endpoint_id
+                    && !hit.indented
+                    && !snapshot.workspaces.iter().any(|workspace| {
+                        workspace.workspace_id == hit.workspace_id
+                            && workspace
+                                .worktree
+                                .as_ref()
+                                .is_some_and(|worktree| worktree.is_linked_worktree)
+                    })
+            })
             .map(|hit| (Some(hit.workspace_id.clone()), hit.rect.y.saturating_sub(1)))
             .collect::<Vec<_>>();
-        let snapshot = self.snapshot.as_deref()?;
         let empty_collapsed_groups = HashSet::new();
         let collapsed_groups = self
             .collapsed_groups_for_endpoint(&self.active_endpoint_id)
             .unwrap_or(&empty_collapsed_groups);
-        let entries = render::workspace_entries(snapshot, collapsed_groups);
         let last_hit = self
             .hits
             .workspaces
             .iter()
             .rev()
             .find(|hit| hit.endpoint_id == self.active_endpoint_id)?;
-        let last_position = entries.iter().position(|entry| {
-            snapshot
-                .workspaces
-                .get(entry.index)
-                .is_some_and(|workspace| workspace.workspace_id == last_hit.workspace_id)
-        })?;
-        let next = entries.get(last_position + 1);
-        if !next.is_some_and(|entry| entry.indented) {
-            let before = next.and_then(|entry| {
+        if self.view_mode == crate::config::ViewMode::Folders {
+            let entries = render::sidebar::folders_entries(snapshot, collapsed_groups);
+            let last_position = entries.iter().position(|entry| {
+                matches!(entry, render::sidebar::FoldersRow::Workspace { index, .. }
+                    if snapshot.workspaces.get(*index).is_some_and(|workspace| workspace.workspace_id == last_hit.workspace_id))
+            })?;
+            let next = entries.get(last_position + 1);
+            let next_is_grouped_member = matches!(
+                next,
+                Some(render::sidebar::FoldersRow::Workspace { in_group: true, .. })
+            );
+            if !next_is_grouped_member {
+                // The next visible workspace row (skipping past a bare
+                // GroupHeader to its first member, if any) is the real
+                // insertion point; only an empty/collapsed group or the
+                // true end of the list falls back to appending at the end.
+                let before = entries[last_position + 1..]
+                    .iter()
+                    .find_map(|entry| match entry {
+                        render::sidebar::FoldersRow::Workspace { index, .. } => snapshot
+                            .workspaces
+                            .get(*index)
+                            .filter(|workspace| {
+                                !workspace
+                                    .worktree
+                                    .as_ref()
+                                    .is_some_and(|worktree| worktree.is_linked_worktree)
+                            })
+                            .map(|workspace| workspace.workspace_id.clone()),
+                        render::sidebar::FoldersRow::GroupHeader { .. } => None,
+                    });
+                let row = last_hit.rect.bottom();
+                if row < self.hits.new_workspace.y {
+                    slots.push((before, row));
+                }
+            }
+        } else {
+            let entries = render::workspace_entries(snapshot, collapsed_groups);
+            let last_position = entries.iter().position(|entry| {
                 snapshot
                     .workspaces
                     .get(entry.index)
-                    .map(|workspace| workspace.workspace_id.clone())
-            });
-            let row = last_hit.rect.bottom();
-            if row < self.hits.new_workspace.y {
-                slots.push((before, row));
+                    .is_some_and(|workspace| workspace.workspace_id == last_hit.workspace_id)
+            })?;
+            let next = entries.get(last_position + 1);
+            if !next.is_some_and(|entry| entry.indented) {
+                let before = next.and_then(|entry| {
+                    snapshot
+                        .workspaces
+                        .get(entry.index)
+                        .map(|workspace| workspace.workspace_id.clone())
+                });
+                let row = last_hit.rect.bottom();
+                if row < self.hits.new_workspace.y {
+                    slots.push((before, row));
+                }
             }
         }
         slots
@@ -515,6 +569,34 @@ impl ClientShellState {
             .enumerate()
             .min_by_key(|(index, (_, row))| (point.1.abs_diff(*row), *index))
             .map(|(_, target)| target)
+    }
+
+    /// Folders view only (ceo-bora#275): the pointer is over a group
+    /// header or a member of an existing group, so a drop here should
+    /// join that group instead of reordering. Returns `None` outside
+    /// `ViewMode::Folders`, or when the pointer is over neither.
+    fn folders_join_target_at(&self, point: (u16, u16)) -> Option<String> {
+        if self.view_mode != crate::config::ViewMode::Folders {
+            return None;
+        }
+        if let Some((_, collapse_key)) = self
+            .hits
+            .folders_group_headers
+            .iter()
+            .find(|(rect, _)| super::contains(*rect, point))
+        {
+            return collapse_key.strip_prefix("vg:").map(str::to_owned);
+        }
+        let hit = self.hits.workspaces.iter().find(|hit| {
+            hit.endpoint_id == self.active_endpoint_id && super::contains(hit.rect, point)
+        })?;
+        let snapshot = self.snapshot.as_deref()?;
+        snapshot
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.workspace_id == hit.workspace_id)?
+            .visual_group
+            .clone()
     }
 
     fn workspace_move_method(
@@ -1103,11 +1185,15 @@ impl ClientShellState {
                 }
                 Some(ClientChromeDrag::Workspace { .. }) => {
                     let target = self.workspace_drop_target_at(point);
+                    let join_group = self.folders_join_target_at(point);
                     if let Some(ClientChromeDrag::Workspace {
-                        target: current, ..
+                        target: current,
+                        join_group: current_join,
+                        ..
                     }) = self.chrome_drag.as_mut()
                     {
                         *current = target;
+                        *current_join = join_group;
                     }
                     outcome.repaint = true;
                     return;
@@ -1124,9 +1210,11 @@ impl ClientShellState {
                     let draggable = self.endpoint_workspace_is_draggable(press);
                     if draggable {
                         if let Some(target) = self.workspace_drop_target_at(point) {
+                            let join_group = self.folders_join_target_at(point);
                             self.chrome_drag = Some(ClientChromeDrag::Workspace {
                                 source_workspace_id,
                                 target: Some(target),
+                                join_group,
                             });
                             outcome.repaint = true;
                         }
@@ -1193,8 +1281,19 @@ impl ClientShellState {
                     ClientChromeDrag::Workspace {
                         source_workspace_id,
                         target,
+                        join_group,
                     } => {
-                        if let Some((before_workspace_id, _)) = target {
+                        if let Some(group) = join_group {
+                            self.push_endpoint_method(
+                                crate::api::schema::Method::WorkspaceSetGroup(
+                                    crate::api::schema::WorkspaceSetGroupParams {
+                                        workspace_id: source_workspace_id,
+                                        group: Some(group),
+                                    },
+                                ),
+                                outcome,
+                            );
+                        } else if let Some((before_workspace_id, _)) = target {
                             if let Some(method) = self.workspace_move_method(
                                 &source_workspace_id,
                                 before_workspace_id.as_deref(),
@@ -1973,6 +2072,18 @@ impl ClientShellState {
                     self.invalidate_pane_surface();
                     outcome.repaint = true;
                     outcome.resize = true;
+                    self.persist_chrome_preferences(outcome);
+                    return;
+                }
+                if let Some((_, collapse_key)) = self
+                    .hits
+                    .folders_group_headers
+                    .iter()
+                    .find(|(rect, _)| super::contains(*rect, point))
+                {
+                    let active_endpoint_id = self.active_endpoint_id.clone();
+                    self.toggle_collapsed_group(&active_endpoint_id, collapse_key.clone());
+                    outcome.repaint = true;
                     self.persist_chrome_preferences(outcome);
                     return;
                 }

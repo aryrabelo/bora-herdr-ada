@@ -52,6 +52,7 @@ impl ClientShellState {
                 reveal_focused_workspace: &mut self.reveal_focused_workspace,
                 reveal_focused_tab: &mut self.reveal_focused_tab,
                 sidebar_collapsed: false,
+                view_mode: self.view_mode,
                 sidebar_section_split: self.sidebar_section_split,
                 tab_drag_insert_index: None,
                 selected_workspace_id: self.navigate_workspace_id.as_deref(),
@@ -127,6 +128,7 @@ impl ClientShellState {
             Some(ClientChromeDrag::Workspace {
                 source_workspace_id,
                 target,
+                ..
             }) => (
                 Some(source_workspace_id.as_str()),
                 target.as_ref().map(|(_, row)| *row),
@@ -151,6 +153,7 @@ impl ClientShellState {
                 reveal_focused_workspace: &mut self.reveal_focused_workspace,
                 reveal_focused_tab: &mut self.reveal_focused_tab,
                 sidebar_collapsed: self.sidebar_collapsed,
+                view_mode: self.view_mode,
                 sidebar_section_split: self.sidebar_section_split,
                 tab_drag_insert_index,
                 selected_workspace_id: (self.mode == ClientShellMode::Navigate)

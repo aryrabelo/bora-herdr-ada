@@ -222,6 +222,10 @@ pub(super) struct ShellRenderState<'a> {
     pub(super) reveal_focused_workspace: &'a mut bool,
     pub(super) reveal_focused_tab: &'a mut bool,
     pub(super) sidebar_collapsed: bool,
+    /// Live, possibly-cycled view mode (`ClientShellState::view_mode`) --
+    /// NEVER `config.view_mode`, which is only the config-file fallback
+    /// and does not move when `prefix+shift+v` cycles it.
+    pub(super) view_mode: crate::config::ViewMode,
     pub(super) sidebar_section_split: f32,
     pub(super) tab_drag_insert_index: Option<usize>,
     pub(super) selected_workspace_id: Option<&'a str>,
@@ -307,6 +311,7 @@ pub(super) fn render_shell(
         hits.new_workspace = Rect::default();
         hits.machines.clear();
         hits.workspaces.clear();
+        hits.folders_group_headers.clear();
         hits.agents.clear();
         hits.endpoint_agents.clear();
         hits.tab_scroll_left = Rect::default();

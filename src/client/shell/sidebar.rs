@@ -210,7 +210,6 @@ pub(crate) fn render_sidebar(
             .add_modifier(Modifier::BOLD),
     );
 
-    let entries = workspace_entries(snapshot, state.collapsed_groups);
     let body = Rect::new(
         workspace_area.x,
         workspace_area.y.saturating_add(WORKSPACE_HEADER_ROWS),
@@ -220,127 +219,148 @@ pub(crate) fn render_sidebar(
             .saturating_sub(WORKSPACE_HEADER_ROWS + 1),
     );
     hits.workspace_body = body;
-    let row_heights = entries
-        .iter()
-        .map(|entry| {
-            snapshot
-                .workspaces
-                .get(entry.index)
-                .map(|workspace| {
-                    workspace_rows(
-                        workspace,
-                        displayed_workspace_status(snapshot, workspace, state.collapsed_groups),
-                        entry.indented,
-                        &config.spaces,
-                    )
-                    .len()
-                    .max(1)
-                    .min(u16::MAX as usize) as u16
+    if state.view_mode == crate::config::ViewMode::Folders {
+        render_folders_workspace_list(buffer, body, snapshot, config, state, hits);
+    } else {
+        let entries = match state.view_mode {
+            // Flat: one row per workspace in workspace-vec order, no
+            // grouping at all -- repo brackets and worktree auto-grouping
+            // both dissolve while this is selected.
+            crate::config::ViewMode::Flat => (0..snapshot.workspaces.len())
+                .map(|index| WorkspaceEntry {
+                    index,
+                    indented: false,
+                    last_child: false,
                 })
-                .unwrap_or(1)
-        })
-        .collect::<Vec<_>>();
-    let gaps = entries
-        .iter()
-        .enumerate()
-        .map(|(index, _)| {
-            entries
-                .get(index + 1)
-                .map_or(0, |next| u16::from(!next.indented) * config.spaces.row_gap)
-        })
-        .collect::<Vec<_>>();
-    let mut metrics = super::scroll::list_scroll_metrics(
-        &row_heights,
-        &gaps,
-        body.height,
-        *state.workspace_scroll,
-    );
-    if !body.is_empty() && std::mem::take(state.reveal_focused_workspace) {
-        if let Some(target) = entries
-            .iter()
-            .position(|entry| snapshot.workspaces[entry.index].focused)
-        {
-            *state.workspace_scroll = super::scroll::list_scroll_start_to_reveal(
-                &row_heights,
-                &gaps,
-                body.height,
-                *state.workspace_scroll,
-                target,
-            );
-            metrics = super::scroll::list_scroll_metrics(
-                &row_heights,
-                &gaps,
-                body.height,
-                *state.workspace_scroll,
-            );
-        }
-    }
-    hits.workspace_max_scroll = metrics.max_offset_from_bottom;
-    hits.workspace_scroll_metrics = Some(metrics);
-    *state.workspace_scroll = metrics
-        .max_offset_from_bottom
-        .saturating_sub(metrics.offset_from_bottom);
-    let show_scrollbar = metrics.max_offset_from_bottom > 0 && body.width > 1;
-    let content_width = body.width.saturating_sub(u16::from(show_scrollbar));
-    let mut y = body.y;
-    for (entry_position, entry) in entries.iter().enumerate().skip(*state.workspace_scroll) {
-        let Some(workspace) = snapshot.workspaces.get(entry.index) else {
-            continue;
+                .collect::<Vec<_>>(),
+            // Repo (default): unchanged upstream behavior, dispatched here
+            // rather than mutated in place.
+            crate::config::ViewMode::Repo | crate::config::ViewMode::Folders => {
+                workspace_entries(snapshot, state.collapsed_groups)
+            }
         };
-        let status = displayed_workspace_status(snapshot, workspace, state.collapsed_groups);
-        let rows = workspace_rows(workspace, status, entry.indented, &config.spaces);
-        let row_height = (rows.len().max(1).min(u16::MAX as usize) as u16).min(body.height);
-        if y.saturating_add(row_height) > body.bottom() {
-            break;
-        }
-        let rect = Rect::new(body.x, y, content_width, row_height);
-        let selected = state.selected_workspace_id == Some(workspace.workspace_id.as_str());
-        let dragged = state.dragged_workspace_id == Some(workspace.workspace_id.as_str());
-        if selected {
-            buffer.set_style(rect, Style::default().bg(palette.selection_bg));
-        } else if dragged {
-            buffer.set_style(rect, Style::default().bg(palette.surface1));
-        } else if workspace.focused {
-            buffer.set_style(rect, Style::default().bg(palette.active_row_bg));
-        }
-        render_workspace_rows(
-            buffer,
-            rect,
-            workspace,
-            status,
-            config.status_indicators,
-            entry,
-            rows,
-            true,
-            selected,
-            dragged,
-            palette,
+        let row_heights = entries
+            .iter()
+            .map(|entry| {
+                snapshot
+                    .workspaces
+                    .get(entry.index)
+                    .map(|workspace| {
+                        workspace_rows(
+                            workspace,
+                            displayed_workspace_status(snapshot, workspace, state.collapsed_groups),
+                            entry.indented,
+                            &config.spaces,
+                        )
+                        .len()
+                        .max(1)
+                        .min(u16::MAX as usize) as u16
+                    })
+                    .unwrap_or(1)
+            })
+            .collect::<Vec<_>>();
+        let gaps = entries
+            .iter()
+            .enumerate()
+            .map(|(index, _)| {
+                entries
+                    .get(index + 1)
+                    .map_or(0, |next| u16::from(!next.indented) * config.spaces.row_gap)
+            })
+            .collect::<Vec<_>>();
+        let mut metrics = super::scroll::list_scroll_metrics(
+            &row_heights,
+            &gaps,
+            body.height,
+            *state.workspace_scroll,
         );
-        let group_toggle = render_parent_group_toggle(
-            buffer,
-            rect,
-            snapshot,
-            entry.index,
-            state.collapsed_groups,
-            palette,
-        );
-        hits.workspaces.push(WorkspaceHit {
-            rect,
-            endpoint_id: ClientEndpointId::Local,
-            workspace_id: workspace.workspace_id.clone(),
-            indented: entry.indented,
-            group_toggle,
-        });
-        let gap = entries
-            .get(entry_position + 1)
-            .map_or(0, |next| u16::from(!next.indented) * config.spaces.row_gap);
-        y = y.saturating_add(row_height + gap);
-    }
+        if !body.is_empty() && std::mem::take(state.reveal_focused_workspace) {
+            if let Some(target) = entries
+                .iter()
+                .position(|entry| snapshot.workspaces[entry.index].focused)
+            {
+                *state.workspace_scroll = super::scroll::list_scroll_start_to_reveal(
+                    &row_heights,
+                    &gaps,
+                    body.height,
+                    *state.workspace_scroll,
+                    target,
+                );
+                metrics = super::scroll::list_scroll_metrics(
+                    &row_heights,
+                    &gaps,
+                    body.height,
+                    *state.workspace_scroll,
+                );
+            }
+        }
+        hits.workspace_max_scroll = metrics.max_offset_from_bottom;
+        hits.workspace_scroll_metrics = Some(metrics);
+        *state.workspace_scroll = metrics
+            .max_offset_from_bottom
+            .saturating_sub(metrics.offset_from_bottom);
+        let show_scrollbar = metrics.max_offset_from_bottom > 0 && body.width > 1;
+        let content_width = body.width.saturating_sub(u16::from(show_scrollbar));
+        let mut y = body.y;
+        for (entry_position, entry) in entries.iter().enumerate().skip(*state.workspace_scroll) {
+            let Some(workspace) = snapshot.workspaces.get(entry.index) else {
+                continue;
+            };
+            let status = displayed_workspace_status(snapshot, workspace, state.collapsed_groups);
+            let rows = workspace_rows(workspace, status, entry.indented, &config.spaces);
+            let row_height = (rows.len().max(1).min(u16::MAX as usize) as u16).min(body.height);
+            if y.saturating_add(row_height) > body.bottom() {
+                break;
+            }
+            let rect = Rect::new(body.x, y, content_width, row_height);
+            let selected = state.selected_workspace_id == Some(workspace.workspace_id.as_str());
+            let dragged = state.dragged_workspace_id == Some(workspace.workspace_id.as_str());
+            if selected {
+                buffer.set_style(rect, Style::default().bg(palette.selection_bg));
+            } else if dragged {
+                buffer.set_style(rect, Style::default().bg(palette.surface1));
+            } else if workspace.focused {
+                buffer.set_style(rect, Style::default().bg(palette.active_row_bg));
+            }
+            render_workspace_rows(
+                buffer,
+                rect,
+                workspace,
+                status,
+                config.status_indicators,
+                entry,
+                rows,
+                true,
+                selected,
+                dragged,
+                palette,
+            );
+            let group_toggle = render_parent_group_toggle(
+                buffer,
+                rect,
+                snapshot,
+                entry.index,
+                state.collapsed_groups,
+                palette,
+            );
+            hits.workspaces.push(WorkspaceHit {
+                rect,
+                endpoint_id: ClientEndpointId::Local,
+                workspace_id: workspace.workspace_id.clone(),
+                indented: entry.indented,
+                group_toggle,
+            });
+            let gap = entries
+                .get(entry_position + 1)
+                .map_or(0, |next| u16::from(!next.indented) * config.spaces.row_gap);
+            y = y.saturating_add(row_height + gap);
+        }
 
-    if show_scrollbar {
-        let track = Rect::new(body.right().saturating_sub(1), body.y, 1, body.height);
-        hits.workspace_scrollbar = track;
-        super::scroll::render_list_scrollbar(buffer, track, metrics, palette);
+        if show_scrollbar {
+            let track = Rect::new(body.right().saturating_sub(1), body.y, 1, body.height);
+            hits.workspace_scrollbar = track;
+            super::scroll::render_list_scrollbar(buffer, track, metrics, palette);
+        }
     }
 
     if let Some(row) = state.workspace_drop_indicator_row.filter(|row| {
@@ -731,5 +751,307 @@ pub(in crate::client::shell) fn render_workspace_rows(
                 buffer[(x, y)].set_bg(background);
             }
         }
+    }
+}
+
+/// Folders view (`ViewMode::Folders`, ceo-bora#275): a flat workspace list
+/// that honors only user-defined `visual_group` folders. No repo
+/// auto-grouping and no branch brackets, unlike `ViewMode::Repo`. A group
+/// is anchored at its first member's position in workspace-vec order;
+/// later members are pulled up under the shared header. Ungrouped
+/// workspaces stay flat, in the same relative order.
+pub(in crate::client::shell) enum FoldersRow {
+    GroupHeader {
+        name: String,
+        collapse_key: String,
+    },
+    /// `in_group` is carried on the entry (rather than re-derived at
+    /// render time) so `folders_row_gap` and the render loop agree on
+    /// which rows stay glued to the row above them without a second
+    /// lookup into `members`.
+    Workspace {
+        index: usize,
+        in_group: bool,
+    },
+}
+
+pub(in crate::client::shell) fn folders_entries(
+    snapshot: &ClientShellSnapshot,
+    collapsed_groups: &HashSet<String>,
+) -> Vec<FoldersRow> {
+    let mut members: HashMap<&str, Vec<usize>> = HashMap::new();
+    for (index, workspace) in snapshot.workspaces.iter().enumerate() {
+        if let Some(group) = workspace.visual_group.as_deref() {
+            members.entry(group).or_default().push(index);
+        }
+    }
+    let mut entries = Vec::new();
+    let mut emitted = HashSet::<&str>::new();
+    for (index, workspace) in snapshot.workspaces.iter().enumerate() {
+        let Some(group) = workspace.visual_group.as_deref() else {
+            entries.push(FoldersRow::Workspace {
+                index,
+                in_group: false,
+            });
+            continue;
+        };
+        if !emitted.insert(group) {
+            continue;
+        }
+        let collapse_key = format!("vg:{group}");
+        entries.push(FoldersRow::GroupHeader {
+            name: group.to_owned(),
+            collapse_key: collapse_key.clone(),
+        });
+        if collapsed_groups.contains(&collapse_key) {
+            continue;
+        }
+        if let Some(group_members) = members.get(group) {
+            for &member_index in group_members {
+                entries.push(FoldersRow::Workspace {
+                    index: member_index,
+                    in_group: true,
+                });
+            }
+        }
+    }
+    entries
+}
+
+/// Row gap shared by the scroll-metrics pass and the render loop
+/// (lockstep, same shape as `entry_row_height` in the pre-merge fork):
+/// a group's header and its members stay glued (gap 0), everything else
+/// gets `config.spaces.row_gap`.
+fn folders_row_gap(entries: &[FoldersRow], index: usize, row_gap: u16) -> u16 {
+    match entries.get(index + 1) {
+        Some(FoldersRow::Workspace { in_group: true, .. }) => 0,
+        Some(_) => row_gap,
+        None => 0,
+    }
+}
+
+/// One status per pane in `workspace_id`, ordered as `snapshot.panes`
+/// lists them. No new server field: this reuses the same
+/// `agent_status`/`status_icon`/`status_color` mapping the collapsed
+/// sidebar and agent panel already read off `snapshot.agents`. A pane with
+/// no matching agent (a plain shell) renders `AgentStatus::Unknown`.
+fn workspace_pane_dot_states(
+    snapshot: &ClientShellSnapshot,
+    workspace_id: &str,
+) -> Vec<crate::api::schema::AgentStatus> {
+    snapshot
+        .panes
+        .iter()
+        .filter(|pane| pane.workspace_id == workspace_id)
+        .map(|pane| {
+            snapshot
+                .agents
+                .iter()
+                .find(|agent| agent.pane_id == pane.pane_id)
+                .map(|agent| agent.agent_status)
+                .unwrap_or(crate::api::schema::AgentStatus::Unknown)
+        })
+        .collect()
+}
+
+/// Owner's ruling (2026-08-31): name and dots share ONE row, `name ○ ○`,
+/// dots right-aligned. Name styling mirrors `render_workspace_rows`'
+/// `workspace_style` so a Folders row reads like any other sidebar row.
+fn render_folders_workspace_row(
+    buffer: &mut Buffer,
+    rect: Rect,
+    workspace: &ClientShellWorkspace,
+    dots: &[crate::api::schema::AgentStatus],
+    indicators: crate::config::StatusIndicatorStyle,
+    selected: bool,
+    dragged: bool,
+    palette: &Palette,
+) {
+    let background = if selected {
+        Some(palette.selection_bg)
+    } else if dragged {
+        Some(palette.surface1)
+    } else if workspace.focused {
+        Some(palette.active_row_bg)
+    } else {
+        None
+    };
+    if let Some(background) = background {
+        for y in rect.y..rect.bottom() {
+            for x in rect.x..rect.right() {
+                buffer[(x, y)].set_bg(background);
+            }
+        }
+    }
+    let dot_glyphs = dots
+        .iter()
+        .map(|status| {
+            (
+                status_icon(*status, indicators),
+                status_color(*status, palette),
+            )
+        })
+        .collect::<Vec<_>>();
+    let dots_width = if dot_glyphs.is_empty() {
+        0
+    } else {
+        (dot_glyphs.len() * 2 - 1) as u16
+    };
+    let reserved = dots_width.saturating_add(u16::from(!dot_glyphs.is_empty()));
+    let name_x = rect.x.saturating_add(1);
+    let name_width = rect.right().saturating_sub(reserved).saturating_sub(name_x);
+    let highlighted = workspace.focused || dragged;
+    let name_style = Style::default()
+        .fg(if highlighted {
+            palette.text
+        } else {
+            palette.subtext0
+        })
+        .add_modifier(if highlighted {
+            Modifier::BOLD
+        } else {
+            Modifier::empty()
+        });
+    put_text(
+        buffer,
+        name_x,
+        rect.y,
+        name_width,
+        &workspace.label,
+        name_style,
+    );
+    let mut dot_x = rect.right().saturating_sub(dots_width);
+    for (index, (glyph, color)) in dot_glyphs.iter().enumerate() {
+        if index > 0 {
+            dot_x = dot_x.saturating_add(1);
+        }
+        dot_x = put_segment(
+            buffer,
+            dot_x,
+            rect.y,
+            rect.right(),
+            glyph,
+            Style::default().fg(*color).add_modifier(Modifier::BOLD),
+        );
+    }
+}
+
+/// Whole-body Folders render path: its own entries, scroll metrics, and
+/// hit areas, independent of the Flat/Repo loop above (aceite #5: the
+/// Repo path stays byte-identical to upstream, so Folders never shares its
+/// row logic). Writes into the same `hits.workspace_*`/`workspace_scroll`
+/// fields as the Flat/Repo path so the shared footer/agent-panel epilogue
+/// in `render_sidebar` lines up regardless of which branch ran.
+pub(in crate::client::shell) fn render_folders_workspace_list(
+    buffer: &mut Buffer,
+    body: Rect,
+    snapshot: &ClientShellSnapshot,
+    config: &ClientShellConfig,
+    state: &mut ShellRenderState<'_>,
+    hits: &mut ShellHitMap,
+) {
+    let palette = &config.palette;
+    let entries = folders_entries(snapshot, state.collapsed_groups);
+    let row_heights = vec![1u16; entries.len()];
+    let gaps = (0..entries.len())
+        .map(|index| folders_row_gap(&entries, index, config.spaces.row_gap))
+        .collect::<Vec<_>>();
+    let mut metrics = super::scroll::list_scroll_metrics(
+        &row_heights,
+        &gaps,
+        body.height,
+        *state.workspace_scroll,
+    );
+    if !body.is_empty() && std::mem::take(state.reveal_focused_workspace) {
+        if let Some(target) = entries.iter().position(|entry| {
+            matches!(entry, FoldersRow::Workspace { index, .. } if snapshot.workspaces[*index].focused)
+        }) {
+            *state.workspace_scroll = super::scroll::list_scroll_start_to_reveal(
+                &row_heights,
+                &gaps,
+                body.height,
+                *state.workspace_scroll,
+                target,
+            );
+            metrics = super::scroll::list_scroll_metrics(
+                &row_heights,
+                &gaps,
+                body.height,
+                *state.workspace_scroll,
+            );
+        }
+    }
+    hits.workspace_max_scroll = metrics.max_offset_from_bottom;
+    hits.workspace_scroll_metrics = Some(metrics);
+    *state.workspace_scroll = metrics
+        .max_offset_from_bottom
+        .saturating_sub(metrics.offset_from_bottom);
+    let show_scrollbar = metrics.max_offset_from_bottom > 0 && body.width > 1;
+    let content_width = body.width.saturating_sub(u16::from(show_scrollbar));
+    let mut y = body.y;
+    for (position, entry) in entries.iter().enumerate().skip(*state.workspace_scroll) {
+        if y >= body.bottom() {
+            break;
+        }
+        let rect = Rect::new(body.x, y, content_width, 1);
+        match entry {
+            FoldersRow::GroupHeader { name, collapse_key } => {
+                let collapsed = state.collapsed_groups.contains(collapse_key);
+                let chevron = if collapsed { "▸" } else { "▾" };
+                let x = put_segment(
+                    buffer,
+                    rect.x,
+                    rect.y,
+                    rect.right(),
+                    chevron,
+                    Style::default().fg(palette.accent),
+                )
+                .saturating_add(1);
+                put_text(
+                    buffer,
+                    x,
+                    rect.y,
+                    rect.right().saturating_sub(x),
+                    name,
+                    Style::default()
+                        .fg(palette.overlay0)
+                        .add_modifier(Modifier::BOLD),
+                );
+                hits.folders_group_headers
+                    .push((rect, collapse_key.clone()));
+            }
+            FoldersRow::Workspace { index, .. } => {
+                let Some(workspace) = snapshot.workspaces.get(*index) else {
+                    continue;
+                };
+                let dots = workspace_pane_dot_states(snapshot, &workspace.workspace_id);
+                let selected = state.selected_workspace_id == Some(workspace.workspace_id.as_str());
+                let dragged = state.dragged_workspace_id == Some(workspace.workspace_id.as_str());
+                render_folders_workspace_row(
+                    buffer,
+                    rect,
+                    workspace,
+                    &dots,
+                    config.status_indicators,
+                    selected,
+                    dragged,
+                    palette,
+                );
+                hits.workspaces.push(WorkspaceHit {
+                    rect,
+                    endpoint_id: ClientEndpointId::Local,
+                    workspace_id: workspace.workspace_id.clone(),
+                    indented: false,
+                    group_toggle: None,
+                });
+            }
+        }
+        let gap = gaps.get(position).copied().unwrap_or(0);
+        y = y.saturating_add(1 + gap);
+    }
+    if show_scrollbar {
+        let track = Rect::new(body.right().saturating_sub(1), body.y, 1, body.height);
+        hits.workspace_scrollbar = track;
+        super::scroll::render_list_scrollbar(buffer, track, metrics, palette);
     }
 }

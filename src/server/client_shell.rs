@@ -71,6 +71,7 @@ pub(super) fn snapshot(
                         label: worktree.repo_name,
                         is_linked_worktree: worktree.is_linked_worktree,
                     }),
+                visual_group: state.visual_group.clone(),
                 agent_status: workspace.agent_status,
             }
         })
