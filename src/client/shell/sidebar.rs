@@ -356,9 +356,12 @@ pub(crate) fn render_sidebar(
                 config.status_indicators,
                 entry,
                 rows,
-                true,
-                selected,
-                dragged,
+                WorkspaceRowRenderOptions {
+                    endpoint_active: true,
+                    selected,
+                    dragged,
+                    first_row_reserved_width: 0,
+                },
                 palette,
             );
             let group_toggle = render_parent_group_toggle(
@@ -680,6 +683,20 @@ pub(in crate::client::shell) fn workspace_rows(
     )
 }
 
+/// Per-call render flags for `render_workspace_rows`, bundled to keep the
+/// function under clippy's argument-count lint (ceo-bora#302 cubic review).
+pub(in crate::client::shell) struct WorkspaceRowRenderOptions {
+    pub(in crate::client::shell) endpoint_active: bool,
+    pub(in crate::client::shell) selected: bool,
+    pub(in crate::client::shell) dragged: bool,
+    /// Columns reserved on ROW 0 ONLY (ceo-bora#302 cubic review): a
+    /// Folders entry's pane dots share row 0 with the row-template text, so
+    /// only that row needs its width narrowed -- every other row already
+    /// has the full `area.width` to itself and must not be clipped for a
+    /// strip that never paints there. Flat/Repo pass 0 (no dots on any row).
+    pub(in crate::client::shell) first_row_reserved_width: u16,
+}
+
 pub(in crate::client::shell) fn render_workspace_rows(
     buffer: &mut Buffer,
     area: Rect,
@@ -688,11 +705,15 @@ pub(in crate::client::shell) fn render_workspace_rows(
     indicators: crate::config::StatusIndicatorStyle,
     entry: &WorkspaceEntry,
     rows: Vec<Vec<crate::ui::ResolvedToken>>,
-    endpoint_active: bool,
-    selected: bool,
-    dragged: bool,
+    options: WorkspaceRowRenderOptions,
     palette: &Palette,
 ) {
+    let WorkspaceRowRenderOptions {
+        endpoint_active,
+        selected,
+        dragged,
+        first_row_reserved_width,
+    } = options;
     for (row_index, row) in rows.iter().enumerate() {
         let y = area.y + row_index as u16;
         if y >= area.bottom() {
@@ -724,6 +745,11 @@ pub(in crate::client::shell) fn render_workspace_rows(
         } else {
             x = x.saturating_add(3);
         }
+        let row_reserved = if row_index == 0 {
+            first_row_reserved_width
+        } else {
+            0
+        };
         let highlighted = endpoint_active && workspace.focused || dragged;
         let workspace_style = Style::default()
             .fg(if highlighted {
@@ -741,6 +767,11 @@ pub(in crate::client::shell) fn render_workspace_rows(
         } else {
             palette.overlay0
         });
+        let row_width = area
+            .right()
+            .saturating_sub(2)
+            .saturating_sub(x)
+            .saturating_sub(row_reserved);
         let spans = crate::ui::resolved_token_spans(
             row,
             (
@@ -754,12 +785,9 @@ pub(in crate::client::shell) fn render_workspace_rows(
             secondary_style,
             Style::default().fg(palette.overlay1),
             palette,
-            area.right().saturating_sub(2).saturating_sub(x) as usize,
+            row_width as usize,
         );
-        Paragraph::new(Line::from(spans)).render(
-            Rect::new(x, y, area.right().saturating_sub(2).saturating_sub(x), 1),
-            buffer,
-        );
+        Paragraph::new(Line::from(spans)).render(Rect::new(x, y, row_width, 1), buffer);
     }
 
     let background = if selected {
@@ -908,6 +936,7 @@ fn render_folders_pane_dots(
     dots: &[(crate::api::schema::AgentStatus, Option<u64>)],
     indicators: crate::config::StatusIndicatorStyle,
     idle_attention_seconds: u64,
+    workspace_focused: bool,
     palette: &Palette,
 ) {
     let dots_width = folders_dots_reserved_width(dots.len()).saturating_sub(1);
@@ -927,6 +956,7 @@ fn render_folders_pane_dots(
                     *status,
                     *idle_seconds,
                     idle_attention_seconds,
+                    workspace_focused,
                     palette,
                 ))
                 .add_modifier(Modifier::BOLD),
@@ -1081,12 +1111,7 @@ pub(in crate::client::shell) fn render_folders_workspace_list(
                 let rows = workspace_rows(workspace, status, false, &config.spaces);
                 render_workspace_rows(
                     buffer,
-                    Rect::new(
-                        rect.x,
-                        rect.y,
-                        rect.width.saturating_sub(reserved),
-                        row_height,
-                    ),
+                    rect,
                     workspace,
                     status,
                     config.status_indicators,
@@ -1096,9 +1121,12 @@ pub(in crate::client::shell) fn render_folders_workspace_list(
                         last_child: false,
                     },
                     rows,
-                    true,
-                    selected,
-                    dragged,
+                    WorkspaceRowRenderOptions {
+                        endpoint_active: true,
+                        selected,
+                        dragged,
+                        first_row_reserved_width: reserved,
+                    },
                     palette,
                 );
                 if !dots.is_empty() {
@@ -1108,6 +1136,7 @@ pub(in crate::client::shell) fn render_folders_workspace_list(
                         &dots,
                         config.status_indicators,
                         config.idle_attention_seconds,
+                        workspace.focused,
                         palette,
                     );
                 }

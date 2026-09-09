@@ -19,16 +19,35 @@ fn header_row(frame: &crate::protocol::FrameData) -> (u16, String) {
         .expect("sidebar header row")
 }
 
-/// Two panes on the focused workspace, the second one optionally `Blocked`.
-/// Both are far past the default 300s idle threshold, so both count as
-/// waiting.
+/// Two panes on a SECOND, unfocused background workspace, the second pane
+/// optionally `Blocked`. Both are far past the default 300s idle threshold,
+/// so both count as waiting -- unlike the default focused `ws_1`, which
+/// never counts (cubic review, ceo-bora#302: the operator is already
+/// looking at whatever workspace is focused).
 fn attention_snapshot(second_pane_status: AgentStatus) -> ClientShellSnapshot {
     let mut projected = snapshot();
-    projected.panes[0].idle_seconds = Some(900);
+    let mut background = projected.workspaces[0].clone();
+    background.workspace_id = "ws_2".into();
+    background.active_tab_id = "tab_2".into();
+    background.number = 2;
+    background.label = "background".into();
+    background.focused = false;
+    projected.workspaces.push(background);
     projected.panes.push(ClientShellPane {
-        pane_id: "pane_2".into(),
-        workspace_id: "ws_1".into(),
-        tab_id: "tab_1".into(),
+        pane_id: "pane_2a".into(),
+        workspace_id: "ws_2".into(),
+        tab_id: "tab_2".into(),
+        label: None,
+        cwd: Some("/repo".into()),
+        foreground_cwd: Some("/repo".into()),
+        focused: false,
+        right_click_passthrough: false,
+        idle_seconds: Some(900),
+    });
+    projected.panes.push(ClientShellPane {
+        pane_id: "pane_2b".into(),
+        workspace_id: "ws_2".into(),
+        tab_id: "tab_2".into(),
         label: None,
         cwd: Some("/repo".into()),
         foreground_cwd: Some("/repo".into()),
@@ -37,9 +56,25 @@ fn attention_snapshot(second_pane_status: AgentStatus) -> ClientShellSnapshot {
         idle_seconds: Some(900),
     });
     projected.agents.push(ClientShellAgent {
-        pane_id: "pane_2".into(),
-        workspace_id: "ws_1".into(),
-        tab_id: "tab_1".into(),
+        pane_id: "pane_2a".into(),
+        workspace_id: "ws_2".into(),
+        tab_id: "tab_2".into(),
+        name: None,
+        display_agent: None,
+        agent: None,
+        title: None,
+        terminal_title: None,
+        terminal_title_stripped: None,
+        agent_status: AgentStatus::Idle,
+        state_change_seq: 0,
+        state_labels: Vec::new(),
+        tokens: Vec::new(),
+        focused: false,
+    });
+    projected.agents.push(ClientShellAgent {
+        pane_id: "pane_2b".into(),
+        workspace_id: "ws_2".into(),
+        tab_id: "tab_2".into(),
         name: None,
         display_agent: None,
         agent: None,
@@ -101,7 +136,7 @@ fn waiting_badge_ignores_channel_workspace_panes() {
     // Channel workspaces (`#`-prefixed) go quiet by design and carry their
     // own unread badge; they must not inflate this counter.
     let mut projected = attention_snapshot(AgentStatus::Idle);
-    projected.workspaces[0].label = "#general".into();
+    projected.workspaces[1].label = "#general".into();
     let (_state, frame) = compose_with(projected);
     let (_, header) = header_row(&frame);
     assert!(!header.contains("waiting"), "header was {header:?}");

@@ -1041,7 +1041,8 @@ pub struct UiConfig {
     /// Sidebar workspace view mode: `flat` shows a freely drag-reorderable
     /// list with no grouping (repo, channel, and visual groups all
     /// dissolve); `folders` is a flat list that honors only user-defined
-    /// `visual_group` folders (no repo grouping, no branch, no pane badge);
+    /// `visual_group` folders (no repo grouping, no branch) and shows a
+    /// per-pane status dots strip unless `hide_pane_badges` is set;
     /// `repo` groups workspaces under repo headers (default).
     ///
     /// Deliberately backward compatible with the retired

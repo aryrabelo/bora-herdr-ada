@@ -549,6 +549,7 @@ fn folders_pane_dots_ramp_with_attention_on_row_zero() {
     let mut state =
         ClientShellState::new(folders_config_from_toml("idle_attention_seconds = 300\n"));
     let mut projected = folders_snapshot();
+    projected.workspaces[0].focused = false;
     projected.workspaces[0].tokens = vec![("frota".into(), "pp".into())];
     // pane_1 has no agent (Unknown) but has been silent for 900s -> waiting
     // -> yellow. pane_1b is Blocked with no idle time at all -> red.

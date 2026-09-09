@@ -346,9 +346,12 @@ pub(super) fn render_expanded(
                     config.status_indicators,
                     entry,
                     tokens,
-                    endpoint_active,
-                    false,
-                    false,
+                    super::sidebar::WorkspaceRowRenderOptions {
+                        endpoint_active,
+                        selected: false,
+                        dragged: false,
+                        first_row_reserved_width: 0,
+                    },
                     palette,
                 );
                 if endpoint.status != ClientEndpointStatus::Online {
