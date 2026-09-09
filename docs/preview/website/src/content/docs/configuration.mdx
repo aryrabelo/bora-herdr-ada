@@ -50,6 +50,8 @@ You can also open the global menu in Herdr and choose `reload config`.
 
 Reload applies most UI settings without restarting panes. Startup-only settings still need a restart.
 
+Themes, sidebar layouts, copy behavior, and other presentation settings come from the client's local config, including when viewing an SSH machine. Pane defaults, worktrees, integrations, and custom commands belong to the server where the panes run. The UI's `reload config` action reloads both the client's local settings and the selected server's config. Local keybindings reload too; `--remote-keybindings server` instead uses the selected server's keybindings.
+
 ## Headless terminal size
 
 When no client is attached, the server uses a 120×40 virtual terminal for layout and newly created panes. Change that fallback for headless orchestration with:
@@ -60,7 +62,7 @@ headless_cols = 160
 headless_rows = 50
 ```
 
-An attached client remains authoritative for the shared runtime size. After it detaches, existing pane PTYs retain their last attached size while new headless layout uses the configured fallback.
+With one attached client, all tabs follow its size. With multiple clients, each viewed tab follows the client that most recently focused, selected, or interacted with it. When all but one client detach, all tabs immediately return to the remaining client's size. When no clients remain, existing pane PTYs retain their last size and new headless layout uses the configured fallback.
 
 ## Terminal defaults
 
@@ -104,28 +106,11 @@ Herdr creates checkouts under `<directory>/<repo>/<branch-slug>`. For sibling-st
 
 Worktree actions are available from Git workspace rows. `New worktree` creates a checkout. It checks out an existing local branch when the entered branch exists; otherwise, it creates the branch. It then opens the checkout as a new Herdr workspace and groups it under the source workspace. `Open worktree...` lists existing Git worktree checkouts for that repo. Choosing an already-open checkout focuses it, while choosing a closed checkout opens it in the same group.
 
-Each repo header row in the sidebar shows a `+` (create worktree) button. Clicking it opens the **Create worktree** modal, the primary way to start a worktree. The modal has **GitHub / Branch / Name** tabs (switch by clicking a tab or pressing `Tab`):
-
-- **GitHub** lists the repo's open pull requests and issues. Choosing a pull request creates or opens its worktree; choosing an issue runs the configured `[flow]` command. Issue rows are disabled with a hint when no `[flow]` command is set.
-- **Branch** checks out an existing local branch into a new worktree.
-- **Name** creates a fresh branch — the classic single-field behavior.
-
-The `new_worktree` keybind and the Git workspace context-menu `New worktree` entry still open the same modal.
+Each repo header row in the sidebar shows a `+` (create worktree) button. Clicking it opens the **Create worktree** modal, a single branch-name entry: it checks out the branch if it already exists locally, otherwise it creates the branch. The `new_worktree` keybind and the Git workspace context-menu `New worktree` entry open the same modal.
 
 Grouped worktrees still behave like normal Herdr workspaces: they can be focused, renamed, closed, and contain their own tabs and panes. The parent row is the original workspace. Closing the parent row closes the whole Herdr group, but it does not delete checkout folders or branches.
 
 To delete a worktree checkout, use `Delete worktree checkout...` on a grouped child workspace. Herdr runs `git worktree remove`, first asking Git to remove safely. If Git refuses because the checkout has modified or untracked files, Herdr asks again before running the forced remove. Branches are not deleted.
-
-## Right panel
-
-The right panel shows context for the active workspace's repository. Toggle it with the configured keybinding (default: `prefix+shift+b`) or the collapsed-state toggle at the right edge of the terminal.
-
-The panel has four tabs:
-
-- **Changes** — unstaged, staged, and committed file changes with status indicators and per-file diff counts. Click a file to open it in gitui (or `git diff` if gitui is not installed).
-- **Checks** — CI check status for the active workspace's branch, fetched on demand via `gh pr view`.
-- **Issues** — open issues assigned to or authored by the current user, fetched on demand. Click an issue to open it in the browser or copy its URL.
-- **PRs** — the current user's open pull requests for the repo, refreshed on tab open and periodically in the background. Each row shows the PR number, title, draft marker, and a mergeable indicator (`✓` green = MERGEABLE, `✗` red = CONFLICTING). Click a PR to open its context menu (Open in worktree / Open in browser / Copy URL).
 
 ## Remote attach
 
@@ -296,9 +281,28 @@ yellow = "#f9e2af"
 
 Color values accept hex, named colors, `rgb(r,g,b)`, or reset aliases like `reset`, `default`, `none`, and `transparent`.
 
+When `auto_switch` is enabled, optional light and dark subtables layer on top of the shared custom colors:
+
+```toml
+[theme.custom]
+accent = "#89b4fa"
+
+[theme.custom.light]
+panel_bg = "#eff1f5"
+text = "#4c4f69"
+
+[theme.custom.dark]
+panel_bg = "#1e1e2e"
+text = "#cdd6f4"
+```
+
+The active palette is applied in this order: built-in theme, `[theme.custom]`, then `[theme.custom.light]` or `[theme.custom.dark]`. Omitting the mode subtables preserves the existing shared override behavior.
+
 ## UI and sidebar
 
 The sidebar is the main Herdr dashboard. Search `ui.` in the [Config reference](/docs/config-reference/) for sizing, collapsed mode, Agent panel ordering, mouse behavior, pane borders, and other presentation settings.
+
+`ui.pane_borders` accepts `"auto"` (the default, borders only for split panes), `"always"` (also frame a single pane), or `"off"`. A single-pane frame requires `ui.pane_outer_borders = true`, because all its edges are outer edges. Existing boolean values remain valid: `true` means `"auto"` and `false` means `"off"`.
 
 Set `tab_bar_position = "bottom"` under `[ui]` to place the desktop tab row below the terminal panes. Prefix, Navigate, Copy, and Resize mode bars temporarily replace the bottom tab row while active. The default is `"top"`.
 
@@ -354,7 +358,7 @@ The expanded desktop sidebar renders each inner array in `rows` as one line. The
 [ui.sidebar.agents]
 row_gap = 0
 rows = [
-  ["state_icon", "workspace", "tab"],
+  ["state_icon", "machine", "workspace", "tab"],
   ["agent"],
 ]
 
@@ -370,6 +374,7 @@ Agent rows accept these built-in tokens:
 
 - `state_icon` — colored icon for the agent's semantic state.
 - `state_text` — `idle`, `working`, `blocked`, `done`, or `unknown`, including a reported display label when present.
+- `machine` — machine label when the client has multiple machines; omitted for a single local machine.
 - `workspace` — workspace name.
 - `tab` — tab name when available.
 - `pane` — pane name when available.
@@ -387,7 +392,7 @@ Space rows accept these built-in tokens:
 - `git_status` — Git ahead and behind counts when nonzero.
 - `$name` — custom workspace metadata named `name`.
 
-Tokens render in their configured order. Herdr normally separates adjacent values with ` · ` and uses a single space after `state_icon`. Missing values and their separators disappear; a row disappears when none of its tokens have a value. Each layout may contain at most 16 rows, with at most 16 tokens in each row.
+Tokens render in their configured order. Herdr normally separates adjacent values with ` · ` and uses a single space after `state_icon`. Missing values and their separators disappear; a row disappears when none of its tokens have a value. Existing custom rows remain unchanged, so add `machine` explicitly if you want machine identity in a custom multi-machine layout. Each layout may contain at most 16 rows, with at most 16 tokens in each row.
 
 A token entry can also be an inline style table:
 
@@ -400,6 +405,25 @@ rows = [
 ```
 
 `fg` accepts strict `#RGB` or `#RRGGBB`. `bold` and `dim` accept booleans. Omitted fields preserve the token's contextual style; explicit `false` removes that modifier. Styling applies to one occurrence, so the same token may look different in another row or agent override. A foreground override replaces all semantic foregrounds inside that occurrence: for example, styled `git_status` ahead and behind counts use one color instead of their default green and red. Token styles never change separators or row backgrounds.
+
+Text-valued tokens also accept up to 16 ordered `rules`. Each rule contains exactly one condition—`equals`, `contains`, `starts_with`, `gt`, or `lt`—and optional `fg`, `bold`, and `dim` overrides:
+
+```toml
+[ui.sidebar.agents]
+rows = [
+  ["state_icon", "workspace", "tab"],
+  [{ token = "machine", fg = "#fff", rules = [{ equals = "Local", fg = "#f55" }, { equals = "Fedora", ignore_case = true, fg = "#51a2da" }] }, "agent"],
+  [{ token = "$load", fg = "#fff", rules = [{ gt = 80, fg = "#f55", bold = true }, { gt = 50, fg = "#fc0" }] }],
+]
+```
+
+The first matching rule wins. Its specified style fields override the occurrence's defaults; unspecified fields inherit them. If no rule matches, the defaults remain. Matching uses the full token value before display truncation and does not change its text, separators, or visibility. A rule with no style fields stops matching and keeps the defaults.
+
+`equals`, `contains`, and `starts_with` take strings and are case-sensitive. Add `ignore_case = true` for ASCII case-insensitive matching; non-ASCII characters remain case-sensitive. Empty strings follow ordinary string matching: empty `equals` matches only an empty value, while empty `contains` or `starts_with` matches any present value.
+
+`gt` and `lt` take finite numeric thresholds and compare strictly greater or less, not equal. Values must parse completely as finite numbers; decimal and exponent forms work, but whitespace, units, `NaN`, and infinity do not match. `ignore_case` is not accepted on numeric rules. Comparisons use floating-point numbers, not exact large-integer arithmetic.
+
+Rules work with text-valued built-ins and custom `$name` tokens in Agent rows, `rows_by_agent` overrides, and Space rows. Custom tokens match their reported value: `$load` reporting `"90"` selects red and bold above, `"60"` selects yellow, and `"90%"` keeps white. Unreported tokens still disappear. `state_icon` and composite `git_status` accept fixed styles only, not rules. Unknown conditions and malformed rules are rejected when loading config; regex, fuzzy matching, and scripts are not supported.
 
 `row_gap` controls the blank terminal rows between entries, independently for the Agent and Space panels. It defaults to `0`, which packs entries together; set it to `1` to restore the previous spacing. It does not add spacing between the content lines declared in `rows`. Consecutive indented worktree children remain packed as one Space group.
 
@@ -490,14 +514,16 @@ Search the [Config reference](/docs/config-reference/) for scrollback limits, ne
 
 ## Kitty graphics
 
-Kitty graphics rendering for attached local clients is experimental and disabled by default:
+Herdr renders pane images by default in compatible outer terminals. To disable graphics rendering and the pane graphics API:
 
 ```toml
-[experimental]
-kitty_graphics = true
+[terminal]
+kitty_graphics = false
 ```
 
-Enable it only when testing terminal image behavior.
+The legacy `experimental.kitty_graphics` setting remains accepted for existing configurations. `terminal.kitty_graphics` takes precedence when both are set.
+
+Changing this setting requires restarting the affected Herdr server or reattaching the client. In remote sessions, the server's setting controls pane graphics parsing and API availability, while the local client's setting controls output to the outer terminal.
 
 ## Agent session restore
 

@@ -171,6 +171,234 @@
           "type": "color",
           "default": "unset",
           "description": "Override the peach color token on top of the base theme. Accepts hex, named colors, rgb(r,g,b), or reset aliases."
+        },
+        {
+          "key": "theme.custom.light.accent",
+          "type": "color",
+          "default": "unset",
+          "description": "Override the accent color token when auto_switch selects a light appearance. Applied after theme.custom. Accepts hex, named colors, rgb(r,g,b), or reset aliases."
+        },
+        {
+          "key": "theme.custom.light.panel_bg",
+          "type": "color",
+          "default": "unset",
+          "description": "Override the panel_bg color token when auto_switch selects a light appearance. Applied after theme.custom. Accepts hex, named colors, rgb(r,g,b), or reset aliases."
+        },
+        {
+          "key": "theme.custom.light.sidebar_bg",
+          "type": "color",
+          "default": "unset",
+          "description": "Override the sidebar_bg color token when auto_switch selects a light appearance. Applied after theme.custom. Accepts hex, named colors, rgb(r,g,b), or reset aliases."
+        },
+        {
+          "key": "theme.custom.light.active_row_bg",
+          "type": "color",
+          "default": "unset",
+          "description": "Override the active_row_bg color token when auto_switch selects a light appearance. Applied after theme.custom. Accepts hex, named colors, rgb(r,g,b), or reset aliases."
+        },
+        {
+          "key": "theme.custom.light.selection_bg",
+          "type": "color",
+          "default": "unset",
+          "description": "Override the selection_bg color token when auto_switch selects a light appearance. Applied after theme.custom. Accepts hex, named colors, rgb(r,g,b), or reset aliases."
+        },
+        {
+          "key": "theme.custom.light.surface0",
+          "type": "color",
+          "default": "unset",
+          "description": "Override the surface0 color token when auto_switch selects a light appearance. Applied after theme.custom. Accepts hex, named colors, rgb(r,g,b), or reset aliases."
+        },
+        {
+          "key": "theme.custom.light.surface1",
+          "type": "color",
+          "default": "unset",
+          "description": "Override the surface1 color token when auto_switch selects a light appearance. Applied after theme.custom. Accepts hex, named colors, rgb(r,g,b), or reset aliases."
+        },
+        {
+          "key": "theme.custom.light.surface_dim",
+          "type": "color",
+          "default": "unset",
+          "description": "Override the surface_dim color token when auto_switch selects a light appearance. Applied after theme.custom. Accepts hex, named colors, rgb(r,g,b), or reset aliases."
+        },
+        {
+          "key": "theme.custom.light.overlay0",
+          "type": "color",
+          "default": "unset",
+          "description": "Override the overlay0 color token when auto_switch selects a light appearance. Applied after theme.custom. Accepts hex, named colors, rgb(r,g,b), or reset aliases."
+        },
+        {
+          "key": "theme.custom.light.overlay1",
+          "type": "color",
+          "default": "unset",
+          "description": "Override the overlay1 color token when auto_switch selects a light appearance. Applied after theme.custom. Accepts hex, named colors, rgb(r,g,b), or reset aliases."
+        },
+        {
+          "key": "theme.custom.light.text",
+          "type": "color",
+          "default": "unset",
+          "description": "Override the text color token when auto_switch selects a light appearance. Applied after theme.custom. Accepts hex, named colors, rgb(r,g,b), or reset aliases."
+        },
+        {
+          "key": "theme.custom.light.subtext0",
+          "type": "color",
+          "default": "unset",
+          "description": "Override the subtext0 color token when auto_switch selects a light appearance. Applied after theme.custom. Accepts hex, named colors, rgb(r,g,b), or reset aliases."
+        },
+        {
+          "key": "theme.custom.light.mauve",
+          "type": "color",
+          "default": "unset",
+          "description": "Override the mauve color token when auto_switch selects a light appearance. Applied after theme.custom. Accepts hex, named colors, rgb(r,g,b), or reset aliases."
+        },
+        {
+          "key": "theme.custom.light.green",
+          "type": "color",
+          "default": "unset",
+          "description": "Override the green color token when auto_switch selects a light appearance. Applied after theme.custom. Accepts hex, named colors, rgb(r,g,b), or reset aliases."
+        },
+        {
+          "key": "theme.custom.light.yellow",
+          "type": "color",
+          "default": "unset",
+          "description": "Override the yellow color token when auto_switch selects a light appearance. Applied after theme.custom. Accepts hex, named colors, rgb(r,g,b), or reset aliases."
+        },
+        {
+          "key": "theme.custom.light.red",
+          "type": "color",
+          "default": "unset",
+          "description": "Override the red color token when auto_switch selects a light appearance. Applied after theme.custom. Accepts hex, named colors, rgb(r,g,b), or reset aliases."
+        },
+        {
+          "key": "theme.custom.light.blue",
+          "type": "color",
+          "default": "unset",
+          "description": "Override the blue color token when auto_switch selects a light appearance. Applied after theme.custom. Accepts hex, named colors, rgb(r,g,b), or reset aliases."
+        },
+        {
+          "key": "theme.custom.light.teal",
+          "type": "color",
+          "default": "unset",
+          "description": "Override the teal color token when auto_switch selects a light appearance. Applied after theme.custom. Accepts hex, named colors, rgb(r,g,b), or reset aliases."
+        },
+        {
+          "key": "theme.custom.light.peach",
+          "type": "color",
+          "default": "unset",
+          "description": "Override the peach color token when auto_switch selects a light appearance. Applied after theme.custom. Accepts hex, named colors, rgb(r,g,b), or reset aliases."
+        },
+        {
+          "key": "theme.custom.dark.accent",
+          "type": "color",
+          "default": "unset",
+          "description": "Override the accent color token when auto_switch selects a dark appearance. Applied after theme.custom. Accepts hex, named colors, rgb(r,g,b), or reset aliases."
+        },
+        {
+          "key": "theme.custom.dark.panel_bg",
+          "type": "color",
+          "default": "unset",
+          "description": "Override the panel_bg color token when auto_switch selects a dark appearance. Applied after theme.custom. Accepts hex, named colors, rgb(r,g,b), or reset aliases."
+        },
+        {
+          "key": "theme.custom.dark.sidebar_bg",
+          "type": "color",
+          "default": "unset",
+          "description": "Override the sidebar_bg color token when auto_switch selects a dark appearance. Applied after theme.custom. Accepts hex, named colors, rgb(r,g,b), or reset aliases."
+        },
+        {
+          "key": "theme.custom.dark.active_row_bg",
+          "type": "color",
+          "default": "unset",
+          "description": "Override the active_row_bg color token when auto_switch selects a dark appearance. Applied after theme.custom. Accepts hex, named colors, rgb(r,g,b), or reset aliases."
+        },
+        {
+          "key": "theme.custom.dark.selection_bg",
+          "type": "color",
+          "default": "unset",
+          "description": "Override the selection_bg color token when auto_switch selects a dark appearance. Applied after theme.custom. Accepts hex, named colors, rgb(r,g,b), or reset aliases."
+        },
+        {
+          "key": "theme.custom.dark.surface0",
+          "type": "color",
+          "default": "unset",
+          "description": "Override the surface0 color token when auto_switch selects a dark appearance. Applied after theme.custom. Accepts hex, named colors, rgb(r,g,b), or reset aliases."
+        },
+        {
+          "key": "theme.custom.dark.surface1",
+          "type": "color",
+          "default": "unset",
+          "description": "Override the surface1 color token when auto_switch selects a dark appearance. Applied after theme.custom. Accepts hex, named colors, rgb(r,g,b), or reset aliases."
+        },
+        {
+          "key": "theme.custom.dark.surface_dim",
+          "type": "color",
+          "default": "unset",
+          "description": "Override the surface_dim color token when auto_switch selects a dark appearance. Applied after theme.custom. Accepts hex, named colors, rgb(r,g,b), or reset aliases."
+        },
+        {
+          "key": "theme.custom.dark.overlay0",
+          "type": "color",
+          "default": "unset",
+          "description": "Override the overlay0 color token when auto_switch selects a dark appearance. Applied after theme.custom. Accepts hex, named colors, rgb(r,g,b), or reset aliases."
+        },
+        {
+          "key": "theme.custom.dark.overlay1",
+          "type": "color",
+          "default": "unset",
+          "description": "Override the overlay1 color token when auto_switch selects a dark appearance. Applied after theme.custom. Accepts hex, named colors, rgb(r,g,b), or reset aliases."
+        },
+        {
+          "key": "theme.custom.dark.text",
+          "type": "color",
+          "default": "unset",
+          "description": "Override the text color token when auto_switch selects a dark appearance. Applied after theme.custom. Accepts hex, named colors, rgb(r,g,b), or reset aliases."
+        },
+        {
+          "key": "theme.custom.dark.subtext0",
+          "type": "color",
+          "default": "unset",
+          "description": "Override the subtext0 color token when auto_switch selects a dark appearance. Applied after theme.custom. Accepts hex, named colors, rgb(r,g,b), or reset aliases."
+        },
+        {
+          "key": "theme.custom.dark.mauve",
+          "type": "color",
+          "default": "unset",
+          "description": "Override the mauve color token when auto_switch selects a dark appearance. Applied after theme.custom. Accepts hex, named colors, rgb(r,g,b), or reset aliases."
+        },
+        {
+          "key": "theme.custom.dark.green",
+          "type": "color",
+          "default": "unset",
+          "description": "Override the green color token when auto_switch selects a dark appearance. Applied after theme.custom. Accepts hex, named colors, rgb(r,g,b), or reset aliases."
+        },
+        {
+          "key": "theme.custom.dark.yellow",
+          "type": "color",
+          "default": "unset",
+          "description": "Override the yellow color token when auto_switch selects a dark appearance. Applied after theme.custom. Accepts hex, named colors, rgb(r,g,b), or reset aliases."
+        },
+        {
+          "key": "theme.custom.dark.red",
+          "type": "color",
+          "default": "unset",
+          "description": "Override the red color token when auto_switch selects a dark appearance. Applied after theme.custom. Accepts hex, named colors, rgb(r,g,b), or reset aliases."
+        },
+        {
+          "key": "theme.custom.dark.blue",
+          "type": "color",
+          "default": "unset",
+          "description": "Override the blue color token when auto_switch selects a dark appearance. Applied after theme.custom. Accepts hex, named colors, rgb(r,g,b), or reset aliases."
+        },
+        {
+          "key": "theme.custom.dark.teal",
+          "type": "color",
+          "default": "unset",
+          "description": "Override the teal color token when auto_switch selects a dark appearance. Applied after theme.custom. Accepts hex, named colors, rgb(r,g,b), or reset aliases."
+        },
+        {
+          "key": "theme.custom.dark.peach",
+          "type": "color",
+          "default": "unset",
+          "description": "Override the peach color token when auto_switch selects a dark appearance. Applied after theme.custom. Accepts hex, named colors, rgb(r,g,b), or reset aliases."
         }
       ]
     },
@@ -206,6 +434,12 @@
             "current",
             "path"
           ]
+        },
+        {
+          "key": "terminal.kitty_graphics",
+          "type": "boolean",
+          "default": "true",
+          "description": "Render pane images in Kitty graphics-compatible outer terminals. Set false to disable graphics rendering and the pane graphics API. Restart the server or reattach the client after changing it. In remote sessions, server configuration controls parsing and API availability while local client configuration controls outer-terminal output."
         }
       ]
     },
@@ -347,7 +581,7 @@
           "key": "keys.detach",
           "type": "keybinding",
           "default": "\"prefix+q\"",
-          "description": "Detach from server/client mode, or exit --no-session mode."
+          "description": "Detach the current client from its Herdr server."
         },
         {
           "key": "keys.reload_config",
@@ -614,16 +848,10 @@
           "description": "Modifier combo for agent shortcuts 1-9. Unset by default."
         },
         {
-          "key": "keys.toggle_right_panel",
-          "type": "string",
-          "default": "unset",
-          "description": "Keybinding that toggles the right panel (Changes / Checks / Issues / PRs) open or closed."
-        },
-        {
           "key": "keys.cycle_view_mode",
           "type": "string",
           "default": "unset",
-          "description": "Keybinding that cycles the sidebar view mode: flat -> repo -> project -> flat. Same thing the view-mode label on the sidebar's workspace header toggles when clicked."
+          "description": "Keybinding that cycles the sidebar view mode: flat -> folders -> repo -> flat. Same thing the view-mode label on the sidebar's workspace header toggles when clicked."
         },
         {
           "key": "keys.chat",
@@ -738,9 +966,14 @@
         },
         {
           "key": "ui.pane_borders",
-          "type": "boolean",
-          "default": "true",
-          "description": "Draw borders around split panes."
+          "type": "enum",
+          "default": "\"auto\"",
+          "description": "Draw borders around split panes. auto draws them only for split panes, always also frames a lone pane (only while pane_outer_borders is enabled, since every edge of a lone pane is an outer edge), off disables them. Legacy booleans still parse: true maps to auto and false maps to off.",
+          "values": [
+            "auto",
+            "always",
+            "off"
+          ]
         },
         {
           "key": "ui.pane_outer_borders",
@@ -836,30 +1069,14 @@
         {
           "key": "ui.sidebar.agents.rows",
           "type": "list of token rows",
-          "default": "[[\"state_icon\", \"workspace\", \"tab\"], [\"agent\"]]",
-          "description": "Default expanded Agent sidebar layout. Entries may be token strings or inline { token, fg, bold, dim } style tables. Supports built-in and $name metadata tokens; at most 16 rows and 16 tokens per row."
+          "default": "[[\"state_icon\", \"machine\", \"workspace\", \"tab\"], [\"agent\"]]",
+          "description": "Default expanded Agent sidebar layout. Entries may be token strings or inline { token, fg, bold, dim, rules } style tables. Text-valued built-ins and $name metadata tokens accept up to 16 ordered rules using equals, contains, starts_with, gt, or lt; the first match overrides specified styles. Text conditions optionally accept ignore_case for ASCII matching; numeric conditions require full finite numbers. state_icon accepts fixed styles only. At most 16 rows and 16 tokens per row."
         },
         {
           "key": "ui.sidebar.agents.rows_by_agent",
           "type": "table of token rows",
           "default": "{}",
           "description": "Complete Agent-row overrides keyed by strict canonical agent id. Agents without an override use ui.sidebar.agents.rows."
-        },
-        {
-          "key": "ui.sidebar.project.glyph_style",
-          "type": "enum",
-          "default": "unicode",
-          "description": "Glyph set for the Project view state cluster (branch/ahead/behind/dirty/staged/PR icons). unicode works on any terminal; nerd_font uses private-use-area glyphs that need a patched font (Ghostty ships one built-in).",
-          "values": [
-            "unicode",
-            "nerd_font"
-          ]
-        },
-        {
-          "key": "ui.sidebar.project.row_gap",
-          "type": "integer",
-          "default": "1",
-          "description": "Blank terminal rows between workspace blocks in the Project sidebar view. Set to 0 to pack rows."
         },
         {
           "key": "ui.sidebar.spaces.row_gap",
@@ -871,7 +1088,7 @@
           "key": "ui.sidebar.spaces.rows",
           "type": "list of token rows",
           "default": "[[\"state_icon\", \"workspace\"], [\"branch\", \"git_status\"]]",
-          "description": "Expanded Space sidebar layout. Entries may be token strings or inline { token, fg, bold, dim } style tables. Supports built-in and $name metadata tokens; at most 16 rows and 16 tokens per row."
+          "description": "Expanded Space sidebar layout. Entries may be token strings or inline { token, fg, bold, dim, rules } style tables. Text-valued built-ins and $name metadata tokens accept up to 16 ordered rules using equals, contains, starts_with, gt, or lt; the first match overrides specified styles. Text conditions optionally accept ignore_case for ASCII matching; numeric conditions require full finite numbers. state_icon and git_status accept fixed styles only. At most 16 rows and 16 tokens per row."
         },
         {
           "key": "ui.accent",
@@ -883,12 +1100,18 @@
           "key": "ui.view_mode",
           "type": "enum",
           "default": "\"repo\"",
-          "description": "How the sidebar groups workspaces. \"repo\" groups them by repository (the default). \"flat\" shows one flat list that can be freely drag-reordered — repo, channel, and visual groups all dissolve, and switching back regroups automatically. \"project\" groups them by declared project (projects.yml); until the project entry model lands it renders like \"repo\". Replaces the retired boolean ui.group_workspaces_by_repo, which is still accepted as an alias: false means \"flat\", true means \"repo\".",
+          "description": "How the sidebar groups workspaces. \"repo\" groups them by repository (the default). \"flat\" shows one flat list that can be freely drag-reordered — repo, channel, and visual groups all dissolve, and switching back regroups automatically. \"folders\" is a flat list too, but honors only your user-defined visual_group folders — no repo grouping, no branch brackets, and the @wNpN pane badge is suppressed. Replaces the retired boolean ui.group_workspaces_by_repo, which is still accepted as an alias: false means \"flat\", true means \"repo\".",
           "values": [
             "flat",
-            "repo",
-            "project"
+            "folders",
+            "repo"
           ]
+        },
+        {
+          "key": "ui.hide_pane_badges",
+          "type": "boolean",
+          "default": "false",
+          "description": "Suppress the synthetic @wNpN pane badge on sidebar workspace rows (a registered `bora agent rename` name is still shown). The \"folders\" view has no pane badges by construction: its rows carry per-pane dots instead."
         },
         {
           "key": "ui.show_pane_ids_on_pane_borders",
@@ -903,6 +1126,12 @@
           "description": "Sidebar group that collects `#`-labelled channel workspaces. The grouping rule keys off the `#` label, never off this string."
         },
         {
+          "key": "ui.idle_attention_seconds",
+          "type": "integer",
+          "default": "300",
+          "description": "Promote a background-workspace pane to the sidebar attention state (unseen: yellow/red dot, and the \"N waiting\" counter on the view row) after it has produced no output for this many seconds. Focusing its workspace clears it. 0 disables."
+        },
+        {
           "key": "ui.chat_view",
           "type": "boolean",
           "default": "false",
@@ -913,12 +1142,6 @@
           "type": "string",
           "default": "null",
           "description": "Human display name in the channel chat view. `null` resolves to the OS username, then \"you\"."
-        },
-        {
-          "key": "ui.chat_open_on_mention",
-          "type": "boolean",
-          "default": "true",
-          "description": "Open the chat view automatically when an agent message addresses the human seat (`@<ui.chat_name>`) while the view is closed. Suppressed while the human is typing or mid-modal, falling back to the toast. Only meaningful when `chat_view` is on."
         },
         {
           "key": "ui.channel_burst_messages",
@@ -1237,6 +1460,17 @@
             "on",
             "off"
           ]
+        },
+        {
+          "key": "ui.sound.agents.muse",
+          "type": "enum",
+          "default": "\"default\"",
+          "description": "Sound override for detected Muse agents.",
+          "values": [
+            "default",
+            "on",
+            "off"
+          ]
         }
       ]
     },
@@ -1261,48 +1495,6 @@
           "type": "string",
           "default": "\"~/.herdr/worktrees\"",
           "description": "Root directory under which Herdr creates <repo>/<branch-slug> checkouts."
-        }
-      ]
-    },
-    {
-      "id": "github",
-      "title": "GitHub",
-      "keys": [
-        {
-          "key": "github.enabled",
-          "type": "boolean",
-          "default": "true",
-          "description": "Enable background GitHub data fetches (open PRs, issues) via the gh CLI."
-        },
-        {
-          "key": "github.refresh_interval_secs",
-          "type": "integer",
-          "default": "120",
-          "description": "Seconds between periodic background open-PR refreshes. 0 falls back to the default interval."
-        }
-      ]
-    },
-    {
-      "id": "checks",
-      "title": "Checks",
-      "keys": [
-        {
-          "key": "checks.refresh_interval_secs",
-          "type": "integer",
-          "default": "30",
-          "description": "Seconds between periodic background PR/CI check-status refreshes, feeding the sidebar CHECKS section and the PR badges. 0 falls back to the default interval."
-        }
-      ]
-    },
-    {
-      "id": "flow",
-      "title": "Flow",
-      "keys": [
-        {
-          "key": "flow.command",
-          "type": "string",
-          "default": "unset",
-          "description": "Shell command template used to run a flow for a GitHub issue from the Issues tab. Placeholders: {issue} = owner/repo#N, {number} = N, {url} = issue URL, {repo} = absolute repo checkout path. Unset disables the action; a repo can override via [flow] in its .bora.toml."
         }
       ]
     },
@@ -1343,8 +1535,8 @@
         {
           "key": "experimental.kitty_graphics",
           "type": "boolean",
-          "default": "false",
-          "description": "Experimental local Kitty graphics rendering for attached clients."
+          "default": "unset",
+          "description": "Deprecated compatibility key for terminal.kitty_graphics. Existing true and false values remain supported; terminal.kitty_graphics takes precedence when both are set."
         },
         {
           "key": "experimental.pane_history",
