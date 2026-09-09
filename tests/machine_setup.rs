@@ -81,7 +81,7 @@ fn setup_with_strict_host_key_failure(
         strict_host_key_failure
     ));
     let app = if cfg!(debug_assertions) {
-        "herdr-dev"
+        "bora-dev"
     } else {
         "herdr"
     };
