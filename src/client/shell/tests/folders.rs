@@ -23,6 +23,7 @@ fn folders_snapshot() -> ClientShellSnapshot {
         foreground_cwd: Some("/repo".into()),
         focused: false,
         right_click_passthrough: false,
+        idle_seconds: None,
     });
     projected.agents.push(ClientShellAgent {
         pane_id: "pane_1b".into(),
