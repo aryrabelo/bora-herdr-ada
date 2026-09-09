@@ -348,6 +348,17 @@ verify a fix, ask for `bora --version` first. (learned 2026-08-25, binding: a
 repaint fix was reported as ineffective while the installed binary was ten
 minor versions behind the tree, and the same stale binary had earlier been
 suspected of *causing* a regression that shipped after it was built.)
+  **The same trap has a second mechanism: `[build] target-dir` in `~/.cargo/config.toml`.**
+  This machine pins a single shared target dir (`/Users/aryrabelo/.cargo/target`, set in
+  config.toml — NOT as an environment variable), so the install recipe's
+  `${CARGO_TARGET_DIR:-target}` fallback always resolved to the checkout's own `target/`,
+  and `just install` kept linking a weeks-old `target/release/bora` while every build
+  landed in the shared dir: `cargo build` said 0.46.0, the installed binary answered
+  0.45.39, and the tree was provably merged. The recipe now resolves the real location
+  through `cargo metadata`'s `target_directory`, which honors both the env var and
+  config.toml. If `bora --version` ever disagrees with `Cargo.toml`, compare
+  `readlink ~/.local/bin/bora` against `cargo metadata --no-deps` before suspecting the
+  build. (learned 2026-09-09, binding.)
 
 **After landing a change, you can put the running server on the new build
 yourself: `just install && bora server live-handoff`.** `live-handoff` hands

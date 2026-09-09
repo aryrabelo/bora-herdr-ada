@@ -119,7 +119,7 @@ build:
 install:
     cargo build --release --locked
     mkdir -p ~/.local/bin
-    ln -sfn "$(pwd)/${CARGO_TARGET_DIR:-target}/release/bora" ~/.local/bin/bora
+    ln -sfn "$(cargo metadata --format-version 1 --no-deps | sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p')/release/bora" ~/.local/bin/bora
     @echo "installed: $(~/.local/bin/bora --version)"
 
 # Non-gating full-render scaling profile for background workspaces and active panes
