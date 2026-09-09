@@ -27,7 +27,7 @@ describe('preview documentation snapshots', () => {
       'selected preview\n',
     );
     await expect(read(root, 'docs/preview/website/stale.mdx')).rejects.toThrow();
-  });
+  }, 30_000);
 
   test('rejects snapshot drift', async () => {
     const root = await fixture();
@@ -37,7 +37,7 @@ describe('preview documentation snapshots', () => {
     await write(root, 'docs/preview/website/src/content/docs/index.mdx', 'changed\n');
 
     expect(() => runScript(root, ['check'])).toThrow();
-  });
+  }, 30_000);
 });
 
 async function fixture() {

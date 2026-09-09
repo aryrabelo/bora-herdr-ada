@@ -1774,7 +1774,7 @@ mod tests {
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::new(
             &crate::config::Config::default(),
-            true,
+            crate::app::AppPolicy::TEST,
             None,
             api_rx,
             crate::api::EventHub::default(),
@@ -2103,11 +2103,12 @@ mod tests {
         app.handle_workspace_create(
             "req".into(),
             crate::api::schema::WorkspaceCreateParams {
+                group: None,
+                source_workspace_id: None,
                 cwd: None,
                 focus: false,
                 label: None,
                 env: Default::default(),
-                group: None,
             },
         );
 
@@ -3598,11 +3599,12 @@ mod tests {
         app.handle_workspace_create(
             "req".into(),
             crate::api::schema::WorkspaceCreateParams {
+                group: None,
+                source_workspace_id: None,
                 cwd: None,
                 focus: false,
                 label: None,
                 env: Default::default(),
-                group: None,
             },
         );
         let ws_idx = app.state.workspaces.len() - 1;

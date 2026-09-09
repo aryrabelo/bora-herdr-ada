@@ -55,56 +55,86 @@ function Get-BoraCommandSource {
     return $existing.Source
 }
 
-function Test-PathStartsWith {
-    param(
-        [string]$Path,
-        [string]$Prefix
-    )
+function Get-HerdrMigrationFallback {
+    param([string]$CurrentDir)
 
-    if ([string]::IsNullOrWhiteSpace($Path) -or [string]::IsNullOrWhiteSpace($Prefix)) {
-        return $false
-    }
-
-    try {
-        $normalizedPath = [System.IO.Path]::GetFullPath($Path)
-        $normalizedPrefix = [System.IO.Path]::GetFullPath($Prefix).TrimEnd("\") + "\"
-        return $normalizedPath.StartsWith($normalizedPrefix, [System.StringComparison]::OrdinalIgnoreCase)
-    } catch {
-        return $false
-    }
-}
-
-function Path-Contains {
-    param(
-        [string]$PathValue,
-        [string]$Entry
-    )
-
-    if ([string]::IsNullOrWhiteSpace($PathValue)) {
-        return $false
-    }
-
-    $needle = $Entry.TrimEnd("\")
-    foreach ($segment in $PathValue.Split(";", [System.StringSplitOptions]::RemoveEmptyEntries)) {
-        if ($segment.TrimEnd("\") -ieq $needle) {
-            return $true
+    if (Test-IsJunction -Path $CurrentDir) {
+        $target = [string](Get-Item -LiteralPath $CurrentDir -Force).Target
+        $candidate = Join-Path $target "herdr.exe"
+        if (Test-RegularFile -Path $candidate) {
+            return $candidate
         }
     }
 
-    return $false
+    return $null
+}
+
+function Get-HerdrExecutableKind {
+    param(
+        [string]$Path,
+        [string]$ReleasesDir,
+        [string]$CurrentDir,
+        [string]$VisibleBinDir
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Path) -or
+        -not [System.IO.Path]::GetFileName($Path).Equals("herdr.exe", [System.StringComparison]::OrdinalIgnoreCase)) {
+        return $null
+    }
+
+    try {
+        $fullPath = [System.IO.Path]::GetFullPath($Path)
+        foreach ($alias in @($CurrentDir, $VisibleBinDir)) {
+            $aliasHerdr = [System.IO.Path]::GetFullPath((Join-Path $alias "herdr.exe"))
+            if ($fullPath.Equals($aliasHerdr, [System.StringComparison]::OrdinalIgnoreCase)) {
+                return "alias"
+            }
+        }
+
+        $parent = Split-Path -Parent $fullPath
+        if ([System.IO.Path]::GetFullPath((Split-Path -Parent $parent)).TrimEnd("\").Equals(
+            [System.IO.Path]::GetFullPath($ReleasesDir).TrimEnd("\"),
+            [System.StringComparison]::OrdinalIgnoreCase
+        )) {
+            return "release"
+        }
+    } catch {
+        return $null
+    }
+
+    return $null
 }
 
 function Prepend-PathEntry {
     param(
         [string]$PathValue,
-        [string]$Entry
+        [string]$Entry,
+        [string[]]$OwnedEntriesToRemove = @(),
+        [string]$OwnedEntryParentToRemove
     )
 
-    $needle = $Entry.TrimEnd("\")
+    $normalize = {
+        param([string]$Value)
+        $comparison = [Environment]::ExpandEnvironmentVariables($Value.Trim().Trim('"')).TrimEnd("\")
+        try { [System.IO.Path]::GetFullPath($comparison).TrimEnd("\") } catch { $comparison }
+    }
+    $needle = & $normalize $Entry
+    $owned = @($OwnedEntriesToRemove | ForEach-Object { & $normalize $_ })
+    $ownedParent = if ([string]::IsNullOrWhiteSpace($OwnedEntryParentToRemove)) {
+        $null
+    } else {
+        & $normalize $OwnedEntryParentToRemove
+    }
     $segments = @($Entry)
     if (-not [string]::IsNullOrWhiteSpace($PathValue)) {
         $segments += $PathValue.Split(";", [System.StringSplitOptions]::RemoveEmptyEntries) |
-            Where-Object { $_.TrimEnd("\") -ine $needle }
+            Where-Object {
+                $segment = & $normalize $_
+                try { $parent = [System.IO.Path]::GetDirectoryName($segment) } catch { $parent = $null }
+                $segment -ine $needle -and
+                    -not ($owned -icontains $segment) -and
+                    ($null -eq $ownedParent -or $parent -ine $ownedParent)
+            }
     }
 
     return ($segments -join ";")
@@ -113,7 +143,9 @@ function Prepend-PathEntry {
 function Update-PathRegistryEntry {
     param(
         [Microsoft.Win32.RegistryKey]$EnvironmentKey,
-        [string]$Entry
+        [string]$Entry,
+        [string[]]$OwnedEntriesToRemove = @(),
+        [string]$OwnedEntryParentToRemove
     )
 
     $options = [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames
@@ -123,7 +155,11 @@ function Update-PathRegistryEntry {
     } else {
         $EnvironmentKey.GetValueKind("Path")
     }
-    $newValue = Prepend-PathEntry -PathValue $value -Entry $Entry
+    $newValue = Prepend-PathEntry `
+        -PathValue $value `
+        -Entry $Entry `
+        -OwnedEntriesToRemove $OwnedEntriesToRemove `
+        -OwnedEntryParentToRemove $OwnedEntryParentToRemove
     if ($newValue -ceq $value) {
         return $false
     }
@@ -776,8 +812,9 @@ Write-Step "Installing bora $versionIdentity for $targetTriple"
 $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) ("bora-install-" + [System.Guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Force -Path $tempDir | Out-Null
 
+$userPathChanged = $false
 try {
-    Invoke-WithInstallLock -LockPath $lockPath -Script {
+    $userPathChanged = Invoke-WithInstallLock -LockPath $lockPath -Script {
         Remove-StaleInstallArtifacts -ReleasesDir $releasesDir
 
         if (-not (Test-HerdrReleaseComplete -ReleaseDir $releaseDir -Format $asset.Format)) {
@@ -840,30 +877,17 @@ try {
             throw "Installed bora command failed verification: $boraCommand --version"
         }
         Remove-OldReleases -ReleasesDir $releasesDir -CurrentReleaseDir $releaseDir -Keep $Retain
+        return $pathChanged
     }
 } finally {
     Remove-Item -LiteralPath $tempDir -Recurse -Force -ErrorAction SilentlyContinue
 }
 
-$userEnvironmentKey = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey("Environment")
-if ($null -eq $userEnvironmentKey) {
-    throw "Unable to open the current user's environment registry key."
-}
-try {
-    $userPathChanged = Update-PathRegistryEntry -EnvironmentKey $userEnvironmentKey -Entry $visibleBinDir
-} finally {
-    $userEnvironmentKey.Dispose()
-}
 if ($userPathChanged) {
     Publish-EnvironmentChange
     Write-Step "PATH updated for future PowerShell sessions."
 } else {
-    Write-Step "$visibleBinDir is already first on PATH."
-}
-
-$newProcessPath = Prepend-PathEntry -PathValue $env:Path -Entry $visibleBinDir
-if ($newProcessPath -cne $env:Path) {
-    $env:Path = $newProcessPath
+    Write-Step "$releaseDir is already first on PATH."
 }
 
 $resolvedBora = Get-BoraCommandSource

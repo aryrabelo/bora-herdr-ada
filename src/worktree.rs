@@ -215,37 +215,16 @@ pub(crate) fn worktree_dirty_remove_message(path: &Path) -> String {
     )
 }
 
+// Only the Windows deferred-worktree-remove path calls this (see
+// `src/app/api/worktrees/deferred.rs`); on other platforms it is unused
+// (the merge-to-main flow that used to call it was retired, ceo-bora#274).
+#[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) fn checkout_has_dirty_files(
     path: &Path,
     trust_repository: bool,
 ) -> Result<bool, String> {
     let output = repository_git_command(path, trust_repository)
         .args(["status", "--porcelain", "--untracked-files=all"])
-        .output()
-        .map_err(|err| err.to_string())?;
-
-    if output.status.success() {
-        return Ok(!output.stdout.is_empty());
-    }
-
-    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if !stderr.is_empty() {
-        Err(stderr)
-    } else if !stdout.is_empty() {
-        Err(stdout)
-    } else {
-        Err(format!("git status failed with status {}", output.status))
-    }
-}
-
-/// Tracked-only dirtiness: staged or unstaged changes to files git already
-/// knows, ignoring untracked ones. `git merge` completes with untracked files
-/// present, so a merge gate must not refuse on them; removing a checkout would
-/// destroy them, so `checkout_has_dirty_files` still counts them.
-pub(crate) fn checkout_has_tracked_changes(path: &Path) -> Result<bool, String> {
-    let output = repository_git_command(path, false)
-        .args(["status", "--porcelain", "--untracked-files=no"])
         .output()
         .map_err(|err| err.to_string())?;
 
@@ -575,122 +554,6 @@ fn existing_worktree_path_on_branch(
         .into_iter()
         .find(|entry| entry.branch.as_deref() == Some(branch))
         .map(|entry| entry.path))
-}
-
-pub(crate) fn build_worktree_merge_command(repo_root: &Path, branch: &str) -> WorktreeCommand {
-    WorktreeCommand {
-        program: "git".to_string(),
-        args: vec![
-            "-C".to_string(),
-            repo_root.display().to_string(),
-            "merge".to_string(),
-            "--no-ff".to_string(),
-            "--no-edit".to_string(),
-            branch.to_string(),
-        ],
-    }
-}
-
-/// Abort an in-progress merge in `repo_root` (used to clean up after a conflict).
-pub(crate) fn build_worktree_merge_abort_command(repo_root: &Path) -> WorktreeCommand {
-    WorktreeCommand {
-        program: "git".to_string(),
-        args: vec![
-            "-C".to_string(),
-            repo_root.display().to_string(),
-            "merge".to_string(),
-            "--abort".to_string(),
-        ],
-    }
-}
-
-/// Merge `branch` into the parent/main checkout, refusing if either side is
-/// dirty and aborting (no changes applied) on conflict. Shared by the
-/// merge-to-main and merge-and-remove flows.
-pub(crate) fn merge_branch_to_parent(
-    repo_root: &Path,
-    checkout_path: &Path,
-    branch: &str,
-) -> Result<(), String> {
-    if checkout_has_dirty_files(checkout_path, false)? {
-        return Err("worktree has uncommitted changes; commit them before merging".into());
-    }
-    // Untracked files in the base do not affect the merge: it runs in repo_root
-    // and git completes with them present. Only tracked modifications can be
-    // overwritten, so gating on untracked ones refuses merges git would perform.
-    if checkout_has_tracked_changes(repo_root)? {
-        return Err(
-            "base checkout has uncommitted changes to tracked files; commit or stash them first"
-                .into(),
-        );
-    }
-    let merge = build_worktree_merge_command(repo_root, branch);
-    if let Err(err) = run_worktree_command(&merge) {
-        let abort = build_worktree_merge_abort_command(repo_root);
-        let _ = run_worktree_command(&abort);
-        return Err(format!("merge failed (no changes applied): {err}"));
-    }
-    Ok(())
-}
-
-/// Push `branch` to `origin` from the worktree checkout, setting upstream so a
-/// subsequent `gh pr create` has a remote head to open a PR from.
-pub(crate) fn build_worktree_push_command(checkout_path: &Path, branch: &str) -> WorktreeCommand {
-    WorktreeCommand {
-        program: "git".to_string(),
-        args: vec![
-            "-C".to_string(),
-            checkout_path.display().to_string(),
-            "push".to_string(),
-            "-u".to_string(),
-            "origin".to_string(),
-            branch.to_string(),
-        ],
-    }
-}
-
-/// Push the worktree branch and open a GitHub PR via `gh pr create --fill`,
-/// returning the PR URL printed on stdout. `gh` runs inside the checkout so it
-/// resolves the repo from the worktree's remote.
-pub(crate) fn open_pull_request(checkout_path: &Path, branch: &str) -> Result<String, String> {
-    run_worktree_command(&build_worktree_push_command(checkout_path, branch))?;
-    let output = std::process::Command::new("gh")
-        .current_dir(checkout_path)
-        .args(["pr", "create", "--fill"])
-        .output()
-        .map_err(|err| format!("failed to run gh: {err}"))?;
-    if output.status.success() {
-        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
-    } else {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        Err(if stderr.is_empty() {
-            "gh pr create failed".to_string()
-        } else {
-            stderr
-        })
-    }
-}
-
-/// A `git -C <checkout_path> <args...>` command.
-fn build_git_in_checkout_command(checkout_path: &Path, args: &[&str]) -> WorktreeCommand {
-    let mut full = vec!["-C".to_string(), checkout_path.display().to_string()];
-    full.extend(args.iter().map(std::string::ToString::to_string));
-    WorktreeCommand {
-        program: "git".to_string(),
-        args: full,
-    }
-}
-
-/// Sync the checkout's branch with its upstream: fast-forward in remote commits
-/// (`pull --ff-only`, never creating merge commits or conflicts), then push any
-/// local commits. A diverged branch fails the `--ff-only` pull cleanly without
-/// touching the tree.
-pub(crate) fn sync_branch_with_upstream(checkout_path: &Path) -> Result<(), String> {
-    run_worktree_command(&build_git_in_checkout_command(
-        checkout_path,
-        &["pull", "--ff-only"],
-    ))?;
-    run_worktree_command(&build_git_in_checkout_command(checkout_path, &["push"]))
 }
 
 pub(crate) fn run_worktree_command(command: &WorktreeCommand) -> Result<(), String> {
@@ -1075,44 +938,6 @@ mod tests {
             generated_branch_slug(0).starts_with("worktree/brave-river-"),
             "generated_branch_slug must still carry the worktree/ prefix and reuse the same words"
         );
-    }
-
-    #[test]
-    fn merge_to_parent_ignores_untracked_files_in_the_base_checkout() {
-        let repo = create_committed_repo("merge-untracked-base");
-        run_git(&repo, &["branch", "feature"]);
-        let checkout = unique_temp_path("merge-untracked-checkout");
-        run_git(
-            &repo,
-            &[
-                "worktree",
-                "add",
-                &checkout.display().to_string(),
-                "feature",
-            ],
-        );
-        std::fs::write(checkout.join("feature.txt"), "work\n").unwrap();
-        run_git(&checkout, &["add", "feature.txt"]);
-        run_git(&checkout, &["commit", "--quiet", "-m", "feature work"]);
-
-        // git merge completes with untracked files present, so the gate must not
-        // refuse on them: this is the reported failure, a clean worktree that
-        // could not be merged because the base held unrelated untracked files.
-        std::fs::write(repo.join("untracked-note.md"), "scratch\n").unwrap();
-        merge_branch_to_parent(&repo, &checkout, "feature").expect("untracked base must merge");
-        assert!(repo.join("feature.txt").exists());
-
-        // A tracked modification in the base is a real conflict risk and still blocks.
-        std::fs::write(checkout.join("more.txt"), "more\n").unwrap();
-        run_git(&checkout, &["add", "more.txt"]);
-        run_git(&checkout, &["commit", "--quiet", "-m", "more work"]);
-        std::fs::write(repo.join("README.md"), "modified\n").unwrap();
-        let err = merge_branch_to_parent(&repo, &checkout, "feature")
-            .expect_err("tracked base changes must still block");
-        assert!(err.contains("tracked"), "unexpected error: {err}");
-
-        let _ = std::fs::remove_dir_all(&checkout);
-        let _ = std::fs::remove_dir_all(&repo);
     }
 
     #[test]

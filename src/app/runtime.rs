@@ -1,10 +1,10 @@
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
-use crossterm::terminal;
+#[cfg(test)]
+use std::time::Duration;
 
 use super::{
-    background_update_check_enabled, App, ANIMATION_INTERVAL, AUTO_UPDATE_CHECK_INTERVAL,
-    MIN_RENDER_INTERVAL, RESIZE_POLL_INTERVAL, SELECTION_AUTOSCROLL_INTERVAL,
+    background_update_check_enabled, App, AUTO_UPDATE_CHECK_INTERVAL, MIN_RENDER_INTERVAL,
 };
 fn retain_detached_process_after_wait(
     pid: u32,
@@ -28,10 +28,6 @@ impl App {
     }
 
     pub(crate) fn shutdown_terminal_runtime(&mut self, terminal_id: crate::terminal::TerminalId) {
-        let target = super::TerminalInputTarget {
-            terminal_id: terminal_id.clone(),
-        };
-        self.release_input_target_headless(&target);
         if let Some(runtime) = self.terminal_runtimes.remove(&terminal_id) {
             runtime.shutdown();
         }
@@ -42,497 +38,6 @@ impl App {
         for terminal_id in terminal_ids {
             self.shutdown_terminal_runtime(terminal_id);
         }
-    }
-
-    pub(crate) fn drain_api_requests(&mut self) -> bool {
-        let mut changed = false;
-        while let Ok(msg) = self.api_rx.try_recv() {
-            changed |= self.handle_api_request_message(msg);
-            self.shutdown_detached_terminal_runtimes();
-        }
-        changed
-    }
-
-    pub(super) fn handle_api_request_message(
-        &mut self,
-        msg: crate::api::ApiRequestMessage,
-    ) -> bool {
-        let previous_mode = self.state.mode;
-        let stream_open = match &msg.request.method {
-            crate::api::schema::Method::PaneGraphicsStreamOpen(params) => Some(params.clone()),
-            _ => None,
-        };
-        let stream_active = msg.stream_active.clone();
-        let mut changed = self.expire_due_metadata(Instant::now());
-        changed |= crate::api::request_changes_ui(&msg.request);
-        let skip_default_workspace = matches!(
-            &msg.request.method,
-            crate::api::schema::Method::ServerStop(_)
-                | crate::api::schema::Method::ServerLiveHandoff(_)
-        );
-        if matches!(
-            &msg.request.method,
-            crate::api::schema::Method::WorktreeCreate(_)
-                | crate::api::schema::Method::WorktreeRemove(_)
-        ) {
-            self.drain_all_internal_events();
-            let deferred_changed =
-                self.handle_deferred_worktree_api_request(msg.request, msg.respond_to);
-            if !skip_default_workspace {
-                changed |= self.ensure_default_workspace();
-            }
-            self.sync_prefix_input_source(previous_mode);
-            return changed | deferred_changed;
-        }
-        let response = self.handle_api_request(msg.request);
-        if let (Some(params), Some(active)) = (stream_open.as_ref(), stream_active) {
-            self.attach_pane_graphics_stream_active(params, active, &response);
-        }
-        if !skip_default_workspace {
-            changed |= self.ensure_default_workspace();
-        }
-        let _ = msg.respond_to.send(response);
-        self.sync_prefix_input_source(previous_mode);
-        changed
-    }
-
-    pub(super) async fn handle_raw_input_batch(
-        &mut self,
-        first: crate::raw_input::RawInputEvent,
-    ) -> bool {
-        let mut changed = self.handle_raw_input_event(first).await;
-
-        while let Some(rx) = self.input_rx.as_mut() {
-            match rx.try_recv() {
-                Ok(event) => changed |= self.handle_raw_input_event(event).await,
-                Err(tokio::sync::mpsc::error::TryRecvError::Empty) => break,
-                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
-                    self.input_rx = None;
-                    break;
-                }
-            }
-        }
-
-        changed
-    }
-
-    async fn execute_repeat_plan(
-        &mut self,
-        lease_key: super::input::InputLeaseKey,
-        key: crate::input::TerminalKey,
-        plan: super::input::RepeatPlan,
-    ) -> bool {
-        match plan {
-            super::input::RepeatPlan::Forwarded(target) => {
-                if !self.forward_terminal_key_to_target(&target, key).await {
-                    self.input_leases.remove(&lease_key);
-                }
-                true
-            }
-            super::input::RepeatPlan::Reprocess {
-                context,
-                repetitions,
-                tracked,
-            } => {
-                let key = key
-                    .with_kind(crossterm::event::KeyEventKind::Repeat)
-                    .with_repeat_count(1);
-                let mut forwarded_target = None;
-                for _ in 0..repetitions {
-                    if let Some(target) = &forwarded_target {
-                        if !self
-                            .forward_terminal_key_to_target(target, key.clone())
-                            .await
-                        {
-                            self.input_leases.remove(&lease_key);
-                            break;
-                        }
-                        continue;
-                    }
-                    let current_context = self.terminal_input_context();
-                    if !self.input_leases.reprocess_allowed(
-                        lease_key,
-                        &context,
-                        current_context.as_ref(),
-                        tracked,
-                    ) {
-                        break;
-                    }
-                    if let Some(target) = self.handle_key(key.clone()).await {
-                        if tracked {
-                            self.input_leases.insert_forwarded(
-                                lease_key,
-                                target.clone(),
-                                key.clone(),
-                            );
-                            forwarded_target = Some(target);
-                        }
-                    }
-                }
-                true
-            }
-            super::input::RepeatPlan::Ignore => false,
-        }
-    }
-
-    pub(super) async fn handle_raw_input_event(
-        &mut self,
-        event: crate::raw_input::RawInputEvent,
-    ) -> bool {
-        let previous_mode = self.state.mode;
-        let changed = match event {
-            crate::raw_input::RawInputEvent::Key(key) => {
-                let lease_key = super::input::InputLeaseKey::new(super::LOCAL_INPUT_SOURCE, &key);
-                let key = self.input_leases.normalize_press(&lease_key, key);
-                match key.kind {
-                    crossterm::event::KeyEventKind::Press => {
-                        let initial_context = self.terminal_input_context();
-                        let target = self.handle_key(key.clone()).await;
-                        let resulting_context = self.terminal_input_context();
-                        let plan = self.input_leases.complete_press(
-                            lease_key,
-                            &key,
-                            initial_context.as_ref(),
-                            resulting_context.as_ref(),
-                            target,
-                        );
-                        self.execute_repeat_plan(lease_key, key, plan).await;
-                        true
-                    }
-                    crossterm::event::KeyEventKind::Repeat => {
-                        let current_context = self.terminal_input_context();
-                        let plan = self.input_leases.plan_repeat(
-                            lease_key,
-                            &key,
-                            current_context.as_ref(),
-                        );
-                        self.execute_repeat_plan(lease_key, key, plan).await
-                    }
-                    crossterm::event::KeyEventKind::Release => {
-                        if let Some(lease) = self.input_leases.remove_forwarded(&lease_key) {
-                            let _ = self
-                                .forward_terminal_key_to_target(&lease.target, key)
-                                .await;
-                        }
-                        false
-                    }
-                }
-            }
-            crate::raw_input::RawInputEvent::Text(text) => {
-                self.handle_text_commit(text.into_string()).await;
-                true
-            }
-            crate::raw_input::RawInputEvent::Paste(text) => {
-                self.handle_paste(text).await;
-                true
-            }
-            crate::raw_input::RawInputEvent::Mouse(mouse) => {
-                let changes_view = !matches!(mouse.kind, crossterm::event::MouseEventKind::Moved)
-                    || self.state.mode.mouse_motion_changes_view();
-                if self.state.popup_pane.is_some() || self.state.mouse_capture {
-                    self.handle_mouse(mouse);
-                } else {
-                    self.state
-                        .handle_pane_mouse_only(&self.terminal_runtimes, mouse);
-                }
-                changes_view
-            }
-            crate::raw_input::RawInputEvent::OuterFocusGained => {
-                #[cfg(not(windows))]
-                self.query_host_terminal_appearance();
-                self.send_outer_focus_event(crate::ghostty::FocusEvent::Gained);
-                if self.state.redraw_on_focus_gained {
-                    self.request_repaint();
-                }
-                self.state.outer_terminal_focus = Some(true);
-                self.state.mark_active_tab_seen();
-                true
-            }
-            crate::raw_input::RawInputEvent::OuterFocusLost => {
-                self.release_input_source(super::LOCAL_INPUT_SOURCE).await;
-                self.send_outer_focus_event(crate::ghostty::FocusEvent::Lost);
-                self.state.outer_terminal_focus = Some(false);
-                false
-            }
-            crate::raw_input::RawInputEvent::HostDefaultColor { kind, color } => {
-                self.update_host_terminal_theme(kind, color)
-            }
-            crate::raw_input::RawInputEvent::HostPaletteColors { colors } => {
-                self.update_host_terminal_palette_colors(&colors)
-            }
-            crate::raw_input::RawInputEvent::HostColorSchemeChanged(appearance) => {
-                self.query_host_terminal_theme();
-                self.set_host_terminal_appearance(appearance, true)
-            }
-            // Cell size reports are consumed by the thin client, not the runtime.
-            crate::raw_input::RawInputEvent::HostCellSizeReport { .. } => false,
-            crate::raw_input::RawInputEvent::Unsupported => false,
-        };
-        self.sync_prefix_input_source(previous_mode);
-        self.shutdown_detached_terminal_runtimes();
-        changed
-    }
-
-    fn handle_resize_poll(&mut self) -> bool {
-        let Ok(size) = terminal::size() else {
-            return false;
-        };
-        if self.last_terminal_size != Some(size) {
-            self.last_terminal_size = Some(size);
-            return true;
-        }
-        false
-    }
-
-    /// ONE owner of the spinner-animation tick: advance `spinner_tick`
-    /// when the animation deadline is due, then re-arm the timer. This
-    /// helper is the ONLY owner of that decision and is called by both
-    /// tick paths (standalone `handle_scheduled_tasks` and the headless
-    /// server's `handle_scheduled_tasks_headless`), so the two cannot
-    /// drift — the headless path shipped without any animation handling
-    /// once and every spinner froze at one frame in server mode, the mode
-    /// most operators actually run). Returns whether visible state
-    /// changed.
-    pub(crate) fn tick_animation(&mut self, now: Instant) -> bool {
-        let mut changed = false;
-        if self
-            .next_animation_tick
-            .is_some_and(|deadline| now >= deadline)
-        {
-            self.state.spinner_tick = self
-                .state
-                .spinner_tick
-                .wrapping_add(crate::app::SPINNER_TICK_STEP);
-            self.next_animation_tick = None;
-            changed = true;
-        }
-        self.sync_animation_timer(now);
-        changed
-    }
-    /// ONE owner of the quiet-panes promotion: a pane in a background
-    /// workspace whose terminal has produced no PTY output for
-    /// `ui.idle_attention_seconds` flips to unseen (`seen = false`) — the
-    /// exact channel the finished/blocked dots, the idle-age label and the
-    /// sidebar "N waiting" counter already read. A promoted pane recovers
-    /// the moment its workspace is focused (`seen` resets there). The
-    /// stamp is `None` until a pane's first output chunk after spawn, so
-    /// shells restored from a previous server run never mass-promote on
-    /// the first tick. `ui.idle_attention_seconds = 0` disables. Runs
-    /// unconditionally on every scheduled tick (one Instant compare per
-    /// pane) and is called by both tick paths (standalone
-    /// `handle_scheduled_tasks` and the headless server's
-    /// `handle_scheduled_tasks_headless`) — same drift rule as
-    /// `tick_animation` above. Returns whether
-    /// visible state changed.
-    pub(crate) fn promote_quiet_panes(&mut self, now: Instant) -> bool {
-        let quiet_seconds = self.state.idle_attention_seconds;
-        if quiet_seconds == 0 {
-            return false;
-        }
-        let active = self.state.active;
-        let terminal_runtimes = &self.terminal_runtimes;
-        let state = &mut self.state;
-        let mut changed = false;
-        for (ws_idx, ws) in state.workspaces.iter_mut().enumerate() {
-            // You are looking at it — quiet here is not "waiting for you".
-            if Some(ws_idx) == active {
-                continue;
-            }
-            // Channel panes go quiet by design and have their own unread badge.
-            if ws.channel_home_name().is_some() {
-                continue;
-            }
-            for pane in ws.tabs.iter_mut().flat_map(|tab| tab.panes.values_mut()) {
-                if !pane.seen {
-                    continue;
-                }
-                let Some(last_output) = terminal_runtimes
-                    .get(&pane.attached_terminal_id)
-                    .and_then(crate::terminal::TerminalRuntime::last_output_at)
-                else {
-                    continue;
-                };
-                if now.duration_since(last_output).as_secs() >= quiet_seconds {
-                    pane.seen = false;
-                    changed = true;
-                }
-            }
-        }
-        changed
-    }
-
-    pub(crate) fn handle_scheduled_tasks(&mut self, now: Instant, geometry_dirty: bool) -> bool {
-        let mut changed = false;
-        let mut resized = false;
-
-        self.sync_animation_timer(now);
-
-        if now >= self.next_resize_poll {
-            resized = self.handle_resize_poll();
-            changed |= resized;
-            self.next_resize_poll = now + RESIZE_POLL_INTERVAL;
-        }
-
-        if self
-            .config_diagnostic_deadline
-            .is_some_and(|deadline| now >= deadline)
-        {
-            self.config_diagnostic_deadline = None;
-            self.state.config_diagnostic = None;
-            changed = true;
-        }
-
-        if self.toast_deadline.is_some_and(|deadline| now >= deadline) {
-            self.toast_deadline = None;
-            self.state.toast = None;
-            changed = true;
-        }
-
-        if self
-            .state
-            .next_pending_agent_notification_deadline()
-            .is_some_and(|deadline| now >= deadline)
-        {
-            let previous_toast = self.state.toast.clone();
-            let mut deliveries = self.state.drain_due_agent_notifications(now);
-            if !deliveries.is_empty() {
-                self.refresh_agent_notification_delivery_contexts(&mut deliveries);
-                self.emit_delayed_client_local_agent_notifications(&deliveries);
-                self.sync_toast_deadline(previous_toast);
-                changed = true;
-            }
-        }
-
-        if self
-            .state
-            .next_managed_agent_deadline()
-            .is_some_and(|deadline| now >= deadline)
-        {
-            let panes = self.state.reconcile_managed_agents_at(now);
-            if !panes.is_empty() {
-                for (ws_idx, pane_id) in panes {
-                    self.emit_pane_updated(ws_idx, pane_id);
-                }
-                self.schedule_session_save();
-                changed = true;
-            }
-        }
-
-        if self
-            .copy_feedback_deadline
-            .is_some_and(|deadline| now >= deadline)
-        {
-            self.copy_feedback_deadline = None;
-            self.state.copy_feedback = None;
-            changed = true;
-        }
-
-        changed |= self.tick_animation(now);
-
-        // Self-heal: `idle_since` is an Instant and cannot survive
-        // restore/handoff, so terminals restored in Idle state come back
-        // without a timestamp. Seed it so idle ages are always available.
-        for terminal in self.state.terminals.values_mut() {
-            if terminal.state == crate::detect::AgentState::Idle && terminal.idle_since.is_none() {
-                terminal.idle_since = Some(now);
-                changed = true;
-            }
-        }
-
-        if self
-            .selection_autoscroll_deadline
-            .is_some_and(|deadline| now >= deadline)
-        {
-            self.tick_selection_autoscroll(now);
-            changed = true;
-        }
-
-        changed |= self.clear_due_selection_highlight(now);
-
-        self.start_git_status_refresh_if_due(now);
-        self.refresh_channel_membership_if_due(now);
-
-        if self
-            .next_auto_update_check
-            .is_some_and(|deadline| now >= deadline)
-        {
-            self.run_auto_update_check();
-        }
-
-        if self
-            .next_agent_manifest_update_check
-            .is_some_and(|deadline| now >= deadline)
-        {
-            self.run_agent_manifest_update_check();
-        }
-
-        if self
-            .session_save_deadline
-            .is_some_and(|deadline| now >= deadline)
-        {
-            self.start_background_session_save();
-        }
-
-        changed |= self.expire_due_metadata(now);
-        changed |= self.handle_tab_bar_status_tasks(now);
-
-        // Periodically sweep workspaces and update their idle-since timestamps.
-        let idle_check_due = self
-            .workspace_idle_check_deadline
-            .is_none_or(|deadline| now >= deadline);
-        if idle_check_due {
-            for ws in &mut self.state.workspaces {
-                let prev_active = ws.last_activity_at.is_some();
-                ws.update_idle_since(&self.state.terminals, now);
-                // Only trigger redraw when a workspace transitions idle state.
-                changed |= ws.last_activity_at.is_some() != prev_active;
-            }
-            self.workspace_idle_check_deadline =
-                Some(now + crate::app::WORKSPACE_IDLE_CHECK_INTERVAL);
-        }
-
-        changed |= self.promote_quiet_panes(now);
-
-        // Expire temporary sidebar hides so their rows return to the list.
-        if self
-            .state
-            .next_hide_expiry()
-            .is_some_and(|deadline| now >= deadline)
-        {
-            changed |= self.state.sweep_expired_hides(now);
-        }
-
-        if geometry_dirty || resized {
-            self.pending_agent_resume_deadline = None;
-        } else {
-            self.sync_pending_agent_resume_deadline(now);
-            changed |= self.start_pending_agent_resumes(self.pending_agent_resume_due(now));
-        }
-        changed |= self.drain_settled_pending_agent_prompts(now);
-        self.sync_animation_timer(now);
-        changed
-    }
-
-    /// Clears temporary copied-token highlights, such as after double-click copy.
-    pub(crate) fn clear_due_selection_highlight(&mut self, now: Instant) -> bool {
-        if self
-            .selection_highlight_clear_deadline
-            .is_none_or(|deadline| now < deadline)
-        {
-            return false;
-        }
-
-        self.selection_highlight_clear_deadline = None;
-        if self
-            .state
-            .selection
-            .as_ref()
-            .is_some_and(|selection| !selection.is_in_progress())
-        {
-            self.state.clear_selection();
-            return true;
-        }
-        false
     }
 
     pub(crate) fn sync_agent_metadata_deadline(&mut self) {
@@ -566,126 +71,6 @@ impl App {
         self.sync_agent_metadata_deadline();
     }
 
-    pub(crate) fn sync_animation_timer(&mut self, now: Instant) {
-        self.sync_animation_timer_with_interval(now, ANIMATION_INTERVAL);
-    }
-
-    fn sync_animation_timer_with_interval(&mut self, now: Instant, interval: Duration) {
-        // Spinners need frame-rate ticks; idle-age labels only need a slow tick.
-        let interval = if self.agent_panel_has_animation() {
-            Some(interval)
-        } else if self.has_idle_age_label() {
-            Some(crate::app::IDLE_AGE_TICK_INTERVAL)
-        } else {
-            None
-        };
-        match interval {
-            Some(interval) => {
-                let deadline = now + interval;
-                if self
-                    .next_animation_tick
-                    .is_none_or(|current| current > deadline)
-                {
-                    self.next_animation_tick = Some(deadline);
-                }
-            }
-            None => self.next_animation_tick = None,
-        }
-    }
-
-    /// True while any terminal carries an idle timestamp, i.e. the sidebar is
-    /// drawing at least one age label that must keep counting.
-    fn has_idle_age_label(&self) -> bool {
-        self.state
-            .terminals
-            .values()
-            .any(|terminal| terminal.idle_since.is_some())
-    }
-
-    fn agent_panel_has_animation(&self) -> bool {
-        self.state.workspaces.iter().any(|ws| {
-            ws.has_working_pane(&self.state.terminals)
-                || ws.has_unseen_idle_pane(&self.state.terminals)
-        })
-    }
-    pub(crate) fn tick_selection_autoscroll(&mut self, now: Instant) {
-        let Some(autoscroll) = self.state.selection_autoscroll.clone() else {
-            // Self-heal: state cleared but deadline leaked
-            self.selection_autoscroll_deadline = None;
-            return;
-        };
-
-        // Selection must still be in progress for autoscroll to continue
-        let Some(pane_id) = self.state.selection.as_ref().map(|s| s.pane_id) else {
-            self.stop_selection_autoscroll();
-            return;
-        };
-        if !self
-            .state
-            .selection
-            .as_ref()
-            .is_some_and(super::super::selection::Selection::is_dragging)
-        {
-            self.stop_selection_autoscroll();
-            return;
-        }
-
-        // Rect-change detection: if inner_rect changed since drag, stop
-        let current_rect = self
-            .state
-            .pane_info_by_id(pane_id)
-            .map(|info| info.inner_rect);
-        if current_rect != Some(autoscroll.inner_rect) {
-            self.stop_selection_autoscroll();
-            return;
-        }
-
-        // Scrollback boundary detection via ScrollMetrics — fail-closed if unavailable
-        let Some(metrics) = self
-            .state
-            .pane_scroll_metrics(&self.terminal_runtimes, pane_id)
-        else {
-            self.stop_selection_autoscroll();
-            return;
-        };
-        match autoscroll.direction {
-            crate::app::state::SelectionAutoscrollDirection::Up => {
-                let at_top = metrics.offset_from_bottom >= metrics.max_offset_from_bottom;
-                if at_top {
-                    self.stop_selection_autoscroll();
-                    return;
-                }
-                self.state
-                    .scroll_pane_up(&self.terminal_runtimes, pane_id, 1);
-            }
-            crate::app::state::SelectionAutoscrollDirection::Down => {
-                let at_bottom = metrics.offset_from_bottom == 0;
-                if at_bottom {
-                    self.stop_selection_autoscroll();
-                    return;
-                }
-                self.state
-                    .scroll_pane_down(&self.terminal_runtimes, pane_id, 1);
-            }
-        }
-
-        // Extend selection cursor to last known mouse position
-        self.state.update_selection_cursor(
-            &self.terminal_runtimes,
-            pane_id,
-            autoscroll.last_mouse_screen_col,
-            autoscroll.last_mouse_screen_row,
-        );
-
-        // Reschedule
-        self.selection_autoscroll_deadline = Some(now + SELECTION_AUTOSCROLL_INTERVAL);
-    }
-
-    pub(crate) fn stop_selection_autoscroll(&mut self) {
-        self.state.stop_selection_autoscroll_state();
-        self.selection_autoscroll_deadline = None;
-    }
-
     pub(crate) fn can_render_now(&self, now: Instant) -> bool {
         match self.last_render_at {
             Some(last_render_at) => now.duration_since(last_render_at) >= MIN_RENDER_INTERVAL,
@@ -710,7 +95,10 @@ impl App {
     }
 
     pub(crate) fn run_auto_update_check(&mut self) {
-        if !background_update_check_enabled(self.no_session, self.update_version_check_enabled) {
+        if !background_update_check_enabled(
+            self.policy.background_updates,
+            self.update_version_check_enabled,
+        ) {
             self.next_auto_update_check = None;
             return;
         }
@@ -730,7 +118,10 @@ impl App {
     }
 
     pub(crate) fn run_agent_manifest_update_check(&mut self) {
-        if !background_update_check_enabled(self.no_session, self.update_manifest_check_enabled) {
+        if !background_update_check_enabled(
+            self.policy.background_updates,
+            self.update_manifest_check_enabled,
+        ) {
             self.next_agent_manifest_update_check = None;
             return;
         }
@@ -741,24 +132,10 @@ impl App {
         std::thread::spawn(move || crate::detect::manifest_update::auto_update(manifest_update_tx));
     }
 
-    pub(crate) fn next_loop_deadline(&self, now: Instant, needs_render: bool) -> Option<Instant> {
-        self.next_loop_deadline_with_resize_poll(now, needs_render, true, true)
-    }
-
     pub(crate) fn next_headless_loop_deadline_with_git_refresh(
         &self,
         now: Instant,
         needs_render: bool,
-        include_git_refresh: bool,
-    ) -> Option<Instant> {
-        self.next_loop_deadline_with_resize_poll(now, needs_render, false, include_git_refresh)
-    }
-
-    fn next_loop_deadline_with_resize_poll(
-        &self,
-        now: Instant,
-        needs_render: bool,
-        include_resize_poll: bool,
         include_git_refresh: bool,
     ) -> Option<Instant> {
         let render_deadline = if needs_render {
@@ -770,13 +147,10 @@ impl App {
         };
 
         [
-            include_resize_poll.then_some(self.next_resize_poll),
             self.config_diagnostic_deadline,
             self.toast_deadline,
             self.state.next_pending_agent_notification_deadline(),
             self.state.next_managed_agent_deadline(),
-            self.copy_feedback_deadline,
-            self.next_animation_tick,
             include_git_refresh
                 .then(|| self.git_refresh_deadline())
                 .flatten(),
@@ -784,13 +158,7 @@ impl App {
             self.next_agent_manifest_update_check,
             self.agent_metadata_deadline,
             self.pending_agent_resume_deadline,
-            self.pending_agent_prompt_drain_deadlines
-                .values()
-                .min()
-                .copied(),
             self.session_save_deadline,
-            self.selection_autoscroll_deadline,
-            self.selection_highlight_clear_deadline,
             self.next_tab_bar_status_deadline(),
             render_deadline,
         ]
@@ -799,11 +167,13 @@ impl App {
         .min()
     }
 
+    #[cfg(test)]
     pub(crate) fn drain_internal_events(&mut self) -> bool {
         self.drain_internal_events_up_to(super::APP_EVENT_DRAIN_LIMIT)
             .1
     }
 
+    #[cfg(test)]
     pub(crate) fn drain_all_internal_events(&mut self) -> bool {
         let mut changed = false;
         loop {
@@ -817,6 +187,7 @@ impl App {
         changed
     }
 
+    #[cfg(test)]
     fn drain_internal_events_up_to(&mut self, limit: usize) -> (bool, bool) {
         let mut had_event = false;
         let mut changed = false;
@@ -825,7 +196,7 @@ impl App {
                 break;
             };
             had_event = true;
-            changed |= self.handle_internal_event_with_prefix_sync(ev);
+            changed |= self.handle_internal_event_with_render_impact(ev);
         }
         (had_event, changed)
     }
@@ -834,7 +205,6 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::state;
     use crate::workspace::Workspace;
 
     #[test]
@@ -861,7 +231,7 @@ mod tests {
     fn test_app_with_pane() -> (super::super::App, crate::layout::PaneId) {
         let mut app = super::super::App::new(
             &crate::config::Config::default(),
-            true,
+            crate::app::AppPolicy::TEST,
             None,
             tokio::sync::mpsc::unbounded_channel().1,
             crate::api::EventHub::default(),
@@ -879,501 +249,5 @@ mod tests {
             is_focused: true,
         });
         (app, pane_id)
-    }
-
-    #[tokio::test]
-    async fn promote_quiet_panes_flips_quiet_background_pane_only() {
-        let (mut app, active_pane) = test_app_with_pane();
-        let background = Workspace::test_new("bg");
-        let background_pane = background.tabs[0].root_pane;
-        app.state.workspaces.push(background);
-        let now = Instant::now();
-
-        let active_terminal = app.state.workspaces[0]
-            .terminal_id(active_pane)
-            .expect("active pane terminal")
-            .clone();
-        let active_runtime = crate::terminal::TerminalRuntime::test_with_screen_bytes(10, 5, b"x");
-        active_runtime.set_last_output_at(now - Duration::from_secs(6000));
-        app.terminal_runtimes
-            .insert(active_terminal, active_runtime);
-
-        let background_terminal = app.state.workspaces[1]
-            .terminal_id(background_pane)
-            .expect("background pane terminal")
-            .clone();
-        let quiet_runtime = crate::terminal::TerminalRuntime::test_with_screen_bytes(10, 5, b"x");
-        quiet_runtime.set_last_output_at(now - Duration::from_secs(600));
-        app.terminal_runtimes
-            .insert(background_terminal, quiet_runtime);
-
-        assert!(
-            app.promote_quiet_panes(now),
-            "a promotion must mark the tick dirty"
-        );
-        assert!(
-            app.state.workspaces[0].tabs[0].panes[&active_pane].seen,
-            "the workspace you are looking at must never promote"
-        );
-        assert!(
-            !app.state.workspaces[1].tabs[0].panes[&background_pane].seen,
-            "a background pane quiet past ui.idle_attention_seconds must promote"
-        );
-    }
-
-    #[tokio::test]
-    async fn promote_quiet_panes_skips_stampless_channel_and_zero_threshold() {
-        let (mut app, _active_pane) = test_app_with_pane();
-        let quiet = Workspace::test_new("quiet");
-        let quiet_pane = quiet.tabs[0].root_pane;
-        app.state.workspaces.push(quiet);
-        let quiet_terminal = app.state.workspaces[1]
-            .terminal_id(quiet_pane)
-            .expect("quiet pane terminal")
-            .clone();
-        // No stamp: a runtime whose last output predates the spawn (None)
-        // must never promote, or restored shells would mass-flip.
-        app.terminal_runtimes.insert(
-            quiet_terminal,
-            crate::terminal::TerminalRuntime::test_with_screen_bytes(10, 5, b"x"),
-        );
-        let now = Instant::now();
-        assert!(
-            !app.promote_quiet_panes(now),
-            "stampless panes never promote"
-        );
-
-        // Channel workspaces go quiet by design and carry their own badge.
-        let channel = Workspace::test_new("#general");
-        let channel_pane = channel.tabs[0].root_pane;
-        app.state.workspaces.push(channel);
-        let channel_terminal = app.state.workspaces[2]
-            .terminal_id(channel_pane)
-            .expect("channel pane terminal")
-            .clone();
-        let channel_runtime = crate::terminal::TerminalRuntime::test_with_screen_bytes(10, 5, b"x");
-        channel_runtime.set_last_output_at(now - Duration::from_secs(600));
-        app.terminal_runtimes
-            .insert(channel_terminal, channel_runtime);
-        assert!(!app.promote_quiet_panes(now), "channel panes never promote");
-
-        // Threshold 0 disables the whole pass.
-        app.state.idle_attention_seconds = 0;
-        let quiet_terminal = app.state.workspaces[1]
-            .terminal_id(quiet_pane)
-            .expect("quiet pane terminal")
-            .clone();
-        let stamped = crate::terminal::TerminalRuntime::test_with_screen_bytes(10, 5, b"x");
-        stamped.set_last_output_at(now - Duration::from_secs(600));
-        app.terminal_runtimes.insert(quiet_terminal, stamped);
-        assert!(!app.promote_quiet_panes(now), "0 must disable promotion");
-        assert!(app.state.workspaces[1].tabs[0].panes[&quiet_pane].seen);
-    }
-
-    #[test]
-    fn animation_tick_seeds_missing_idle_since_for_idle_terminals() {
-        let (mut app, pane_id) = test_app_with_pane();
-        let terminal_id = app.state.workspaces[0]
-            .terminal_id(pane_id)
-            .expect("pane terminal")
-            .clone();
-        let mut terminal = crate::terminal::TerminalState::new(
-            terminal_id.clone(),
-            std::path::PathBuf::from("/tmp"),
-        );
-        terminal.state = crate::detect::AgentState::Idle;
-        terminal.idle_since = None;
-        app.state.terminals.insert(terminal_id.clone(), terminal);
-
-        let now = Instant::now();
-        app.handle_scheduled_tasks(now, false);
-
-        assert_eq!(
-            app.state.terminals.get(&terminal_id).unwrap().idle_since,
-            Some(now)
-        );
-    }
-
-    /// Insert a terminal for `pane_id` in `state`, with `idle_since` set when
-    /// the terminal should carry an age label.
-    fn set_pane_terminal(
-        app: &mut super::super::App,
-        pane_id: crate::layout::PaneId,
-        state: crate::detect::AgentState,
-        idle_since: Option<Instant>,
-    ) {
-        let terminal_id = app.state.workspaces[0]
-            .terminal_id(pane_id)
-            .expect("pane terminal")
-            .clone();
-        let mut terminal = crate::terminal::TerminalState::new(
-            terminal_id.clone(),
-            std::path::PathBuf::from("/tmp"),
-        );
-        terminal.state = state;
-        terminal.idle_since = idle_since;
-        app.state.terminals.insert(terminal_id, terminal);
-    }
-
-    #[test]
-    fn idle_age_tick_uses_slow_interval_without_animation() {
-        let (mut app, pane_id) = test_app_with_pane();
-        let now = Instant::now();
-        // Fresh panes are seen, so no unseen-idle animation is pending.
-        set_pane_terminal(
-            &mut app,
-            pane_id,
-            crate::detect::AgentState::Idle,
-            Some(now),
-        );
-
-        app.sync_animation_timer(now);
-
-        assert_eq!(
-            app.next_animation_tick,
-            Some(now + crate::app::IDLE_AGE_TICK_INTERVAL)
-        );
-    }
-
-    #[test]
-    fn animation_tick_prefers_frame_interval_when_working() {
-        let (mut app, pane_id) = test_app_with_pane();
-        let now = Instant::now();
-        set_pane_terminal(
-            &mut app,
-            pane_id,
-            crate::detect::AgentState::Working,
-            Some(now),
-        );
-
-        app.sync_animation_timer(now);
-        assert_eq!(app.next_animation_tick, Some(now + ANIMATION_INTERVAL));
-
-        // A pending slow idle deadline must not starve the spinner cadence.
-        app.next_animation_tick = Some(now + crate::app::IDLE_AGE_TICK_INTERVAL);
-        app.sync_animation_timer(now);
-        assert_eq!(app.next_animation_tick, Some(now + ANIMATION_INTERVAL));
-    }
-
-    /// `ANIMATION_INTERVAL` sets how often the app re-renders; `SPINNER_TICK_STEP`
-    /// compensates so the visible glyph cadence is unchanged. Slowing the render
-    /// tick without raising the step would freeze the spinner, so pin the
-    /// product: a glyph must change every 100-200 ms of wall clock.
-    #[test]
-    fn spinner_glyph_cadence_survives_the_render_tick_interval() {
-        let start = crate::ui::spinner_frame(0);
-        let mut tick = 0u32;
-        let ticks_per_glyph = loop {
-            tick += crate::app::SPINNER_TICK_STEP;
-            if crate::ui::spinner_frame(tick) != start {
-                break tick / crate::app::SPINNER_TICK_STEP;
-            }
-            assert!(tick < 10_000, "spinner glyph never advanced");
-        };
-        let glyph_period = ANIMATION_INTERVAL * ticks_per_glyph;
-        assert!(
-            (100..=200).contains(&glyph_period.as_millis()),
-            "spinner glyph period {glyph_period:?} left the 100-200 ms band; \
-             adjust SPINNER_TICK_STEP after changing ANIMATION_INTERVAL"
-        );
-    }
-
-    #[test]
-    fn idle_age_tick_clears_without_idle_terminals() {
-        let (mut app, pane_id) = test_app_with_pane();
-        let now = Instant::now();
-        set_pane_terminal(&mut app, pane_id, crate::detect::AgentState::Unknown, None);
-        app.next_animation_tick = Some(now);
-
-        app.sync_animation_timer(now);
-
-        assert!(app.next_animation_tick.is_none());
-    }
-
-    #[test]
-    fn tick_selection_autoscroll_stops_when_metrics_unavailable() {
-        // Without a runtime, pane_scroll_metrics returns None.
-        // Fail-closed: stop autoscroll instead of rescheduling forever.
-        let (mut app, pane_id) = test_app_with_pane();
-        let now = Instant::now();
-        let mut sel = crate::selection::Selection::anchor(pane_id, 0, 0, None);
-        // Drag to a different cell so it becomes Dragging
-        sel.drag(5, 5, ratatui::layout::Rect::new(0, 0, 80, 24), None);
-        app.state.selection = Some(sel);
-        app.state.selection_autoscroll = Some(state::SelectionAutoscroll {
-            direction: state::SelectionAutoscrollDirection::Down,
-            last_mouse_screen_col: 5,
-            last_mouse_screen_row: 23,
-            inner_rect: ratatui::layout::Rect::new(0, 0, 80, 24),
-        });
-        app.selection_autoscroll_deadline = Some(now);
-        app.tick_selection_autoscroll(now);
-        // Should stop because no runtime metrics available
-        assert!(app.state.selection_autoscroll.is_none());
-        assert!(app.selection_autoscroll_deadline.is_none());
-    }
-
-    #[test]
-    fn idle_age_tick_redraws_and_rearms_each_second() {
-        // End-to-end: an idle pane with no output must keep producing frames so
-        // the sidebar age label advances, and the timer must re-arm at 1 s.
-        let (mut app, pane_id) = test_app_with_pane();
-        let start = Instant::now();
-        set_pane_terminal(
-            &mut app,
-            pane_id,
-            crate::detect::AgentState::Idle,
-            Some(start),
-        );
-        app.sync_animation_timer(start);
-        let deadline = app.next_animation_tick.expect("idle tick armed");
-        assert_eq!(deadline, start + crate::app::IDLE_AGE_TICK_INTERVAL);
-
-        assert!(
-            app.handle_scheduled_tasks(deadline, false),
-            "due idle tick must mark the frame dirty"
-        );
-        assert_eq!(
-            app.next_animation_tick,
-            Some(deadline + crate::app::IDLE_AGE_TICK_INTERVAL),
-            "idle tick must re-arm at the slow cadence, not the frame cadence"
-        );
-    }
-
-    #[test]
-    fn tick_selection_autoscroll_stops_when_selection_done() {
-        let (mut app, pane_id) = test_app_with_pane();
-        let now = Instant::now();
-        // Create a selection that is already finished (not in progress)
-        let mut sel = crate::selection::Selection::anchor(pane_id, 0, 0, None);
-        // Drag to a different cell so it becomes visible, then finish
-        sel.drag(5, 5, ratatui::layout::Rect::new(0, 0, 80, 24), None);
-        sel.finish(); // now it's Done, not in progress
-        app.state.selection = Some(sel);
-        app.state.selection_autoscroll = Some(state::SelectionAutoscroll {
-            direction: state::SelectionAutoscrollDirection::Down,
-            last_mouse_screen_col: 0,
-            last_mouse_screen_row: 23,
-            inner_rect: ratatui::layout::Rect::new(0, 0, 80, 24),
-        });
-        app.selection_autoscroll_deadline = Some(now);
-        app.tick_selection_autoscroll(now);
-        assert!(app.state.selection_autoscroll.is_none());
-        assert!(app.selection_autoscroll_deadline.is_none());
-    }
-
-    #[test]
-    fn tick_selection_autoscroll_stops_when_selection_cleared() {
-        let (mut app, _pane_id) = test_app_with_pane();
-        let now = Instant::now();
-        app.state.selection = None;
-        app.state.selection_autoscroll = Some(state::SelectionAutoscroll {
-            direction: state::SelectionAutoscrollDirection::Down,
-            last_mouse_screen_col: 0,
-            last_mouse_screen_row: 23,
-            inner_rect: ratatui::layout::Rect::new(0, 0, 80, 24),
-        });
-        app.selection_autoscroll_deadline = Some(now);
-        app.tick_selection_autoscroll(now);
-        assert!(app.state.selection_autoscroll.is_none());
-        assert!(app.selection_autoscroll_deadline.is_none());
-    }
-
-    #[test]
-    fn tick_selection_autoscroll_stops_when_selection_anchored() {
-        // Anchored (click, no drag) should not keep the timer running.
-        let (mut app, pane_id) = test_app_with_pane();
-        let now = Instant::now();
-        app.state.selection = Some(crate::selection::Selection::anchor(pane_id, 0, 0, None));
-        app.state.selection_autoscroll = Some(state::SelectionAutoscroll {
-            direction: state::SelectionAutoscrollDirection::Down,
-            last_mouse_screen_col: 0,
-            last_mouse_screen_row: 23,
-            inner_rect: ratatui::layout::Rect::new(0, 0, 80, 24),
-        });
-        app.selection_autoscroll_deadline = Some(now);
-        app.tick_selection_autoscroll(now);
-        assert!(app.state.selection_autoscroll.is_none());
-        assert!(app.selection_autoscroll_deadline.is_none());
-    }
-
-    /// Creates an app with a real TerminalRuntime (no PTY) so scroll_metrics
-    /// returns meaningful data. Uses test_with_scrollback_bytes.
-    fn test_app_with_runtime(
-        cols: u16,
-        rows: u16,
-        bytes: &[u8],
-    ) -> (super::super::App, crate::layout::PaneId) {
-        let mut app = super::super::App::new(
-            &crate::config::Config::default(),
-            true,
-            None,
-            tokio::sync::mpsc::unbounded_channel().1,
-            crate::api::EventHub::default(),
-        );
-        let mut ws = Workspace::test_new("test");
-        let pane_id = ws.tabs[0].root_pane;
-        let runtime =
-            crate::terminal::TerminalRuntime::test_with_scrollback_bytes(cols, rows, 0, bytes);
-        ws.tabs[0].runtimes.insert(pane_id, runtime);
-        app.state.workspaces.push(ws);
-        app.state.active = Some(0);
-        app.state.view.pane_infos.push(crate::layout::PaneInfo {
-            id: pane_id,
-            rect: ratatui::layout::Rect::new(0, 0, cols, rows),
-            inner_rect: ratatui::layout::Rect::new(0, 0, cols, rows),
-            scrollbar_rect: None,
-            borders: ratatui::widgets::Borders::NONE,
-            is_focused: true,
-        });
-        (app, pane_id)
-    }
-
-    #[tokio::test]
-    async fn tick_selection_autoscroll_stops_at_scrollback_top() {
-        // Create a runtime with no scrollback content — we're already at
-        // the top (offset_from_bottom == max_offset_from_bottom).
-        let (mut app, pane_id) = test_app_with_runtime(80, 24, &[]);
-        let now = Instant::now();
-        let mut sel = crate::selection::Selection::anchor(pane_id, 5, 5, None);
-        sel.drag(0, 0, ratatui::layout::Rect::new(0, 0, 80, 24), None);
-        app.state.selection = Some(sel);
-        app.state.selection_autoscroll = Some(state::SelectionAutoscroll {
-            direction: state::SelectionAutoscrollDirection::Up,
-            last_mouse_screen_col: 0,
-            last_mouse_screen_row: 0,
-            inner_rect: ratatui::layout::Rect::new(0, 0, 80, 24),
-        });
-        app.selection_autoscroll_deadline = Some(now);
-        app.tick_selection_autoscroll(now);
-        // At scrollback top, can't scroll further up — should stop
-        assert!(app.state.selection_autoscroll.is_none());
-        assert!(app.selection_autoscroll_deadline.is_none());
-    }
-
-    #[tokio::test]
-    async fn tick_selection_autoscroll_stops_at_scrollback_bottom() {
-        // Create a runtime with no scrollback content — we're already at
-        // the bottom (offset_from_bottom == 0).
-        let (mut app, pane_id) = test_app_with_runtime(80, 24, &[]);
-        let now = Instant::now();
-        let mut sel = crate::selection::Selection::anchor(pane_id, 0, 0, None);
-        sel.drag(5, 5, ratatui::layout::Rect::new(0, 0, 80, 24), None);
-        app.state.selection = Some(sel);
-        app.state.selection_autoscroll = Some(state::SelectionAutoscroll {
-            direction: state::SelectionAutoscrollDirection::Down,
-            last_mouse_screen_col: 5,
-            last_mouse_screen_row: 23,
-            inner_rect: ratatui::layout::Rect::new(0, 0, 80, 24),
-        });
-        app.selection_autoscroll_deadline = Some(now);
-        app.tick_selection_autoscroll(now);
-        // At scrollback bottom, can't scroll further down — should stop
-        assert!(app.state.selection_autoscroll.is_none());
-        assert!(app.selection_autoscroll_deadline.is_none());
-    }
-
-    #[tokio::test]
-    async fn passive_mouse_motion_does_not_request_monolithic_render() {
-        let (mut app, _) = test_app_with_pane();
-        app.state.mode = crate::app::Mode::Terminal;
-        let motion = || {
-            crate::raw_input::RawInputEvent::Mouse(crossterm::event::MouseEvent {
-                kind: crossterm::event::MouseEventKind::Moved,
-                column: 10,
-                row: 5,
-                modifiers: crossterm::event::KeyModifiers::empty(),
-            })
-        };
-
-        assert!(!app.handle_raw_input_event(motion()).await);
-        app.state.mode = crate::app::Mode::GlobalMenu;
-        assert!(app.handle_raw_input_event(motion()).await);
-    }
-
-    #[tokio::test]
-    async fn raw_input_batch_does_not_start_pending_agent_resume_before_render() {
-        let (mut app, pane_id) = test_app_with_pane();
-        app.state.ensure_test_terminals();
-        let terminal_id = app.state.workspaces[0]
-            .terminal_id(pane_id)
-            .cloned()
-            .expect("test pane should have a terminal");
-        app.state
-            .terminals
-            .get_mut(&terminal_id)
-            .expect("test terminal should exist")
-            .pending_agent_resume_plan = Some(crate::agent_resume::AgentResumePlan {
-            agent: "codex".into(),
-            argv: vec!["/bin/sh".into(), "-c".into(), "sleep 5".into()],
-            dedupe_key: "herdr:codex\0codex\0Id\0codex-session".into(),
-        });
-
-        assert!(
-            app.handle_raw_input_batch(crate::raw_input::RawInputEvent::HostDefaultColor {
-                kind: crate::terminal_theme::DefaultColorKind::Foreground,
-                color: crate::terminal_theme::RgbColor {
-                    r: 220,
-                    g: 220,
-                    b: 220,
-                },
-            })
-            .await
-        );
-        assert!(
-            app.terminal_runtimes.get(&terminal_id).is_none(),
-            "raw input can mutate active geometry; pending resumes must wait for render to refresh pane_infos"
-        );
-        assert!(app
-            .state
-            .terminals
-            .get(&terminal_id)
-            .expect("test terminal should still exist")
-            .pending_agent_resume_plan
-            .is_some());
-    }
-
-    #[tokio::test]
-    async fn scheduled_tasks_do_not_start_pending_agent_resume_when_geometry_dirty() {
-        let (mut app, pane_id) = test_app_with_pane();
-        app.state.ensure_test_terminals();
-        app.state.host_terminal_theme = crate::terminal_theme::TerminalTheme {
-            foreground: Some(crate::terminal_theme::RgbColor {
-                r: 220,
-                g: 220,
-                b: 220,
-            }),
-            background: Some(crate::terminal_theme::RgbColor {
-                r: 20,
-                g: 20,
-                b: 20,
-            }),
-            ..Default::default()
-        };
-        let terminal_id = app.state.workspaces[0]
-            .terminal_id(pane_id)
-            .cloned()
-            .expect("test pane should have a terminal");
-        app.state
-            .terminals
-            .get_mut(&terminal_id)
-            .expect("test terminal should exist")
-            .pending_agent_resume_plan = Some(crate::agent_resume::AgentResumePlan {
-            agent: "codex".into(),
-            argv: vec!["/bin/sh".into(), "-c".into(), "sleep 5".into()],
-            dedupe_key: "herdr:codex\0codex\0Id\0codex-session".into(),
-        });
-        app.pending_agent_resume_deadline = Some(Instant::now() - Duration::from_millis(1));
-
-        assert!(!app.handle_scheduled_tasks(Instant::now(), true));
-        assert!(app.terminal_runtimes.get(&terminal_id).is_none());
-        assert!(app
-            .state
-            .terminals
-            .get(&terminal_id)
-            .expect("test terminal should still exist")
-            .pending_agent_resume_plan
-            .is_some());
-        assert!(app.pending_agent_resume_deadline.is_none());
     }
 }
