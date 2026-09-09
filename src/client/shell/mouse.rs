@@ -472,14 +472,30 @@ impl ClientShellState {
         {
             return None;
         }
+        let snapshot = self.snapshot.as_deref()?;
+        // A linked-worktree workspace is never a valid `before` target:
+        // `workspace_move_method` only resolves `before_workspace_id`
+        // against non-linked-worktree `roots`, so a slot pointing at one
+        // silently no-ops on drop (P2, cubic PR #30 review). Folders rows
+        // never set `indented`, so the Repo-mode "skip indented" filter
+        // above cannot exclude them there the way it does for Repo.
         let mut slots = self
             .hits
             .workspaces
             .iter()
-            .filter(|hit| hit.endpoint_id == self.active_endpoint_id && !hit.indented)
+            .filter(|hit| {
+                hit.endpoint_id == self.active_endpoint_id
+                    && !hit.indented
+                    && !snapshot.workspaces.iter().any(|workspace| {
+                        workspace.workspace_id == hit.workspace_id
+                            && workspace
+                                .worktree
+                                .as_ref()
+                                .is_some_and(|worktree| worktree.is_linked_worktree)
+                    })
+            })
             .map(|hit| (Some(hit.workspace_id.clone()), hit.rect.y.saturating_sub(1)))
             .collect::<Vec<_>>();
-        let snapshot = self.snapshot.as_deref()?;
         let empty_collapsed_groups = HashSet::new();
         let collapsed_groups = self
             .collapsed_groups_for_endpoint(&self.active_endpoint_id)
@@ -512,6 +528,12 @@ impl ClientShellState {
                         render::sidebar::FoldersRow::Workspace { index, .. } => snapshot
                             .workspaces
                             .get(*index)
+                            .filter(|workspace| {
+                                !workspace
+                                    .worktree
+                                    .as_ref()
+                                    .is_some_and(|worktree| worktree.is_linked_worktree)
+                            })
                             .map(|workspace| workspace.workspace_id.clone()),
                         render::sidebar::FoldersRow::GroupHeader { .. } => None,
                     });

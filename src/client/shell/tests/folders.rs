@@ -254,6 +254,102 @@ fn folders_mode_drag_outside_header_still_reorders() {
 }
 
 #[test]
+fn folders_mode_drag_skips_linked_worktree_row_as_drop_target() {
+    let mut state = ClientShellState::new(folders_config());
+    let mut projected = snapshot();
+    projected.workspaces[0].visual_group = None;
+    // Order: ws_1 (drag source), loose_a, ws_linked (linked worktree,
+    // ungrouped so it renders as a plain Folders row -- `indented` does
+    // not exist there), loose_b, loose_c. Dropping exactly on
+    // `ws_linked`'s row must resolve to a real movable-root slot
+    // (`workspace_move_method` can never resolve a `before_workspace_id`
+    // pointing at a linked worktree), not silently no-op.
+    let mut loose_a = projected.workspaces[0].clone();
+    loose_a.workspace_id = "loose_a".into();
+    loose_a.number = 2;
+    loose_a.label = "loose-a".into();
+    loose_a.focused = false;
+    let mut linked = projected.workspaces[0].clone();
+    linked.workspace_id = "ws_linked".into();
+    linked.number = 3;
+    linked.label = "linked".into();
+    linked.focused = false;
+    linked.worktree = Some(ClientShellWorktree {
+        key: "repo".into(),
+        label: "repo".into(),
+        is_linked_worktree: true,
+    });
+    let mut loose_b = projected.workspaces[0].clone();
+    loose_b.workspace_id = "loose_b".into();
+    loose_b.number = 4;
+    loose_b.label = "loose-b".into();
+    loose_b.focused = false;
+    let mut loose_c = projected.workspaces[0].clone();
+    loose_c.workspace_id = "loose_c".into();
+    loose_c.number = 5;
+    loose_c.label = "loose-c".into();
+    loose_c.focused = false;
+    projected.workspaces.push(loose_a);
+    projected.workspaces.push(linked);
+    projected.workspaces.push(loose_b);
+    projected.workspaces.push(loose_c);
+    state.set_snapshot(Box::new(projected));
+    state.set_pane_surface(surface());
+    state.compose(106, 24).expect("folders layout");
+
+    let source = state
+        .hits
+        .workspaces
+        .iter()
+        .find(|hit| hit.workspace_id == "ws_1")
+        .expect("ws_1 row")
+        .rect;
+    let linked_rect = state
+        .hits
+        .workspaces
+        .iter()
+        .find(|hit| hit.workspace_id == "ws_linked")
+        .expect("ws_linked row")
+        .rect;
+
+    state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: source.x + 1,
+        row: source.y,
+        modifiers: KeyModifiers::empty(),
+    })]);
+    state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
+        kind: MouseEventKind::Drag(MouseButton::Left),
+        column: linked_rect.x + 1,
+        row: linked_rect.y,
+        modifiers: KeyModifiers::empty(),
+    })]);
+    assert!(matches!(
+        &state.chrome_drag,
+        Some(ClientChromeDrag::Workspace {
+            target: Some((before, _)),
+            ..
+        }) if before.as_deref() != Some("ws_linked")
+    ));
+
+    let release = state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
+        kind: MouseEventKind::Up(MouseButton::Left),
+        column: linked_rect.x + 1,
+        row: linked_rect.y,
+        modifiers: KeyModifiers::empty(),
+    })]);
+    assert!(matches!(
+        &release.actions[..],
+        [ClientShellAction::Endpoint { request, .. }]
+            if matches!(
+                &request.method,
+                crate::api::schema::Method::WorkspaceMove(params)
+                    if params.workspace_id == "ws_1"
+            )
+    ));
+}
+
+#[test]
 fn cycle_view_mode_action_cycles_flat_folders_repo_flat() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
     state.set_snapshot(Box::new(folders_snapshot()));
