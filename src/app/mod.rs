@@ -599,11 +599,7 @@ impl App {
             session_dirty: false,
             terminal_runtime_shutdowns: Vec::new(),
             agent_commands: config.agents.clone(),
-            chat_name: config
-                .ui
-                .chat_name
-                .clone()
-                .unwrap_or_else(|| "you".to_string()),
+            chat_name: config.ui.effective_chat_name(),
             channel_burst_messages: config.ui.channel_burst_messages,
             channel_burst_window: Duration::from_secs(config.ui.channel_burst_window_secs),
             sidebar_width: config.ui.sidebar_width,
@@ -944,6 +940,11 @@ impl App {
                 self.state.sidebar_spaces = config.ui.sidebar.spaces.clone();
                 self.state.sound = config.ui.sound.clone();
                 self.state.toast_config = config.ui.toast.clone();
+                self.state.view_mode = config.ui.view_mode;
+                self.state.chat_name = config.ui.effective_chat_name();
+                self.state.channel_burst_messages = config.ui.channel_burst_messages;
+                self.state.channel_burst_window =
+                    Duration::from_secs(config.ui.channel_burst_window_secs);
             }
         }
 
@@ -1070,6 +1071,499 @@ impl App {
         }
     }
 }
+
+impl App {
+    /// Rehydrates `pending_agent_prompts` from
+    /// `persist::pending_prompts`. Without this the `deferred` receipt was a
+    /// promise the server broke on every restart: the queue was memory-only,
+    /// so a restart silently dropped messages a sender had been told were
+    /// queued for delivery.
+    pub(crate) fn load_pending_agent_prompts(&mut self) {
+        let records = crate::persist::pending_prompts::read_pending_prompts();
+        if records.is_empty() {
+            return;
+        }
+        let now = Instant::now();
+        let mut highest_queue_id = 0;
+        for record in records {
+            highest_queue_id = highest_queue_id.max(record.queue_id);
+            self.pending_agent_prompts
+                .entry(record.target)
+                .or_default()
+                .push_back(PendingAgentPrompt {
+                    queue_id: record.queue_id,
+                    params: record.params,
+                    enqueued_at: now,
+                });
+        }
+        self.next_pending_agent_prompt_queue_id = self
+            .next_pending_agent_prompt_queue_id
+            .max(highest_queue_id + 1);
+        tracing::info!(
+            targets = self.pending_agent_prompts.len(),
+            "restored deferred agent prompts"
+        );
+    }
+
+    /// Mirrors `pending_agent_prompts` to disk. Called after every mutation of
+    /// the map — enqueue, cap eviction, drain, pane-close drop — so the stored
+    /// queue is never a stale superset that would replay an already-delivered
+    /// prompt after a restart. A write failure is logged, never propagated:
+    /// losing durability is strictly better than failing the delivery that was
+    /// already accepted.
+    pub(crate) fn persist_pending_agent_prompts(&self) {
+        let records: Vec<crate::persist::pending_prompts::PendingPromptRecord> = self
+            .pending_agent_prompts
+            .iter()
+            .flat_map(|(target, queue)| {
+                queue.iter().map(move |pending| {
+                    crate::persist::pending_prompts::PendingPromptRecord {
+                        target: target.clone(),
+                        queue_id: pending.queue_id,
+                        params: pending.params.clone(),
+                    }
+                })
+            })
+            .collect();
+        if let Err(err) = crate::persist::pending_prompts::write_pending_prompts(&records) {
+            tracing::warn!(error = %err, "failed to persist deferred agent prompts");
+        }
+    }
+
+    /// Checks and records an `agent.prompt` call from `from_pane` to
+    /// `target_pane` against the loop-guard rate limit.
+    ///
+    /// Returns `Ok(())` and records `now` for the pair when the call is
+    /// allowed. Returns `Err(remaining)` — the cooldown still left — when
+    /// the same pair fired within `AGENT_PROMPT_RATE_LIMIT` and the call
+    /// must be rejected without recording a new timestamp.
+    pub(crate) fn check_agent_prompt_rate_limit(
+        &mut self,
+        from_pane: &str,
+        target_pane: &str,
+        now: Instant,
+    ) -> Result<(), Duration> {
+        self.agent_prompt_rate_limits
+            .retain(|_, at| now.duration_since(*at) < AGENT_PROMPT_RATE_LIMIT_PRUNE_AGE);
+        let key = (from_pane.to_string(), target_pane.to_string());
+        if let Some(last) = self.agent_prompt_rate_limits.get(&key) {
+            let elapsed = now.duration_since(*last);
+            if elapsed < AGENT_PROMPT_RATE_LIMIT {
+                return Err(AGENT_PROMPT_RATE_LIMIT - elapsed);
+            }
+        }
+        self.agent_prompt_rate_limits.insert(key, now);
+        Ok(())
+    }
+
+    /// Queues `params` for replay once `target_pane` (its public pane id) is next
+    /// observed to leave `Working`. Bounded per target at
+    /// `PENDING_AGENT_PROMPT_CAP`: past the cap, the oldest queued prompt is dropped
+    /// (with a tracing warning, and a `agent_prompt.dropped` event / best-effort
+    /// sender notice — see `report_queued_prompt_dropped`) to make room — a full
+    /// queue means the target is falling behind, so keeping the newest instruction
+    /// is more useful than keeping the oldest. Returns `(1-based queue position,
+    /// queue_id)`, surfaced to callers as `AgentPrompted.queue_position` /
+    /// `AgentPrompted.queue_id`.
+    pub(crate) fn enqueue_pending_agent_prompt(
+        &mut self,
+        target_pane: String,
+        params: crate::api::schema::AgentPromptParams,
+    ) -> (usize, u64) {
+        let queue_id = self.next_pending_agent_prompt_queue_id();
+        let evicted = {
+            let queue = self
+                .pending_agent_prompts
+                .entry(target_pane.clone())
+                .or_default();
+            if queue.len() >= PENDING_AGENT_PROMPT_CAP {
+                queue.pop_front()
+            } else {
+                None
+            }
+        };
+        if let Some(evicted) = evicted {
+            tracing::warn!(
+                target = %target_pane,
+                cap = PENDING_AGENT_PROMPT_CAP,
+                "pending agent prompt queue full; dropped oldest queued prompt"
+            );
+            self.report_queued_prompt_dropped(
+                evicted.queue_id,
+                &target_pane,
+                evicted.params.from_pane,
+                evicted.params.origin_channel,
+                crate::api::schema::QueuedAgentPromptDropReason::Capacity,
+                None,
+            );
+        }
+        let queue = self
+            .pending_agent_prompts
+            .entry(target_pane.clone())
+            .or_default();
+        queue.push_back(PendingAgentPrompt {
+            queue_id,
+            params,
+            enqueued_at: Instant::now(),
+        });
+        let depth = queue.len();
+        self.persist_pending_agent_prompts();
+        (depth, queue_id)
+    }
+
+    fn next_pending_agent_prompt_queue_id(&mut self) -> u64 {
+        let id = self.next_pending_agent_prompt_queue_id;
+        self.next_pending_agent_prompt_queue_id =
+            self.next_pending_agent_prompt_queue_id.saturating_add(1);
+        id
+    }
+
+    /// Replays every prompt queued for `target_pane`, oldest first, through
+    /// `handle_agent_prompt`. A queued prompt that lands mid-`Working` again (the
+    /// target flipped back busy between drains) is simply re-queued by
+    /// `handle_agent_prompt`'s own busy check — reported as an `outcome: "deferred"`
+    /// receipt, not an error — so ordering degrades but nothing is lost; not a
+    /// terminal fate, so no event yet. A successful replay is terminal: reports
+    /// `agent_prompt.delivered`. Any other failure (rate-limited, pane gone, agent
+    /// swapped out) is also terminal — a retry cannot fix it — so it is logged and
+    /// reported via `report_queued_prompt_dropped`.
+    pub(crate) fn drain_pending_agent_prompts(&mut self, target_pane: &str) {
+        let Some(queue) = self.pending_agent_prompts.remove(target_pane) else {
+            return;
+        };
+        // Persist the removal BEFORE replaying: a crash mid-drain must not
+        // leave a stored queue that redelivers prompts already written to the
+        // pane. A re-queue (target flipped busy again) goes back through
+        // `enqueue_pending_agent_prompt`, which persists on its own.
+        self.persist_pending_agent_prompts();
+        for pending in queue {
+            let queue_id = pending.queue_id;
+            let from_pane = pending.params.from_pane.clone();
+            let origin_channel = pending.params.origin_channel.clone();
+            let waited_ms = pending.enqueued_at.elapsed().as_millis();
+            let request_id = format!("deferred:{target_pane}:{waited_ms}");
+            let response = self.handle_agent_prompt(request_id, pending.params);
+            let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&response) else {
+                continue;
+            };
+            if let Some(error) = parsed.get("error") {
+                let code = error.get("code").and_then(|c| c.as_str()).unwrap_or("");
+                let message = error.get("message").and_then(|m| m.as_str()).unwrap_or("");
+                tracing::warn!(
+                    target = %target_pane,
+                    waited_ms,
+                    code,
+                    message,
+                    "deferred agent prompt dropped; replay failed"
+                );
+                let detail = if message.is_empty() {
+                    code.to_string()
+                } else {
+                    message.to_string()
+                };
+                self.report_queued_prompt_dropped(
+                    queue_id,
+                    target_pane,
+                    from_pane,
+                    origin_channel,
+                    crate::api::schema::QueuedAgentPromptDropReason::AgentChanged,
+                    Some(detail),
+                );
+                continue;
+            }
+            let outcome = parsed
+                .get("result")
+                .and_then(|result| result.get("outcome"))
+                .and_then(|outcome| outcome.as_str());
+            if outcome == Some("deferred") {
+                tracing::debug!(
+                    target = %target_pane,
+                    waited_ms,
+                    "deferred agent prompt re-queued; target busy again"
+                );
+                continue;
+            }
+            self.report_queued_prompt_delivered(queue_id, target_pane, from_pane);
+        }
+    }
+
+    /// Called on every `pane.agent_status_changed` observation for
+    /// `target_pane`. Starts or cancels the settle window that gates
+    /// `drain_settled_pending_agent_prompts`.
+    pub(crate) fn sync_pending_agent_prompt_drain_deadline(
+        &mut self,
+        target_pane: &str,
+        agent_status: crate::api::schema::AgentStatus,
+        now: Instant,
+    ) {
+        if agent_status == crate::api::schema::AgentStatus::Working {
+            self.pending_agent_prompt_drain_deadlines
+                .remove(target_pane);
+            return;
+        }
+        if self
+            .pending_agent_prompts
+            .get(target_pane)
+            .is_none_or(std::collections::VecDeque::is_empty)
+        {
+            return;
+        }
+        self.pending_agent_prompt_drain_deadlines
+            .entry(target_pane.to_string())
+            .or_insert_with(|| now + PENDING_AGENT_PROMPT_DRAIN_SETTLE);
+    }
+
+    /// Drains every target whose settle deadline (see
+    /// `sync_pending_agent_prompt_drain_deadline`) has elapsed by `now`.
+    /// Called from the scheduled-task tick (`handle_scheduled_tasks` /
+    /// `handle_scheduled_tasks_headless`) so a target that goes quiet and
+    /// never produces another status-change event still gets drained once
+    /// settled, not just on the next incidental status flip. Returns
+    /// whether any target was drained, for the caller's render-dirty flag.
+    pub(crate) fn drain_settled_pending_agent_prompts(&mut self, now: Instant) -> bool {
+        let due: Vec<String> = self
+            .pending_agent_prompt_drain_deadlines
+            .iter()
+            .filter(|(_, deadline)| now >= **deadline)
+            .map(|(target, _)| target.clone())
+            .collect();
+        for target in &due {
+            self.pending_agent_prompt_drain_deadlines.remove(target);
+            self.drain_pending_agent_prompts(target);
+        }
+        !due.is_empty()
+    }
+
+    /// Drops every prompt queued for `target_pane` (its public pane id) — the
+    /// recipient disappeared (pane closed) before it could be delivered.
+    pub(crate) fn fail_pending_agent_prompts(&mut self, target_pane: &str) {
+        let Some(queue) = self.pending_agent_prompts.remove(target_pane) else {
+            return;
+        };
+        self.persist_pending_agent_prompts();
+        for pending in queue {
+            tracing::warn!(
+                target = %target_pane,
+                waited_ms = pending.enqueued_at.elapsed().as_millis(),
+                "deferred agent prompt dropped; target pane closed before delivery"
+            );
+            self.report_queued_prompt_dropped(
+                pending.queue_id,
+                target_pane,
+                pending.params.from_pane,
+                pending.params.origin_channel,
+                crate::api::schema::QueuedAgentPromptDropReason::PaneClosed,
+                None,
+            );
+        }
+    }
+
+    /// Emits the durable `agent_prompt.delivered` event for a queued prompt that
+    /// was successfully drained and injected.
+    fn report_queued_prompt_delivered(
+        &mut self,
+        queue_id: u64,
+        target_pane: &str,
+        from_pane: Option<String>,
+    ) {
+        let workspace_id = self
+            .resolve_agent_target(target_pane)
+            .ok()
+            .map(|resolved| self.public_workspace_id(resolved.ws_idx));
+        self.emit_event(crate::api::schema::EventEnvelope {
+            event: crate::api::schema::EventKind::QueuedPromptDelivered,
+            data: crate::api::schema::EventData::QueuedPromptDelivered {
+                queue_id,
+                target_pane: target_pane.to_string(),
+                workspace_id,
+                from_pane,
+            },
+        });
+    }
+
+    /// Reports the terminal drop of a queued prompt — this is what keeps a
+    /// `deferred` receipt honest, since the queue itself otherwise only logs
+    /// internally. Always emits the durable `agent_prompt.dropped` event; when
+    /// the sender is a known, resolvable pane, also best-effort injects a
+    /// one-line PTY notice (see `notify_pane_of_queue_drop` — that path can
+    /// never itself be queued, so this never recurses); when the prompt was a
+    /// `channel.send` fan-out delivery, appends an honest system line to that
+    /// channel's history.
+    fn report_queued_prompt_dropped(
+        &mut self,
+        queue_id: u64,
+        target_pane: &str,
+        from_pane: Option<String>,
+        origin_channel: Option<String>,
+        reason: crate::api::schema::QueuedAgentPromptDropReason,
+        detail: Option<String>,
+    ) {
+        let workspace_id = self
+            .resolve_agent_target(target_pane)
+            .ok()
+            .map(|resolved| self.public_workspace_id(resolved.ws_idx));
+        self.emit_event(crate::api::schema::EventEnvelope {
+            event: crate::api::schema::EventKind::QueuedPromptDropped,
+            data: crate::api::schema::EventData::QueuedPromptDropped {
+                queue_id,
+                target_pane: target_pane.to_string(),
+                workspace_id,
+                from_pane: from_pane.clone(),
+                reason,
+                detail: detail.clone(),
+            },
+        });
+        let reason_text = queued_prompt_drop_reason_text(reason, detail.as_deref());
+        if let Some(from_pane) = from_pane.as_deref() {
+            self.notify_pane_of_queue_drop(from_pane, target_pane, &reason_text);
+        }
+        if let Some(channel) = origin_channel {
+            let line = crate::api::schema::ChannelMessage {
+                ts: rfc3339_now(),
+                seq: crate::persist::channels::next_seq(&channel),
+                from_pane: "system".to_string(),
+                from_name: "bora".to_string(),
+                from_kind: crate::api::schema::ChannelSenderKind::Agent,
+                text: format!("delivery to {target_pane} dropped: {reason_text}"),
+                in_reply_to: None,
+                to_pane: None,
+                to_human: false,
+            };
+            if let Err(err) = crate::persist::channels::append_message(&channel, &line) {
+                tracing::warn!(
+                    channel = %channel,
+                    target_pane = %target_pane,
+                    error = %err,
+                    "failed to append delivery-drop notice to channel history"
+                );
+            }
+        }
+    }
+
+    /// Best-effort direct PTY notice to `from_pane` that its queued prompt to
+    /// `target_pane` was dropped. Deliberately bypasses the deferred queue and
+    /// rate limiting entirely — it calls `handle_agent_prompt` with
+    /// `from_pane: None` and `when_idle: None`, so neither gate applies — which is
+    /// what keeps a notice from ever being queued itself: a drop can never
+    /// recurse into reporting another drop. Skips silently (the event emitted by
+    /// `report_queued_prompt_dropped` remains the durable record) when `from_pane`
+    /// no longer resolves to a live agent pane, or that pane is currently
+    /// `Working` — a courtesy notice must never interrupt an agent mid-task.
+    fn notify_pane_of_queue_drop(&mut self, from_pane: &str, target_pane: &str, reason: &str) {
+        let Ok(resolved) = self.resolve_agent_target(from_pane) else {
+            return;
+        };
+        if let Some(agent) = self.agent_info(resolved.ws_idx, resolved.pane_id) {
+            if agent.agent_status == crate::api::schema::AgentStatus::Working {
+                tracing::debug!(
+                    from_pane,
+                    target_pane,
+                    "queued prompt drop notice skipped; sender pane busy"
+                );
+                return;
+            }
+        }
+        let notice = format!("[bora] prompt to {target_pane} dropped: {reason}");
+        let response = self.handle_agent_prompt(
+            format!("system:queue_drop_notice:{target_pane}"),
+            crate::api::schema::AgentPromptParams {
+                target: from_pane.to_string(),
+                text: notice,
+                wait: None,
+                from_pane: None,
+                when_idle: None,
+                when_idle_timeout_ms: None,
+                peer_pid: None,
+                origin_channel: None,
+            },
+        );
+        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&response) {
+            if parsed.get("error").is_some() {
+                tracing::debug!(
+                    from_pane,
+                    target_pane,
+                    "queued prompt drop notice failed to inject"
+                );
+            }
+        }
+    }
+
+    /// Chat view feed hook. The chat view itself is temporarily absent in this
+    /// merge (see ceo-bora#274); the channel transcript on disk remains the
+    /// source of truth, so this is a deliberate no-op until the re-port in
+    /// ceo-bora#276.
+    pub(crate) fn push_chat_message(
+        &mut self,
+        _channel: &str,
+        _message: crate::api::schema::ChannelMessage,
+    ) {
+    }
+
+    /// Human-seat chat arrival notice: passive delivery per ceo-bora#33 —
+    /// patches the channel workspace's `chat_unread` metadata token (the dim
+    /// one-line preview the sidebar row renders) and never switches the view
+    /// or injects a pane. The toast raise returns with the chat view (#276).
+    pub(crate) fn notify_chat_to_human(
+        &mut self,
+        channel: &str,
+        message: &crate::api::schema::ChannelMessage,
+    ) {
+        if !message.to_human {
+            return;
+        }
+        self.set_channel_unread_badge(channel, message);
+    }
+
+    /// Writes the dim one-line preview + unread badge onto `channel`'s own
+    /// workspace row (`Workspace::metadata_tokens`), keyed by
+    /// `CHAT_UNREAD_TOKEN`. A channel whose workspace can't be found (e.g.
+    /// gone) is a silent no-op, same posture as every other channel
+    /// sidecar write.
+    fn set_channel_unread_badge(
+        &mut self,
+        channel: &str,
+        message: &crate::api::schema::ChannelMessage,
+    ) {
+        let normalized = crate::persist::channels::normalize_channel_name(channel);
+        let Some(ws_idx) = self.find_channel_workspace(&normalized) else {
+            return;
+        };
+        let Some(ws) = self.state.workspaces.get_mut(ws_idx) else {
+            return;
+        };
+        let preview = chat_human_preview(&message.from_name, &message.text);
+        ws.metadata_tokens.patch(
+            std::collections::HashMap::from([(CHAT_UNREAD_TOKEN.to_string(), Some(preview))]),
+            None,
+            std::time::Instant::now(),
+        );
+    }
+}
+
+/// Collapses `text` to one line (channel messages can carry newlines) and
+/// caps its length, so one very long message can't grow the sidebar
+/// badge without bound.
+fn chat_human_preview(from_name: &str, text: &str) -> String {
+    const MAX_LEN: usize = 48;
+    let collapsed: String = text
+        .chars()
+        .map(|c| if c == '\n' { ' ' } else { c })
+        .take(MAX_LEN)
+        .collect();
+    let ellipsis = if text.chars().count() > MAX_LEN {
+        "…"
+    } else {
+        ""
+    };
+    format!("{from_name}: {collapsed}{ellipsis}")
+}
+
+/// Metadata-token key `App::notify_chat_to_human` patches onto a
+/// channel's own workspace to carry its unread badge + one-line dim
+/// preview — the same `Workspace::metadata_tokens` store
+/// `bora workspace report-metadata` patches, so the sidebar row renders it
+/// with zero extra wiring.
+const CHAT_UNREAD_TOKEN: &str = "chat_unread";
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1077,7 +1571,6 @@ mod tests {
     use crate::detect::{Agent, AgentState};
     use crate::workspace::Workspace;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-    use std::sync::Mutex;
 
     fn test_app() -> App {
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -3372,496 +3865,3 @@ mod tests {
         );
     }
 }
-
-impl App {
-    /// Rehydrates `pending_agent_prompts` from
-    /// `persist::pending_prompts`. Without this the `deferred` receipt was a
-    /// promise the server broke on every restart: the queue was memory-only,
-    /// so a restart silently dropped messages a sender had been told were
-    /// queued for delivery.
-    pub(crate) fn load_pending_agent_prompts(&mut self) {
-        let records = crate::persist::pending_prompts::read_pending_prompts();
-        if records.is_empty() {
-            return;
-        }
-        let now = Instant::now();
-        let mut highest_queue_id = 0;
-        for record in records {
-            highest_queue_id = highest_queue_id.max(record.queue_id);
-            self.pending_agent_prompts
-                .entry(record.target)
-                .or_default()
-                .push_back(PendingAgentPrompt {
-                    queue_id: record.queue_id,
-                    params: record.params,
-                    enqueued_at: now,
-                });
-        }
-        self.next_pending_agent_prompt_queue_id = self
-            .next_pending_agent_prompt_queue_id
-            .max(highest_queue_id + 1);
-        tracing::info!(
-            targets = self.pending_agent_prompts.len(),
-            "restored deferred agent prompts"
-        );
-    }
-
-    /// Mirrors `pending_agent_prompts` to disk. Called after every mutation of
-    /// the map — enqueue, cap eviction, drain, pane-close drop — so the stored
-    /// queue is never a stale superset that would replay an already-delivered
-    /// prompt after a restart. A write failure is logged, never propagated:
-    /// losing durability is strictly better than failing the delivery that was
-    /// already accepted.
-    pub(crate) fn persist_pending_agent_prompts(&self) {
-        let records: Vec<crate::persist::pending_prompts::PendingPromptRecord> = self
-            .pending_agent_prompts
-            .iter()
-            .flat_map(|(target, queue)| {
-                queue.iter().map(move |pending| {
-                    crate::persist::pending_prompts::PendingPromptRecord {
-                        target: target.clone(),
-                        queue_id: pending.queue_id,
-                        params: pending.params.clone(),
-                    }
-                })
-            })
-            .collect();
-        if let Err(err) = crate::persist::pending_prompts::write_pending_prompts(&records) {
-            tracing::warn!(error = %err, "failed to persist deferred agent prompts");
-        }
-    }
-
-    /// Checks and records an `agent.prompt` call from `from_pane` to
-    /// `target_pane` against the loop-guard rate limit.
-    ///
-    /// Returns `Ok(())` and records `now` for the pair when the call is
-    /// allowed. Returns `Err(remaining)` — the cooldown still left — when
-    /// the same pair fired within `AGENT_PROMPT_RATE_LIMIT` and the call
-    /// must be rejected without recording a new timestamp.
-    pub(crate) fn check_agent_prompt_rate_limit(
-        &mut self,
-        from_pane: &str,
-        target_pane: &str,
-        now: Instant,
-    ) -> Result<(), Duration> {
-        self.agent_prompt_rate_limits
-            .retain(|_, at| now.duration_since(*at) < AGENT_PROMPT_RATE_LIMIT_PRUNE_AGE);
-        let key = (from_pane.to_string(), target_pane.to_string());
-        if let Some(last) = self.agent_prompt_rate_limits.get(&key) {
-            let elapsed = now.duration_since(*last);
-            if elapsed < AGENT_PROMPT_RATE_LIMIT {
-                return Err(AGENT_PROMPT_RATE_LIMIT - elapsed);
-            }
-        }
-        self.agent_prompt_rate_limits.insert(key, now);
-        Ok(())
-    }
-
-    /// Queues `params` for replay once `target_pane` (its public pane id) is next
-    /// observed to leave `Working`. Bounded per target at
-    /// `PENDING_AGENT_PROMPT_CAP`: past the cap, the oldest queued prompt is dropped
-    /// (with a tracing warning, and a `agent_prompt.dropped` event / best-effort
-    /// sender notice — see `report_queued_prompt_dropped`) to make room — a full
-    /// queue means the target is falling behind, so keeping the newest instruction
-    /// is more useful than keeping the oldest. Returns `(1-based queue position,
-    /// queue_id)`, surfaced to callers as `AgentPrompted.queue_position` /
-    /// `AgentPrompted.queue_id`.
-    pub(crate) fn enqueue_pending_agent_prompt(
-        &mut self,
-        target_pane: String,
-        params: crate::api::schema::AgentPromptParams,
-    ) -> (usize, u64) {
-        let queue_id = self.next_pending_agent_prompt_queue_id();
-        let evicted = {
-            let queue = self
-                .pending_agent_prompts
-                .entry(target_pane.clone())
-                .or_default();
-            if queue.len() >= PENDING_AGENT_PROMPT_CAP {
-                queue.pop_front()
-            } else {
-                None
-            }
-        };
-        if let Some(evicted) = evicted {
-            tracing::warn!(
-                target = %target_pane,
-                cap = PENDING_AGENT_PROMPT_CAP,
-                "pending agent prompt queue full; dropped oldest queued prompt"
-            );
-            self.report_queued_prompt_dropped(
-                evicted.queue_id,
-                &target_pane,
-                evicted.params.from_pane,
-                evicted.params.origin_channel,
-                crate::api::schema::QueuedAgentPromptDropReason::Capacity,
-                None,
-            );
-        }
-        let queue = self
-            .pending_agent_prompts
-            .entry(target_pane.clone())
-            .or_default();
-        queue.push_back(PendingAgentPrompt {
-            queue_id,
-            params,
-            enqueued_at: Instant::now(),
-        });
-        let depth = queue.len();
-        self.persist_pending_agent_prompts();
-        (depth, queue_id)
-    }
-
-    fn next_pending_agent_prompt_queue_id(&mut self) -> u64 {
-        let id = self.next_pending_agent_prompt_queue_id;
-        self.next_pending_agent_prompt_queue_id =
-            self.next_pending_agent_prompt_queue_id.saturating_add(1);
-        id
-    }
-
-    /// Replays every prompt queued for `target_pane`, oldest first, through
-    /// `handle_agent_prompt`. A queued prompt that lands mid-`Working` again (the
-    /// target flipped back busy between drains) is simply re-queued by
-    /// `handle_agent_prompt`'s own busy check — reported as an `outcome: "deferred"`
-    /// receipt, not an error — so ordering degrades but nothing is lost; not a
-    /// terminal fate, so no event yet. A successful replay is terminal: reports
-    /// `agent_prompt.delivered`. Any other failure (rate-limited, pane gone, agent
-    /// swapped out) is also terminal — a retry cannot fix it — so it is logged and
-    /// reported via `report_queued_prompt_dropped`.
-    pub(crate) fn drain_pending_agent_prompts(&mut self, target_pane: &str) {
-        let Some(queue) = self.pending_agent_prompts.remove(target_pane) else {
-            return;
-        };
-        // Persist the removal BEFORE replaying: a crash mid-drain must not
-        // leave a stored queue that redelivers prompts already written to the
-        // pane. A re-queue (target flipped busy again) goes back through
-        // `enqueue_pending_agent_prompt`, which persists on its own.
-        self.persist_pending_agent_prompts();
-        for pending in queue {
-            let queue_id = pending.queue_id;
-            let from_pane = pending.params.from_pane.clone();
-            let origin_channel = pending.params.origin_channel.clone();
-            let waited_ms = pending.enqueued_at.elapsed().as_millis();
-            let request_id = format!("deferred:{target_pane}:{waited_ms}");
-            let response = self.handle_agent_prompt(request_id, pending.params);
-            let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&response) else {
-                continue;
-            };
-            if let Some(error) = parsed.get("error") {
-                let code = error.get("code").and_then(|c| c.as_str()).unwrap_or("");
-                let message = error.get("message").and_then(|m| m.as_str()).unwrap_or("");
-                tracing::warn!(
-                    target = %target_pane,
-                    waited_ms,
-                    code,
-                    message,
-                    "deferred agent prompt dropped; replay failed"
-                );
-                let detail = if message.is_empty() {
-                    code.to_string()
-                } else {
-                    message.to_string()
-                };
-                self.report_queued_prompt_dropped(
-                    queue_id,
-                    target_pane,
-                    from_pane,
-                    origin_channel,
-                    crate::api::schema::QueuedAgentPromptDropReason::AgentChanged,
-                    Some(detail),
-                );
-                continue;
-            }
-            let outcome = parsed
-                .get("result")
-                .and_then(|result| result.get("outcome"))
-                .and_then(|outcome| outcome.as_str());
-            if outcome == Some("deferred") {
-                tracing::debug!(
-                    target = %target_pane,
-                    waited_ms,
-                    "deferred agent prompt re-queued; target busy again"
-                );
-                continue;
-            }
-            self.report_queued_prompt_delivered(queue_id, target_pane, from_pane);
-        }
-    }
-
-    /// Called on every `pane.agent_status_changed` observation for
-    /// `target_pane`. Starts or cancels the settle window that gates
-    /// `drain_settled_pending_agent_prompts`.
-    pub(crate) fn sync_pending_agent_prompt_drain_deadline(
-        &mut self,
-        target_pane: &str,
-        agent_status: crate::api::schema::AgentStatus,
-        now: Instant,
-    ) {
-        if agent_status == crate::api::schema::AgentStatus::Working {
-            self.pending_agent_prompt_drain_deadlines
-                .remove(target_pane);
-            return;
-        }
-        if self
-            .pending_agent_prompts
-            .get(target_pane)
-            .is_none_or(std::collections::VecDeque::is_empty)
-        {
-            return;
-        }
-        self.pending_agent_prompt_drain_deadlines
-            .entry(target_pane.to_string())
-            .or_insert_with(|| now + PENDING_AGENT_PROMPT_DRAIN_SETTLE);
-    }
-
-    /// Drains every target whose settle deadline (see
-    /// `sync_pending_agent_prompt_drain_deadline`) has elapsed by `now`.
-    /// Called from the scheduled-task tick (`handle_scheduled_tasks` /
-    /// `handle_scheduled_tasks_headless`) so a target that goes quiet and
-    /// never produces another status-change event still gets drained once
-    /// settled, not just on the next incidental status flip. Returns
-    /// whether any target was drained, for the caller's render-dirty flag.
-    pub(crate) fn drain_settled_pending_agent_prompts(&mut self, now: Instant) -> bool {
-        let due: Vec<String> = self
-            .pending_agent_prompt_drain_deadlines
-            .iter()
-            .filter(|(_, deadline)| now >= **deadline)
-            .map(|(target, _)| target.clone())
-            .collect();
-        for target in &due {
-            self.pending_agent_prompt_drain_deadlines.remove(target);
-            self.drain_pending_agent_prompts(target);
-        }
-        !due.is_empty()
-    }
-
-    /// Drops every prompt queued for `target_pane` (its public pane id) — the
-    /// recipient disappeared (pane closed) before it could be delivered.
-    pub(crate) fn fail_pending_agent_prompts(&mut self, target_pane: &str) {
-        let Some(queue) = self.pending_agent_prompts.remove(target_pane) else {
-            return;
-        };
-        self.persist_pending_agent_prompts();
-        for pending in queue {
-            tracing::warn!(
-                target = %target_pane,
-                waited_ms = pending.enqueued_at.elapsed().as_millis(),
-                "deferred agent prompt dropped; target pane closed before delivery"
-            );
-            self.report_queued_prompt_dropped(
-                pending.queue_id,
-                target_pane,
-                pending.params.from_pane,
-                pending.params.origin_channel,
-                crate::api::schema::QueuedAgentPromptDropReason::PaneClosed,
-                None,
-            );
-        }
-    }
-
-    /// Emits the durable `agent_prompt.delivered` event for a queued prompt that
-    /// was successfully drained and injected.
-    fn report_queued_prompt_delivered(
-        &mut self,
-        queue_id: u64,
-        target_pane: &str,
-        from_pane: Option<String>,
-    ) {
-        let workspace_id = self
-            .resolve_agent_target(target_pane)
-            .ok()
-            .map(|resolved| self.public_workspace_id(resolved.ws_idx));
-        self.emit_event(crate::api::schema::EventEnvelope {
-            event: crate::api::schema::EventKind::QueuedPromptDelivered,
-            data: crate::api::schema::EventData::QueuedPromptDelivered {
-                queue_id,
-                target_pane: target_pane.to_string(),
-                workspace_id,
-                from_pane,
-            },
-        });
-    }
-
-    /// Reports the terminal drop of a queued prompt — this is what keeps a
-    /// `deferred` receipt honest, since the queue itself otherwise only logs
-    /// internally. Always emits the durable `agent_prompt.dropped` event; when
-    /// the sender is a known, resolvable pane, also best-effort injects a
-    /// one-line PTY notice (see `notify_pane_of_queue_drop` — that path can
-    /// never itself be queued, so this never recurses); when the prompt was a
-    /// `channel.send` fan-out delivery, appends an honest system line to that
-    /// channel's history.
-    fn report_queued_prompt_dropped(
-        &mut self,
-        queue_id: u64,
-        target_pane: &str,
-        from_pane: Option<String>,
-        origin_channel: Option<String>,
-        reason: crate::api::schema::QueuedAgentPromptDropReason,
-        detail: Option<String>,
-    ) {
-        let workspace_id = self
-            .resolve_agent_target(target_pane)
-            .ok()
-            .map(|resolved| self.public_workspace_id(resolved.ws_idx));
-        self.emit_event(crate::api::schema::EventEnvelope {
-            event: crate::api::schema::EventKind::QueuedPromptDropped,
-            data: crate::api::schema::EventData::QueuedPromptDropped {
-                queue_id,
-                target_pane: target_pane.to_string(),
-                workspace_id,
-                from_pane: from_pane.clone(),
-                reason,
-                detail: detail.clone(),
-            },
-        });
-        let reason_text = queued_prompt_drop_reason_text(reason, detail.as_deref());
-        if let Some(from_pane) = from_pane.as_deref() {
-            self.notify_pane_of_queue_drop(from_pane, target_pane, &reason_text);
-        }
-        if let Some(channel) = origin_channel {
-            let line = crate::api::schema::ChannelMessage {
-                ts: rfc3339_now(),
-                seq: crate::persist::channels::next_seq(&channel),
-                from_pane: "system".to_string(),
-                from_name: "bora".to_string(),
-                from_kind: crate::api::schema::ChannelSenderKind::Agent,
-                text: format!("delivery to {target_pane} dropped: {reason_text}"),
-                in_reply_to: None,
-                to_pane: None,
-                to_human: false,
-            };
-            if let Err(err) = crate::persist::channels::append_message(&channel, &line) {
-                tracing::warn!(
-                    channel = %channel,
-                    target_pane = %target_pane,
-                    error = %err,
-                    "failed to append delivery-drop notice to channel history"
-                );
-            }
-        }
-    }
-
-    /// Best-effort direct PTY notice to `from_pane` that its queued prompt to
-    /// `target_pane` was dropped. Deliberately bypasses the deferred queue and
-    /// rate limiting entirely — it calls `handle_agent_prompt` with
-    /// `from_pane: None` and `when_idle: None`, so neither gate applies — which is
-    /// what keeps a notice from ever being queued itself: a drop can never
-    /// recurse into reporting another drop. Skips silently (the event emitted by
-    /// `report_queued_prompt_dropped` remains the durable record) when `from_pane`
-    /// no longer resolves to a live agent pane, or that pane is currently
-    /// `Working` — a courtesy notice must never interrupt an agent mid-task.
-    fn notify_pane_of_queue_drop(&mut self, from_pane: &str, target_pane: &str, reason: &str) {
-        let Ok(resolved) = self.resolve_agent_target(from_pane) else {
-            return;
-        };
-        if let Some(agent) = self.agent_info(resolved.ws_idx, resolved.pane_id) {
-            if agent.agent_status == crate::api::schema::AgentStatus::Working {
-                tracing::debug!(
-                    from_pane,
-                    target_pane,
-                    "queued prompt drop notice skipped; sender pane busy"
-                );
-                return;
-            }
-        }
-        let notice = format!("[bora] prompt to {target_pane} dropped: {reason}");
-        let response = self.handle_agent_prompt(
-            format!("system:queue_drop_notice:{target_pane}"),
-            crate::api::schema::AgentPromptParams {
-                target: from_pane.to_string(),
-                text: notice,
-                wait: None,
-                from_pane: None,
-                when_idle: None,
-                when_idle_timeout_ms: None,
-                peer_pid: None,
-                origin_channel: None,
-            },
-        );
-        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&response) {
-            if parsed.get("error").is_some() {
-                tracing::debug!(
-                    from_pane,
-                    target_pane,
-                    "queued prompt drop notice failed to inject"
-                );
-            }
-        }
-    }
-
-    /// Chat view feed hook. The chat view itself is temporarily absent in this
-    /// merge (see ceo-bora#274); the channel transcript on disk remains the
-    /// source of truth, so this is a deliberate no-op until the re-port in
-    /// ceo-bora#276.
-    pub(crate) fn push_chat_message(
-        &mut self,
-        _channel: &str,
-        _message: crate::api::schema::ChannelMessage,
-    ) {
-    }
-
-    /// Human-seat chat arrival notice: passive delivery per ceo-bora#33 —
-    /// patches the channel workspace's `chat_unread` metadata token (the dim
-    /// one-line preview the sidebar row renders) and never switches the view
-    /// or injects a pane. The toast raise returns with the chat view (#276).
-    pub(crate) fn notify_chat_to_human(
-        &mut self,
-        channel: &str,
-        message: &crate::api::schema::ChannelMessage,
-    ) {
-        if !message.to_human {
-            return;
-        }
-        self.set_channel_unread_badge(channel, message);
-    }
-
-    /// Writes the dim one-line preview + unread badge onto `channel`'s own
-    /// workspace row (`Workspace::metadata_tokens`), keyed by
-    /// `CHAT_UNREAD_TOKEN`. A channel whose workspace can't be found (e.g.
-    /// gone) is a silent no-op, same posture as every other channel
-    /// sidecar write.
-    fn set_channel_unread_badge(
-        &mut self,
-        channel: &str,
-        message: &crate::api::schema::ChannelMessage,
-    ) {
-        let normalized = crate::persist::channels::normalize_channel_name(channel);
-        let Some(ws_idx) = self.find_channel_workspace(&normalized) else {
-            return;
-        };
-        let Some(ws) = self.state.workspaces.get_mut(ws_idx) else {
-            return;
-        };
-        let preview = chat_human_preview(&message.from_name, &message.text);
-        ws.metadata_tokens.patch(
-            std::collections::HashMap::from([(CHAT_UNREAD_TOKEN.to_string(), Some(preview))]),
-            None,
-            std::time::Instant::now(),
-        );
-    }
-}
-
-/// Collapses `text` to one line (channel messages can carry newlines) and
-/// caps its length, so one very long message can't grow the sidebar
-/// badge without bound.
-fn chat_human_preview(from_name: &str, text: &str) -> String {
-    const MAX_LEN: usize = 48;
-    let collapsed: String = text
-        .chars()
-        .map(|c| if c == '\n' { ' ' } else { c })
-        .take(MAX_LEN)
-        .collect();
-    let ellipsis = if text.chars().count() > MAX_LEN {
-        "…"
-    } else {
-        ""
-    };
-    format!("{from_name}: {collapsed}{ellipsis}")
-}
-
-/// Metadata-token key `App::notify_chat_to_human` patches onto a
-/// channel's own workspace to carry its unread badge + one-line dim
-/// preview — the same `Workspace::metadata_tokens` store
-/// `bora workspace report-metadata` patches, so the sidebar row renders it
-/// with zero extra wiring.
-const CHAT_UNREAD_TOKEN: &str = "chat_unread";

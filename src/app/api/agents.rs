@@ -3,9 +3,9 @@ use std::time::{Duration, Instant};
 use bytes::Bytes;
 
 use crate::api::schema::{
-    AgentPromptOutcome, AgentPromptParams, AgentRenameParams, AgentSendKeysParams,
-    AgentStartParams, AgentTarget, EventData, EventEnvelope, EventKind, PaneReadResult,
-    ResponseResult, AGENT_PROMPTED_TEXT_LIMIT,
+    AgentPromptOutcome, AgentPromptParams, AgentPromptWaitOptions, AgentRenameParams,
+    AgentSendKeysParams, AgentStartParams, AgentTarget, EventData, EventEnvelope, EventKind,
+    PaneReadResult, ResponseResult, AGENT_PROMPTED_TEXT_LIMIT,
 };
 use crate::app::App;
 
@@ -23,6 +23,50 @@ fn agent_prompt_submit_delay(agent: crate::detect::Agent, prompt_bytes: usize) -
     #[cfg(not(windows))]
     let _ = (agent, prompt_bytes);
     AGENT_PROMPT_SUBMIT_DELAY
+}
+
+/// Submission deadline honoured by the Windows ConPTY actor. The unix actor has
+/// no deadline (`PaneRuntimeIo::queue_user_input_submission` discards it), so
+/// the value is only ever computed there.
+fn agent_prompt_submit_deadline(wait: Option<&AgentPromptWaitOptions>) -> Option<Instant> {
+    if cfg!(windows) {
+        wait.and_then(|wait| wait.submission_deadline)
+    } else {
+        None
+    }
+}
+
+/// A prompt that passed `App::admit_agent_prompt`: the resolved target, the
+/// agent expected in its foreground, and the text as it will be injected.
+struct AdmittedAgentPrompt {
+    ws_idx: usize,
+    pane_id: crate::layout::PaneId,
+    expected_agent: crate::detect::Agent,
+    /// `AgentPromptParams::text` with the `[from ...]` prefix already applied.
+    text: String,
+    from_pane: Option<String>,
+    wait: Option<AgentPromptWaitOptions>,
+}
+
+/// Encodes `text` plus a separate Enter for the pane's current input mode,
+/// after nudging GitHub Copilot with a focus-gained report — Copilot ignores a
+/// synthetic Enter after focus loss until it receives focus gained. `Err` is
+/// the `agent_prompt_failed` message.
+fn encode_agent_prompt_submission(
+    runtime: &crate::terminal::TerminalRuntime,
+    expected_agent: crate::detect::Agent,
+    text: &str,
+) -> Result<(Vec<u8>, Vec<u8>), String> {
+    if expected_agent == crate::detect::Agent::GithubCopilot {
+        let focus = crate::ghostty::encode_focus(crate::ghostty::FocusEvent::Gained)
+            .map_err(|err| err.to_string())?;
+        runtime
+            .try_send_bytes(Bytes::from(focus))
+            .map_err(|err| err.to_string())?;
+    }
+    Ok(crate::app::api_helpers::encode_api_submission_parts(
+        runtime, text,
+    ))
 }
 
 impl App {
@@ -72,17 +116,77 @@ impl App {
         encode_success(id, ResponseResult::AgentStarted { agent, argv })
     }
 
-    pub(in crate::app) fn handle_agent_prompt(
+    /// Synchronous delivery path: admission via `admit_agent_prompt`, then the
+    /// text is written immediately and Enter is scheduled after the agent's
+    /// submit delay. Used where the caller already holds the App and needs a
+    /// receipt now — `channel.send` fan-out, the channel protocol briefing, and
+    /// replay of `when_idle`-deferred prompts (`App::drain_pending_agent_prompts`).
+    /// API `agent.prompt` requests go through `handle_deferred_agent_api_request`.
+    pub(crate) fn handle_agent_prompt(&mut self, id: String, params: AgentPromptParams) -> String {
+        let target = params.target.clone();
+        let admitted = match self.admit_agent_prompt(&id, params) {
+            Ok(admitted) => admitted,
+            Err(response) => return response,
+        };
+        let Some(runtime) = self.lookup_runtime_sender(admitted.ws_idx, admitted.pane_id) else {
+            return agent_not_found(id, &target);
+        };
+        let submit_delay = agent_prompt_submit_delay(admitted.expected_agent, admitted.text.len());
+        let (text, enter) = match encode_agent_prompt_submission(
+            runtime,
+            admitted.expected_agent,
+            &admitted.text,
+        ) {
+            Ok(parts) => parts,
+            Err(err) => return encode_error(id, "agent_prompt_failed", err),
+        };
+        if let Err(err) = runtime.try_send_bytes(Bytes::from(text)) {
+            return encode_error(id, "agent_prompt_failed", err.to_string());
+        }
+        runtime.send_bytes_after(Bytes::from(enter), submit_delay);
+        self.emit_agent_prompted(&admitted);
+        let Some(agent) = self.agent_info(admitted.ws_idx, admitted.pane_id) else {
+            return agent_not_found(id, &target);
+        };
+        encode_success(
+            id,
+            ResponseResult::AgentPrompted {
+                agent,
+                outcome: AgentPromptOutcome::Injected,
+                queue_position: None,
+                queue_id: None,
+            },
+        )
+    }
+
+    /// Admission shared by both delivery paths. Everything that decides
+    /// whether a prompt may be injected right now lives here, in this order:
+    /// empty text, target resolution, the `when_idle` busy gate (a `Working`
+    /// target queues the prompt and answers with a `deferred` receipt), the
+    /// per-(sender, target) rate limit, `[from ...]` sender attribution, and
+    /// the agent-identity checks (blocked, launch pending, foreground process
+    /// still the agent). `Err` carries the complete wire response — a receipt
+    /// or an error — for the caller to return as-is.
+    fn admit_agent_prompt(
         &mut self,
-        id: String,
+        id: &str,
         mut params: AgentPromptParams,
-    ) -> String {
+    ) -> Result<AdmittedAgentPrompt, String> {
         if params.text.is_empty() {
-            return encode_error(id, "empty_agent_prompt", "agent prompt must not be empty");
+            return Err(encode_error(
+                id.to_string(),
+                "empty_agent_prompt",
+                "agent prompt must not be empty",
+            ));
         }
         let resolved = match self.resolve_agent_target(&params.target) {
             Ok(resolved) => resolved,
-            Err(err) => return encode_error_body(id, self.agent_target_error_body(err)),
+            Err(err) => {
+                return Err(encode_error_body(
+                    id.to_string(),
+                    self.agent_target_error_body(err),
+                ))
+            }
         };
         if let Some(agent) = self.agent_info(resolved.ws_idx, resolved.pane_id) {
             if agent_prompt_should_reject_busy(params.when_idle, agent.agent_status) {
@@ -91,15 +195,15 @@ impl App {
                     .unwrap_or_else(|| params.target.clone());
                 let (queue_position, queue_id) =
                     self.enqueue_pending_agent_prompt(target_pane, params.clone());
-                return encode_success(
-                    id,
+                return Err(encode_success(
+                    id.to_string(),
                     ResponseResult::AgentPrompted {
                         agent,
                         outcome: AgentPromptOutcome::Deferred,
                         queue_position: Some(queue_position),
                         queue_id: Some(queue_id),
                     },
-                );
+                ));
             }
         }
         if let Some(from_pane) = params.from_pane.as_deref() {
@@ -109,14 +213,14 @@ impl App {
             if let Err(remaining) =
                 self.check_agent_prompt_rate_limit(from_pane, &target_pane, Instant::now())
             {
-                return encode_error(
-                    id,
+                return Err(encode_error(
+                    id.to_string(),
                     "agent_prompt_rate_limited",
                     format!(
                         "agent prompt from {from_pane} to {target_pane} is rate-limited; retry in {}ms",
                         remaining.as_millis()
                     ),
-                );
+                ));
             }
         }
         if let Some(from_pane) = params.from_pane.clone() {
@@ -130,98 +234,71 @@ impl App {
             .and_then(|workspace| workspace.terminal_id(resolved.pane_id))
             .cloned()
         else {
-            return agent_not_found(id, &params.target);
+            return Err(agent_not_found(id.to_string(), &params.target));
         };
         let Some(terminal) = self.state.terminals.get(&terminal_id) else {
-            return agent_not_found(id, &params.target);
+            return Err(agent_not_found(id.to_string(), &params.target));
         };
         if terminal.state == crate::detect::AgentState::Blocked {
-            return encode_error(
-                id,
+            return Err(encode_error(
+                id.to_string(),
                 "agent_blocked",
                 format!(
                     "agent {} is blocked and requires interactive input",
                     params.target
                 ),
-            );
+            ));
         }
         let Some(expected_agent) = terminal.effective_known_agent() else {
-            return agent_not_ready(id, &params.target);
+            return Err(agent_not_ready(id.to_string(), &params.target));
         };
         if terminal.managed_agent_launch_pending() {
-            return agent_not_ready(id, &params.target);
+            return Err(agent_not_ready(id.to_string(), &params.target));
         }
         let Some(runtime) = self.lookup_runtime_sender(resolved.ws_idx, resolved.pane_id) else {
-            return agent_not_found(id, &params.target);
+            return Err(agent_not_found(id.to_string(), &params.target));
         };
         if !super::super::agents::runtime_hosts_agent(runtime, expected_agent) {
-            return encode_error(
-                id,
+            return Err(encode_error(
+                id.to_string(),
                 "agent_not_ready",
                 format!(
                     "agent {} is no longer the pane foreground process",
                     params.target
                 ),
-            );
+            ));
         }
-        let submit_delay = agent_prompt_submit_delay(expected_agent, params.text.len());
-        #[cfg(windows)]
-        let submit_deadline = params
-            .wait
-            .as_ref()
-            .and_then(|wait| wait.submission_deadline);
-        #[cfg(not(windows))]
-        let submit_deadline: Option<std::time::Instant> = None;
-        if expected_agent == crate::detect::Agent::GithubCopilot {
-            // Copilot ignores synthetic Enter after focus loss until it receives focus gained.
-            let focus = match crate::ghostty::encode_focus(crate::ghostty::FocusEvent::Gained) {
-                Ok(focus) => focus,
-                Err(err) => {
-                    return encode_error(id, "agent_prompt_failed", err.to_string());
-                }
-            };
-            if let Err(err) = runtime.try_send_bytes(Bytes::from(focus)) {
-                return encode_error(id, "agent_prompt_failed", err.to_string());
-            }
-        }
-        // `params.text` already carries the `[from ...]`/`[from? claimed ...]` prefix
-        // (applied above via `agent_prompt_from_prefix`) when `from_pane` was set, so
-        // the announced text used for injection/event reporting is just the text as-is.
-        let announced_text = params.text.clone();
-        let (text, enter) =
-            crate::app::api_helpers::encode_api_submission_parts(runtime, &announced_text);
-        if let Err(err) = runtime.try_send_bytes(Bytes::from(text)) {
-            return encode_error(id, "agent_prompt_failed", err.to_string());
-        }
-        runtime.send_bytes_after(Bytes::from(enter), AGENT_PROMPT_SUBMIT_DELAY);
-        let to_pane_id = self.public_pane_id(resolved.ws_idx, resolved.pane_id);
-        let to_workspace_id = self.public_workspace_id(resolved.ws_idx);
-        if let Some(to_pane_id) = to_pane_id {
-            let (text, text_truncated) = truncate_agent_prompt_text(&announced_text);
-            self.emit_event(EventEnvelope {
-                event: EventKind::AgentPrompted,
-                data: EventData::AgentPrompted {
-                    from_pane_id: params.from_pane.clone(),
-                    to_pane_id,
-                    to_workspace_id,
-                    text,
-                    text_truncated,
-                    text_len: announced_text.len(),
-                },
-            });
-        }
-        let Some(agent) = self.agent_info(resolved.ws_idx, resolved.pane_id) else {
-            return agent_not_found(id, &params.target);
+        Ok(AdmittedAgentPrompt {
+            ws_idx: resolved.ws_idx,
+            pane_id: resolved.pane_id,
+            expected_agent,
+            text: params.text,
+            from_pane: params.from_pane,
+            wait: params.wait,
+        })
+    }
+
+    /// `agent.prompted` for an admitted prompt, emitted by both delivery paths
+    /// so event subscribers (channel transcripts among them) see every prompt
+    /// regardless of how it was dispatched. `admitted.text` already carries
+    /// the `[from ...]` prefix, so the announced text is the text as injected.
+    fn emit_agent_prompted(&mut self, admitted: &AdmittedAgentPrompt) {
+        let Some(to_pane_id) = self.public_pane_id(admitted.ws_idx, admitted.pane_id) else {
+            return;
         };
-        encode_success(
-            id,
-            ResponseResult::AgentPrompted {
-                agent,
-                outcome: AgentPromptOutcome::Injected,
-                queue_position: None,
-                queue_id: None,
+        let to_workspace_id = self.public_workspace_id(admitted.ws_idx);
+        let (text, text_truncated) = truncate_agent_prompt_text(&admitted.text);
+        self.emit_event(EventEnvelope {
+            event: EventKind::AgentPrompted,
+            data: EventData::AgentPrompted {
+                from_pane_id: admitted.from_pane.clone(),
+                to_pane_id,
+                to_workspace_id,
+                text,
+                text_truncated,
+                text_len: admitted.text.len(),
             },
-        )
+        });
     }
 
     /// Resolves a `from_pane` identifier into a `[from <public_pane_id> <display_name>] `
@@ -289,11 +366,12 @@ impl App {
         crate::platform::pid_is_descendant_of(shell_pid, peer_pid)
     }
 
-    /// Upstream headless dispatch entry: routes an `AgentPrompt` API request through the
-    /// busy-queue/prefix/rate-limit logic above, then submits via
-    /// `queue_user_input_submission` and answers the API client from a background thread
-    /// when the submission completes. `handle_agent_prompt` remains the synchronous
-    /// in-process path channels use.
+    /// API `agent.prompt` entry (headless dispatch): admission via
+    /// `admit_agent_prompt` — busy queue, rate limit, sender prefix — then
+    /// delivery via `queue_user_input_submission`, answering the API client from
+    /// a background thread once the submission completes. A response that is
+    /// ready immediately (a `deferred` receipt or an error) is sent as-is.
+    /// `handle_agent_prompt` remains the synchronous in-process path channels use.
     pub(crate) fn handle_deferred_agent_api_request(
         &mut self,
         request: crate::api::schema::Request,
@@ -331,14 +409,14 @@ impl App {
         true
     }
 
-    /// Upstream async prompt queue: same admission checks as
-    /// `handle_agent_prompt`, but delivery goes through
-    /// `queue_user_input_submission` and the caller receives a completion
-    /// receiver instead of a synchronous receipt.
+    /// Async delivery: same admission as `handle_agent_prompt`, but text and
+    /// Enter go through `queue_user_input_submission` and the caller receives a
+    /// completion receiver instead of a synchronous receipt. `Err` carries a
+    /// complete wire response (receipt or error) that needs no completion.
     fn queue_agent_prompt(
         &mut self,
         id: String,
-        mut params: AgentPromptParams,
+        params: AgentPromptParams,
     ) -> Result<
         (
             String,
@@ -347,84 +425,18 @@ impl App {
         ),
         String,
     > {
-        if params.text.is_empty() {
-            return Err(encode_error(
-                id,
-                "empty_agent_prompt",
-                "agent prompt must not be empty",
-            ));
-        }
-        let resolved = match self.resolve_agent_target(&params.target) {
-            Ok(resolved) => resolved,
-            Err(err) => return Err(encode_error_body(id, self.agent_target_error_body(err))),
+        let target = params.target.clone();
+        let admitted = self.admit_agent_prompt(&id, params)?;
+        let Some(runtime) = self.lookup_runtime_sender(admitted.ws_idx, admitted.pane_id) else {
+            return Err(agent_not_found(id, &target));
         };
-        if let Some(from_pane) = params.from_pane.clone() {
-            let prefix = self.agent_prompt_from_prefix(&from_pane, params.peer_pid);
-            params.text = format!("{prefix}{}", params.text);
-        }
-        let Some(terminal_id) = self
-            .state
-            .workspaces
-            .get(resolved.ws_idx)
-            .and_then(|workspace| workspace.terminal_id(resolved.pane_id))
-            .cloned()
-        else {
-            return Err(agent_not_found(id, &params.target));
-        };
-        let Some(terminal) = self.state.terminals.get(&terminal_id) else {
-            return Err(agent_not_found(id, &params.target));
-        };
-        if terminal.state == crate::detect::AgentState::Blocked {
-            return Err(encode_error(
-                id,
-                "agent_blocked",
-                format!(
-                    "agent {} is blocked and requires interactive input",
-                    params.target
-                ),
-            ));
-        }
-        let Some(expected_agent) = terminal.effective_known_agent() else {
-            return Err(agent_not_ready(id, &params.target));
-        };
-        if terminal.managed_agent_launch_pending() {
-            return Err(agent_not_ready(id, &params.target));
-        }
-        let Some(runtime) = self.lookup_runtime_sender(resolved.ws_idx, resolved.pane_id) else {
-            return Err(agent_not_found(id, &params.target));
-        };
-        if !super::super::agents::runtime_hosts_agent(runtime, expected_agent) {
-            return Err(encode_error(
-                id,
-                "agent_not_ready",
-                format!(
-                    "agent {} is no longer the pane foreground process",
-                    params.target
-                ),
-            ));
-        }
-        let submit_delay = agent_prompt_submit_delay(expected_agent, params.text.len());
-        #[cfg(windows)]
-        let submit_deadline = params
-            .wait
-            .as_ref()
-            .and_then(|wait| wait.submission_deadline);
-        #[cfg(not(windows))]
-        let submit_deadline: Option<std::time::Instant> = None;
-        if expected_agent == crate::detect::Agent::GithubCopilot {
-            // Copilot ignores synthetic Enter after focus loss until it receives focus gained.
-            let focus = match crate::ghostty::encode_focus(crate::ghostty::FocusEvent::Gained) {
-                Ok(focus) => focus,
-                Err(err) => return Err(encode_error(id, "agent_prompt_failed", err.to_string())),
-            };
-            if let Err(err) = runtime.try_send_bytes(Bytes::from(focus)) {
-                return Err(encode_error(id, "agent_prompt_failed", err.to_string()));
-            }
-        }
+        let submit_delay = agent_prompt_submit_delay(admitted.expected_agent, admitted.text.len());
+        let submit_deadline = agent_prompt_submit_deadline(admitted.wait.as_ref());
         let (text, enter) =
-            crate::app::api_helpers::encode_api_submission_parts(runtime, &params.text);
-        let Some(agent) = self.agent_info(resolved.ws_idx, resolved.pane_id) else {
-            return Err(agent_not_found(id, &params.target));
+            encode_agent_prompt_submission(runtime, admitted.expected_agent, &admitted.text)
+                .map_err(|err| encode_error(id.clone(), "agent_prompt_failed", err))?;
+        let Some(agent) = self.agent_info(admitted.ws_idx, admitted.pane_id) else {
+            return Err(agent_not_found(id, &target));
         };
         let completion = runtime
             .queue_user_input_submission(
@@ -434,24 +446,7 @@ impl App {
                 submit_deadline,
             )
             .map_err(|err| encode_error(id.clone(), "agent_prompt_failed", err.to_string()))?;
-        // Emit the same `agent_prompted` event the synchronous path
-        // (`handle_agent_prompt`) emits, so event subscribers (channel
-        // transcripts among them) see prompts regardless of dispatch path.
-        if let Some(to_pane_id) = self.public_pane_id(resolved.ws_idx, resolved.pane_id) {
-            let to_workspace_id = self.public_workspace_id(resolved.ws_idx);
-            let (event_text, text_truncated) = truncate_agent_prompt_text(&params.text);
-            self.emit_event(EventEnvelope {
-                event: EventKind::AgentPrompted,
-                data: EventData::AgentPrompted {
-                    from_pane_id: params.from_pane.clone(),
-                    to_pane_id,
-                    to_workspace_id,
-                    text: event_text,
-                    text_truncated,
-                    text_len: params.text.len(),
-                },
-            });
-        }
+        self.emit_agent_prompted(&admitted);
         Ok((id, agent, completion))
     }
 
@@ -1111,6 +1106,58 @@ mod tests {
             .expect("prompt queued, not dropped");
         assert_eq!(queue.len(), 1);
         assert_eq!(queue[0].params.text, "queued message");
+    }
+
+    /// The API path (`bora agent prompt --when-idle`, dispatched through
+    /// `handle_deferred_agent_api_request`) must honour the busy gate exactly
+    /// like the in-process path: a `Working` target yields a `deferred` receipt
+    /// immediately and nothing reaches the pty. The 0.9.0 merge once gave this
+    /// path its own admission without the gate, so the CLI could never defer.
+    #[tokio::test]
+    async fn deferred_api_request_defers_when_target_busy_and_when_idle() {
+        let mut app = app_with_agent();
+        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        let terminal_id = app.state.workspaces[0].tabs[0].panes[&pane_id]
+            .attached_terminal_id
+            .clone();
+        let terminal = app.state.terminals.get_mut(&terminal_id).unwrap();
+        terminal.set_agent_name("reviewer".into());
+        terminal.set_detected_state(Some(Agent::OpenCode), AgentState::Working);
+        let (runtime, mut rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        app.state.insert_test_runtime(pane_id, runtime);
+        let public_pane_id = app.public_pane_id(0, pane_id).unwrap();
+
+        let response = run_deferred_agent_prompt(
+            &mut app,
+            "req",
+            AgentPromptParams {
+                target: "reviewer".into(),
+                text: "queued via api".into(),
+                wait: None,
+                from_pane: None,
+                when_idle: Some(true),
+                when_idle_timeout_ms: None,
+                peer_pid: None,
+                origin_channel: None,
+            },
+        );
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        let ResponseResult::AgentPrompted {
+            outcome, queue_id, ..
+        } = success.result
+        else {
+            panic!("expected AgentPrompted, got {:?}", success.result);
+        };
+        assert_eq!(outcome, crate::api::schema::AgentPromptOutcome::Deferred);
+        assert!(queue_id.is_some());
+        assert!(
+            rx.try_recv().is_err(),
+            "busy prompt must not dispatch bytes"
+        );
+        assert_eq!(
+            app.pending_agent_prompts[&public_pane_id][0].params.text,
+            "queued via api"
+        );
     }
 
     #[test]

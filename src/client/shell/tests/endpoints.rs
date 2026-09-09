@@ -132,7 +132,7 @@ fn live_catalog_active_removal_does_not_retain_remote_projection_or_input() {
     let text = buffer
         .content()
         .iter()
-        .map(|cell| cell.symbol())
+        .map(ratatui::buffer::Cell::symbol)
         .collect::<String>();
     assert!(!text.contains("remote-workspace"));
 }

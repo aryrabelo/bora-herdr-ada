@@ -46,7 +46,7 @@ lint:
     # scope the rule names. Proven non-blind: injecting one production unwrap()
     # fails this line with "error: used `unwrap()`".
     cargo clippy --bins --locked -- -D clippy::unwrap_used
-    @gated=$(grep -rlF '#![cfg(not(target_os = "macos"))]' src tests 2>/dev/null || true); \
+    @gated=$(grep -rlE '^#!\[cfg\(.*not\(target_os = "macos"\)' src tests 2>/dev/null || true); \
     for f in src/platform/linux.rs src/platform/windows.rs; do \
         [ -f "$f" ] && gated="$gated $f"; \
     done; \

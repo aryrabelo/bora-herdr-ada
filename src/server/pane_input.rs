@@ -312,17 +312,17 @@ fn apply_client_terminal_input_events(
 
                 runtime.scroll_reset();
                 let bytes = runtime.encode_terminal_key(key);
-                if !bytes.is_empty() {
-                    runtime
-                        .try_send_bytes(Bytes::from(bytes))
-                        .map_err(|err| format!("targeted pane key input failed: {err}"))?;
+                if !bytes.is_empty() && !runtime.send_bytes_preserving_order(Bytes::from(bytes)) {
+                    return Err("targeted pane key input failed: pane input closed".to_owned());
                 }
             }
             crate::raw_input::RawInputEvent::Text(text) => {
                 runtime.scroll_reset();
-                runtime
-                    .try_send_bytes(Bytes::copy_from_slice(text.as_str().as_bytes()))
-                    .map_err(|err| format!("targeted pane text input failed: {err}"))?;
+                if !runtime
+                    .send_bytes_preserving_order(Bytes::copy_from_slice(text.as_str().as_bytes()))
+                {
+                    return Err("targeted pane text input failed: pane input closed".to_owned());
+                }
             }
             crate::raw_input::RawInputEvent::Paste(text) => {
                 runtime.scroll_reset();

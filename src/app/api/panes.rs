@@ -4697,6 +4697,7 @@ mod tests {
     /// whatever shares the test runner's terminal. Returns (pid, master_fd);
     /// the caller must keep the master open until the child is killed, or the
     /// slave hangs up.
+    #[cfg(unix)]
     fn spawn_sleep_with_own_pty() -> (std::process::Child, libc::c_int) {
         use std::os::unix::process::CommandExt;
         unsafe {
@@ -4734,6 +4735,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     fn pane_list_with_sleeper_child() -> (App, String, std::process::Child, libc::c_int) {
         let (sleeper, master) = spawn_sleep_with_own_pty();
         let (mut app, public_pane_id) = app_with_test_workspace();
@@ -4745,6 +4747,7 @@ mod tests {
         (app, public_pane_id, sleeper, master)
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn pane_list_reports_the_foreground_process_name() {
         let (mut app, public_pane_id, mut sleeper, master) = pane_list_with_sleeper_child();
@@ -4790,6 +4793,7 @@ mod tests {
         unsafe { libc::close(master) };
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn pane_process_info_reports_the_controlling_tty() {
         let (mut app, public_pane_id, mut sleeper, master) = pane_list_with_sleeper_child();
@@ -4825,6 +4829,7 @@ mod tests {
     }
 
     /// A setsid'd sleeper with NO controlling terminal, for the None branch.
+    #[cfg(unix)]
     fn spawn_bare_setsid_sleeper() -> (std::process::Child, libc::c_int) {
         use std::os::unix::process::CommandExt;
         unsafe {

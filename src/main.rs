@@ -62,10 +62,6 @@ mod update;
 mod workspace;
 mod worktree;
 
-fn init_logging() {
-    crate::logging::init_file_logging("herdr.log");
-}
-
 const DEFAULT_CONFIG: &str = r##"# bora configuration
 # Place this file at ~/.config/bora/config.toml
 

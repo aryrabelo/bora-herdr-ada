@@ -92,7 +92,7 @@ impl ClientShellState {
         self.push_endpoint_method_with_kind(
             crate::api::schema::Method::ReleaseNotesDismiss(
                 crate::api::schema::ReleaseNotesDismissParams {
-                    version: notes.version.clone(),
+                    version: notes.version,
                 },
             ),
             PendingEndpointKind::ReleaseNotesDismiss,

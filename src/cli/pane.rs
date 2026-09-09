@@ -67,6 +67,9 @@ fn pane_list(args: &[String]) -> std::io::Result<i32> {
                 workspace_id = Some(super::normalize_workspace_id(value));
                 index += 2;
             }
+            // Output is already JSON; `~/.local/bin/loop-status` passes `--json`
+            // the way `plugin list --json` accepts it.
+            "--json" => index += 1,
             other => {
                 eprintln!("unknown option: {other}");
                 return Ok(2);

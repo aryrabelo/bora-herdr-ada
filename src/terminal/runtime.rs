@@ -453,6 +453,12 @@ impl TerminalRuntime {
         self.0.try_send_bytes(bytes)
     }
 
+    /// Forwards user keystroke bytes without dropping them on transient
+    /// backpressure; see `PaneRuntime::send_bytes_preserving_order`.
+    pub fn send_bytes_preserving_order(&self, bytes: Bytes) -> bool {
+        self.0.send_bytes_preserving_order(bytes)
+    }
+
     pub fn send_bytes_after(&self, bytes: Bytes, delay: std::time::Duration) {
         self.0.send_bytes_after(bytes, delay);
     }
@@ -573,6 +579,10 @@ impl TerminalRuntime {
         self.0.content_seq()
     }
 
+    /// Quiet-pane promotion data source (`App::promote_quiet_panes`, pane
+    /// attention dots). The consumer was dropped with the pre-0.9.0 sidebar and
+    /// returns with the Folders view re-port.
+    #[allow(dead_code)] // re-wired by ceo-bora#275
     pub(crate) fn last_output_at(&self) -> Option<std::time::Instant> {
         self.0.last_output_at()
     }
@@ -603,11 +613,6 @@ impl TerminalRuntime {
 
     pub(crate) fn test_process_pty_bytes(&self, bytes: &[u8]) {
         self.0.test_process_pty_bytes(bytes);
-    }
-
-    #[cfg(test)]
-    pub(crate) fn set_last_output_at(&self, at: std::time::Instant) {
-        self.0.set_last_output_at(at);
     }
 
     pub(crate) fn test_set_child_pid(&self, pid: u32) {

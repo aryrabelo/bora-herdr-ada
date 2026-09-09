@@ -615,7 +615,7 @@ impl HeadlessServer {
             let next_deadline = self
                 .pending_alt_screen_reads
                 .iter()
-                .map(|pending| pending.next_deadline())
+                .map(crate::server::alt_screen_read::PendingAltScreenRead::next_deadline)
                 .fold(next_deadline, |deadline, pending| {
                     Some(deadline.map_or(pending, |current| current.min(pending)))
                 });
@@ -1487,7 +1487,7 @@ impl HeadlessServer {
             .state
             .active
             .and_then(|ws_idx| self.app.state.workspaces.get(ws_idx))
-            .and_then(|workspace| workspace.focused_pane_id())
+            .and_then(crate::workspace::Workspace::focused_pane_id)
             .is_some_and(|pane_id| sources.contains(&pane_id));
         let changes = self.app.sync_terminal_titles(sources);
         let outer_title_synced = focused_source && self.app.window_title_uses_terminal_title();
@@ -1864,8 +1864,7 @@ impl HeadlessServer {
         }
 
         info!(client_id, cols, rows, terminal_id = %terminal_id, "terminal attach client connected");
-        self.terminal_attach_owners
-            .insert(terminal_id.clone(), client_id);
+        self.terminal_attach_owners.insert(terminal_id, client_id);
         self.app
             .state
             .direct_attach_resize_locks
@@ -3377,6 +3376,7 @@ impl HeadlessServer {
                 .app
                 .start_pending_agent_resumes(self.app.pending_agent_resume_due(now));
         }
+        changed |= self.app.drain_settled_pending_agent_prompts(now);
         changed
     }
 }

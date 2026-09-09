@@ -6,6 +6,7 @@ Bora is a fork of [herdr](https://github.com/ogulcancelik/herdr). This changelog
 
 ### Synced from herdr
 - Merged upstream `herdrdev/herdr` through `8a6d6973` (47 commits, the 0.8.x line before the client-shell refactor) into the fork.
+- Merged upstream `herdrdev/herdr` through `68c7b78e` (herdr 0.9.0): the TUI now runs in the client (`src/client/shell`), with saved SSH machines (`bora machine`), a stable client endpoint contract, multi-client tab views and the new `Muse` agent detection. The fork's server/API/CLI surface is unchanged (`bora channel *`, `workspace set-group`/`--group`, `pane report-result`, `bora events`, `bora mcp serve`, `[agents.commands]`, when-idle prompts, `idle_seconds`). `bora pane list` now accepts `--json` (output was already JSON). Fork-only sidebar modes (Folders view, chat view, context-menu plugin actions, timed hide) are temporarily unavailable in this build and return in the next releases on the new client shell; `ui.view_mode` is accepted and ignored until then. Wire protocol 23; omp integration asset 10.
 - Custom themes can now define separate light and dark color overrides when automatic theme switching is enabled. (#837, thanks @aneym)
 - Claude Code integration hooks now ignore Cursor CLI's Claude-compatible session events, preventing Cursor sessions from being stored as resumable Claude sessions. (#2832)
 - Running named servers now activate remote agent-detection manifests downloaded by another server, preventing stale agent states and `agent explain` output until restart. (#2711)

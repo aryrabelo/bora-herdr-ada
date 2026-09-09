@@ -421,7 +421,7 @@ pub(super) fn rollback_endpoint_activation(
     let Some(activation) = pending.as_mut() else {
         return;
     };
-    match activation.rollback(endpoints, error.clone(), source_release_rejected) {
+    match activation.rollback(endpoints, error, source_release_rejected) {
         endpoint::ActivationRollback::Pending => state.freeze_presentation(),
         endpoint::ActivationRollback::Unavailable(message) => {
             *pending = None;

@@ -15,9 +15,6 @@ pub struct PaneDetail {
     pub state: AgentState,
     pub seen: bool,
     pub last_agent_state_change_seq: Option<u64>,
-    pub idle_since: Option<std::time::Instant>,
-    pub custom_status: Option<String>,
-    pub state_labels: HashMap<String, String>,
     pub tokens: HashMap<String, String>,
 }
 
@@ -37,7 +34,6 @@ impl Tab {
                 if terminal.agent_name.is_none() && agent_kind_label.is_none() {
                     return None;
                 }
-                let presentation = terminal.effective_presentation();
                 Some(PaneDetail {
                     pane_id: *id,
                     tab_idx,
@@ -45,11 +41,6 @@ impl Tab {
                     state: terminal.state,
                     seen: pane.seen,
                     last_agent_state_change_seq: terminal.last_agent_state_change_seq,
-                    idle_since: terminal.idle_since,
-                    // Upstream folded hook-owned custom status into metadata
-                    // tokens; the dedicated field has no data source anymore.
-                    custom_status: None,
-                    state_labels: presentation.state_labels,
                     tokens: terminal.metadata_tokens.values(),
                 })
             })
@@ -57,10 +48,10 @@ impl Tab {
     }
 
     /// Aggregate this tab's own panes into a single (state, seen) pair via
-    /// `crate::detect::attention_priority`, mirroring
-    /// [`Workspace::aggregate_state`] but scoped to this tab only. Drives the
-    /// tab bar's per-tab attention indicator: which tab wants the user, not
-    /// just that something somewhere does.
+    /// `crate::detect::attention_sort_key`, mirroring
+    /// [`Workspace::aggregate_state`] but scoped to this tab only. Drives
+    /// `TabInfo.agent_status`: which tab wants the user, not just that
+    /// something somewhere does.
     pub fn aggregate_state(
         &self,
         terminals: &HashMap<TerminalId, TerminalState>,
@@ -93,29 +84,6 @@ impl Workspace {
             .max_by_key(|(state, seen)| crate::detect::attention_sort_key(*state, *seen))
             .unwrap_or((AgentState::Unknown, true))
     }
-
-    /// Like `aggregate_state` but uses `crate::detect::display_priority`, so a `Working`
-    /// pane wins over a just-finished `Done` pane. Drives the SPACES dot only;
-    /// the agent-panel sort still uses `aggregate_state`.
-    pub fn aggregate_display_state(
-        &self,
-        terminals: &HashMap<TerminalId, TerminalState>,
-    ) -> (AgentState, bool) {
-        self.tabs
-            .iter()
-            .flat_map(|tab| tab.panes.values())
-            .filter_map(|pane| {
-                terminals
-                    .get(&pane.attached_terminal_id)
-                    .map(|terminal| (terminal.state, pane.seen))
-            })
-            .max_by_key(|(state, seen)| crate::detect::display_sort_key(*state, *seen))
-            .unwrap_or((AgentState::Unknown, true))
-    }
-
-    pub fn has_working_pane(&self, terminals: &HashMap<TerminalId, TerminalState>) -> bool {
-        self.tabs.iter().any(|tab| tab.has_working_pane(terminals))
-    }
     pub fn pane_details(&self, terminals: &HashMap<TerminalId, TerminalState>) -> Vec<PaneDetail> {
         self.tabs
             .iter()
@@ -124,69 +92,20 @@ impl Workspace {
             .collect()
     }
 
-    /// Update the idle-since timestamp.
-    ///
-    /// Call periodically from the tick loop.  When all panes are idle AND
-    /// seen, starts the timer (only sets it if not already running).  Any
-    /// other aggregate state clears the timer so the clock resets on activity.
-    pub(crate) fn update_idle_since(
-        &mut self,
-        terminals: &HashMap<TerminalId, TerminalState>,
-        now: Instant,
-    ) {
-        let (state, seen) = self.aggregate_display_state(terminals);
-        if state == AgentState::Idle && seen {
-            // Start the timer only when it isn't already running.
-            if self.last_activity_at.is_none() {
-                self.last_activity_at = Some(now);
-            }
-        } else {
-            self.last_activity_at = None;
+    /// When the workspace as a whole went quiet: no pane is working or
+    /// blocked, every idle agent has been seen, and the instant is the moment
+    /// the last agent finished (`TerminalState::idle_since`). `None` while any
+    /// pane still wants the user or none has ever run an agent. Feeds
+    /// `WorkspaceInfo.idle_seconds`.
+    pub fn idle_since(&self, terminals: &HashMap<TerminalId, TerminalState>) -> Option<Instant> {
+        if self.aggregate_state(terminals) != (AgentState::Idle, true) {
+            return None;
         }
-    }
-
-    pub fn has_unseen_idle_pane(&self, terminals: &HashMap<TerminalId, TerminalState>) -> bool {
-        self.tabs.iter().any(|tab| {
-            tab.panes.values().any(|pane| {
-                !pane.seen
-                    && terminals
-                        .get(&pane.attached_terminal_id)
-                        .is_some_and(|t| t.state == AgentState::Idle)
-            })
-        })
-    }
-
-    pub fn oldest_unseen_idle_age(
-        &self,
-        terminals: &HashMap<TerminalId, TerminalState>,
-        now: std::time::Instant,
-    ) -> Option<std::time::Duration> {
-        self.tabs
-            .iter()
-            .flat_map(|tab| tab.panes.values())
-            .filter(|pane| !pane.seen)
-            .filter_map(|pane| terminals.get(&pane.attached_terminal_id))
-            .filter(|t| matches!(t.state, AgentState::Idle | AgentState::Unknown))
-            .filter_map(|t| t.idle_since)
-            .map(|since| now.saturating_duration_since(since))
-            .max()
-    }
-
-    /// Oldest idle age across ALL idle panes, seen or not. Drives the numeric
-    /// idle time in the sidebar for workspaces whose idle panes were already
-    /// viewed (unseen-idle age takes precedence for the color ramp).
-    pub fn oldest_idle_age(
-        &self,
-        terminals: &HashMap<TerminalId, TerminalState>,
-        now: std::time::Instant,
-    ) -> Option<std::time::Duration> {
         self.tabs
             .iter()
             .flat_map(|tab| tab.panes.values())
             .filter_map(|pane| terminals.get(&pane.attached_terminal_id))
-            .filter(|t| matches!(t.state, AgentState::Idle | AgentState::Unknown))
-            .filter_map(|t| t.idle_since)
-            .map(|since| now.saturating_duration_since(since))
+            .filter_map(|terminal| terminal.idle_since)
             .max()
     }
 }
@@ -339,32 +258,8 @@ mod tests {
     }
 
     #[test]
-    fn has_unseen_idle_pane_tracks_seen_flips() {
-        use std::time::Instant;
-
-        let mut ws = Workspace::test_new("test");
-        let root_id = ws.tabs[0].root_pane;
-        let mut terminals = HashMap::new();
-        let mut terminal = terminal_for_pane(&ws, root_id);
-        terminal.state = AgentState::Idle;
-        terminal.idle_since = Some(Instant::now());
-        terminals.insert(terminal.id.clone(), terminal);
-
-        // Fresh pane is seen by default -> no unseen idle.
-        assert!(!ws.has_unseen_idle_pane(&terminals));
-
-        // Mark the pane unseen -> unseen idle now present.
-        ws.tabs[0].panes.get_mut(&root_id).unwrap().seen = false;
-        assert!(ws.has_unseen_idle_pane(&terminals));
-
-        // Mark it seen again -> back to false.
-        ws.tabs[0].panes.get_mut(&root_id).unwrap().seen = true;
-        assert!(!ws.has_unseen_idle_pane(&terminals));
-    }
-
-    #[test]
-    fn oldest_unseen_idle_age_returns_largest_duration() {
-        use std::time::{Duration, Instant};
+    fn idle_since_is_the_last_agent_to_finish_once_every_pane_is_quiet_and_seen() {
+        use std::time::Duration;
 
         let mut ws = Workspace::test_new("test");
         let id2 = ws.test_split(Direction::Horizontal);
@@ -376,60 +271,41 @@ mod tests {
             .unwrap();
         let now = Instant::now();
         let mut terminals = HashMap::new();
-
-        // No unseen idle -> None.
         let mut root_terminal = terminal_for_pane(&ws, root_id);
         root_terminal.state = AgentState::Idle;
-        root_terminal.idle_since = Some(now - Duration::from_secs(60));
+        root_terminal.idle_since = Some(now - Duration::from_secs(300));
         terminals.insert(root_terminal.id.clone(), root_terminal);
         let mut second_terminal = terminal_for_pane(&ws, id2);
-        second_terminal.state = AgentState::Idle;
-        second_terminal.idle_since = Some(now - Duration::from_secs(300));
+        second_terminal.state = AgentState::Working;
         terminals.insert(second_terminal.id.clone(), second_terminal);
 
-        // Both panes seen -> no unseen idle.
-        assert_eq!(ws.oldest_unseen_idle_age(&terminals, now), None);
+        // One pane still working -> the workspace is not idle.
+        assert_eq!(ws.idle_since(&terminals), None);
 
-        // Mark both unseen -> returns the larger (older) age.
-        ws.tabs[0].panes.get_mut(&root_id).unwrap().seen = false;
-        ws.tabs[0].panes.get_mut(&id2).unwrap().seen = false;
+        let second_id = ws.terminal_id(id2).unwrap().clone();
+        let second_terminal = terminals.get_mut(&second_id).unwrap();
+        second_terminal.state = AgentState::Idle;
+        second_terminal.idle_since = Some(now - Duration::from_secs(60));
+
+        // Every pane idle and seen -> quiet since the LAST one finished.
         assert_eq!(
-            ws.oldest_unseen_idle_age(&terminals, now),
-            Some(Duration::from_secs(300))
+            ws.idle_since(&terminals),
+            Some(now - Duration::from_secs(60))
         );
+
+        // An unseen finished pane still wants the user -> not idle.
+        ws.tabs[0].panes.get_mut(&id2).unwrap().seen = false;
+        assert_eq!(ws.idle_since(&terminals), None);
     }
 
     #[test]
-    fn idle_age_counts_exited_agent_but_not_plain_shell() {
-        use std::time::{Duration, Instant};
-
-        let mut ws = Workspace::test_new("test");
+    fn idle_since_is_none_for_plain_shells_that_never_ran_an_agent() {
+        let ws = Workspace::test_new("test");
         let root_id = ws.tabs[0].root_pane;
-        let now = Instant::now();
         let mut terminals = HashMap::new();
-
-        // Agent exited back to shell: state Unknown but idle_since preserved.
-        let mut terminal = terminal_for_pane(&ws, root_id);
-        terminal.state = AgentState::Unknown;
-        terminal.idle_since = Some(now - Duration::from_secs(240));
+        let terminal = terminal_for_pane(&ws, root_id);
         terminals.insert(terminal.id.clone(), terminal);
 
-        assert_eq!(
-            ws.oldest_idle_age(&terminals, now),
-            Some(Duration::from_secs(240))
-        );
-        ws.tabs[0].panes.get_mut(&root_id).unwrap().seen = false;
-        assert_eq!(
-            ws.oldest_unseen_idle_age(&terminals, now),
-            Some(Duration::from_secs(240))
-        );
-
-        // Plain shell pane (never had an agent): no idle_since -> no timer.
-        terminals
-            .get_mut(&ws.terminal_id(root_id).unwrap().clone())
-            .unwrap()
-            .idle_since = None;
-        assert_eq!(ws.oldest_idle_age(&terminals, now), None);
-        assert_eq!(ws.oldest_unseen_idle_age(&terminals, now), None);
+        assert_eq!(ws.idle_since(&terminals), None);
     }
 }

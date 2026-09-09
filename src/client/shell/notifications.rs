@@ -245,7 +245,7 @@ mod tests {
         let text = buffer
             .content
             .iter()
-            .map(|cell| cell.symbol())
+            .map(ratatui::buffer::Cell::symbol)
             .collect::<String>();
         assert!(text.contains("pi waiting"));
         assert!(text.contains("workspace · tab 1"));

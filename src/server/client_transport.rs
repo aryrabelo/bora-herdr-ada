@@ -1858,9 +1858,8 @@ mod tests {
             local_stream_pair("client-shell-empty-surface");
         let (server_event_tx, mut server_event_rx) = mpsc::channel(4);
         let should_quit = Arc::new(AtomicBool::new(false));
-        let handshake_quit = should_quit.clone();
         let handle = std::thread::spawn(move || {
-            handle_client_handshake(server_stream, 43, &server_event_tx, &handshake_quit)
+            handle_client_handshake(server_stream, 43, &server_event_tx, &should_quit)
         });
 
         protocol::write_message(&mut client_stream, &endpoint_hello(0, 29))
@@ -1884,9 +1883,8 @@ mod tests {
         let (mut client_stream, server_stream, _path) = local_stream_pair("client-read-detach");
         let (server_event_tx, mut server_event_rx) = mpsc::channel(4);
         let should_quit = Arc::new(AtomicBool::new(false));
-        let read_quit = should_quit.clone();
         let handle = std::thread::spawn(move || {
-            client_read_loop(server_stream, 7, &server_event_tx, &read_quit)
+            client_read_loop(server_stream, 7, &server_event_tx, &should_quit)
         });
 
         let mut messages = Vec::new();
@@ -1921,9 +1919,8 @@ mod tests {
             local_stream_pair("client-read-future-control");
         let (server_event_tx, mut server_event_rx) = mpsc::channel(4);
         let should_quit = Arc::new(AtomicBool::new(false));
-        let read_quit = should_quit.clone();
         let handle = std::thread::spawn(move || {
-            client_read_loop(server_stream, 7, &server_event_tx, &read_quit)
+            client_read_loop(server_stream, 7, &server_event_tx, &should_quit)
         });
 
         protocol::write_message(
@@ -1952,9 +1949,8 @@ mod tests {
             local_stream_pair("client-read-unsafe-resize");
         let (server_event_tx, mut server_event_rx) = mpsc::channel(4);
         let should_quit = Arc::new(AtomicBool::new(false));
-        let read_quit = should_quit.clone();
         let handle = std::thread::spawn(move || {
-            client_read_loop(server_stream, 7, &server_event_tx, &read_quit)
+            client_read_loop(server_stream, 7, &server_event_tx, &should_quit)
         });
 
         protocol::write_message(
@@ -2121,9 +2117,8 @@ mod tests {
         let (mut client_stream, server_stream, _path) = local_stream_pair("client-read-resize");
         let (server_event_tx, mut server_event_rx) = mpsc::channel(4);
         let should_quit = Arc::new(AtomicBool::new(false));
-        let read_quit = should_quit.clone();
         let handle = std::thread::spawn(move || {
-            client_read_loop(server_stream, 7, &server_event_tx, &read_quit)
+            client_read_loop(server_stream, 7, &server_event_tx, &should_quit)
         });
 
         protocol::write_message(

@@ -1046,7 +1046,7 @@ async fn client_shell_direct_graphics_uploads_without_server_authored_coordinate
         &crate::kitty_graphics::surface::DeliveryCache::default(),
         1,
     );
-    assert_eq!(pending.retained_assets, vec![asset.clone()]);
+    assert_eq!(pending.retained_assets, vec![asset]);
 
     server.start_direct_graphics_response(1, transfer_id, image_id);
     assert!(server.complete_direct_graphics(1, transfer_id, image_id, true));

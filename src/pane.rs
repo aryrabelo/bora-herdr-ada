@@ -3052,13 +3052,6 @@ impl PaneRuntime {
         *self.last_output_at.lock().ok()?
     }
 
-    #[cfg(test)]
-    pub(crate) fn set_last_output_at(&self, at: std::time::Instant) {
-        if let Ok(mut stamp) = self.last_output_at.lock() {
-            *stamp = Some(at);
-        }
-    }
-
     /// Resize if the dimensions actually changed.
     pub fn resize(&self, rows: u16, cols: u16, cell_width_px: u32, cell_height_px: u32) {
         let rows = rows.max(2);
@@ -3334,10 +3327,6 @@ impl PaneRuntime {
             .encode_terminal_key(key, self.keyboard_protocol())
     }
 
-    pub async fn send_bytes(&self, bytes: Bytes) -> Result<(), mpsc::error::SendError<Bytes>> {
-        self.io.send_bytes(bytes).await
-    }
-
     pub fn try_send_bytes(&self, bytes: Bytes) -> Result<(), mpsc::error::TrySendError<Bytes>> {
         self.io.try_send_bytes(bytes)
     }
@@ -3355,10 +3344,6 @@ impl PaneRuntime {
 
     pub fn send_bytes_after(&self, bytes: Bytes, delay: std::time::Duration) {
         self.io.send_bytes_after(bytes, delay);
-    }
-
-    pub async fn send_paste(&self, text: String) -> Result<(), mpsc::error::SendError<Bytes>> {
-        self.send_bytes(self.paste_payload(text)).await
     }
 
     pub fn queue_user_input_submission(

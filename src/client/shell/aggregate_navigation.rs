@@ -228,7 +228,7 @@ pub(super) fn navigator_rows(
             if federated {
                 rows.push(ClientNavigatorRow {
                     depth: 0,
-                    label: endpoint.label.to_owned(),
+                    label: endpoint.label.clone(),
                     meta: String::new(),
                     status: None,
                     stale,

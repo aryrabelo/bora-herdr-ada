@@ -89,9 +89,13 @@ mod windows {
             {
                 return Err(mpsc::error::SendError(bytes));
             }
-            self.data_tx
-                .send(PtyIoDataCommand::WriteUserInput(bytes))
-                .await
+            match self.data_tx.reserve().await {
+                Ok(permit) => {
+                    permit.send(PtyIoDataCommand::WriteUserInput(bytes));
+                    Ok(())
+                }
+                Err(_) => Err(mpsc::error::SendError(bytes)),
+            }
         }
 
         pub(crate) fn try_write_user_input(

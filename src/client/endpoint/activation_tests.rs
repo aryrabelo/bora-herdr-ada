@@ -357,7 +357,7 @@ fn source_release_is_sent_and_acknowledged_before_target_activation() {
     let mut activation = PendingEndpointActivation::begin(
         &shell,
         &mut endpoints,
-        target.clone(),
+        target,
         None,
         resize(),
         11,

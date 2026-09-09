@@ -1105,7 +1105,7 @@ impl ClientShellState {
                 tab_id: focused_tab?,
             })),
             KeybindAction::ClosePane => Some(Method::PaneClose(PaneTarget {
-                pane_id: focused_pane.clone()?,
+                pane_id: focused_pane?,
             })),
             KeybindAction::CyclePaneNext | KeybindAction::CyclePanePrevious => {
                 let focused_tab = focused_tab?;

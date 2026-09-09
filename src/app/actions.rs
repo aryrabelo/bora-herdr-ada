@@ -12,6 +12,8 @@ use crate::layout::PaneId;
 use crate::layout::{find_in_direction, NavDirection};
 use crate::selection::Selection;
 use crate::terminal::{EffectiveStateChange, TerminalStateMutation};
+#[cfg(test)]
+use crate::workspace::Workspace;
 use crate::workspace::WorkspaceGitStatus;
 
 use super::api_helpers::pane_agent_status;
@@ -398,7 +400,7 @@ impl AppState {
                     known_agent: change.known_agent,
                     state: change.state,
                     seen,
-                    presentation: change.presentation.clone(),
+                    presentation: change.presentation,
                     agent_name_changed: false,
                     agent_released: false,
                     agent_release_status: None,
@@ -1030,12 +1032,12 @@ impl AppState {
             .into_iter()
             .collect::<Vec<_>>();
         let pane_ids = active
-            .and_then(|i| self.workspaces.get(i).and_then(|ws| ws.focused_pane_id()))
+            .and_then(|i| self.workspaces.get(i).and_then(Workspace::focused_pane_id))
             .into_iter()
             .collect::<Vec<_>>();
         let should_close_workspace = active
             .and_then(|i| self.workspaces.get_mut(i))
-            .is_some_and(|ws| ws.close_focused());
+            .is_some_and(Workspace::close_focused);
         self.remove_plugin_pane_records(pane_ids);
         if should_close_workspace {
             if let Some(active) = active {
@@ -1884,6 +1886,14 @@ impl AppState {
             self.next_agent_state_change_seq += 1;
             if let Some(terminal) = self.terminals.get_mut(&terminal_id) {
                 terminal.last_agent_state_change_seq = Some(self.next_agent_state_change_seq);
+                // Feeds `PaneInfo.idle_seconds` / `WorkspaceInfo.idle_seconds`.
+                terminal.idle_since = match change.state {
+                    AgentState::Idle => Some(now),
+                    // Agent vanished (exited back to shell): keep the finish
+                    // time so the idle age survives the agent process.
+                    AgentState::Unknown => terminal.idle_since.or(Some(now)),
+                    _ => None,
+                };
             }
         }
         let seen = self.apply_pane_state_change(ws_idx, pane_id, &change, suppress_completion)?;
@@ -2685,7 +2695,7 @@ mod tests {
         let names: Vec<_> = state
             .workspaces
             .iter()
-            .map(|ws| ws.display_name())
+            .map(Workspace::display_name)
             .collect();
         assert_eq!(names, vec!["b", "a", "c"]);
         assert_eq!(state.active, Some(0));
@@ -2703,7 +2713,7 @@ mod tests {
         let names: Vec<_> = state
             .workspaces
             .iter()
-            .map(|ws| ws.display_name())
+            .map(Workspace::display_name)
             .collect();
         assert_eq!(names, vec!["b", "c", "a"]);
     }
@@ -2727,7 +2737,7 @@ mod tests {
         let names = state
             .workspaces
             .iter()
-            .map(|workspace| workspace.display_name())
+            .map(Workspace::display_name)
             .collect::<Vec<_>>();
         assert_eq!(
             names,
@@ -2755,7 +2765,7 @@ mod tests {
             state
                 .workspaces
                 .iter()
-                .map(|workspace| workspace.display_name())
+                .map(Workspace::display_name)
                 .collect::<Vec<_>>(),
             ["a", "b", "c"]
         );
@@ -2981,6 +2991,39 @@ mod tests {
         assert_eq!(terminal.state, AgentState::Idle);
         let pane = state.workspaces[0].panes.get(&pane_id).unwrap();
         assert!(pane.seen);
+    }
+
+    /// `idle_seconds` in the JSON API is derived from `TerminalState.idle_since`,
+    /// which only this state-change path writes. Dropping the setter leaves the
+    /// field `null` forever while every other test stays green (ceo-bora#274).
+    #[test]
+    fn state_changed_to_idle_stamps_idle_since_for_pane_and_workspace() {
+        let mut state = app_with_workspaces(&["active"]);
+        state.active = Some(0);
+        state.outer_terminal_focus = Some(true);
+        let pane_id = *state.workspaces[0].panes.keys().next().unwrap();
+        let terminal_id = state.terminal_id_for_pane(0, pane_id).unwrap();
+        state.terminals.get_mut(&terminal_id).unwrap().state = AgentState::Working;
+        assert!(state.terminals[&terminal_id].idle_since.is_none());
+        assert!(state.workspaces[0].idle_since(&state.terminals).is_none());
+
+        state.handle_app_event(AppEvent::StateChanged {
+            pane_id,
+            agent: Some(Agent::Pi),
+            state: AgentState::Idle,
+            visible_blocker: false,
+            visible_working: false,
+            process_exited: false,
+            observed_at: std::time::Instant::now(),
+        });
+
+        let idle_since = state.terminals[&terminal_id]
+            .idle_since
+            .expect("idle transition stamps idle_since");
+        assert_eq!(
+            state.workspaces[0].idle_since(&state.terminals),
+            Some(idle_since)
+        );
     }
 
     #[test]

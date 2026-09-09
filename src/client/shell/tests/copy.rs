@@ -693,7 +693,7 @@ fn copy_search_owns_prompt_repeat_highlights_selection_and_restore() {
     let (_, reverse_actions) = state.handle_endpoint_result(
         "boot-1",
         &request.id,
-        Ok(copy_search_result(matches.clone(), Some(0))),
+        Ok(copy_search_result(matches, Some(0))),
     );
     if let Some(scroll_id) = reverse_actions.iter().find_map(|action| match action {
         ClientShellAction::Endpoint { request, .. }

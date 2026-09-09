@@ -397,9 +397,7 @@ mod tests {
         );
         assert!(!supervisors.record_status(&id, 7, ClientEndpointStatus::Online, now));
         profile.enabled = true;
-        assert!(supervisors
-            .reconcile_profiles(&[profile.clone()], now)
-            .is_empty());
+        assert!(supervisors.reconcile_profiles(&[profile], now).is_empty());
         assert!(!supervisors.record_status(&id, 7, ClientEndpointStatus::Online, now));
         assert_eq!(supervisors.next_generation, 8);
         assert_eq!(supervisors.reconcile_profiles(&[], now), vec![id.clone()]);

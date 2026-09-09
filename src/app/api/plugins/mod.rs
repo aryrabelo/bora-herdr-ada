@@ -803,6 +803,7 @@ fn manifest_actions(
 /// the general form of the old dagr-specific id-existence probe this
 /// replaces: dagr is just another plugin action once its manifest
 /// declares a matching context.
+#[allow(dead_code)] // context-menu plugin actions, re-wired by ceo-bora#276
 pub(crate) fn plugin_actions_for_context(
     plugins: &crate::app::state::InstalledPluginRegistry,
     context: crate::api::schema::PluginActionContext,

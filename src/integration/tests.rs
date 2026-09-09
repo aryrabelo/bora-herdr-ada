@@ -2934,9 +2934,13 @@ fn bundled_integration_assets_report_session_refs() {
     assert!(!GROK_HOOK_ASSET.contains("pane.release_agent"));
 }
 
+/// Upstream's rule, minus pi: this fork's pi extension releases explicitly on
+/// `session_shutdown` (cc4948d6, asserted in
+/// `bundled_integration_assets_report_session_refs`), so pi is not in the
+/// process-owned set here.
+#[test]
 fn process_owned_integration_assets_do_not_report_release() {
     for (name, asset) in [
-        ("pi", PI_EXTENSION_ASSET),
         ("omp", OMP_EXTENSION_ASSET),
         ("mastracode", MASTRACODE_HOOK_ASSET),
         ("kimi", KIMI_HOOK_ASSET),

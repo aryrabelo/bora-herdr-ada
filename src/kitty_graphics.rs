@@ -32,29 +32,6 @@ pub(crate) struct HostCellSize {
 }
 
 impl HostCellSize {
-    fn for_area(self, area: Rect) -> Self {
-        if area.width == 0 || area.height == 0 {
-            return Self::default();
-        }
-        self
-    }
-
-    pub(crate) fn try_from_terminal(area: Rect) -> Option<Self> {
-        let Ok(size) = crossterm::terminal::window_size() else {
-            return None;
-        };
-        if size.columns == 0 || size.rows == 0 || size.width == 0 || size.height == 0 {
-            return None;
-        }
-        Some(
-            Self {
-                width_px: (u32::from(size.width) / u32::from(size.columns)).max(1),
-                height_px: (u32::from(size.height) / u32::from(size.rows)).max(1),
-            }
-            .for_area(area),
-        )
-    }
-
     pub(crate) fn is_known(self) -> bool {
         self.width_px > 0 && self.height_px > 0
     }

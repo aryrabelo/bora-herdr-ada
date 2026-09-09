@@ -2406,7 +2406,7 @@ mod tests {
             boot_id: "boot-1".into(),
             projection_revision: 1,
             surface_revision: 1,
-            frame: frame.clone(),
+            frame,
             panes: Vec::new(),
             splits: Vec::new(),
             popup: None,

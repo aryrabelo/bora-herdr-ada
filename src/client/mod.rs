@@ -736,7 +736,7 @@ async fn run_client_loop(
                     let image_target = state
                         .shell
                         .as_ref()
-                        .and_then(|shell| shell.clipboard_image_target());
+                        .and_then(shell::ClientShellState::clipboard_image_target);
                     if let Some(target) = image_target.clone() {
                         if should_bridge_clipboard_image_paste(
                             &data,

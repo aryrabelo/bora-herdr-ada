@@ -4882,7 +4882,7 @@ mod tests {
 
         pane.seed_history_ansi("\x1b[>4;1m");
         assert_eq!(pane.modify_other_keys_level(), 1);
-        let encoded = pane.encode_terminal_key(key.clone(), crate::input::KeyboardProtocol::Legacy);
+        let encoded = pane.encode_terminal_key(key, crate::input::KeyboardProtocol::Legacy);
 
         assert_eq!(encoded, b"\x1b[27;2;13~");
     }

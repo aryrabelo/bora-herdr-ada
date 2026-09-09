@@ -2586,7 +2586,7 @@ async fn client_shell_text_input_renders_only_when_resetting_scrollback() {
             .app
             .state
             .runtime_for_pane_in_workspace(&server.app.terminal_runtimes, 0, pane_id)
-            .and_then(|runtime| runtime.scroll_metrics())
+            .and_then(crate::terminal::TerminalRuntime::scroll_metrics)
             .map(|metrics| metrics.offset_from_bottom),
         Some(0)
     );
@@ -3511,7 +3511,7 @@ fn terminal_attach_rejects_later_observe_and_clears_ownership() {
         assert!(
             !server.handle_server_event(ServerEvent::ClientObserveTerminal {
                 client_id: 7,
-                target: terminal_id_string.clone(),
+                target: terminal_id_string,
             })
         );
 
@@ -4615,6 +4615,98 @@ fn headless_scheduled_tasks_clears_disabled_agent_manifest_update_deadline() {
     assert_eq!(server.app.next_agent_manifest_update_check, None);
 }
 
+/// The headless tick is the only scheduler operators run, so a `when_idle`
+/// prompt deferred while the target was `Working` must be replayed by
+/// `handle_scheduled_tasks_headless` once the settle window elapses — not only
+/// by an App-level drain call a test happens to make. The 0.9.0 merge dropped
+/// this line from the tick once; every deferred channel message then sat in the
+/// queue forever while its sender held a `deferred` receipt.
+#[tokio::test]
+async fn headless_scheduled_tasks_drain_settled_pending_agent_prompts() {
+    let mut server = test_headless_server();
+    let workspace = crate::workspace::Workspace::test_new("agent");
+    let pane_id = workspace.tabs[0].root_pane;
+    let terminal_id = workspace.terminal_id(pane_id).cloned().unwrap();
+    server.app.state.workspaces = vec![workspace];
+    server.app.state.active = Some(0);
+    server.app.state.ensure_test_terminals();
+    let terminal = server.app.state.terminals.get_mut(&terminal_id).unwrap();
+    terminal.set_agent_name("reviewer".into());
+    terminal.set_detected_state(
+        Some(crate::detect::Agent::OpenCode),
+        crate::detect::AgentState::Working,
+    );
+    let (runtime, mut rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+    server.app.state.insert_test_runtime(pane_id, runtime);
+    let public_pane_id = server.app.public_pane_id(0, pane_id).unwrap();
+
+    let receipt = server.app.handle_agent_prompt(
+        "req".into(),
+        crate::api::schema::AgentPromptParams {
+            target: public_pane_id.clone(),
+            text: "after your turn".into(),
+            wait: None,
+            from_pane: None,
+            when_idle: Some(true),
+            when_idle_timeout_ms: None,
+            peer_pid: None,
+            origin_channel: None,
+        },
+    );
+    let receipt: serde_json::Value = serde_json::from_str(&receipt).unwrap();
+    assert_eq!(receipt["result"]["outcome"], "deferred");
+    let queue_id = receipt["result"]["queue_id"].as_u64().unwrap();
+
+    // The target leaves `Working`; the status-change hook only arms the
+    // settle window, the tick does the replay.
+    server
+        .app
+        .state
+        .terminals
+        .get_mut(&terminal_id)
+        .unwrap()
+        .set_detected_state(
+            Some(crate::detect::Agent::OpenCode),
+            crate::detect::AgentState::Idle,
+        );
+    let t0 = Instant::now();
+    server.app.sync_pending_agent_prompt_drain_deadline(
+        &public_pane_id,
+        crate::api::schema::AgentStatus::Idle,
+        t0,
+    );
+
+    assert!(!server.handle_scheduled_tasks_headless(t0 + Duration::from_millis(200), false));
+    assert!(
+        rx.try_recv().is_err(),
+        "nothing may be replayed before the settle window elapses"
+    );
+
+    assert!(server.handle_scheduled_tasks_headless(
+        t0 + crate::app::PENDING_AGENT_PROMPT_DRAIN_SETTLE + Duration::from_millis(50),
+        false,
+    ));
+    assert_eq!(
+        rx.try_recv().unwrap(),
+        Bytes::from_static(b"after your turn")
+    );
+    assert!(!server
+        .app
+        .pending_agent_prompts
+        .contains_key(&public_pane_id));
+    assert!(server
+        .app
+        .event_hub
+        .events_after(0)
+        .iter()
+        .any(|(_, event)| matches!(
+            &event.data,
+            crate::api::schema::EventData::QueuedPromptDelivered { queue_id: id, .. }
+                if *id == queue_id
+        )));
+    shutdown_test_runtimes(&mut server);
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn headless_scheduled_tasks_start_pending_agent_resume_without_foreground_client() {
@@ -5162,9 +5254,7 @@ fn direct_terminal_mouse_uses_runtime_protocol_encoding() {
         server.clients.insert(
             1,
             ClientConnection::new_with_mode(
-                ClientConnectionMode::TerminalAttach {
-                    terminal_id: terminal_id.clone(),
-                },
+                ClientConnectionMode::TerminalAttach { terminal_id },
                 (80, 24),
                 crate::kitty_graphics::HostCellSize::default(),
                 1,
@@ -5207,9 +5297,7 @@ fn direct_terminal_pixel_mouse_uses_runtime_tracking_and_coordinates() {
         server.clients.insert(
             1,
             ClientConnection::new_with_mode(
-                ClientConnectionMode::TerminalAttach {
-                    terminal_id: terminal_id.clone(),
-                },
+                ClientConnectionMode::TerminalAttach { terminal_id },
                 (80, 24),
                 crate::kitty_graphics::HostCellSize {
                     width_px: 10,

@@ -3,7 +3,6 @@ use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
 
 use ratatui::layout::Direction;
 use tokio::sync::{mpsc, Notify};
@@ -210,6 +209,7 @@ pub struct Workspace {
     /// `#`-channels this workspace has a pane explicitly joined into (not
     /// counting the channel's own home workspace, whose name already shows
     /// it). Refreshed periodically alongside git status, never in render.
+    #[allow(dead_code)] // read by the sidebar channel suffix, re-wired by ceo-bora#276
     pub(crate) cached_channels: Vec<String>,
     /// Explicit Herdr-managed worktree grouping provenance.
     pub worktree_space: Option<WorktreeSpaceMembership>,
@@ -217,9 +217,6 @@ pub struct Workspace {
     pub(crate) metadata_token_sequences: HashMap<String, u64>,
     /// User-defined visual group name for sidebar grouping.
     pub visual_group: Option<String>,
-    /// Timestamp when the workspace entered the all-panes-idle+seen state.
-    /// `None` if the workspace has not yet been fully idle, or was recently active.
-    pub(crate) last_activity_at: Option<Instant>,
     /// Public pane numbers within this workspace. Closed pane numbers are not reused.
     pub public_pane_numbers: HashMap<PaneId, usize>,
     pub(crate) next_public_pane_number: usize,
@@ -291,7 +288,6 @@ impl Workspace {
             metadata_tokens: crate::metadata_tokens::MetadataTokens::default(),
             metadata_token_sequences: HashMap::new(),
             visual_group: None,
-            last_activity_at: None,
             public_pane_numbers,
             next_public_pane_number: 2,
             next_public_tab_number: 2,
@@ -332,6 +328,7 @@ impl Workspace {
 
     /// Creates a workspace whose first pane runs `argv` instead of a shell.
     /// Fork-only convenience used by git-space derivation tests.
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub fn new_argv_command(
         initial_cwd: PathBuf,
@@ -481,7 +478,6 @@ impl Workspace {
                 metadata_tokens: crate::metadata_tokens::MetadataTokens::default(),
                 metadata_token_sequences: HashMap::new(),
                 visual_group: None,
-                last_activity_at: None,
                 public_pane_numbers,
                 next_public_pane_number: 2,
                 next_public_tab_number: 2,
@@ -1324,7 +1320,6 @@ impl Workspace {
             metadata_tokens: crate::metadata_tokens::MetadataTokens::default(),
             metadata_token_sequences: HashMap::new(),
             visual_group: None,
-            last_activity_at: None,
             public_pane_numbers,
             next_public_pane_number: 2,
             next_public_tab_number: 2,
