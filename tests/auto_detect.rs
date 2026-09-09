@@ -1,8 +1,8 @@
 //! Integration tests for auto-detect launch behavior.
 
-#![cfg(not(target_os = "macos"))]
+#![cfg(all(unix, not(target_os = "macos")))]
 
-mod support;
+pub mod support;
 
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
@@ -142,49 +142,11 @@ fn spawn_herdr_auto(
         .unwrap();
 
     let mut cmd = CommandBuilder::new(env!("CARGO_BIN_EXE_bora"));
-    // No subcommand, no --no-session → auto-detect launch
+    // No subcommand → auto-detect launch.
     cmd.env("XDG_CONFIG_HOME", config_home);
     cmd.env("XDG_RUNTIME_DIR", runtime_dir);
     cmd.env("HERDR_SOCKET_PATH", api_socket_path);
     cmd.env_remove("HERDR_CLIENT_SOCKET_PATH");
-    cmd.env("SHELL", "/bin/sh");
-    cmd.env_remove("HERDR_ENV");
-
-    let child = pair.slave.spawn_command(cmd).unwrap();
-    register_spawned_herdr_pid(child.process_id());
-    drop(pair.slave);
-
-    SpawnedHerdr {
-        _master: pair.master,
-        child,
-    }
-}
-
-/// Spawn `herdr --no-session` — the monolithic escape hatch.
-fn spawn_herdr_no_session(
-    config_home: &Path,
-    runtime_dir: &Path,
-    api_socket_path: &Path,
-) -> SpawnedHerdr {
-    fs::create_dir_all(config_home.join("bora")).unwrap();
-    fs::create_dir_all(runtime_dir).unwrap();
-    register_runtime_dir(runtime_dir);
-    fs::write(config_home.join("bora/config.toml"), "onboarding = false\n").unwrap();
-
-    let pair = native_pty_system()
-        .openpty(PtySize {
-            rows: 24,
-            cols: 80,
-            pixel_width: 0,
-            pixel_height: 0,
-        })
-        .unwrap();
-
-    let mut cmd = CommandBuilder::new(env!("CARGO_BIN_EXE_bora"));
-    cmd.arg("--no-session");
-    cmd.env("XDG_CONFIG_HOME", config_home);
-    cmd.env("XDG_RUNTIME_DIR", runtime_dir);
-    cmd.env("HERDR_SOCKET_PATH", api_socket_path);
     cmd.env("SHELL", "/bin/sh");
     cmd.env_remove("HERDR_ENV");
 
@@ -407,50 +369,6 @@ fn auto_detect_socket_path_consistency() {
     // client socket path).
     let _stream = UnixStream::connect(&client_socket)
         .expect("should connect to client socket at custom path");
-
-    cleanup_spawned_herdr(herdr, base);
-}
-
-/// `herdr --no-session` bypasses server/client and runs
-/// monolithically. No server process is spawned. No client socket is created.
-#[test]
-fn no_session_flag_runs_monolithically() {
-    let _lock = test_lock();
-    let base = unique_test_dir();
-    let config_home = base.join("config");
-    let runtime_dir = base.join("runtime");
-    let api_socket = runtime_dir.join("herdr.sock");
-    let client_socket = runtime_dir.join("herdr-client.sock");
-
-    // Run `herdr --no-session` — monolithic mode, no server/client.
-    let herdr = spawn_herdr_no_session(&config_home, &runtime_dir, &api_socket);
-
-    // Wait for the API socket (monolithic mode creates it).
-    wait_for_socket(&api_socket, Duration::from_secs(10));
-
-    // Verify the API socket exists and responds.
-    let response = ping_socket(&api_socket);
-    assert!(
-        response.contains("pong"),
-        "monolithic API should respond: {response}"
-    );
-
-    // Verify NO client socket was created — this is the key distinction
-    // between monolithic mode and server/client mode.
-    assert!(
-        !client_socket.exists(),
-        "no client socket should exist in monolithic mode"
-    );
-
-    // Verify the API socket is served by the monolithic process itself,
-    // not by a separate server. We can check this by verifying the client
-    // PID matches what would be serving the socket — in monolithic mode,
-    // there is only one herdr process.
-    let client_pid = herdr.child.process_id().expect("should have PID");
-    assert!(
-        process_exists(client_pid),
-        "monolithic process should be running"
-    );
 
     cleanup_spawned_herdr(herdr, base);
 }
@@ -689,34 +607,7 @@ fn auto_detect_writes_client_and_server_logs_to_separate_files() {
 }
 
 #[test]
-fn no_session_writes_startup_logs_to_monolith_file() {
-    let _lock = test_lock();
-    let base = unique_test_dir();
-    let config_home = base.join("config");
-    let runtime_dir = base.join("runtime");
-    let api_socket = runtime_dir.join("herdr.sock");
 
-    let spawned = spawn_herdr_no_session(&config_home, &runtime_dir, &api_socket);
-    wait_for_socket(&api_socket, Duration::from_secs(10));
-
-    let app_dir_name = if cfg!(debug_assertions) {
-        "bora-dev"
-    } else {
-        "bora"
-    };
-    let log_dir = config_home.join(app_dir_name);
-    let monolith_log = log_dir.join("herdr.log");
-
-    wait_for_log_contains(
-        &monolith_log,
-        "event=\"app.startup\" subsystem=\"app\"",
-        Duration::from_secs(10),
-    );
-
-    cleanup_spawned_herdr(spawned, base);
-}
-
-#[test]
 fn auto_detect_respects_nested_guard_before_auto_attach() {
     let _lock = test_lock();
     let base = unique_test_dir();

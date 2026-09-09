@@ -427,7 +427,6 @@ fn restore_workspace(
             metadata_tokens: crate::metadata_tokens::MetadataTokens::default(),
             metadata_token_sequences: HashMap::new(),
             visual_group: snap.visual_group.clone(),
-            last_activity_at: None,
             public_pane_numbers,
             next_public_pane_number,
             next_public_tab_number,

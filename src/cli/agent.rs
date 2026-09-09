@@ -559,6 +559,7 @@ fn agent_new_core(
     let workspace = super::send_request(&Request {
         id: "cli:agent:new:workspace".into(),
         method: Method::WorkspaceCreate(WorkspaceCreateParams {
+            source_workspace_id: None,
             cwd: Some(cwd.to_string_lossy().into_owned()),
             focus: false,
             label: None,
@@ -1190,7 +1191,11 @@ fn agent_prompt(args: &[String]) -> std::io::Result<i32> {
         method: Method::AgentPrompt(AgentPromptParams {
             target: target.clone(),
             text: text.clone(),
-            wait: wait.then_some(AgentPromptWaitOptions { until, timeout_ms }),
+            wait: wait.then_some(AgentPromptWaitOptions {
+                until,
+                timeout_ms,
+                submission_deadline: None,
+            }),
             from_pane,
             when_idle: when_idle.then_some(true),
             when_idle_timeout_ms: when_idle.then_some(timeout_ms).flatten(),

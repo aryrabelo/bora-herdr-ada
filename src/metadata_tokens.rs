@@ -88,10 +88,6 @@ impl MetadataTokens {
             .collect()
     }
 
-    pub(crate) fn is_empty(&self) -> bool {
-        self.entries.is_empty()
-    }
-
     pub(crate) fn next_expiry(&self) -> Option<Instant> {
         self.entries
             .values()

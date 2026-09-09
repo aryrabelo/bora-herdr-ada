@@ -83,13 +83,13 @@ class ReviewRulesEndToEnd(unittest.TestCase):
             self.assertRegex(output, VERDICT_RE, "every review must end in a VERDICT line")
         return done.returncode, output
 
-    def assert_flags(self, expected_text: str) -> None:
-        status, output = self.review()
+    def assert_flags(self, expected_text: str, base: str = "HEAD~1") -> None:
+        status, output = self.review(base=base)
         self.assertEqual(status, FINDINGS, f"expected a finding, got:\n{output}")
         self.assertIn(expected_text, output)
 
-    def assert_clean(self) -> None:
-        status, output = self.review()
+    def assert_clean(self, base: str = "HEAD~1") -> None:
+        status, output = self.review(base=base)
         self.assertEqual(status, CLEAN, f"expected no findings, got:\n{output}")
 
     # ── version bump ────────────────────────────────────────────────────
@@ -155,6 +155,30 @@ class ReviewRulesEndToEnd(unittest.TestCase):
         self.git("mv", "notes.json", "distribution/latest.json")
         self.commit("chore: move notes over the manifest")
         self.assert_flags("distribution/latest.json")
+
+    def _merge_upstream_generated_docs(self) -> None:
+        # An upstream sync: release CI on the other side generated
+        # docs/versions/0.9.0, and the merge brings it in untouched.
+        self.git("checkout", "-q", "-b", "upstream")
+        (self.repo / "docs/versions/0.9.0").mkdir(parents=True)
+        self.write("docs/versions/0.9.0/index.md", "generated upstream\n")
+        self.commit("docs: publish 0.9.0")
+        self.git("checkout", "-q", "-")
+        self.write("src/lib.rs", "pub fn fork() {}\n")
+        self.bump_version()
+        self.commit("feat: fork work")
+        self.git("merge", "-q", "--no-ff", "-m", "chore: merge upstream", "upstream")
+
+    def test_generated_output_inherited_through_a_merge_is_not_a_hand_edit(self) -> None:
+        self._merge_upstream_generated_docs()
+        # base = the fork tip before the merge (what a PR's base.sha is).
+        self.assert_clean(base="HEAD~1")
+
+    def test_generated_output_edited_on_top_of_a_merge_is_flagged(self) -> None:
+        self._merge_upstream_generated_docs()
+        self.write("docs/versions/0.9.0/index.md", "generated upstream, then edited by hand\n")
+        self.commit("docs: tweak the merged output")
+        self.assert_flags("docs/versions/0.9.0/index.md", base="HEAD~2")
 
     # ── #[allow] justification ──────────────────────────────────────────
 

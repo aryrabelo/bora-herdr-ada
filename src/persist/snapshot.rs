@@ -965,16 +965,19 @@ mod tests {
     }
 
     #[test]
-    fn capture_contract_tracks_sidebar_state() {
-        let mut state = state_with_workspaces(&["one"]);
-        state.sidebar_width = 31;
-        state.sidebar_section_split = 0.4;
-        state.collapsed_space_keys.insert("repo-key".into());
+    fn capture_contract_retains_fork_sidebar_state() {
+        // Unlike upstream (whose sidebar moved entirely client-side), this
+        // fork still round-trips sidebar chrome through the session snapshot
+        // so the client-shell sidebar (re-port, ceo-bora#275) can restore it.
+        let state = state_with_workspaces(&["one"]);
 
         let snapshot = capture_from_state(&state);
-        assert_eq!(snapshot.sidebar_width, Some(31));
-        assert_eq!(snapshot.sidebar_section_split, Some(0.4));
-        assert!(snapshot.collapsed_space_keys.contains("repo-key"));
+        assert_eq!(snapshot.sidebar_width, Some(state.sidebar_width));
+        assert_eq!(
+            snapshot.sidebar_section_split,
+            Some(state.sidebar_section_split)
+        );
+        assert!(snapshot.collapsed_space_keys.is_empty());
     }
 
     #[test]
@@ -1018,7 +1021,11 @@ mod tests {
         let mut state = state_with_workspaces(&["one"]);
         let root = state.workspaces[0].tabs[0].root_pane;
         let second = state.workspaces[0].test_split(Direction::Horizontal);
-        crate::ui::compute_view(&mut state, Rect::new(0, 0, 106, 20));
+        crate::ui::compute_view_with_runtime_registry(
+            &mut state,
+            &crate::terminal::TerminalRuntimeRegistry::new(),
+            Rect::new(0, 0, 106, 20),
+        );
 
         state.navigate_pane(NavDirection::Right);
 
@@ -1033,7 +1040,11 @@ mod tests {
         let root = state.workspaces[0].tabs[0].root_pane;
         state.workspaces[0].test_split(Direction::Horizontal);
         state.workspaces[0].layout.focus_pane(root);
-        crate::ui::compute_view(&mut state, Rect::new(0, 0, 106, 20));
+        crate::ui::compute_view_with_runtime_registry(
+            &mut state,
+            &crate::terminal::TerminalRuntimeRegistry::new(),
+            Rect::new(0, 0, 106, 20),
+        );
         let before = capture_from_state(&state);
 
         state.resize_pane(NavDirection::Right);

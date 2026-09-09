@@ -158,6 +158,7 @@ fn reached_src_files() -> (HashSet<String>, usize) {
         }
     }
 
+    let canonical_root = fs::canonicalize(&root).unwrap_or_else(|_| root.clone());
     let mut reached = HashSet::new();
     for dep_file in &dep_files {
         let Ok(raw) = fs::read_to_string(dep_file) else {
@@ -165,20 +166,60 @@ fn reached_src_files() -> (HashSet<String>, usize) {
         };
         for dep in split_dep_targets(&raw) {
             let dep_path = Path::new(&dep);
-            let rel = if let Ok(stripped) = dep_path.strip_prefix(&root) {
-                stripped.to_path_buf()
-            } else if dep_path.is_absolute() {
-                continue; // absolute path outside the repo (e.g. cargo registry sources)
-            } else {
+            // A `#[path = "../shell/overlays.rs"]` module can be recorded with
+            // the `..` left in (and the on-disk walk never sees that spelling),
+            // so resolve through the filesystem when the file exists and fall
+            // back to a lexical collapse of `.`/`..` when it does not.
+            let absolute = if dep_path.is_absolute() {
                 dep_path.to_path_buf()
+            } else {
+                root.join(dep_path)
             };
-            let rel_str = rel.to_string_lossy().replace('\\', "/");
+            let rel_str = match fs::canonicalize(&absolute) {
+                Ok(canonical) => match canonical.strip_prefix(&canonical_root) {
+                    Ok(stripped) => normalize_components(stripped),
+                    Err(_) => continue, // outside the repo (e.g. cargo registry sources)
+                },
+                Err(_) => match absolute.strip_prefix(&root) {
+                    Ok(stripped) => normalize_components(stripped),
+                    Err(_) => continue,
+                },
+            };
             if rel_str.starts_with("src/") {
                 reached.insert(rel_str);
             }
         }
     }
     (reached, dep_files.len())
+}
+
+/// Repo-relative forward-slash path with `.` and `..` components resolved.
+fn normalize_components(path: &Path) -> String {
+    use std::path::Component;
+    let mut parts: Vec<String> = Vec::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                parts.pop();
+            }
+            Component::Normal(part) => parts.push(part.to_string_lossy().into_owned()),
+            Component::RootDir | Component::Prefix(_) => parts.clear(),
+        }
+    }
+    parts.join("/")
+}
+
+#[test]
+fn dep_info_paths_with_parent_components_resolve_to_the_module_file() {
+    assert_eq!(
+        normalize_components(Path::new("src/client/shell/../shell/overlays.rs")),
+        "src/client/shell/overlays.rs"
+    );
+    assert_eq!(
+        normalize_components(Path::new("src/./app/mod.rs")),
+        "src/app/mod.rs"
+    );
 }
 
 fn all_src_rs_files() -> Vec<String> {
@@ -241,7 +282,21 @@ fn sidebar_token_rendering_stays_wired() {
 #[test]
 fn no_source_file_references_the_upstream_binary_name() {
     let root = repo_root();
-    let needle = format!("CARGO_BIN_EXE_{}", "herdr");
+    // Both needles are assembled at runtime on purpose: spelled as one
+    // literal, either would match this file and fail against itself. The
+    // second is the debug namespace directory from `app_dir_name()` in
+    // src/config/io.rs (upstream spells it with the upstream binary name; the
+    // fork spells it with its own). A test file merged in from upstream
+    // unmodified can hardcode upstream's spelling and only fail at runtime
+    // against a real directory (measured 2026-09-09: tests/api_ping.rs,
+    // live_handoff.rs, machine_setup.rs, two shell scripts).
+    let bin_needle = format!("CARGO_BIN_EXE_{}", "herdr");
+    let namespace_needle = format!("{}-dev", "herdr");
+    // `persist/snapshot.rs` names a fixture key `"current-herdr-dev"`, which
+    // contains the namespace needle as a substring but is not the namespace
+    // path itself (no directory ever resolves to that string); allowlisted by
+    // exact relative path so a new false-positive elsewhere still fails loud.
+    let namespace_allowlist: &[&str] = &["src/persist/snapshot.rs", "tests/upstream_wiring.rs"];
     let mut files = Vec::new();
     for dir in ["src", "tests"] {
         walk_rs(&root.join(dir), &root, &mut files);
@@ -251,14 +306,20 @@ fn no_source_file_references_the_upstream_binary_name() {
     let offenders: Vec<String> = files
         .into_iter()
         .filter(|rel| {
-            fs::read_to_string(root.join(rel)).is_ok_and(|text| text.contains(needle.as_str()))
+            let Ok(text) = fs::read_to_string(root.join(rel)) else {
+                return false;
+            };
+            if text.contains(bin_needle.as_str()) {
+                return true;
+            }
+            text.contains(namespace_needle.as_str()) && !namespace_allowlist.contains(&rel.as_str())
         })
         .collect();
 
     assert!(
         offenders.is_empty(),
-        "these files reference the upstream binary name, which cargo does not define for \
-         this fork (the bin is `bora`): {}. Use env!(\"CARGO_BIN_EXE_bora\") instead.",
+        "these files reference an upstream herdr name this fork renamed (bin `bora`, debug \
+         namespace `bora-dev`): {}. Use env!(\"CARGO_BIN_EXE_bora\") / \"bora-dev\" instead.",
         offenders.join(", ")
     );
 }
