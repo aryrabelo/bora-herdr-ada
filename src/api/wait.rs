@@ -320,7 +320,6 @@ pub(super) fn prompt_agent(
             _ => (
                 AGENT_PROMPT_EFFECT_TIMEOUT_MS,
                 AgentWaitTimeoutKind::PromptStalled {
-                    baseline: prompt_state_change_seq,
                     timeout_ms: AGENT_PROMPT_EFFECT_TIMEOUT_MS,
                 },
             ),
@@ -420,7 +419,7 @@ struct ResolvedAgentWait {
 #[derive(Clone, Copy)]
 enum AgentWaitTimeoutKind {
     Status,
-    PromptStalled { baseline: u64, timeout_ms: u64 },
+    PromptStalled { timeout_ms: u64 },
     Idle { timeout_ms: u64 },
 }
 
@@ -850,15 +849,12 @@ fn agent_wait_timeout(
         AgentWaitTimeoutKind::Status => {
             ("timeout", "timed out waiting for agent status".to_string())
         }
-        AgentWaitTimeoutKind::PromptStalled {
-            baseline,
-            timeout_ms,
-        } => {
+        AgentWaitTimeoutKind::PromptStalled { timeout_ms, .. } => {
             let status = format!("{:?}", current.agent_status).to_ascii_lowercase();
             (
                 "agent_prompt_stalled",
                 format!(
-                    "agent prompt produced no observed state change within {timeout_ms} ms; status is {status} and state_change_seq remained {baseline}"
+                    "agent prompt produced no observed working or blocked state within {timeout_ms} ms; current status is {status}"
                 ),
             )
         }

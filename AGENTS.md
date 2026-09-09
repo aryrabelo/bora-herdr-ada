@@ -248,6 +248,22 @@ today's upstream sync.)
   after any sync, scan newly added files for the upstream binary name. Note that
   `tests/upstream_wiring.rs::no_source_file_references_the_upstream_binary_name` now catches
   this on any host.
+- **Message-text drift is invisible to a macOS `just check` when only linux-gated tests
+  assert it.** The 0.9.0 sync kept the fork's `agent_prompt_stalled` message ("no observed
+  state change … state_change_seq remained …") while taking upstream's
+  `tests/cli/agents.rs`, which asserts upstream's newer text ("no observed working or
+  blocked state"); `tests/cli.rs` is one of the four `#![cfg(not(target_os = "macos"))]`
+  files, so every local run and the macos CI leg were green and only
+  `check (ubuntu-latest)` failed. Upstream's 8633a398 also DROPPED the variant's
+  `baseline` field — port the text and the field together or neither, or the field goes
+  dead. Same sync, same class: upstream's ci.yml brought the whole `windows-conpty-package`
+  job with `herdr.exe` paths while this fork builds `bora.exe`; rename the paths, and gate
+  the one step driving `windows_install_conpty_package_test.ps1` (asserts
+  herdr.exe/herdr.cmd/PATH migration throughout, never fork-adapted) to
+  `herdrdev/herdr`. The Windows ARM64 installer failure that predates this sync is the
+  published-package side of the same rename: preview zips built before f87ef336 contain
+  `herdr.exe` while install.ps1 expects `bora.exe` — the next preview publish heals it, no
+  installer change needed. (learned 2026-09-09, binding.)
 - **Upstream blocks conflicting wholesale where the fork moved code.** `src/ui/sidebar.rs`
   is roughly 5.8k lines in the fork versus 3.2k upstream, so git can't align them and
   produces one large conflict whose "ours" side is empty. Taking `theirs` would duplicate

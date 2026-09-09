@@ -137,7 +137,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $exe = Join-Path $PWD "target\debug\herdr.exe"
+          $exe = Join-Path $PWD "target\debug\bora.exe"
           .\scripts\windows_smoke_conpty_path.ps1 -ExePath $exe -Session "ci-windows-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
 
   windows-conpty-package:
@@ -176,7 +176,7 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           Remove-Item Env:HERDR_SOCKET_PATH, Env:HERDR_CLIENT_SOCKET_PATH -ErrorAction SilentlyContinue
-          $exe = Join-Path $PWD "target\x86_64-pc-windows-msvc\debug\herdr.exe"
+          $exe = Join-Path $PWD "target\x86_64-pc-windows-msvc\debug\bora.exe"
           $bundle = Join-Path (Split-Path -Parent $exe) "conpty"
           New-Item -ItemType Directory -Force -Path (Join-Path $bundle "x64"), (Join-Path $bundle "arm64") | Out-Null
           Set-Content -LiteralPath (Join-Path $bundle "herdr-conpty.json") -Value "{}" -Encoding ascii
@@ -213,20 +213,20 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           $package = Join-Path $env:RUNNER_TEMP "Microsoft.Windows.Console.ConPTY.nupkg"
-          $stage = Join-Path $env:RUNNER_TEMP "herdr-windows-x86_64"
+          $stage = Join-Path $env:RUNNER_TEMP "bora-windows-x86_64"
           New-Item -ItemType Directory -Force -Path artifacts | Out-Null
           .\scripts\package_windows_conpty.ps1 `
-            -HerdrExe target\x86_64-pc-windows-msvc\debug\herdr.exe `
+            -HerdrExe target\x86_64-pc-windows-msvc\debug\bora.exe `
             -PackagePath $package `
             -StageDir $stage `
-            -OutputPath artifacts\herdr-windows-x86_64.zip
+            -OutputPath artifacts\bora-windows-x86_64.zip
           "HERDR_CONPTY_PACKAGE_DIR=$stage" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Probe enhanced pane input with bundled ConPTY
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $exe = Join-Path $env:HERDR_CONPTY_PACKAGE_DIR "herdr.exe"
+          $exe = Join-Path $env:HERDR_CONPTY_PACKAGE_DIR "bora.exe"
           $consoleHost = Join-Path $env:HERDR_CONPTY_PACKAGE_DIR "conpty\x64\OpenConsole.exe"
           .\scripts\windows_conpty_enhanced_input_probe.ps1 `
             -ExePath $exe `
@@ -234,11 +234,17 @@ jobs:
             -ExpectedConsoleHostPath $consoleHost
 
       - name: Test packaged installer and repair with Windows PowerShell 5.1
+        # windows_install_conpty_package_test.ps1 asserts the upstream herdr.exe
+        # layout (binary name, herdr.cmd shims, PATH migration) throughout; this
+        # fork installs bora.exe (f87ef336) and has never ported that script.
+        # The fork's installer coverage is windows-arm64.yml, which drives the
+        # real published manifest end to end against bora.exe.
+        if: github.repository == 'herdrdev/herdr'
         shell: pwsh
         run: |
           & powershell.exe -NoProfile -ExecutionPolicy Bypass -File `
             .\scripts\windows_install_conpty_package_test.ps1 `
-            -ArchivePath artifacts\herdr-windows-x86_64.zip
+            -ArchivePath artifacts\bora-windows-x86_64.zip
           if ($LASTEXITCODE -ne 0) {
             throw "Windows PowerShell installer test failed with exit code $LASTEXITCODE"
           }
