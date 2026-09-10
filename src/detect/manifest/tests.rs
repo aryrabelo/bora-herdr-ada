@@ -186,6 +186,65 @@ fn omp_manifest_reads_state_from_title_not_body() {
 }
 
 #[test]
+fn osc_title_state_reads_only_title_rules() {
+    with_manifest_dirs("omp-title-only", || {
+        // Idle prompt title: the visible_idle osc_title rule wins.
+        assert_eq!(
+            osc_title_state(Agent::Omp, "π > Confirmar opção A do broker"),
+            Some(AgentState::Idle)
+        );
+        // Spinner and attention titles outrank idle and never read as Idle.
+        assert_eq!(
+            osc_title_state(Agent::Omp, "π ⠹ thinking"),
+            Some(AgentState::Working)
+        );
+        assert_eq!(
+            osc_title_state(Agent::Omp, "π ! approve?"),
+            Some(AgentState::Blocked)
+        );
+        // No title, or a title with tui.titleState off, matches nothing.
+        assert_eq!(osc_title_state(Agent::Omp, ""), None);
+        assert_eq!(osc_title_state(Agent::Omp, "π: label"), None);
+    });
+}
+
+#[test]
+fn osc_title_state_is_none_for_manifests_without_a_title_idle_rule() {
+    // A manifest whose only osc_title rules are working/blocked carries no
+    // title evidence for idle, so even a non-matching title yields None
+    // rather than a state the reconcile path could act on.
+    let manifest = parse_manifest(
+        r#"
+id = "codex"
+
+[[rules]]
+id = "osc_title_working"
+state = "working"
+priority = 1050
+region = "osc_title"
+regex = ['spin']
+
+[[rules]]
+id = "prompt_idle"
+state = "idle"
+priority = 100
+region = "whole_recent"
+visible_idle = true
+contains = ["›"]
+"#,
+    )
+    .unwrap();
+    let loaded = loaded_manifest(manifest, ManifestSource::Bundled, None, None, false).unwrap();
+    assert_eq!(osc_title_state_for_loaded(&loaded, "spin"), None);
+    assert_eq!(osc_title_state_for_loaded(&loaded, "quiet title"), None);
+
+    // The bundled pi manifest has no osc_title rules at all.
+    with_manifest_dirs("pi-no-title-rules", || {
+        assert_eq!(osc_title_state(Agent::Pi, "π > prompt"), None);
+    });
+}
+
+#[test]
 fn remote_manifest_loads_between_local_override_and_bundled() {
     with_manifest_dirs("remote-source", || {
         write_remote_codex(&remote_manifest("9999.01.01.1", "blocked", "remote-ready"));

@@ -20,6 +20,7 @@ process.env.HERDR_SOCKET_PATH = "/tmp/herdr-agent-state-test.sock"; // unused; n
 process.env.HERDR_PANE_ID = "test-pane";
 process.env.HERDR_OMP_IDLE_DEBOUNCE_MS = "50";
 process.env.HERDR_PI_IDLE_DEBOUNCE_MS = "50";
+process.env.HERDR_OMP_HEARTBEAT_MS = "5000";
 
 type Report = {
   method?: string;
@@ -28,6 +29,7 @@ type Report = {
 
 let reportedStates: string[] = [];
 let sessionReports: Report[] = [];
+let requestMethods: string[] = [];
 
 function capture(raw: unknown): void {
   for (const line of String(raw).split("\n")) {
@@ -37,6 +39,9 @@ function capture(raw: unknown): void {
       parsed = JSON.parse(line) as Report;
     } catch {
       continue;
+    }
+    if (typeof parsed?.method === "string") {
+      requestMethods.push(parsed.method);
     }
     if (parsed?.method === "pane.report_agent" && typeof parsed.params?.state === "string") {
       reportedStates.push(parsed.params.state);
@@ -49,7 +54,11 @@ function capture(raw: unknown): void {
 
 // Fake unix socket: captures the written payload, then resolves the asset's
 // send promise by emitting connect/data/end/close on later microtasks (after
-// the asset has registered its listeners). No real I/O, no timers.
+// the asset has registered its listeners). No real I/O, no timers. While
+// `failNextConnections` is positive each new connection instead fails with a
+// socket error before connecting, so delivery retries can be exercised.
+let failNextConnections = 0;
+
 function fakeCreateConnection(_path: string, connectListener?: () => void) {
   const listeners = new Map<string, (...args: unknown[]) => void>();
   const socket = {
@@ -75,6 +84,13 @@ function fakeCreateConnection(_path: string, connectListener?: () => void) {
       return socket;
     },
   };
+  if (failNextConnections > 0) {
+    failNextConnections -= 1;
+    queueMicrotask(() => {
+      listeners.get("error")?.(new Error("ECONNREFUSED"));
+    });
+    return socket;
+  }
   queueMicrotask(() => {
     connectListener?.();
     listeners.get("connect")?.();
@@ -99,6 +115,8 @@ beforeAll(async () => {
 afterEach(() => {
   reportedStates = [];
   sessionReports = [];
+  requestMethods = [];
+  failNextConnections = 0;
   jest.useRealTimers();
 });
 
@@ -407,4 +425,132 @@ test("omp: agent_end with willContinue keeps the pane working", async () => {
   jest.advanceTimersByTime(200);
   await flush();
   expect(reportedStates.at(-1)).toBe("idle");
+});
+
+// ceo-bora#314: a state report herdr never acknowledged used to be dropped after
+// two socket attempts, and nothing re-sent it until the next turn_start — a
+// lost idle left the pane Working in the sidebar for hours. Reports are now
+// retried with backoff until delivered or superseded, and the root session
+// heartbeats its current state so the server never keeps a state the
+// extension no longer believes.
+function spawnOmp() {
+  return (async () => {
+    const mod = await import("./omp/herdr-agent-state.ts");
+    const handlers = new Map<string, (...args: unknown[]) => void>();
+    const pi = {
+      on: (name: string, cb: (...args: unknown[]) => void) => {
+        handlers.set(name, cb);
+      },
+      events: {
+        on: (name: string, cb: (...args: unknown[]) => void) => {
+          handlers.set(`events:${name}`, cb);
+        },
+      },
+    };
+    mod.default(pi);
+    return (name: string, ...args: unknown[]) => handlers.get(name)?.(...args);
+  })();
+}
+
+// Retry sleeps and socket attempts interleave several promise hops each, so
+// drain a few flush rounds between fake-clock advances.
+async function settle(): Promise<void> {
+  for (let i = 0; i < 4; i += 1) {
+    await flush();
+  }
+}
+
+test("omp: an undelivered state report is retried until it lands", async () => {
+  jest.useFakeTimers();
+  const fire = await spawnOmp();
+
+  // Both attempts of the first send fail: nothing reaches herdr yet.
+  failNextConnections = 2;
+  fire("session_start", {}, { hasUI: true, mode: "tui" });
+  await settle();
+  expect(reportedStates).toHaveLength(0);
+
+  // First backoff (250ms) elapses: the report is re-sent and delivered.
+  jest.advanceTimersByTime(250);
+  await settle();
+  expect(reportedStates).toEqual(["idle"]);
+
+  // Nothing further is queued, so the later backoff steps re-send nothing
+  // (stay short of the 5s heartbeat, which is covered below).
+  jest.advanceTimersByTime(4000);
+  await settle();
+  expect(reportedStates).toEqual(["idle"]);
+  fire("session_shutdown");
+});
+
+test("omp: a newer queued state cancels the retries of the older one", async () => {
+  jest.useFakeTimers();
+  const fire = await spawnOmp();
+
+  failNextConnections = 2;
+  fire("session_start", {}, { hasUI: true, mode: "tui" }); // idle, undelivered
+  await settle();
+  expect(reportedStates).toHaveLength(0);
+
+  // While the idle report sits in its 250ms backoff, real work starts. The
+  // newer state wakes the sleeper and goes out first; the stale idle is never
+  // re-sent, so the pane cannot flap idle→working→idle.
+  fire("agent_start", {}, {});
+  await settle();
+  expect(reportedStates).toEqual(["working"]);
+
+  jest.advanceTimersByTime(250);
+  await settle();
+  expect(reportedStates).toEqual(["working"]);
+  fire("session_shutdown");
+});
+
+test("omp: the root session heartbeats its unchanged state", async () => {
+  jest.useFakeTimers();
+  const fire = await spawnOmp();
+
+  fire("session_start", {}, { hasUI: true, mode: "tui" });
+  await settle();
+  expect(reportedStates).toEqual(["idle"]);
+
+  // Nothing changed, yet each HERDR_OMP_HEARTBEAT_MS re-sends the current
+  // state so a report herdr lost (or a stale server-side state) is repaired.
+  jest.advanceTimersByTime(5000);
+  await settle();
+  expect(reportedStates).toEqual(["idle", "idle"]);
+
+  fire("agent_start", {}, {});
+  await settle();
+  jest.advanceTimersByTime(5000);
+  await settle();
+  expect(reportedStates.slice(-2)).toEqual(["working", "working"]);
+
+  // Shutdown stops the heartbeat.
+  fire("session_shutdown");
+  jest.advanceTimersByTime(20_000);
+  await settle();
+  expect(reportedStates.slice(-2)).toEqual(["working", "working"]);
+});
+
+// Socket requests stay ordered: a state report queued behind a session report
+// whose first socket attempt failed must not overtake it, or the server would
+// see state for a session it has not been told about yet.
+test("omp: socket requests are serialized through the retrying queue", async () => {
+  jest.useFakeTimers();
+  const fire = await spawnOmp();
+  const sessionCtx = {
+    hasUI: true,
+    sessionManager: {
+      getSessionFile: (): string => "/tmp/omp-ordered.jsonl",
+      getSessionId: (): string => "omp-ordered",
+    },
+  };
+
+  failNextConnections = 1;
+  fire("session_start", {}, sessionCtx); // session report, then state report
+  await settle();
+
+  expect(requestMethods).toEqual(["pane.report_agent_session", "pane.report_agent"]);
+  expect(reportedStates).toEqual(["idle"]);
+  fire("session_shutdown");
 });

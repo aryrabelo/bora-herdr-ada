@@ -2,7 +2,7 @@
 // managed by herdr; reinstalling or updating the integration overwrites this file.
 // add custom hooks/plugins beside this file instead of editing it.
 // HERDR_INTEGRATION_ID=omp
-// HERDR_INTEGRATION_VERSION=10
+// HERDR_INTEGRATION_VERSION=11
 // @ts-nocheck
 
 import net from "node:net";
@@ -49,19 +49,21 @@ function sendRequestAttempt(request: unknown, timeoutMs: number): Promise<boolea
   });
 }
 
-async function sendRequestNow(request: unknown): Promise<void> {
+async function sendRequestNow(request: unknown): Promise<boolean> {
   if (await sendRequestAttempt(request, 500)) {
-    return;
+    return true;
   }
-  await sendRequestAttempt(request, 1500);
+  return sendRequestAttempt(request, 1500);
 }
 
-function sendRequest(request: unknown): Promise<void> {
-  requestQueue = requestQueue.then(
-    () => sendRequestNow(request),
-    () => sendRequestNow(request),
+function sendRequest(request: unknown): Promise<boolean> {
+  const send = () => sendRequestNow(request);
+  const next = requestQueue.then(send, send);
+  requestQueue = next.then(
+    () => undefined,
+    () => undefined,
   );
-  return requestQueue;
+  return next;
 }
 
 type AgentState = "working" | "blocked" | "idle";
@@ -74,6 +76,7 @@ type QueuedState = {
 
 const idleDebounceMs = parseDurationEnv("HERDR_OMP_IDLE_DEBOUNCE_MS", 250);
 const retryGraceMs = parseDurationEnv("HERDR_OMP_RETRY_GRACE_MS", 2500);
+const heartbeatMs = parseDurationEnv("HERDR_OMP_HEARTBEAT_MS", 15_000);
 const retryableErrorPattern =
   /overloaded|provider.?returned.?error|rate.?limit|too many requests|429|500|502|503|504|service.?unavailable|server.?error|internal.?error|network.?error|connection.?error|connection.?refused|connection.?lost|websocket.?closed|websocket.?error|other side closed|fetch failed|upstream.?connect|reset before headers|socket hang up|ended without|http2 request did not get a response|timed? out|timeout|terminated|retry delay/i;
 let reportSeq = Date.now() * 1000;
@@ -157,10 +160,10 @@ function reportSession(sessionStartSource = "startup"): Promise<void> {
       session_start_source: sessionStartSource,
       ...sessionRef,
     },
-  });
+  }).then(() => undefined);
 }
 
-function sendState(state: AgentState, message?: string, seq = nextReportSeq()): Promise<void> {
+function sendState(state: AgentState, message?: string, seq = nextReportSeq()): Promise<boolean> {
   return sendRequest({
     id: `${source}:${Date.now()}:${Math.random().toString(36).slice(2)}`,
     method: "pane.report_agent",
@@ -175,14 +178,38 @@ function sendState(state: AgentState, message?: string, seq = nextReportSeq()): 
   });
 }
 
+// A state report that herdr never acknowledged is retried until it lands or
+// a newer state supersedes it: a dropped idle would otherwise be final and the
+// pane would sit Working in the sidebar until the next turn.
+const stateRetryDelaysMs = [250, 1000, 3000];
+const stateRetryIntervalMs = 10_000;
+
 let sendInFlight = false;
 let queuedState: QueuedState | undefined;
+let wakeRetry: (() => void) | undefined;
 
 function queueState(state: AgentState, message?: string): void {
   queuedState = { state, message, seq: nextReportSeq() };
+  // A newer state cancels the backoff of the one it supersedes.
+  wakeRetry?.();
   if (!sendInFlight) {
     void drainStateQueue();
   }
+}
+
+function sleepUntilWoken(ms: number): Promise<void> {
+  const { promise, resolve } = Promise.withResolvers<void>();
+  const timer = setTimeout(() => {
+    wakeRetry = undefined;
+    resolve();
+  }, ms);
+  timer.unref?.();
+  wakeRetry = () => {
+    clearTimeout(timer);
+    wakeRetry = undefined;
+    resolve();
+  };
+  return promise;
 }
 
 async function drainStateQueue(): Promise<void> {
@@ -195,7 +222,15 @@ async function drainStateQueue(): Promise<void> {
     while (queuedState) {
       const next = queuedState;
       queuedState = undefined;
-      await sendState(next.state, next.message, next.seq);
+      for (let attempt = 0; !queuedState; attempt += 1) {
+        if (await sendState(next.state, next.message, next.seq)) {
+          break;
+        }
+        if (queuedState) {
+          break;
+        }
+        await sleepUntilWoken(stateRetryDelaysMs[attempt] ?? stateRetryIntervalMs);
+      }
     }
   } finally {
     sendInFlight = false;
@@ -253,6 +288,7 @@ export default function (pi) {
   let lastMessage: string | undefined;
   let idleTimer: ReturnType<typeof setTimeout> | undefined;
   let retryTimer: ReturnType<typeof setTimeout> | undefined;
+  let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
   let rootSession = false;
   let turnRepairHold = false;
 
@@ -331,7 +367,26 @@ export default function (pi) {
     rootSession = true;
     updateSessionRef(ctx);
     void reportSession(sessionStartSource);
+    armHeartbeat();
     return true;
+  }
+
+  // While this runtime owns the pane, periodically re-send the current state
+  // regardless of change dedupe. Together with the delivery retries this
+  // bounds how long herdr can hold a state the extension no longer believes.
+  function armHeartbeat() {
+    if (heartbeatMs === 0 || heartbeatTimer) {
+      return;
+    }
+    heartbeatTimer = setInterval(() => publishState(true), heartbeatMs);
+    heartbeatTimer.unref?.();
+  }
+
+  function clearHeartbeat() {
+    if (heartbeatTimer) {
+      clearInterval(heartbeatTimer);
+      heartbeatTimer = undefined;
+    }
   }
 
   function resetSessionState() {
@@ -496,6 +551,7 @@ export default function (pi) {
       rootSession = true;
       updateSessionRef(ctx);
       void reportSession();
+      armHeartbeat();
     }
     // A turn proves the agent loop is alive: duplicate/late agent_end events
     // can drain agentActiveCount mid-run (e.g. concurrent subagent fan-out),
@@ -513,6 +569,7 @@ export default function (pi) {
   pi.on("session_shutdown", () => {
     if (rootSession) {
       clearPendingTimers();
+      clearHeartbeat();
     }
   });
 }

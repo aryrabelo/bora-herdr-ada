@@ -3366,6 +3366,15 @@ impl HeadlessServer {
             changed = true;
         }
 
+        if self
+            .app
+            .state
+            .next_hook_title_idle_reconcile_deadline()
+            .is_some_and(|deadline| now >= deadline)
+        {
+            changed |= self.app.reconcile_hook_title_idle_at(now);
+        }
+
         changed |= self.app.handle_tab_bar_status_tasks(now);
 
         if geometry_dirty {

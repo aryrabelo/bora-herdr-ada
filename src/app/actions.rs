@@ -1677,6 +1677,16 @@ impl AppState {
                 })
                 .into_iter()
                 .collect(),
+            AppEvent::AgentTitleIdleObserved {
+                pane_id,
+                idle,
+                observed_at,
+            } => self
+                .update_terminal_state(pane_id, |terminal| {
+                    Some(terminal.set_title_idle_observed_at(idle, observed_at))
+                })
+                .into_iter()
+                .collect(),
             AppEvent::HookStateReported {
                 pane_id,
                 source,
@@ -1931,6 +1941,40 @@ impl AppState {
             .values()
             .filter_map(crate::terminal::TerminalState::next_managed_agent_deadline)
             .min()
+    }
+
+    pub(crate) fn next_hook_title_idle_reconcile_deadline(&self) -> Option<Instant> {
+        self.terminals
+            .values()
+            .filter_map(crate::terminal::TerminalState::next_hook_title_idle_reconcile_deadline)
+            .min()
+    }
+
+    /// Flips terminals whose `visible_idle` title outlasted a non-idle hook
+    /// state once their grace window has elapsed.
+    pub(crate) fn reconcile_hook_title_idle_at(&mut self, now: Instant) -> Vec<PaneStateUpdate> {
+        let terminals = &self.terminals;
+        let due_panes: Vec<PaneId> = self
+            .workspaces
+            .iter()
+            .flat_map(|workspace| workspace.tabs.iter())
+            .flat_map(|tab| tab.panes.iter())
+            .filter_map(|(pane_id, pane)| {
+                terminals
+                    .get(&pane.attached_terminal_id)?
+                    .next_hook_title_idle_reconcile_deadline()
+                    .is_some_and(|deadline| now >= deadline)
+                    .then_some(*pane_id)
+            })
+            .collect();
+        due_panes
+            .into_iter()
+            .filter_map(|pane_id| {
+                self.update_terminal_state(pane_id, |terminal| {
+                    Some(terminal.reconcile_hook_title_idle_at(now))
+                })
+            })
+            .collect()
     }
 
     pub(crate) fn publish_pane_process_exit_if_agent(
@@ -3438,6 +3482,82 @@ mod tests {
         let toast = state.toast.as_ref().unwrap();
         assert_eq!(toast.kind, ToastKind::NeedsAttention);
         assert_eq!(toast.title, "codex needs attention");
+    }
+
+    #[test]
+    fn idle_title_under_stale_omp_hook_schedules_and_publishes_the_idle_flip() {
+        let mut state = app_with_workspaces(&["active"]);
+        state.active = Some(0);
+        let pane_id = *state.workspaces[0].panes.keys().next().unwrap();
+        let terminal_id = state.workspaces[0]
+            .panes
+            .get(&pane_id)
+            .unwrap()
+            .attached_terminal_id
+            .clone();
+        let t0 = Instant::now();
+        let session_ref = crate::agent_resume::AgentSessionRef::id("omp-root").unwrap();
+
+        state.handle_app_event(AppEvent::StateChanged {
+            pane_id,
+            agent: Some(Agent::Omp),
+            state: AgentState::Idle,
+            visible_blocker: false,
+            visible_working: false,
+            process_exited: false,
+            observed_at: t0,
+        });
+        state.handle_app_event(AppEvent::AgentSessionReported {
+            pane_id,
+            source: "herdr:omp".into(),
+            agent_label: "omp".into(),
+            seq: Some(1),
+            session_ref: Some(session_ref.clone()),
+            session_start_source: Some("startup".into()),
+        });
+        state.handle_app_event(AppEvent::HookStateReported {
+            pane_id,
+            source: "herdr:omp".into(),
+            agent_label: "omp".into(),
+            state: AgentState::Working,
+            message: None,
+            seq: Some(2),
+            session_ref: Some(session_ref),
+        });
+        let terminal = state.terminals.get(&terminal_id).unwrap();
+        assert_eq!(terminal.state, AgentState::Working);
+        assert_eq!(state.next_hook_title_idle_reconcile_deadline(), None);
+        // The event path stamps the report with the wall clock, so the window
+        // starts at the state change, not at the (earlier) title observation.
+        let state_changed_at = terminal.hook_authority.as_ref().unwrap().state_changed_at;
+
+        // The detector sees the `π >` prompt title: the grace window opens.
+        state.handle_app_event(AppEvent::AgentTitleIdleObserved {
+            pane_id,
+            idle: true,
+            observed_at: t0,
+        });
+        let grace = crate::terminal::state::HOOK_TITLE_IDLE_RECONCILE_GRACE;
+        assert_eq!(
+            state.next_hook_title_idle_reconcile_deadline(),
+            Some(state_changed_at + grace)
+        );
+        assert!(state
+            .reconcile_hook_title_idle_at(
+                state_changed_at + grace - std::time::Duration::from_secs(1)
+            )
+            .is_empty());
+
+        let updates = state.reconcile_hook_title_idle_at(state_changed_at + grace);
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0].pane_id, pane_id);
+        assert_eq!(updates[0].previous_state, AgentState::Working);
+        assert_eq!(updates[0].state, AgentState::Idle);
+        let terminal = state.terminals.get(&terminal_id).unwrap();
+        assert_eq!(terminal.state, AgentState::Idle);
+        assert!(terminal.idle_since.is_some());
+        assert!(terminal.full_lifecycle_hook_authority_active());
+        assert_eq!(state.next_hook_title_idle_reconcile_deadline(), None);
     }
 
     #[test]
