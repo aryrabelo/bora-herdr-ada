@@ -885,7 +885,7 @@ fn group_parent_path(path: &str) -> Option<&str> {
 /// Drops empty segments and returns `None` when nothing is left, which
 /// `folders_entries` treats identically to "ungrouped" (cubic review,
 /// ceo-bora#303 PR #32 -- an unnormalized `"foo/"` rendered a blank header).
-fn normalize_group_path(path: &str) -> Option<String> {
+pub(in crate::client::shell) fn normalize_group_path(path: &str) -> Option<String> {
     let segments = path
         .split('/')
         .filter(|segment| !segment.is_empty())

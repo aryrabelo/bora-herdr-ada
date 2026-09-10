@@ -136,7 +136,10 @@ impl ClientShellState {
         let collapsed = worktree.is_some_and(|worktree| {
             self.group_is_collapsed(&self.active_endpoint_id, &worktree.key)
         });
-        let visual_group = workspace.visual_group.clone();
+        let visual_group = workspace
+            .visual_group
+            .as_deref()
+            .and_then(super::sidebar::normalize_group_path);
         // Every VISIBLE folder, including a parent that exists only as a
         // synthesized ancestor of a nested path -- not just paths with a
         // direct exact member (cubic review, ceo-bora#303 PR #32). Sorted
@@ -432,7 +435,8 @@ impl ClientShellState {
             .iter()
             .find(|workspace| workspace.workspace_id == workspace_id)?
             .visual_group
-            .clone()
+            .as_deref()
+            .and_then(super::sidebar::normalize_group_path)
     }
 
     /// Prompt for the last segment of `old_path`; the parent prefix is
@@ -447,9 +451,15 @@ impl ClientShellState {
         }));
     }
 
-    /// One `WorkspaceSetGroup` per workspace sitting at `path` or
-    /// nested under it. `replacement` swaps that prefix (keeping each
-    /// workspace's own relative suffix); `None` ungroups them all.
+    /// One `WorkspaceSetGroup` per workspace sitting at `path` or nested
+    /// under it. `replacement` swaps that prefix (keeping each workspace's
+    /// own relative suffix); `None` ungroups them all. Matches against each
+    /// workspace's NORMALIZED `visual_group` (`sidebar::normalize_group_path`),
+    /// not the raw wire string -- `path` itself, coming from a rendered
+    /// header or `workspace_visual_group`, is already normalized, and a raw
+    /// value like `"foo//bar"` must still match the canonical `"foo/bar"`
+    /// header it renders under, or renaming/ungrouping from that header
+    /// silently leaves it untouched (cubic review, ceo-bora#303 PR #32).
     pub(super) fn group_repath_methods(
         &self,
         path: &str,
@@ -463,13 +473,16 @@ impl ClientShellState {
             .workspaces
             .iter()
             .filter_map(|workspace| {
-                let group = workspace.visual_group.as_deref()?;
+                let group = workspace
+                    .visual_group
+                    .as_deref()
+                    .and_then(super::sidebar::normalize_group_path)?;
                 let suffix = if group == path {
                     None
                 } else {
-                    Some(group.strip_prefix(prefix.as_str())?)
+                    Some(group.strip_prefix(prefix.as_str())?.to_owned())
                 };
-                let group = replacement.map(|replacement| match suffix {
+                let group = replacement.map(|replacement| match &suffix {
                     Some(suffix) => format!("{replacement}/{suffix}"),
                     None => replacement.to_owned(),
                 });

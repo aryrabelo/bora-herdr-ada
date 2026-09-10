@@ -831,3 +831,40 @@ fn workspace_context_menu_move_to_group_includes_a_synthesized_ancestor_folder()
         vec![("ws_2".to_owned(), Some("bora-sync".to_owned()))]
     );
 }
+
+/// A workspace whose RAW `visual_group` is malformed (a doubled slash,
+/// `"bora-sync//docs"`, never produced by this shell's own prompts but
+/// reachable via the CLI) renders under the NORMALIZED header
+/// `"bora-sync/docs"`. Rename/ungroup from that header must still match
+/// and affect it, not silently no-op because the raw string never equals
+/// the canonical path (cubic review, ceo-bora#303 PR #32).
+#[test]
+fn group_header_actions_match_a_workspace_with_a_malformed_raw_group_path() {
+    let mut config = Config::default();
+    config.ui.view_mode = crate::config::ViewMode::Folders;
+    let mut projected = snapshot();
+    projected.workspaces[0].visual_group = Some("bora-sync//docs".into());
+
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+    state.set_snapshot(Box::new(projected));
+    state.set_pane_surface(surface());
+    state.compose(106, 30).expect("folders layout");
+
+    // Renders under the normalized path, not the raw one.
+    let keys = state
+        .hits
+        .folders_group_headers
+        .iter()
+        .map(|(_, key)| key.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(keys, vec!["vg:bora-sync", "vg:bora-sync/docs"]);
+
+    let header = group_header_rect(&state, "vg:bora-sync/docs");
+    right_click(&mut state, header);
+    let ungrouped = click_menu_item(&mut state, &ClientContextMenuAction::UngroupAll);
+    assert_eq!(
+        set_group_methods(&ungrouped),
+        vec![("ws_1".to_owned(), None)],
+        "the malformed-raw-path workspace must still be found and ungrouped"
+    );
+}
