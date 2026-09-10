@@ -1,0 +1,16 @@
+src/app/actions.rs
+  h_b156936c57c455 3531-3532,3543,3546-3548,3551
+src/terminal/state.rs
+  h_b156936c57c455 17-20,30-33,746-754,761,1012,1952-1956,1966,2597,2601-2603,2606,2611,2618,2632-2692
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "a1a5a8e858e0eec4c9e67a98ab01bf7a6a40eba8",
+  "prompts": {},
+  "humans": {
+    "h_b156936c57c455": {
+      "author": "Ary Rabelo <aryrabelo@gmail.com>"
+    }
+  }
+}
