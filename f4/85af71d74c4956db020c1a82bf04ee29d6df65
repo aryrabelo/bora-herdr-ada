@@ -1,0 +1,55 @@
+src/api/wait.rs
+  s_dfb5abc9b75497::t_1d479d76e1b5a0 8-9,392,673-680,682-714,716-765,771-780
+src/app/actions.rs
+  s_dfb5abc9b75497::t_5874341c08833a 4511,4539
+src/app/agents.rs
+  s_dfb5abc9b75497::t_637e790c6defaa 213
+src/app/api/agents.rs
+  s_dfb5abc9b75497::t_3e666360b4b162 246
+src/app/api/workspaces.rs
+  s_dfb5abc9b75497::t_6b1c4c9a8ac8d3 752
+src/app/creation.rs
+  s_dfb5abc9b75497::t_b146ab71a83003 43
+src/app/input/mouse.rs
+  s_dfb5abc9b75497::t_53c1b6013b3452 917,931,951,954,1083,1087,1791
+src/app/mod.rs
+  s_dfb5abc9b75497::t_f9290fea812bdc 17,1200,1777,1986-1994
+src/app/runtime.rs
+  s_dfb5abc9b75497::t_7984157d0ac2a1 4,8-9,893-896
+src/app/terminal_targets.rs
+  s_dfb5abc9b75497::t_569c6604b051fe 113
+src/config/sidebar.rs
+  s_dfb5abc9b75497::t_7405f86886df35 46
+src/popup_size.rs
+  s_dfb5abc9b75497::t_175546a090ded6 16
+src/protocol/wire.rs
+  s_dfb5abc9b75497::t_82c76270dd6b87 458,585-589
+src/server/headless.rs
+  s_dfb5abc9b75497::t_d451bfcc405396 760
+src/ui/dialogs.rs
+  s_dfb5abc9b75497::t_e0041c2e7b55ca 1052
+src/ui/navigator.rs
+  s_dfb5abc9b75497::t_8b4d7b49ff1a77 614
+src/ui/sidebar.rs
+  s_dfb5abc9b75497::t_56492bde1f6c55 155-161,1425,1428-1431,1435-1437,1440-1444,1446,1449-1453,1499,1501
+src/ui/tab_surface.rs
+  s_dfb5abc9b75497::t_554fe0da1a3795 229,307
+tests/client_mode.rs
+  s_dfb5abc9b75497::t_6605aedc667d01 610,620-623,630-633
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.19",
+  "base_commit_sha": "f485af71d74c4956db020c1a82bf04ee29d6df65",
+  "prompts": {},
+  "sessions": {
+    "s_dfb5abc9b75497": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1932a90d-1d3a-4cf3-8060-b56efe6c9880",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Ary Rabelo <aryrabelo@gmail.com>"
+    }
+  }
+}

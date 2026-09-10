@@ -1,0 +1,19 @@
+Cargo.toml
+  s_55a2cb28829857::t_f00c88b3223022 3
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "47ed7463739342a805796bd09e32342eec69c70f",
+  "prompts": {},
+  "sessions": {
+    "s_55a2cb28829857": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "40b0a5d9-8d48-44d5-b584-d2a146ee193a",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Ary Rabelo <aryrabelo@gmail.com>"
+    }
+  }
+}

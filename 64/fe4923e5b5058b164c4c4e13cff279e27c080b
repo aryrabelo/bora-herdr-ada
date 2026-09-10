@@ -1,0 +1,32 @@
+.claude/memory/session-log.md
+  h_b156936c57c455 32-51
+.claude/sessions/active.json
+  h_b156936c57c455 1
+.claude/state/instructions-loaded.jsonl
+  h_b156936c57c455 5-8
+.claude/state/memory-resume-context.md
+  h_b156936c57c455 1-19
+.claude/state/memory-resume-pack.json
+  h_b156936c57c455 1
+.claude/state/session.events.jsonl
+  h_b156936c57c455 2
+.claude/state/session.json
+  h_b156936c57c455 1
+.claude/state/sessions/session-1785758099826830000.events.jsonl
+  h_b156936c57c455 1-2
+.claude/state/sessions/session-1785758099826830000.json
+  h_b156936c57c455 1-60
+.harness-mem/state/continuity.json
+  h_b156936c57c455 1
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "64fe4923e5b5058b164c4c4e13cff279e27c080b",
+  "prompts": {},
+  "humans": {
+    "h_b156936c57c455": {
+      "author": "Ary Rabelo <aryrabelo@gmail.com>"
+    }
+  }
+}

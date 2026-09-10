@@ -1,0 +1,56 @@
+src/ui/right_panel.rs
+  s_f4b63c53a51064::t_782898ed5f283f 10-45
+  s_f4b63c53a51064::t_6ece97222f27f0 252-257,432-433
+  s_f4b63c53a51064::t_35e5a280c23bd4 364-431,434-562
+  s_f4b63c53a51064::t_9fc9431ec6cb4d 85,93-105
+  s_f4b63c53a51064::t_7d570d92b3260f 250-251,258-312
+src/app/mod.rs
+  s_f4b63c53a51064::t_f3984b208c166a 2317-2358
+  s_f4b63c53a51064::t_04d8165cf43d01 708
+  s_f4b63c53a51064::t_a3ae7ecd964ce2 650
+src/app/runtime.rs
+  s_f4b63c53a51064::t_5d9b96b5282869 763-765,769-773
+  s_f4b63c53a51064::t_89c25660e6122f 774-775
+src/app/input/sidebar.rs
+  s_f4b63c53a51064::t_555c5fe8dd7342 349-372
+src/app/input/mouse.rs
+  s_f4b63c53a51064::t_6ece97222f27f0 4037-4044,4331-4335
+  s_f4b63c53a51064::t_d40666597730bd 4139-4140
+  s_f4b63c53a51064::t_acecc709abd182 488-503,514-529
+  s_f4b63c53a51064::t_b29445e321b36e 4195-4330,4336-4351
+  s_f4b63c53a51064::t_2bc3bcd6dce5ec 4003-4018,4020,4026-4036,4048-4064,4067-4071,4074,4076-4077,4079-4083,4085,4088-4102,4107,4112,4114-4115,4120,4124
+  s_f4b63c53a51064::t_aa378c74adb6b7 530
+src/app/input/modal.rs
+  s_f4b63c53a51064::t_2bf34126b36ba7 2525-2581
+  s_f4b63c53a51064::t_aad3756cd3d1dc 952-959
+  s_f4b63c53a51064::t_c015ac3fef0f04 1463-1470
+src/app/api.rs
+  s_f4b63c53a51064::t_a808ae259b4d06 152
+src/app/state.rs
+  s_f4b63c53a51064::t_797ea15a314ee2 2035
+  s_f4b63c53a51064::t_a1eb6ef3c41a5e 1355-1357
+  s_f4b63c53a51064::t_f65b13024833f8 1968
+  s_f4b63c53a51064::t_24540c929feb14 1572-1573
+  s_f4b63c53a51064::t_f4cbe64e276fbe 1149-1153
+  s_f4b63c53a51064::t_8ed0007c02e91b 1659-1662
+  s_f4b63c53a51064::t_f60597d2fc920f 2356-2357
+  s_f4b63c53a51064::t_b22dac52076f85 776
+src/app/input/mod.rs
+  s_f4b63c53a51064::t_1600c164e2f893 373-390
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.9",
+  "base_commit_sha": "eb00d394ba4ee49a9acf1d48d445174b6e682cb8",
+  "prompts": {},
+  "sessions": {
+    "s_f4b63c53a51064": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a9343042-8c45-4055-bb27-ab3c022fce0c",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Ary Rabelo <aryrabelo@gmail.com>"
+    }
+  }
+}

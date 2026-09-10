@@ -1,0 +1,45 @@
+src/worktree.rs
+  s_f4b63c53a51064::t_8f8ef750ceba54 307-484
+  s_f4b63c53a51064::t_ef84bde96a0b0d 1158-1159,1161-1240
+  s_f4b63c53a51064::t_a77dc599142997 1160
+src/api/schema/tests.rs
+  s_f4b63c53a51064::t_e8d14d7985489b 599-626
+  s_f4b63c53a51064::t_de1f8be6e3aa12 598
+src/cli/worktree.rs
+  s_f4b63c53a51064::t_f174f0609b7a80 318
+  s_f4b63c53a51064::t_08a2097c97b2fb 74
+  s_f4b63c53a51064::t_8a8462b8af250d 114-125,157-159,161,173
+src/app/worktrees.rs
+  s_f4b63c53a51064::t_451ca268f816d6 1115
+  s_f4b63c53a51064::t_2459439d9077d8 606
+  s_f4b63c53a51064::t_be082fdfd5f8bd 12-16
+  s_f4b63c53a51064::t_40d5659286e805 1159-1160,1162-1173,1175-1181
+src/app/api/worktrees/deferred.rs
+  s_f4b63c53a51064::t_1faab62fadbd3e 399
+  s_f4b63c53a51064::t_0bbe2746df9a78 100-127
+  s_f4b63c53a51064::t_2ef55afaf488ae 213-219,224
+  s_f4b63c53a51064::t_5c4de502ef7504 397-398,400-405
+docs/next/api/herdr-api.schema.json
+  s_f4b63c53a51064::t_f237eb2f286135 3538-3545
+src/api/schema/worktrees.rs
+  s_f4b63c53a51064::t_97087c57c908c0 22-23
+src/app/api/worktrees.rs
+  s_f4b63c53a51064::t_23cc93c720521f 867-902
+  s_f4b63c53a51064::t_5a9c13c771ea24 2143
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.9",
+  "base_commit_sha": "964a671b5aa2d3a86934f9e33e2516b3b69c1e18",
+  "prompts": {},
+  "sessions": {
+    "s_f4b63c53a51064": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a9343042-8c45-4055-bb27-ab3c022fce0c",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Ary Rabelo <aryrabelo@gmail.com>"
+    }
+  }
+}

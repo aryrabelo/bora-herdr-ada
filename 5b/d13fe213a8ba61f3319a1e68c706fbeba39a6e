@@ -1,0 +1,33 @@
+src/api/server.rs
+  s_c95770b4979629::t_59c79f3eb75ef3 205
+src/api/subscriptions.rs
+  s_c95770b4979629::t_dd68f9aad68f91 581
+src/api/wait.rs
+  s_c95770b4979629::t_c0f279025eb46d 7,14,130,137-178
+src/ui/sidebar.rs
+  s_1b694b07a4fc55::t_0b10bb640cbb18 1009-1012,1014-1032,1744-1781
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "5bd13fe213a8ba61f3319a1e68c706fbeba39a6e",
+  "prompts": {},
+  "sessions": {
+    "s_1b694b07a4fc55": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "85c34ae5-e3ba-401e-be94-dbd7d7ba50bc",
+        "model": "unknown"
+      },
+      "human_author": "Ary Rabelo <aryrabelo@gmail.com>"
+    },
+    "s_c95770b4979629": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d3283920-0316-4b88-b31a-b0f20fb36704",
+        "model": "unknown"
+      },
+      "human_author": "Ary Rabelo <aryrabelo@gmail.com>"
+    }
+  }
+}

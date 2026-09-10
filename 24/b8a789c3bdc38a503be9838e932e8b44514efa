@@ -1,0 +1,19 @@
+justfile
+  s_55a2cb28829857::t_1506bbddde1fcb 145,171-172,175,189,191,195-196
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "24b8a789c3bdc38a503be9838e932e8b44514efa",
+  "prompts": {},
+  "sessions": {
+    "s_55a2cb28829857": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "40b0a5d9-8d48-44d5-b584-d2a146ee193a",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Ary Rabelo <aryrabelo@gmail.com>"
+    }
+  }
+}

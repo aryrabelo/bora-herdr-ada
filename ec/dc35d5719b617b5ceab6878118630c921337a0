@@ -1,0 +1,30 @@
+.github/workflows/bora-test.yml
+  h_b156936c57c455 6-10,13-16,23
+.github/workflows/build-artifacts-manual.yml
+  h_b156936c57c455 46,131
+.github/workflows/ci.yml
+  h_b156936c57c455 25
+.github/workflows/issue-gate.yml
+  h_b156936c57c455 10-13,18
+.github/workflows/label-next-release-issues.yml
+  h_b156936c57c455 11-14,21
+.github/workflows/libghostty-vt-prebuilts.yml
+  h_b156936c57c455 24
+.github/workflows/pr-gate.yml
+  h_b156936c57c455 7-10,15
+.github/workflows/preview.yml
+  h_b156936c57c455 24,143,264
+.github/workflows/release.yml
+  h_b156936c57c455 15-17,21,70,163,187,215,355
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.21",
+  "base_commit_sha": "ecdc35d5719b617b5ceab6878118630c921337a0",
+  "prompts": {},
+  "humans": {
+    "h_b156936c57c455": {
+      "author": "Ary Rabelo <aryrabelo@gmail.com>"
+    }
+  }
+}

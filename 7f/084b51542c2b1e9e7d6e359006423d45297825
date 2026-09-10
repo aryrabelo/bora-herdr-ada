@@ -1,0 +1,66 @@
+src/workspace/git/mod.rs
+  s_f4b63c53a51064::t_1f4ce03c28d71b 7-8,19-20
+src/app/actions.rs
+  s_f4b63c53a51064::t_376afebd1d38d7 2722-2723
+src/workspace.rs
+  s_f4b63c53a51064::t_f6c89d76175767 32-33,37-40
+  s_f4b63c53a51064::t_cb7b0c30a29ca3 27
+src/workspace/git/issues.rs
+  s_f4b63c53a51064::t_9974859369b77c 1-141,151-305
+  s_f4b63c53a51064::t_cb7b0c30a29ca3 142-150
+src/app/mod.rs
+  s_f4b63c53a51064::t_1dd407843d713f 2217-2359
+  s_f4b63c53a51064::t_41938ea2772a1e 702-703
+  s_f4b63c53a51064::t_54cc7284844b9f 741
+  s_f4b63c53a51064::t_4bd804adfad92f 759-762
+  s_f4b63c53a51064::t_5c5ee73cd8b6a2 742
+  s_f4b63c53a51064::t_cb7b0c30a29ca3 2919-2923
+  s_f4b63c53a51064::t_ddef5297a380de 2891-2918,2924-2939
+  s_f4b63c53a51064::t_450ec546912e4b 1564-1568,1570-1571
+  s_f4b63c53a51064::t_1e20712a0911ba 227-236
+  s_f4b63c53a51064::t_5ea7da8cb99296 116-125
+  s_f4b63c53a51064::t_d74818e45c5dcb 1569
+  s_f4b63c53a51064::t_5327083b8fe961 754-758
+  s_f4b63c53a51064::t_f1ba4881fc6f97 39-41
+src/app/runtime.rs
+  s_f4b63c53a51064::t_1452edbc66cda4 717
+  s_f4b63c53a51064::t_dd41a5614c4626 697-716,718-734,760-777
+  s_f4b63c53a51064::t_4be4446a904620 735-759
+src/app/api.rs
+  s_f4b63c53a51064::t_e324719bcc83e3 109
+  s_f4b63c53a51064::t_52f958e9f02c1b 131-157
+src/config/model.rs
+  s_f4b63c53a51064::t_040be7c2e8d717 57-63,65-76
+  s_f4b63c53a51064::t_0a891a00281c70 315
+  s_f4b63c53a51064::t_4750744964251a 1147-1173
+  s_f4b63c53a51064::t_6c16b448125626 64
+src/config/io.rs
+  s_f4b63c53a51064::t_45e613403d9170 10
+  s_f4b63c53a51064::t_b1a102326ae270 270-275
+  s_f4b63c53a51064::t_1846720b37e74b 268-269
+src/events.rs
+  s_f4b63c53a51064::t_cb7b0c30a29ca3 191-192
+  s_f4b63c53a51064::t_8bfb96b3748a3a 10-12
+  s_f4b63c53a51064::t_e8f8355654f8ee 185-190,193-196
+src/app/state.rs
+  s_f4b63c53a51064::t_32c69e90f456d2 1986-1987
+  s_f4b63c53a51064::t_932930bae77b2a 1612-1619
+src/workspace/git/open_prs.rs
+  s_f4b63c53a51064::t_448739d3b5407d 1-246
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.9",
+  "base_commit_sha": "7f084b51542c2b1e9e7d6e359006423d45297825",
+  "prompts": {},
+  "sessions": {
+    "s_f4b63c53a51064": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a9343042-8c45-4055-bb27-ab3c022fce0c",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Ary Rabelo <aryrabelo@gmail.com>"
+    }
+  }
+}

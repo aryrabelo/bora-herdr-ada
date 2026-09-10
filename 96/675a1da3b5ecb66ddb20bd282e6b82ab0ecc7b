@@ -1,0 +1,24 @@
+src/integration/assets/pi/herdr-agent-state.ts
+  s_55a2cb28829857::t_d780429e2fc5d6 310-317,370,394
+src/integration/assets/omp/herdr-agent-state.ts
+  s_55a2cb28829857::t_69f5f74b682967 363-370,456,480
+src/integration/tests.rs
+  s_55a2cb28829857::t_be50ffa785e791 2805-2850
+  s_55a2cb28829857::t_42c0c520eacee8 2804
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "96675a1da3b5ecb66ddb20bd282e6b82ab0ecc7b",
+  "prompts": {},
+  "sessions": {
+    "s_55a2cb28829857": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "40b0a5d9-8d48-44d5-b584-d2a146ee193a",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Ary Rabelo <aryrabelo@gmail.com>"
+    }
+  }
+}
