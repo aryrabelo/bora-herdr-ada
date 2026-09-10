@@ -123,6 +123,7 @@ pub(super) fn snapshot(
                 foreground_cwd: pane.foreground_cwd,
                 focused,
                 right_click_passthrough,
+                idle_seconds: pane.idle_seconds,
             }
         })
         .collect();

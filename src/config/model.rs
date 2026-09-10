@@ -145,10 +145,11 @@ pub enum SidebarCollapsedModeConfig {
 /// Sidebar workspace view mode. `Flat` shows a freely drag-reorderable list
 /// with no grouping at all — repo, channel, and visual groups all dissolve.
 /// `Folders` is a flat list too, but honors user-defined `visual_group`
-/// folders (and nothing else): no repo auto-grouping, no branch brackets,
-/// and the `@wNpN` pane badge is always suppressed, so a row is just its
-/// name — like `Flat` with drag-in folders. `Repo` groups workspaces under
-/// repo headers and is the historical default.
+/// folders (and nothing else): no repo auto-grouping, no branch brackets.
+/// Both `Flat` and `Folders` render `[ui.sidebar.spaces].rows` templates
+/// (ceo-bora#302); `Folders` additionally shows a per-pane status dots
+/// strip on the row (`hide_pane_badges` suppresses it there). `Repo`
+/// groups workspaces under repo headers and is the historical default.
 ///
 /// Deliberately backward compatible with the retired
 /// `group_workspaces_by_repo` boolean: this type's `Deserialize` impl
@@ -1040,7 +1041,8 @@ pub struct UiConfig {
     /// Sidebar workspace view mode: `flat` shows a freely drag-reorderable
     /// list with no grouping (repo, channel, and visual groups all
     /// dissolve); `folders` is a flat list that honors only user-defined
-    /// `visual_group` folders (no repo grouping, no branch, no pane badge);
+    /// `visual_group` folders (no repo grouping, no branch) and shows a
+    /// per-pane status dots strip unless `hide_pane_badges` is set;
     /// `repo` groups workspaces under repo headers (default).
     ///
     /// Deliberately backward compatible with the retired
@@ -1051,10 +1053,10 @@ pub struct UiConfig {
     /// ambiguity and fails to parse rather than silently picking one.
     #[serde(alias = "group_workspaces_by_repo")]
     pub view_mode: ViewMode,
-    /// Suppress the `@wNpN` synthetic pane badge on `Workspace`-shaped
-    /// sidebar rows (a registered `bora agent rename` name is still shown).
-    /// The `folders` view never emits that row shape (it shows real
-    /// per-pane dots instead), so this flag has nothing to do there.
+    /// Suppress the per-pane status dots on a `folders`-view workspace row
+    /// (ceo-bora#302). `flat` and `repo` never show that dot strip (they
+    /// show the row-template tokens instead), so this flag has nothing to
+    /// do there.
     /// Default: false.
     pub hide_pane_badges: bool,
     /// Promote a background-workspace pane to the sidebar attention state

@@ -85,6 +85,13 @@ pub(crate) struct ClientShellConfig {
     pub(super) spaces: SpacesSidebarConfig,
     pub(super) agents: crate::config::AgentsSidebarConfig,
     pub(super) agent_panel_sort: crate::config::AgentPanelSortConfig,
+    /// Suppress the pane-dots row on a Folders-view workspace entry
+    /// (`ui.hide_pane_badges`, ceo-bora#302). Live-reloadable.
+    pub(super) hide_pane_badges: bool,
+    /// Idle-attention ramp threshold in seconds (`ui.idle_attention_seconds`,
+    /// ceo-bora#302): `0` disables. Presentation-side comparison against the
+    /// server-side `ClientShellPane.idle_seconds` fact.
+    pub(super) idle_attention_seconds: u64,
     pub(super) status_indicators: crate::config::StatusIndicatorStyle,
     pub(super) sound_enabled: bool,
     pub(super) toast_delivery: crate::config::ToastDelivery,

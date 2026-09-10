@@ -60,6 +60,7 @@ pub(super) fn snapshot() -> ClientShellSnapshot {
             foreground_cwd: Some("/repo".into()),
             focused: true,
             right_click_passthrough: false,
+            idle_seconds: None,
         }],
         agents: Vec::new(),
         commands: Vec::new(),
@@ -212,6 +213,7 @@ fn surface_with_popup() -> PaneSurfaceFrame {
 }
 
 mod agents_worktrees_notifications;
+mod attention_badge;
 mod chrome_context;
 mod copy;
 mod endpoint_requests;

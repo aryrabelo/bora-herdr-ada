@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 // ---------------------------------------------------------------------------
 
 /// Current protocol version. Bumped when wire format changes incompatibly.
-pub const PROTOCOL_VERSION: u32 = 24;
+pub const PROTOCOL_VERSION: u32 = 25;
 
 /// Maximum allowed frame payload size (2 MB). Frames larger than this are
 /// rejected to prevent denial-of-service via oversized length prefixes.
@@ -1071,6 +1071,11 @@ pub struct ClientShellPane {
     pub foreground_cwd: Option<String>,
     pub focused: bool,
     pub right_click_passthrough: bool,
+    /// Seconds since the terminal last changed (`PaneInfo.idle_seconds`,
+    /// same computation). Server-side FACT; pane-attention presentation
+    /// (waiting counter, idle-ramp color) is a client decision (ceo-bora#302).
+    #[serde(default)]
+    pub idle_seconds: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2706,6 +2711,7 @@ mod tests {
                 foreground_cwd: Some("/repo".into()),
                 focused: true,
                 right_click_passthrough: false,
+                idle_seconds: Some(42),
             }],
             agents: Vec::new(),
             commands: vec![ClientShellCommand {
