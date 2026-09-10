@@ -384,3 +384,402 @@ fn close_confirmation_error_becomes_client_owned_overlay_and_stable_group_close(
             if params.workspace_id == "ws_1" && params.close_group
     ));
 }
+
+/// ceo-bora#303 group context menus. Folders view, one top-level group
+/// (`bora-sync`) with a nested subgroup (`bora-sync/docs`) and one
+/// ungrouped workspace, so both the "has a group" and "has no group"
+/// menus are reachable from the same snapshot.
+fn grouped_folders_state(prompt_new_workspace_name: bool) -> ClientShellState {
+    let mut config = Config::default();
+    config.ui.view_mode = crate::config::ViewMode::Folders;
+    config.ui.prompt_new_workspace_name = prompt_new_workspace_name;
+
+    let mut projected = snapshot();
+    projected.workspaces[0].visual_group = Some("bora-sync".into());
+    let mut nested = projected.workspaces[0].clone();
+    nested.workspace_id = "ws_2".into();
+    nested.number = 2;
+    nested.label = "docs-space".into();
+    nested.focused = false;
+    nested.visual_group = Some("bora-sync/docs".into());
+    let mut loose = projected.workspaces[0].clone();
+    loose.workspace_id = "ws_3".into();
+    loose.number = 3;
+    loose.label = "loose-space".into();
+    loose.focused = false;
+    loose.visual_group = None;
+    projected.workspaces.push(nested);
+    projected.workspaces.push(loose);
+
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+    state.set_snapshot(Box::new(projected));
+    state.set_pane_surface(surface());
+    state.compose(106, 30).expect("folders layout");
+    state
+}
+
+fn right_click(state: &mut ClientShellState, rect: Rect) -> ClientShellInput {
+    state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Right),
+        column: rect.x + 1,
+        row: rect.y,
+        modifiers: KeyModifiers::empty(),
+    })])
+}
+
+fn menu_actions(state: &ClientShellState) -> Vec<ClientContextMenuAction> {
+    match state.overlay.as_ref() {
+        Some(ClientShellOverlay::ContextMenu(menu)) => {
+            menu.items().into_iter().map(|item| item.action).collect()
+        }
+        _ => panic!("expected a context menu"),
+    }
+}
+
+fn menu_labels(state: &ClientShellState) -> Vec<String> {
+    match state.overlay.as_ref() {
+        Some(ClientShellOverlay::ContextMenu(menu)) => menu
+            .items()
+            .into_iter()
+            .map(|item| item.label.into_owned())
+            .collect(),
+        _ => panic!("expected a context menu"),
+    }
+}
+
+/// Click the menu row carrying `action`, exercising the same hit path a
+/// user takes instead of calling the activation helper directly.
+fn click_menu_item(
+    state: &mut ClientShellState,
+    action: &ClientContextMenuAction,
+) -> ClientShellInput {
+    let index = menu_actions(state)
+        .iter()
+        .position(|candidate| candidate == action)
+        .unwrap_or_else(|| panic!("menu item {action:?} in {:?}", menu_labels(state)));
+    state.compose(106, 30).expect("context menu frame");
+    let row = state.hits.context_menu_rows[index].0;
+    state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: row.x + 1,
+        row: row.y,
+        modifiers: KeyModifiers::empty(),
+    })])
+}
+
+fn workspace_rect(state: &ClientShellState, workspace_id: &str) -> Rect {
+    state
+        .hits
+        .workspaces
+        .iter()
+        .find(|hit| hit.workspace_id == workspace_id)
+        .expect("workspace row")
+        .rect
+}
+
+fn group_header_rect(state: &ClientShellState, collapse_key: &str) -> Rect {
+    state
+        .hits
+        .folders_group_headers
+        .iter()
+        .find(|(_, key)| key.as_str() == collapse_key)
+        .map(|(rect, _)| *rect)
+        .expect("group header row")
+}
+
+fn set_group_methods(outcome: &ClientShellInput) -> Vec<(String, Option<String>)> {
+    outcome
+        .actions
+        .iter()
+        .map(|action| {
+            let ClientShellAction::Endpoint { request, .. } = action else {
+                panic!("group actions should use the endpoint API: {action:?}");
+            };
+            match &request.method {
+                crate::api::schema::Method::WorkspaceSetGroup(params) => {
+                    (params.workspace_id.clone(), params.group.clone())
+                }
+                other => panic!("expected WorkspaceSetGroup, got {other:?}"),
+            }
+        })
+        .collect()
+}
+
+#[test]
+fn workspace_context_menu_moves_an_ungrouped_workspace_into_an_existing_group() {
+    let mut state = grouped_folders_state(false);
+    let loose = workspace_rect(&state, "ws_3");
+    right_click(&mut state, loose);
+
+    let labels = menu_labels(&state);
+    assert!(labels.contains(&"New group…".to_owned()), "{labels:?}");
+    // Flattened "move to group" run: one row per distinct path, sorted.
+    assert!(labels.contains(&"→ bora-sync".to_owned()), "{labels:?}");
+    assert!(
+        labels.contains(&"→ bora-sync/docs".to_owned()),
+        "{labels:?}"
+    );
+    // An ungrouped workspace has no group to rename or leave.
+    assert!(!labels.contains(&"Rename group…".to_owned()), "{labels:?}");
+    assert!(
+        !labels.contains(&"Remove from group".to_owned()),
+        "{labels:?}"
+    );
+
+    let moved = click_menu_item(
+        &mut state,
+        &ClientContextMenuAction::MoveToGroup("bora-sync".into()),
+    );
+    assert_eq!(
+        set_group_methods(&moved),
+        vec![("ws_3".to_owned(), Some("bora-sync".to_owned()))]
+    );
+}
+
+#[test]
+fn workspace_context_menu_new_group_nests_under_the_workspace_own_group() {
+    let mut state = grouped_folders_state(false);
+    let grouped = workspace_rect(&state, "ws_1");
+    right_click(&mut state, grouped);
+    click_menu_item(&mut state, &ClientContextMenuAction::NewGroup);
+
+    let Some(ClientShellOverlay::Rename(rename)) = state.overlay.as_ref() else {
+        panic!("new group prompt");
+    };
+    // Seeded with the workspace's own path as an editable prefix.
+    assert_eq!(rename.input, "bora-sync/");
+    assert!(matches!(
+        &rename.target,
+        ClientRenameTarget::NewGroup {
+            workspace_id,
+            parent_path: Some(parent),
+        } if workspace_id == "ws_1" && parent == "bora-sync"
+    ));
+
+    let created = state.handle_input_bytes(b"docs\r");
+    assert_eq!(
+        set_group_methods(&created),
+        vec![("ws_1".to_owned(), Some("bora-sync/docs".to_owned()))]
+    );
+
+    // Confirming the bare prefix must not create a group whose last
+    // segment is empty, nor re-set the group the workspace already has.
+    right_click(&mut state, grouped);
+    click_menu_item(&mut state, &ClientContextMenuAction::NewGroup);
+    let unchanged = state.handle_input_bytes(b"\r");
+    assert!(unchanged.actions.is_empty(), "{:?}", unchanged.actions);
+}
+
+#[test]
+fn workspace_context_menu_new_group_from_an_ungrouped_workspace_starts_empty() {
+    let mut state = grouped_folders_state(false);
+    let loose = workspace_rect(&state, "ws_3");
+    right_click(&mut state, loose);
+    click_menu_item(&mut state, &ClientContextMenuAction::NewGroup);
+
+    let Some(ClientShellOverlay::Rename(rename)) = state.overlay.as_ref() else {
+        panic!("new group prompt");
+    };
+    assert!(rename.input.is_empty());
+    assert!(matches!(
+        &rename.target,
+        ClientRenameTarget::NewGroup {
+            parent_path: None,
+            ..
+        }
+    ));
+
+    let created = state.handle_input_bytes(b"alpha\r");
+    assert_eq!(
+        set_group_methods(&created),
+        vec![("ws_3".to_owned(), Some("alpha".to_owned()))]
+    );
+}
+
+#[test]
+fn workspace_context_menu_remove_from_group_clears_only_that_workspace() {
+    let mut state = grouped_folders_state(false);
+    let grouped = workspace_rect(&state, "ws_1");
+    right_click(&mut state, grouped);
+
+    let outcome = click_menu_item(&mut state, &ClientContextMenuAction::RemoveFromGroup);
+    assert_eq!(set_group_methods(&outcome), vec![("ws_1".to_owned(), None)]);
+}
+
+#[test]
+fn workspace_context_menu_rename_group_repaths_members_and_nested_subgroups() {
+    let mut state = grouped_folders_state(false);
+    let grouped = workspace_rect(&state, "ws_1");
+    right_click(&mut state, grouped);
+    click_menu_item(&mut state, &ClientContextMenuAction::RenameGroup);
+
+    let Some(ClientShellOverlay::Rename(rename)) = state.overlay.as_ref() else {
+        panic!("group rename prompt");
+    };
+    assert_eq!(rename.input, "bora-sync");
+    assert!(matches!(
+        &rename.target,
+        ClientRenameTarget::Group { old_path } if old_path == "bora-sync"
+    ));
+
+    assert!(state.handle_input_bytes(&[0x15]).actions.is_empty());
+    let renamed = state.handle_input_bytes(b"sync\r");
+    // ws_2 lives in `bora-sync/docs`, so it keeps its own `docs`
+    // suffix under the new top-level name; ws_3 is untouched.
+    assert_eq!(
+        set_group_methods(&renamed),
+        vec![
+            ("ws_1".to_owned(), Some("sync".to_owned())),
+            ("ws_2".to_owned(), Some("sync/docs".to_owned())),
+        ]
+    );
+}
+
+#[test]
+fn group_rename_of_a_nested_group_keeps_its_parent_prefix() {
+    let mut state = grouped_folders_state(false);
+    let nested = workspace_rect(&state, "ws_2");
+    right_click(&mut state, nested);
+    click_menu_item(&mut state, &ClientContextMenuAction::RenameGroup);
+
+    let Some(ClientShellOverlay::Rename(rename)) = state.overlay.as_ref() else {
+        panic!("group rename prompt");
+    };
+    // Only the last segment is offered for editing.
+    assert_eq!(rename.input, "docs");
+
+    assert!(state.handle_input_bytes(&[0x15]).actions.is_empty());
+    let renamed = state.handle_input_bytes(b"manuals\r");
+    assert_eq!(
+        set_group_methods(&renamed),
+        vec![("ws_2".to_owned(), Some("bora-sync/manuals".to_owned()))]
+    );
+}
+
+#[test]
+fn group_header_right_click_opens_the_group_menu_and_toggles_collapse() {
+    let mut state = grouped_folders_state(false);
+    let header = group_header_rect(&state, "vg:bora-sync");
+    let opened = right_click(&mut state, header);
+    assert!(opened.actions.is_empty());
+    assert!(matches!(
+        state.overlay.as_ref(),
+        Some(ClientShellOverlay::ContextMenu(ClientContextMenuOverlay {
+            target: ClientContextMenuTarget::GroupHeader { path, collapsed: false },
+            ..
+        })) if path == "bora-sync"
+    ));
+    assert_eq!(
+        menu_labels(&state),
+        vec![
+            "Rename group…".to_owned(),
+            "Collapse".to_owned(),
+            "Ungroup all".to_owned(),
+            "New workspace in group".to_owned(),
+        ]
+    );
+
+    let collapsed = click_menu_item(&mut state, &ClientContextMenuAction::ToggleGroup);
+    assert!(collapsed.repaint);
+    assert!(state.collapsed_groups.contains("vg:bora-sync"));
+
+    // Re-opening the header menu now offers the inverse label.
+    state.compose(106, 30).expect("collapsed folders layout");
+    let header = group_header_rect(&state, "vg:bora-sync");
+    right_click(&mut state, header);
+    assert_eq!(menu_labels(&state)[1], "Expand");
+    click_menu_item(&mut state, &ClientContextMenuAction::ToggleGroup);
+    assert!(!state.collapsed_groups.contains("vg:bora-sync"));
+}
+
+#[test]
+fn group_header_rename_prompts_for_the_header_path() {
+    let mut state = grouped_folders_state(false);
+    let header = group_header_rect(&state, "vg:bora-sync");
+    right_click(&mut state, header);
+    click_menu_item(&mut state, &ClientContextMenuAction::RenameGroup);
+
+    let Some(ClientShellOverlay::Rename(rename)) = state.overlay.as_ref() else {
+        panic!("group rename prompt");
+    };
+    assert!(matches!(
+        &rename.target,
+        ClientRenameTarget::Group { old_path } if old_path == "bora-sync"
+    ));
+    let renamed = state.handle_input_bytes(&[0x15]);
+    assert!(renamed.actions.is_empty());
+    let renamed = state.handle_input_bytes(b"sync\r");
+    assert_eq!(
+        set_group_methods(&renamed),
+        vec![
+            ("ws_1".to_owned(), Some("sync".to_owned())),
+            ("ws_2".to_owned(), Some("sync/docs".to_owned())),
+        ]
+    );
+}
+
+#[test]
+fn group_header_ungroup_all_clears_the_group_and_its_nested_members() {
+    let mut state = grouped_folders_state(false);
+    let header = group_header_rect(&state, "vg:bora-sync");
+    right_click(&mut state, header);
+
+    let outcome = click_menu_item(&mut state, &ClientContextMenuAction::UngroupAll);
+    assert_eq!(
+        set_group_methods(&outcome),
+        vec![("ws_1".to_owned(), None), ("ws_2".to_owned(), None)]
+    );
+}
+
+#[test]
+fn group_header_new_workspace_creates_inside_the_group() {
+    let mut state = grouped_folders_state(false);
+    let header = group_header_rect(&state, "vg:bora-sync");
+    right_click(&mut state, header);
+
+    let created = click_menu_item(&mut state, &ClientContextMenuAction::NewWorkspaceInGroup);
+    let [ClientShellAction::Endpoint { request, .. }] = &created.actions[..] else {
+        panic!(
+            "new workspace should use endpoint API: {:?}",
+            created.actions
+        );
+    };
+    assert!(matches!(
+        &request.method,
+        crate::api::schema::Method::WorkspaceCreate(params)
+            if params.group.as_deref() == Some("bora-sync") && params.focus
+    ));
+}
+
+#[test]
+fn group_header_new_workspace_prompt_carries_the_group_through_the_name_overlay() {
+    let mut state = grouped_folders_state(true);
+    let header = group_header_rect(&state, "vg:bora-sync");
+    right_click(&mut state, header);
+
+    let prompted = click_menu_item(&mut state, &ClientContextMenuAction::NewWorkspaceInGroup);
+    assert!(prompted.actions.is_empty());
+    assert!(matches!(
+        state.overlay.as_ref(),
+        Some(ClientShellOverlay::Rename(ClientRenameOverlay {
+            target: ClientRenameTarget::NewWorkspace { group: Some(group), .. },
+            ..
+        })) if group == "bora-sync"
+    ));
+
+    let created = state.handle_input_bytes(&[0x15]);
+    assert!(created.actions.is_empty());
+    let created = state.handle_input_bytes(b"notes\r");
+    let [ClientShellAction::Endpoint { request, .. }] = &created.actions[..] else {
+        panic!(
+            "new workspace should use endpoint API: {:?}",
+            created.actions
+        );
+    };
+    assert!(matches!(
+        &request.method,
+        crate::api::schema::Method::WorkspaceCreate(params)
+            if params.group.as_deref() == Some("bora-sync")
+                && params.label.as_deref() == Some("notes")
+    ));
+}

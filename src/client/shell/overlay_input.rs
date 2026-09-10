@@ -321,6 +321,17 @@ impl ClientShellState {
     }
 
     pub(super) fn open_new_workspace_overlay(&mut self) {
+        let group = self
+            .snapshot
+            .as_deref()
+            .and_then(super::focused_workspace_visual_group);
+        self.open_new_workspace_overlay_with_group(group);
+    }
+
+    /// ceo-bora#303: same prompt, but the Folders group is supplied by
+    /// the caller (a group header's own path) instead of inherited
+    /// from the focused workspace.
+    pub(super) fn open_new_workspace_overlay_with_group(&mut self, group: Option<String>) {
         let source_workspace_id = self.workspace_action_id();
         let cwd = self.snapshot.as_deref().and_then(|snapshot| {
             let workspace_id = source_workspace_id.as_deref()?;
@@ -330,10 +341,6 @@ impl ClientShellState {
                 .find(|workspace| workspace.workspace_id == workspace_id)
                 .map(|workspace| workspace.new_workspace_cwd.clone())
         });
-        let group = self
-            .snapshot
-            .as_deref()
-            .and_then(super::focused_workspace_visual_group);
         let suggested_name = cwd
             .as_deref()
             .map(std::path::Path::new)
@@ -1011,6 +1018,38 @@ impl ClientShellState {
                     env: Default::default(),
                 },
             )),
+            ClientRenameTarget::NewGroup {
+                workspace_id,
+                parent_path,
+            } => {
+                // The prompt is seeded with `{parent}/`, so a confirm
+                // that never added a leaf must not create a group with
+                // an empty last segment (ceo-bora#303).
+                let path = trimmed.trim_end_matches('/').trim_end();
+                (!path.is_empty() && parent_path.as_deref() != Some(path)).then(|| {
+                    crate::api::schema::Method::WorkspaceSetGroup(
+                        crate::api::schema::WorkspaceSetGroupParams {
+                            workspace_id,
+                            group: Some(path.to_owned()),
+                        },
+                    )
+                })
+            }
+            ClientRenameTarget::Group { old_path } => {
+                // Only the last segment is editable; the parent prefix
+                // is re-applied, and every nested member keeps its own
+                // relative suffix under the new path.
+                let new_path = match old_path.rsplit_once('/') {
+                    Some((parent, _)) => format!("{parent}/{trimmed}"),
+                    None => trimmed.to_owned(),
+                };
+                if !trimmed.is_empty() && new_path != old_path {
+                    for method in self.group_repath_methods(&old_path, Some(&new_path)) {
+                        self.push_endpoint_method(method, outcome);
+                    }
+                }
+                None
+            }
             ClientRenameTarget::Workspace { workspace_id } => (!trimmed.is_empty()).then(|| {
                 crate::api::schema::Method::WorkspaceRename(
                     crate::api::schema::WorkspaceRenameParams {

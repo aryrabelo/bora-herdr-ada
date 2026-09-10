@@ -649,3 +649,136 @@ fn folders_hide_pane_badges_drops_the_dot_strip() {
         "hiding the badges hands the reserved columns back to the text: {hidden_row:?} vs {shown_row:?}"
     );
 }
+
+/// Column of the first painted (non-blank) cell on `row` of `rect`, as an
+/// offset from `rect.x`: how far right the row's content actually starts.
+/// Read off the frame, so the nesting indent is observable without
+/// re-deriving the layout math the renderer used.
+fn leading_column(frame: &crate::protocol::FrameData, rect: Rect, row: u16) -> u16 {
+    let painted = row_slice(frame, rect, row);
+    painted
+        .chars()
+        .position(|symbol| symbol != ' ')
+        .unwrap_or(painted.chars().count()) as u16
+}
+
+/// A clone of the base workspace carrying its own id, label and folder, so
+/// a test can lay out an explicit `snapshot.workspaces` order.
+fn folders_workspace(
+    base: &ClientShellWorkspace,
+    workspace_id: &str,
+    number: usize,
+    group: Option<&str>,
+) -> ClientShellWorkspace {
+    let mut workspace = base.clone();
+    workspace.workspace_id = workspace_id.into();
+    workspace.number = number;
+    workspace.label = workspace_id.into();
+    workspace.focused = false;
+    workspace.visual_group = group.map(str::to_owned);
+    workspace
+}
+
+/// The owner's bug report (ceo-bora#303, 2026-09-10): one workspace inside
+/// a folder plus several loose ones rendered the loose rows right under the
+/// header at the member's indent, reading as if they were in the folder.
+/// The ruling is an order rule -- "soltos primeiro, depois cada pasta com
+/// seus membros" -- so EVERY loose row paints before ANY header, whatever
+/// the wire order was, and the header stays glued to its own member.
+#[test]
+fn folders_view_renders_loose_workspaces_before_any_group_header() {
+    let mut state = ClientShellState::new(folders_config());
+    let mut projected = snapshot();
+    // Wire order interleaves the grouped workspace between loose ones:
+    // ws_1 (loose), grouped (alpha), loose_b, loose_c.
+    let base = projected.workspaces[0].clone();
+    projected
+        .workspaces
+        .push(folders_workspace(&base, "grouped", 2, Some("alpha")));
+    projected
+        .workspaces
+        .push(folders_workspace(&base, "loose_b", 3, None));
+    projected
+        .workspaces
+        .push(folders_workspace(&base, "loose_c", 4, None));
+    state.set_snapshot(Box::new(projected));
+    state.set_pane_surface(surface());
+    state.compose(106, 24).expect("folders layout");
+
+    let order = state
+        .hits
+        .workspaces
+        .iter()
+        .map(|hit| hit.workspace_id.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(order, vec!["ws_1", "loose_b", "loose_c", "grouped"]);
+    assert_eq!(state.hits.folders_group_headers.len(), 1);
+    let (header_rect, collapse_key) = state.hits.folders_group_headers[0].clone();
+    assert_eq!(collapse_key, "vg:alpha");
+    for loose in ["ws_1", "loose_b", "loose_c"] {
+        let rect = workspace_rect(&state, loose);
+        assert!(
+            rect.bottom() <= header_rect.y,
+            "{loose} must render above the folder header, not under it"
+        );
+    }
+    let member_rect = workspace_rect(&state, "grouped");
+    assert_eq!(
+        header_rect.bottom(),
+        member_rect.y,
+        "the header stays glued to its own member (no gap between them)"
+    );
+}
+
+/// A `visual_group` of `"bora-sync/docs"` is a `docs` folder nested under
+/// `bora-sync` (ceo-bora#303). `bora-sync` has no workspace of its own, so
+/// its header is synthesized; the nested header paints only its own
+/// segment; and every level shifts the row further right, which is what
+/// makes a member visually distinguishable from a loose row.
+#[test]
+fn folders_view_synthesizes_parent_header_and_indents_by_depth() {
+    let mut state = ClientShellState::new(folders_config());
+    let mut projected = snapshot();
+    let base = projected.workspaces[0].clone();
+    projected.workspaces.push(folders_workspace(
+        &base,
+        "nested",
+        2,
+        Some("bora-sync/docs"),
+    ));
+    projected
+        .workspaces
+        .push(folders_workspace(&base, "loose_b", 3, None));
+    state.set_snapshot(Box::new(projected));
+    state.set_pane_surface(surface());
+    let frame = state.compose(106, 24).expect("folders layout");
+
+    let keys = state
+        .hits
+        .folders_group_headers
+        .iter()
+        .map(|(_, key)| key.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(keys, vec!["vg:bora-sync", "vg:bora-sync/docs"]);
+    let parent_rect = state.hits.folders_group_headers[0].0;
+    let child_rect = state.hits.folders_group_headers[1].0;
+    let member_rect = workspace_rect(&state, "nested");
+    let child_row = row_slice(&frame, child_rect, 0);
+    assert!(
+        child_row.contains("docs") && !child_row.contains("bora-sync"),
+        "a nested header paints its own segment, not the whole path: {child_row:?}"
+    );
+
+    let parent_indent = leading_column(&frame, parent_rect, 0);
+    let child_indent = leading_column(&frame, child_rect, 0);
+    let member_indent = leading_column(&frame, member_rect, 0);
+    let loose_indent = leading_column(&frame, workspace_rect(&state, "loose_b"), 0);
+    assert!(
+        parent_indent < child_indent && child_indent < member_indent,
+        "indent must increase strictly with depth: parent {parent_indent}, child {child_indent}, member {member_indent}"
+    );
+    assert!(
+        loose_indent < member_indent,
+        "a loose row can never sit at a folder member's indent: loose {loose_indent}, member {member_indent}"
+    );
+}

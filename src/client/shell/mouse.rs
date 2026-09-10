@@ -515,7 +515,7 @@ impl ClientShellState {
             let next = entries.get(last_position + 1);
             let next_is_grouped_member = matches!(
                 next,
-                Some(render::sidebar::FoldersRow::Workspace { in_group: true, .. })
+                Some(render::sidebar::FoldersRow::Workspace { depth, .. }) if *depth > 0
             );
             if !next_is_grouped_member {
                 // The next visible workspace row (skipping past a bare
@@ -1819,6 +1819,20 @@ impl ClientShellState {
                     }
                 }
                 if !self.config.mouse_capture {
+                    return;
+                }
+                // ceo-bora#303: Folders group headers own their row,
+                // so this never shadows the workspace/tab/pane checks.
+                let group_path = self
+                    .hits
+                    .folders_group_headers
+                    .iter()
+                    .find(|(rect, _)| super::contains(*rect, point))
+                    .and_then(|(_, collapse_key)| collapse_key.strip_prefix("vg:"))
+                    .map(str::to_owned);
+                if let Some(path) = group_path {
+                    self.open_group_context_menu(path, mouse.column, mouse.row);
+                    outcome.repaint = true;
                     return;
                 }
                 let workspace_id = (!self.sidebar_collapsed)

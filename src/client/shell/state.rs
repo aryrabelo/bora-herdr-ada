@@ -375,6 +375,21 @@ pub(super) enum ClientRenameTarget {
         /// Flat/Repo or when the focused workspace is ungrouped.
         group: Option<String>,
     },
+    /// ceo-bora#303: prompt for the name of a brand-new Folders group
+    /// to move `workspace_id` into. `parent_path` is the workspace's
+    /// own current `visual_group`, used both to seed the prompt with an
+    /// editable `{parent}/` prefix and to reject a confirm that never
+    /// added a leaf segment.
+    NewGroup {
+        workspace_id: String,
+        parent_path: Option<String>,
+    },
+    /// ceo-bora#303: rename the Folders group at `old_path`. Only the
+    /// last segment is edited; every member of the group and of its
+    /// nested subgroups is re-pathed under the new name.
+    Group {
+        old_path: String,
+    },
     Workspace {
         workspace_id: String,
     },
@@ -588,7 +603,9 @@ pub(super) struct ClientWorktreeRemoveOverlay {
     pub(super) force_confirmation: bool,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// `MoveToGroup` carries a group path, so this is `Clone` but not
+/// `Copy` (ceo-bora#303).
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum ClientContextMenuAction {
     Rename,
     Close,
@@ -605,6 +622,19 @@ pub(super) enum ClientContextMenuAction {
     Zoom,
     ToggleRightClickPassthrough,
     ClosePane,
+    /// Prompt for a new Folders group holding this workspace.
+    NewGroup,
+    /// Move this workspace into the carried existing group path.
+    MoveToGroup(String),
+    /// Rename the Folders group this workspace (or header) belongs to.
+    RenameGroup,
+    /// Clear this workspace's `visual_group`.
+    RemoveFromGroup,
+    /// Clear `visual_group` for every member of a group and of its
+    /// nested subgroups.
+    UngroupAll,
+    /// Create a workspace already inside the right-clicked group.
+    NewWorkspaceInGroup,
 }
 
 #[derive(Debug)]
@@ -615,6 +645,12 @@ pub(super) enum ClientContextMenuTarget {
         is_linked_worktree: bool,
         has_worktree_children: bool,
         collapsed: bool,
+        /// The right-clicked workspace's own `visual_group`, captured
+        /// so `items()` stays a pure function of the target.
+        visual_group: Option<String>,
+        /// Every distinct `visual_group` path in the snapshot, sorted,
+        /// backing the flattened "move to group" item list.
+        group_paths: Vec<String>,
     },
     Tab {
         tab_id: String,
@@ -627,6 +663,9 @@ pub(super) enum ClientContextMenuTarget {
         has_manual_label: bool,
         right_click_passthrough: bool,
     },
+    /// ceo-bora#303: a Folders group header row. `path` is the full
+    /// `/`-separated group path, without the `vg:` collapse prefix.
+    GroupHeader { path: String, collapsed: bool },
 }
 
 #[derive(Debug)]
@@ -638,7 +677,7 @@ pub(super) struct ClientContextMenuOverlay {
 }
 
 pub(super) struct ClientContextMenuItem {
-    pub(super) label: &'static str,
+    pub(super) label: std::borrow::Cow<'static, str>,
     pub(super) action: ClientContextMenuAction,
 }
 
