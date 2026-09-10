@@ -1,0 +1,18 @@
+src/integration/assets/herdr-agent-state.test.ts
+  h_b156936c57c455 23,32,43-45,57-61,87-93,118-119,429-556
+src/integration/assets/omp/herdr-agent-state.ts
+  h_b156936c57c455 5,52,54,56,59-64,66,79,163,166,181-186,189,193-194,200-214,225-233,291,370,374-391,554,572
+src/integration/mod.rs
+  h_b156936c57c455 30
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "03980348a62fe29169bedd39cabf19aeef98ca9b",
+  "prompts": {},
+  "humans": {
+    "h_b156936c57c455": {
+      "author": "Ary Rabelo <aryrabelo@gmail.com>"
+    }
+  }
+}
