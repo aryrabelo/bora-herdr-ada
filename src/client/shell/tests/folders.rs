@@ -6,6 +6,12 @@ fn folders_config() -> ClientShellConfig {
     ClientShellConfig::from_config(&config)
 }
 
+fn flat_config() -> ClientShellConfig {
+    let mut config = Config::default();
+    config.ui.view_mode = crate::config::ViewMode::Flat;
+    ClientShellConfig::from_config(&config)
+}
+
 /// Folders mode driven by an explicit `[ui.sidebar.spaces]` template, parsed
 /// from the same TOML a user would write (ceo-bora#302's example config), so
 /// the test exercises the real deserialization path and not a hand-built
@@ -309,16 +315,17 @@ fn folders_mode_drag_outside_header_still_reorders() {
 }
 
 #[test]
-fn folders_mode_drag_skips_linked_worktree_row_as_drop_target() {
+fn folders_mode_drag_targets_linked_worktree_row() {
+    // Rewrite of the retired `folders_mode_drag_skips_linked_worktree_row_as_drop_target`
+    // (c949e9dc), which codified the ceo-bora#311 defect: a linked-worktree
+    // row was excluded as a `before` target in Folders, so a drop landing
+    // on one silently fell back to a different slot. In Folders/Flat a
+    // linked worktree is an ordinary one-row entry and IS a valid target.
     let mut state = ClientShellState::new(folders_config());
     let mut projected = snapshot();
     projected.workspaces[0].visual_group = None;
     // Order: ws_1 (drag source), loose_a, ws_linked (linked worktree,
-    // ungrouped so it renders as a plain Folders row -- `indented` does
-    // not exist there), loose_b, loose_c. Dropping exactly on
-    // `ws_linked`'s row must resolve to a real movable-root slot
-    // (`workspace_move_method` can never resolve a `before_workspace_id`
-    // pointing at a linked worktree), not silently no-op.
+    // ungrouped so it renders as a plain Folders row), loose_b, loose_c.
     let mut loose_a = projected.workspaces[0].clone();
     loose_a.workspace_id = "loose_a".into();
     loose_a.number = 2;
@@ -384,7 +391,254 @@ fn folders_mode_drag_skips_linked_worktree_row_as_drop_target() {
         Some(ClientChromeDrag::Workspace {
             target: Some((before, _)),
             ..
-        }) if before.as_deref() != Some("ws_linked")
+        }) if before.as_deref() == Some("ws_linked")
+    ));
+
+    let release = state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
+        kind: MouseEventKind::Up(MouseButton::Left),
+        column: linked_rect.x + 1,
+        row: linked_rect.y,
+        modifiers: KeyModifiers::empty(),
+    })]);
+    assert!(matches!(
+        &release.actions[..],
+        [ClientShellAction::Endpoint { request, .. }]
+            if matches!(
+                &request.method,
+                crate::api::schema::Method::WorkspaceMove(params)
+                    if params.workspace_id == "ws_1" && params.insert_index == 2
+            )
+    ));
+}
+
+#[test]
+fn folders_mode_drag_linked_worktree_source_reorders_single_row() {
+    // The other half of ceo-bora#311: a linked worktree must also be a
+    // valid drag SOURCE in Folders, and the resulting move is a plain
+    // one-row `WorkspaceMove`, never a sibling-block expansion.
+    let mut state = ClientShellState::new(folders_config());
+    let mut projected = snapshot();
+    projected.workspaces[0].workspace_id = "ws_linked".into();
+    projected.workspaces[0].label = "linked".into();
+    projected.workspaces[0].worktree = Some(ClientShellWorktree {
+        key: "repo".into(),
+        label: "repo".into(),
+        is_linked_worktree: true,
+    });
+    let mut loose_a = projected.workspaces[0].clone();
+    loose_a.workspace_id = "loose_a".into();
+    loose_a.number = 2;
+    loose_a.label = "loose-a".into();
+    loose_a.focused = false;
+    loose_a.worktree = None;
+    let mut loose_b = projected.workspaces[0].clone();
+    loose_b.workspace_id = "loose_b".into();
+    loose_b.number = 3;
+    loose_b.label = "loose-b".into();
+    loose_b.focused = false;
+    loose_b.worktree = None;
+    projected.workspaces.push(loose_a);
+    projected.workspaces.push(loose_b);
+    state.set_snapshot(Box::new(projected));
+    state.set_pane_surface(surface());
+    state.compose(106, 24).expect("folders layout");
+
+    let source = state
+        .hits
+        .workspaces
+        .iter()
+        .find(|hit| hit.workspace_id == "ws_linked")
+        .expect("ws_linked row")
+        .rect;
+    let target = state
+        .hits
+        .workspaces
+        .iter()
+        .find(|hit| hit.workspace_id == "loose_b")
+        .expect("loose_b row")
+        .rect;
+
+    state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: source.x + 1,
+        row: source.y,
+        modifiers: KeyModifiers::empty(),
+    })]);
+    let drag = state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
+        kind: MouseEventKind::Drag(MouseButton::Left),
+        column: target.x + 1,
+        row: target.y,
+        modifiers: KeyModifiers::empty(),
+    })]);
+    // A drag actually started at all -- before ceo-bora#311's fix,
+    // `endpoint_workspace_is_draggable` refused a linked-worktree source
+    // outright and this drag event was a silent no-op.
+    assert!(state.chrome_drag.is_some());
+    assert!(drag.repaint);
+
+    let release = state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
+        kind: MouseEventKind::Up(MouseButton::Left),
+        column: target.x + 1,
+        row: target.y,
+        modifiers: KeyModifiers::empty(),
+    })]);
+    assert!(matches!(
+        &release.actions[..],
+        [ClientShellAction::Endpoint { request, .. }]
+            if matches!(
+                &request.method,
+                crate::api::schema::Method::WorkspaceMove(params)
+                    if params.workspace_id == "ws_linked"
+            )
+    ));
+}
+
+#[test]
+fn flat_mode_drag_linked_worktree_source_reorders_single_row() {
+    // Flat mirror of `folders_mode_drag_linked_worktree_source_reorders_single_row`:
+    // a linked worktree is a valid drag SOURCE, and the move is a single
+    // row, never a sibling-block expansion (ceo-bora#311). `loose_a` sits
+    // between the source and the drop target so the move is not a same-
+    // position no-op.
+    let mut state = ClientShellState::new(flat_config());
+    let mut projected = snapshot();
+    projected.workspaces[0].workspace_id = "ws_linked".into();
+    projected.workspaces[0].label = "linked".into();
+    projected.workspaces[0].worktree = Some(ClientShellWorktree {
+        key: "repo".into(),
+        label: "repo".into(),
+        is_linked_worktree: true,
+    });
+    let mut loose_a = projected.workspaces[0].clone();
+    loose_a.workspace_id = "loose_a".into();
+    loose_a.number = 2;
+    loose_a.label = "loose-a".into();
+    loose_a.focused = false;
+    loose_a.worktree = None;
+    let mut loose_b = projected.workspaces[0].clone();
+    loose_b.workspace_id = "loose_b".into();
+    loose_b.number = 3;
+    loose_b.label = "loose-b".into();
+    loose_b.focused = false;
+    loose_b.worktree = None;
+    projected.workspaces.push(loose_a);
+    projected.workspaces.push(loose_b);
+    state.set_snapshot(Box::new(projected));
+    state.set_pane_surface(surface());
+    state.compose(106, 24).expect("flat layout");
+
+    let source = state
+        .hits
+        .workspaces
+        .iter()
+        .find(|hit| hit.workspace_id == "ws_linked")
+        .expect("ws_linked row")
+        .rect;
+    let target = state
+        .hits
+        .workspaces
+        .iter()
+        .find(|hit| hit.workspace_id == "loose_b")
+        .expect("loose_b row")
+        .rect;
+
+    state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: source.x + 1,
+        row: source.y,
+        modifiers: KeyModifiers::empty(),
+    })]);
+    state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
+        kind: MouseEventKind::Drag(MouseButton::Left),
+        column: target.x + 1,
+        row: target.y,
+        modifiers: KeyModifiers::empty(),
+    })]);
+    assert!(state.chrome_drag.is_some());
+
+    let release = state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
+        kind: MouseEventKind::Up(MouseButton::Left),
+        column: target.x + 1,
+        row: target.y,
+        modifiers: KeyModifiers::empty(),
+    })]);
+    assert!(matches!(
+        &release.actions[..],
+        [ClientShellAction::Endpoint { request, .. }]
+            if matches!(
+                &request.method,
+                crate::api::schema::Method::WorkspaceMove(params)
+                    if params.workspace_id == "ws_linked"
+            )
+    ));
+}
+
+#[test]
+fn flat_mode_drag_targets_linked_worktree_row() {
+    // Flat mirror of `folders_mode_drag_targets_linked_worktree_row`: a
+    // linked worktree is also a valid drop TARGET in Flat (ceo-bora#311).
+    let mut state = ClientShellState::new(flat_config());
+    let mut projected = snapshot();
+    let mut loose_a = projected.workspaces[0].clone();
+    loose_a.workspace_id = "loose_a".into();
+    loose_a.number = 2;
+    loose_a.label = "loose-a".into();
+    loose_a.focused = false;
+    let mut linked = projected.workspaces[0].clone();
+    linked.workspace_id = "ws_linked".into();
+    linked.number = 3;
+    linked.label = "linked".into();
+    linked.focused = false;
+    linked.worktree = Some(ClientShellWorktree {
+        key: "repo".into(),
+        label: "repo".into(),
+        is_linked_worktree: true,
+    });
+    let mut loose_b = projected.workspaces[0].clone();
+    loose_b.workspace_id = "loose_b".into();
+    loose_b.number = 4;
+    loose_b.label = "loose-b".into();
+    loose_b.focused = false;
+    projected.workspaces.push(loose_a);
+    projected.workspaces.push(linked);
+    projected.workspaces.push(loose_b);
+    state.set_snapshot(Box::new(projected));
+    state.set_pane_surface(surface());
+    state.compose(106, 24).expect("flat layout");
+
+    let source = state
+        .hits
+        .workspaces
+        .iter()
+        .find(|hit| hit.workspace_id == "ws_1")
+        .expect("ws_1 row")
+        .rect;
+    let linked_rect = state
+        .hits
+        .workspaces
+        .iter()
+        .find(|hit| hit.workspace_id == "ws_linked")
+        .expect("ws_linked row")
+        .rect;
+
+    state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: source.x + 1,
+        row: source.y,
+        modifiers: KeyModifiers::empty(),
+    })]);
+    state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
+        kind: MouseEventKind::Drag(MouseButton::Left),
+        column: linked_rect.x + 1,
+        row: linked_rect.y,
+        modifiers: KeyModifiers::empty(),
+    })]);
+    assert!(matches!(
+        &state.chrome_drag,
+        Some(ClientChromeDrag::Workspace {
+            target: Some((before, _)),
+            ..
+        }) if before.as_deref() == Some("ws_linked")
     ));
 
     let release = state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
@@ -506,6 +760,58 @@ fn repo_view_mode_matches_default_rendering() {
         .any(|hit| hit.indented));
     assert!(default_state.hits.folders_group_headers.is_empty());
     assert!(explicit_state.hits.folders_group_headers.is_empty());
+}
+
+/// Sibling of `repo_view_mode_matches_default_rendering`: `ViewMode::Repo`
+/// drag behavior for a linked worktree stays byte-for-byte the upstream
+/// behavior ceo-bora#311 leaves untouched -- a linked worktree can never
+/// be dragged as a source, mirroring
+/// `workspace_drag_moves_parent_worktree_as_one_block_and_rejects_child`
+/// but exercised through the default (Repo) config used by that test's
+/// sibling above, so both guards are pinned from the same fixture shape.
+#[test]
+fn repo_mode_drag_of_linked_worktree_source_still_refused() {
+    let default_config = Config::default();
+    assert_eq!(default_config.ui.view_mode, crate::config::ViewMode::Repo);
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&default_config));
+    let mut projected = snapshot();
+    projected.workspaces[0].worktree = Some(ClientShellWorktree {
+        key: "repo".into(),
+        label: "repo".into(),
+        is_linked_worktree: false,
+    });
+    let mut child = projected.workspaces[0].clone();
+    child.workspace_id = "ws_child".into();
+    child.number = 2;
+    child.label = "feature".into();
+    child.focused = false;
+    child.worktree = Some(ClientShellWorktree {
+        key: "repo".into(),
+        label: "repo".into(),
+        is_linked_worktree: true,
+    });
+    projected.workspaces.push(child);
+    state.set_snapshot(Box::new(projected));
+    state.set_pane_surface(surface());
+    state.compose(106, 24).expect("repo layout");
+    assert!(state.hits.workspaces[1].indented);
+    let child_rect = state.hits.workspaces[1].rect;
+    let parent_rect = state.hits.workspaces[0].rect;
+
+    state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: child_rect.x + 2,
+        row: child_rect.y,
+        modifiers: KeyModifiers::empty(),
+    })]);
+    let drag = state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
+        kind: MouseEventKind::Drag(MouseButton::Left),
+        column: parent_rect.x + 2,
+        row: parent_rect.y,
+        modifiers: KeyModifiers::empty(),
+    })]);
+    assert!(drag.actions.is_empty());
+    assert!(state.chrome_drag.is_none());
 }
 
 /// A Folders workspace renders its full `[ui.sidebar.spaces].rows` template,
