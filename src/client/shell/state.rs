@@ -369,6 +369,11 @@ pub(super) enum ClientRenameTarget {
         source_workspace_id: Option<String>,
         cwd: Option<String>,
         suggested_name: String,
+        /// Inherited `visual_group` of the focused workspace when the
+        /// prompt was opened (ceo-bora#303: a new workspace joins the
+        /// focused workspace's Folders group by default). `None` in
+        /// Flat/Repo or when the focused workspace is ungrouped.
+        group: Option<String>,
     },
     Workspace {
         workspace_id: String,
@@ -943,6 +948,12 @@ pub(crate) struct ClientShellState {
     pub(super) reveal_focused_tab: bool,
     pub(super) last_tab_bar_width: Option<u16>,
     pub(super) last_composed_size: Option<(u16, u16)>,
+    /// Frame counter for the animated `Working` spinner glyph
+    /// (`status_icon_animated`, ceo-bora#303), incremented once per composed
+    /// frame in `compose()`. Never a dedicated timer: see
+    /// `has_working_agent`, which only makes the client's *existing* ~100ms
+    /// poll wake also force a repaint while something is Working.
+    pub(super) spinner_tick: u32,
     pub(super) hits: ShellHitMap,
     pub(super) endpoints: Vec<ClientShellEndpoint>,
     pub(super) active_endpoint_id: ClientEndpointId,
@@ -1100,6 +1111,7 @@ impl ClientShellState {
             reveal_focused_tab: true,
             last_tab_bar_width: None,
             last_composed_size: None,
+            spinner_tick: 0,
             hits: ShellHitMap::default(),
             endpoints: vec![local_endpoint()],
             active_endpoint_id: ClientEndpointId::Local,
@@ -1175,6 +1187,20 @@ impl ClientShellState {
     pub(super) fn mobile_layout_active(&self) -> bool {
         self.last_composed_size
             .is_some_and(|(cols, rows)| !self.layout(cols, rows).mobile_header.is_empty())
+    }
+
+    /// True while any agent in the live snapshot is `Working`, so the
+    /// client's already-firing ~100ms poll wake (`timer_delay`) should also
+    /// force a repaint -- the only way the animated spinner glyph
+    /// (`status_icon_animated`, ceo-bora#303) advances. No dedicated timer:
+    /// this rides the poll cadence that already exists for other reasons.
+    pub(crate) fn has_working_agent(&self) -> bool {
+        self.snapshot.as_deref().is_some_and(|snapshot| {
+            snapshot
+                .agents
+                .iter()
+                .any(|agent| agent.agent_status == crate::api::schema::AgentStatus::Working)
+        })
     }
 
     pub(super) fn collapsed_groups_for_endpoint(

@@ -151,7 +151,11 @@ fn folders_view_renders_group_header_and_pane_dots_row() {
         )),
     );
     let working_style = (
-        crate::client::shell::status_icon(AgentStatus::Working, state.config.status_indicators),
+        crate::client::shell::status_icon_animated(
+            AgentStatus::Working,
+            state.config.status_indicators,
+            1,
+        ),
         crate::protocol::color_to_u32(crate::client::shell::status_color(
             AgentStatus::Working,
             palette,
@@ -627,9 +631,10 @@ fn folders_hide_pane_badges_drops_the_dot_strip() {
         AgentStatus::Unknown,
         hidden_state.config.status_indicators,
     );
-    let working_dot = crate::client::shell::status_icon(
+    let working_dot = crate::client::shell::status_icon_animated(
         AgentStatus::Working,
         hidden_state.config.status_indicators,
+        1,
     );
     assert!(
         shown_row.ends_with(&format!("{unknown_dot} {working_dot}")),

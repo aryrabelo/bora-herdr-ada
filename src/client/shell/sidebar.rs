@@ -361,6 +361,7 @@ pub(crate) fn render_sidebar(
                     selected,
                     dragged,
                     first_row_reserved_width: 0,
+                    tick: state.tick,
                 },
                 palette,
             );
@@ -695,6 +696,9 @@ pub(in crate::client::shell) struct WorkspaceRowRenderOptions {
     /// has the full `area.width` to itself and must not be clipped for a
     /// strip that never paints there. Flat/Repo pass 0 (no dots on any row).
     pub(in crate::client::shell) first_row_reserved_width: u16,
+    /// Animated-spinner frame counter (ceo-bora#303), forwarded to
+    /// `status_icon_animated` for row 0's leading glyph.
+    pub(in crate::client::shell) tick: u32,
 }
 
 pub(in crate::client::shell) fn render_workspace_rows(
@@ -713,6 +717,7 @@ pub(in crate::client::shell) fn render_workspace_rows(
         selected,
         dragged,
         first_row_reserved_width,
+        tick,
     } = options;
     for (row_index, row) in rows.iter().enumerate() {
         let y = area.y + row_index as u16;
@@ -775,7 +780,7 @@ pub(in crate::client::shell) fn render_workspace_rows(
         let spans = crate::ui::resolved_token_spans(
             row,
             (
-                status_icon(status, indicators),
+                status_icon_animated(status, indicators, tick),
                 Style::default().fg(status_color(status, palette)),
             ),
             Style::default()
@@ -937,6 +942,7 @@ fn render_folders_pane_dots(
     indicators: crate::config::StatusIndicatorStyle,
     idle_attention_seconds: u64,
     workspace_focused: bool,
+    tick: u32,
     palette: &Palette,
 ) {
     let dots_width = folders_dots_reserved_width(dots.len()).saturating_sub(1);
@@ -950,7 +956,7 @@ fn render_folders_pane_dots(
             dot_x,
             rect.y,
             rect.right(),
-            status_icon(*status, indicators),
+            status_icon_animated(*status, indicators, tick),
             Style::default()
                 .fg(attention::pane_attention_color(
                     *status,
@@ -1126,6 +1132,7 @@ pub(in crate::client::shell) fn render_folders_workspace_list(
                         selected,
                         dragged,
                         first_row_reserved_width: reserved,
+                        tick: state.tick,
                     },
                     palette,
                 );
@@ -1137,6 +1144,7 @@ pub(in crate::client::shell) fn render_folders_workspace_list(
                         config.status_indicators,
                         config.idle_attention_seconds,
                         workspace.focused,
+                        state.tick,
                         palette,
                     );
                 }

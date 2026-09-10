@@ -330,6 +330,10 @@ impl ClientShellState {
                 .find(|workspace| workspace.workspace_id == workspace_id)
                 .map(|workspace| workspace.new_workspace_cwd.clone())
         });
+        let group = self
+            .snapshot
+            .as_deref()
+            .and_then(super::focused_workspace_visual_group);
         let suggested_name = cwd
             .as_deref()
             .map(std::path::Path::new)
@@ -343,6 +347,7 @@ impl ClientShellState {
                 source_workspace_id,
                 cwd,
                 suggested_name,
+                group,
             },
         }));
     }
@@ -994,9 +999,10 @@ impl ClientShellState {
                 source_workspace_id,
                 cwd,
                 suggested_name,
+                group,
             } => Some(crate::api::schema::Method::WorkspaceCreate(
                 crate::api::schema::WorkspaceCreateParams {
-                    group: None,
+                    group,
                     source_workspace_id,
                     cwd,
                     focus: true,
