@@ -83,6 +83,7 @@ impl ClientContextMenuOverlay {
                 if *has_manual_label {
                     items.push(item("Clear pane name", Action::ClearPaneName));
                 }
+                items.push(item("Copy reference", Action::CopyPaneReference));
                 if source_pane_id.is_some() {
                     items.push(item("Swap with focused pane", Action::SwapWithFocusedPane));
                 }
@@ -611,6 +612,28 @@ impl ClientShellState {
                 }),
                 outcome,
             ),
+            // ceo-bora#315: `<workspace label> <pane_id>` is the form the
+            // `bora agent prompt <pane>` / channel workflows paste, so the
+            // label is resolved from the live snapshot at activation and the
+            // bytes go out through the same ClipboardWrite path as
+            // selection copy (`PendingEndpointKind::SelectionCopy`).
+            ClientContextMenuAction::CopyPaneReference => {
+                let label = self.snapshot.as_deref().and_then(|snapshot| {
+                    snapshot
+                        .workspaces
+                        .iter()
+                        .find(|workspace| workspace.workspace_id == workspace_id)
+                        .map(|workspace| workspace.label.as_str())
+                });
+                let reference = match label {
+                    Some(label) => format!("{label} {pane_id}"),
+                    None => pane_id,
+                };
+                self.show_copy_feedback(std::time::Instant::now());
+                outcome
+                    .actions
+                    .push(ClientShellAction::ClipboardWrite(reference.into_bytes()));
+            }
             ClientContextMenuAction::SwapWithFocusedPane => {
                 if let Some(source_pane_id) = source_pane_id {
                     self.push_endpoint_method(

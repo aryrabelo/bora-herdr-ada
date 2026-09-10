@@ -616,6 +616,8 @@ pub(super) enum ClientContextMenuAction {
     NewTab,
     RenamePane,
     ClearPaneName,
+    /// Copy `<workspace label> <pane_id>` to the clipboard (ceo-bora#315).
+    CopyPaneReference,
     SwapWithFocusedPane,
     SplitRight,
     SplitDown,

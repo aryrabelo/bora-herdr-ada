@@ -868,3 +868,29 @@ fn group_header_actions_match_a_workspace_with_a_malformed_raw_group_path() {
         "the malformed-raw-path workspace must still be found and ungrouped"
     );
 }
+
+/// ceo-bora#315: the pane menu's "Copy reference" puts `<workspace label>
+/// <pane_id>` on the clipboard through the same `ClipboardWrite` action
+/// selection copy uses, with no endpoint round trip.
+#[test]
+fn pane_context_menu_copy_reference_writes_workspace_label_and_pane_id() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    state.set_pane_surface(surface());
+    state.compose(106, 30).expect("shell frame");
+
+    let pane = state.hits.panes[0].rect;
+    right_click(&mut state, pane);
+    let copied = click_menu_item(&mut state, &ClientContextMenuAction::CopyPaneReference);
+
+    assert!(
+        matches!(
+            &copied.actions[..],
+            [ClientShellAction::ClipboardWrite(bytes)] if bytes == b"client-shell pane_1"
+        ),
+        "copy reference should be a single clipboard write: {:?}",
+        copied.actions
+    );
+    assert!(state.overlay.is_none());
+    assert!(state.copy_feedback.is_some());
+}
