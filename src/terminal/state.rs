@@ -14,9 +14,10 @@ use crate::terminal::TerminalId;
 mod metadata;
 pub use metadata::{AgentMetadata, AgentMetadataReport, EffectivePresentation};
 
-/// How long a `visible_idle` OSC title must hold, with no newer hook report,
-/// before it overrides a non-idle full-lifecycle hook state. A dropped idle
-/// report from the integration would otherwise be final.
+/// How long a `visible_idle` OSC title must hold, with no accepted hook
+/// report that *changed* the hook state, before it overrides a non-idle
+/// full-lifecycle hook state. A dropped idle report from the integration
+/// would otherwise be final.
 pub(crate) const HOOK_TITLE_IDLE_RECONCILE_GRACE: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,6 +27,10 @@ pub struct HookAuthority {
     pub state: AgentState,
     pub message: Option<String>,
     pub reported_at: Instant,
+    /// When an accepted report last changed `state`. A same-state heartbeat
+    /// refreshes `reported_at` but not this, so a stuck integration cannot
+    /// keep restarting the title-idle grace window.
+    pub state_changed_at: Instant,
     pub session_ref: Option<crate::agent_resume::AgentSessionRef>,
 }
 
@@ -738,12 +743,22 @@ impl TerminalState {
             }
         }
         self.persisted_agent_session = None;
+        let state_changed_at = self
+            .hook_authority
+            .as_ref()
+            .filter(|previous| {
+                previous.source == source
+                    && previous.agent_label == agent_label
+                    && previous.state == state
+            })
+            .map_or(now, |previous| previous.state_changed_at);
         self.hook_authority = Some(HookAuthority {
             source,
             agent_label,
             state,
             message,
             reported_at: now,
+            state_changed_at,
             session_ref,
         });
         let current_session = self.current_session_identity_for_persistence();
@@ -994,6 +1009,7 @@ impl TerminalState {
                     state,
                     message: message.map(str::to_string),
                     reported_at,
+                    state_changed_at: reported_at,
                     session_ref: Some(session_ref),
                 },
                 seq,
@@ -1933,9 +1949,11 @@ impl TerminalState {
     }
 
     /// Start of the window in which a `visible_idle` title must hold before
-    /// it overrides a non-idle live full-lifecycle hook state. Every accepted
-    /// hook report restarts the window, so the hook retakes authority the
-    /// moment it speaks again.
+    /// it overrides a non-idle live full-lifecycle hook state. An accepted
+    /// report that changes the hook state restarts the window, so a genuine
+    /// transition retakes authority the moment it lands; a same-state
+    /// heartbeat does not, so a stuck integration converges to Idle once and
+    /// stays there instead of flapping every heartbeat.
     fn hook_title_idle_window_start(&self) -> Option<Instant> {
         let title_idle_since = self.title_idle_since?;
         if !self.live_full_lifecycle_hook_authority() {
@@ -1945,7 +1963,7 @@ impl TerminalState {
         if authority.state == AgentState::Idle {
             return None;
         }
-        Some(title_idle_since.max(authority.reported_at))
+        Some(title_idle_since.max(authority.state_changed_at))
     }
 
     fn stale_hook_title_idle_at(&self, now: Instant) -> bool {
@@ -2576,26 +2594,28 @@ mod tests {
     }
 
     #[test]
-    fn newer_hook_report_inside_the_grace_window_restarts_it() {
+    fn hook_state_change_inside_the_grace_window_restarts_it() {
         let t0 = Instant::now();
         let mut terminal = omp_terminal_with_stale_hook(AgentState::Working, t0);
 
-        // The hook speaks again at t0+3s with a newer seq: it retakes
-        // authority and the title must hold idle for a fresh 5s.
+        // The hook reports a genuine transition (Working -> Blocked) at t0+3s
+        // with a newer seq: it retakes authority and the title must hold idle
+        // for a fresh 5s.
         report_omp_state(
             &mut terminal,
-            AgentState::Working,
+            AgentState::Blocked,
             2,
             t0 + Duration::from_secs(3),
         )
         .expect("newer hook report accepted");
+        assert_eq!(terminal.state, AgentState::Blocked);
         assert_eq!(
             terminal.next_hook_title_idle_reconcile_deadline(),
             Some(t0 + Duration::from_secs(3) + HOOK_TITLE_IDLE_RECONCILE_GRACE)
         );
 
         terminal.reconcile_hook_title_idle_at(t0 + Duration::from_secs(6));
-        assert_eq!(terminal.state, AgentState::Working);
+        assert_eq!(terminal.state, AgentState::Blocked);
 
         terminal.reconcile_hook_title_idle_at(t0 + Duration::from_secs(8));
         assert_eq!(terminal.state, AgentState::Idle);
@@ -2609,6 +2629,67 @@ mod tests {
         )
         .is_none());
         assert_eq!(terminal.state, AgentState::Idle);
+
+        // Idle -> Working (a new turn) is a real change again: the hook
+        // retakes authority immediately and the window restarts.
+        report_omp_state(
+            &mut terminal,
+            AgentState::Idle,
+            3,
+            t0 + Duration::from_secs(10),
+        )
+        .expect("idle report accepted");
+        assert_eq!(terminal.next_hook_title_idle_reconcile_deadline(), None);
+        report_omp_state(
+            &mut terminal,
+            AgentState::Working,
+            4,
+            t0 + Duration::from_secs(11),
+        )
+        .expect("working report accepted");
+        assert_eq!(terminal.state, AgentState::Working);
+        assert_eq!(
+            terminal.next_hook_title_idle_reconcile_deadline(),
+            Some(t0 + Duration::from_secs(11) + HOOK_TITLE_IDLE_RECONCILE_GRACE)
+        );
+    }
+
+    #[test]
+    fn same_state_heartbeat_does_not_restart_the_grace_window() {
+        let t0 = Instant::now();
+        let mut terminal = omp_terminal_with_stale_hook(AgentState::Working, t0);
+
+        // A stuck integration re-asserts Working at t0+3s: accepted (newer
+        // seq, reported_at moves) but the state did not change, so the window
+        // that opened at t0 keeps running.
+        report_omp_state(
+            &mut terminal,
+            AgentState::Working,
+            2,
+            t0 + Duration::from_secs(3),
+        )
+        .expect("heartbeat accepted");
+        let authority = terminal.hook_authority.as_ref().unwrap();
+        assert_eq!(authority.reported_at, t0 + Duration::from_secs(3));
+        assert_eq!(authority.state_changed_at, t0);
+        assert_eq!(
+            terminal.next_hook_title_idle_reconcile_deadline(),
+            Some(t0 + HOOK_TITLE_IDLE_RECONCILE_GRACE)
+        );
+
+        terminal.reconcile_hook_title_idle_at(t0 + Duration::from_secs(5));
+        assert_eq!(terminal.state, AgentState::Idle);
+
+        // Later heartbeats of the same stuck state do not flap it back.
+        report_omp_state(
+            &mut terminal,
+            AgentState::Working,
+            3,
+            t0 + Duration::from_secs(18),
+        )
+        .expect("heartbeat accepted");
+        assert_eq!(terminal.state, AgentState::Idle);
+        assert!(terminal.hook_title_idle_reconciled());
     }
 
     #[test]

@@ -3528,8 +3528,8 @@ mod tests {
         assert_eq!(terminal.state, AgentState::Working);
         assert_eq!(state.next_hook_title_idle_reconcile_deadline(), None);
         // The event path stamps the report with the wall clock, so the window
-        // starts at the report, not at the (earlier) title observation.
-        let reported_at = terminal.hook_authority.as_ref().unwrap().reported_at;
+        // starts at the state change, not at the (earlier) title observation.
+        let state_changed_at = terminal.hook_authority.as_ref().unwrap().state_changed_at;
 
         // The detector sees the `π >` prompt title: the grace window opens.
         state.handle_app_event(AppEvent::AgentTitleIdleObserved {
@@ -3540,13 +3540,15 @@ mod tests {
         let grace = crate::terminal::state::HOOK_TITLE_IDLE_RECONCILE_GRACE;
         assert_eq!(
             state.next_hook_title_idle_reconcile_deadline(),
-            Some(reported_at + grace)
+            Some(state_changed_at + grace)
         );
         assert!(state
-            .reconcile_hook_title_idle_at(reported_at + grace - std::time::Duration::from_secs(1))
+            .reconcile_hook_title_idle_at(
+                state_changed_at + grace - std::time::Duration::from_secs(1)
+            )
             .is_empty());
 
-        let updates = state.reconcile_hook_title_idle_at(reported_at + grace);
+        let updates = state.reconcile_hook_title_idle_at(state_changed_at + grace);
         assert_eq!(updates.len(), 1);
         assert_eq!(updates[0].pane_id, pane_id);
         assert_eq!(updates[0].previous_state, AgentState::Working);
