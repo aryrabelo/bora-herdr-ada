@@ -498,8 +498,14 @@ impl AgentOscStateTracker {
         self.terminal_title.as_deref()
     }
 
+    /// Seeds the title carried across a live handoff. The exporting server
+    /// captured it from the same OSC 0/2 stream, so it is also the retained
+    /// detection evidence: without it an imported pane whose agent never
+    /// re-emits its title (an idle prompt) has no `osc_title` rule input
+    /// until the next title write.
     #[cfg(unix)]
     pub(super) fn seed_terminal_title(&mut self, title: Option<String>) {
+        self.latest_title = title.clone();
         self.terminal_title = title;
     }
 
@@ -1023,14 +1029,21 @@ mod tests {
         assert_eq!(tracker.terminal_title(), Some("✳ 修复🙂标题"));
     }
 
+    /// An imported pane whose agent sits at an idle prompt never re-emits its
+    /// title, so the carried title is the only `osc_title` evidence the
+    /// detector will see until the next turn.
     #[cfg(unix)]
     #[test]
-    fn handoff_seed_does_not_restore_agent_detection_evidence() {
+    fn handoff_seed_restores_agent_detection_evidence() {
         let mut tracker = AgentOscStateTracker::default();
 
-        tracker.seed_terminal_title(Some("✳ restored title".into()));
+        tracker.seed_terminal_title(Some("π > prompt".into()));
 
-        assert_eq!(tracker.terminal_title(), Some("✳ restored title"));
+        assert_eq!(tracker.terminal_title(), Some("π > prompt"));
+        assert_eq!(tracker.latest_title(), "π > prompt");
+
+        tracker.seed_terminal_title(None);
+        assert_eq!(tracker.terminal_title(), None);
         assert_eq!(tracker.latest_title(), "");
     }
 

@@ -29,13 +29,18 @@ fn test_headless_server_with_event_hub(event_hub: api::EventHub) -> HeadlessServ
     );
 
     app.state.default_shell = crate::app::exiting_test_command().into();
+    // Wall-clock nanos alone collide when the harness starts two tests in the
+    // same tick, and the loser fails `bind` with AddrInUse; the counter makes
+    // the path unique per call.
+    static TEST_SERVER_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let dir = std::env::temp_dir().join(format!(
-        "hh-{}-{}",
+        "hh-{}-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos())
-            .unwrap_or(0)
+            .unwrap_or(0),
+        TEST_SERVER_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     ));
     let _ = fs::create_dir_all(&dir);
     let socket_path = dir.join("client.sock");
@@ -4603,6 +4608,171 @@ fn headless_scheduled_tasks_expire_agent_metadata() {
                     } if title.is_none()
                 )
         }));
+}
+
+/// Drives the stale-hook title reconcile through the path the server runs
+/// live: the `pane.report_agent` API request, the detector's
+/// `AgentTitleIdleObserved` event, the headless loop deadline, the scheduled
+/// task tick that publishes the Idle flip, and the `agent.explain` reason.
+/// The `TerminalState` unit tests cover the arbitration; this pins the wiring
+/// between them, which is what a live pane depends on.
+#[tokio::test]
+async fn headless_scheduled_tasks_reconcile_stale_hook_state_from_idle_title() {
+    let mut server = test_headless_server();
+    let workspace = crate::workspace::Workspace::test_new("omp");
+    let pane_id = workspace.tabs[0].root_pane;
+    let terminal_id = workspace.terminal_id(pane_id).cloned().unwrap();
+    server.app.state.workspaces = vec![workspace];
+    server.app.state.active = Some(0);
+    server.app.state.ensure_test_terminals();
+    // The process probe identified omp before the hook spoke, as it does live;
+    // the hook route only accepts full-lifecycle reports for a present process.
+    server
+        .app
+        .state
+        .terminals
+        .get_mut(&terminal_id)
+        .unwrap()
+        .set_detected_state(
+            Some(crate::detect::Agent::Omp),
+            crate::detect::AgentState::Idle,
+        );
+    let (runtime, _rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+    server.app.state.insert_test_runtime(pane_id, runtime);
+    let public_pane_id = server.app.public_pane_id(0, pane_id).unwrap();
+
+    fn report_omp_state(
+        server: &mut HeadlessServer,
+        public_pane_id: &str,
+        state: &str,
+        seq: u64,
+    ) -> String {
+        let request: crate::api::schema::Request = serde_json::from_value(serde_json::json!({
+            "id": "probe",
+            "method": "pane.report_agent",
+            "params": {
+                "pane_id": public_pane_id,
+                "source": "herdr:omp",
+                "agent": "omp",
+                "state": state,
+                "seq": seq,
+                "agent_session_id": "omp-root",
+            },
+        }))
+        .unwrap();
+        server.app.handle_api_request(request)
+    }
+    fn explain(server: &mut HeadlessServer, public_pane_id: &str) -> serde_json::Value {
+        let request: crate::api::schema::Request = serde_json::from_value(serde_json::json!({
+            "id": "explain",
+            "method": "agent.explain",
+            "params": { "target": public_pane_id },
+        }))
+        .unwrap();
+        let response: serde_json::Value =
+            serde_json::from_str(&server.app.handle_api_request(request)).unwrap();
+        response["result"]["explain"].clone()
+    }
+
+    // The extension anchors its session, reports idle, then a stale working
+    // report lands (the idle for the next turn is the one dropped live).
+    let session: crate::api::schema::Request = serde_json::from_value(serde_json::json!({
+        "id": "session",
+        "method": "pane.report_agent_session",
+        "params": {
+            "pane_id": public_pane_id,
+            "source": "herdr:omp",
+            "agent": "omp",
+            "seq": 1,
+            "agent_session_id": "omp-root",
+            "session_start_source": "startup",
+        },
+    }))
+    .unwrap();
+    server.app.handle_api_request(session);
+    let response: serde_json::Value =
+        serde_json::from_str(&report_omp_state(&mut server, &public_pane_id, "idle", 2)).unwrap();
+    assert_eq!(response["result"]["type"], "ok");
+    report_omp_state(&mut server, &public_pane_id, "working", 3);
+    let terminal = server.app.state.terminals.get(&terminal_id).unwrap();
+    assert!(terminal.full_lifecycle_hook_authority_active());
+    assert_eq!(terminal.state, crate::detect::AgentState::Working);
+    let reported_at = terminal.hook_authority.as_ref().unwrap().reported_at;
+    assert_eq!(
+        server.app.state.next_hook_title_idle_reconcile_deadline(),
+        None
+    );
+    let before = explain(&mut server, &public_pane_id);
+    assert_eq!(before["state"], "working");
+    assert_eq!(before["screen_detection_skipped"], true);
+    assert_eq!(before["fallback_reason"], serde_json::Value::Null);
+
+    // The detector sees the `π >` prompt title: the grace window opens and
+    // the headless loop must wake for it, without a client or PTY bytes.
+    server.handle_internal_event_with_forwarding(AppEvent::AgentTitleIdleObserved {
+        pane_id,
+        idle: true,
+        observed_at: reported_at,
+    });
+    let grace = crate::terminal::state::HOOK_TITLE_IDLE_RECONCILE_GRACE;
+    assert_eq!(
+        server.app.state.next_hook_title_idle_reconcile_deadline(),
+        Some(reported_at + grace)
+    );
+    assert_eq!(
+        server
+            .app
+            .next_headless_loop_deadline_with_git_refresh(reported_at, false, false),
+        Some(reported_at + grace)
+    );
+
+    assert!(!server
+        .handle_scheduled_tasks_headless(reported_at + grace - Duration::from_millis(1), false));
+    assert_eq!(
+        server.app.state.terminals.get(&terminal_id).unwrap().state,
+        crate::detect::AgentState::Working
+    );
+
+    let events_before = server.app.event_hub.events_after(0).len();
+    assert!(server.handle_scheduled_tasks_headless(reported_at + grace, false));
+    let terminal = server.app.state.terminals.get(&terminal_id).unwrap();
+    assert_eq!(terminal.state, crate::detect::AgentState::Idle);
+    assert!(terminal.full_lifecycle_hook_authority_active());
+    assert_eq!(
+        server.app.state.next_hook_title_idle_reconcile_deadline(),
+        None
+    );
+    let public_pane_id_for_event = public_pane_id.clone();
+    assert!(server
+        .app
+        .event_hub
+        .events_after(events_before as u64)
+        .iter()
+        .any(|(_, event)| matches!(
+            &event.data,
+            crate::api::schema::EventData::PaneAgentStatusChanged {
+                pane_id,
+                agent_status,
+                ..
+            } if *pane_id == public_pane_id_for_event
+                && *agent_status == crate::api::schema::AgentStatus::Idle
+        )));
+    let after = explain(&mut server, &public_pane_id);
+    assert_eq!(after["state"], "idle");
+    assert_eq!(after["screen_detection_skipped"], true);
+    assert_eq!(
+        after["fallback_reason"],
+        "osc_title_idle_reconciled_stale_hook"
+    );
+
+    // The extension speaking again with a real transition retakes authority.
+    report_omp_state(&mut server, &public_pane_id, "blocked", 4);
+    let terminal = server.app.state.terminals.get(&terminal_id).unwrap();
+    assert_eq!(terminal.state, crate::detect::AgentState::Blocked);
+    assert_eq!(
+        explain(&mut server, &public_pane_id)["fallback_reason"],
+        serde_json::Value::Null
+    );
 }
 
 #[test]
