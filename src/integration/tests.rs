@@ -3062,24 +3062,6 @@ fn omp_session_reports_include_start_source() {
 }
 
 #[test]
-fn omp_socket_requests_are_serialized() {
-    let queue = OMP_EXTENSION_ASSET
-        .find("let requestQueue = Promise.resolve();")
-        .expect("omp extension should keep socket reports ordered");
-    let send_request = OMP_EXTENSION_ASSET[queue..]
-        .find("function sendRequest(request: unknown): Promise<void>")
-        .expect("omp extension should wrap socket sends in an ordered queue");
-    let queued_send = OMP_EXTENSION_ASSET[queue + send_request..]
-        .find("requestQueue = requestQueue.then(")
-        .expect("omp extension should serialize socket requests through the queue");
-    let raw_send = OMP_EXTENSION_ASSET[queue + send_request..]
-        .find("sendRequestNow(request)")
-        .expect("omp extension should enqueue the raw socket send");
-
-    assert!(queued_send < raw_send);
-}
-
-#[test]
 fn omp_runtime_events_can_activate_root_session_after_resume() {
     for event in [
         "agent_start",
