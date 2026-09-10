@@ -71,6 +71,19 @@ impl App {
         self.sync_agent_metadata_deadline();
     }
 
+    /// Scheduled-task tick for the stale-hook title reconcile: once a
+    /// terminal's grace window elapses, publish its Idle flip like any other
+    /// pane state update.
+    pub(crate) fn reconcile_hook_title_idle_at(&mut self, now: Instant) -> bool {
+        let previous_toast = self.state.toast.clone();
+        let updates = self.state.reconcile_hook_title_idle_at(now);
+        for update in &updates {
+            self.refresh_new_herdr_toast_context_for_update(update, &previous_toast);
+            self.emit_pane_state_update(update);
+        }
+        !updates.is_empty()
+    }
+
     pub(crate) fn can_render_now(&self, now: Instant) -> bool {
         match self.last_render_at {
             Some(last_render_at) => now.duration_since(last_render_at) >= MIN_RENDER_INTERVAL,
@@ -151,6 +164,7 @@ impl App {
             self.toast_deadline,
             self.state.next_pending_agent_notification_deadline(),
             self.state.next_managed_agent_deadline(),
+            self.state.next_hook_title_idle_reconcile_deadline(),
             include_git_refresh
                 .then(|| self.git_refresh_deadline())
                 .flatten(),

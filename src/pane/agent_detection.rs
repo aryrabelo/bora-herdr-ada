@@ -77,6 +77,41 @@ impl PendingIdleConfirmation {
     }
 }
 
+/// Title-only detection while a full-lifecycle hook owns the pane state.
+/// Screen scans and process probes stay paused; only the OSC title is read,
+/// and only after new PTY bytes, so an idle pane costs nothing per tick. A
+/// verdict is reported when it changes or after a reset, so the server's
+/// idle window always restarts from a fresh observation.
+#[derive(Debug, Default)]
+pub(super) struct HookTitleIdleTracker {
+    evaluated_content_seq: Option<u64>,
+    last_idle: Option<bool>,
+}
+
+impl HookTitleIdleTracker {
+    pub(super) fn reset(&mut self) {
+        *self = Self::default();
+    }
+
+    /// Returns `Some(idle)` when the verdict must be published.
+    pub(super) fn observe(
+        &mut self,
+        content_seq: u64,
+        title_idle: impl FnOnce() -> bool,
+    ) -> Option<bool> {
+        if self.last_idle.is_some() && self.evaluated_content_seq == Some(content_seq) {
+            return None;
+        }
+        self.evaluated_content_seq = Some(content_seq);
+        let idle = title_idle();
+        if self.last_idle == Some(idle) {
+            return None;
+        }
+        self.last_idle = Some(idle);
+        Some(idle)
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(super) struct IdleScreenScanSkipInput {
     pub(super) state: AgentState,
@@ -552,5 +587,34 @@ mod tests {
         mark_detection_content_changed(&seq);
 
         assert_eq!(seq.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn hook_title_idle_tracker_reads_on_new_bytes_and_reports_only_changes() {
+        let mut tracker = HookTitleIdleTracker::default();
+        let evaluations = std::cell::Cell::new(0);
+        let observe = |tracker: &mut HookTitleIdleTracker, seq: u64, idle: bool| {
+            tracker.observe(seq, || {
+                evaluations.set(evaluations.get() + 1);
+                idle
+            })
+        };
+
+        // First observation always publishes, even a non-idle verdict, so a
+        // stale server-side window is closed after a reset.
+        assert_eq!(observe(&mut tracker, 1, false), Some(false));
+        // Same bytes: no re-read, nothing published.
+        assert_eq!(observe(&mut tracker, 1, true), None);
+        // New bytes with an unchanged verdict: read but not published.
+        assert_eq!(observe(&mut tracker, 2, false), None);
+        // New bytes flipping the verdict publish it.
+        assert_eq!(observe(&mut tracker, 3, true), Some(true));
+        assert_eq!(observe(&mut tracker, 4, true), None);
+        assert_eq!(observe(&mut tracker, 5, false), Some(false));
+        assert_eq!(evaluations.get(), 5);
+
+        // A reset re-publishes the current verdict on the next tick.
+        tracker.reset();
+        assert_eq!(observe(&mut tracker, 5, false), Some(false));
     }
 }

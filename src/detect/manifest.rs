@@ -432,6 +432,58 @@ pub fn should_skip_state_update(agent: Agent, screen_content: &str) -> bool {
     .skip_state_update
 }
 
+const OSC_TITLE_REGION: &str = "osc_title";
+
+/// Title-only evaluation for panes whose state a full-lifecycle hook owns.
+///
+/// Matches just the `region = "osc_title"` rules against `osc_title` and
+/// returns the highest-priority matching rule's state. Reads no screen text
+/// and never clones the manifest, so it is cheap enough for a per-tick
+/// detector path. Returns `None` when no osc_title rule matches, and always
+/// `None` for a manifest without a `visible_idle` osc_title rule: such a
+/// manifest carries no title evidence a stale hook state could be reconciled
+/// against.
+pub fn osc_title_state(agent: Agent, osc_title: &str) -> Option<AgentState> {
+    let lock = manifest_cache();
+    let guard = match lock.read() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    let loaded = guard
+        .manifests
+        .iter()
+        .find(|(cached_agent, _)| *cached_agent == agent)
+        .and_then(|(_, loaded)| loaded.as_ref())?;
+    osc_title_state_for_loaded(loaded, osc_title)
+}
+
+fn osc_title_state_for_loaded(loaded: &LoadedManifest, osc_title: &str) -> Option<AgentState> {
+    let rules = &loaded.manifest.rules;
+    if !rules.iter().any(|rule| {
+        rule.region.trim() == OSC_TITLE_REGION
+            && rule.visible_idle
+            && rule.state == Some(ManifestState::Idle)
+    }) {
+        return None;
+    }
+    let mut matched: Option<&ManifestRule> = None;
+    for (rule, compiled_rule) in rules.iter().zip(&loaded.compiled_rules) {
+        if rule.region.trim() != OSC_TITLE_REGION
+            || !compiled_rule_matches(compiled_rule, osc_title)
+        {
+            continue;
+        }
+        if matched.is_none_or(|previous| rule.priority > previous.priority) {
+            matched = Some(rule);
+        }
+    }
+    matched.map(|rule| {
+        rule.state
+            .map(AgentState::from)
+            .unwrap_or(AgentState::Unknown)
+    })
+}
+
 impl DetectionExplain {
     fn into_detection(self) -> AgentDetection {
         AgentDetection {

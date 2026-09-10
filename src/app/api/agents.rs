@@ -12,6 +12,10 @@ use crate::app::App;
 use super::responses::{encode_error, encode_error_body, encode_success};
 
 const AGENT_PROMPT_SUBMIT_DELAY: Duration = Duration::from_millis(300);
+/// `fallback_reason` in `agent explain` when a `visible_idle` OSC title
+/// outlasted a non-idle full-lifecycle hook state (see
+/// `crate::terminal::state::HOOK_TITLE_IDLE_RECONCILE_GRACE`).
+pub(crate) const HOOK_TITLE_IDLE_RECONCILE_REASON: &str = "osc_title_idle_reconciled_stale_hook";
 
 fn agent_prompt_submit_delay(agent: crate::detect::Agent, prompt_bytes: usize) -> Duration {
     #[cfg(windows)]
@@ -514,6 +518,12 @@ impl App {
             return agent_not_found(id, &target.target);
         };
         if terminal.full_lifecycle_hook_authority_active() {
+            // Screen detection stays paused under hook authority; the one
+            // exception is the title-only stale-hook reconcile, reported as the
+            // fallback reason so the Idle state is explainable.
+            let fallback_reason = terminal
+                .hook_title_idle_reconciled()
+                .then_some(HOOK_TITLE_IDLE_RECONCILE_REASON);
             let explain = serde_json::json!({
                 "agent": terminal.effective_agent_label().unwrap_or("unknown"),
                 "state": crate::detect::manifest::agent_state_label(terminal.state),
@@ -531,7 +541,7 @@ impl App {
                 "screen_detection_skip_reason": "full_lifecycle_hook_authority",
                 "skip_state_update": false,
                 "skipped_update_reason": null,
-                "fallback_reason": null,
+                "fallback_reason": fallback_reason,
                 "warning": null,
                 "evaluated_rules": [],
             });

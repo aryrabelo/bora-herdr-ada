@@ -14,6 +14,11 @@ use crate::terminal::TerminalId;
 mod metadata;
 pub use metadata::{AgentMetadata, AgentMetadataReport, EffectivePresentation};
 
+/// How long a `visible_idle` OSC title must hold, with no newer hook report,
+/// before it overrides a non-idle full-lifecycle hook state. A dropped idle
+/// report from the integration would otherwise be final.
+pub(crate) const HOOK_TITLE_IDLE_RECONCILE_GRACE: Duration = Duration::from_secs(5);
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HookAuthority {
     pub source: String,
@@ -124,6 +129,9 @@ pub struct TerminalState {
     pub fallback_state: AgentState,
     fallback_visible_blocker: bool,
     fallback_observed_at: Option<Instant>,
+    /// Since when the OSC title has continuously matched the detected
+    /// agent's `visible_idle` osc_title rule; `None` while it does not.
+    title_idle_since: Option<Instant>,
     pub hook_authority: Option<HookAuthority>,
     pub agent_metadata: HashMap<String, AgentMetadata>,
     pub metadata_tokens: crate::metadata_tokens::MetadataTokens,
@@ -160,6 +168,7 @@ impl TerminalState {
             fallback_state: AgentState::Unknown,
             fallback_visible_blocker: false,
             fallback_observed_at: None,
+            title_idle_since: None,
             hook_authority: None,
             agent_metadata: HashMap::new(),
             metadata_tokens: crate::metadata_tokens::MetadataTokens::default(),
@@ -1874,6 +1883,92 @@ impl TerminalState {
         })
     }
 
+    /// Records the detector's title-only verdict for this terminal. A `true`
+    /// observation opens (or keeps) the idle window; `false` closes it.
+    pub fn set_title_idle_observed_at(
+        &mut self,
+        idle: bool,
+        now: Instant,
+    ) -> TerminalStateMutation {
+        let previous_agent_label = self.effective_agent_label().map(str::to_string);
+        let previous_known_agent = self.effective_known_agent();
+        let previous_state = self.state;
+        let previous_presentation = self.effective_presentation_for_state_at(previous_state, now);
+        self.title_idle_since = if idle {
+            Some(self.title_idle_since.unwrap_or(now))
+        } else {
+            None
+        };
+        TerminalStateMutation {
+            effective_state_change: self.recompute_effective_state(
+                previous_agent_label,
+                previous_known_agent,
+                previous_state,
+                previous_presentation,
+                now,
+            ),
+            session_ref_changed: false,
+            agent_released: false,
+        }
+    }
+
+    /// Re-evaluates the effective state once the title-idle grace window has
+    /// elapsed; the scheduled-task tick calls this at the deadline.
+    pub fn reconcile_hook_title_idle_at(&mut self, now: Instant) -> TerminalStateMutation {
+        let previous_agent_label = self.effective_agent_label().map(str::to_string);
+        let previous_known_agent = self.effective_known_agent();
+        let previous_state = self.state;
+        let previous_presentation = self.effective_presentation_for_state_at(previous_state, now);
+        TerminalStateMutation {
+            effective_state_change: self.recompute_effective_state(
+                previous_agent_label,
+                previous_known_agent,
+                previous_state,
+                previous_presentation,
+                now,
+            ),
+            session_ref_changed: false,
+            agent_released: false,
+        }
+    }
+
+    /// Start of the window in which a `visible_idle` title must hold before
+    /// it overrides a non-idle live full-lifecycle hook state. Every accepted
+    /// hook report restarts the window, so the hook retakes authority the
+    /// moment it speaks again.
+    fn hook_title_idle_window_start(&self) -> Option<Instant> {
+        let title_idle_since = self.title_idle_since?;
+        if !self.live_full_lifecycle_hook_authority() {
+            return None;
+        }
+        let authority = self.hook_authority.as_ref()?;
+        if authority.state == AgentState::Idle {
+            return None;
+        }
+        Some(title_idle_since.max(authority.reported_at))
+    }
+
+    fn stale_hook_title_idle_at(&self, now: Instant) -> bool {
+        self.hook_title_idle_window_start()
+            .is_some_and(|start| now.duration_since(start) >= HOOK_TITLE_IDLE_RECONCILE_GRACE)
+    }
+
+    /// When the title-idle window is open but has not yet elapsed, the instant
+    /// at which `reconcile_hook_title_idle_at` must run.
+    pub fn next_hook_title_idle_reconcile_deadline(&self) -> Option<Instant> {
+        if self.state == AgentState::Idle {
+            return None;
+        }
+        self.hook_title_idle_window_start()
+            .map(|start| start + HOOK_TITLE_IDLE_RECONCILE_GRACE)
+    }
+
+    /// True while the effective state is Idle only because the OSC title
+    /// outlasted a non-idle hook state; `agent explain` surfaces this.
+    pub fn hook_title_idle_reconciled(&self) -> bool {
+        self.state == AgentState::Idle && self.hook_title_idle_window_start().is_some()
+    }
+
     pub fn set_manual_label(&mut self, label: String) {
         let label = label.trim().to_string();
         self.manual_label = (!label.is_empty()).then_some(label);
@@ -2159,6 +2254,8 @@ impl TerminalState {
     ) -> Option<EffectiveStateChange> {
         let state = if self.visible_blocker_overrides_hook() {
             AgentState::Blocked
+        } else if self.stale_hook_title_idle_at(now) {
+            AgentState::Idle
         } else {
             self.hook_authority
                 .as_ref()
@@ -2398,6 +2495,168 @@ mod tests {
         assert_eq!(terminal.fallback_state, AgentState::Idle);
         assert_eq!(terminal.state, AgentState::Working);
         assert!(change.is_none());
+    }
+
+    fn omp_root_session_ref() -> Option<crate::agent_resume::AgentSessionRef> {
+        Some(crate::agent_resume::AgentSessionRef::id("omp-root").unwrap())
+    }
+
+    /// An omp state report as the shipped extension sends it: the session ref
+    /// rides along so later reports stay anchored to the same session.
+    fn report_omp_state(
+        terminal: &mut TerminalState,
+        state: AgentState,
+        seq: u64,
+        at: Instant,
+    ) -> Option<TerminalStateMutation> {
+        terminal.set_hook_authority_at(
+            "herdr:omp".into(),
+            "omp".into(),
+            state,
+            None,
+            omp_root_session_ref(),
+            Some(seq),
+            at,
+        )
+    }
+
+    /// omp terminal under live full-lifecycle hook authority reporting
+    /// `state` at `t0`, with the OSC title observed idle at the same instant.
+    fn omp_terminal_with_stale_hook(state: AgentState, t0: Instant) -> TerminalState {
+        let mut terminal = test_terminal();
+        terminal.set_detected_state(Some(Agent::Omp), AgentState::Idle);
+        anchor_full_lifecycle_session(
+            &mut terminal,
+            Agent::Omp,
+            "herdr:omp",
+            "omp",
+            crate::agent_resume::AgentSessionRef::id("omp-root").unwrap(),
+        );
+        report_omp_state(&mut terminal, state, 1, t0).expect("hook report accepted");
+        assert_eq!(terminal.state, state);
+        terminal.set_title_idle_observed_at(true, t0);
+        terminal
+    }
+
+    #[test]
+    fn idle_title_outlasting_working_hook_reconciles_to_idle_after_grace() {
+        let t0 = Instant::now();
+        let mut terminal = omp_terminal_with_stale_hook(AgentState::Working, t0);
+        assert_eq!(terminal.state, AgentState::Working);
+        assert_eq!(
+            terminal.next_hook_title_idle_reconcile_deadline(),
+            Some(t0 + HOOK_TITLE_IDLE_RECONCILE_GRACE)
+        );
+        assert!(!terminal.hook_title_idle_reconciled());
+
+        let change = terminal.reconcile_hook_title_idle_at(t0 + Duration::from_secs(4));
+        assert!(change.effective_state_change.is_none());
+        assert_eq!(terminal.state, AgentState::Working);
+
+        let change = terminal
+            .reconcile_hook_title_idle_at(t0 + Duration::from_secs(5))
+            .effective_state_change
+            .expect("grace elapsed flips the state");
+        assert_eq!(change.previous_state, AgentState::Working);
+        assert_eq!(change.state, AgentState::Idle);
+        assert_eq!(terminal.state, AgentState::Idle);
+        // The hook authority itself survives: label and session ref stay.
+        assert!(terminal.full_lifecycle_hook_authority_active());
+        assert_eq!(terminal.effective_agent_label(), Some("omp"));
+        assert!(terminal.hook_title_idle_reconciled());
+        assert_eq!(terminal.next_hook_title_idle_reconcile_deadline(), None);
+
+        // The title leaving idle hands the state back to the hook.
+        let change = terminal
+            .set_title_idle_observed_at(false, t0 + Duration::from_secs(6))
+            .effective_state_change
+            .expect("title change restores the hook state");
+        assert_eq!(change.state, AgentState::Working);
+        assert!(!terminal.hook_title_idle_reconciled());
+    }
+
+    #[test]
+    fn newer_hook_report_inside_the_grace_window_restarts_it() {
+        let t0 = Instant::now();
+        let mut terminal = omp_terminal_with_stale_hook(AgentState::Working, t0);
+
+        // The hook speaks again at t0+3s with a newer seq: it retakes
+        // authority and the title must hold idle for a fresh 5s.
+        report_omp_state(
+            &mut terminal,
+            AgentState::Working,
+            2,
+            t0 + Duration::from_secs(3),
+        )
+        .expect("newer hook report accepted");
+        assert_eq!(
+            terminal.next_hook_title_idle_reconcile_deadline(),
+            Some(t0 + Duration::from_secs(3) + HOOK_TITLE_IDLE_RECONCILE_GRACE)
+        );
+
+        terminal.reconcile_hook_title_idle_at(t0 + Duration::from_secs(6));
+        assert_eq!(terminal.state, AgentState::Working);
+
+        terminal.reconcile_hook_title_idle_at(t0 + Duration::from_secs(8));
+        assert_eq!(terminal.state, AgentState::Idle);
+
+        // A stale (not newer) report is rejected and does not restart the window.
+        assert!(report_omp_state(
+            &mut terminal,
+            AgentState::Working,
+            2,
+            t0 + Duration::from_secs(9),
+        )
+        .is_none());
+        assert_eq!(terminal.state, AgentState::Idle);
+    }
+
+    #[test]
+    fn idle_title_outlasting_blocked_hook_reconciles_to_idle() {
+        let t0 = Instant::now();
+        let mut terminal = omp_terminal_with_stale_hook(AgentState::Blocked, t0);
+        assert_eq!(terminal.state, AgentState::Blocked);
+
+        terminal.reconcile_hook_title_idle_at(t0 + HOOK_TITLE_IDLE_RECONCILE_GRACE);
+        assert_eq!(terminal.state, AgentState::Idle);
+        assert!(terminal.hook_title_idle_reconciled());
+    }
+
+    #[test]
+    fn title_never_promotes_an_idle_hook_state() {
+        let t0 = Instant::now();
+        let mut terminal = test_terminal();
+        terminal.set_detected_state(Some(Agent::Omp), AgentState::Idle);
+        anchor_full_lifecycle_session(
+            &mut terminal,
+            Agent::Omp,
+            "herdr:omp",
+            "omp",
+            crate::agent_resume::AgentSessionRef::id("omp-root").unwrap(),
+        );
+        terminal
+            .set_hook_authority_at(
+                "herdr:omp".into(),
+                "omp".into(),
+                AgentState::Idle,
+                None,
+                None,
+                Some(1),
+                t0,
+            )
+            .expect("hook report accepted");
+
+        // A working title (`π ⠹ x`) is a non-idle verdict: nothing to reconcile.
+        let change = terminal.set_title_idle_observed_at(false, t0);
+        assert!(change.effective_state_change.is_none());
+        assert_eq!(terminal.next_hook_title_idle_reconcile_deadline(), None);
+        terminal.reconcile_hook_title_idle_at(t0 + Duration::from_secs(10));
+        assert_eq!(terminal.state, AgentState::Idle);
+
+        // An idle title under an idle hook opens no window either.
+        terminal.set_title_idle_observed_at(true, t0);
+        assert_eq!(terminal.next_hook_title_idle_reconcile_deadline(), None);
+        assert!(!terminal.hook_title_idle_reconciled());
     }
 
     #[test]

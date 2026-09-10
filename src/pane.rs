@@ -38,8 +38,8 @@ use self::agent_detection::{
     decide_detection_screen_read, decide_screen_detection_publish,
     detection_update_for_publish_with_osc, mark_detection_content_changed,
     observe_detection_content_change, DetectionPublishDecision, DetectionScreenReadDecision,
-    DetectionScreenReadInput, PendingIdleConfirmation, ScreenDetectionPublishInput,
-    AGENT_PENDING_IDLE_RECHECK, AGENT_STARTUP_GRACE_WINDOW,
+    DetectionScreenReadInput, HookTitleIdleTracker, PendingIdleConfirmation,
+    ScreenDetectionPublishInput, AGENT_PENDING_IDLE_RECHECK, AGENT_STARTUP_GRACE_WINDOW,
 };
 #[cfg(any(unix, test))]
 pub use self::terminal::InputState;
@@ -246,6 +246,41 @@ async fn publish_agent_process_detected_event(
             pane = pane_id.raw(),
             err = %e,
             "failed to deliver AgentProcessDetected event"
+        );
+    }
+}
+
+/// Title-only detection tick under full-lifecycle hook authority: reads the
+/// OSC title (no screen scan, no process probe) and publishes the idle verdict
+/// when the tracker reports a change.
+async fn observe_hook_title_idle(
+    tracker: &mut HookTitleIdleTracker,
+    terminal: &PaneTerminal,
+    detection_content_seq: &AtomicU64,
+    state_events: &mpsc::Sender<AppEvent>,
+    pane_id: PaneId,
+    agent: Agent,
+    observed_at: std::time::Instant,
+) {
+    let content_seq = detection_content_seq.load(Ordering::Relaxed);
+    let Some(idle) = tracker.observe(content_seq, || {
+        crate::detect::manifest::osc_title_state(agent, &terminal.agent_osc_title())
+            == Some(AgentState::Idle)
+    }) else {
+        return;
+    };
+    if let Err(e) = state_events
+        .send(AppEvent::AgentTitleIdleObserved {
+            pane_id,
+            idle,
+            observed_at,
+        })
+        .await
+    {
+        warn!(
+            pane = pane_id.raw(),
+            err = %e,
+            "failed to deliver AgentTitleIdleObserved event"
         );
     }
 }
@@ -747,6 +782,7 @@ fn spawn_basic_detection_task(
         let mut last_screen_scan_detection_content_seq = None;
         let mut agent_startup_grace_until = None;
         let mut pending_idle = PendingIdleConfirmation::default();
+        let mut hook_title_idle = HookTitleIdleTracker::default();
 
         loop {
             let sleep_duration = if pending_idle.active() {
@@ -775,6 +811,7 @@ fn spawn_basic_detection_task(
                     last_screen_scan_detection_content_seq = None;
                     agent_startup_grace_until = None;
                     pending_idle.clear();
+                    hook_title_idle.reset();
                 }
             }
 
@@ -865,6 +902,7 @@ fn spawn_basic_detection_task(
                     if agent_changed {
                         pending_idle.clear();
                         last_screen_scan_detection_content_seq = None;
+                        hook_title_idle.reset();
                         // A replacement agent must not inherit OSC evidence
                         // from the previous process; a first acquisition keeps
                         // the evidence its own process already emitted.
@@ -896,8 +934,21 @@ fn spawn_basic_detection_task(
 
             if lifecycle_authority_active && !process_exited {
                 pending_idle.clear();
+                if let Some(agent) = agent {
+                    observe_hook_title_idle(
+                        &mut hook_title_idle,
+                        &terminal,
+                        &detection_content_seq,
+                        &state_events,
+                        pane_id,
+                        agent,
+                        now,
+                    )
+                    .await;
+                }
                 continue;
             }
+            hook_title_idle.reset();
 
             if let Some(until) = agent_startup_grace_until {
                 if process_exited {
@@ -2633,6 +2684,7 @@ impl PaneRuntime {
                 let mut last_screen_scan_detection_content_seq = None;
                 let mut agent_startup_grace_until = None;
                 let mut pending_idle = PendingIdleConfirmation::default();
+                let mut hook_title_idle = HookTitleIdleTracker::default();
 
                 tokio::time::sleep(Duration::from_millis(50)).await;
 
@@ -2671,6 +2723,7 @@ impl PaneRuntime {
                             last_screen_scan_detection_content_seq = None;
                             agent_startup_grace_until = None;
                             pending_idle.clear();
+                            hook_title_idle.reset();
                         }
                     }
 
@@ -2797,6 +2850,7 @@ impl PaneRuntime {
                                 {
                                     pending_idle.clear();
                                     last_screen_scan_detection_content_seq = None;
+                                    hook_title_idle.reset();
                                     // A replacement agent must not inherit OSC
                                     // evidence from the previous process; a first
                                     // acquisition keeps the evidence its own
@@ -2862,8 +2916,21 @@ impl PaneRuntime {
 
                     if lifecycle_authority_active && !process_exited {
                         pending_idle.clear();
+                        if let Some(agent) = agent {
+                            observe_hook_title_idle(
+                                &mut hook_title_idle,
+                                &terminal,
+                                &detection_content_seq,
+                                &state_events,
+                                pane_id,
+                                agent,
+                                now,
+                            )
+                            .await;
+                        }
                         continue;
                     }
+                    hook_title_idle.reset();
 
                     if let Some(until) = agent_startup_grace_until {
                         if process_exited {

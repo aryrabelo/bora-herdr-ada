@@ -78,6 +78,14 @@ pub enum AppEvent {
         process_exited: bool,
         observed_at: Instant,
     },
+    /// Title-only detection under full-lifecycle hook authority: whether the
+    /// pane's OSC title currently matches the agent's `visible_idle` osc_title
+    /// rule. Emitted on change only; the server times the stale-hook grace.
+    AgentTitleIdleObserved {
+        pane_id: PaneId,
+        idle: bool,
+        observed_at: Instant,
+    },
     /// Hook-authoritative agent state was reported for a pane.
     HookStateReported {
         pane_id: PaneId,
