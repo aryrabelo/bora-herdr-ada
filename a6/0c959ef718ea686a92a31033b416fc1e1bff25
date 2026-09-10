@@ -1,0 +1,36 @@
+Cargo.lock
+  h_b156936c57c455 135
+Cargo.toml
+  h_b156936c57c455 3
+src/app/actions.rs
+  h_b156936c57c455 1680-1689,1946-1979,3487-3560
+src/app/api/agents.rs
+  h_b156936c57c455 15-18,521-526,544
+src/app/runtime.rs
+  h_b156936c57c455 74-86,167
+src/detect/manifest.rs
+  h_b156936c57c455 435-486
+src/detect/manifest/tests.rs
+  h_b156936c57c455 189-247
+src/events.rs
+  h_b156936c57c455 81-88
+src/pane.rs
+  h_b156936c57c455 41-42,253-287,785,814,905,937-948,951,2687,2726,2853,2919-2930,2933
+src/pane/agent_detection.rs
+  h_b156936c57c455 80-114,591-619
+src/server/headless.rs
+  h_b156936c57c455 3369-3377
+src/terminal/state.rs
+  h_b156936c57c455 17-21,132-134,171,1886-1971,2257-2258,2500-2661
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "a60c959ef718ea686a92a31033b416fc1e1bff25",
+  "prompts": {},
+  "humans": {
+    "h_b156936c57c455": {
+      "author": "Ary Rabelo <aryrabelo@gmail.com>"
+    }
+  }
+}
