@@ -1,0 +1,22 @@
+Cargo.lock
+  h_b156936c57c455 135
+Cargo.toml
+  h_b156936c57c455 3
+src/client/shell/context_menu.rs
+  h_b156936c57c455 86,615-636
+src/client/shell/state.rs
+  h_b156936c57c455 619-620
+src/client/shell/tests/chrome_context.rs
+  h_b156936c57c455 871-896
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "bc79130503d5d2a642adf5c5be63f801f1160e34",
+  "prompts": {},
+  "humans": {
+    "h_b156936c57c455": {
+      "author": "Ary Rabelo <aryrabelo@gmail.com>"
+    }
+  }
+}
