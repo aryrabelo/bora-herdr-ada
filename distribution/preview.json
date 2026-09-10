@@ -1,37 +1,68 @@
 {
   "schema_version": 1,
   "channel": "preview",
-  "base_version": "0.46.0",
-  "build_id": "2026-09-09-f6d8f35b29c2",
-  "commit": "f6d8f35b29c2c0dc3a993bbc34827bff8a2c5379",
-  "built_at": "2026-09-09T17:09:49Z",
-  "protocol": 23,
+  "base_version": "0.46.8",
+  "build_id": "2026-09-10-d3a2bde6c945",
+  "commit": "d3a2bde6c94504407fd0184c28c904eedbdb2597",
+  "built_at": "2026-09-10T21:03:43Z",
+  "protocol": 25,
   "endpoint_generation": 1,
-  "notes": "Preview build 2026-09-09-f6d8f35b29c2\n\nBuilt from `f6d8f35b29c2` on `master`.\nBase stable: v0.46.0\nCompare: https://github.com/aryrabelo/bora-herdr-ada/compare/8bdafea4c8443a2187a831a9dc7314ab1906dbcd...f6d8f35b29c2c0dc3a993bbc34827bff8a2c5379\n\n### Added\n- Make channel.message subscribable (#25)\n- Deliver channel sends immediately with --when-idle opt-in\n- Add bora events verb streaming session events as json lines\n- Populate tty and foreground process on pane list\n- Waiting counter and quiet-pane promotion for background terminals\n- Rename a folder group from its right-click menu\n- Brighter navigate-selection background on catppuccin\n- Folders rows are one line - name and pane dots share the row\n- Folders view - flat list grouped only by your visual_group folders\n- Add muse agent with generic Pick blocked detection (#2489)\n- Add per-mode theme overrides (#2324)\n\n### Fixed\n- Resolve the release binary from cargo's configured target dir\n- Package the windows zip as bora.exe, matching the installer\n- Address review findings on the upstream merge\n- Lint the linux-gated tests and let the generated-path guard see renames\n- Brief unbriefed working panes in the message's delivery mode\n- Distinguish unseen plain shells in pane dots\n- Shape events error output and close pane-flag test blind spot\n- Folders view fills the active marker row with the lighter active-row background\n- Launch powershell agent shims with arguments (#3455)\n- Folders view assigns group on drop into folder body\n- Enable mouse reporting over openssh (#3461)\n- Folders view drags like flat \u2014 one row per grab, slots in every gap\n- Detect pi bundled cli (#3207)\n- Make test-one work on Windows (#3442)\n- Detect copilot background agents as working (#3403)\n- Encode antigravity windows hook command (#3352)\n- Report the foreground group leader's cwd, not a descendant's (#3386)\n- Reject oversized git ref files in workspace status reads (#3373)\n- Detect claude mcp elicitation dialogs as blocked (#3383)\n- Show project display names in assembly menus\n- Handle associated text on special keys (#3350)\n- Keep OSC evidence through first agent acquisition (#3326)\n- Trust worktree repositories per request (#3344)\n- Ignore cursor events in claude hooks (#3342)\n- Ignore codex weak blockers above the current prompt (#3339)\n- Require explicit workspace group close (#3206)\n- Accept reordered agent report arguments (#2928)\n- Route osc 8 file links to plugin handlers (#2942)\n- Keep wayland clipboard copies responsive (#3015)\n- Report agent explain file errors as json (#3023)\n- Refresh shared agent manifest caches (#3204)\n- Batch kitty image row lifecycle (#3166)\n- Serve a google-eligible favicon\n- Keep omp panes working through scheduled continuations (#3122)\n- Start lifecycle subscriptions from live events (#3134)\n- Add local cmd installer bootstrap (#3133)\n- Preserve non-us shifted text (#3055)\n- Clear Windows Terminal identity in panes (#3127)\n- Copy selections before delayed mouse release (#3102)\n- Preserve focus after background worktree removal (#3099)\n- Publish Claude MCP detection manifest\n- Match generated characters in prefix bindings (#3085)\n- Keep background Claude MCP tasks working (#3094)\n- Preserve multiline paste in terminal attach (#3056)\n- Isolate oversized kitty images (#3035)\n\n### Maintenance\n- Install website deps with a frozen lockfile in preview publish\n- Restore the publish job's bun install for the preview website build\n- Merge upstream herdr 0.9.0 (68c7b78e), theirs on the client shell (stage 2) (#29)\n- Add the fork identity to the maintainer list\n- Separate the two gitignore blocks\n- Merge origin/main into agente/ag-273\n- Require a prior-art sweep before building, and record the plugin-trial traps (#26)\n- Follow the upstream distribution/ and scripts/docs/ moves in fork tooling\n- Merge origin/main into agente/ag-273\n- Keep the fork's CI-owned preview and version snapshots\n- Merge upstream herdr through 8a6d6973 (0.8.x)\n- Remove the sandbox orchestrator, todo/scratchpad stores, right panel and channel scope (#24)\n- Bump nixpkgs so crate fetches use static.crates.io (#23)\n- Move .bora.toml commands and .bora/settings.toml provisioning to the bora-local-commands plugin (#21)\n- Retire the project view before the upstream sync (#22)\n- Add binding rule for worktree install symlink hazard\n- Isolate disk-touching channel tests behind IsolatedDirs\n- Prove the pane without subscribe guard dies under mutation\n- Refresh events ledger after rebase onto 0.45.37 main\n- Record events leaf gate evidence\n- Record live-handoff as the post-install swap for a running server\n- Separate website presentation from runtime\n- Trigger private website deploys\n- Publish preview documentation\n- Stabilize headless metadata expiry check (#3453)\n- Cover three-way channel join collision ordinals (ceo-bora#34) (#17)\n- Remove .beads\n- Remove beads issue-tracker annotations from agent surfaces\n- Trigger ai reviews and add maintainer\n- Publish preview documentation\n- Restrict release workflows to canonical repository\n- Move changelog curation to release prep\n- Document macos keychain launch context\n- Keep kennel authority private\n- Pin kennel maintainer identities\n\n### Other\n- Merge pull request #27 from aryrabelo/agente/ag-273\n- Canais sem invadir a sess\u00e3o: entrega passiva, painel agrupado, mentions r\u00edgidas (mapa ceo-bora#29) (#16)",
+  "notes": "Preview build 2026-09-10-d3a2bde6c945\n\nBuilt from `d3a2bde6c945` on `master`.\nBase stable: v0.46.8\nCompare: https://github.com/aryrabelo/bora-herdr-ada/compare/f6d8f35b29c2c0dc3a993bbc34827bff8a2c5379...d3a2bde6c94504407fd0184c28c904eedbdb2597\n\n### Added\n- Copy pane reference from the pane context menu (#36)\n- Folder context menu, nested folders and group inheritance on new workspaces (#32)\n- Re-port sidebar row templates and pane attention onto the client shell (#31)\n- Re-port folders view and pane dots onto the client shell (#30)\n\n### Fixed\n- Carry osc title evidence across a live handoff (#38)\n- Stop a dropped idle report from leaving a pane Working forever (#37)\n- Advertise workspace.set_group as a client_shell endpoint method (#35)\n- Allow linked worktree drag in Flat/Folders view modes (#34)\n- Install copies the release binary instead of symlinking into the shared target dir\n\n### Maintenance\n- Record the hook-title reconcile contract, copy reference, and worktree build traps\n- Name the gate allowlists as sync conflict surface (#33)\n- Record the shared-target-dir clobber and the copy-based install\n- Publish preview documentation",
   "assets": {
     "linux-x86_64": {
-      "url": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/preview-2026-09-09-f6d8f35b29c2/bora-linux-x86_64",
-      "sha256": "75367b49fd3efb3bb8703ad6af0888fbe258d9b55a816f45c5729b5d44f87d2d"
+      "url": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/preview-2026-09-10-d3a2bde6c945/bora-linux-x86_64",
+      "sha256": "5f8ecbffd87c3eab46236749de7b6c77b61612ab6996d96602f090cb0c9f22ca"
     },
     "linux-aarch64": {
-      "url": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/preview-2026-09-09-f6d8f35b29c2/bora-linux-aarch64",
-      "sha256": "ff1a546d81ec0129e2713f5917a4abfcdd5e70147521240354bb5c9e369653b4"
+      "url": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/preview-2026-09-10-d3a2bde6c945/bora-linux-aarch64",
+      "sha256": "4db0fc90d371811fe2d9b946de770de9499437f5513edff4aeebe93939c2b590"
     },
     "macos-x86_64": {
-      "url": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/preview-2026-09-09-f6d8f35b29c2/bora-macos-x86_64",
-      "sha256": "a49384179550b2b1f1ac3dbcde1e279fd56eafa4ea8ef528e1a4bd3fa9a549b4"
+      "url": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/preview-2026-09-10-d3a2bde6c945/bora-macos-x86_64",
+      "sha256": "b73c64fdac6e4022a6c9dbff91350b38d2ff2f27b71368e32536ddc2382ff3df"
     },
     "macos-aarch64": {
-      "url": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/preview-2026-09-09-f6d8f35b29c2/bora-macos-aarch64",
-      "sha256": "90dc022cf611e4e4ae33cb17ff7e77fe031d9c51beccfe7acef528d3c92cce74"
+      "url": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/preview-2026-09-10-d3a2bde6c945/bora-macos-aarch64",
+      "sha256": "eee4e14bc7d99c4ab8b9e1e6d53ef9cd8bdc176314f168963ca19af04c302ad8"
     },
     "windows-x86_64": {
-      "url": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/preview-2026-09-09-f6d8f35b29c2/bora-windows-x86_64.zip",
-      "sha256": "84b8584c12b229f92d8440b032199a522784d7c210b2201b33eaaf2d4bca6952",
+      "url": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/preview-2026-09-10-d3a2bde6c945/bora-windows-x86_64.zip",
+      "sha256": "723cf0eb867e27ca1234b009f6b667105b37b056afa648203e280a7c8ab481ac",
       "format": "zip"
     }
   },
   "builds": {
+    "2026-09-10-d3a2bde6c945": {
+      "base_version": "0.46.8",
+      "commit": "d3a2bde6c94504407fd0184c28c904eedbdb2597",
+      "built_at": "2026-09-10T21:03:43Z",
+      "protocol": 25,
+      "endpoint_generation": 1,
+      "tag": "preview-2026-09-10-d3a2bde6c945",
+      "assets": {
+        "linux-x86_64": {
+          "url": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/preview-2026-09-10-d3a2bde6c945/bora-linux-x86_64",
+          "sha256": "5f8ecbffd87c3eab46236749de7b6c77b61612ab6996d96602f090cb0c9f22ca"
+        },
+        "linux-aarch64": {
+          "url": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/preview-2026-09-10-d3a2bde6c945/bora-linux-aarch64",
+          "sha256": "4db0fc90d371811fe2d9b946de770de9499437f5513edff4aeebe93939c2b590"
+        },
+        "macos-x86_64": {
+          "url": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/preview-2026-09-10-d3a2bde6c945/bora-macos-x86_64",
+          "sha256": "b73c64fdac6e4022a6c9dbff91350b38d2ff2f27b71368e32536ddc2382ff3df"
+        },
+        "macos-aarch64": {
+          "url": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/preview-2026-09-10-d3a2bde6c945/bora-macos-aarch64",
+          "sha256": "eee4e14bc7d99c4ab8b9e1e6d53ef9cd8bdc176314f168963ca19af04c302ad8"
+        },
+        "windows-x86_64": {
+          "url": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/preview-2026-09-10-d3a2bde6c945/bora-windows-x86_64.zip",
+          "sha256": "723cf0eb867e27ca1234b009f6b667105b37b056afa648203e280a7c8ab481ac",
+          "format": "zip"
+        }
+      }
+    },
     "2026-09-09-f6d8f35b29c2": {
       "base_version": "0.46.0",
       "commit": "f6d8f35b29c2c0dc3a993bbc34827bff8a2c5379",
@@ -864,31 +895,6 @@
         "macos-aarch64": {
           "url": "https://github.com/herdrdev/herdr/releases/download/preview-2026-06-03-5b2fce600f76/herdr-macos-aarch64",
           "sha256": "29f3979e08420a6182f9dd0925a15d101dcbbb1eb75948cdf58f927b9f319da8"
-        }
-      }
-    },
-    "2026-06-03-fc82cbad2179": {
-      "base_version": "0.6.6",
-      "commit": "fc82cbad21791ed58c08905469055eb9357cd350",
-      "built_at": "2026-06-03T04:35:19Z",
-      "protocol": 12,
-      "tag": "preview-2026-06-03-fc82cbad2179",
-      "assets": {
-        "linux-x86_64": {
-          "url": "https://github.com/herdrdev/herdr/releases/download/preview-2026-06-03-fc82cbad2179/herdr-linux-x86_64",
-          "sha256": "c2291bc05f417329a233d09d769933ccccdc4e1f03e6f2d9a8223464b141728d"
-        },
-        "linux-aarch64": {
-          "url": "https://github.com/herdrdev/herdr/releases/download/preview-2026-06-03-fc82cbad2179/herdr-linux-aarch64",
-          "sha256": "bce62864bf3cff6046799acd0e8eb2d6eab546f4be9fe0e37a026704a85db3b2"
-        },
-        "macos-x86_64": {
-          "url": "https://github.com/herdrdev/herdr/releases/download/preview-2026-06-03-fc82cbad2179/herdr-macos-x86_64",
-          "sha256": "7990bdc39fa96322b37a497f85bc1963cb40f9f298d400f8da8fe13dac2adaf6"
-        },
-        "macos-aarch64": {
-          "url": "https://github.com/herdrdev/herdr/releases/download/preview-2026-06-03-fc82cbad2179/herdr-macos-aarch64",
-          "sha256": "c8bcd63323c6daf671022a6872134c6178c153ddd89c4260fbb9b28fe162c18a"
         }
       }
     }
