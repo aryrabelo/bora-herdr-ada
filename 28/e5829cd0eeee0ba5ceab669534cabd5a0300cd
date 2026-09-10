@@ -1,0 +1,20 @@
+Cargo.lock
+  h_b156936c57c455 135
+Cargo.toml
+  h_b156936c57c455 3
+src/pane/osc.rs
+  h_b156936c57c455 501-505,508,1032-1034,1037,1040,1042-1046
+src/server/headless/tests/mod.rs
+  h_b156936c57c455 32-35,37,42-43,4613-4777
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "28e5829cd0eeee0ba5ceab669534cabd5a0300cd",
+  "prompts": {},
+  "humans": {
+    "h_b156936c57c455": {
+      "author": "Ary Rabelo <aryrabelo@gmail.com>"
+    }
+  }
+}
