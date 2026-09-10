@@ -11,6 +11,9 @@ impl ClientShellState {
             .map(|hit| hit.workspace_id.clone())
     }
 
+    // A linked worktree is a nested display row only in `ViewMode::Repo`;
+    // in Flat/Folders it is an ordinary one-row entry and a valid drag
+    // source like any other workspace (ceo-bora#311).
     pub(super) fn endpoint_workspace_is_draggable(&self, press: &ClientWorkspacePress) -> bool {
         press.endpoint_id == self.active_endpoint_id
             && self
@@ -23,10 +26,11 @@ impl ClientShellState {
                         .find(|workspace| workspace.workspace_id == press.workspace_id)
                 })
                 .is_some_and(|workspace| {
-                    !workspace
-                        .worktree
-                        .as_ref()
-                        .is_some_and(|worktree| worktree.is_linked_worktree)
+                    self.view_mode != crate::config::ViewMode::Repo
+                        || !workspace
+                            .worktree
+                            .as_ref()
+                            .is_some_and(|worktree| worktree.is_linked_worktree)
                 })
     }
 

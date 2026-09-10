@@ -473,12 +473,14 @@ impl ClientShellState {
             return None;
         }
         let snapshot = self.snapshot.as_deref()?;
-        // A linked-worktree workspace is never a valid `before` target:
+        let repo_mode = self.view_mode == crate::config::ViewMode::Repo;
+        // In `ViewMode::Repo` a linked-worktree workspace renders nested
+        // under its root and is never itself a reorderable slot --
         // `workspace_move_method` only resolves `before_workspace_id`
-        // against non-linked-worktree `roots`, so a slot pointing at one
-        // silently no-ops on drop (P2, cubic PR #30 review). Folders rows
-        // never set `indented`, so the Repo-mode "skip indented" filter
-        // above cannot exclude them there the way it does for Repo.
+        // against non-linked-worktree `roots` there, so a slot pointing at
+        // one would silently no-op on drop. In `ViewMode::Flat`/
+        // `ViewMode::Folders` every workspace, linked worktree or not, is
+        // an ordinary one-row entry and a valid drop target (ceo-bora#311).
         let mut slots = self
             .hits
             .workspaces
@@ -486,13 +488,14 @@ impl ClientShellState {
             .filter(|hit| {
                 hit.endpoint_id == self.active_endpoint_id
                     && !hit.indented
-                    && !snapshot.workspaces.iter().any(|workspace| {
-                        workspace.workspace_id == hit.workspace_id
-                            && workspace
-                                .worktree
-                                .as_ref()
-                                .is_some_and(|worktree| worktree.is_linked_worktree)
-                    })
+                    && (!repo_mode
+                        || !snapshot.workspaces.iter().any(|workspace| {
+                            workspace.workspace_id == hit.workspace_id
+                                && workspace
+                                    .worktree
+                                    .as_ref()
+                                    .is_some_and(|worktree| worktree.is_linked_worktree)
+                        }))
             })
             .map(|hit| (Some(hit.workspace_id.clone()), hit.rect.y.saturating_sub(1)))
             .collect::<Vec<_>>();
@@ -522,18 +525,14 @@ impl ClientShellState {
                 // GroupHeader to its first member, if any) is the real
                 // insertion point; only an empty/collapsed group or the
                 // true end of the list falls back to appending at the end.
+                // A linked worktree is a valid `before` target here, same
+                // as any other row (ceo-bora#311).
                 let before = entries[last_position + 1..]
                     .iter()
                     .find_map(|entry| match entry {
                         render::sidebar::FoldersRow::Workspace { index, .. } => snapshot
                             .workspaces
                             .get(*index)
-                            .filter(|workspace| {
-                                !workspace
-                                    .worktree
-                                    .as_ref()
-                                    .is_some_and(|worktree| worktree.is_linked_worktree)
-                            })
                             .map(|workspace| workspace.workspace_id.clone()),
                         render::sidebar::FoldersRow::GroupHeader { .. } => None,
                     });
@@ -543,7 +542,21 @@ impl ClientShellState {
                 }
             }
         } else {
-            let entries = render::workspace_entries(snapshot, collapsed_groups);
+            // Flat has no grouping at all (ceo-bora#311); Repo keeps the
+            // upstream worktree-grouped/indented entries unchanged. This
+            // mirrors `render_sidebar`'s own dispatch so the drop math
+            // agrees with what is actually on screen.
+            let entries = if repo_mode {
+                render::workspace_entries(snapshot, collapsed_groups)
+            } else {
+                (0..snapshot.workspaces.len())
+                    .map(|index| WorkspaceEntry {
+                        index,
+                        indented: false,
+                        last_child: false,
+                    })
+                    .collect::<Vec<_>>()
+            };
             let last_position = entries.iter().position(|entry| {
                 snapshot
                     .workspaces
@@ -609,10 +622,18 @@ impl ClientShellState {
             .workspaces
             .iter()
             .find(|workspace| workspace.workspace_id == source_workspace_id)?;
-        if source
-            .worktree
-            .as_ref()
-            .is_some_and(|worktree| worktree.is_linked_worktree)
+        let repo_mode = self.view_mode == crate::config::ViewMode::Repo;
+        // In `ViewMode::Repo` a linked worktree is a nested display row
+        // under its root, never itself a reorderable slot, and moving its
+        // root drags the whole sibling block with it. In `ViewMode::Flat`/
+        // `ViewMode::Folders` every workspace -- linked worktree or not --
+        // is an ordinary one-row entry, and a move is always of that one
+        // row, never a sibling-block expansion (ceo-bora#311).
+        if repo_mode
+            && source
+                .worktree
+                .as_ref()
+                .is_some_and(|worktree| worktree.is_linked_worktree)
         {
             return None;
         }
@@ -623,10 +644,11 @@ impl ClientShellState {
             .workspaces
             .iter()
             .filter(|workspace| {
-                !workspace
-                    .worktree
-                    .as_ref()
-                    .is_some_and(|worktree| worktree.is_linked_worktree)
+                !repo_mode
+                    || !workspace
+                        .worktree
+                        .as_ref()
+                        .is_some_and(|worktree| worktree.is_linked_worktree)
             })
             .collect::<Vec<_>>();
         let source_position = roots
@@ -647,44 +669,45 @@ impl ClientShellState {
             return None;
         }
 
-        if let Some(worktree) = source.worktree.as_ref() {
-            let workspace_ids = std::iter::once(source.workspace_id.clone())
-                .chain(
-                    snapshot
-                        .workspaces
-                        .iter()
-                        .filter(|workspace| workspace.workspace_id != source.workspace_id)
-                        .filter(|workspace| {
-                            workspace
-                                .worktree
-                                .as_ref()
-                                .is_some_and(|candidate| candidate.key == worktree.key)
-                        })
-                        .map(|workspace| workspace.workspace_id.clone()),
-                )
-                .collect();
-            Some(crate::api::schema::Method::WorkspaceMoveBlock(
-                crate::api::schema::WorkspaceMoveBlockParams {
-                    workspace_ids,
-                    before_workspace_id: before_workspace_id.map(str::to_owned),
-                },
-            ))
-        } else {
-            let insert_index = before_workspace_id
-                .and_then(|target| {
-                    snapshot
-                        .workspaces
-                        .iter()
-                        .position(|workspace| workspace.workspace_id == target)
-                })
-                .unwrap_or(snapshot.workspaces.len());
-            Some(crate::api::schema::Method::WorkspaceMove(
-                crate::api::schema::WorkspaceMoveParams {
-                    workspace_id: source.workspace_id.clone(),
-                    insert_index,
-                },
-            ))
+        if repo_mode {
+            if let Some(worktree) = source.worktree.as_ref() {
+                let workspace_ids = std::iter::once(source.workspace_id.clone())
+                    .chain(
+                        snapshot
+                            .workspaces
+                            .iter()
+                            .filter(|workspace| workspace.workspace_id != source.workspace_id)
+                            .filter(|workspace| {
+                                workspace
+                                    .worktree
+                                    .as_ref()
+                                    .is_some_and(|candidate| candidate.key == worktree.key)
+                            })
+                            .map(|workspace| workspace.workspace_id.clone()),
+                    )
+                    .collect();
+                return Some(crate::api::schema::Method::WorkspaceMoveBlock(
+                    crate::api::schema::WorkspaceMoveBlockParams {
+                        workspace_ids,
+                        before_workspace_id: before_workspace_id.map(str::to_owned),
+                    },
+                ));
+            }
         }
+        let insert_index = before_workspace_id
+            .and_then(|target| {
+                snapshot
+                    .workspaces
+                    .iter()
+                    .position(|workspace| workspace.workspace_id == target)
+            })
+            .unwrap_or(snapshot.workspaces.len());
+        Some(crate::api::schema::Method::WorkspaceMove(
+            crate::api::schema::WorkspaceMoveParams {
+                workspace_id: source.workspace_id.clone(),
+                insert_index,
+            },
+        ))
     }
 
     pub(super) fn handle_mouse(&mut self, mouse: MouseEvent, outcome: &mut ClientShellInput) {
