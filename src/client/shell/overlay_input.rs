@@ -320,11 +320,27 @@ impl ClientShellState {
         })
     }
 
+    /// The `visual_group` of `workspace_action_id()`'s own workspace
+    /// (ceo-bora#303: a new workspace joins the SAME Folders group as
+    /// whatever `cmd+n` would create it under). Deliberately the same
+    /// workspace as `source_workspace_id`, not `snapshot.focused_workspace_id`
+    /// directly -- in Navigate mode those can differ (`navigate_workspace_id`
+    /// is a selection, not yet a focus), and inheriting from a workspace
+    /// other than the create source produced a folder/cwd mismatch (cubic
+    /// review, ceo-bora#303 PR #32).
+    pub(super) fn workspace_action_group(&self) -> Option<String> {
+        let workspace_id = self.workspace_action_id()?;
+        self.snapshot
+            .as_deref()?
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.workspace_id == workspace_id)?
+            .visual_group
+            .clone()
+    }
+
     pub(super) fn open_new_workspace_overlay(&mut self) {
-        let group = self
-            .snapshot
-            .as_deref()
-            .and_then(super::focused_workspace_visual_group);
+        let group = self.workspace_action_group();
         self.open_new_workspace_overlay_with_group(group);
     }
 

@@ -137,13 +137,12 @@ impl ClientShellState {
             self.group_is_collapsed(&self.active_endpoint_id, &worktree.key)
         });
         let visual_group = workspace.visual_group.clone();
-        // Sorted + deduped so the flattened "move to group" run is
-        // stable across frames and across right-clicks.
-        let mut group_paths = snapshot
-            .workspaces
-            .iter()
-            .filter_map(|workspace| workspace.visual_group.clone())
-            .collect::<Vec<_>>();
+        // Every VISIBLE folder, including a parent that exists only as a
+        // synthesized ancestor of a nested path -- not just paths with a
+        // direct exact member (cubic review, ceo-bora#303 PR #32). Sorted
+        // + deduped so the flattened "move to group" run is stable across
+        // frames and across right-clicks.
+        let (_, mut group_paths) = super::sidebar::folders_group_tree(snapshot);
         group_paths.sort();
         group_paths.dedup();
         self.overlay = Some(ClientShellOverlay::ContextMenu(ClientContextMenuOverlay {

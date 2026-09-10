@@ -782,3 +782,26 @@ fn folders_view_synthesizes_parent_header_and_indents_by_depth() {
         "a loose row can never sit at a folder member's indent: loose {loose_indent}, member {member_indent}"
     );
 }
+
+/// A `visual_group` with an empty `/`-separated segment (`"foo/"`, as a
+/// stray CLI/malformed value never produced by this shell's own group
+/// prompts, which already trim trailing separators) must not render a
+/// blank header or a phantom folder (cubic review, ceo-bora#303 PR #32).
+#[test]
+fn folders_view_normalizes_a_trailing_slash_group_path() {
+    let mut state = ClientShellState::new(folders_config());
+    let mut projected = snapshot();
+    projected.workspaces[0].visual_group = Some("foo/".into());
+    state.set_snapshot(Box::new(projected));
+    state.set_pane_surface(surface());
+    let frame = state.compose(106, 24).expect("folders layout");
+
+    assert_eq!(state.hits.folders_group_headers.len(), 1);
+    assert_eq!(state.hits.folders_group_headers[0].1, "vg:foo");
+    let header_rect = state.hits.folders_group_headers[0].0;
+    let header_row = row_slice(&frame, header_rect, 0);
+    assert!(
+        header_row.contains("foo") && !header_row.trim().is_empty(),
+        "the trailing slash must normalize away, not produce a blank header: {header_row:?}"
+    );
+}

@@ -76,15 +76,13 @@ impl ClientShellState {
                     if self.config.prompt_new_workspace_name {
                         self.open_new_workspace_overlay();
                     } else {
-                        let group = self
-                            .snapshot
-                            .as_deref()
-                            .and_then(super::focused_workspace_visual_group);
+                        let source_workspace_id = self.workspace_action_id();
+                        let group = self.workspace_action_group();
                         self.push_endpoint_method(
                             crate::api::schema::Method::WorkspaceCreate(
                                 crate::api::schema::WorkspaceCreateParams {
                                     group,
-                                    source_workspace_id: self.workspace_action_id(),
+                                    source_workspace_id,
                                     cwd: None,
                                     focus: true,
                                     label: None,

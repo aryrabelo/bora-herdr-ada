@@ -1463,3 +1463,35 @@ fn navigator_foreign_tab_selection_keeps_the_tab_target() {
         }] if activated == &endpoint_id && tab_id == "tab_1"
     ));
 }
+
+/// `has_working_agent()` drives the client's poll-forced repaint for the
+/// animated `Working` spinner glyph. It must see a `Working` agent on a
+/// BACKGROUND endpoint's cached snapshot, not only the active one -- the
+/// expanded multi-machine sidebar renders every endpoint's cached
+/// snapshot at once, so a remote-only `Working` row would otherwise never
+/// advance its spinner (cubic review, ceo-bora#303 PR #32).
+#[test]
+fn has_working_agent_checks_every_endpoints_cached_snapshot() {
+    let (mut state, remote) = state_with_remote();
+    // The active (Local) endpoint's snapshot has no agents at all.
+    assert!(!state.has_working_agent());
+
+    // Give the REMOTE (background, not activated) endpoint a Working
+    // agent while Local stays untouched.
+    let mut remote_snapshot = state
+        .endpoints
+        .iter()
+        .find(|endpoint| endpoint.endpoint_id == remote)
+        .and_then(|endpoint| endpoint.snapshot.clone())
+        .expect("remote snapshot");
+    remote_snapshot
+        .agents
+        .push(agent("worker", crate::api::schema::AgentStatus::Working, 1));
+    state.set_endpoint_snapshot(&remote, remote_snapshot);
+
+    assert_eq!(state.active_endpoint_id, ClientEndpointId::Local);
+    assert!(
+        state.has_working_agent(),
+        "a Working agent on a background endpoint must still be seen"
+    );
+}

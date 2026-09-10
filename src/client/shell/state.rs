@@ -1228,17 +1228,22 @@ impl ClientShellState {
             .is_some_and(|(cols, rows)| !self.layout(cols, rows).mobile_header.is_empty())
     }
 
-    /// True while any agent in the live snapshot is `Working`, so the
-    /// client's already-firing ~100ms poll wake (`timer_delay`) should also
-    /// force a repaint -- the only way the animated spinner glyph
-    /// (`status_icon_animated`, ceo-bora#303) advances. No dedicated timer:
-    /// this rides the poll cadence that already exists for other reasons.
+    /// True while any agent is `Working` on ANY endpoint's cached snapshot
+    /// -- not just the active `self.snapshot` -- so the client's already-
+    /// firing ~100ms poll wake (`timer_delay`) also forces a repaint while
+    /// a background machine's row still needs to animate in the expanded
+    /// multi-machine sidebar (`endpoint_sidebar.rs::render_expanded` draws
+    /// every endpoint's cached snapshot, not only the active one).
+    /// (`status_icon_animated`, ceo-bora#303). No dedicated timer: this
+    /// rides the poll cadence that already exists for other reasons.
     pub(crate) fn has_working_agent(&self) -> bool {
-        self.snapshot.as_deref().is_some_and(|snapshot| {
-            snapshot
-                .agents
-                .iter()
-                .any(|agent| agent.agent_status == crate::api::schema::AgentStatus::Working)
+        self.endpoints.iter().any(|endpoint| {
+            endpoint.snapshot.as_deref().is_some_and(|snapshot| {
+                snapshot
+                    .agents
+                    .iter()
+                    .any(|agent| agent.agent_status == crate::api::schema::AgentStatus::Working)
+            })
         })
     }
 

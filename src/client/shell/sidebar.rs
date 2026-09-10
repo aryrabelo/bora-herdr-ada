@@ -871,39 +871,57 @@ fn group_display_name(path: &str) -> &str {
 }
 
 /// Everything before the last `/`, or `None` when `path` is top-level.
+/// Only ever called on an already-`normalize_group_path`-ed string, so a
+/// doubled or trailing `/` can't produce an empty parent segment here.
 fn group_parent_path(path: &str) -> Option<&str> {
     path.rsplit_once('/').map(|(parent, _)| parent)
 }
 
-pub(in crate::client::shell) fn folders_entries(
-    snapshot: &ClientShellSnapshot,
-    collapsed_groups: &HashSet<String>,
-) -> Vec<FoldersRow> {
-    // Loose workspaces first, relative order untouched.
-    let mut entries = snapshot
-        .workspaces
-        .iter()
-        .enumerate()
-        .filter(|(_, workspace)| workspace.visual_group.is_none())
-        .map(|(index, _)| FoldersRow::Workspace { index, depth: 0 })
+/// A raw `visual_group` value, defended against an empty or malformed
+/// `/`-separated segment (`"foo/"`, `"foo//bar"`, `""`) reaching the
+/// folder tree: nothing upstream of the wire field guarantees this shape
+/// (the CLI takes any string; the UI's own "New/Rename group…" prompts
+/// trim it, but that is a presentation-layer guarantee, not a wire one).
+/// Drops empty segments and returns `None` when nothing is left, which
+/// `folders_entries` treats identically to "ungrouped" (cubic review,
+/// ceo-bora#303 PR #32 -- an unnormalized `"foo/"` rendered a blank header).
+fn normalize_group_path(path: &str) -> Option<String> {
+    let segments = path
+        .split('/')
+        .filter(|segment| !segment.is_empty())
         .collect::<Vec<_>>();
-    // `direct` holds the workspaces sitting on a path EXACTLY; `group_paths`
-    // holds every folder that exists at all -- ancestors synthesized by
-    // walking `group_parent_path` up from each member -- ordered by the
-    // first grouped workspace that mentions them, ancestors before
-    // descendants.
-    let mut direct: HashMap<&str, Vec<usize>> = HashMap::new();
-    let mut group_paths: Vec<&str> = Vec::new();
+    (!segments.is_empty()).then(|| segments.join("/"))
+}
+
+/// The full folder tree derived from `snapshot`, normalized: `direct` maps
+/// a folder path to the indices of workspaces sitting on it exactly;
+/// `group_paths` lists every folder that exists at all -- including a
+/// parent with no workspace directly on it, synthesized from its
+/// descendants -- ordered ancestors-before-descendants, in order of first
+/// appearance among grouped workspaces. Shared by `folders_entries` (which
+/// walks it depth-first for rendering) and the context menu's "Move to
+/// group" list, which needs every VISIBLE folder, not only paths with a
+/// direct exact member (cubic review, ceo-bora#303 PR #32).
+pub(in crate::client::shell) fn folders_group_tree(
+    snapshot: &ClientShellSnapshot,
+) -> (HashMap<String, Vec<usize>>, Vec<String>) {
+    let mut direct: HashMap<String, Vec<usize>> = HashMap::new();
+    let mut group_paths: Vec<String> = Vec::new();
     for (index, workspace) in snapshot.workspaces.iter().enumerate() {
-        let Some(group) = workspace.visual_group.as_deref() else {
+        let Some(group) = workspace
+            .visual_group
+            .as_deref()
+            .and_then(normalize_group_path)
+        else {
             continue;
         };
-        direct.entry(group).or_default().push(index);
+        direct.entry(group.clone()).or_default().push(index);
         let mut ancestry = Vec::new();
         let mut cursor = Some(group);
         while let Some(path) = cursor {
+            let parent = group_parent_path(&path).map(str::to_owned);
             ancestry.push(path);
-            cursor = group_parent_path(path);
+            cursor = parent;
         }
         for path in ancestry.into_iter().rev() {
             if !group_paths.contains(&path) {
@@ -911,9 +929,31 @@ pub(in crate::client::shell) fn folders_entries(
             }
         }
     }
+    (direct, group_paths)
+}
+
+pub(in crate::client::shell) fn folders_entries(
+    snapshot: &ClientShellSnapshot,
+    collapsed_groups: &HashSet<String>,
+) -> Vec<FoldersRow> {
+    // Loose workspaces first, relative order untouched. A workspace whose
+    // raw `visual_group` normalizes away to nothing counts as loose too.
+    let mut entries = snapshot
+        .workspaces
+        .iter()
+        .enumerate()
+        .filter(|(_, workspace)| {
+            workspace
+                .visual_group
+                .as_deref()
+                .and_then(normalize_group_path)
+                .is_none()
+        })
+        .map(|(index, _)| FoldersRow::Workspace { index, depth: 0 })
+        .collect::<Vec<_>>();
+    let (direct, group_paths) = folders_group_tree(snapshot);
     for path in group_paths
         .iter()
-        .copied()
         .filter(|path| group_parent_path(path).is_none())
     {
         push_folders_group(path, &group_paths, &direct, collapsed_groups, &mut entries);
@@ -925,10 +965,10 @@ pub(in crate::client::shell) fn folders_entries(
 /// subfolder (ceo-bora#303 ordering). A collapsed folder emits its header
 /// and nothing below it -- members and subfolders alike -- which is how
 /// collapse keeps working unchanged for nested paths.
-fn push_folders_group<'a>(
-    path: &'a str,
-    group_paths: &[&'a str],
-    direct: &HashMap<&'a str, Vec<usize>>,
+fn push_folders_group(
+    path: &str,
+    group_paths: &[String],
+    direct: &HashMap<String, Vec<usize>>,
     collapsed_groups: &HashSet<String>,
     entries: &mut Vec<FoldersRow>,
 ) {
@@ -950,7 +990,6 @@ fn push_folders_group<'a>(
     }
     for child in group_paths
         .iter()
-        .copied()
         .filter(|candidate| group_parent_path(candidate) == Some(path))
     {
         push_folders_group(child, group_paths, direct, collapsed_groups, entries);

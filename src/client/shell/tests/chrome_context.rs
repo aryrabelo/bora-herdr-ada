@@ -783,3 +783,51 @@ fn group_header_new_workspace_prompt_carries_the_group_through_the_name_overlay(
                 && params.label.as_deref() == Some("notes")
     ));
 }
+
+/// "Move to group" must include a folder that exists only as a
+/// synthesized ancestor of a nested path -- not only paths with a direct
+/// exact member -- or a user can never move a workspace into a visible
+/// parent folder (cubic review, ceo-bora#303 PR #32).
+#[test]
+fn workspace_context_menu_move_to_group_includes_a_synthesized_ancestor_folder() {
+    let mut config = Config::default();
+    config.ui.view_mode = crate::config::ViewMode::Folders;
+    let mut projected = snapshot();
+    // `bora-sync` never appears as an exact `visual_group` -- only as the
+    // ancestor of `bora-sync/docs` -- so it is a header the sidebar
+    // synthesizes, exactly the case the fix covers.
+    projected.workspaces[0].visual_group = Some("bora-sync/docs".into());
+    let mut loose = projected.workspaces[0].clone();
+    loose.workspace_id = "ws_2".into();
+    loose.number = 2;
+    loose.label = "loose-space".into();
+    loose.focused = false;
+    loose.visual_group = None;
+    projected.workspaces.push(loose);
+
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+    state.set_snapshot(Box::new(projected));
+    state.set_pane_surface(surface());
+    state.compose(106, 30).expect("folders layout");
+
+    let loose_rect = workspace_rect(&state, "ws_2");
+    right_click(&mut state, loose_rect);
+    let labels = menu_labels(&state);
+    assert!(
+        labels.contains(&"→ bora-sync".to_owned()),
+        "a folder with no direct member of its own must still be a move target: {labels:?}"
+    );
+    assert!(
+        labels.contains(&"→ bora-sync/docs".to_owned()),
+        "{labels:?}"
+    );
+
+    let moved = click_menu_item(
+        &mut state,
+        &ClientContextMenuAction::MoveToGroup("bora-sync".into()),
+    );
+    assert_eq!(
+        set_group_methods(&moved),
+        vec![("ws_2".to_owned(), Some("bora-sync".to_owned()))]
+    );
+}
