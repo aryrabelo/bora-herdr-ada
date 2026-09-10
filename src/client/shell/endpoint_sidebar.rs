@@ -351,6 +351,7 @@ pub(super) fn render_expanded(
                         selected: false,
                         dragged: false,
                         first_row_reserved_width: 0,
+                        tick: state.tick,
                     },
                     palette,
                 );

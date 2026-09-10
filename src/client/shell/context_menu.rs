@@ -4,42 +4,69 @@ impl ClientContextMenuOverlay {
     pub(super) fn items(&self) -> Vec<ClientContextMenuItem> {
         use ClientContextMenuAction as Action;
 
-        let item = |label, action| ClientContextMenuItem { label, action };
+        let item = |label: &'static str, action| ClientContextMenuItem {
+            label: std::borrow::Cow::Borrowed(label),
+            action,
+        };
         match &self.target {
-            ClientContextMenuTarget::Workspace { is_git: false, .. } => {
-                vec![item("Rename", Action::Rename), item("Close", Action::Close)]
-            }
             ClientContextMenuTarget::Workspace {
-                is_linked_worktree: false,
-                has_worktree_children: false,
-                ..
-            } => vec![
-                item("Rename", Action::Rename),
-                item("Close", Action::Close),
-                item("New worktree", Action::NewWorktree),
-                item("Open worktree...", Action::OpenWorktree),
-            ],
-            ClientContextMenuTarget::Workspace {
-                is_linked_worktree: true,
-                ..
-            } => vec![
-                item("Rename", Action::Rename),
-                item("Close", Action::Close),
-                item("Delete worktree checkout...", Action::RemoveWorktree),
-            ],
-            ClientContextMenuTarget::Workspace {
-                has_worktree_children: true,
+                is_git,
+                is_linked_worktree,
+                has_worktree_children,
                 collapsed,
+                visual_group,
+                group_paths,
                 ..
-            } => vec![
-                item("Rename", Action::Rename),
-                item("Close group", Action::Close),
-                item("New worktree", Action::NewWorktree),
-                item("Open worktree...", Action::OpenWorktree),
+            } => {
+                let mut items = vec![item("Rename", Action::Rename)];
+                if !*is_git {
+                    items.push(item("Close", Action::Close));
+                } else if *is_linked_worktree {
+                    items.extend([
+                        item("Close", Action::Close),
+                        item("Delete worktree checkout...", Action::RemoveWorktree),
+                    ]);
+                } else if *has_worktree_children {
+                    items.extend([
+                        item("Close group", Action::Close),
+                        item("New worktree", Action::NewWorktree),
+                        item("Open worktree...", Action::OpenWorktree),
+                        item(
+                            if *collapsed { "Expand" } else { "Collapse" },
+                            Action::ToggleGroup,
+                        ),
+                    ]);
+                } else {
+                    items.extend([
+                        item("Close", Action::Close),
+                        item("New worktree", Action::NewWorktree),
+                        item("Open worktree...", Action::OpenWorktree),
+                    ]);
+                }
+                // ceo-bora#303: this shell has no nested popup, so
+                // "move to group" is a flat run of one item per known
+                // group path rather than a submenu.
+                items.push(item("New group…", Action::NewGroup));
+                items.extend(group_paths.iter().map(|path| ClientContextMenuItem {
+                    label: std::borrow::Cow::Owned(format!("→ {path}")),
+                    action: Action::MoveToGroup(path.clone()),
+                }));
+                if visual_group.is_some() {
+                    items.extend([
+                        item("Rename group…", Action::RenameGroup),
+                        item("Remove from group", Action::RemoveFromGroup),
+                    ]);
+                }
+                items
+            }
+            ClientContextMenuTarget::GroupHeader { collapsed, .. } => vec![
+                item("Rename group…", Action::RenameGroup),
                 item(
                     if *collapsed { "Expand" } else { "Collapse" },
                     Action::ToggleGroup,
                 ),
+                item("Ungroup all", Action::UngroupAll),
+                item("New workspace in group", Action::NewWorkspaceInGroup),
             ],
             ClientContextMenuTarget::Tab { .. } => vec![
                 item("New tab", Action::NewTab),
@@ -109,6 +136,18 @@ impl ClientShellState {
         let collapsed = worktree.is_some_and(|worktree| {
             self.group_is_collapsed(&self.active_endpoint_id, &worktree.key)
         });
+        let visual_group = workspace
+            .visual_group
+            .as_deref()
+            .and_then(super::sidebar::normalize_group_path);
+        // Every VISIBLE folder, including a parent that exists only as a
+        // synthesized ancestor of a nested path -- not just paths with a
+        // direct exact member (cubic review, ceo-bora#303 PR #32). Sorted
+        // + deduped so the flattened "move to group" run is stable across
+        // frames and across right-clicks.
+        let (_, mut group_paths) = super::sidebar::folders_group_tree(snapshot);
+        group_paths.sort();
+        group_paths.dedup();
         self.overlay = Some(ClientShellOverlay::ContextMenu(ClientContextMenuOverlay {
             target: ClientContextMenuTarget::Workspace {
                 workspace_id,
@@ -116,7 +155,21 @@ impl ClientShellState {
                 is_linked_worktree: worktree.is_some_and(|worktree| worktree.is_linked_worktree),
                 has_worktree_children,
                 collapsed,
+                visual_group,
+                group_paths,
             },
+            x,
+            y,
+            highlighted: 0,
+        }));
+    }
+
+    /// ceo-bora#303: right-click on a Folders group header. `path` is
+    /// the plain group path; the collapse key adds the `vg:` prefix.
+    pub(super) fn open_group_context_menu(&mut self, path: String, x: u16, y: u16) {
+        let collapsed = self.group_is_collapsed(&self.active_endpoint_id, &format!("vg:{path}"));
+        self.overlay = Some(ClientShellOverlay::ContextMenu(ClientContextMenuOverlay {
+            target: ClientContextMenuTarget::GroupHeader { path, collapsed },
             x,
             y,
             highlighted: 0,
@@ -187,13 +240,16 @@ impl ClientShellState {
         let Some(ClientShellOverlay::ContextMenu(menu)) = self.overlay.take() else {
             return;
         };
-        let Some(action) = menu.items().get(index).map(|item| item.action) else {
+        let Some(action) = menu.items().get(index).map(|item| item.action.clone()) else {
             outcome.repaint = true;
             return;
         };
         match menu.target {
             ClientContextMenuTarget::Workspace { workspace_id, .. } => {
                 self.activate_workspace_context_action(workspace_id, action, outcome)
+            }
+            ClientContextMenuTarget::GroupHeader { path, .. } => {
+                self.activate_group_header_context_action(path, action, outcome)
             }
             ClientContextMenuTarget::Tab {
                 tab_id,
@@ -285,8 +341,159 @@ impl ClientShellState {
                     self.persist_chrome_preferences(outcome);
                 }
             }
+            ClientContextMenuAction::NewGroup => {
+                let parent_path = self.workspace_visual_group(&workspace_id);
+                // Seeded with the workspace's own path plus a
+                // separator, so confirming after typing a leaf nests
+                // the new group under the current one (ceo-bora#303).
+                let input = parent_path
+                    .as_deref()
+                    .map(|parent| format!("{parent}/"))
+                    .unwrap_or_default();
+                self.overlay = Some(ClientShellOverlay::Rename(ClientRenameOverlay {
+                    title: "new group",
+                    input,
+                    replace_on_type: false,
+                    target: ClientRenameTarget::NewGroup {
+                        workspace_id,
+                        parent_path,
+                    },
+                }));
+            }
+            ClientContextMenuAction::MoveToGroup(path) => self.push_endpoint_method(
+                crate::api::schema::Method::WorkspaceSetGroup(
+                    crate::api::schema::WorkspaceSetGroupParams {
+                        workspace_id,
+                        group: Some(path),
+                    },
+                ),
+                outcome,
+            ),
+            ClientContextMenuAction::RenameGroup => {
+                if let Some(old_path) = self.workspace_visual_group(&workspace_id) {
+                    self.open_group_rename_overlay(old_path);
+                }
+            }
+            ClientContextMenuAction::RemoveFromGroup => self.push_endpoint_method(
+                crate::api::schema::Method::WorkspaceSetGroup(
+                    crate::api::schema::WorkspaceSetGroupParams {
+                        workspace_id,
+                        group: None,
+                    },
+                ),
+                outcome,
+            ),
             _ => {}
         }
+    }
+
+    fn activate_group_header_context_action(
+        &mut self,
+        path: String,
+        action: ClientContextMenuAction,
+        outcome: &mut ClientShellInput,
+    ) {
+        match action {
+            ClientContextMenuAction::RenameGroup => self.open_group_rename_overlay(path),
+            ClientContextMenuAction::ToggleGroup => {
+                let endpoint_id = self.active_endpoint_id.clone();
+                self.toggle_collapsed_group(&endpoint_id, format!("vg:{path}"));
+                self.persist_chrome_preferences(outcome);
+            }
+            ClientContextMenuAction::UngroupAll => {
+                for method in self.group_repath_methods(&path, None) {
+                    self.push_endpoint_method(method, outcome);
+                }
+            }
+            ClientContextMenuAction::NewWorkspaceInGroup => {
+                if self.config.prompt_new_workspace_name {
+                    self.open_new_workspace_overlay_with_group(Some(path));
+                } else {
+                    self.push_endpoint_method(
+                        crate::api::schema::Method::WorkspaceCreate(
+                            crate::api::schema::WorkspaceCreateParams {
+                                group: Some(path),
+                                source_workspace_id: None,
+                                cwd: None,
+                                focus: true,
+                                label: None,
+                                env: Default::default(),
+                            },
+                        ),
+                        outcome,
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn workspace_visual_group(&self, workspace_id: &str) -> Option<String> {
+        self.snapshot
+            .as_deref()?
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.workspace_id == workspace_id)?
+            .visual_group
+            .as_deref()
+            .and_then(super::sidebar::normalize_group_path)
+    }
+
+    /// Prompt for the last segment of `old_path`; the parent prefix is
+    /// kept as-is and re-applied on save (ceo-bora#303).
+    fn open_group_rename_overlay(&mut self, old_path: String) {
+        let leaf = old_path.rsplit('/').next().unwrap_or_default().to_owned();
+        self.overlay = Some(ClientShellOverlay::Rename(ClientRenameOverlay {
+            title: "rename group",
+            input: leaf,
+            replace_on_type: false,
+            target: ClientRenameTarget::Group { old_path },
+        }));
+    }
+
+    /// One `WorkspaceSetGroup` per workspace sitting at `path` or nested
+    /// under it. `replacement` swaps that prefix (keeping each workspace's
+    /// own relative suffix); `None` ungroups them all. Matches against each
+    /// workspace's NORMALIZED `visual_group` (`sidebar::normalize_group_path`),
+    /// not the raw wire string -- `path` itself, coming from a rendered
+    /// header or `workspace_visual_group`, is already normalized, and a raw
+    /// value like `"foo//bar"` must still match the canonical `"foo/bar"`
+    /// header it renders under, or renaming/ungrouping from that header
+    /// silently leaves it untouched (cubic review, ceo-bora#303 PR #32).
+    pub(super) fn group_repath_methods(
+        &self,
+        path: &str,
+        replacement: Option<&str>,
+    ) -> Vec<crate::api::schema::Method> {
+        let Some(snapshot) = self.snapshot.as_deref() else {
+            return Vec::new();
+        };
+        let prefix = format!("{path}/");
+        snapshot
+            .workspaces
+            .iter()
+            .filter_map(|workspace| {
+                let group = workspace
+                    .visual_group
+                    .as_deref()
+                    .and_then(super::sidebar::normalize_group_path)?;
+                let suffix = if group == path {
+                    None
+                } else {
+                    Some(group.strip_prefix(prefix.as_str())?.to_owned())
+                };
+                let group = replacement.map(|replacement| match &suffix {
+                    Some(suffix) => format!("{replacement}/{suffix}"),
+                    None => replacement.to_owned(),
+                });
+                Some(crate::api::schema::Method::WorkspaceSetGroup(
+                    crate::api::schema::WorkspaceSetGroupParams {
+                        workspace_id: workspace.workspace_id.clone(),
+                        group,
+                    },
+                ))
+            })
+            .collect()
     }
 
     fn activate_tab_context_action(

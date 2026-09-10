@@ -231,6 +231,10 @@ pub(super) struct ShellRenderState<'a> {
     pub(super) selected_workspace_id: Option<&'a str>,
     pub(super) dragged_workspace_id: Option<&'a str>,
     pub(super) workspace_drop_indicator_row: Option<u16>,
+    /// Frame counter for the animated `Working` spinner glyph
+    /// (`status_icon_animated`, ceo-bora#303); see
+    /// `ClientShellState::spinner_tick`.
+    pub(super) tick: u32,
 }
 
 pub(super) fn render_shell(

@@ -369,6 +369,26 @@ pub(super) enum ClientRenameTarget {
         source_workspace_id: Option<String>,
         cwd: Option<String>,
         suggested_name: String,
+        /// Inherited `visual_group` of the focused workspace when the
+        /// prompt was opened (ceo-bora#303: a new workspace joins the
+        /// focused workspace's Folders group by default). `None` in
+        /// Flat/Repo or when the focused workspace is ungrouped.
+        group: Option<String>,
+    },
+    /// ceo-bora#303: prompt for the name of a brand-new Folders group
+    /// to move `workspace_id` into. `parent_path` is the workspace's
+    /// own current `visual_group`, used both to seed the prompt with an
+    /// editable `{parent}/` prefix and to reject a confirm that never
+    /// added a leaf segment.
+    NewGroup {
+        workspace_id: String,
+        parent_path: Option<String>,
+    },
+    /// ceo-bora#303: rename the Folders group at `old_path`. Only the
+    /// last segment is edited; every member of the group and of its
+    /// nested subgroups is re-pathed under the new name.
+    Group {
+        old_path: String,
     },
     Workspace {
         workspace_id: String,
@@ -583,7 +603,9 @@ pub(super) struct ClientWorktreeRemoveOverlay {
     pub(super) force_confirmation: bool,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// `MoveToGroup` carries a group path, so this is `Clone` but not
+/// `Copy` (ceo-bora#303).
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum ClientContextMenuAction {
     Rename,
     Close,
@@ -600,6 +622,19 @@ pub(super) enum ClientContextMenuAction {
     Zoom,
     ToggleRightClickPassthrough,
     ClosePane,
+    /// Prompt for a new Folders group holding this workspace.
+    NewGroup,
+    /// Move this workspace into the carried existing group path.
+    MoveToGroup(String),
+    /// Rename the Folders group this workspace (or header) belongs to.
+    RenameGroup,
+    /// Clear this workspace's `visual_group`.
+    RemoveFromGroup,
+    /// Clear `visual_group` for every member of a group and of its
+    /// nested subgroups.
+    UngroupAll,
+    /// Create a workspace already inside the right-clicked group.
+    NewWorkspaceInGroup,
 }
 
 #[derive(Debug)]
@@ -610,6 +645,12 @@ pub(super) enum ClientContextMenuTarget {
         is_linked_worktree: bool,
         has_worktree_children: bool,
         collapsed: bool,
+        /// The right-clicked workspace's own `visual_group`, captured
+        /// so `items()` stays a pure function of the target.
+        visual_group: Option<String>,
+        /// Every distinct `visual_group` path in the snapshot, sorted,
+        /// backing the flattened "move to group" item list.
+        group_paths: Vec<String>,
     },
     Tab {
         tab_id: String,
@@ -622,6 +663,9 @@ pub(super) enum ClientContextMenuTarget {
         has_manual_label: bool,
         right_click_passthrough: bool,
     },
+    /// ceo-bora#303: a Folders group header row. `path` is the full
+    /// `/`-separated group path, without the `vg:` collapse prefix.
+    GroupHeader { path: String, collapsed: bool },
 }
 
 #[derive(Debug)]
@@ -633,7 +677,7 @@ pub(super) struct ClientContextMenuOverlay {
 }
 
 pub(super) struct ClientContextMenuItem {
-    pub(super) label: &'static str,
+    pub(super) label: std::borrow::Cow<'static, str>,
     pub(super) action: ClientContextMenuAction,
 }
 
@@ -943,6 +987,12 @@ pub(crate) struct ClientShellState {
     pub(super) reveal_focused_tab: bool,
     pub(super) last_tab_bar_width: Option<u16>,
     pub(super) last_composed_size: Option<(u16, u16)>,
+    /// Frame counter for the animated `Working` spinner glyph
+    /// (`status_icon_animated`, ceo-bora#303), incremented once per composed
+    /// frame in `compose()`. Never a dedicated timer: see
+    /// `has_working_agent`, which only makes the client's *existing* ~100ms
+    /// poll wake also force a repaint while something is Working.
+    pub(super) spinner_tick: u32,
     pub(super) hits: ShellHitMap,
     pub(super) endpoints: Vec<ClientShellEndpoint>,
     pub(super) active_endpoint_id: ClientEndpointId,
@@ -1100,6 +1150,7 @@ impl ClientShellState {
             reveal_focused_tab: true,
             last_tab_bar_width: None,
             last_composed_size: None,
+            spinner_tick: 0,
             hits: ShellHitMap::default(),
             endpoints: vec![local_endpoint()],
             active_endpoint_id: ClientEndpointId::Local,
@@ -1175,6 +1226,25 @@ impl ClientShellState {
     pub(super) fn mobile_layout_active(&self) -> bool {
         self.last_composed_size
             .is_some_and(|(cols, rows)| !self.layout(cols, rows).mobile_header.is_empty())
+    }
+
+    /// True while any agent is `Working` on ANY endpoint's cached snapshot
+    /// -- not just the active `self.snapshot` -- so the client's already-
+    /// firing ~100ms poll wake (`timer_delay`) also forces a repaint while
+    /// a background machine's row still needs to animate in the expanded
+    /// multi-machine sidebar (`endpoint_sidebar.rs::render_expanded` draws
+    /// every endpoint's cached snapshot, not only the active one).
+    /// (`status_icon_animated`, ceo-bora#303). No dedicated timer: this
+    /// rides the poll cadence that already exists for other reasons.
+    pub(crate) fn has_working_agent(&self) -> bool {
+        self.endpoints.iter().any(|endpoint| {
+            endpoint.snapshot.as_deref().is_some_and(|snapshot| {
+                snapshot
+                    .agents
+                    .iter()
+                    .any(|agent| agent.agent_status == crate::api::schema::AgentStatus::Working)
+            })
+        })
     }
 
     pub(super) fn collapsed_groups_for_endpoint(

@@ -361,6 +361,7 @@ pub(crate) fn render_sidebar(
                     selected,
                     dragged,
                     first_row_reserved_width: 0,
+                    tick: state.tick,
                 },
                 palette,
             );
@@ -695,6 +696,9 @@ pub(in crate::client::shell) struct WorkspaceRowRenderOptions {
     /// has the full `area.width` to itself and must not be clipped for a
     /// strip that never paints there. Flat/Repo pass 0 (no dots on any row).
     pub(in crate::client::shell) first_row_reserved_width: u16,
+    /// Animated-spinner frame counter (ceo-bora#303), forwarded to
+    /// `status_icon_animated` for row 0's leading glyph.
+    pub(in crate::client::shell) tick: u32,
 }
 
 pub(in crate::client::shell) fn render_workspace_rows(
@@ -713,6 +717,7 @@ pub(in crate::client::shell) fn render_workspace_rows(
         selected,
         dragged,
         first_row_reserved_width,
+        tick,
     } = options;
     for (row_index, row) in rows.iter().enumerate() {
         let y = area.y + row_index as u16;
@@ -775,7 +780,7 @@ pub(in crate::client::shell) fn render_workspace_rows(
         let spans = crate::ui::resolved_token_spans(
             row,
             (
-                status_icon(status, indicators),
+                status_icon_animated(status, indicators, tick),
                 Style::default().fg(status_color(status, palette)),
             ),
             Style::default()
@@ -808,78 +813,216 @@ pub(in crate::client::shell) fn render_workspace_rows(
     }
 }
 
-/// Folders view (`ViewMode::Folders`, ceo-bora#275): a flat workspace list
-/// that honors only user-defined `visual_group` folders. No repo
-/// auto-grouping and no branch brackets, unlike `ViewMode::Repo`. A group
-/// is anchored at its first member's position in workspace-vec order;
-/// later members are pulled up under the shared header. Ungrouped
-/// workspaces stay flat, in the same relative order.
+/// Folders view (`ViewMode::Folders`, ceo-bora#275, reshaped by
+/// ceo-bora#303): a workspace list that honors only user-defined
+/// `visual_group` folders. No repo auto-grouping and no branch brackets,
+/// unlike `ViewMode::Repo`.
+///
+/// `visual_group` is read as a `/`-separated PATH -- a purely client-side
+/// reinterpretation of the same wire string, no protocol change:
+/// `"alpha"` is a top-level folder, `"bora-sync/docs"` is a `docs` folder
+/// nested one level under `bora-sync`. A parent path that no workspace
+/// sits on directly still gets a header row; it is synthesized from its
+/// descendants.
+///
+/// Owner's ruling (ceo-bora#303, 2026-09-10): "membros de pasta tem recuo
+/// proprio (por nivel, para o aninhamento), e a lista se organiza como o
+/// `folders_view_entries` do fork fazia -- soltos primeiro, depois cada
+/// pasta com seus membros -- nunca uma linha solta abaixo de um cabecalho
+/// sem separacao visual." So the order is: every ungrouped ("loose")
+/// workspace first, keeping its relative `snapshot.workspaces` order,
+/// then each top-level folder in order of first appearance among grouped
+/// workspaces; a folder is its header, then its DIRECT members (again in
+/// workspace order), then each subfolder, applying the same rule
+/// recursively. A folder is NOT anchored at its first member's position
+/// in workspace-vec order any more -- that older behavior is exactly what
+/// left a loose row sitting under a header at the same indent, reading as
+/// if it belonged to that folder.
 pub(in crate::client::shell) enum FoldersRow {
     GroupHeader {
+        /// FULL `/`-separated path. The header paints only
+        /// `group_display_name` of it, but the whole path is what the
+        /// collapse key and `WorkspaceSetGroup` need.
         name: String,
         collapse_key: String,
+        /// `group_depth` of `name`: 0 for a top-level folder, 1 for a
+        /// subfolder of one, and so on.
+        depth: u16,
     },
-    /// `in_group` is carried on the entry (rather than re-derived at
-    /// render time) so `folders_row_gap` and the render loop agree on
-    /// which rows stay glued to the row above them without a second
-    /// lookup into `members`.
-    Workspace {
-        index: usize,
-        in_group: bool,
-    },
+    /// `depth` is carried on the entry (rather than re-derived at render
+    /// time) so `folders_row_gap`, the row-height pass and the render loop
+    /// agree on indentation and on which rows stay glued to the row above
+    /// them, without a second lookup into the folder map. 0 is a loose
+    /// workspace, 1 a direct member of a top-level folder, 2 a member one
+    /// level deeper.
+    Workspace { index: usize, depth: u16 },
+}
+
+/// How many `/`-separated levels sit above `path`'s own segment: 0 for a
+/// top-level folder, 1 for `"bora-sync/docs"`.
+fn group_depth(path: &str) -> u16 {
+    path.matches('/').count().min(u16::MAX as usize) as u16
+}
+
+/// The last `/`-separated segment -- what a nested header paints, so
+/// `"bora-sync/docs"` shows `docs` instead of repeating its ancestry.
+fn group_display_name(path: &str) -> &str {
+    path.rsplit('/').next().unwrap_or(path)
+}
+
+/// Everything before the last `/`, or `None` when `path` is top-level.
+/// Only ever called on an already-`normalize_group_path`-ed string, so a
+/// doubled or trailing `/` can't produce an empty parent segment here.
+fn group_parent_path(path: &str) -> Option<&str> {
+    path.rsplit_once('/').map(|(parent, _)| parent)
+}
+
+/// A raw `visual_group` value, defended against an empty or malformed
+/// `/`-separated segment (`"foo/"`, `"foo//bar"`, `""`) reaching the
+/// folder tree: nothing upstream of the wire field guarantees this shape
+/// (the CLI takes any string; the UI's own "New/Rename group…" prompts
+/// trim it, but that is a presentation-layer guarantee, not a wire one).
+/// Drops empty segments and returns `None` when nothing is left, which
+/// `folders_entries` treats identically to "ungrouped" (cubic review,
+/// ceo-bora#303 PR #32 -- an unnormalized `"foo/"` rendered a blank header).
+pub(in crate::client::shell) fn normalize_group_path(path: &str) -> Option<String> {
+    let segments = path
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .collect::<Vec<_>>();
+    (!segments.is_empty()).then(|| segments.join("/"))
+}
+
+/// The full folder tree derived from `snapshot`, normalized: `direct` maps
+/// a folder path to the indices of workspaces sitting on it exactly;
+/// `group_paths` lists every folder that exists at all -- including a
+/// parent with no workspace directly on it, synthesized from its
+/// descendants -- ordered ancestors-before-descendants, in order of first
+/// appearance among grouped workspaces. Shared by `folders_entries` (which
+/// walks it depth-first for rendering) and the context menu's "Move to
+/// group" list, which needs every VISIBLE folder, not only paths with a
+/// direct exact member (cubic review, ceo-bora#303 PR #32).
+pub(in crate::client::shell) fn folders_group_tree(
+    snapshot: &ClientShellSnapshot,
+) -> (HashMap<String, Vec<usize>>, Vec<String>) {
+    let mut direct: HashMap<String, Vec<usize>> = HashMap::new();
+    let mut group_paths: Vec<String> = Vec::new();
+    for (index, workspace) in snapshot.workspaces.iter().enumerate() {
+        let Some(group) = workspace
+            .visual_group
+            .as_deref()
+            .and_then(normalize_group_path)
+        else {
+            continue;
+        };
+        direct.entry(group.clone()).or_default().push(index);
+        let mut ancestry = Vec::new();
+        let mut cursor = Some(group);
+        while let Some(path) = cursor {
+            let parent = group_parent_path(&path).map(str::to_owned);
+            ancestry.push(path);
+            cursor = parent;
+        }
+        for path in ancestry.into_iter().rev() {
+            if !group_paths.contains(&path) {
+                group_paths.push(path);
+            }
+        }
+    }
+    (direct, group_paths)
 }
 
 pub(in crate::client::shell) fn folders_entries(
     snapshot: &ClientShellSnapshot,
     collapsed_groups: &HashSet<String>,
 ) -> Vec<FoldersRow> {
-    let mut members: HashMap<&str, Vec<usize>> = HashMap::new();
-    for (index, workspace) in snapshot.workspaces.iter().enumerate() {
-        if let Some(group) = workspace.visual_group.as_deref() {
-            members.entry(group).or_default().push(index);
-        }
-    }
-    let mut entries = Vec::new();
-    let mut emitted = HashSet::<&str>::new();
-    for (index, workspace) in snapshot.workspaces.iter().enumerate() {
-        let Some(group) = workspace.visual_group.as_deref() else {
-            entries.push(FoldersRow::Workspace {
-                index,
-                in_group: false,
-            });
-            continue;
-        };
-        if !emitted.insert(group) {
-            continue;
-        }
-        let collapse_key = format!("vg:{group}");
-        entries.push(FoldersRow::GroupHeader {
-            name: group.to_owned(),
-            collapse_key: collapse_key.clone(),
-        });
-        if collapsed_groups.contains(&collapse_key) {
-            continue;
-        }
-        if let Some(group_members) = members.get(group) {
-            for &member_index in group_members {
-                entries.push(FoldersRow::Workspace {
-                    index: member_index,
-                    in_group: true,
-                });
-            }
-        }
+    // Loose workspaces first, relative order untouched. A workspace whose
+    // raw `visual_group` normalizes away to nothing counts as loose too.
+    let mut entries = snapshot
+        .workspaces
+        .iter()
+        .enumerate()
+        .filter(|(_, workspace)| {
+            workspace
+                .visual_group
+                .as_deref()
+                .and_then(normalize_group_path)
+                .is_none()
+        })
+        .map(|(index, _)| FoldersRow::Workspace { index, depth: 0 })
+        .collect::<Vec<_>>();
+    let (direct, group_paths) = folders_group_tree(snapshot);
+    for path in group_paths
+        .iter()
+        .filter(|path| group_parent_path(path).is_none())
+    {
+        push_folders_group(path, &group_paths, &direct, collapsed_groups, &mut entries);
     }
     entries
 }
 
+/// One folder subtree, depth-first: header, own direct members, then each
+/// subfolder (ceo-bora#303 ordering). A collapsed folder emits its header
+/// and nothing below it -- members and subfolders alike -- which is how
+/// collapse keeps working unchanged for nested paths.
+fn push_folders_group(
+    path: &str,
+    group_paths: &[String],
+    direct: &HashMap<String, Vec<usize>>,
+    collapsed_groups: &HashSet<String>,
+    entries: &mut Vec<FoldersRow>,
+) {
+    let depth = group_depth(path);
+    let collapse_key = format!("vg:{path}");
+    entries.push(FoldersRow::GroupHeader {
+        name: path.to_owned(),
+        collapse_key: collapse_key.clone(),
+        depth,
+    });
+    if collapsed_groups.contains(&collapse_key) {
+        return;
+    }
+    for &index in direct.get(path).into_iter().flatten() {
+        entries.push(FoldersRow::Workspace {
+            index,
+            depth: depth.saturating_add(1),
+        });
+    }
+    for child in group_paths
+        .iter()
+        .filter(|candidate| group_parent_path(candidate) == Some(path))
+    {
+        push_folders_group(child, group_paths, direct, collapsed_groups, entries);
+    }
+}
+
+/// Columns a Folders row is pushed right per nesting level (ceo-bora#303):
+/// two per level, so a folder's members read as clearly inside their
+/// header and a loose row -- always at column 0 -- can never be mistaken
+/// for one, which is the bug the owner reported on 2026-09-10. Clamped
+/// against the row width so a very deep path cannot eat the whole row on
+/// a narrow sidebar.
+fn folders_depth_indent(depth: u16, width: u16) -> u16 {
+    depth.saturating_mul(2).min(width / 2)
+}
+
 /// Row gap shared by the scroll-metrics pass and the render loop
 /// (lockstep, same shape as `entry_row_height` in the pre-merge fork):
-/// a group's header and its members stay glued (gap 0), everything else
-/// gets `config.spaces.row_gap`.
+/// anything that lives INSIDE a folder -- a member row or a nested
+/// subfolder header, i.e. any entry at `depth > 0` -- stays glued to the
+/// row above it (gap 0), so a subtree paints as one block. Everything
+/// else, top-level folder headers and loose rows included, gets
+/// `config.spaces.row_gap`, which is what keeps a loose row from ever
+/// touching a header (ceo-bora#303).
 fn folders_row_gap(entries: &[FoldersRow], index: usize, row_gap: u16) -> u16 {
     match entries.get(index + 1) {
-        Some(FoldersRow::Workspace { in_group: true, .. }) => 0,
-        Some(_) => row_gap,
+        Some(FoldersRow::Workspace { depth, .. } | FoldersRow::GroupHeader { depth, .. }) => {
+            if *depth > 0 {
+                0
+            } else {
+                row_gap
+            }
+        }
         None => 0,
     }
 }
@@ -937,6 +1080,7 @@ fn render_folders_pane_dots(
     indicators: crate::config::StatusIndicatorStyle,
     idle_attention_seconds: u64,
     workspace_focused: bool,
+    tick: u32,
     palette: &Palette,
 ) {
     let dots_width = folders_dots_reserved_width(dots.len()).saturating_sub(1);
@@ -950,7 +1094,7 @@ fn render_folders_pane_dots(
             dot_x,
             rect.y,
             rect.right(),
-            status_icon(*status, indicators),
+            status_icon_animated(*status, indicators, tick),
             Style::default()
                 .fg(attention::pane_attention_color(
                     *status,
@@ -1053,13 +1197,21 @@ pub(in crate::client::shell) fn render_folders_workspace_list(
             .unwrap_or(1)
             .min(body.height);
         match entry {
-            FoldersRow::GroupHeader { name, collapse_key } => {
+            FoldersRow::GroupHeader {
+                name,
+                collapse_key,
+                depth,
+            } => {
+                // The HIT rect stays the full row (click and collapse toggle
+                // are unchanged at any depth); only the painted chevron and
+                // label move right with the nesting level.
                 let rect = Rect::new(body.x, y, content_width, 1);
+                let indent = folders_depth_indent(*depth, content_width);
                 let collapsed = state.collapsed_groups.contains(collapse_key);
                 let chevron = if collapsed { "▸" } else { "▾" };
                 let x = put_segment(
                     buffer,
-                    rect.x,
+                    rect.x.saturating_add(indent),
                     rect.y,
                     rect.right(),
                     chevron,
@@ -1071,7 +1223,7 @@ pub(in crate::client::shell) fn render_folders_workspace_list(
                     x,
                     rect.y,
                     rect.right().saturating_sub(x),
-                    name,
+                    group_display_name(name),
                     Style::default()
                         .fg(palette.overlay0)
                         .add_modifier(Modifier::BOLD),
@@ -1079,7 +1231,7 @@ pub(in crate::client::shell) fn render_folders_workspace_list(
                 hits.folders_group_headers
                     .push((rect, collapse_key.clone()));
             }
-            FoldersRow::Workspace { index, .. } => {
+            FoldersRow::Workspace { index, depth } => {
                 let Some(workspace) = snapshot.workspaces.get(*index) else {
                     continue;
                 };
@@ -1087,6 +1239,18 @@ pub(in crate::client::shell) fn render_folders_workspace_list(
                     break;
                 }
                 let rect = Rect::new(body.x, y, content_width, row_height);
+                // Nesting indent (ceo-bora#303): the row's HIT rect, its
+                // highlight and its right-aligned pane dots all keep the
+                // full row -- unchanged behavior -- while the row-template
+                // text starts `indent` columns further right, so a member
+                // of a folder can never line up with a loose row.
+                let indent = folders_depth_indent(*depth, content_width);
+                let text_rect = Rect::new(
+                    rect.x.saturating_add(indent),
+                    rect.y,
+                    rect.width.saturating_sub(indent),
+                    row_height,
+                );
                 // `hide_pane_badges` suppresses the dots outright: no dot
                 // states are computed and the whole row width goes to text.
                 let dots = if config.hide_pane_badges {
@@ -1111,7 +1275,7 @@ pub(in crate::client::shell) fn render_folders_workspace_list(
                 let rows = workspace_rows(workspace, status, false, &config.spaces);
                 render_workspace_rows(
                     buffer,
-                    rect,
+                    text_rect,
                     workspace,
                     status,
                     config.status_indicators,
@@ -1126,6 +1290,7 @@ pub(in crate::client::shell) fn render_folders_workspace_list(
                         selected,
                         dragged,
                         first_row_reserved_width: reserved,
+                        tick: state.tick,
                     },
                     palette,
                 );
@@ -1137,6 +1302,7 @@ pub(in crate::client::shell) fn render_folders_workspace_list(
                         config.status_indicators,
                         config.idle_attention_seconds,
                         workspace.focused,
+                        state.tick,
                         palette,
                     );
                 }

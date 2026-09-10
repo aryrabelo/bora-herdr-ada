@@ -58,6 +58,7 @@ impl ClientShellState {
                 selected_workspace_id: self.navigate_workspace_id.as_deref(),
                 dragged_workspace_id: None,
                 workspace_drop_indicator_row: None,
+                tick: self.spinner_tick,
             },
             &mut self.hits,
         );
@@ -102,6 +103,7 @@ impl ClientShellState {
 
     pub(crate) fn compose(&mut self, cols: u16, rows: u16) -> Option<FrameData> {
         self.last_composed_size = Some((cols, rows));
+        self.spinner_tick = self.spinner_tick.wrapping_add(1);
         if self.snapshot.is_none() || self.pane_surface.is_none() {
             return Some(self.compose_unavailable(cols, rows));
         }
@@ -161,6 +163,7 @@ impl ClientShellState {
                     .flatten(),
                 dragged_workspace_id,
                 workspace_drop_indicator_row,
+                tick: self.spinner_tick,
             },
         );
         self.hits.panes = surface

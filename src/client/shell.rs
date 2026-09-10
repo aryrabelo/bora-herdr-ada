@@ -217,6 +217,30 @@ fn status_dot(status: crate::api::schema::AgentStatus) -> &'static str {
     status_icon(status, crate::config::StatusIndicatorStyle::Dots)
 }
 
+// Braille spinner frames for the animated `Working` glyph (ceo-bora#303,
+// owner ruling 2026-09-10: "working" reads as a rotating braille spinner,
+// matching the retired fork's `SPINNERS` set). `tick` is
+// `ClientShellState::spinner_tick`, incremented once per composed frame --
+// never a dedicated timer (see `ClientShellState::has_working_agent`, which
+// only makes the client's *existing* ~100ms poll wake also force a repaint
+// while something is Working, so the frame naturally advances at that
+// cadence). Used ONLY by the three sidebar view modes (Flat/Folders/Repo,
+// ceo-bora#275/#302 in `sidebar.rs`) -- every other surface (agent panel,
+// mobile view, endpoint list, pane navigator) keeps the plain static glyph
+// from `status_icon` above; idle/blocked/done glyphs never animate.
+const SPINNERS: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+pub(super) fn status_icon_animated(
+    status: crate::api::schema::AgentStatus,
+    style: crate::config::StatusIndicatorStyle,
+    tick: u32,
+) -> &'static str {
+    if status == crate::api::schema::AgentStatus::Working {
+        return SPINNERS[tick as usize % SPINNERS.len()];
+    }
+    status_icon(status, style)
+}
+
 fn status_priority(status: crate::api::schema::AgentStatus) -> u8 {
     use crate::api::schema::AgentStatus;
     match status {

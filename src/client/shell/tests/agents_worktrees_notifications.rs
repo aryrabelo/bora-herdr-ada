@@ -868,6 +868,73 @@ fn named_workspace_overlay_targets_projected_source_workspace() {
     ));
 }
 
+/// In Navigate mode the `cmd+n`/`keys.workspace_new` group must come from
+/// the SAME workspace used as `source_workspace_id` (`workspace_action_id()`,
+/// i.e. the selected `navigate_workspace_id`) -- never from whichever
+/// workspace the server reports as `focused`, which can be a different
+/// one while browsing (cubic review, ceo-bora#303 PR #32).
+#[test]
+fn named_workspace_overlay_group_matches_the_selected_not_the_focused_workspace() {
+    let mut config = Config::default();
+    config.ui.prompt_new_workspace_name = true;
+    config.ui.view_mode = crate::config::ViewMode::Folders;
+    let mut projected = snapshot();
+    // The server-focused workspace ("ws_1") sits in "alpha"; the SELECTED
+    // (navigate_workspace_id) workspace ("ws_2") sits in "beta".
+    projected.workspaces[0].visual_group = Some("alpha".into());
+    let mut second = projected.workspaces[0].clone();
+    second.workspace_id = "ws_2".into();
+    second.number = 2;
+    second.label = "second".into();
+    second.focused = false;
+    second.visual_group = Some("beta".into());
+    projected.workspaces.push(second);
+
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+    state.set_snapshot(Box::new(projected));
+    state.mode = ClientShellMode::Navigate;
+    state.navigate_workspace_id = Some("ws_2".into());
+
+    let mut open = ClientShellInput::default();
+    state.record_binding(
+        crate::input::KeybindMatch::Action(crate::input::KeybindAction::NewWorkspace),
+        &mut open,
+    );
+    assert!(matches!(
+        state.overlay.as_ref(),
+        Some(ClientShellOverlay::Rename(ClientRenameOverlay {
+            target: ClientRenameTarget::NewWorkspace {
+                source_workspace_id,
+                group: Some(group),
+                ..
+            },
+            ..
+        })) if source_workspace_id.as_deref() == Some("ws_2") && group == "beta"
+    ));
+
+    // Same rule on the direct-create path (`prompt_new_workspace_name = false`).
+    let mut direct_config = Config::default();
+    direct_config.ui.view_mode = crate::config::ViewMode::Folders;
+    let mut direct_state = ClientShellState::new(ClientShellConfig::from_config(&direct_config));
+    direct_state.set_snapshot(Box::new(state.snapshot.as_deref().unwrap().clone()));
+    direct_state.mode = ClientShellMode::Navigate;
+    direct_state.navigate_workspace_id = Some("ws_2".into());
+    let mut create = ClientShellInput::default();
+    direct_state.record_binding(
+        crate::input::KeybindMatch::Action(crate::input::KeybindAction::NewWorkspace),
+        &mut create,
+    );
+    let [ClientShellAction::Endpoint { request, .. }] = &create.actions[..] else {
+        panic!("direct-create new workspace should use endpoint API");
+    };
+    assert!(matches!(
+        &request.method,
+        crate::api::schema::Method::WorkspaceCreate(params)
+            if params.source_workspace_id.as_deref() == Some("ws_2")
+                && params.group.as_deref() == Some("beta")
+    ));
+}
+
 #[test]
 fn navigate_mode_selects_workspace_locally_then_focuses_by_stable_id() {
     let mut snapshot = snapshot();
