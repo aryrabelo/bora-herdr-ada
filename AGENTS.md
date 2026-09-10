@@ -192,6 +192,21 @@ classes, and how to resolve them, so the next sync is cheap:
   2026-05/06). The fork uses `${{ github.token }}` and `github-actions[bot]` (41898282)
   everywhere — on merges, swap any reintroduced KANGAL reference back, and keep the
   example text in the pre-release-audit prompts free of it.
+- **`.github/{MAINTAINERS,APPROVED_CONTRIBUTORS}` are sync conflict surface, and losing
+  the fork owner from them locks him out of his own repository.** `pr-gate.yml` runs on
+  `pull_request_target` and reads BOTH lists from the DEFAULT BRANCH, not from the PR:
+  an author who is in neither gets an "unsolicited implementation pull request" comment
+  and the PR is closed automatically, in under ten seconds. That already happened here —
+  `aryrabelo` was in neither list until `5116cec0` (2026-09-09 15:41Z), so ceo-bora#28
+  and #29 were both auto-closed, and only #29 was recovered (a maintainer reopening is
+  honored by the gate's own `hasVerifiedRecovery`, so reopen is the fix, never a force
+  merge). The merge-friction part: upstream owns both files and the 0.9.0 sync
+  (`27c65c27`) really did touch `.github/APPROVED_CONTRIBUTORS`, so a future sync taking
+  `theirs` silently drops the fork's own entries and the lockout returns identically.
+  On every upstream merge, diff both files and keep the fork's lines. The symptom does
+  NOT read as a merge regression — it reads as "GitHub is blocking my PRs" — so check
+  the two lists on the default branch before investigating anything else. (learned
+  2026-09-10, binding.)
 
 - **The 0.9.0 sync was a client rewrite, and it landed in two stages (ceo-bora#273,
   #274, 2026-09-08/09).** Upstream moved the entire TUI into `src/client/shell/*` +
