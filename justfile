@@ -192,6 +192,12 @@ release-docs-check:
         echo "run this before releasing: reconcile CHANGELOG.md and docs/next/CHANGELOG.md (the staging file)"; \
         exit 1; \
     }
+    @for name in latest preview; do \
+        cmp -s "distribution/$name.json" "website/$name.json" || { \
+            echo "error: website/$name.json is out of step with distribution/$name.json (bora <= 0.45.5 fetches the website/ path); cp it and commit"; \
+            exit 1; \
+        }; \
+    done
     @for file in CONFIGURATION.md INTEGRATIONS.md SOCKET_API.md; do \
         if [ -e "$file" ]; then \
             echo "error: $file was replaced by technical docs; remove the root copy"; \

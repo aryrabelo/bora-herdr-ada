@@ -4,6 +4,9 @@ Bora is a fork of [herdr](https://github.com/ogulcancelik/herdr). This changelog
 
 ## Unreleased
 
+### Fixed
+- `bora update` works again from 0.45.5 and earlier: those builds fetch the release manifest at `website/latest.json`, which the 0.9.0 sync had moved to `distribution/`. Both paths are now published and kept identical.
+
 ## [0.46.9] - 2026-09-11
 
 ### Synced from herdr

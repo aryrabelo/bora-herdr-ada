@@ -438,7 +438,9 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A docs/preview distribution/preview.json
+          # bora <= 0.45.5 still fetches the manifest at website/; keep the copy in step.
+          cp distribution/preview.json website/preview.json
+          git add -A docs/preview distribution/preview.json website/preview.json
           git diff --cached --quiet || git commit -m "docs: publish preview documentation"
           remote="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           for attempt in 1 2 3; do
