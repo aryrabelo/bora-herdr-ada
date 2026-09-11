@@ -41,7 +41,7 @@ https://github.com/user-attachments/assets/043ec09f-4bdd-41d5-aee0-8fda6b83e267
 推荐使用预编译二进制——linux（x86_64、aarch64）、macos（x86_64、aarch64）和 windows（x86_64）：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/aryrabelo/bora-herdr-ada/main/website/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/aryrabelo/bora-herdr-ada/main/distribution/install.sh | sh
 ```
 
 安装到 `~/.local/bin`（可通过 `HERDR_INSTALL_DIR` 覆盖）；需要 `curl` 和 `awk`。
