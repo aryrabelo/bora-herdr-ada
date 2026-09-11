@@ -2,6 +2,7 @@
 
 pub mod support;
 
+use std::ffi::OsStr;
 use std::fs;
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
@@ -122,6 +123,24 @@ fn spawn_herdr_with_options(
     path_override: Option<&Path>,
     shell: &str,
 ) -> SpawnedHerdr {
+    spawn_herdr_with_env(
+        config_home,
+        runtime_dir,
+        socket_path,
+        path_override,
+        shell,
+        &[],
+    )
+}
+
+fn spawn_herdr_with_env(
+    config_home: &Path,
+    runtime_dir: &Path,
+    socket_path: &Path,
+    path_override: Option<&Path>,
+    shell: &str,
+    extra_env: &[(&str, &OsStr)],
+) -> SpawnedHerdr {
     fs::create_dir_all(config_home.join("bora")).unwrap();
     fs::create_dir_all(runtime_dir).unwrap();
     register_runtime_dir(runtime_dir);
@@ -155,6 +174,9 @@ fn spawn_herdr_with_options(
     cmd.env_remove("HERDR_WORKSPACE_ID");
     if let Some(path) = path_override {
         cmd.env("PATH", path);
+    }
+    for (key, value) in extra_env {
+        cmd.env(key, value);
     }
 
     let child = pair.slave.spawn_command(cmd).unwrap();
@@ -431,6 +453,97 @@ fn shutdown_preserves_session_after_shell_is_signaled() {
     );
 
     cleanup_spawned_herdr(child, base);
+}
+
+#[test]
+fn restored_pane_shell_does_not_inherit_startup_cwd_env() {
+    let _lock = test_lock();
+    let base = unique_test_dir();
+    let config_home = base.join("config");
+    let runtime_dir = base.join("runtime");
+    let socket_path = runtime_dir.join("herdr.sock");
+    let workspace_cwd = base.join("ws");
+    fs::create_dir_all(&workspace_cwd).unwrap();
+
+    // First server: create one workspace and persist it.
+    let mut first = spawn_herdr(&config_home, &runtime_dir, &socket_path);
+    wait_for_socket(&socket_path, Duration::from_secs(5));
+    let created = send_request(
+        &socket_path,
+        &format!(
+            r#"{{"id":"create","method":"workspace.create","params":{{"cwd":"{}","focus":true}}}}"#,
+            workspace_cwd.display()
+        ),
+    );
+    assert_eq!(created["result"]["type"], "workspace_created");
+    let stopped = send_request(
+        &socket_path,
+        r#"{"id":"stop","method":"server.stop","params":{}}"#,
+    );
+    assert_eq!(stopped["result"]["type"], "ok");
+    first
+        .child
+        .wait()
+        .expect("first server should stop cleanly");
+    assert!(config_home.join("bora-dev/session.json").is_file());
+
+    // Second server: restores that workspace while carrying HERDR_STARTUP_CWD,
+    // exactly as the TUI's daemon spawn does on every launch. The restored
+    // pane's shell must not see the variable: a nested `bora server` started
+    // from that shell would otherwise seed a workspace at the leaked path.
+    let startup_cwd = base.join("startup");
+    fs::create_dir_all(&startup_cwd).unwrap();
+    let second = spawn_herdr_with_env(
+        &config_home,
+        &runtime_dir,
+        &socket_path,
+        None,
+        "/bin/sh",
+        &[("HERDR_STARTUP_CWD", startup_cwd.as_os_str())],
+    );
+    wait_for_socket(&socket_path, Duration::from_secs(5));
+
+    let workspaces = send_request(
+        &socket_path,
+        r#"{"id":"ws","method":"workspace.list","params":{}}"#,
+    );
+    let workspaces = workspaces["result"]["workspaces"]
+        .as_array()
+        .expect("workspace list");
+    assert_eq!(
+        workspaces.len(),
+        1,
+        "restored session ignores the startup cwd"
+    );
+    let panes = send_request(
+        &socket_path,
+        r#"{"id":"panes","method":"pane.list","params":{}}"#,
+    );
+    let pane_id = panes["result"]["panes"][0]["pane_id"]
+        .as_str()
+        .expect("restored pane id")
+        .to_string();
+
+    let sent = send_request(
+        &socket_path,
+        &format!(
+            r#"{{"id":"probe","method":"pane.send_input","params":{{"pane_id":"{pane_id}","text":"echo startup-cwd-probe=${{HERDR_STARTUP_CWD:-unset}}","keys":["Enter"]}}}}"#
+        ),
+    );
+    assert_eq!(sent["result"]["type"], "ok");
+    let matched = send_request(
+        &socket_path,
+        &format!(
+            r#"{{"id":"wait","method":"pane.wait_for_output","params":{{"pane_id":"{pane_id}","source":"recent","lines":40,"match":{{"type":"regex","value":"^startup-cwd-probe=.*$"}},"timeout_ms":5000}}}}"#
+        ),
+    );
+    assert_eq!(matched["result"]["type"], "output_matched");
+    assert_eq!(
+        matched["result"]["matched_line"].as_str().unwrap().trim(),
+        "startup-cwd-probe=unset"
+    );
+
+    cleanup_spawned_herdr(second, base);
 }
 
 #[cfg(not(target_os = "macos"))]

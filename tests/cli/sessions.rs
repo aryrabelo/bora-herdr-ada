@@ -240,6 +240,7 @@ fn dead_server_cli_reports_one_session_aware_json_line() {
         .env("HERDR_SESSION", "unrelated")
         .env_remove("HERDR_CLIENT_SOCKET_PATH")
         .env_remove("HERDR_ENV")
+        .env_remove("HERDR_STARTUP_CWD")
         .output()
         .unwrap();
     assert_server_not_running(stale, &stale_socket, "bora");

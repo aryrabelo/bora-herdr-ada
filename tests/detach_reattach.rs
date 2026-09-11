@@ -129,6 +129,7 @@ fn spawn_server_with_config(
     cmd.env("HERDR_CONFIG_PATH", config_home.join("bora/config.toml"));
     cmd.env("SHELL", "/bin/sh");
     cmd.env_remove("HERDR_ENV");
+    cmd.env_remove("HERDR_STARTUP_CWD");
 
     let child = pair.slave.spawn_command(cmd).unwrap();
     register_spawned_herdr_pid(child.process_id());
