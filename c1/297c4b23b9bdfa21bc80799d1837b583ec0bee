@@ -1,0 +1,20 @@
+CHANGELOG.md
+  h_b156936c57c455 7-50
+Cargo.lock
+  h_b156936c57c455 135
+Cargo.toml
+  h_b156936c57c455 3
+docs/next/CHANGELOG.md
+  h_b156936c57c455 7-8
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "c1297c4b23b9bdfa21bc80799d1837b583ec0bee",
+  "prompts": {},
+  "humans": {
+    "h_b156936c57c455": {
+      "author": "Ary Rabelo <aryrabelo@gmail.com>"
+    }
+  }
+}
