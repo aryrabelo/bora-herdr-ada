@@ -1,0 +1,20 @@
+docs/next/README.md
+  h_b156936c57c455 46,89-96
+docs/next/README.pt-BR.md
+  h_b156936c57c455 46
+docs/next/README.zh-CN.md
+  h_b156936c57c455 44
+skills/herdr/SKILL.md
+  h_b156936c57c455 3,6,8,10,16,18,25,31-44,47,59,63,73-74,77-79,90-94,101-113,122,128,136,139,142,145,150,155-157,162,170-171,174,177-178,183-193,199,205-207,221,225-236,242-250,254-258,269-271
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "3adc8dc2a614b6bd8f0658026c4dcc83bd46c5e3",
+  "prompts": {},
+  "humans": {
+    "h_b156936c57c455": {
+      "author": "Ary Rabelo <aryrabelo@gmail.com>"
+    }
+  }
+}
