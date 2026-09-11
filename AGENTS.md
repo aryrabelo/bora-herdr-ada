@@ -452,6 +452,22 @@ server:
 env -u HERDR_SOCKET_PATH -u HERDR_CLIENT_SOCKET_PATH cargo run -- <command>
 ```
 
+**Integration tests that spawn a `bora server` must scrub every ambient `HERDR_*`
+variable, and `HERDR_STARTUP_CWD` is the one that bites.** Three upstream tests
+(`api_pane_output_is_fanned_out_as_pane_surface_updates`,
+`same_tab_geometry_follows_meaningful_client_activity`,
+`federated_client_starts_without_local_and_survives_its_restart`) failed only when
+`just check` ran inside a bora pane and were green on CI: the pane's shell carried
+`HERDR_STARTUP_CWD=$HOME`, the test server inherited it and seeded an extra
+workspace the test never asked for. The variable was in the pane's environment
+because `run_server` took it out of the env AFTER `App::new`, which restores the
+session and spawns every pane shell — fixed in ceo-bora#318 (bora #39) by taking it
+first. Every test harness now scrubs `HERDR_STARTUP_CWD` next to `HERDR_ENV`; when
+adding a spawn site, copy the whole scrub block (`tests/api_ping.rs`
+`spawn_herdr_with_env` is the reference), and when a test fails only on this
+machine, bisect the `HERDR_*` env before reading the test. (learned 2026-09-11,
+binding.)
+
 **Trialling a third-party plugin: `--session` is NOT isolation, and two clones
 are NOT two builds.** Three facts measured 2026-09-07 while running the
 `herdr-mirror` plugin against a second machine, each of which silently
