@@ -1,0 +1,150 @@
+README.md
+  h_b156936c57c455 46,74-96
+README.pt-BR.md
+  h_b156936c57c455 46
+README.zh-CN.md
+  h_b156936c57c455 44
+distribution/latest.json
+  h_b156936c57c455 2-5,7-11,14-18,21-39
+docs/versions/0.46.9/website/src/content/docs/agent-automation.mdx
+  h_b156936c57c455 1-204
+docs/versions/0.46.9/website/src/content/docs/agent-skill.mdx
+  h_b156936c57c455 1-67
+docs/versions/0.46.9/website/src/content/docs/agents.mdx
+  h_b156936c57c455 1-158
+docs/versions/0.46.9/website/src/content/docs/cli-reference.mdx
+  h_b156936c57c455 1-544
+docs/versions/0.46.9/website/src/content/docs/concepts.mdx
+  h_b156936c57c455 1-89
+docs/versions/0.46.9/website/src/content/docs/config-reference.mdx
+  h_b156936c57c455 1-21
+docs/versions/0.46.9/website/src/content/docs/configuration.mdx
+  h_b156936c57c455 1-589
+docs/versions/0.46.9/website/src/content/docs/connecting-machines.mdx
+  h_b156936c57c455 1-102
+docs/versions/0.46.9/website/src/content/docs/how-to-work.mdx
+  h_b156936c57c455 1-103
+docs/versions/0.46.9/website/src/content/docs/index.mdx
+  h_b156936c57c455 1-82
+docs/versions/0.46.9/website/src/content/docs/install.mdx
+  h_b156936c57c455 1-154
+docs/versions/0.46.9/website/src/content/docs/integrations.mdx
+  h_b156936c57c455 1-372
+docs/versions/0.46.9/website/src/content/docs/ja/agent-automation.mdx
+  h_b156936c57c455 1-157
+docs/versions/0.46.9/website/src/content/docs/ja/agent-skill.mdx
+  h_b156936c57c455 1-67
+docs/versions/0.46.9/website/src/content/docs/ja/agents.mdx
+  h_b156936c57c455 1-158
+docs/versions/0.46.9/website/src/content/docs/ja/cli-reference.mdx
+  h_b156936c57c455 1-491
+docs/versions/0.46.9/website/src/content/docs/ja/concepts.mdx
+  h_b156936c57c455 1-89
+docs/versions/0.46.9/website/src/content/docs/ja/config-reference.mdx
+  h_b156936c57c455 1-27
+docs/versions/0.46.9/website/src/content/docs/ja/configuration.mdx
+  h_b156936c57c455 1-582
+docs/versions/0.46.9/website/src/content/docs/ja/connecting-machines.mdx
+  h_b156936c57c455 1-100
+docs/versions/0.46.9/website/src/content/docs/ja/how-to-work.mdx
+  h_b156936c57c455 1-103
+docs/versions/0.46.9/website/src/content/docs/ja/index.mdx
+  h_b156936c57c455 1-82
+docs/versions/0.46.9/website/src/content/docs/ja/install.mdx
+  h_b156936c57c455 1-154
+docs/versions/0.46.9/website/src/content/docs/ja/integrations.mdx
+  h_b156936c57c455 1-374
+docs/versions/0.46.9/website/src/content/docs/ja/keyboard.mdx
+  h_b156936c57c455 1-112
+docs/versions/0.46.9/website/src/content/docs/ja/marketplace.mdx
+  h_b156936c57c455 1-52
+docs/versions/0.46.9/website/src/content/docs/ja/persistence-remote.mdx
+  h_b156936c57c455 1-149
+docs/versions/0.46.9/website/src/content/docs/ja/plugins.mdx
+  h_b156936c57c455 1-374
+docs/versions/0.46.9/website/src/content/docs/ja/quick-start.mdx
+  h_b156936c57c455 1-69
+docs/versions/0.46.9/website/src/content/docs/ja/session-state.mdx
+  h_b156936c57c455 1-108
+docs/versions/0.46.9/website/src/content/docs/ja/socket-api.mdx
+  h_b156936c57c455 1-754
+docs/versions/0.46.9/website/src/content/docs/ja/troubleshooting.mdx
+  h_b156936c57c455 1-112
+docs/versions/0.46.9/website/src/content/docs/ja/windows-beta.mdx
+  h_b156936c57c455 1-148
+docs/versions/0.46.9/website/src/content/docs/keyboard.mdx
+  h_b156936c57c455 1-112
+docs/versions/0.46.9/website/src/content/docs/marketplace.mdx
+  h_b156936c57c455 1-54
+docs/versions/0.46.9/website/src/content/docs/persistence-remote.mdx
+  h_b156936c57c455 1-157
+docs/versions/0.46.9/website/src/content/docs/plugins.mdx
+  h_b156936c57c455 1-377
+docs/versions/0.46.9/website/src/content/docs/quick-start.mdx
+  h_b156936c57c455 1-69
+docs/versions/0.46.9/website/src/content/docs/session-state.mdx
+  h_b156936c57c455 1-108
+docs/versions/0.46.9/website/src/content/docs/socket-api.mdx
+  h_b156936c57c455 1-954
+docs/versions/0.46.9/website/src/content/docs/troubleshooting.mdx
+  h_b156936c57c455 1-112
+docs/versions/0.46.9/website/src/content/docs/windows-beta.mdx
+  h_b156936c57c455 1-148
+docs/versions/0.46.9/website/src/content/docs/zh-cn/agent-automation.mdx
+  h_b156936c57c455 1-157
+docs/versions/0.46.9/website/src/content/docs/zh-cn/agent-skill.mdx
+  h_b156936c57c455 1-67
+docs/versions/0.46.9/website/src/content/docs/zh-cn/agents.mdx
+  h_b156936c57c455 1-158
+docs/versions/0.46.9/website/src/content/docs/zh-cn/cli-reference.mdx
+  h_b156936c57c455 1-491
+docs/versions/0.46.9/website/src/content/docs/zh-cn/concepts.mdx
+  h_b156936c57c455 1-89
+docs/versions/0.46.9/website/src/content/docs/zh-cn/config-reference.mdx
+  h_b156936c57c455 1-26
+docs/versions/0.46.9/website/src/content/docs/zh-cn/configuration.mdx
+  h_b156936c57c455 1-582
+docs/versions/0.46.9/website/src/content/docs/zh-cn/connecting-machines.mdx
+  h_b156936c57c455 1-100
+docs/versions/0.46.9/website/src/content/docs/zh-cn/how-to-work.mdx
+  h_b156936c57c455 1-103
+docs/versions/0.46.9/website/src/content/docs/zh-cn/index.mdx
+  h_b156936c57c455 1-82
+docs/versions/0.46.9/website/src/content/docs/zh-cn/install.mdx
+  h_b156936c57c455 1-154
+docs/versions/0.46.9/website/src/content/docs/zh-cn/integrations.mdx
+  h_b156936c57c455 1-374
+docs/versions/0.46.9/website/src/content/docs/zh-cn/keyboard.mdx
+  h_b156936c57c455 1-112
+docs/versions/0.46.9/website/src/content/docs/zh-cn/marketplace.mdx
+  h_b156936c57c455 1-44
+docs/versions/0.46.9/website/src/content/docs/zh-cn/persistence-remote.mdx
+  h_b156936c57c455 1-149
+docs/versions/0.46.9/website/src/content/docs/zh-cn/plugins.mdx
+  h_b156936c57c455 1-333
+docs/versions/0.46.9/website/src/content/docs/zh-cn/quick-start.mdx
+  h_b156936c57c455 1-69
+docs/versions/0.46.9/website/src/content/docs/zh-cn/session-state.mdx
+  h_b156936c57c455 1-108
+docs/versions/0.46.9/website/src/content/docs/zh-cn/socket-api.mdx
+  h_b156936c57c455 1-750
+docs/versions/0.46.9/website/src/content/docs/zh-cn/troubleshooting.mdx
+  h_b156936c57c455 1-112
+docs/versions/0.46.9/website/src/content/docs/zh-cn/windows-beta.mdx
+  h_b156936c57c455 1-148
+docs/versions/0.46.9/website/src/data/config-reference.json
+  h_b156936c57c455 1-1600
+docs/versions/manifest.json
+  h_b156936c57c455 4,6-11
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "3c4f522f5f494accaacd605d0b7da95d73e6dff1",
+  "prompts": {},
+  "humans": {
+    "h_b156936c57c455": {
+      "author": "Ary Rabelo <aryrabelo@gmail.com>"
+    }
+  }
+}
