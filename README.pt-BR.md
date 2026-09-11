@@ -43,7 +43,7 @@ https://github.com/user-attachments/assets/043ec09f-4bdd-41d5-aee0-8fda6b83e267
 recomendado, binário pré-compilado — linux (x86_64, aarch64), macos (x86_64, aarch64) e windows (x86_64):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/aryrabelo/bora-herdr-ada/main/website/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/aryrabelo/bora-herdr-ada/main/distribution/install.sh | sh
 ```
 
 instala em `~/.local/bin` (substitua com `HERDR_INSTALL_DIR`); precisa de `curl` e `awk`.

@@ -43,7 +43,7 @@ https://github.com/user-attachments/assets/043ec09f-4bdd-41d5-aee0-8fda6b83e267
 recommended, prebuilt binary — linux (x86_64, aarch64), macos (x86_64, aarch64), and windows (x86_64):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/aryrabelo/bora-herdr-ada/main/website/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/aryrabelo/bora-herdr-ada/main/distribution/install.sh | sh
 ```
 
 installs to `~/.local/bin` (override with `HERDR_INSTALL_DIR`); needs `curl` and `awk`.
@@ -70,6 +70,29 @@ run your agents, split panes, walk away. `ctrl+b q` detaches, `bora` reattaches.
 ## recommended setup
 
 we run bora inside [Ghostty](https://ghostty.org/). Ghostty eats several of bora's keybindings by default (Option-as-Alt, tab/window chords) unless configured — see [`examples/README.md`](examples/README.md) for the full worked Ghostty + bora + omp setup.
+
+## agent dispatch
+
+two fork-only commands turn "run an agent on this" into one shot:
+
+```bash
+bora agent --new "review the plan and list the risks"
+# creates a workspace on the current directory, starts the default agent
+# on its root pane, injects the prompt, and prints one json result.
+
+bora agent my-key prompt "first task"   # creates agent "my-key"
+bora agent my-key prompt "second task"  # same agent, new prompt
+```
+
+`--new` always creates; `agent <name> prompt` is get-or-create — the name is the idempotency key, so re-running the same dispatch prompts the existing agent instead of duplicating it. the kind resolves `--kind` over `[agents] default` in config.toml over a hardcoded `omp` fallback. see `bora agent help` for the full surface.
+
+the rest of the fork-only surface, each documented by its own `--help`:
+
+- **`bora channel`** — `#channel` workspaces where agents broadcast, `@nick` or `--to` one member, `ask` and block for a reply, `note` without waking anyone, and `send --when-idle` to hold delivery until a working member is free.
+- **`bora events`** — stream session events as json lines; `--subscribe <name>` narrows it, `--pane <id>` for the pane-scoped ones, `--limit <n>` to exit after n events.
+- **folders** — the sidebar's Folders view groups workspaces by a visual group; `bora workspace set-group <id> [a/b]` sets it from the cli, `/` nests folders, and omitting the name clears it. the group is display-only.
+- **`bora mcp serve`** — a scoped MCP stdio server exposing the channel and agent tools to an MCP client.
+- **copy reference** — the pane context menu copies `<workspace label> <pane_id>`; the trailing `wX:pN` token is what `bora agent prompt` and `--pane` take.
 
 ## docs
 

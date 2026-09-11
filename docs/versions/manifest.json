@@ -1,8 +1,14 @@
 {
   "schema_version": 1,
   "stable_source": "snapshot",
-  "current": "0.45.5",
+  "current": "0.46.9",
   "versions": [
+    {
+      "version": "0.46.9",
+      "tag": "v0.46.9",
+      "commit": "c1297c4b23b9bdfa21bc80799d1837b583ec0bee",
+      "source": "docs/next/website/src/content/docs"
+    },
     {
       "version": "0.45.5",
       "tag": "v0.45.5",
