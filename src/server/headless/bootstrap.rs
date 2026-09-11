@@ -42,6 +42,13 @@ pub fn run_server() -> io::Result<()> {
         .build()
         .map_err(io::Error::other)?;
 
+    // Consume the startup cwd BEFORE `App::new`: session restore spawns the
+    // pane shells inside it, and every shell inherits the server's environment
+    // at that moment. Taking it afterwards leaked `HERDR_STARTUP_CWD` into every
+    // restored pane, where a nested `bora server` (integration tests run from
+    // inside a pane) would seed an unexpected workspace at that path.
+    let startup_cwd = take_startup_cwd();
+
     let result = rt.block_on(async {
         // Create the App (with AppState, event channels, etc.).
         let mut app = app::App::new(
@@ -51,7 +58,7 @@ pub fn run_server() -> io::Result<()> {
             api_rx,
             event_hub,
         );
-        seed_startup_workspace_if_empty(&mut app);
+        seed_startup_workspace_if_empty(&mut app, startup_cwd);
 
         // Create the headless server.
         let mut server = match HeadlessServer::new(
@@ -86,8 +93,8 @@ pub fn run_server() -> io::Result<()> {
     result
 }
 
-fn seed_startup_workspace_if_empty(app: &mut app::App) {
-    let Some(cwd) = take_startup_cwd() else {
+fn seed_startup_workspace_if_empty(app: &mut app::App, startup_cwd: Option<PathBuf>) {
+    let Some(cwd) = startup_cwd else {
         return;
     };
 
