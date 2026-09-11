@@ -1471,3 +1471,63 @@ fn folders_view_workspace_context_menu_offers_close_not_close_group() {
     assert!(repo_labels.iter().any(|label| label == "Close group"));
     assert!(!repo_labels.iter().any(|label| label == "Close"));
 }
+
+/// `prefix+]`/`[` must walk the list the user is looking at. In Folders
+/// view that is `folders_entries` -- loose rows first, then each folder's
+/// members -- and a collapsed folder contributes nothing to it. Reading
+/// the Repo-nested order here made next/previous jump to rows a collapsed
+/// folder was hiding and skip the ones it showed.
+#[test]
+fn folders_view_workspace_navigation_follows_the_rendered_order() {
+    let mut config = Config::default();
+    config.ui.view_mode = crate::config::ViewMode::Folders;
+    let mut projected = snapshot();
+    // Workspace-vec order is ws_1 (loose), ws_2 (folder "a"), ws_3 (loose).
+    // Rendered Folders order is ws_1, ws_3, then "a"'s member ws_2.
+    for (index, group) in [(2, Some("a")), (3, None)] {
+        let mut workspace = projected.workspaces[0].clone();
+        workspace.workspace_id = format!("ws_{index}");
+        workspace.number = index;
+        workspace.label = format!("workspace-{index}");
+        workspace.focused = false;
+        workspace.visual_group = group.map(str::to_owned);
+        projected.workspaces.push(workspace);
+    }
+
+    let next_target = |state: &mut ClientShellState| {
+        let mut input = ClientShellInput::default();
+        state.record_binding(
+            crate::input::KeybindMatch::Action(crate::input::KeybindAction::NextWorkspace),
+            &mut input,
+        );
+        match &input.actions[..] {
+            [ClientShellAction::Endpoint { request, .. }] => match &request.method {
+                crate::api::schema::Method::WorkspaceFocus(target) => target.workspace_id.clone(),
+                other => panic!("expected workspace.focus, got {other:?}"),
+            },
+            other => panic!("expected one endpoint action, got {other:?}"),
+        }
+    };
+
+    let mut folders = ClientShellState::new(ClientShellConfig::from_config(&config));
+    folders.set_snapshot(Box::new(projected.clone()));
+    assert_eq!(next_target(&mut folders), "ws_3");
+
+    // Collapsing "a" removes its member from the walk entirely, so the
+    // step after ws_3 wraps to ws_1 instead of landing on the hidden ws_2.
+    folders.collapsed_groups.insert("vg:a".into());
+    let mut focused_ws_3 = projected.clone();
+    focused_ws_3.revision = 2;
+    focused_ws_3.focused_workspace_id = Some("ws_3".into());
+    focused_ws_3.workspaces[0].focused = false;
+    focused_ws_3.workspaces[2].focused = true;
+    folders.set_snapshot(Box::new(focused_ws_3));
+    assert_eq!(next_target(&mut folders), "ws_1");
+
+    // Repo view still walks the nested/workspace-vec order.
+    let mut repo_config = Config::default();
+    repo_config.ui.view_mode = crate::config::ViewMode::Repo;
+    let mut repo = ClientShellState::new(ClientShellConfig::from_config(&repo_config));
+    repo.set_snapshot(Box::new(projected));
+    assert_eq!(next_target(&mut repo), "ws_2");
+}

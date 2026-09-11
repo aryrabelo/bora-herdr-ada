@@ -1278,19 +1278,50 @@ impl ClientShellState {
         }
     }
 
+    /// Prev/next workspace and `SwitchWorkspace(n)` must step the list the
+    /// user is looking at. `render_sidebar` picks the entry list by view
+    /// mode, so this mirrors that dispatch: Repo nests linked worktrees
+    /// under their parent, Flat is plain workspace order, and Folders is
+    /// `folders_entries` (loose rows first, then each folder's members,
+    /// collapsed folders contributing nothing). Reading only
+    /// `workspace_entries` here made navigation walk the Repo order in
+    /// every mode -- stepping into rows a collapsed folder was hiding and
+    /// skipping the ones it showed.
     pub(super) fn navigation_workspace_entries(
         &self,
         snapshot: &ClientShellSnapshot,
     ) -> Vec<WorkspaceEntry> {
         let empty_collapsed_groups = HashSet::new();
         if self.mobile_layout_active() {
-            render::workspace_entries(snapshot, &empty_collapsed_groups)
-        } else {
-            render::workspace_entries(
-                snapshot,
-                self.collapsed_groups_for_endpoint(&self.active_endpoint_id)
-                    .unwrap_or(&empty_collapsed_groups),
-            )
+            return render::workspace_entries(snapshot, &empty_collapsed_groups);
+        }
+        let collapsed_groups = self
+            .collapsed_groups_for_endpoint(&self.active_endpoint_id)
+            .unwrap_or(&empty_collapsed_groups);
+        match self.view_mode {
+            crate::config::ViewMode::Repo => render::workspace_entries(snapshot, collapsed_groups),
+            crate::config::ViewMode::Flat => (0..snapshot.workspaces.len())
+                .map(|index| WorkspaceEntry {
+                    index,
+                    indented: false,
+                    last_child: false,
+                })
+                .collect(),
+            crate::config::ViewMode::Folders => {
+                render::sidebar::folders_entries(snapshot, collapsed_groups)
+                    .into_iter()
+                    .filter_map(|row| match row {
+                        render::sidebar::FoldersRow::Workspace { index, depth } => {
+                            Some(WorkspaceEntry {
+                                index,
+                                indented: depth > 0,
+                                last_child: false,
+                            })
+                        }
+                        render::sidebar::FoldersRow::GroupHeader { .. } => None,
+                    })
+                    .collect()
+            }
         }
     }
 
