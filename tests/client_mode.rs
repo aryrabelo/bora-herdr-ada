@@ -496,6 +496,7 @@ fn server_unreachable_shows_clear_error() {
         .env("HERDR_SOCKET_PATH", &api_socket)
         .env_remove("HERDR_CLIENT_SOCKET_PATH")
         .env_remove("HERDR_ENV")
+        .env_remove("HERDR_STARTUP_CWD")
         .output()
         .expect("client command should run");
 
