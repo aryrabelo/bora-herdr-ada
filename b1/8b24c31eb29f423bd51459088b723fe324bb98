@@ -1,0 +1,40 @@
+Cargo.lock
+  h_b156936c57c455 135
+Cargo.toml
+  h_b156936c57c455 3
+docs/next/CHANGELOG.md
+  h_b156936c57c455 7-9
+src/server/headless/bootstrap.rs
+  h_b156936c57c455 45-51,61,96-97
+tests/api_ping.rs
+  h_b156936c57c455 5,125-142,178-180,458-548
+tests/auto_detect.rs
+  h_b156936c57c455 112,153,535
+tests/cli/harness.rs
+  h_b156936c57c455 313
+tests/cli/sessions.rs
+  h_b156936c57c455 243
+tests/cli/surface.rs
+  h_b156936c57c455 284,333,431
+tests/client_mode.rs
+  h_b156936c57c455 135,194,440,1813
+tests/cross_area.rs
+  h_b156936c57c455 125,165
+tests/detach_reattach.rs
+  h_b156936c57c455 132
+tests/multi_client.rs
+  h_b156936c57c455 110,139
+tests/server_headless.rs
+  h_b156936c57c455 129,363
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "b18b24c31eb29f423bd51459088b723fe324bb98",
+  "prompts": {},
+  "humans": {
+    "h_b156936c57c455": {
+      "author": "Ary Rabelo <aryrabelo@gmail.com>"
+    }
+  }
+}
