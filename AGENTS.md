@@ -152,6 +152,22 @@ candidate with the current stable binary under hidden and visible output. When
 the result moves materially or when validating performance work, repeat it with
 `HERDR_PERF_SAMPLE_SECONDS=60` and investigate the affected scenario.
 
+**The 0.9.0 sync moved visible-pane render cost from the client to the server, and
+the smoke gate reads that as a regression.** Measured 2026-09-11 against stable
+0.45.5 (macOS/aarch64, 60 s samples, two rounds): `hidden50` flat (+0.5%),
+`visible30` +43% total CPU — server 1.07 → 1.96, client 1.00 → 0.64 (per-pid
+split from `scripts/release_perf_case.sh`'s `cpu-raw.txt`; the smoke deletes its
+results dir on exit, so run the case script directly with your own results path
+to see it). The bare sync commit `27c65c27` (0.46.0, before any fork re-port)
+shows the same +47%, so this is upstream's client-shell architecture (the server
+now composes pane surfaces for the snapshot), not ceo-bora#275/#276 work. Running
+the upstream `herdr` binary as the candidate does not work as an attribution:
+the case script hardcodes the `bora/sessions` socket dir and its producer pane
+fails with `writer pane 2 produced no output` — build the fork at a commit
+instead. Do not re-run the smoke hoping for a different number; a stable release
+across this line needs an explicit decision to ship with the note or to first
+profile the server-side visible-pane path. (learned 2026-09-11, binding.)
+
 ### Runtime/client boundary guardrail
 
 Herdr is migrating toward a server-owned runtime protocol with the TUI as one client. New work should not deepen the current server/TUI coupling.
