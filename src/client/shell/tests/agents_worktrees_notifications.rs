@@ -1481,18 +1481,7 @@ fn folders_view_workspace_context_menu_offers_close_not_close_group() {
 fn folders_view_workspace_navigation_follows_the_rendered_order() {
     let mut config = Config::default();
     config.ui.view_mode = crate::config::ViewMode::Folders;
-    let mut projected = snapshot();
-    // Workspace-vec order is ws_1 (loose), ws_2 (folder "a"), ws_3 (loose).
-    // Rendered Folders order is ws_1, ws_3, then "a"'s member ws_2.
-    for (index, group) in [(2, Some("a")), (3, None)] {
-        let mut workspace = projected.workspaces[0].clone();
-        workspace.workspace_id = format!("ws_{index}");
-        workspace.number = index;
-        workspace.label = format!("workspace-{index}");
-        workspace.focused = false;
-        workspace.visual_group = group.map(str::to_owned);
-        projected.workspaces.push(workspace);
-    }
+    let projected = folders_nav_snapshot();
 
     let next_target = |state: &mut ClientShellState| {
         let mut input = ClientShellInput::default();
@@ -1530,4 +1519,83 @@ fn folders_view_workspace_navigation_follows_the_rendered_order() {
     let mut repo = ClientShellState::new(ClientShellConfig::from_config(&repo_config));
     repo.set_snapshot(Box::new(projected));
     assert_eq!(next_target(&mut repo), "ws_2");
+}
+
+/// ws_1 (loose, focused), ws_2 (folder "a"), ws_3 (loose). Workspace-vec
+/// order is 1,2,3; the rendered Folders order is 1, 3, header "a", 2.
+pub(in crate::client::shell) fn folders_nav_snapshot() -> ClientShellSnapshot {
+    let mut projected = snapshot();
+    for (index, group) in [(2, Some("a")), (3, None)] {
+        let mut workspace = projected.workspaces[0].clone();
+        workspace.workspace_id = format!("ws_{index}");
+        workspace.number = index;
+        workspace.label = format!("workspace-{index}");
+        workspace.focused = false;
+        workspace.visual_group = group.map(str::to_owned);
+        projected.workspaces.push(workspace);
+    }
+    projected
+}
+
+/// `workspace_scroll` is an index into the RENDERED rows, and Folders
+/// renders group headers the navigation list drops. Revealing ws_2 -- the
+/// last of the four rendered rows -- must scroll to row 3, not to its
+/// workspace-only position 2, or the renderer leaves it off-screen.
+#[test]
+fn folders_view_reveal_scrolls_past_the_group_header_rows() {
+    let mut config = Config::default();
+    config.ui.view_mode = crate::config::ViewMode::Folders;
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+    state.set_snapshot(Box::new(folders_nav_snapshot()));
+    state.hits.workspace_max_scroll = 10;
+
+    state.reveal_workspace("ws_2");
+
+    assert_eq!(state.workspace_scroll, 3);
+}
+
+/// A collapsed folder hides the focused workspace, so it is absent from
+/// the walk. Stepping forward from "nowhere" must land on the FIRST
+/// visible row; starting from index 0 made it land on the second and skip
+/// the first outright.
+#[test]
+fn folders_view_navigation_from_a_hidden_focused_workspace_lands_on_the_first_row() {
+    let mut config = Config::default();
+    config.ui.view_mode = crate::config::ViewMode::Folders;
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+    let mut projected = folders_nav_snapshot();
+    // Focus ws_2, the member of folder "a", then collapse "a".
+    projected.focused_workspace_id = Some("ws_2".into());
+    projected.workspaces[0].focused = false;
+    projected.workspaces[1].focused = true;
+    state.set_snapshot(Box::new(projected));
+    state.collapsed_groups.insert("vg:a".into());
+
+    let mut next = ClientShellInput::default();
+    state.record_binding(
+        crate::input::KeybindMatch::Action(crate::input::KeybindAction::NextWorkspace),
+        &mut next,
+    );
+    assert!(matches!(
+        &next.actions[..],
+        [ClientShellAction::Endpoint { request, .. }]
+            if matches!(
+                &request.method,
+                crate::api::schema::Method::WorkspaceFocus(target) if target.workspace_id == "ws_1"
+            )
+    ));
+
+    let mut previous = ClientShellInput::default();
+    state.record_binding(
+        crate::input::KeybindMatch::Action(crate::input::KeybindAction::PreviousWorkspace),
+        &mut previous,
+    );
+    assert!(matches!(
+        &previous.actions[..],
+        [ClientShellAction::Endpoint { request, .. }]
+            if matches!(
+                &request.method,
+                crate::api::schema::Method::WorkspaceFocus(target) if target.workspace_id == "ws_3"
+            )
+    ));
 }

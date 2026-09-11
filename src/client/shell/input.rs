@@ -871,19 +871,22 @@ impl ClientShellState {
         if entries.is_empty() {
             return;
         }
-        let current = self
-            .navigate_workspace_id
-            .as_deref()
-            .and_then(|selected| {
-                entries
-                    .iter()
-                    .position(|entry| snapshot.workspaces[entry.index].workspace_id == selected)
-            })
-            .unwrap_or(0);
-        let next = if mobile {
-            (current as isize + delta).clamp(0, entries.len().saturating_sub(1) as isize) as usize
-        } else {
-            (current as isize + delta).rem_euclid(entries.len() as isize) as usize
+        // No current row (nothing selected yet, or a collapsed folder hides
+        // it) steps onto the edge the direction comes from, instead of
+        // starting at 0 and skipping the first visible row (cubic review,
+        // PR #40).
+        let current = self.navigate_workspace_id.as_deref().and_then(|selected| {
+            entries
+                .iter()
+                .position(|entry| snapshot.workspaces[entry.index].workspace_id == selected)
+        });
+        let next = match current {
+            Some(current) if mobile => (current as isize + delta)
+                .clamp(0, entries.len().saturating_sub(1) as isize)
+                as usize,
+            Some(current) => (current as isize + delta).rem_euclid(entries.len() as isize) as usize,
+            None if delta > 0 => 0,
+            None => entries.len() - 1,
         };
         let workspace_id = snapshot.workspaces[entries[next].index]
             .workspace_id

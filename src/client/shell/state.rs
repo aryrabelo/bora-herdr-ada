@@ -1298,6 +1298,17 @@ impl ClientShellState {
         let collapsed_groups = self
             .collapsed_groups_for_endpoint(&self.active_endpoint_id)
             .unwrap_or(&empty_collapsed_groups);
+        // The expanded multi-machine sidebar (`render.rs` dispatches to
+        // `endpoint_sidebar::render_expanded` whenever `endpoints.len() > 1`)
+        // builds every machine's rows from `workspace_entries`, view mode or
+        // not, so the callers that reach this list there -- `SwitchWorkspace(n)`
+        // and Navigate-mode movement -- have to walk that same order or they
+        // select a row nobody is looking at (cubic review, PR #40). Prev/next
+        // never arrives: `handle_endpoint_navigation` intercepts those two
+        // first and does its own per-endpoint walk.
+        if self.multi_endpoint_active() {
+            return render::workspace_entries(snapshot, collapsed_groups);
+        }
         match self.view_mode {
             crate::config::ViewMode::Repo => render::workspace_entries(snapshot, collapsed_groups),
             crate::config::ViewMode::Flat => (0..snapshot.workspaces.len())
@@ -1334,7 +1345,28 @@ impl ClientShellState {
         {
             return;
         }
+        // `workspace_scroll` is an index into the RENDERED row list, and in
+        // Folders that list carries group headers the navigation list drops.
+        // Positioning by workspace-only index would scroll short and leave the
+        // target off-screen (cubic review, PR #40).
         let target = self.snapshot.as_deref().and_then(|snapshot| {
+            if self.view_mode == crate::config::ViewMode::Folders
+                && !self.multi_endpoint_active()
+                && !self.mobile_layout_active()
+            {
+                let empty_collapsed_groups = HashSet::new();
+                let collapsed_groups = self
+                    .collapsed_groups_for_endpoint(&self.active_endpoint_id)
+                    .unwrap_or(&empty_collapsed_groups);
+                return render::sidebar::folders_entries(snapshot, collapsed_groups)
+                    .iter()
+                    .position(|row| match row {
+                        render::sidebar::FoldersRow::Workspace { index, .. } => {
+                            snapshot.workspaces[*index].workspace_id == workspace_id
+                        }
+                        render::sidebar::FoldersRow::GroupHeader { .. } => false,
+                    });
+            }
             self.navigation_workspace_entries(snapshot)
                 .iter()
                 .position(|entry| snapshot.workspaces[entry.index].workspace_id == workspace_id)

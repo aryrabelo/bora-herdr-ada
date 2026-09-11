@@ -994,18 +994,26 @@ impl ClientShellState {
                 if entries.is_empty() {
                     return None;
                 }
-                let current = entries
-                    .iter()
-                    .position(|entry| {
-                        snapshot.workspaces[entry.index].workspace_id == focused_workspace
-                    })
-                    .unwrap_or(0);
+                // A collapsed folder can hide the focused workspace, so it may
+                // not be in the walk at all. Starting from index 0 then made
+                // the first step land on the SECOND visible row, skipping the
+                // first (cubic review, PR #40): with no current row, step onto
+                // the edge the direction comes from.
+                let current = entries.iter().position(|entry| {
+                    snapshot.workspaces[entry.index].workspace_id == focused_workspace
+                });
                 let delta = if action == KeybindAction::PreviousWorkspace {
                     -1
                 } else {
                     1
                 };
-                let next = (current as isize + delta).rem_euclid(entries.len() as isize) as usize;
+                let next = match current {
+                    Some(current) => {
+                        (current as isize + delta).rem_euclid(entries.len() as isize) as usize
+                    }
+                    None if delta > 0 => 0,
+                    None => entries.len() - 1,
+                };
                 let workspace_id = snapshot.workspaces[entries[next].index]
                     .workspace_id
                     .clone();
