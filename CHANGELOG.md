@@ -4,6 +4,50 @@ Bora is a fork of [herdr](https://github.com/ogulcancelik/herdr). This changelog
 
 ## Unreleased
 
+## [0.46.9] - 2026-09-11
+
+### Synced from herdr
+- Merged upstream `herdrdev/herdr` through `8a6d6973` (47 commits, the 0.8.x line before the client-shell refactor) into the fork.
+- Merged upstream `herdrdev/herdr` through `68c7b78e` (herdr 0.9.0): the TUI now runs in the client (`src/client/shell`), with saved SSH machines (`bora machine`), a stable client endpoint contract, multi-client tab views and the new `Muse` agent detection. The fork's server/API/CLI surface is unchanged (`bora channel *`, `workspace set-group`/`--group`, `pane report-result`, `bora events`, `bora mcp serve`, `[agents.commands]`, when-idle prompts, `idle_seconds`). `bora pane list` now accepts `--json` (output was already JSON). The Folders sidebar view is back on the new client shell (see Added); the chat view (`prefix+i`), plugin `contexts` entries in right-click menus and the timed sidebar hide are not on it yet. Wire protocol 25; omp integration asset 11.
+
+### Added
+- `bora agent --new "<prompt>"` turns your current directory into a live agent session in one command: it creates a workspace there without stealing focus, starts the configured agent, delivers the prompt and prints one JSON result. `bora agent <name> prompt "<text>"` is get-or-create, so the name is the idempotency key: an existing agent just gets the prompt, a missing one is created with that name. The agent kind resolves `--kind`, then the new `[agents] default` config key, then `omp`.
+- `bora events` streams server events as JSON lines, one flushed line per event, so a piped consumer sees each event as it happens. `--subscribe <name>` picks event kinds (all parameterless kinds by default), `--pane <id>` unlocks the pane-scoped kinds, `--limit <n>` exits after n events, and `--session <name>` streams from a named session. (#19)
+- `channel.message` is subscribable: `bora events --subscribe channel.message` (and the default set) streams channel traffic, so you no longer need one `channel tail --follow` process per room. (#25)
+- `bora pane list` reports each pane's `foreground_process` (e.g. `omp`), and `pane process-info` resolves the pane's `tty`, so a second round trip to learn what is running in a pane is no longer needed. (#18)
+- Folders sidebar view (`ui.view_mode = "folders"`, or cycle Flat -> Folders -> Repo with `prefix+shift+v`): a flat list grouped only by the folders you assign, with no repo auto-grouping, one row per workspace and a clickable status dot per pane on that row. Put a workspace in a folder with `bora workspace set-group`, the workspace context menu (New group, Move to group, Rename group, Remove from group) or by dragging its row onto a folder; folder headers offer Rename group, Collapse/Expand, Ungroup all and New workspace in group. Folders nest as `a/b` paths, and a new workspace (`keys.new_workspace` or New workspace in group) inherits the folder of the focused one. (#30, #32)
+- Folders rows render your `[ui.sidebar.spaces].rows` templates and `bora workspace report-metadata` tokens like Flat and Repo do; `ui.hide_pane_badges` hides the dot strip. Working panes show an animated spinner dot in every view mode. (#31, #32)
+- The sidebar header shows how many panes are waiting for you: an aggregate `N waiting` counter, yellow while finished-but-unseen panes wait, red the moment one is blocked. A background pane that produces no output for `ui.idle_attention_seconds` (default 300, `0` disables) is flagged the same way, so a shell command that ends or an agent that goes quiet shows up even without an agent-state transition. (#31)
+- Colliding channel names take ordinals at join time (`@rev` becomes `@rev-1` and `@rev-2`), derived from join order so a restart mints the same names; the bare colliding name is still refused as ambiguous rather than broadcast. (#16)
+- "Copy reference" in the pane context menu copies `<workspace label> <pane_id>` (e.g. `orquestra wB4:p1`) to the clipboard, ready to paste into another agent's prompt. (#36)
+
+### Changed
+- `bora channel send` delivers to agent members immediately, even when the recipient is mid-turn, and the receipt says `delivered`; two agents in one channel now hear each other during a turn. The old hold-until-idle behaviour is opt-in with `--when-idle` (`when_idle: true` on the wire), reported as `deferred` with the queue position. The channel briefing travels in the same delivery mode as the message, so an unbriefed busy pane reads the protocol before its first message. (#20)
+- Channel messages addressed to you (`to_human`) arrive passively: nothing opens over the pane you are looking at and the active workspace never switches. The channel's own sidebar row carries a `chat_unread` preview token (`<sender>: <text>`) you can place in `[ui.sidebar.spaces].rows`. This replaces the `ui.chat_open_on_mention` auto-open. (#16)
+- A channel member is listed and addressed by its workspace label (the name the sidebar shows) before its self-reported name, assigned name or detected kind, so the name you see is the name that resolves. A `#`-prefixed label is refused as an identity. (#16)
+- Installers and release manifests moved from `website/` to `distribution/`. Install with `curl -fsSL https://raw.githubusercontent.com/aryrabelo/bora-herdr-ada/main/distribution/install.sh | sh`; `bora update` reads `distribution/latest.json` and `distribution/preview.json`.
+- A visible pane receiving heavy output costs slightly more CPU than on 0.45.5 (measured +0.9 points of one core at 30 lines/s, 2.0% → 2.9% total across server and client), because herdr 0.9.0 composes pane surfaces on the server for the new client shell. Hidden panes are unchanged. Tracked for profiling in the fork.
+
+### Fixed
+- omp panes no longer sit `working` for hours after a dropped idle report. The omp integration retries undelivered state reports and re-sends its state every `HERDR_OMP_HEARTBEAT_MS` (default 15000, `0` disables); on the server, a hook-owned pane whose own OSC title has read idle for 5 seconds becomes idle, and `bora agent explain` reports it as `fallback_reason: "osc_title_idle_reconciled_stale_hook"`. That title evidence now also survives a live handoff. Run `bora integration install omp` after updating to get the extension side. (#37, #38)
+- An `@nick` that does not resolve fails `bora channel send` with `channel_nick_unknown` or `channel_nick_ambiguous` instead of silently broadcasting to every member of the channel. (#16)
+- Linked worktree rows can be dragged, and dropped onto, in Flat and Folders views; Repo view keeps moving a worktree with its siblings as one block. (#34)
+- Changing a workspace's group from the client (context menu, drag, `workspace set-group`) no longer fails with "Action unavailable". (#35)
+- Creating a worktree no longer risks wiping the repo's `.git/info/exclude`: an unreadable file is left alone, and the `.context/` line is appended instead of rewriting the file, so two concurrent creates cannot drop each other's lines. (#21)
+- Renaming a workspace to an empty string clears the custom label and the automatic name takes over, instead of leaving the row blank everywhere.
+- Windows zip installs no longer fail the package completeness check: the package ships `bora.exe`, the name the installer activates. (#27)
+
+### Removed
+- The Project view (`ui.view_mode = "project"`), with the `project.*` API verbs and MCP tools, `workspace.set_project`, the `projects.yml` store and the `[ui.sidebar.project]` config keys. `ui.view_mode` now cycles `flat` -> `folders` -> `repo`. Edit your config before updating: `view_mode = "project"` is an unknown value now, and an unknown value fails the whole config document, so every other key would fall back to its default. (#22)
+- The right panel (Changes, Checks, Issues and PRs tabs, PR badges) and its `[github]`, `[checks]` and `[flow]` polling config sections; the sandbox orchestrator; the shared todo and scratchpad stores with their `todo.*`/`scratchpad.*` verbs, events and MCP tools; and per-pane channel scope (`channel join --scope-write`/`--scope-read`). `prefix+shift+b` is free again (it was double-booked with the right panel toggle). The Create worktree modal drops its GitHub and Branch tabs. (#24)
+- `.bora.toml` and `.bora/settings.toml` support: the per-repo command menu (`[[commands]]`), worktree provisioning (setup script, file copy/symlink, `[ports]` allocation, `bora worktree create --no-setup` and the `setup` field in its `--json`), `bora workspace run`, and the per-repo `[flow]` override. The global `[flow]` in `config.toml` is untouched. This lives on as the `aryrabelo/bora-local-commands` plugin. (#21)
+- `ui.chat_open_on_mention`, superseded by passive `to_human` delivery.
+
+### Breaking Changes
+- `ui.view_mode = "project"` is rejected at startup and takes every other config key down with it; change it to `flat`, `folders` or `repo` before updating.
+- Removed API verbs: `project.*`, `workspace.set_project`, `todo.*`, `scratchpad.*`, `workspace.run`, and the `channel.join` scope parameters. Their MCP tools are gone with them.
+- `bora worktree create --no-setup` and the `setup` field of its `--json` output are gone; `.bora.toml`/`.bora/settings.toml` are no longer read.
+
 ## [0.9.0] - 2026-09-07
 
 ### Added

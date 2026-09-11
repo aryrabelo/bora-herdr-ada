@@ -4,6 +4,8 @@ Bora is a fork of [herdr](https://github.com/ogulcancelik/herdr). This changelog
 
 ## Unreleased
 
+## [0.46.9] - 2026-09-11
+
 ### Synced from herdr
 - Merged upstream `herdrdev/herdr` through `8a6d6973` (47 commits, the 0.8.x line before the client-shell refactor) into the fork.
 - Merged upstream `herdrdev/herdr` through `68c7b78e` (herdr 0.9.0): the TUI now runs in the client (`src/client/shell`), with saved SSH machines (`bora machine`), a stable client endpoint contract, multi-client tab views and the new `Muse` agent detection. The fork's server/API/CLI surface is unchanged (`bora channel *`, `workspace set-group`/`--group`, `pane report-result`, `bora events`, `bora mcp serve`, `[agents.commands]`, when-idle prompts, `idle_seconds`). `bora pane list` now accepts `--json` (output was already JSON). The Folders sidebar view is back on the new client shell (see Added); the chat view (`prefix+i`), plugin `contexts` entries in right-click menus and the timed sidebar hide are not on it yet. Wire protocol 25; omp integration asset 11.
