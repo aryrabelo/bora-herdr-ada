@@ -1,0 +1,22 @@
+.github/workflows/preview.yml
+  h_b156936c57c455 441-443
+.github/workflows/release.yml
+  h_b156936c57c455 447-449
+AGENTS.md
+  h_b156936c57c455 712
+docs/next/CHANGELOG.md
+  h_b156936c57c455 7-9
+justfile
+  h_b156936c57c455 195-200
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "31037a7ab406aa70fcacebb1ed6dc4331389a209",
+  "prompts": {},
+  "humans": {
+    "h_b156936c57c455": {
+      "author": "Ary Rabelo <aryrabelo@gmail.com>"
+    }
+  }
+}
