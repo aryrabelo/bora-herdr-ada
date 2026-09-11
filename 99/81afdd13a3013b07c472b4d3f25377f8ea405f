@@ -1,0 +1,14 @@
+docs/next/CHANGELOG.md
+  h_b156936c57c455 27
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "9981afdd13a3013b07c472b4d3f25377f8ea405f",
+  "prompts": {},
+  "humans": {
+    "h_b156936c57c455": {
+      "author": "Ary Rabelo <aryrabelo@gmail.com>"
+    }
+  }
+}
