@@ -1732,7 +1732,7 @@ impl ClientShellState {
                             crate::api::schema::Method::WorkspaceClose(
                                 crate::api::schema::WorkspaceCloseParams {
                                     workspace_id: confirm.workspace_id,
-                                    close_group: true,
+                                    close_group: self.close_drags_worktree_group(),
                                 },
                             ),
                             outcome,

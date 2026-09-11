@@ -217,7 +217,7 @@ fn worktree_management_commands_work() {
 }
 
 #[test]
-fn workspace_close_requires_explicit_worktree_group_intent() {
+fn workspace_close_leaves_linked_worktree_workspaces_open() {
     let base = unique_test_dir();
     let config_home = base.join("config");
     let runtime_dir = base.join("runtime");
@@ -256,35 +256,25 @@ fn workspace_close_requires_explicit_worktree_group_intent() {
         .map(|workspace| workspace["workspace_id"].as_str().unwrap().to_string())
         .collect::<Vec<_>>();
 
-    let rejected = run_cli(&socket_path, &["workspace", "close", &parent_workspace_id]);
-    assert_eq!(rejected.status.code(), Some(1));
-    let error: serde_json::Value = serde_json::from_slice(&rejected.stderr).unwrap();
-    assert_eq!(error["error"]["code"], "workspace_group_close_required");
-    let after_rejection = run_cli_json(&socket_path, &["workspace", "list"]);
+    let child_workspace_ids = workspace_ids
+        .iter()
+        .filter(|id| *id != &parent_workspace_id)
+        .cloned()
+        .collect::<Vec<_>>();
+    assert_eq!(child_workspace_ids.len(), 1);
+
+    let closed = run_cli_json(&socket_path, &["workspace", "close", &parent_workspace_id]);
+    assert_eq!(closed["result"]["type"], "ok");
+    let after_close = run_cli_json(&socket_path, &["workspace", "list"]);
     assert_eq!(
-        after_rejection["result"]["workspaces"]
+        after_close["result"]["workspaces"]
             .as_array()
             .unwrap()
             .iter()
             .map(|workspace| workspace["workspace_id"].as_str().unwrap().to_string())
             .collect::<Vec<_>>(),
-        workspace_ids
+        child_workspace_ids
     );
-
-    let closed = run_cli(
-        &socket_path,
-        &["workspace", "close", &parent_workspace_id, "--group"],
-    );
-    assert!(
-        closed.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&closed.stderr)
-    );
-    let after_close = run_cli_json(&socket_path, &["workspace", "list"]);
-    assert!(after_close["result"]["workspaces"]
-        .as_array()
-        .unwrap()
-        .is_empty());
     assert!(
         checkout.exists(),
         "workspace close must not remove the checkout"

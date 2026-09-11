@@ -793,6 +793,9 @@ fn workspace_actions_preserve_selected_target_and_client_confirmation() {
     let [ClientShellAction::Endpoint { request, .. }] = &confirm.actions[..] else {
         panic!("workspace confirmation should use endpoint API");
     };
+    // Default view mode is `ViewMode::Repo`, the one view that renders a
+    // worktree group nested, so the close is allowed to drag the group.
+    assert_eq!(state.view_mode, crate::config::ViewMode::Repo);
     assert!(matches!(
         &request.method,
         crate::api::schema::Method::WorkspaceClose(params)
@@ -1348,4 +1351,123 @@ fn semantic_notifications_use_client_policy_and_stable_navigation_targets() {
     assert!(repaint);
     assert!(state.visible_notification.is_none());
     assert_eq!(state.pending_notifications.len(), 1);
+}
+
+/// Root checkout `ws_1` plus a linked worktree `ws_2` sharing its
+/// `worktree.key`, with the child parked in an unrelated sidebar
+/// folder -- the shape that made a group close reach rows the user
+/// could not see.
+fn worktree_group_state(view_mode: crate::config::ViewMode) -> ClientShellState {
+    let mut config = Config::default();
+    config.ui.view_mode = view_mode;
+    let mut projected = snapshot();
+    projected.workspaces[0].worktree = Some(ClientShellWorktree {
+        key: "repo".into(),
+        label: "repo".into(),
+        is_linked_worktree: false,
+    });
+    projected.workspaces.push(ClientShellWorkspace {
+        workspace_id: "ws_2".into(),
+        active_tab_id: "tab_ws2".into(),
+        new_workspace_cwd: "/repo/feature".into(),
+        number: 2,
+        label: "repo-feature".into(),
+        custom_label: false,
+        branch: Some("worktree/feature".into()),
+        git_ahead_behind: None,
+        tokens: Vec::new(),
+        worktree: Some(ClientShellWorktree {
+            key: "repo".into(),
+            label: "repo".into(),
+            is_linked_worktree: true,
+        }),
+        visual_group: Some("foxtrot".into()),
+        focused: false,
+        agent_status: AgentStatus::Idle,
+    });
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+    state.set_snapshot(Box::new(projected));
+    state.set_pane_surface(surface());
+    state.mode = ClientShellMode::Navigate;
+    state.navigate_workspace_id = Some("ws_1".into());
+    state
+}
+
+fn close_workspace_confirm_title(state: &mut ClientShellState) -> String {
+    let mut close = ClientShellInput::default();
+    state.record_binding(
+        crate::input::KeybindMatch::Action(crate::input::KeybindAction::CloseWorkspace),
+        &mut close,
+    );
+    match state.overlay.as_ref() {
+        Some(ClientShellOverlay::ConfirmClose(confirm)) => confirm.title.clone(),
+        _ => panic!("expected a close confirmation overlay"),
+    }
+}
+
+/// Only `ViewMode::Repo` renders the worktree group nested, so only
+/// there may a close of the root checkout drag the linked worktrees
+/// with it. In Folders the child is a separate top-level row in
+/// another folder: closing the parent must close the parent alone.
+#[test]
+fn folders_view_close_confirms_and_closes_only_the_clicked_workspace() {
+    let mut state = worktree_group_state(crate::config::ViewMode::Folders);
+    assert_eq!(
+        close_workspace_confirm_title(&mut state),
+        "Close workspace?"
+    );
+
+    let confirm = state.handle_input_bytes(b"\r");
+    let [ClientShellAction::Endpoint { request, .. }] = &confirm.actions[..] else {
+        panic!("confirmation should use endpoint API");
+    };
+    assert!(matches!(
+        &request.method,
+        crate::api::schema::Method::WorkspaceClose(params)
+            if params.workspace_id == "ws_1" && !params.close_group
+    ));
+}
+
+#[test]
+fn repo_view_close_still_confirms_and_closes_the_whole_worktree_group() {
+    let mut state = worktree_group_state(crate::config::ViewMode::Repo);
+    assert_eq!(
+        close_workspace_confirm_title(&mut state),
+        "Close worktree group?"
+    );
+
+    let confirm = state.handle_input_bytes(b"\r");
+    let [ClientShellAction::Endpoint { request, .. }] = &confirm.actions[..] else {
+        panic!("confirmation should use endpoint API");
+    };
+    assert!(matches!(
+        &request.method,
+        crate::api::schema::Method::WorkspaceClose(params)
+            if params.workspace_id == "ws_1" && params.close_group
+    ));
+}
+
+#[test]
+fn folders_view_workspace_context_menu_offers_close_not_close_group() {
+    let labels = |state: &ClientShellState| match state.overlay.as_ref() {
+        Some(ClientShellOverlay::ContextMenu(menu)) => menu
+            .items()
+            .into_iter()
+            .map(|item| item.label.into_owned())
+            .collect::<Vec<_>>(),
+        _ => panic!("expected a context menu"),
+    };
+
+    let mut folders = worktree_group_state(crate::config::ViewMode::Folders);
+    folders.open_workspace_context_menu("ws_1".into(), 0, 0);
+    let folders_labels = labels(&folders);
+    assert!(folders_labels.iter().any(|label| label == "Close"));
+    assert!(!folders_labels.iter().any(|label| label == "Close group"));
+    assert!(folders_labels.iter().any(|label| label == "New worktree"));
+
+    let mut repo = worktree_group_state(crate::config::ViewMode::Repo);
+    repo.open_workspace_context_menu("ws_1".into(), 0, 0);
+    let repo_labels = labels(&repo);
+    assert!(repo_labels.iter().any(|label| label == "Close group"));
+    assert!(!repo_labels.iter().any(|label| label == "Close"));
 }
