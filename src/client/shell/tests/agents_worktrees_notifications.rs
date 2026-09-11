@@ -793,6 +793,9 @@ fn workspace_actions_preserve_selected_target_and_client_confirmation() {
     let [ClientShellAction::Endpoint { request, .. }] = &confirm.actions[..] else {
         panic!("workspace confirmation should use endpoint API");
     };
+    // Default view mode is `ViewMode::Repo`, the one view that renders a
+    // worktree group nested, so the close is allowed to drag the group.
+    assert_eq!(state.view_mode, crate::config::ViewMode::Repo);
     assert!(matches!(
         &request.method,
         crate::api::schema::Method::WorkspaceClose(params)
@@ -1348,4 +1351,307 @@ fn semantic_notifications_use_client_policy_and_stable_navigation_targets() {
     assert!(repaint);
     assert!(state.visible_notification.is_none());
     assert_eq!(state.pending_notifications.len(), 1);
+}
+
+/// Root checkout `ws_1` plus a linked worktree `ws_2` sharing its
+/// `worktree.key`, with the child parked in an unrelated sidebar
+/// folder -- the shape that made a group close reach rows the user
+/// could not see.
+fn worktree_group_state(view_mode: crate::config::ViewMode) -> ClientShellState {
+    let mut config = Config::default();
+    config.ui.view_mode = view_mode;
+    let mut projected = snapshot();
+    projected.workspaces[0].worktree = Some(ClientShellWorktree {
+        key: "repo".into(),
+        label: "repo".into(),
+        is_linked_worktree: false,
+    });
+    projected.workspaces.push(ClientShellWorkspace {
+        workspace_id: "ws_2".into(),
+        active_tab_id: "tab_ws2".into(),
+        new_workspace_cwd: "/repo/feature".into(),
+        number: 2,
+        label: "repo-feature".into(),
+        custom_label: false,
+        branch: Some("worktree/feature".into()),
+        git_ahead_behind: None,
+        tokens: Vec::new(),
+        worktree: Some(ClientShellWorktree {
+            key: "repo".into(),
+            label: "repo".into(),
+            is_linked_worktree: true,
+        }),
+        visual_group: Some("foxtrot".into()),
+        focused: false,
+        agent_status: AgentStatus::Idle,
+    });
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+    state.set_snapshot(Box::new(projected));
+    state.set_pane_surface(surface());
+    state.mode = ClientShellMode::Navigate;
+    state.navigate_workspace_id = Some("ws_1".into());
+    state
+}
+
+fn close_workspace_confirm_title(state: &mut ClientShellState) -> String {
+    let mut close = ClientShellInput::default();
+    state.record_binding(
+        crate::input::KeybindMatch::Action(crate::input::KeybindAction::CloseWorkspace),
+        &mut close,
+    );
+    match state.overlay.as_ref() {
+        Some(ClientShellOverlay::ConfirmClose(confirm)) => confirm.title.clone(),
+        _ => panic!("expected a close confirmation overlay"),
+    }
+}
+
+/// Only `ViewMode::Repo` renders the worktree group nested, so only
+/// there may a close of the root checkout drag the linked worktrees
+/// with it. In Folders the child is a separate top-level row in
+/// another folder: closing the parent must close the parent alone.
+#[test]
+fn folders_view_close_confirms_and_closes_only_the_clicked_workspace() {
+    let mut state = worktree_group_state(crate::config::ViewMode::Folders);
+    assert_eq!(
+        close_workspace_confirm_title(&mut state),
+        "Close workspace?"
+    );
+
+    let confirm = state.handle_input_bytes(b"\r");
+    let [ClientShellAction::Endpoint { request, .. }] = &confirm.actions[..] else {
+        panic!("confirmation should use endpoint API");
+    };
+    assert!(matches!(
+        &request.method,
+        crate::api::schema::Method::WorkspaceClose(params)
+            if params.workspace_id == "ws_1" && !params.close_group
+    ));
+}
+
+#[test]
+fn repo_view_close_still_confirms_and_closes_the_whole_worktree_group() {
+    let mut state = worktree_group_state(crate::config::ViewMode::Repo);
+    assert_eq!(
+        close_workspace_confirm_title(&mut state),
+        "Close worktree group?"
+    );
+
+    let confirm = state.handle_input_bytes(b"\r");
+    let [ClientShellAction::Endpoint { request, .. }] = &confirm.actions[..] else {
+        panic!("confirmation should use endpoint API");
+    };
+    assert!(matches!(
+        &request.method,
+        crate::api::schema::Method::WorkspaceClose(params)
+            if params.workspace_id == "ws_1" && params.close_group
+    ));
+}
+
+#[test]
+fn folders_view_workspace_context_menu_offers_close_not_close_group() {
+    let labels = |state: &ClientShellState| match state.overlay.as_ref() {
+        Some(ClientShellOverlay::ContextMenu(menu)) => menu
+            .items()
+            .into_iter()
+            .map(|item| item.label.into_owned())
+            .collect::<Vec<_>>(),
+        _ => panic!("expected a context menu"),
+    };
+
+    let mut folders = worktree_group_state(crate::config::ViewMode::Folders);
+    folders.open_workspace_context_menu("ws_1".into(), 0, 0);
+    let folders_labels = labels(&folders);
+    assert!(folders_labels.iter().any(|label| label == "Close"));
+    assert!(!folders_labels.iter().any(|label| label == "Close group"));
+    assert!(folders_labels.iter().any(|label| label == "New worktree"));
+
+    let mut repo = worktree_group_state(crate::config::ViewMode::Repo);
+    repo.open_workspace_context_menu("ws_1".into(), 0, 0);
+    let repo_labels = labels(&repo);
+    assert!(repo_labels.iter().any(|label| label == "Close group"));
+    assert!(!repo_labels.iter().any(|label| label == "Close"));
+}
+
+/// `prefix+]`/`[` must walk the list the user is looking at. In Folders
+/// view that is `folders_entries` -- loose rows first, then each folder's
+/// members -- and a collapsed folder contributes nothing to it. Reading
+/// the Repo-nested order here made next/previous jump to rows a collapsed
+/// folder was hiding and skip the ones it showed.
+#[test]
+fn folders_view_workspace_navigation_follows_the_rendered_order() {
+    let mut config = Config::default();
+    config.ui.view_mode = crate::config::ViewMode::Folders;
+    let projected = folders_nav_snapshot();
+
+    let next_target = |state: &mut ClientShellState| {
+        let mut input = ClientShellInput::default();
+        state.record_binding(
+            crate::input::KeybindMatch::Action(crate::input::KeybindAction::NextWorkspace),
+            &mut input,
+        );
+        match &input.actions[..] {
+            [ClientShellAction::Endpoint { request, .. }] => match &request.method {
+                crate::api::schema::Method::WorkspaceFocus(target) => target.workspace_id.clone(),
+                other => panic!("expected workspace.focus, got {other:?}"),
+            },
+            other => panic!("expected one endpoint action, got {other:?}"),
+        }
+    };
+
+    let mut folders = ClientShellState::new(ClientShellConfig::from_config(&config));
+    folders.set_snapshot(Box::new(projected.clone()));
+    assert_eq!(next_target(&mut folders), "ws_3");
+
+    // Collapsing "a" removes its member from the walk entirely, so the
+    // step after ws_3 wraps to ws_1 instead of landing on the hidden ws_2.
+    folders.collapsed_groups.insert("vg:a".into());
+    let mut focused_ws_3 = projected.clone();
+    focused_ws_3.revision = 2;
+    focused_ws_3.focused_workspace_id = Some("ws_3".into());
+    focused_ws_3.workspaces[0].focused = false;
+    focused_ws_3.workspaces[2].focused = true;
+    folders.set_snapshot(Box::new(focused_ws_3));
+    assert_eq!(next_target(&mut folders), "ws_1");
+
+    // Repo view still walks the nested/workspace-vec order.
+    let mut repo_config = Config::default();
+    repo_config.ui.view_mode = crate::config::ViewMode::Repo;
+    let mut repo = ClientShellState::new(ClientShellConfig::from_config(&repo_config));
+    repo.set_snapshot(Box::new(projected));
+    assert_eq!(next_target(&mut repo), "ws_2");
+}
+
+/// ws_1 (loose, focused), ws_2 (folder "a"), ws_3 (loose). Workspace-vec
+/// order is 1,2,3; the rendered Folders order is 1, 3, header "a", 2.
+pub(in crate::client::shell) fn folders_nav_snapshot() -> ClientShellSnapshot {
+    let mut projected = snapshot();
+    for (index, group) in [(2, Some("a")), (3, None)] {
+        let mut workspace = projected.workspaces[0].clone();
+        workspace.workspace_id = format!("ws_{index}");
+        workspace.number = index;
+        workspace.label = format!("workspace-{index}");
+        workspace.focused = false;
+        workspace.visual_group = group.map(str::to_owned);
+        projected.workspaces.push(workspace);
+    }
+    projected
+}
+
+/// `workspace_scroll` is an index into the RENDERED rows, and Folders
+/// renders group headers the navigation list drops. Revealing ws_2 -- the
+/// last of the four rendered rows -- must scroll to row 3, not to its
+/// workspace-only position 2, or the renderer leaves it off-screen.
+#[test]
+fn folders_view_reveal_scrolls_past_the_group_header_rows() {
+    let mut config = Config::default();
+    config.ui.view_mode = crate::config::ViewMode::Folders;
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+    state.set_snapshot(Box::new(folders_nav_snapshot()));
+    state.hits.workspace_max_scroll = 10;
+
+    state.reveal_workspace("ws_2");
+
+    assert_eq!(state.workspace_scroll, 3);
+}
+
+/// Collapsed draws neither headers nor grouping, so the header-aware offset
+/// above must not apply there: ws_2 is the second collapsed row, not the
+/// fourth (cubic review, PR #40).
+#[test]
+fn collapsed_sidebar_reveal_uses_the_flat_row_index() {
+    let mut config = Config::default();
+    config.ui.view_mode = crate::config::ViewMode::Folders;
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+    state.set_snapshot(Box::new(folders_nav_snapshot()));
+    state.hits.workspace_max_scroll = 10;
+    state.sidebar_collapsed = true;
+
+    state.reveal_workspace("ws_2");
+
+    assert_eq!(state.workspace_scroll, 1);
+}
+
+/// A collapsed folder hides the focused workspace, so it is absent from
+/// the walk. Stepping forward from "nowhere" must land on the FIRST
+/// visible row; starting from index 0 made it land on the second and skip
+/// the first outright.
+#[test]
+fn folders_view_navigation_from_a_hidden_focused_workspace_lands_on_the_first_row() {
+    let mut config = Config::default();
+    config.ui.view_mode = crate::config::ViewMode::Folders;
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+    let mut projected = folders_nav_snapshot();
+    // Focus ws_2, the member of folder "a", then collapse "a".
+    projected.focused_workspace_id = Some("ws_2".into());
+    projected.workspaces[0].focused = false;
+    projected.workspaces[1].focused = true;
+    state.set_snapshot(Box::new(projected));
+    state.collapsed_groups.insert("vg:a".into());
+
+    let mut next = ClientShellInput::default();
+    state.record_binding(
+        crate::input::KeybindMatch::Action(crate::input::KeybindAction::NextWorkspace),
+        &mut next,
+    );
+    assert!(matches!(
+        &next.actions[..],
+        [ClientShellAction::Endpoint { request, .. }]
+            if matches!(
+                &request.method,
+                crate::api::schema::Method::WorkspaceFocus(target) if target.workspace_id == "ws_1"
+            )
+    ));
+
+    let mut previous = ClientShellInput::default();
+    state.record_binding(
+        crate::input::KeybindMatch::Action(crate::input::KeybindAction::PreviousWorkspace),
+        &mut previous,
+    );
+    assert!(matches!(
+        &previous.actions[..],
+        [ClientShellAction::Endpoint { request, .. }]
+            if matches!(
+                &request.method,
+                crate::api::schema::Method::WorkspaceFocus(target) if target.workspace_id == "ws_3"
+            )
+    ));
+}
+
+/// Both collapsed renderers -- `render_collapsed_sidebar` (one machine) and
+/// `endpoint_sidebar::render_collapsed` (several) -- walk `snapshot.workspaces`
+/// directly and draw neither folder headers nor worktree nesting. So a
+/// collapsed sidebar navigates in snapshot-vec order no matter which view mode
+/// is live, and a collapsed folder hides nothing (cubic review, PR #40).
+#[test]
+fn collapsed_sidebar_navigates_in_snapshot_order_whatever_the_view_mode() {
+    let mut config = Config::default();
+    config.ui.view_mode = crate::config::ViewMode::Folders;
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+    state.set_snapshot(Box::new(folders_nav_snapshot()));
+    // Folder "a" holds ws_2 and is collapsed: expanded Folders would render
+    // ws_1, ws_3, header "a" -- and never ws_2.
+    state.collapsed_groups.insert("vg:a".into());
+
+    let second_row = |state: &mut ClientShellState| {
+        let mut input = ClientShellInput::default();
+        state.record_binding(
+            crate::input::KeybindMatch::Action(crate::input::KeybindAction::SwitchWorkspace(1)),
+            &mut input,
+        );
+        match &input.actions[..] {
+            [ClientShellAction::Endpoint { request, .. }] => match &request.method {
+                crate::api::schema::Method::WorkspaceFocus(target) => target.workspace_id.clone(),
+                other => panic!("expected workspace.focus, got {other:?}"),
+            },
+            other => panic!("expected one endpoint action, got {other:?}"),
+        }
+    };
+
+    // Expanded: Folders order, so row 2 is the other loose workspace.
+    assert_eq!(second_row(&mut state), "ws_3");
+
+    // Collapsed: snapshot-vec order, so row 2 is ws_2 -- the very workspace the
+    // collapsed folder hid from the expanded list.
+    state.sidebar_collapsed = true;
+    assert_eq!(second_row(&mut state), "ws_2");
 }

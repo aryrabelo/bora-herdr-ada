@@ -165,7 +165,7 @@ herdr worktree remove --workspace ID [--force] [--trust-repository]
 
 Worktrees are normal Herdr workspaces with Git checkout provenance. `worktree create` creates a Git worktree checkout, opens it as a workspace, and groups it with the parent repo workspace. If `--branch` names an existing local branch, Herdr checks it out; otherwise it creates the branch from `--base` or `HEAD`. Without `--path`, Herdr creates the checkout under `<worktrees.directory>/<repo>/<branch-slug>`.
 
-`workspace close` closes only Herdr state. Closing a primary workspace while linked-worktree workspaces are open requires `--group`; without it, the command leaves the group open and returns `workspace_group_close_required`. To delete the checkout, run `worktree remove`. It runs `git worktree remove`, never deletes the branch, and requires `--force` when Git refuses a dirty checkout.
+`workspace close` closes only Herdr state. Closing a primary workspace closes only that workspace; pass `--group` to also close the linked-worktree workspaces sharing its checkout. To delete the checkout, run `worktree remove`. It runs `git worktree remove`, never deletes the branch, and requires `--force` when Git refuses a dirty checkout.
 
 Git rejects repositories owned by another user by default. If you have independently verified the repository, pass `--trust-repository` to trust its resolved path for that command only. Herdr does not change your Git configuration.
 
@@ -180,7 +180,7 @@ herdr tab rename <tab_id> <label>
 herdr tab close <tab_id>
 ```
 
-A tab is another terminal layout inside a workspace. Without `--workspace`, `tab create` uses the active workspace and fails if none exists. Its JSON response exposes `.result.tab.tab_id` and `.result.root_pane.pane_id`. Closing a workspace's last tab also closes the workspace, matching the TUI close-tab action. If `confirm_close` is enabled and closing the tab would also close a whole worktree group, `tab close` returns a `confirmation_required` error instead.
+A tab is another terminal layout inside a workspace. Without `--workspace`, `tab create` uses the active workspace and fails if none exists. Its JSON response exposes `.result.tab.tab_id` and `.result.root_pane.pane_id`. Closing a workspace's last tab also closes the workspace, matching the TUI close-tab action.
 
 Workspace and tab creation, and pane splitting, leave focus unchanged by default. `--focus` selects the new layout; `--no-focus` states the default explicitly. Without `--cwd`, new terminals follow the configured `terminal.new_cwd` policy, which follows the source pane or workspace by default. Each `--env KEY=VALUE` adds or replaces that variable in the new root shell.
 
