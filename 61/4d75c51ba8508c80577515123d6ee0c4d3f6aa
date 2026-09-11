@@ -1,0 +1,14 @@
+AGENTS.md
+  h_b156936c57c455 155-170
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "614d75c51ba8508c80577515123d6ee0c4d3f6aa",
+  "prompts": {},
+  "humans": {
+    "h_b156936c57c455": {
+      "author": "Ary Rabelo <aryrabelo@gmail.com>"
+    }
+  }
+}
