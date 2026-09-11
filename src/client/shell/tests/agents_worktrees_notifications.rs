@@ -1554,6 +1554,23 @@ fn folders_view_reveal_scrolls_past_the_group_header_rows() {
     assert_eq!(state.workspace_scroll, 3);
 }
 
+/// Collapsed draws neither headers nor grouping, so the header-aware offset
+/// above must not apply there: ws_2 is the second collapsed row, not the
+/// fourth (cubic review, PR #40).
+#[test]
+fn collapsed_sidebar_reveal_uses_the_flat_row_index() {
+    let mut config = Config::default();
+    config.ui.view_mode = crate::config::ViewMode::Folders;
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+    state.set_snapshot(Box::new(folders_nav_snapshot()));
+    state.hits.workspace_max_scroll = 10;
+    state.sidebar_collapsed = true;
+
+    state.reveal_workspace("ws_2");
+
+    assert_eq!(state.workspace_scroll, 1);
+}
+
 /// A collapsed folder hides the focused workspace, so it is absent from
 /// the walk. Stepping forward from "nowhere" must land on the FIRST
 /// visible row; starting from index 0 made it land on the second and skip
@@ -1598,4 +1615,43 @@ fn folders_view_navigation_from_a_hidden_focused_workspace_lands_on_the_first_ro
                 crate::api::schema::Method::WorkspaceFocus(target) if target.workspace_id == "ws_3"
             )
     ));
+}
+
+/// Both collapsed renderers -- `render_collapsed_sidebar` (one machine) and
+/// `endpoint_sidebar::render_collapsed` (several) -- walk `snapshot.workspaces`
+/// directly and draw neither folder headers nor worktree nesting. So a
+/// collapsed sidebar navigates in snapshot-vec order no matter which view mode
+/// is live, and a collapsed folder hides nothing (cubic review, PR #40).
+#[test]
+fn collapsed_sidebar_navigates_in_snapshot_order_whatever_the_view_mode() {
+    let mut config = Config::default();
+    config.ui.view_mode = crate::config::ViewMode::Folders;
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+    state.set_snapshot(Box::new(folders_nav_snapshot()));
+    // Folder "a" holds ws_2 and is collapsed: expanded Folders would render
+    // ws_1, ws_3, header "a" -- and never ws_2.
+    state.collapsed_groups.insert("vg:a".into());
+
+    let second_row = |state: &mut ClientShellState| {
+        let mut input = ClientShellInput::default();
+        state.record_binding(
+            crate::input::KeybindMatch::Action(crate::input::KeybindAction::SwitchWorkspace(1)),
+            &mut input,
+        );
+        match &input.actions[..] {
+            [ClientShellAction::Endpoint { request, .. }] => match &request.method {
+                crate::api::schema::Method::WorkspaceFocus(target) => target.workspace_id.clone(),
+                other => panic!("expected workspace.focus, got {other:?}"),
+            },
+            other => panic!("expected one endpoint action, got {other:?}"),
+        }
+    };
+
+    // Expanded: Folders order, so row 2 is the other loose workspace.
+    assert_eq!(second_row(&mut state), "ws_3");
+
+    // Collapsed: snapshot-vec order, so row 2 is ws_2 -- the very workspace the
+    // collapsed folder hid from the expanded list.
+    state.sidebar_collapsed = true;
+    assert_eq!(second_row(&mut state), "ws_2");
 }

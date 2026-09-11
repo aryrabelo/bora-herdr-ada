@@ -1298,6 +1298,15 @@ impl ClientShellState {
         let collapsed_groups = self
             .collapsed_groups_for_endpoint(&self.active_endpoint_id)
             .unwrap_or(&empty_collapsed_groups);
+        // A collapsed sidebar draws one flat row per workspace in snapshot-vec
+        // order and nests nothing: `endpoint_sidebar::render_collapsed` walks
+        // `snapshot.workspaces` per machine, and `render_collapsed_sidebar`
+        // walks it directly. Neither reads the view mode, so neither Repo
+        // nesting nor Folders grouping is on screen to be walked (cubic review,
+        // PR #40).
+        if self.sidebar_collapsed {
+            return Self::flat_workspace_entries(snapshot);
+        }
         // The expanded multi-machine sidebar (`render.rs` dispatches to
         // `endpoint_sidebar::render_expanded` whenever `endpoints.len() > 1`)
         // builds every machine's rows from `workspace_entries`, view mode or
@@ -1311,13 +1320,7 @@ impl ClientShellState {
         }
         match self.view_mode {
             crate::config::ViewMode::Repo => render::workspace_entries(snapshot, collapsed_groups),
-            crate::config::ViewMode::Flat => (0..snapshot.workspaces.len())
-                .map(|index| WorkspaceEntry {
-                    index,
-                    indented: false,
-                    last_child: false,
-                })
-                .collect(),
+            crate::config::ViewMode::Flat => Self::flat_workspace_entries(snapshot),
             crate::config::ViewMode::Folders => {
                 render::sidebar::folders_entries(snapshot, collapsed_groups)
                     .into_iter()
@@ -1336,6 +1339,18 @@ impl ClientShellState {
         }
     }
 
+    /// One flat row per workspace, snapshot-vec order: what `ViewMode::Flat`
+    /// and every collapsed sidebar render.
+    fn flat_workspace_entries(snapshot: &ClientShellSnapshot) -> Vec<WorkspaceEntry> {
+        (0..snapshot.workspaces.len())
+            .map(|index| WorkspaceEntry {
+                index,
+                indented: false,
+                last_child: false,
+            })
+            .collect()
+    }
+
     pub(super) fn reveal_workspace(&mut self, workspace_id: &str) {
         if self
             .hits
@@ -1350,7 +1365,10 @@ impl ClientShellState {
         // Positioning by workspace-only index would scroll short and leave the
         // target off-screen (cubic review, PR #40).
         let target = self.snapshot.as_deref().and_then(|snapshot| {
+            // Collapsed draws no group headers, so the header-aware offset is
+            // wrong there too (cubic review, PR #40).
             if self.view_mode == crate::config::ViewMode::Folders
+                && !self.sidebar_collapsed
                 && !self.multi_endpoint_active()
                 && !self.mobile_layout_active()
             {
