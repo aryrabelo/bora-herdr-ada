@@ -378,6 +378,8 @@ fn close_confirmation_error_becomes_client_owned_overlay_and_stable_group_close(
     let [ClientShellAction::Endpoint { request, .. }] = &confirm.actions[..] else {
         panic!("confirmation should use endpoint API");
     };
+    // Default view mode is `ViewMode::Repo`: group close stays on.
+    assert_eq!(state.view_mode, crate::config::ViewMode::Repo);
     assert!(matches!(
         &request.method,
         crate::api::schema::Method::WorkspaceClose(params)

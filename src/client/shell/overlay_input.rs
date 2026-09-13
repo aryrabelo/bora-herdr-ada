@@ -932,7 +932,7 @@ impl ClientShellState {
                     crate::api::schema::Method::WorkspaceClose(
                         crate::api::schema::WorkspaceCloseParams {
                             workspace_id: confirm.workspace_id,
-                            close_group: true,
+                            close_group: self.close_drags_worktree_group(),
                         },
                     ),
                     outcome,
@@ -1110,6 +1110,17 @@ impl ClientShellState {
         outcome.repaint = true;
     }
 
+    /// Whether closing a root-checkout workspace should also close the
+    /// linked worktrees sharing its `worktree.key`. Only `ViewMode::Repo`
+    /// renders that group nested under the parent row; in Folders/Flat
+    /// every worktree is its own top-level row (often in an unrelated
+    /// folder), so a group close would silently close rows the user
+    /// never pointed at. Reads the LIVE `view_mode`, which `CycleViewMode`
+    /// moves without touching `config.view_mode`.
+    pub(super) fn close_drags_worktree_group(&self) -> bool {
+        self.view_mode == crate::config::ViewMode::Repo
+    }
+
     pub(super) fn open_confirm_close_overlay(&mut self, workspace_id: String) {
         let Some(snapshot) = self.snapshot.as_deref() else {
             return;
@@ -1124,6 +1135,7 @@ impl ClientShellState {
         let group_key = workspace
             .worktree
             .as_ref()
+            .filter(|_| self.close_drags_worktree_group())
             .filter(|worktree| !worktree.is_linked_worktree)
             .map(|worktree| worktree.key.as_str());
         let group = group_key

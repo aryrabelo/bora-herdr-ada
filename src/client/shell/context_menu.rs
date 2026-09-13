@@ -120,20 +120,25 @@ impl ClientShellState {
             return;
         };
         let worktree = workspace.worktree.as_ref();
-        let has_worktree_children = worktree.is_some_and(|worktree| {
-            !worktree.is_linked_worktree
-                && snapshot
-                    .workspaces
-                    .iter()
-                    .filter(|candidate| {
-                        candidate
-                            .worktree
-                            .as_ref()
-                            .is_some_and(|candidate| candidate.key == worktree.key)
-                    })
-                    .count()
-                    >= 2
-        });
+        // "Close group"/"Collapse" only make sense where the group is
+        // actually rendered nested -- `ViewMode::Repo`. In Folders/Flat
+        // the parent is a plain row (and Folders collapse keys are
+        // `vg:`-prefixed), so it gets the plain workspace menu.
+        let has_worktree_children = self.close_drags_worktree_group()
+            && worktree.is_some_and(|worktree| {
+                !worktree.is_linked_worktree
+                    && snapshot
+                        .workspaces
+                        .iter()
+                        .filter(|candidate| {
+                            candidate
+                                .worktree
+                                .as_ref()
+                                .is_some_and(|candidate| candidate.key == worktree.key)
+                        })
+                        .count()
+                        >= 2
+            });
         let collapsed = worktree.is_some_and(|worktree| {
             self.group_is_collapsed(&self.active_endpoint_id, &worktree.key)
         });
@@ -311,7 +316,7 @@ impl ClientShellState {
                         crate::api::schema::Method::WorkspaceClose(
                             crate::api::schema::WorkspaceCloseParams {
                                 workspace_id,
-                                close_group: true,
+                                close_group: self.close_drags_worktree_group(),
                             },
                         ),
                         outcome,

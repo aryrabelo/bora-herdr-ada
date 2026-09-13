@@ -355,14 +355,11 @@ impl App {
         if self.state.workspaces.get(index).is_none() {
             return workspace_not_found(id, &params.workspace_id);
         }
-        let close_indices = self.state.workspace_close_indices(index);
-        if close_indices.len() >= 2 && !params.close_group {
-            return encode_error(
-                id,
-                "workspace_group_close_required",
-                "workspace has linked worktree workspaces; use --group (close_group=true in the API) to close the group",
-            );
-        }
+        let close_indices = if params.close_group {
+            self.state.workspace_close_indices(index)
+        } else {
+            vec![index]
+        };
         let closed_workspaces = close_indices
             .iter()
             .map(|index| {
@@ -373,7 +370,11 @@ impl App {
             })
             .collect::<Vec<_>>();
         self.state.selected = index;
-        self.state.close_selected_workspace();
+        if params.close_group {
+            self.state.close_selected_workspace_group();
+        } else {
+            self.state.close_selected_workspace();
+        }
         self.shutdown_detached_terminal_runtimes();
         for (workspace_id, workspace) in closed_workspaces {
             self.emit_event(EventEnvelope {
@@ -627,42 +628,109 @@ mod tests {
         app
     }
 
+    fn app_with_worktree_group_of_three() -> App {
+        let mut app = app_with_worktree_group();
+        let mut second = Workspace::test_new("issue-2");
+        second.worktree_space = Some(crate::workspace::WorktreeSpaceMembership {
+            key: "repo-key".into(),
+            label: "herdr".into(),
+            repo_root: "/repo/herdr".into(),
+            checkout_path: "/repo/herdr-issue-2".into(),
+            is_linked_worktree: true,
+        });
+        app.state.workspaces.push(second);
+        app
+    }
+
+    fn surviving_workspace_names(app: &App) -> Vec<String> {
+        app.state
+            .workspaces
+            .iter()
+            .map(crate::workspace::Workspace::display_name)
+            .collect()
+    }
+
+    fn closed_workspace_event_ids(app: &App) -> Vec<String> {
+        app.event_hub
+            .events_after(0)
+            .into_iter()
+            .filter_map(|(_, event)| match event.data {
+                EventData::WorkspaceClosed { workspace_id, .. } => Some(workspace_id),
+                _ => None,
+            })
+            .collect()
+    }
+
+    // `close_group: false` is literal: the parent root checkout closes alone,
+    // its linked worktree workspaces stay open, and only the named workspace
+    // gets a `workspace.closed` event.
     #[test]
-    fn api_workspace_close_parent_group_requires_explicit_group_intent() {
-        for confirm_close in [true, false] {
-            let mut app = app_with_worktree_group();
-            app.state.confirm_close = confirm_close;
-            let parent_id = app.public_workspace_id(0);
-            let workspace_ids = app
-                .state
-                .workspaces
-                .iter()
-                .map(|workspace| workspace.id.clone())
-                .collect::<Vec<_>>();
+    fn api_workspace_close_without_group_closes_only_the_named_workspace() {
+        let mut app = app_with_worktree_group_of_three();
+        let parent_id = app.public_workspace_id(0);
+        let parent_info = app.workspace_info(0);
 
-            let request: crate::api::schema::Request = serde_json::from_value(serde_json::json!({
-                "id": "req",
-                "method": "workspace.close",
-                "params": { "workspace_id": parent_id }
-            }))
-            .unwrap();
-            let response = app.handle_api_request(request);
+        let response = app.handle_workspace_close(
+            "req".into(),
+            WorkspaceCloseParams {
+                workspace_id: parent_id.clone(),
+                close_group: false,
+            },
+        );
 
-            let response: serde_json::Value = serde_json::from_str(&response).unwrap();
-            assert_eq!(response["error"]["code"], "workspace_group_close_required");
-            assert!(app.event_hub.events_after(0).is_empty());
-            assert_eq!(app.state.mode, crate::app::Mode::Terminal);
-            assert_eq!(app.state.active, Some(1));
-            assert_eq!(app.state.selected, 1);
-            assert_eq!(
-                app.state
-                    .workspaces
-                    .iter()
-                    .map(|workspace| workspace.id.clone())
-                    .collect::<Vec<_>>(),
-                workspace_ids
-            );
-        }
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        assert_eq!(success.id, "req");
+        assert_eq!(surviving_workspace_names(&app), vec!["issue", "issue-2"]);
+        assert_eq!(closed_workspace_event_ids(&app), vec![parent_id.clone()]);
+        assert!(app.event_hub.events_after(0).iter().any(|(_, event)| {
+            matches!(
+                &event.data,
+                EventData::WorkspaceClosed {
+                    workspace_id,
+                    workspace: Some(workspace),
+                } if workspace_id == &parent_id && workspace == &parent_info
+            )
+        }));
+    }
+
+    #[test]
+    fn api_workspace_close_group_closes_every_worktree_group_member() {
+        let mut app = app_with_worktree_group_of_three();
+        let closed_ids = [0, 1, 2].map(|index| app.public_workspace_id(index));
+
+        let response = app.handle_workspace_close(
+            "req".into(),
+            WorkspaceCloseParams {
+                workspace_id: closed_ids[0].clone(),
+                close_group: true,
+            },
+        );
+
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        assert_eq!(success.id, "req");
+        assert!(app.state.workspaces.is_empty());
+        assert_eq!(closed_workspace_event_ids(&app), closed_ids.to_vec());
+    }
+
+    // An implicit close (last pane of the workspace) never expands into the
+    // worktree group, regardless of confirmation settings.
+    #[test]
+    fn api_pane_close_of_last_parent_pane_closes_only_the_parent_workspace() {
+        let mut app = app_with_worktree_group_of_three();
+        app.state.ensure_test_terminals();
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        let parent_id = app.public_workspace_id(0);
+        let root_pane = app.state.workspaces[0].tabs[0].root_pane;
+        let pane_id = app.pane_info(0, root_pane).unwrap().pane_id;
+
+        let response =
+            app.handle_pane_close("req".into(), crate::api::schema::PaneTarget { pane_id });
+
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        assert_eq!(success.id, "req");
+        assert_eq!(surviving_workspace_names(&app), vec!["issue", "issue-2"]);
+        assert_eq!(closed_workspace_event_ids(&app), vec![parent_id]);
     }
 
     #[test]

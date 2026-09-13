@@ -1495,3 +1495,55 @@ fn has_working_agent_checks_every_endpoints_cached_snapshot() {
         "a Working agent on a background endpoint must still be seen"
     );
 }
+
+/// With two machines the expanded sidebar is `endpoint_sidebar::render_expanded`,
+/// which builds every machine's rows from `workspace_entries` regardless of
+/// view mode. NUMERIC workspace selection must walk THAT list there, or the
+/// Folders order picks a row the multi-machine sidebar never drew (cubic
+/// review, PR #40).
+///
+/// Prev/next is deliberately NOT the probe here: `handle_endpoint_navigation`
+/// intercepts those two actions before `navigation_workspace_entries` is ever
+/// reached and walks its own per-endpoint `workspace_entries` list, so a
+/// prev/next probe stays green with the fix removed. `SwitchWorkspace(n)` and
+/// Navigate-mode movement are the callers that really reach it.
+#[test]
+fn numeric_workspace_selection_follows_the_expanded_multi_machine_sidebar() {
+    let mut config = Config::default();
+    config.ui.view_mode = crate::config::ViewMode::Folders;
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+    let projected = super::agents_worktrees_notifications::folders_nav_snapshot();
+
+    // Single machine: Folders rows are ws_1, ws_3, header "a", ws_2, so the
+    // second workspace row is ws_3.
+    state.set_snapshot(Box::new(projected));
+    assert!(!state.multi_endpoint_active());
+    assert_eq!(switch_workspace_target(&mut state, 1), "ws_3");
+
+    // Second machine attached: the sidebar switches to the endpoint renderer,
+    // whose rows are workspace-vec order, so the second row is ws_2.
+    let profile = remote_profile();
+    let endpoint_id = ClientEndpointId::Ssh(profile.id.clone());
+    state.set_endpoint_catalog(&[profile]);
+    state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Online);
+    let mut remote = snapshot();
+    remote.boot_id = "remote-boot".into();
+    state.set_endpoint_snapshot(&endpoint_id, Box::new(remote));
+    assert!(state.multi_endpoint_active());
+    assert_eq!(switch_workspace_target(&mut state, 1), "ws_2");
+}
+
+fn switch_workspace_target(state: &mut ClientShellState, index: usize) -> String {
+    let mut input = ClientShellInput::default();
+    state.record_binding(
+        crate::input::KeybindMatch::Action(crate::input::KeybindAction::SwitchWorkspace(index)),
+        &mut input,
+    );
+    match &input.actions[..] {
+        [ClientShellAction::Endpoint { request, .. }] => match &request.method {
+            crate::api::schema::Method::WorkspaceFocus(target) => target.workspace_id.clone(),
+            other => panic!("expected workspace.focus, got {other:?}"),
+        },
+        other => panic!("expected one endpoint action, got {other:?}"),
+    }
+}
