@@ -1,0 +1,26 @@
+AGENTS.md
+  h_b156936c57c455 715
+docs/next/api/herdr-api.schema.json
+  h_b156936c57c455 3848-3853
+src/api/schema/common.rs
+  h_b156936c57c455 168-179
+src/api/schema/panes.rs
+  h_b156936c57c455 471
+src/app/api/panes.rs
+  h_b156936c57c455 5072-5108
+src/terminal/state.rs
+  h_b156936c57c455 120-125,130-138,2034
+src/workspace/aggregate.rs
+  h_b156936c57c455 81,112
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "b855daccdaede32b1510132e92e3f9a1fc52b750",
+  "prompts": {},
+  "humans": {
+    "h_b156936c57c455": {
+      "author": "Ary Rabelo <aryrabelo@gmail.com>"
+    }
+  }
+}
