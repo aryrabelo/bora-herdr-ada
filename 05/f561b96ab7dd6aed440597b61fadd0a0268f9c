@@ -1,0 +1,14 @@
+src/terminal/state.rs
+  h_b156936c57c455 2026-2029
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "05f561b96ab7dd6aed440597b61fadd0a0268f9c",
+  "prompts": {},
+  "humans": {
+    "h_b156936c57c455": {
+      "author": "Ary Rabelo <aryrabelo@gmail.com>"
+    }
+  }
+}
