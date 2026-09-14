@@ -460,6 +460,17 @@ pub struct PaneReportAgentParams {
     pub agent_session_path: Option<String>,
 }
 
+/// Hand-set status for one pane, overriding automatic agent detection at
+/// read-out. `status: null` clears the override and returns the pane to
+/// detection; `unknown` is rejected because the override exists to state a
+/// human-meaningful status, and unknown is the absence of one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct PaneSetStatusParams {
+    pub pane_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<crate::api::schema::AgentStatus>,
+}
+
 /// Structured, opaque attestation posted by an agent/orchestrator about a pane's
 /// task result. Bora does not interpret `result`; it carries the JSON through to
 /// an event verbatim (runtime fact, not persisted task-state).

@@ -3,7 +3,7 @@ use std::time::Instant;
 
 use crate::detect::AgentState;
 use crate::layout::PaneId;
-use crate::terminal::{TerminalId, TerminalState};
+use crate::terminal::{ManualAgentStatus, TerminalId, TerminalState};
 
 use super::{Tab, Workspace};
 
@@ -66,6 +66,20 @@ impl Tab {
             .max_by_key(|(state, seen)| crate::detect::attention_sort_key(*state, *seen))
             .unwrap_or((AgentState::Unknown, true))
     }
+
+    /// The hand-set status pin covering this tab, newest pin wins: a tab is
+    /// pinned as soon as any of its panes is, and the most recent human
+    /// statement is the one worth showing. `None` leaves
+    /// [`Tab::aggregate_state`] authoritative.
+    pub fn manual_status_pin(
+        &self,
+        terminals: &HashMap<TerminalId, TerminalState>,
+    ) -> Option<ManualAgentStatus> {
+        self.panes
+            .values()
+            .filter_map(|pane| terminals.get(&pane.attached_terminal_id)?.manual_status)
+            .max_by_key(|manual| manual.set_at)
+    }
 }
 
 impl Workspace {
@@ -84,6 +98,20 @@ impl Workspace {
             .max_by_key(|(state, seen)| crate::detect::attention_sort_key(*state, *seen))
             .unwrap_or((AgentState::Unknown, true))
     }
+
+    /// The hand-set status pin covering this workspace, newest pin wins.
+    /// Mirrors [`Tab::manual_status_pin`] across every tab.
+    pub fn manual_status_pin(
+        &self,
+        terminals: &HashMap<TerminalId, TerminalState>,
+    ) -> Option<ManualAgentStatus> {
+        self.tabs
+            .iter()
+            .flat_map(|tab| tab.panes.values())
+            .filter_map(|pane| terminals.get(&pane.attached_terminal_id)?.manual_status)
+            .max_by_key(|manual| manual.set_at)
+    }
+
     pub fn pane_details(&self, terminals: &HashMap<TerminalId, TerminalState>) -> Vec<PaneDetail> {
         self.tabs
             .iter()

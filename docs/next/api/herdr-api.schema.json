@@ -3838,6 +3838,28 @@
           ],
           "type": "object"
         },
+        "PaneSetStatusParams": {
+          "description": "Hand-set status for one pane, overriding automatic agent detection at\nread-out. `status: null` clears the override and returns the pane to\ndetection; `unknown` is rejected because the override exists to state a\nhuman-meaningful status, and unknown is the absence of one.",
+          "properties": {
+            "pane_id": {
+              "type": "string"
+            },
+            "status": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/request/$defs/AgentStatus"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "pane_id"
+          ],
+          "type": "object"
+        },
         "PaneSplitParams": {
           "properties": {
             "cwd": {
@@ -6622,6 +6644,22 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/PaneReportAgentParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "pane.set_status",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/PaneSetStatusParams"
             }
           },
           "required": [

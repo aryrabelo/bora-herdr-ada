@@ -896,3 +896,106 @@ fn pane_context_menu_copy_reference_writes_workspace_label_and_pane_id() {
     assert!(state.overlay.is_none());
     assert!(state.copy_feedback.is_some());
 }
+
+/// The pane menu ends with a flat run of hand-set status choices --
+/// this shell has no nested popup -- appended AFTER the existing pane
+/// items, with "Auto" last as the un-pin.
+#[test]
+fn pane_context_menu_appends_the_status_run_after_the_existing_items() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    state.set_pane_surface(surface());
+    state.compose(106, 30).expect("shell frame");
+
+    let pane = state.hits.panes[0].rect;
+    right_click(&mut state, pane);
+
+    let actions = menu_actions(&state);
+    let labels = menu_labels(&state);
+    let status_run = [
+        ClientContextMenuAction::SetPaneStatus(Some(AgentStatus::Working)),
+        ClientContextMenuAction::SetPaneStatus(Some(AgentStatus::Blocked)),
+        ClientContextMenuAction::SetPaneStatus(Some(AgentStatus::Idle)),
+        ClientContextMenuAction::SetPaneStatus(Some(AgentStatus::Done)),
+        ClientContextMenuAction::SetPaneStatus(None),
+    ];
+    assert_eq!(
+        &actions[actions.len() - status_run.len()..],
+        &status_run[..],
+        "status run must be the tail of the pane menu: {labels:?}"
+    );
+    assert_eq!(
+        &labels[labels.len() - status_run.len()..],
+        &[
+            "Status: Working".to_owned(),
+            "Status: Blocked".to_owned(),
+            "Status: Idle".to_owned(),
+            "Status: Done".to_owned(),
+            "Status: Auto".to_owned(),
+        ][..]
+    );
+    // The run is appended, so everything that was there before stays,
+    // in order, ahead of it.
+    assert_eq!(
+        &actions[..actions.len() - status_run.len()],
+        &[
+            ClientContextMenuAction::RenamePane,
+            ClientContextMenuAction::CopyPaneReference,
+            ClientContextMenuAction::SplitRight,
+            ClientContextMenuAction::SplitDown,
+            ClientContextMenuAction::Zoom,
+            ClientContextMenuAction::ToggleRightClickPassthrough,
+            ClientContextMenuAction::ClosePane,
+        ][..]
+    );
+}
+
+/// Each status row pushes one `pane.set_status` for the right-clicked
+/// pane; "Auto" pushes the same method with `status: None`, which is how
+/// the server clears the manual pin.
+#[test]
+fn pane_context_menu_status_items_push_pane_set_status() {
+    for (action, expected) in [
+        (
+            ClientContextMenuAction::SetPaneStatus(Some(AgentStatus::Working)),
+            Some(AgentStatus::Working),
+        ),
+        (
+            ClientContextMenuAction::SetPaneStatus(Some(AgentStatus::Blocked)),
+            Some(AgentStatus::Blocked),
+        ),
+        (
+            ClientContextMenuAction::SetPaneStatus(Some(AgentStatus::Idle)),
+            Some(AgentStatus::Idle),
+        ),
+        (
+            ClientContextMenuAction::SetPaneStatus(Some(AgentStatus::Done)),
+            Some(AgentStatus::Done),
+        ),
+        (ClientContextMenuAction::SetPaneStatus(None), None),
+    ] {
+        let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+        state.set_snapshot(Box::new(snapshot()));
+        state.set_pane_surface(surface());
+        state.compose(106, 30).expect("shell frame");
+
+        let pane = state.hits.panes[0].rect;
+        right_click(&mut state, pane);
+        let outcome = click_menu_item(&mut state, &action);
+
+        let [ClientShellAction::Endpoint { request, .. }] = &outcome.actions[..] else {
+            panic!(
+                "{action:?} should push one endpoint request: {:?}",
+                outcome.actions
+            );
+        };
+        match &request.method {
+            crate::api::schema::Method::PaneSetStatus(params) => {
+                assert_eq!(params.pane_id, "pane_1");
+                assert_eq!(params.status, expected, "{action:?}");
+            }
+            other => panic!("expected PaneSetStatus, got {other:?}"),
+        }
+        assert!(state.overlay.is_none(), "menu should close: {action:?}");
+    }
+}

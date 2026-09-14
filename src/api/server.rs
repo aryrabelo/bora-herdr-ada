@@ -498,6 +498,7 @@ pub(crate) fn api_method_name(method: &Method) -> &'static str {
         Method::PaneGraphicsStreamOpen(_) => "pane.graphics.stream.open",
         Method::PaneGraphicsStreamClose(_) => "pane.graphics.stream.close",
         Method::PaneReportAgent(_) => "pane.report_agent",
+        Method::PaneSetStatus(_) => "pane.set_status",
         Method::PaneReportResult(_) => "pane.report_result",
         Method::PaneReportAgentSession(_) => "pane.report_agent_session",
         Method::PaneReportMetadata(_) => "pane.report_metadata",

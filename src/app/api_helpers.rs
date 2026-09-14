@@ -96,6 +96,22 @@ pub(super) fn pane_agent_status(
     }
 }
 
+/// The status a reader must see: a hand-set pin when one is present, otherwise
+/// live detection through [`pane_agent_status`]. Every read-out point (pane,
+/// tab, workspace, events, terminal targets) folds through here so the mapping
+/// and the override precedence each keep a single owner. Detection keeps
+/// running underneath a pin, so clearing it reveals the live state immediately.
+pub(super) fn effective_agent_status(
+    manual: Option<crate::terminal::ManualAgentStatus>,
+    state: crate::detect::AgentState,
+    seen: bool,
+) -> crate::api::schema::AgentStatus {
+    match manual {
+        Some(manual) => manual.status,
+        None => pane_agent_status(state, seen),
+    }
+}
+
 pub(super) fn read_terminal_snapshot(
     terminal: &crate::terminal::TerminalRuntime,
     source: crate::api::schema::ReadSource,

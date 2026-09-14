@@ -624,6 +624,9 @@ pub(super) enum ClientContextMenuAction {
     Zoom,
     ToggleRightClickPassthrough,
     ClosePane,
+    /// Pin this pane's sidebar status by hand, or clear the pin with
+    /// `None` and return the pane to automatic agent detection.
+    SetPaneStatus(Option<crate::api::schema::AgentStatus>),
     /// Prompt for a new Folders group holding this workspace.
     NewGroup,
     /// Move this workspace into the carried existing group path.

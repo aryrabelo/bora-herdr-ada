@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use super::{api_helpers::pane_agent_status, App, Mode};
+use super::{api_helpers::effective_agent_status, App, Mode};
 use crate::api::schema::{EventData, EventEnvelope, EventKind};
 use crate::{config::NewTerminalCwdConfig, workspace::Workspace};
 
@@ -211,7 +211,11 @@ impl App {
             label: ws.tab_display_name(tab_idx)?,
             focused: self.state.active == Some(ws_idx) && ws.active_tab == tab_idx,
             pane_count: tab.panes.len(),
-            agent_status: pane_agent_status(agg_state, seen),
+            agent_status: effective_agent_status(
+                tab.manual_status_pin(&self.state.terminals),
+                agg_state,
+                seen,
+            ),
         })
     }
 
@@ -338,7 +342,7 @@ impl App {
             terminal_title: terminal.terminal_title.clone(),
             terminal_title_stripped: terminal.terminal_title_stripped(),
             display_agent: presentation.display_agent,
-            agent_status: pane_agent_status(terminal.state, pane.seen),
+            agent_status: effective_agent_status(terminal.manual_status, terminal.state, pane.seen),
             idle_seconds: terminal.idle_since.map(|since| since.elapsed().as_secs()),
             state_labels: presentation.state_labels,
             tokens: terminal.metadata_tokens.values(),
@@ -381,7 +385,11 @@ impl App {
             active_tab_id: self.public_tab_id(index, ws.active_tab).unwrap_or_else(|| {
                 crate::workspace::public_tab_id_for_number(&ws.id, ws.active_tab + 1)
             }),
-            agent_status: pane_agent_status(agg_state, seen),
+            agent_status: effective_agent_status(
+                ws.manual_status_pin(&self.state.terminals),
+                agg_state,
+                seen,
+            ),
             idle_seconds: ws
                 .idle_since(&self.state.terminals)
                 .map(|since| since.elapsed().as_secs()),

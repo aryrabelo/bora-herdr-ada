@@ -222,6 +222,8 @@ pub enum Method {
     PaneGraphicsStreamClose(PaneGraphicsStreamParams),
     #[serde(rename = "pane.report_agent")]
     PaneReportAgent(PaneReportAgentParams),
+    #[serde(rename = "pane.set_status")]
+    PaneSetStatus(PaneSetStatusParams),
     #[serde(rename = "pane.report_result")]
     PaneReportResult(PaneReportResultParams),
     #[serde(rename = "pane.report_agent_session")]

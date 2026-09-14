@@ -116,6 +116,17 @@ struct AgentNameOwner {
     session_ref: Option<crate::agent_resume::AgentSessionRef>,
 }
 
+/// A hand-set agent status for one terminal: what the human says this pane is
+/// doing, overriding detection at read-out. `set_at` orders competing pins when
+/// several panes of one workspace/tab are pinned — newest wins. Pure runtime
+/// state: never persisted with the session, so a restart drops back to
+/// automatic detection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ManualAgentStatus {
+    pub status: crate::api::schema::AgentStatus,
+    pub set_at: Instant,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct RecentAgentProcessExit {
     agent: Agent,
@@ -143,6 +154,10 @@ pub struct TerminalState {
     pub persisted_agent_session: Option<crate::agent_resume::PersistedAgentSession>,
     pub terminal_title: Option<String>,
     pub manual_label: Option<String>,
+    /// Hand-set status pin; `None` means automatic detection is authoritative.
+    /// Detection keeps running while this is set — see
+    /// `crate::app::api_helpers::effective_agent_status`.
+    pub manual_status: Option<ManualAgentStatus>,
     pub agent_name: Option<String>,
     agent_name_owner: Option<AgentNameOwner>,
     managed_agent: Option<ManagedAgent>,
@@ -180,6 +195,7 @@ impl TerminalState {
             persisted_agent_session: None,
             terminal_title: None,
             manual_label: None,
+            manual_status: None,
             agent_name: None,
             agent_name_owner: None,
             managed_agent: None,
@@ -1994,6 +2010,23 @@ impl TerminalState {
 
     pub fn clear_manual_label(&mut self) {
         self.manual_label = None;
+    }
+
+    /// Pin this terminal's read-out status by hand. `now` is the only ordering
+    /// key manual pins have — aggregates pick the newest one — so it is stamped
+    /// here, in the single place that owns the field, and never by callers
+    /// reaching into `manual_status` themselves.
+    pub fn set_manual_status_at(&mut self, status: crate::api::schema::AgentStatus, now: Instant) {
+        self.manual_status = Some(ManualAgentStatus {
+            status,
+            set_at: now,
+        });
+    }
+
+    /// Drop the pin and hand read-out back to live detection, which has been
+    /// running underneath the whole time.
+    pub fn clear_manual_status(&mut self) {
+        self.manual_status = None;
     }
 
     pub fn set_agent_name(&mut self, name: String) {
