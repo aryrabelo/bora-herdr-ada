@@ -117,14 +117,25 @@ struct AgentNameOwner {
 }
 
 /// A hand-set agent status for one terminal: what the human says this pane is
-/// doing, overriding detection at read-out. `set_at` orders competing pins when
-/// several panes of one workspace/tab are pinned — newest wins. Pure runtime
-/// state: never persisted with the session, so a restart drops back to
-/// automatic detection.
+/// doing, overriding detection at read-out. `set_seq` orders competing pins
+/// when several panes of one workspace/tab are pinned — newest wins — and is
+/// a process-wide monotonic counter, not the clock: two pins stamped within
+/// the same clock tick must still order by who was set second. `set_at` is
+/// kept for diagnostics only. Pure runtime state: never persisted with the
+/// session, so a restart drops back to automatic detection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ManualAgentStatus {
     pub status: crate::api::schema::AgentStatus,
     pub set_at: Instant,
+    pub set_seq: u64,
+}
+
+/// Monotonic ordering source for [`ManualAgentStatus::set_seq`]; the clock
+/// has coarse ticks on some platforms, this counter does not.
+static NEXT_MANUAL_PIN_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn next_manual_pin_seq() -> u64 {
+    NEXT_MANUAL_PIN_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2020,6 +2031,7 @@ impl TerminalState {
         self.manual_status = Some(ManualAgentStatus {
             status,
             set_at: now,
+            set_seq: next_manual_pin_seq(),
         });
     }
 

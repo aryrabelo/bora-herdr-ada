@@ -3845,13 +3845,12 @@
               "type": "string"
             },
             "status": {
-              "anyOf": [
-                {
-                  "$ref": "#/schemas/request/$defs/AgentStatus"
-                },
-                {
-                  "type": "null"
-                }
+              "enum": [
+                "working",
+                "blocked",
+                "idle",
+                "done",
+                null
               ]
             }
           },

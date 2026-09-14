@@ -165,6 +165,18 @@ pub enum AgentStatus {
     Unknown,
 }
 
+/// Schema for `pane.set_status`'s manual pin: the four human-settable
+/// statuses only. `AgentStatus`'s derived schema also advertises `unknown`,
+/// which the endpoint rejects at runtime, so the advertised contract is
+/// narrowed here to match the enforced one. Absent or `null` clears the pin.
+pub(super) fn settable_agent_status_schema(
+    _generator: &mut schemars::SchemaGenerator,
+) -> schemars::Schema {
+    schemars::json_schema!({
+        "enum": ["working", "blocked", "idle", "done", null]
+    })
+}
+
 pub(crate) fn default_true() -> bool {
     true
 }

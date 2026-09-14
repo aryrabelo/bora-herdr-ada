@@ -78,7 +78,7 @@ impl Tab {
         self.panes
             .values()
             .filter_map(|pane| terminals.get(&pane.attached_terminal_id)?.manual_status)
-            .max_by_key(|manual| manual.set_at)
+            .max_by_key(|manual| manual.set_seq)
     }
 }
 
@@ -109,7 +109,7 @@ impl Workspace {
             .iter()
             .flat_map(|tab| tab.panes.values())
             .filter_map(|pane| terminals.get(&pane.attached_terminal_id)?.manual_status)
-            .max_by_key(|manual| manual.set_at)
+            .max_by_key(|manual| manual.set_seq)
     }
 
     pub fn pane_details(&self, terminals: &HashMap<TerminalId, TerminalState>) -> Vec<PaneDetail> {

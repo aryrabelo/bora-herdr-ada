@@ -5070,6 +5070,43 @@ mod tests {
     }
 
     #[test]
+    fn workspace_aggregate_breaks_same_tick_pin_ties_by_set_order() {
+        let (mut app, first_public) = app_with_test_workspace();
+        let first = app.state.workspaces[0].tabs[0].root_pane;
+        let second = app.state.workspaces[0].test_split(ratatui::layout::Direction::Horizontal);
+        app.state.ensure_test_terminals();
+        set_detected_state(&mut app, first, AgentState::Idle);
+        set_detected_state(&mut app, second, AgentState::Working);
+
+        // Both pins carry the SAME clock stamp: ordering must come from the
+        // monotonic set sequence, never from Instant resolution.
+        let same_tick = std::time::Instant::now();
+        let first_terminal = terminal_id_for(&app, first);
+        let second_terminal = terminal_id_for(&app, second);
+        app.state
+            .terminals
+            .get_mut(&first_terminal)
+            .expect("fixture terminal exists")
+            .set_manual_status_at(AgentStatus::Blocked, same_tick);
+        app.state
+            .terminals
+            .get_mut(&second_terminal)
+            .expect("fixture terminal exists")
+            .set_manual_status_at(AgentStatus::Done, same_tick);
+
+        assert_eq!(
+            app.workspace_info(0).agent_status,
+            AgentStatus::Done,
+            "the pin set second wins even when stamps tie"
+        );
+
+        // The order is total, so a fresh API-driven pin after the tie still
+        // resolves deterministically without touching the clock.
+        set_status_ok(&mut app, &first_public, Some(AgentStatus::Blocked));
+        assert_eq!(app.workspace_info(0).agent_status, AgentStatus::Blocked);
+    }
+
+    #[test]
     fn pane_set_status_emits_status_changed_only_when_the_effective_status_moves() {
         let (mut app, public_pane_id) = app_with_test_workspace();
         let pane_id = app.state.workspaces[0].tabs[0].root_pane;

@@ -468,6 +468,7 @@ pub struct PaneReportAgentParams {
 pub struct PaneSetStatusParams {
     pub pane_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(schema_with = "super::common::settable_agent_status_schema")]
     pub status: Option<crate::api::schema::AgentStatus>,
 }
 
