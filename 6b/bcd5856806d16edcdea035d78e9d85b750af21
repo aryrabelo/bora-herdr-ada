@@ -1,0 +1,60 @@
+AGENTS.md
+  h_b156936c57c455 715
+Cargo.lock
+  h_b156936c57c455 135
+Cargo.toml
+  h_b156936c57c455 3
+docs/next/api/herdr-api.schema.json
+  h_b156936c57c455 3841-3862,6655-6670
+docs/next/website/src/content/docs/ja/socket-api.mdx
+  h_b156936c57c455 102,544-556
+docs/next/website/src/content/docs/socket-api.mdx
+  h_b156936c57c455 106,716-735
+docs/next/website/src/content/docs/zh-cn/socket-api.mdx
+  h_b156936c57c455 102,540-552
+src/api/mod.rs
+  h_b156936c57c455 75
+src/api/schema.rs
+  h_b156936c57c455 225-226
+src/api/schema/panes.rs
+  h_b156936c57c455 463-473
+src/api/server.rs
+  h_b156936c57c455 501
+src/app/api.rs
+  h_b156936c57c455 18-21,669-672,674,679-689,691,705-709,794-819,1218-1220
+src/app/api/panes.rs
+  h_b156936c57c455 4-6,15-17,26-28,1595-1637,4888-5138
+src/app/api_helpers.rs
+  h_b156936c57c455 99-114
+src/app/creation.rs
+  h_b156936c57c455 3,214-218,345,388-392
+src/app/mod.rs
+  h_b156936c57c455 2788-2799,2813
+src/app/terminal_targets.rs
+  h_b156936c57c455 1,204
+src/client/shell/context_menu.rs
+  h_b156936c57c455 5,105-127,617-619,726-729
+src/client/shell/state.rs
+  h_b156936c57c455 627-629
+src/client/shell/tests/chrome_context.rs
+  h_b156936c57c455 899-1001
+src/server/client_shell.rs
+  h_b156936c57c455 585-633
+src/terminal/mod.rs
+  h_b156936c57c455 13-14
+src/terminal/state.rs
+  h_b156936c57c455 119-129,157-160,198,2015-2031
+src/workspace/aggregate.rs
+  h_b156936c57c455 6,69-82,101-114
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "6bbcd5856806d16edcdea035d78e9d85b750af21",
+  "prompts": {},
+  "humans": {
+    "h_b156936c57c455": {
+      "author": "Ary Rabelo <aryrabelo@gmail.com>"
+    }
+  }
+}
