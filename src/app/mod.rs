@@ -2785,6 +2785,18 @@ mod tests {
                 },
             ),
         };
+        // The sidebar dot is the whole point of a manual pin: if this method
+        // ever drops out of `request_changes_ui` the pin lands in state and
+        // the shell keeps painting the stale status.
+        let pane_set_status = crate::api::schema::Request {
+            id: "req_13".into(),
+            method: crate::api::schema::Method::PaneSetStatus(
+                crate::api::schema::PaneSetStatusParams {
+                    pane_id: "w1:p1".into(),
+                    status: Some(crate::api::schema::AgentStatus::Working),
+                },
+            ),
+        };
 
         assert!(!crate::api::request_changes_ui(&read_only));
         assert!(!crate::api::request_changes_ui(&worktree_list));
@@ -2798,6 +2810,7 @@ mod tests {
         assert!(crate::api::request_changes_ui(&command_invoke));
         assert!(crate::api::request_changes_ui(&announcement_dismiss));
         assert!(crate::api::request_changes_ui(&release_notes_dismiss));
+        assert!(crate::api::request_changes_ui(&pane_set_status));
     }
 
     #[test]

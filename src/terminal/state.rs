@@ -116,6 +116,28 @@ struct AgentNameOwner {
     session_ref: Option<crate::agent_resume::AgentSessionRef>,
 }
 
+/// A hand-set agent status for one terminal: what the human says this pane is
+/// doing, overriding detection at read-out. `set_seq` orders competing pins
+/// when several panes of one workspace/tab are pinned — newest wins — and is
+/// a process-wide monotonic counter, not the clock: two pins stamped within
+/// the same clock tick must still order by who was set second. `set_at` is
+/// kept for diagnostics only. Pure runtime state: never persisted with the
+/// session, so a restart drops back to automatic detection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ManualAgentStatus {
+    pub status: crate::api::schema::AgentStatus,
+    pub set_at: Instant,
+    pub set_seq: u64,
+}
+
+/// Monotonic ordering source for [`ManualAgentStatus::set_seq`]; the clock
+/// has coarse ticks on some platforms, this counter does not.
+static NEXT_MANUAL_PIN_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn next_manual_pin_seq() -> u64 {
+    NEXT_MANUAL_PIN_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct RecentAgentProcessExit {
     agent: Agent,
@@ -143,6 +165,10 @@ pub struct TerminalState {
     pub persisted_agent_session: Option<crate::agent_resume::PersistedAgentSession>,
     pub terminal_title: Option<String>,
     pub manual_label: Option<String>,
+    /// Hand-set status pin; `None` means automatic detection is authoritative.
+    /// Detection keeps running while this is set — see
+    /// `crate::app::api_helpers::effective_agent_status`.
+    pub manual_status: Option<ManualAgentStatus>,
     pub agent_name: Option<String>,
     agent_name_owner: Option<AgentNameOwner>,
     managed_agent: Option<ManagedAgent>,
@@ -180,6 +206,7 @@ impl TerminalState {
             persisted_agent_session: None,
             terminal_title: None,
             manual_label: None,
+            manual_status: None,
             agent_name: None,
             agent_name_owner: None,
             managed_agent: None,
@@ -1994,6 +2021,24 @@ impl TerminalState {
 
     pub fn clear_manual_label(&mut self) {
         self.manual_label = None;
+    }
+
+    /// Pin this terminal's read-out status by hand. `set_seq` — stamped here,
+    /// in the single place that owns the field, and never by callers reaching
+    /// into `manual_status` themselves — is what aggregates order by; `now`
+    /// is diagnostics only.
+    pub fn set_manual_status_at(&mut self, status: crate::api::schema::AgentStatus, now: Instant) {
+        self.manual_status = Some(ManualAgentStatus {
+            status,
+            set_at: now,
+            set_seq: next_manual_pin_seq(),
+        });
+    }
+
+    /// Drop the pin and hand read-out back to live detection, which has been
+    /// running underneath the whole time.
+    pub fn clear_manual_status(&mut self) {
+        self.manual_status = None;
     }
 
     pub fn set_agent_name(&mut self, name: String) {

@@ -15,7 +15,10 @@ mod tabs;
 mod workspaces;
 mod worktrees;
 
-use super::{api_helpers::pane_agent_status, App, Mode, OverlayPaneState, ToastKind};
+use super::{
+    api_helpers::{effective_agent_status, pane_agent_status},
+    App, Mode, OverlayPaneState, ToastKind,
+};
 use crate::events::AppEvent;
 
 const API_NOTIFICATION_RATE_LIMIT: Duration = Duration::from_secs(1);
@@ -663,16 +666,29 @@ impl App {
             });
         }
 
+        // The emission gate stays on the automatically detected status, exactly
+        // as before: detection runs underneath a manual pin, and the queued
+        // `when_idle` drain below is detection-driven machinery, not a read-out.
+        // Only the reported status folds the pin in.
         let previous_agent_status = pane_agent_status(update.previous_state, update.previous_seen);
-        let agent_status = self
+        let (seen, manual_status) = self
             .state
             .workspaces
             .get(update.ws_idx)
             .and_then(|ws| ws.pane_state(update.pane_id))
-            .map(|pane| pane_agent_status(update.state, pane.seen))
-            .unwrap_or_else(|| pane_agent_status(update.state, update.seen));
+            .map(|pane| {
+                let manual = self
+                    .state
+                    .terminals
+                    .get(&pane.attached_terminal_id)
+                    .and_then(|terminal| terminal.manual_status);
+                (pane.seen, manual)
+            })
+            .unwrap_or((update.seen, None));
+        let detected_agent_status = pane_agent_status(update.state, seen);
+        let agent_status = effective_agent_status(manual_status, update.state, seen);
 
-        if previous_agent_status != agent_status
+        if previous_agent_status != detected_agent_status
             || update.previous_presentation != update.presentation
         {
             let presentation = update.presentation.clone();
@@ -686,7 +702,11 @@ impl App {
             // after `emit_event` below with no observable difference: it
             // only ever touches the settle-deadline map, never pty bytes or
             // events, synchronously.
-            self.sync_pending_agent_prompt_drain_deadline(&pane_id, agent_status, Instant::now());
+            self.sync_pending_agent_prompt_drain_deadline(
+                &pane_id,
+                detected_agent_status,
+                Instant::now(),
+            );
             self.emit_event(crate::api::schema::EventEnvelope {
                 event: crate::api::schema::EventKind::PaneAgentStatusChanged,
                 data: crate::api::schema::EventData::PaneAgentStatusChanged {
@@ -769,6 +789,32 @@ impl App {
                 data: crate::api::schema::EventData::PaneUpdated { pane },
             });
         }
+    }
+
+    /// Announce a status change that did not come from detection (today: a
+    /// manual pin being set or cleared). The payload is taken straight from
+    /// `pane_info`, so the reported status and the whole label chain are the
+    /// same values a `pane.get` would return right now.
+    pub(crate) fn emit_pane_agent_status_changed(
+        &mut self,
+        ws_idx: usize,
+        pane_id: crate::layout::PaneId,
+    ) {
+        let Some(pane) = self.pane_info(ws_idx, pane_id) else {
+            return;
+        };
+        self.emit_event(crate::api::schema::EventEnvelope {
+            event: crate::api::schema::EventKind::PaneAgentStatusChanged,
+            data: crate::api::schema::EventData::PaneAgentStatusChanged {
+                pane_id: pane.pane_id,
+                workspace_id: pane.workspace_id,
+                agent_status: pane.agent_status,
+                agent: pane.agent,
+                title: pane.title,
+                display_agent: pane.display_agent,
+                state_labels: pane.state_labels,
+            },
+        });
     }
 
     pub(crate) fn emit_workspace_token_updated(&mut self, ws_idx: usize) {
@@ -1168,6 +1214,9 @@ impl App {
             }
             Method::PaneReportAgent(params) => {
                 return self.handle_pane_report_agent(request.id, params);
+            }
+            Method::PaneSetStatus(params) => {
+                return self.handle_pane_set_status(request.id, params);
             }
             Method::PaneReportResult(params) => {
                 return self.handle_pane_report_result(request.id, params);

@@ -2,6 +2,7 @@ use super::*;
 
 impl ClientContextMenuOverlay {
     pub(super) fn items(&self) -> Vec<ClientContextMenuItem> {
+        use crate::api::schema::AgentStatus;
         use ClientContextMenuAction as Action;
 
         let item = |label: &'static str, action| ClientContextMenuItem {
@@ -100,6 +101,29 @@ impl ClientContextMenuOverlay {
                         Action::ToggleRightClickPassthrough,
                     ),
                     item("Close pane", Action::ClosePane),
+                ]);
+                // This shell has no nested popup (see the "move to
+                // group" run above), so hand-setting the status is a
+                // flat run of one item per choice. "Auto" clears the
+                // pin and hands the row back to agent detection.
+                items.extend([
+                    item(
+                        "Status: Working",
+                        Action::SetPaneStatus(Some(AgentStatus::Working)),
+                    ),
+                    item(
+                        "Status: Blocked",
+                        Action::SetPaneStatus(Some(AgentStatus::Blocked)),
+                    ),
+                    item(
+                        "Status: Idle",
+                        Action::SetPaneStatus(Some(AgentStatus::Idle)),
+                    ),
+                    item(
+                        "Status: Done",
+                        Action::SetPaneStatus(Some(AgentStatus::Done)),
+                    ),
+                    item("Status: Auto", Action::SetPaneStatus(None)),
                 ]);
                 items
             }
@@ -590,8 +614,9 @@ impl ClientShellState {
         outcome: &mut ClientShellInput,
     ) {
         use crate::api::schema::{
-            Method, PaneInputSetParams, PaneRenameParams, PaneRightClickTarget, PaneSplitParams,
-            PaneSwapParams, PaneTarget, PaneZoomMode, PaneZoomParams, SplitDirection,
+            Method, PaneInputSetParams, PaneRenameParams, PaneRightClickTarget,
+            PaneSetStatusParams, PaneSplitParams, PaneSwapParams, PaneTarget, PaneZoomMode,
+            PaneZoomParams, SplitDirection,
         };
 
         match action {
@@ -698,6 +723,10 @@ impl ClientShellState {
             ClientContextMenuAction::ClosePane => {
                 self.push_endpoint_method(Method::PaneClose(PaneTarget { pane_id }), outcome)
             }
+            ClientContextMenuAction::SetPaneStatus(status) => self.push_endpoint_method(
+                Method::PaneSetStatus(PaneSetStatusParams { pane_id, status }),
+                outcome,
+            ),
             _ => {}
         }
     }

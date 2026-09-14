@@ -1,9 +1,9 @@
 use bytes::Bytes;
 
 use crate::api::schema::{
-    EventData, EventEnvelope, EventKind, PaneClearAgentAuthorityParams, PaneCopyMotion,
-    PaneCopyMotionParams, PaneCopySearchDirection, PaneCopySearchParams, PaneCurrentParams,
-    PaneDirection, PaneEdgesParams, PaneEdgesResult, PaneFocusDirectionParams,
+    AgentStatus, EventData, EventEnvelope, EventKind, PaneClearAgentAuthorityParams,
+    PaneCopyMotion, PaneCopyMotionParams, PaneCopySearchDirection, PaneCopySearchParams,
+    PaneCurrentParams, PaneDirection, PaneEdgesParams, PaneEdgesResult, PaneFocusDirectionParams,
     PaneFocusDirectionReason, PaneFocusDirectionResult, PaneInfo, PaneInputSetParams,
     PaneLayoutPane, PaneLayoutParams, PaneLayoutRect, PaneLayoutSnapshot, PaneLayoutSplit,
     PaneListParams, PaneMoveDestination, PaneMoveParams, PaneMoveReason, PaneMoveResult,
@@ -12,9 +12,9 @@ use crate::api::schema::{
     PaneRenameParams, PaneReportAgentParams, PaneReportAgentSessionParams,
     PaneReportMetadataParams, PaneResizeParams, PaneResizeReason, PaneResizeResult,
     PaneScrollParams, PaneSelectionReadParams, PaneSendInputParams, PaneSendKeysParams,
-    PaneSendTextParams, PaneSplitParams, PaneSwapParams, PaneSwapReason, PaneSwapResult,
-    PaneTarget, PaneTextPoint, PaneTextRange, PaneZoomMode, PaneZoomParams, PaneZoomReason,
-    PaneZoomResult, ResponseResult,
+    PaneSendTextParams, PaneSetStatusParams, PaneSplitParams, PaneSwapParams, PaneSwapReason,
+    PaneSwapResult, PaneTarget, PaneTextPoint, PaneTextRange, PaneZoomMode, PaneZoomParams,
+    PaneZoomReason, PaneZoomResult, ResponseResult,
 };
 use crate::app::actions::{PaneZoomCommand, PaneZoomNoopReason};
 use crate::app::App;
@@ -23,8 +23,9 @@ use crate::app::Mode;
 use crate::layout::{find_in_direction, NavDirection, PaneId};
 
 use super::super::api_helpers::{
-    detect_state_from_api, encode_api_keys, normalize_metadata_source, normalize_metadata_tokens,
-    normalize_metadata_ttl, normalize_reported_agent_label, MAX_METADATA_TOKEN_KEYS_PER_RESOURCE,
+    detect_state_from_api, effective_agent_status, encode_api_keys, normalize_metadata_source,
+    normalize_metadata_tokens, normalize_metadata_ttl, normalize_reported_agent_label,
+    MAX_METADATA_TOKEN_KEYS_PER_RESOURCE,
 };
 #[cfg(test)]
 use super::super::api_helpers::{METADATA_SOURCE_MAX_CHARS, METADATA_TTL_MAX_MS};
@@ -1587,6 +1588,49 @@ impl App {
             message: params.message,
             seq: params.seq,
         });
+
+        encode_success(id, ResponseResult::Ok {})
+    }
+
+    /// Pin (or unpin, with `status: None`) a pane's agent status by hand.
+    /// Detection is left running underneath: the pin only wins where status is
+    /// read out, so clearing it reveals the live state on the next read.
+    pub(super) fn handle_pane_set_status(
+        &mut self,
+        id: String,
+        params: PaneSetStatusParams,
+    ) -> String {
+        let Some((ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
+            return pane_not_found(id, &params.pane_id);
+        };
+        if matches!(params.status, Some(AgentStatus::Unknown)) {
+            return encode_error(
+                id,
+                "invalid_params",
+                "status must be working, blocked, idle, done, or null to clear the override",
+            );
+        }
+        let Some((terminal_id, seen)) = self
+            .state
+            .workspaces
+            .get(ws_idx)
+            .and_then(|ws| ws.pane_state(pane_id))
+            .map(|pane| (pane.attached_terminal_id.clone(), pane.seen))
+        else {
+            return pane_not_found(id, &params.pane_id);
+        };
+        let Some(terminal) = self.state.terminals.get_mut(&terminal_id) else {
+            return pane_not_found(id, &params.pane_id);
+        };
+        let previous_status = effective_agent_status(terminal.manual_status, terminal.state, seen);
+        match params.status {
+            Some(status) => terminal.set_manual_status_at(status, std::time::Instant::now()),
+            None => terminal.clear_manual_status(),
+        }
+        let status = effective_agent_status(terminal.manual_status, terminal.state, seen);
+        if status != previous_status {
+            self.emit_pane_agent_status_changed(ws_idx, pane_id);
+        }
 
         encode_success(id, ResponseResult::Ok {})
     }
@@ -4840,5 +4884,293 @@ mod tests {
                 .expect("sleep spawns on unix");
             (child, master)
         }
+    }
+
+    fn set_status_params(pane_id: String, status: Option<AgentStatus>) -> PaneSetStatusParams {
+        PaneSetStatusParams { pane_id, status }
+    }
+
+    fn terminal_id_for(app: &App, pane_id: PaneId) -> crate::terminal::TerminalId {
+        app.state.workspaces[0]
+            .terminal_id(pane_id)
+            .expect("fixture pane has a terminal")
+            .clone()
+    }
+
+    fn set_detected_state(app: &mut App, pane_id: PaneId, state: AgentState) {
+        let terminal_id = terminal_id_for(app, pane_id);
+        app.state
+            .terminals
+            .get_mut(&terminal_id)
+            .expect("fixture terminal exists")
+            .state = state;
+    }
+
+    fn set_status_ok(app: &mut App, pane_id: &str, status: Option<AgentStatus>) {
+        let response =
+            app.handle_pane_set_status("req_set".into(), set_status_params(pane_id.into(), status));
+        let response: SuccessResponse =
+            serde_json::from_str(&response).expect("set_status succeeds");
+        assert!(matches!(response.result, ResponseResult::Ok {}));
+    }
+
+    fn status_changed_events(
+        hub: &crate::api::EventHub,
+        after: u64,
+    ) -> Vec<crate::api::schema::AgentStatus> {
+        hub.events_after(after)
+            .into_iter()
+            .filter_map(|(_, event)| match event.data {
+                EventData::PaneAgentStatusChanged { agent_status, .. } => Some(agent_status),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn pane_set_status_pins_every_settable_status_across_read_outs() {
+        for (pinned, detected) in [
+            (AgentStatus::Working, AgentState::Idle),
+            (AgentStatus::Blocked, AgentState::Idle),
+            (AgentStatus::Idle, AgentState::Working),
+            (AgentStatus::Done, AgentState::Working),
+        ] {
+            let (mut app, public_pane_id) = app_with_test_workspace();
+            let pane_id = app.state.workspaces[0].tabs[0].root_pane;
+            set_detected_state(&mut app, pane_id, detected);
+            let detected_status = app
+                .pane_info(0, pane_id)
+                .expect("fixture pane resolves")
+                .agent_status;
+            assert_ne!(
+                detected_status, pinned,
+                "fixture must start on a different status than the pin"
+            );
+
+            set_status_ok(&mut app, &public_pane_id, Some(pinned));
+
+            assert_eq!(
+                app.pane_info(0, pane_id)
+                    .expect("fixture pane resolves")
+                    .agent_status,
+                pinned
+            );
+            assert_eq!(app.workspace_info(0).agent_status, pinned);
+            assert_eq!(
+                app.tab_info(0, 0)
+                    .expect("fixture tab resolves")
+                    .agent_status,
+                pinned
+            );
+        }
+    }
+
+    #[test]
+    fn pane_set_status_pin_outlives_detection_and_clearing_reveals_it() {
+        let (mut app, public_pane_id) = app_with_test_workspace();
+        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        let terminal_id = terminal_id_for(&app, pane_id);
+        set_detected_state(&mut app, pane_id, AgentState::Idle);
+        set_status_ok(&mut app, &public_pane_id, Some(AgentStatus::Blocked));
+
+        // Detection keeps running underneath the pin: the terminal's own state
+        // moves, the read-out does not.
+        let response = app.handle_pane_report_agent(
+            "req_report".into(),
+            PaneReportAgentParams {
+                pane_id: public_pane_id.clone(),
+                source: "hook:claude".into(),
+                agent: "claude".into(),
+                state: crate::api::schema::PaneAgentState::Working,
+                message: None,
+                seq: None,
+                agent_session_id: None,
+                agent_session_path: None,
+            },
+        );
+        let response: SuccessResponse =
+            serde_json::from_str(&response).expect("report_agent succeeds");
+        assert!(matches!(response.result, ResponseResult::Ok {}));
+        assert_eq!(
+            app.state.terminals[&terminal_id].state,
+            AgentState::Working,
+            "the pin must not gate detection"
+        );
+        assert_eq!(
+            app.pane_info(0, pane_id)
+                .expect("fixture pane resolves")
+                .agent_status,
+            AgentStatus::Blocked
+        );
+        assert_eq!(app.workspace_info(0).agent_status, AgentStatus::Blocked);
+
+        set_status_ok(&mut app, &public_pane_id, None);
+
+        assert!(app.state.terminals[&terminal_id].manual_status.is_none());
+        assert_eq!(
+            app.pane_info(0, pane_id)
+                .expect("fixture pane resolves")
+                .agent_status,
+            AgentStatus::Working,
+            "clearing the pin reveals the live automatic state"
+        );
+        assert_eq!(app.workspace_info(0).agent_status, AgentStatus::Working);
+    }
+
+    #[test]
+    fn workspace_aggregate_follows_the_newest_manual_pin() {
+        let (mut app, first_public) = app_with_test_workspace();
+        let first = app.state.workspaces[0].tabs[0].root_pane;
+        let second = app.state.workspaces[0].test_split(ratatui::layout::Direction::Horizontal);
+        app.state.ensure_test_terminals();
+        let second_public = app.public_pane_id(0, second).expect("split pane resolves");
+        set_detected_state(&mut app, first, AgentState::Idle);
+        set_detected_state(&mut app, second, AgentState::Working);
+
+        set_status_ok(&mut app, &first_public, Some(AgentStatus::Blocked));
+        // Rewind the older pin's stamp so the ordering assertion cannot ride on
+        // clock resolution between two back-to-back handler calls.
+        let older = std::time::Instant::now() - std::time::Duration::from_secs(5);
+        let first_terminal = terminal_id_for(&app, first);
+        app.state
+            .terminals
+            .get_mut(&first_terminal)
+            .expect("fixture terminal exists")
+            .set_manual_status_at(AgentStatus::Blocked, older);
+        set_status_ok(&mut app, &second_public, Some(AgentStatus::Done));
+
+        assert_eq!(app.workspace_info(0).agent_status, AgentStatus::Done);
+        assert_eq!(
+            app.tab_info(0, 0)
+                .expect("fixture tab resolves")
+                .agent_status,
+            AgentStatus::Done
+        );
+
+        set_status_ok(&mut app, &second_public, None);
+
+        assert_eq!(
+            app.workspace_info(0).agent_status,
+            AgentStatus::Blocked,
+            "clearing the newest pin falls back to the older one"
+        );
+        assert_eq!(
+            app.pane_info(0, first)
+                .expect("fixture pane resolves")
+                .agent_status,
+            AgentStatus::Blocked
+        );
+        assert_eq!(
+            app.pane_info(0, second)
+                .expect("split pane resolves")
+                .agent_status,
+            AgentStatus::Working,
+            "an unpinned pane answers from detection"
+        );
+    }
+
+    #[test]
+    fn workspace_aggregate_breaks_same_tick_pin_ties_by_set_order() {
+        let (mut app, first_public) = app_with_test_workspace();
+        let first = app.state.workspaces[0].tabs[0].root_pane;
+        let second = app.state.workspaces[0].test_split(ratatui::layout::Direction::Horizontal);
+        app.state.ensure_test_terminals();
+        set_detected_state(&mut app, first, AgentState::Idle);
+        set_detected_state(&mut app, second, AgentState::Working);
+
+        // Both pins carry the SAME clock stamp: ordering must come from the
+        // monotonic set sequence, never from Instant resolution.
+        let same_tick = std::time::Instant::now();
+        let first_terminal = terminal_id_for(&app, first);
+        let second_terminal = terminal_id_for(&app, second);
+        app.state
+            .terminals
+            .get_mut(&first_terminal)
+            .expect("fixture terminal exists")
+            .set_manual_status_at(AgentStatus::Blocked, same_tick);
+        app.state
+            .terminals
+            .get_mut(&second_terminal)
+            .expect("fixture terminal exists")
+            .set_manual_status_at(AgentStatus::Done, same_tick);
+
+        assert_eq!(
+            app.workspace_info(0).agent_status,
+            AgentStatus::Done,
+            "the pin set second wins even when stamps tie"
+        );
+
+        // The order is total, so a fresh API-driven pin after the tie still
+        // resolves deterministically without touching the clock.
+        set_status_ok(&mut app, &first_public, Some(AgentStatus::Blocked));
+        assert_eq!(app.workspace_info(0).agent_status, AgentStatus::Blocked);
+    }
+
+    #[test]
+    fn pane_set_status_emits_status_changed_only_when_the_effective_status_moves() {
+        let (mut app, public_pane_id) = app_with_test_workspace();
+        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        set_detected_state(&mut app, pane_id, AgentState::Idle);
+        let hub = app.event_hub.clone();
+
+        let before = hub.current_sequence();
+        set_status_ok(&mut app, &public_pane_id, Some(AgentStatus::Working));
+        assert_eq!(
+            status_changed_events(&hub, before),
+            vec![AgentStatus::Working]
+        );
+
+        let before = hub.current_sequence();
+        set_status_ok(&mut app, &public_pane_id, Some(AgentStatus::Working));
+        assert!(
+            status_changed_events(&hub, before).is_empty(),
+            "re-setting the same status is not a change"
+        );
+
+        let before = hub.current_sequence();
+        set_status_ok(&mut app, &public_pane_id, Some(AgentStatus::Idle));
+        assert_eq!(status_changed_events(&hub, before), vec![AgentStatus::Idle]);
+
+        // The pin now matches detection, so dropping it changes nothing.
+        let before = hub.current_sequence();
+        set_status_ok(&mut app, &public_pane_id, None);
+        assert!(
+            status_changed_events(&hub, before).is_empty(),
+            "clearing a pin that matched detection is not a change"
+        );
+
+        let before = hub.current_sequence();
+        set_status_ok(&mut app, &public_pane_id, Some(AgentStatus::Done));
+        assert_eq!(status_changed_events(&hub, before), vec![AgentStatus::Done]);
+        let before = hub.current_sequence();
+        set_status_ok(&mut app, &public_pane_id, None);
+        assert_eq!(status_changed_events(&hub, before), vec![AgentStatus::Idle]);
+    }
+
+    #[test]
+    fn pane_set_status_rejects_unknown_and_unresolvable_panes() {
+        let (mut app, public_pane_id) = app_with_test_workspace();
+        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        let terminal_id = terminal_id_for(&app, pane_id);
+
+        let response = app.handle_pane_set_status(
+            "req_unknown".into(),
+            set_status_params(public_pane_id, Some(AgentStatus::Unknown)),
+        );
+        let response: ErrorResponse =
+            serde_json::from_str(&response).expect("unknown status is rejected");
+        assert_eq!(response.error.code, "invalid_params");
+        assert!(
+            app.state.terminals[&terminal_id].manual_status.is_none(),
+            "a rejected request must not pin anything"
+        );
+
+        let response = app.handle_pane_set_status(
+            "req_missing".into(),
+            set_status_params("w9:p9".into(), Some(AgentStatus::Working)),
+        );
+        let response: ErrorResponse =
+            serde_json::from_str(&response).expect("missing pane is rejected");
+        assert_eq!(response.error.code, "pane_not_found");
     }
 }

@@ -583,6 +583,55 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_projects_manual_status_pins_onto_the_sidebar() {
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = crate::app::App::new(
+            &crate::config::Config::default(),
+            crate::app::AppPolicy::TEST,
+            None,
+            api_rx,
+            crate::api::EventHub::default(),
+        );
+        app.state.workspaces = vec![crate::workspace::Workspace::test_new("pinned")];
+        app.state.ensure_test_terminals();
+        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        let terminal_id = app.state.workspaces[0]
+            .terminal_id(pane_id)
+            .expect("fixture pane has a terminal")
+            .clone();
+        let terminal = app
+            .state
+            .terminals
+            .get_mut(&terminal_id)
+            .expect("fixture terminal exists");
+        terminal.set_agent_name("worker".into());
+        terminal.state = crate::detect::AgentState::Idle;
+        terminal.set_manual_status_at(
+            crate::api::schema::AgentStatus::Blocked,
+            std::time::Instant::now(),
+        );
+
+        let snapshot = snapshot(&app, "boot", 1, None, None);
+
+        assert_eq!(
+            snapshot.workspaces[0].agent_status,
+            crate::api::schema::AgentStatus::Blocked
+        );
+        assert_eq!(
+            snapshot.tabs[0].agent_status,
+            crate::api::schema::AgentStatus::Blocked
+        );
+        assert_eq!(
+            snapshot
+                .agents
+                .iter()
+                .map(|agent| agent.agent_status)
+                .collect::<Vec<_>>(),
+            vec![crate::api::schema::AgentStatus::Blocked]
+        );
+    }
+
+    #[test]
     fn snapshot_badges_only_outdated_integrations() {
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = crate::app::App::new(

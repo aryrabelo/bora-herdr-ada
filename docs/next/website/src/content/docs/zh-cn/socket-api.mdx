@@ -99,7 +99,7 @@ herdr pane read w1:p2 --source recent --lines 50
 | 工作区 | `workspace.create`、`workspace.list`、`workspace.get`、`workspace.focus`、`workspace.rename`、`workspace.move`、`workspace.move_block`、`workspace.report_metadata`、`workspace.close` |
 | Worktree | `worktree.list`、`worktree.create`、`worktree.open`、`worktree.remove` |
 | 标签页 | `tab.create`、`tab.list`、`tab.get`、`tab.focus`、`tab.rename`、`tab.move`、`tab.close` |
-| 窗格 | `pane.split`、`pane.swap`、`pane.move`、`pane.zoom`、`pane.layout`、`pane.process_info`、`pane.neighbor`、`pane.edges`、`pane.focus_direction`、`pane.resize`、`pane.list`、`pane.current`、`pane.get`、`pane.rename`、`pane.send_text`、`pane.send_keys`、`pane.send_input`、`pane.read`、`pane.graphics.info`、`pane.graphics.set`、`pane.graphics.clear`、`pane.graphics.stream`、`pane.report_agent`、`pane.report_agent_session`、`pane.report_metadata`、`pane.clear_agent_authority`、`pane.release_agent`、`pane.close`、`pane.wait_for_output` |
+| 窗格 | `pane.split`、`pane.swap`、`pane.move`、`pane.zoom`、`pane.layout`、`pane.process_info`、`pane.neighbor`、`pane.edges`、`pane.focus_direction`、`pane.resize`、`pane.list`、`pane.current`、`pane.get`、`pane.rename`、`pane.send_text`、`pane.send_keys`、`pane.send_input`、`pane.read`、`pane.graphics.info`、`pane.graphics.set`、`pane.graphics.clear`、`pane.graphics.stream`、`pane.report_agent`、`pane.set_status`、`pane.report_agent_session`、`pane.report_metadata`、`pane.clear_agent_authority`、`pane.release_agent`、`pane.close`、`pane.wait_for_output` |
 | 弹窗 | `popup.close` |
 | 布局 | `layout.export`、`layout.apply`、`layout.set_split_ratio` |
 | 智能体 | `agent.list`、`agent.get`、`agent.read`、`agent.explain`、`agent.send_keys`、`agent.prompt`、`agent.wait`、`agent.rename`、`agent.focus`、`agent.start` |
@@ -536,6 +536,19 @@ Herdr 在本地 socket 上使用换行分隔的 JSON。在 Unix 上,那个 socke
 ```
 
 `state` 是语义性的。它影响等待、通知和汇总。只影响展示的值应通过元数据单独上报。
+
+`pane.set_status` 手动固定窗格状态，在所有读出状态的地方（`PaneInfo`、`AgentInfo`、标签页与工作区汇总、`pane.agent_status_changed` 负载）覆盖自动检测。`status` 接受 `working`、`blocked`、`idle`、`done`，`null` 表示清除固定。`unknown` 会以 `invalid_params` 被拒绝。固定期间检测仍在后台运行，因此清除后会立即显示当前的真实状态。同一工作区或标签页中有多个窗格被固定时，最近设置的那个决定汇总结果。固定仅存在于运行时，不会在服务端重启后保留。
+
+```json
+{
+  "id": "req_3",
+  "method": "pane.set_status",
+  "params": {
+    "pane_id": "w1:p1",
+    "status": "blocked"
+  }
+}
+```
 
 仅提供会话的官方集成用 `pane.report_agent_session` 上报原生会话引用。上报状态的集成仍然可以在 `pane.report_agent` 中包含原生会话引用。与状态无关的会话上报不影响等待、通知或汇总。
 

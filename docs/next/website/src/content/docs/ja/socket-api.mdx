@@ -99,7 +99,7 @@ herdr pane read w1:p2 --source recent --lines 50
 | ワークスペース | `workspace.create`、`workspace.list`、`workspace.get`、`workspace.focus`、`workspace.rename`、`workspace.move`、`workspace.move_block`、`workspace.report_metadata`、`workspace.close` |
 | Worktree | `worktree.list`、`worktree.create`、`worktree.open`、`worktree.remove` |
 | タブ | `tab.create`、`tab.list`、`tab.get`、`tab.focus`、`tab.rename`、`tab.move`、`tab.close` |
-| ペイン | `pane.split`、`pane.swap`、`pane.move`、`pane.zoom`、`pane.layout`、`pane.process_info`、`pane.neighbor`、`pane.edges`、`pane.focus_direction`、`pane.resize`、`pane.list`、`pane.current`、`pane.get`、`pane.rename`、`pane.send_text`、`pane.send_keys`、`pane.send_input`、`pane.read`、`pane.graphics.info`、`pane.graphics.set`、`pane.graphics.clear`、`pane.graphics.stream`、`pane.report_agent`、`pane.report_agent_session`、`pane.report_metadata`、`pane.clear_agent_authority`、`pane.release_agent`、`pane.close`、`pane.wait_for_output` |
+| ペイン | `pane.split`、`pane.swap`、`pane.move`、`pane.zoom`、`pane.layout`、`pane.process_info`、`pane.neighbor`、`pane.edges`、`pane.focus_direction`、`pane.resize`、`pane.list`、`pane.current`、`pane.get`、`pane.rename`、`pane.send_text`、`pane.send_keys`、`pane.send_input`、`pane.read`、`pane.graphics.info`、`pane.graphics.set`、`pane.graphics.clear`、`pane.graphics.stream`、`pane.report_agent`、`pane.set_status`、`pane.report_agent_session`、`pane.report_metadata`、`pane.clear_agent_authority`、`pane.release_agent`、`pane.close`、`pane.wait_for_output` |
 | ポップアップ | `popup.close` |
 | レイアウト | `layout.export`、`layout.apply`、`layout.set_split_ratio` |
 | エージェント | `agent.list`、`agent.get`、`agent.read`、`agent.explain`、`agent.send_keys`、`agent.prompt`、`agent.wait`、`agent.rename`、`agent.focus`、`agent.start` |
@@ -540,6 +540,19 @@ Herdr はローカルソケット上の改行区切り JSON を使います。Un
 ```
 
 `state` は意味的です。wait、通知、ロールアップに影響します。表示専用の値はメタデータで別に報告します。
+
+`pane.set_status` はペインの状態を手動で固定し、状態が読み出されるすべての場所（`PaneInfo`、`AgentInfo`、タブとワークスペースのロールアップ、`pane.agent_status_changed` のペイロード）で検出結果を上書きします。`status` は `working`、`blocked`、`idle`、`done` を受け付け、`null` は固定を解除します。`unknown` は `invalid_params` で拒否されます。固定中も検出は動き続けるため、解除すると現在の状態がすぐに現れます。1 つのワークスペースやタブで複数のペインが固定されている場合、最後に設定された固定がロールアップを決めます。固定はランタイム限定で、サーバーの再起動をまたいで保持されません。
+
+```json
+{
+  "id": "req_3",
+  "method": "pane.set_status",
+  "params": {
+    "pane_id": "w1:p1",
+    "status": "blocked"
+  }
+}
+```
 
 セッションのみの公式インテグレーションは、`pane.report_agent_session` でネイティブセッション参照を報告します。状態を報告するインテグレーションは、`pane.report_agent` にネイティブセッション参照を含めることもできます。状態に依存しないセッション報告は、wait、通知、ロールアップに影響しません。
 
