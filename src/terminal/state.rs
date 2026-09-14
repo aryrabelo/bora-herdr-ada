@@ -2023,10 +2023,10 @@ impl TerminalState {
         self.manual_label = None;
     }
 
-    /// Pin this terminal's read-out status by hand. `now` is the only ordering
-    /// key manual pins have — aggregates pick the newest one — so it is stamped
-    /// here, in the single place that owns the field, and never by callers
-    /// reaching into `manual_status` themselves.
+    /// Pin this terminal's read-out status by hand. `set_seq` — stamped here,
+    /// in the single place that owns the field, and never by callers reaching
+    /// into `manual_status` themselves — is what aggregates order by; `now`
+    /// is diagnostics only.
     pub fn set_manual_status_at(&mut self, status: crate::api::schema::AgentStatus, now: Instant) {
         self.manual_status = Some(ManualAgentStatus {
             status,
