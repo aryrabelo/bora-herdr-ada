@@ -887,6 +887,19 @@ typedef enum GHOSTTY_ENUM_TYPED {
    * Input type: GhosttyTerminalClipboardWriteFn
    */
   GHOSTTY_TERMINAL_OPT_CLIPBOARD_WRITE = 26,
+
+  /**
+   * Whether a column change in ghostty_terminal_resize() reflows (rewraps)
+   * the existing grid contents.
+   *
+   * When disabled, a narrowing resize truncates each row at the new width
+   * instead of rewrapping it into additional rows, leaving the running
+   * program to repaint. Enabled by default. A NULL value pointer restores
+   * the default.
+   *
+   * Input type: bool*
+   */
+  GHOSTTY_TERMINAL_OPT_REFLOW_ON_RESIZE = 27,
   GHOSTTY_TERMINAL_OPT_MAX_VALUE = GHOSTTY_ENUM_MAX_VALUE,
 } GhosttyTerminalOption;
 

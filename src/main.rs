@@ -118,6 +118,10 @@ const DEFAULT_CONFIG: &str = r##"# bora configuration
 # Render pane images in Kitty graphics-compatible outer terminals.
 # kitty_graphics = true
 
+# Rewrap already-painted rows when a pane narrows. Set false to truncate rows
+# at the new width and let the running program repaint instead.
+# reflow_on_resize = true
+
 [update]
 # Update channel used by background version checks and `bora update`.
 # Stable builds default to "stable". Windows preview builds default to "preview"

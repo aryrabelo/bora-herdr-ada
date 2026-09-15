@@ -2364,6 +2364,32 @@ pub fn Stream(comptime H: type) type {
                     self.handler.vt(.progress_report, v);
                 },
 
+                .kitty_text_sizing => |v| {
+                    // We don't implement the Kitty text sizing protocol
+                    // attributes (scale, width, valign, halign), but the
+                    // specification requires that an implementation which
+                    // doesn't support them still renders the payload text
+                    // normally. Print the payload through the normal print
+                    // path and ignore the attributes.
+                    //
+                    // ref: https://sw.kovidgoyal.net/kitty/text-sizing-protocol/
+                    if (v.text.len == 0) return;
+
+                    // The parser already rejects payloads that aren't
+                    // escape-code-safe UTF-8, but decoding is fallible so we
+                    // never assume validity here.
+                    const view = std.unicode.Utf8View.init(v.text) catch {
+                        @branchHint(.unlikely);
+                        log.warn(
+                            "kitty text sizing: invalid utf-8 payload, ignoring",
+                            .{},
+                        );
+                        return;
+                    };
+                    var it = view.iterator();
+                    while (it.nextCodepoint()) |cp| self.print(cp);
+                },
+
                 .conemu_sleep,
                 .conemu_show_message_box,
                 .conemu_change_tab_title,
@@ -2373,7 +2399,6 @@ pub fn Stream(comptime H: type) type {
                 .conemu_xterm_emulation,
                 .conemu_output_environment_variable,
                 .conemu_run_process,
-                .kitty_text_sizing,
                 .kitty_clipboard_protocol,
                 .kitty_dnd_protocol,
                 .context_signal,
@@ -3327,6 +3352,66 @@ test "stream: change window title with invalid utf-8" {
         var s: Stream(H) = .init(.{});
         s.nextSlice("\x1b]2;abc\xc0\x1b\\");
         try testing.expect(!s.handler.seen);
+    }
+}
+
+test "stream: OSC 66 prints payload when text sizing is unsupported" {
+    const H = struct {
+        buf: [64]u8 = undefined,
+        len: usize = 0,
+
+        pub fn vt(
+            self: *@This(),
+            comptime action: Action.Tag,
+            value: Action.Value(action),
+        ) void {
+            switch (action) {
+                .print => self.len += std.unicode.utf8Encode(
+                    value.cp,
+                    self.buf[self.len..],
+                ) catch unreachable,
+                else => {},
+            }
+        }
+
+        fn written(self: *const @This()) []const u8 {
+            return self.buf[0..self.len];
+        }
+    };
+
+    // Sizing attributes are ignored, but the text is still printed.
+    {
+        var s: Stream(H) = .init(.{});
+        s.nextSlice("\x1b]66;s=2;SCALE-TWO\x1b\\");
+        try testing.expectEqualStrings("SCALE-TWO", s.handler.written());
+    }
+
+    // No attributes at all.
+    {
+        var s: Stream(H) = .init(.{});
+        s.nextSlice("\x1b]66;;PLAIN\x1b\\");
+        try testing.expectEqualStrings("PLAIN", s.handler.written());
+    }
+
+    // Multi-byte UTF-8 payload.
+    {
+        var s: Stream(H) = .init(.{});
+        s.nextSlice("\x1b]66;s=3:w=2;héllo\x1b\\");
+        try testing.expectEqualStrings("héllo", s.handler.written());
+    }
+
+    // Empty payload prints nothing and does not panic.
+    {
+        var s: Stream(H) = .init(.{});
+        s.nextSlice("\x1b]66;s=2;\x1b\\");
+        try testing.expectEqualStrings("", s.handler.written());
+    }
+
+    // Invalid UTF-8 is rejected by the parser, so nothing is printed.
+    {
+        var s: Stream(H) = .init(.{});
+        s.nextSlice("\x1b]66;s=2;ab\xc0\x1b\\");
+        try testing.expectEqualStrings("", s.handler.written());
     }
 }
 

@@ -440,6 +440,12 @@
           "type": "boolean",
           "default": "true",
           "description": "Render pane images in Kitty graphics-compatible outer terminals. Set false to disable graphics rendering and the pane graphics API. Restart the server or reattach the client after changing it. In remote sessions, server configuration controls parsing and API availability while local client configuration controls outer-terminal output."
+        },
+        {
+          "key": "terminal.reflow_on_resize",
+          "type": "boolean",
+          "default": "true",
+          "description": "Rewrap already-painted rows when a pane narrows. Set false to keep painted rows as they are and let the program repaint; a narrowing pane then truncates rows at the new width instead of splitting each padded row into a content row plus a trailing-space remainder row. Applies to panes created after the change."
         }
       ]
     },
