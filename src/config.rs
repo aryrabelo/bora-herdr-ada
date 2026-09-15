@@ -109,6 +109,10 @@ impl Config {
             .unwrap_or(true)
     }
 
+    pub fn reflow_on_resize_enabled(&self) -> bool {
+        self.terminal.reflow_on_resize.unwrap_or(true)
+    }
+
     pub fn prefix_key(&self) -> (KeyCode, KeyModifiers) {
         self.validated_keybinds().1
     }

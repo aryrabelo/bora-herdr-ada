@@ -57,6 +57,15 @@ tabstops: Tabstops,
 rows: size.CellCountInt,
 cols: size.CellCountInt,
 
+/// Whether a column change on resize reflows (rewraps) the existing grid
+/// contents. When false, a narrowing resize truncates each row at the new
+/// width instead of rewrapping it into additional rows.
+///
+/// This is host configuration, not terminal state: it is intentionally not
+/// reset by `fullReset` (RIS) and cannot be changed by the running program.
+/// Defaults to true, which is the standard reflow-on-resize behavior.
+reflow_on_resize: bool = true,
+
 /// The size of the screen in pixels. This is used for pty events and images
 width_px: u32 = 0,
 height_px: u32 = 0,
@@ -3554,12 +3563,14 @@ pub fn resize(
         self.tabstops = tabstops;
     }
 
-    // Resize primary screen, which supports reflow
+    // Resize primary screen, which supports reflow. Reflow requires both
+    // wraparound (the program expects soft-wrapped lines) and the host
+    // opting in to reflow-on-resize.
     const primary = self.screens.get(.primary).?;
     try primary.resize(.{
         .cols = cols,
         .rows = rows,
-        .reflow = self.modes.get(.wraparound),
+        .reflow = self.reflow_on_resize and self.modes.get(.wraparound),
         .prompt_redraw = self.flags.shell_redraws_prompt,
     });
 
@@ -13900,6 +13911,37 @@ test "Terminal: resize with wraparound on" {
     const str = try t.plainString(testing.allocator);
     defer testing.allocator.free(str);
     try testing.expectEqualStrings("01\n23", str);
+}
+
+test "Terminal: resize with reflow_on_resize disabled" {
+    const alloc = testing.allocator;
+    const cols = 4;
+    const rows = 2;
+    var t = try init(alloc, .{ .cols = cols, .rows = rows });
+    defer t.deinit(alloc);
+
+    t.reflow_on_resize = false;
+    t.modes.set(.wraparound, true);
+    try t.print('0');
+    try t.print('1');
+    try t.print('2');
+    try t.print('3');
+    const new_cols = 2;
+    try t.resize(alloc, new_cols, rows);
+
+    const str = try t.plainString(testing.allocator);
+    defer testing.allocator.free(str);
+    try testing.expectEqualStrings("01", str);
+}
+
+test "Terminal: resize with reflow_on_resize disabled survives full reset" {
+    const alloc = testing.allocator;
+    var t = try init(alloc, .{ .cols = 4, .rows = 2 });
+    defer t.deinit(alloc);
+
+    t.reflow_on_resize = false;
+    t.fullReset();
+    try testing.expect(!t.reflow_on_resize);
 }
 
 test "Terminal: resize with high unique style per cell" {

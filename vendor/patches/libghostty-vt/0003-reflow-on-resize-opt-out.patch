@@ -1,0 +1,197 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: herdr maintainers <maintainers@herdr.dev>
+Date: Tue, 15 Sep 2026 00:00:00 +0000
+Subject: [PATCH] allow hosts to opt out of reflow on resize
+
+Upstream derives reflow-on-resize purely from DECAWM wraparound, so a pane
+that narrows rewraps rows the program already painted. Output padded to the
+old width is then re-split into a content row plus a trailing-space remainder
+row (measured: 91 -> 53 cols produced one 38-column remainder row per full
+row). tmux never reflows and Herdr had no knob.
+
+Add a per-terminal `reflow_on_resize` host flag (default true, so behavior is
+unchanged) that gates the existing PageList no-reflow path, and expose it over
+the C ABI as GHOSTTY_TERMINAL_OPT_REFLOW_ON_RESIZE. The flag is host
+configuration: `fullReset` (RIS) does not clear it and the running program
+cannot change it.
+
+Vendored base: c5a21edfcbc2d5b46540ad91b7980aca31f5f1f3
+---
+diff --git a/vendor/libghostty-vt/include/ghostty/vt/terminal.h b/vendor/libghostty-vt/include/ghostty/vt/terminal.h
+index 9bb961d3..fbe32a7e 100644
+--- a/vendor/libghostty-vt/include/ghostty/vt/terminal.h
++++ b/vendor/libghostty-vt/include/ghostty/vt/terminal.h
+@@ -887,6 +887,19 @@ typedef enum GHOSTTY_ENUM_TYPED {
+    * Input type: GhosttyTerminalClipboardWriteFn
+    */
+   GHOSTTY_TERMINAL_OPT_CLIPBOARD_WRITE = 26,
++
++  /**
++   * Whether a column change in ghostty_terminal_resize() reflows (rewraps)
++   * the existing grid contents.
++   *
++   * When disabled, a narrowing resize truncates each row at the new width
++   * instead of rewrapping it into additional rows, leaving the running
++   * program to repaint. Enabled by default. A NULL value pointer restores
++   * the default.
++   *
++   * Input type: bool*
++   */
++  GHOSTTY_TERMINAL_OPT_REFLOW_ON_RESIZE = 27,
+   GHOSTTY_TERMINAL_OPT_MAX_VALUE = GHOSTTY_ENUM_MAX_VALUE,
+ } GhosttyTerminalOption;
+ 
+diff --git a/vendor/libghostty-vt/src/terminal/Terminal.zig b/vendor/libghostty-vt/src/terminal/Terminal.zig
+index 08920127..9855a007 100644
+--- a/vendor/libghostty-vt/src/terminal/Terminal.zig
++++ b/vendor/libghostty-vt/src/terminal/Terminal.zig
+@@ -57,6 +57,15 @@ tabstops: Tabstops,
+ rows: size.CellCountInt,
+ cols: size.CellCountInt,
+ 
++/// Whether a column change on resize reflows (rewraps) the existing grid
++/// contents. When false, a narrowing resize truncates each row at the new
++/// width instead of rewrapping it into additional rows.
++///
++/// This is host configuration, not terminal state: it is intentionally not
++/// reset by `fullReset` (RIS) and cannot be changed by the running program.
++/// Defaults to true, which is the standard reflow-on-resize behavior.
++reflow_on_resize: bool = true,
++
+ /// The size of the screen in pixels. This is used for pty events and images
+ width_px: u32 = 0,
+ height_px: u32 = 0,
+@@ -3554,12 +3563,14 @@ pub fn resize(
+         self.tabstops = tabstops;
+     }
+ 
+-    // Resize primary screen, which supports reflow
++    // Resize primary screen, which supports reflow. Reflow requires both
++    // wraparound (the program expects soft-wrapped lines) and the host
++    // opting in to reflow-on-resize.
+     const primary = self.screens.get(.primary).?;
+     try primary.resize(.{
+         .cols = cols,
+         .rows = rows,
+-        .reflow = self.modes.get(.wraparound),
++        .reflow = self.reflow_on_resize and self.modes.get(.wraparound),
+         .prompt_redraw = self.flags.shell_redraws_prompt,
+     });
+ 
+@@ -13902,6 +13913,37 @@ test "Terminal: resize with wraparound on" {
+     try testing.expectEqualStrings("01\n23", str);
+ }
+ 
++test "Terminal: resize with reflow_on_resize disabled" {
++    const alloc = testing.allocator;
++    const cols = 4;
++    const rows = 2;
++    var t = try init(alloc, .{ .cols = cols, .rows = rows });
++    defer t.deinit(alloc);
++
++    t.reflow_on_resize = false;
++    t.modes.set(.wraparound, true);
++    try t.print('0');
++    try t.print('1');
++    try t.print('2');
++    try t.print('3');
++    const new_cols = 2;
++    try t.resize(alloc, new_cols, rows);
++
++    const str = try t.plainString(testing.allocator);
++    defer testing.allocator.free(str);
++    try testing.expectEqualStrings("01", str);
++}
++
++test "Terminal: resize with reflow_on_resize disabled survives full reset" {
++    const alloc = testing.allocator;
++    var t = try init(alloc, .{ .cols = 4, .rows = 2 });
++    defer t.deinit(alloc);
++
++    t.reflow_on_resize = false;
++    t.fullReset();
++    try testing.expect(!t.reflow_on_resize);
++}
++
+ test "Terminal: resize with high unique style per cell" {
+     const alloc = testing.allocator;
+     var t = try init(alloc, .{ .cols = 30, .rows = 30 });
+diff --git a/vendor/libghostty-vt/src/terminal/c/terminal.zig b/vendor/libghostty-vt/src/terminal/c/terminal.zig
+index 0f95fcf1..ab9f0a6c 100644
+--- a/vendor/libghostty-vt/src/terminal/c/terminal.zig
++++ b/vendor/libghostty-vt/src/terminal/c/terminal.zig
+@@ -438,6 +438,7 @@ pub const Option = enum(c_int) {
+     glyph_protocol = 24,
+     pwd_changed = 25,
+     clipboard_write = 26,
++    reflow_on_resize = 27,
+ 
+     /// Input type expected for setting the option.
+     pub fn InType(comptime self: Option) type {
+@@ -461,6 +462,7 @@ pub const Option = enum(c_int) {
+             .kitty_image_medium_temp_file,
+             .kitty_image_medium_shared_mem,
+             .glyph_protocol,
++            .reflow_on_resize,
+             => ?*const bool,
+             .apc_max_bytes, .apc_max_bytes_kitty => ?*const usize,
+             .selection => ?*const selection_c.CSelection,
+@@ -602,6 +604,9 @@ fn setTyped(
+                 wrapper.terminal.modes.set(.cursor_blinking, blink);
+             }
+         },
++        .reflow_on_resize => {
++            wrapper.terminal.reflow_on_resize = if (value) |ptr| ptr.* else true;
++        },
+     }
+     return .success;
+ }
+@@ -1397,6 +1402,48 @@ test "resize shrinks both axes with cursor at bottom" {
+     try testing.expectEqual(23, t.?.terminal.rows);
+ }
+ 
++test "set reflow_on_resize" {
++    var t: Terminal = null;
++    try testing.expectEqual(Result.success, new(
++        &lib.alloc.test_allocator,
++        &t,
++        .{
++            .cols = 4,
++            .rows = 2,
++            .max_scrollback = 0,
++        },
++    ));
++    defer free(t);
++
++    // Default is reflow, so narrowing rewraps the soft-wrapped row.
++    try testing.expect(zigTerminal(t).?.reflow_on_resize);
++    vt_write(t, "0123", 4);
++    try testing.expectEqual(Result.success, resize(t, 2, 2, 9, 18));
++    {
++        const str = try zigTerminal(t).?.plainString(testing.allocator);
++        defer testing.allocator.free(str);
++        try testing.expectEqualStrings("01\n23", str);
++    }
++
++    // Disabling reflow truncates on narrowing instead of rewrapping.
++    const disabled = false;
++    try testing.expectEqual(Result.success, set(t, .reflow_on_resize, @ptrCast(&disabled)));
++    try testing.expect(!zigTerminal(t).?.reflow_on_resize);
++    try testing.expectEqual(Result.success, resize(t, 4, 2, 9, 18));
++    reset(t);
++    vt_write(t, "0123", 4);
++    try testing.expectEqual(Result.success, resize(t, 2, 2, 9, 18));
++    {
++        const str = try zigTerminal(t).?.plainString(testing.allocator);
++        defer testing.allocator.free(str);
++        try testing.expectEqualStrings("01", str);
++    }
++
++    // A null value pointer restores the default.
++    try testing.expectEqual(Result.success, set(t, .reflow_on_resize, null));
++    try testing.expect(zigTerminal(t).?.reflow_on_resize);
++}
++
+ test "mode_get and mode_set" {
+     var t: Terminal = null;
+     try testing.expectEqual(Result.success, new(

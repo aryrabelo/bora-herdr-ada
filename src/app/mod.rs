@@ -437,6 +437,7 @@ impl App {
     ) -> Self {
         let (prefix_code, prefix_mods) = config.prefix_key();
         crate::kitty_graphics::set_enabled(config.kitty_graphics_enabled());
+        crate::ghostty::set_reflow_on_resize_enabled(config.reflow_on_resize_enabled());
         let (event_tx, event_rx) = mpsc::channel::<AppEvent>(APP_EVENT_CHANNEL_CAPACITY);
         let render_notify = Arc::new(Notify::new());
         let render_dirty = Arc::new(crate::render_signal::RenderSignal::new());
@@ -955,6 +956,12 @@ impl App {
                 "terminal.kitty_graphics changes require restarting Herdr; kept current setting"
                     .into(),
             );
+        }
+
+        // Reflow-on-resize is read when a pane's terminal is created, so a
+        // reload takes effect for panes created from here on.
+        if !invalid_section("terminal") {
+            crate::ghostty::set_reflow_on_resize_enabled(config.reflow_on_resize_enabled());
         }
 
         if !invalid_section("experimental") {

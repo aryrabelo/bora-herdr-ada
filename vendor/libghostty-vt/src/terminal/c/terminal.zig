@@ -438,6 +438,7 @@ pub const Option = enum(c_int) {
     glyph_protocol = 24,
     pwd_changed = 25,
     clipboard_write = 26,
+    reflow_on_resize = 27,
 
     /// Input type expected for setting the option.
     pub fn InType(comptime self: Option) type {
@@ -461,6 +462,7 @@ pub const Option = enum(c_int) {
             .kitty_image_medium_temp_file,
             .kitty_image_medium_shared_mem,
             .glyph_protocol,
+            .reflow_on_resize,
             => ?*const bool,
             .apc_max_bytes, .apc_max_bytes_kitty => ?*const usize,
             .selection => ?*const selection_c.CSelection,
@@ -601,6 +603,9 @@ fn setTyped(
             if (wrapper.stream.handler.default_cursor) {
                 wrapper.terminal.modes.set(.cursor_blinking, blink);
             }
+        },
+        .reflow_on_resize => {
+            wrapper.terminal.reflow_on_resize = if (value) |ptr| ptr.* else true;
         },
     }
     return .success;
@@ -1395,6 +1400,48 @@ test "resize shrinks both axes with cursor at bottom" {
     try testing.expectEqual(Result.success, resize(t, 79, 23, 8, 16));
     try testing.expectEqual(79, t.?.terminal.cols);
     try testing.expectEqual(23, t.?.terminal.rows);
+}
+
+test "set reflow_on_resize" {
+    var t: Terminal = null;
+    try testing.expectEqual(Result.success, new(
+        &lib.alloc.test_allocator,
+        &t,
+        .{
+            .cols = 4,
+            .rows = 2,
+            .max_scrollback = 0,
+        },
+    ));
+    defer free(t);
+
+    // Default is reflow, so narrowing rewraps the soft-wrapped row.
+    try testing.expect(zigTerminal(t).?.reflow_on_resize);
+    vt_write(t, "0123", 4);
+    try testing.expectEqual(Result.success, resize(t, 2, 2, 9, 18));
+    {
+        const str = try zigTerminal(t).?.plainString(testing.allocator);
+        defer testing.allocator.free(str);
+        try testing.expectEqualStrings("01\n23", str);
+    }
+
+    // Disabling reflow truncates on narrowing instead of rewrapping.
+    const disabled = false;
+    try testing.expectEqual(Result.success, set(t, .reflow_on_resize, @ptrCast(&disabled)));
+    try testing.expect(!zigTerminal(t).?.reflow_on_resize);
+    try testing.expectEqual(Result.success, resize(t, 4, 2, 9, 18));
+    reset(t);
+    vt_write(t, "0123", 4);
+    try testing.expectEqual(Result.success, resize(t, 2, 2, 9, 18));
+    {
+        const str = try zigTerminal(t).?.plainString(testing.allocator);
+        defer testing.allocator.free(str);
+        try testing.expectEqualStrings("01", str);
+    }
+
+    // A null value pointer restores the default.
+    try testing.expectEqual(Result.success, set(t, .reflow_on_resize, null));
+    try testing.expect(zigTerminal(t).?.reflow_on_resize);
 }
 
 test "mode_get and mode_set" {

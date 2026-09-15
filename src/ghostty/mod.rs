@@ -22,6 +22,7 @@ use std::ops::RangeInclusive;
 use std::os::raw::c_char;
 use std::ptr;
 use std::slice;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, Once, OnceLock};
 
 pub use bindings as ffi;
@@ -785,6 +786,18 @@ pub fn encode_focus(event: FocusEvent) -> Result<Vec<u8>, Error> {
     Ok(buffer)
 }
 
+/// Whether new terminals reflow (rewrap) already-painted rows when a pane
+/// narrows. Mirrors `terminal.reflow_on_resize`; true is the VT default.
+static REFLOW_ON_RESIZE: AtomicBool = AtomicBool::new(true);
+
+pub(crate) fn set_reflow_on_resize_enabled(enabled: bool) {
+    REFLOW_ON_RESIZE.store(enabled, Ordering::Release);
+}
+
+pub(crate) fn reflow_on_resize_enabled() -> bool {
+    REFLOW_ON_RESIZE.load(Ordering::Acquire)
+}
+
 pub struct Terminal {
     raw: ffi::GhosttyTerminal,
     max_scrollback: usize,
@@ -871,6 +884,21 @@ impl Terminal {
             .into_result()?;
         }
         Ok(terminal)
+    }
+
+    /// Whether a narrowing resize rewraps already-painted rows. Disabling it
+    /// truncates rows at the new width and leaves repainting to the program.
+    pub fn set_reflow_on_resize(&mut self, enabled: bool) -> Result<(), Error> {
+        // SAFETY: self.raw is a live terminal handle and enabled outlives the
+        // call; this option copies the bool it points at.
+        unsafe {
+            ffi::ghostty_terminal_set(
+                self.raw,
+                ffi::GhosttyTerminalOption_GHOSTTY_TERMINAL_OPT_REFLOW_ON_RESIZE,
+                (&enabled as *const bool).cast(),
+            )
+            .into_result()
+        }
     }
 
     pub fn write(&mut self, bytes: &[u8]) {
@@ -3978,6 +4006,74 @@ mod tests {
         assert!(terminal.mode_get(MODE_GRAPHEME_CLUSTER).unwrap());
     }
 
+    fn rendered_row_texts(terminal: &Terminal) -> Vec<String> {
+        let mut render_state = RenderState::new().unwrap();
+        render_state.update(terminal).unwrap();
+        let mut row_iterator = RowIterator::new().unwrap();
+        let mut rows = render_state
+            .populate_row_iterator(&mut row_iterator)
+            .unwrap();
+        let mut row_cells = RowCells::new().unwrap();
+        let mut bytes = Vec::new();
+        let mut cell_text = String::new();
+        let mut out = Vec::new();
+
+        while rows.next() {
+            let mut cells = rows.populate_cells(&mut row_cells).unwrap();
+            let mut row_text = String::new();
+            while cells.next() {
+                cells
+                    .grapheme_text_into(&mut bytes, &mut cell_text)
+                    .unwrap();
+                if cell_text.is_empty() {
+                    row_text.push(' ');
+                } else {
+                    row_text.push_str(&cell_text);
+                }
+            }
+            out.push(row_text.trim_end().to_owned());
+        }
+        out
+    }
+
+    #[test]
+    fn reflow_on_resize_default_rewraps_soft_wrapped_row() {
+        let mut terminal = Terminal::new(6, 3, 100).unwrap();
+        terminal.write(b"abcdefgh");
+        let rows = rendered_row_texts(&terminal);
+        assert_eq!(rows[0], "abcdef");
+        assert_eq!(rows[1], "gh");
+
+        terminal.resize(4, 3, 8, 16).unwrap();
+
+        // Default behavior: the logical line is rewrapped at the new width.
+        let rows = rendered_row_texts(&terminal);
+        assert_eq!(rows[0], "abcd");
+        assert_eq!(rows[1], "efgh");
+        assert!(rows[2..].iter().all(String::is_empty));
+    }
+
+    #[test]
+    fn reflow_on_resize_disabled_keeps_rows_unwrapped() {
+        let mut terminal = Terminal::new(6, 3, 100).unwrap();
+        terminal.set_reflow_on_resize(false).unwrap();
+        terminal.write(b"abcdefgh");
+        let rows = rendered_row_texts(&terminal);
+        assert_eq!(rows[0], "abcdef");
+        assert_eq!(rows[1], "gh");
+
+        terminal.resize(4, 3, 8, 16).unwrap();
+
+        // No rewrap: each painted row is truncated at the new width and the
+        // continuation row keeps its own content. In particular no remainder
+        // row carrying the trimmed 6 - 4 = 2 columns ("ef") is inserted.
+        let rows = rendered_row_texts(&terminal);
+        assert_eq!(rows[0], "abcd");
+        assert_eq!(rows[1], "gh");
+        assert!(rows[2..].iter().all(String::is_empty));
+        assert!(!rows.iter().any(|row| row.as_str() == "ef"));
+    }
+
     #[test]
     fn screen_text_rows_preserve_wrap_and_grapheme_cells() {
         let mut terminal = Terminal::new(5, 3, 100).unwrap();
@@ -4170,5 +4266,56 @@ mod tests {
         assert!(basic.has_styling);
         assert_eq!(basic.style.fg_color, Some(CellColor::Palette(1)));
         assert!(!basic.has_hyperlink);
+    }
+
+    /// OSC 66 is the Kitty text-sizing protocol. bora does not implement the
+    /// sizing attributes (scale/width/valign/halign), and the protocol
+    /// requires that an implementation which does not support them still
+    /// renders the payload text normally.
+    ///
+    /// Before vendor patch 0004 the vendored VT grouped `kitty_text_sizing`
+    /// into the "unimplemented OSC callback" arm of `Stream.oscDispatch`
+    /// (vendor/libghostty-vt/src/terminal/stream.zig), so the whole command
+    /// was dropped and `printf '\033]66;s=2;SCALE-TWO\033\\'` printed an
+    /// empty line.
+    #[test]
+    fn osc_66_renders_payload_when_text_sizing_unsupported() {
+        fn row_text(row: &ScreenTextRow) -> String {
+            row.cells
+                .iter()
+                .filter(|cell| cell.wide != CellWide::SpacerTail)
+                .flat_map(|cell| cell.graphemes.iter().filter_map(|&cp| char::from_u32(cp)))
+                .collect()
+        }
+
+        // Sizing attribute present: attribute ignored, text still rendered.
+        let mut terminal = Terminal::new(20, 3, 100).unwrap();
+        terminal.write(b"\x1b]66;s=2;SCALE-TWO\x1b\\");
+        let rows = terminal.screen_text_rows().unwrap();
+        assert!(
+            row_text(&rows[0]).contains("SCALE-TWO"),
+            "row 0 was {:?}",
+            row_text(&rows[0])
+        );
+
+        // No attributes at all.
+        let mut terminal = Terminal::new(20, 3, 100).unwrap();
+        terminal.write(b"\x1b]66;;PLAIN\x1b\\");
+        let rows = terminal.screen_text_rows().unwrap();
+        assert!(
+            row_text(&rows[0]).contains("PLAIN"),
+            "row 0 was {:?}",
+            row_text(&rows[0])
+        );
+
+        // Empty payload must not panic and must not swallow the next write.
+        let mut terminal = Terminal::new(20, 3, 100).unwrap();
+        terminal.write(b"\x1b]66;s=2;\x1b\\after");
+        let rows = terminal.screen_text_rows().unwrap();
+        assert!(
+            row_text(&rows[0]).contains("after"),
+            "row 0 was {:?}",
+            row_text(&rows[0])
+        );
     }
 }

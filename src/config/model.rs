@@ -340,6 +340,8 @@ pub struct TerminalConfig {
     pub new_cwd: NewTerminalCwdConfig,
     /// Render Kitty graphics in compatible outer terminals. Default: true.
     pub kitty_graphics: Option<bool>,
+    /// Rewrap already-painted rows when a pane narrows. Default: true.
+    pub reflow_on_resize: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2253,6 +2255,20 @@ kitty_graphics = false
         )
         .unwrap();
         assert!(!config.kitty_graphics_enabled());
+    }
+
+    #[test]
+    fn reflow_on_resize_default_on_with_opt_out() {
+        assert!(Config::default().reflow_on_resize_enabled());
+
+        let config: Config = toml::from_str(
+            r#"
+[terminal]
+reflow_on_resize = false
+"#,
+        )
+        .unwrap();
+        assert!(!config.reflow_on_resize_enabled());
     }
 
     #[test]
