@@ -93,6 +93,15 @@ new_cwd = "follow"
 
 `new_cwd = "follow"` keeps the default behavior and inherits the source pane or workspace. When there is no source workspace, Herdr starts in `$HOME`. Use `"home"` to always start in `$HOME`, `"current"` to use Herdr's process directory, or a fixed path such as `"~/Projects"`. Explicit `--cwd` values from the CLI or socket API still take precedence.
 
+Keep already-painted rows as they are when a pane narrows:
+
+```toml
+[terminal]
+reflow_on_resize = false
+```
+
+By default Herdr rewraps the existing pane contents when the pane's width changes, so a soft-wrapped logical line is re-split at the new width. That rewrap also re-splits output a program padded to the old width, which turns one padded row into a content row plus a trailing-space remainder row. Set `reflow_on_resize = false` to truncate rows at the new width instead and leave repainting to the running program, which is what tmux does. The setting applies to panes created after the change.
+
 ## Worktrees
 
 Set the root directory Herdr uses for Git worktree checkouts created from the sidebar:

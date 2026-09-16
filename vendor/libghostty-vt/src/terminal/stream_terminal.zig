@@ -897,6 +897,53 @@ test "basic print" {
     try testing.expectEqualStrings("Hello", str);
 }
 
+test "OSC 66 text sizing prints payload" {
+    var t: Terminal = try .init(testing.allocator, .{ .cols = 20, .rows = 3 });
+    defer t.deinit(testing.allocator);
+
+    var s: Stream = .initAlloc(testing.allocator, .init(&t));
+    defer s.deinit();
+
+    // We don't implement the sizing attributes, but the protocol requires
+    // that the payload text still be rendered.
+    s.nextSlice("\x1b]66;s=2;SCALE-TWO\x1b\\");
+
+    try testing.expectEqual(@as(usize, 9), t.screens.active.cursor.x);
+
+    const str = try t.plainString(testing.allocator);
+    defer testing.allocator.free(str);
+    try testing.expectEqualStrings("SCALE-TWO", str);
+}
+
+test "OSC 66 text sizing with no attributes prints payload" {
+    var t: Terminal = try .init(testing.allocator, .{ .cols = 20, .rows = 3 });
+    defer t.deinit(testing.allocator);
+
+    var s: Stream = .initAlloc(testing.allocator, .init(&t));
+    defer s.deinit();
+
+    s.nextSlice("\x1b]66;;PLAIN\x1b\\");
+
+    const str = try t.plainString(testing.allocator);
+    defer testing.allocator.free(str);
+    try testing.expectEqualStrings("PLAIN", str);
+}
+
+test "OSC 66 text sizing empty payload prints nothing" {
+    var t: Terminal = try .init(testing.allocator, .{ .cols = 20, .rows = 3 });
+    defer t.deinit(testing.allocator);
+
+    var s: Stream = .initAlloc(testing.allocator, .init(&t));
+    defer s.deinit();
+
+    s.nextSlice("\x1b]66;s=2;\x1b\\");
+    s.nextSlice("after");
+
+    const str = try t.plainString(testing.allocator);
+    defer testing.allocator.free(str);
+    try testing.expectEqualStrings("after", str);
+}
+
 test "cursor movement" {
     var t: Terminal = try .init(testing.allocator, .{ .cols = 10, .rows = 10 });
     defer t.deinit(testing.allocator);

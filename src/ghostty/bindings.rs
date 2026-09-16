@@ -2498,7 +2498,9 @@ pub const GhosttyTerminalOption_GHOSTTY_TERMINAL_OPT_GLYPH_PROTOCOL: GhosttyTerm
 pub const GhosttyTerminalOption_GHOSTTY_TERMINAL_OPT_PWD_CHANGED: GhosttyTerminalOption = 25;
 #[doc = " Callback invoked when the running program performs a clipboard write.\n OSC 52 and iTerm2 OSC 1337 Copy writes are normalized to an atomic set\n of decoded MIME representations. Set to NULL to ignore clipboard writes.\n Clipboard read requests are always ignored; see\n GhosttyTerminalClipboardWriteFn.\n\n Input type: GhosttyTerminalClipboardWriteFn"]
 pub const GhosttyTerminalOption_GHOSTTY_TERMINAL_OPT_CLIPBOARD_WRITE: GhosttyTerminalOption = 26;
-#[doc = " Callback invoked when the running program performs a clipboard write.\n OSC 52 and iTerm2 OSC 1337 Copy writes are normalized to an atomic set\n of decoded MIME representations. Set to NULL to ignore clipboard writes.\n Clipboard read requests are always ignored; see\n GhosttyTerminalClipboardWriteFn.\n\n Input type: GhosttyTerminalClipboardWriteFn"]
+#[doc = " Whether a column change in ghostty_terminal_resize() reflows (rewraps)\n the existing grid contents.\n\n When disabled, a narrowing resize truncates each row at the new width\n instead of rewrapping it into additional rows, leaving the running\n program to repaint. Enabled by default. A NULL value pointer restores\n the default.\n\n Input type: bool*"]
+pub const GhosttyTerminalOption_GHOSTTY_TERMINAL_OPT_REFLOW_ON_RESIZE: GhosttyTerminalOption = 27;
+#[doc = " Whether a column change in ghostty_terminal_resize() reflows (rewraps)\n the existing grid contents.\n\n When disabled, a narrowing resize truncates each row at the new width\n instead of rewrapping it into additional rows, leaving the running\n program to repaint. Enabled by default. A NULL value pointer restores\n the default.\n\n Input type: bool*"]
 pub const GhosttyTerminalOption_GHOSTTY_TERMINAL_OPT_MAX_VALUE: GhosttyTerminalOption = 2147483647;
 #[doc = " Terminal option identifiers.\n\n These values are used with ghostty_terminal_set() to configure\n terminal callbacks and associated state.\n\n @ingroup terminal"]
 pub type GhosttyTerminalOption = ::std::os::raw::c_uint;
