@@ -474,8 +474,10 @@ impl TerminalRuntime {
             .queue_user_input_submission(text, enter, delay, deadline)
     }
 
-    pub fn try_send_paste(&self, text: String) -> Result<(), mpsc::error::TrySendError<Bytes>> {
-        self.0.try_send_paste(text)
+    /// Forwards pasted text without dropping it on transient backpressure;
+    /// see `PaneRuntime::send_paste_preserving_order`.
+    pub fn send_paste_preserving_order(&self, text: String) -> bool {
+        self.0.send_paste_preserving_order(text)
     }
 
     pub fn try_send_focus_event(&self, event: crate::ghostty::FocusEvent) -> bool {

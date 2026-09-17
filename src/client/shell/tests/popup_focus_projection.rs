@@ -166,7 +166,9 @@ fn desktop_composition_keeps_shell_outside_origin_relative_surface() {
         })
         .collect::<Vec<_>>()
         .join("\n");
-    assert!(text.contains("spaces"));
+    // The sidebar header names the live view mode since the toggle was restored
+    // onto that row; what this asserts is that the sidebar was composed at all.
+    assert!(text.contains(Config::default().ui.view_mode.as_str()));
     assert!(text.contains("client-shell"));
     assert!(text.contains("main"));
     assert!(text.contains("LIVE"));

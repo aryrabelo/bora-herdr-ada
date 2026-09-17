@@ -190,13 +190,17 @@ pub(super) fn apply_terminal_attach_input(
 ) -> Result<(), String> {
     runtime.scroll_reset();
     if let Some(text) = crate::raw_input::complete_text_bracketed_paste(&data) {
-        runtime
-            .try_send_paste(text.to_owned())
-            .map_err(|err| format!("terminal attach paste failed: {err}"))
+        if runtime.send_paste_preserving_order(text.to_owned()) {
+            Ok(())
+        } else {
+            Err("terminal attach paste failed: pane input closed".to_owned())
+        }
+    } else if runtime.send_bytes_preserving_order(Bytes::from(data)) {
+        // Transient backpressure queues the keystroke in FIFO order instead of
+        // discarding it, matching the TUI client key/text paths below.
+        Ok(())
     } else {
-        runtime
-            .try_send_bytes(Bytes::from(data))
-            .map_err(|err| format!("terminal attach input failed: {err}"))
+        Err("terminal attach input failed: pane input closed".to_owned())
     }
 }
 
@@ -326,9 +330,9 @@ fn apply_client_terminal_input_events(
             }
             crate::raw_input::RawInputEvent::Paste(text) => {
                 runtime.scroll_reset();
-                runtime
-                    .try_send_paste(text)
-                    .map_err(|err| format!("targeted pane paste failed: {err}"))?;
+                if !runtime.send_paste_preserving_order(text) {
+                    return Err("targeted pane paste failed: pane input closed".to_owned());
+                }
             }
             crate::raw_input::RawInputEvent::Mouse(_)
             | crate::raw_input::RawInputEvent::OuterFocusGained
@@ -511,5 +515,124 @@ mod tests {
                 ..
             }]
         ));
+    }
+
+    #[tokio::test]
+    async fn terminal_attach_input_queues_backpressured_keystrokes_in_order() {
+        let (runtime, mut rx) =
+            crate::terminal::TerminalRuntime::test_with_channel_capacity(80, 24, 1);
+
+        // Occupy the only channel slot so every later send observes `Full`.
+        runtime
+            .try_send_bytes(Bytes::from_static(b"filler"))
+            .expect("fills the single channel slot");
+
+        let typed = b"attach";
+        for byte in typed {
+            apply_terminal_attach_input(&runtime, vec![*byte])
+                .expect("a backpressured attach keystroke must be accepted, never dropped");
+        }
+
+        assert_eq!(rx.recv().await.expect("filler arrives").as_ref(), b"filler");
+
+        let received = drain_pane_input(&mut rx, typed.len()).await;
+        assert_eq!(
+            received, typed,
+            "attach keystrokes must survive backpressure in the order they were typed"
+        );
+    }
+
+    #[tokio::test]
+    async fn terminal_attach_input_reports_closed_pane_input() {
+        let (runtime, rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        drop(rx);
+
+        let err = apply_terminal_attach_input(&runtime, b"x".to_vec())
+            .expect_err("input to a closed pane must be reported to the attach client");
+
+        assert!(
+            err.contains("pane input closed"),
+            "closed-pane failures must stay legible to the attach client: {err}"
+        );
+    }
+
+    /// Reads up to `len` bytes of pane input, concatenated in arrival order.
+    /// Bounded so that input which never arrives fails the caller's assertion
+    /// with what actually showed up, instead of hanging the test.
+    async fn drain_pane_input(rx: &mut tokio::sync::mpsc::Receiver<Bytes>, len: usize) -> Vec<u8> {
+        let mut received = Vec::new();
+        while received.len() < len {
+            match tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv()).await {
+                Ok(Some(bytes)) => received.extend_from_slice(&bytes),
+                Ok(None) | Err(_) => break,
+            }
+        }
+        received
+    }
+
+    #[tokio::test]
+    async fn terminal_attach_paste_survives_backpressure_without_being_overtaken() {
+        let (runtime, mut rx) =
+            crate::terminal::TerminalRuntime::test_with_channel_capacity(80, 24, 1);
+
+        // Occupy the only channel slot so every later send observes `Full`.
+        runtime
+            .try_send_bytes(Bytes::from_static(b"filler"))
+            .expect("fills the single channel slot");
+
+        apply_terminal_attach_input(&runtime, b"k1".to_vec()).expect("keystroke is accepted");
+        apply_terminal_attach_input(&runtime, b"\x1b[200~pasted\x1b[201~".to_vec())
+            .expect("a backpressured paste must be accepted, never dropped");
+        apply_terminal_attach_input(&runtime, b"k2".to_vec()).expect("keystroke is accepted");
+
+        assert_eq!(rx.recv().await.expect("filler arrives").as_ref(), b"filler");
+
+        assert_eq!(
+            drain_pane_input(&mut rx, b"k1pastedk2".len()).await,
+            b"k1pastedk2",
+            "a paste must arrive whole and stay between the keys typed around it"
+        );
+    }
+
+    #[tokio::test]
+    async fn client_pane_paste_survives_backpressure_without_being_overtaken() {
+        let (runtime, mut rx) =
+            crate::terminal::TerminalRuntime::test_with_channel_capacity(80, 24, 1);
+
+        runtime
+            .try_send_bytes(Bytes::from_static(b"filler"))
+            .expect("fills the single channel slot");
+
+        apply_client_pane_input_events(
+            &runtime,
+            &[
+                ClientPaneInputEvent::TextCommit("a".to_owned()),
+                ClientPaneInputEvent::Paste("pasted".to_owned()),
+                ClientPaneInputEvent::TextCommit("b".to_owned()),
+            ],
+        )
+        .expect("a backpressured paste must be accepted, never dropped");
+
+        assert_eq!(rx.recv().await.expect("filler arrives").as_ref(), b"filler");
+
+        assert_eq!(
+            drain_pane_input(&mut rx, b"apastedb".len()).await,
+            b"apastedb",
+            "a paste must arrive whole and stay between the text typed around it"
+        );
+    }
+
+    #[tokio::test]
+    async fn terminal_attach_paste_reports_closed_pane_input() {
+        let (runtime, rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        drop(rx);
+
+        let err = apply_terminal_attach_input(&runtime, b"\x1b[200~pasted\x1b[201~".to_vec())
+            .expect_err("a paste into a closed pane must be reported, never silently dropped");
+
+        assert!(
+            err.contains("pane input closed"),
+            "closed-pane paste failures must stay legible to the attach client: {err}"
+        );
     }
 }

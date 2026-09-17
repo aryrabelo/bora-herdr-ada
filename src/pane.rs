@@ -3430,8 +3430,15 @@ impl PaneRuntime {
             .queue_user_input_submission(text, enter, delay, deadline)
     }
 
-    pub fn try_send_paste(&self, text: String) -> Result<(), mpsc::error::TrySendError<Bytes>> {
-        self.try_send_bytes(self.paste_payload(text))
+    /// Forwards pasted text to the pane, queuing it under transient
+    /// backpressure instead of discarding it. Pasted text is content: unlike a
+    /// keystroke, a human cannot tell a lost paste from an empty clipboard, and
+    /// unlike a focus or mouse report, nothing later supersedes it. Routing it
+    /// through the same queue as keystrokes also keeps it in order — a key
+    /// typed after the paste can never overtake it. Returns `false` only when
+    /// the pane's input is genuinely closed.
+    pub fn send_paste_preserving_order(&self, text: String) -> bool {
+        self.send_bytes_preserving_order(self.paste_payload(text))
     }
 
     fn paste_payload(&self, text: String) -> Bytes {
@@ -3445,6 +3452,11 @@ impl PaneRuntime {
         Bytes::from(payload)
     }
 
+    /// Forwards a focus in/out report to the pane. Returns whether the report
+    /// actually reached the pane's input channel: focus state is disposable
+    /// (the next report supersedes it, unlike typed content), so a full or
+    /// closed channel drops it rather than queueing it — but the caller is
+    /// told, instead of being handed a `true` that only means "we tried".
     pub fn try_send_focus_event(&self, event: crate::ghostty::FocusEvent) -> bool {
         if !self.focus_reporting_enabled() {
             return false;
@@ -3455,6 +3467,7 @@ impl PaneRuntime {
         };
         if let Err(err) = self.try_send_bytes(Bytes::from(bytes)) {
             warn!(err = %err, ?event, "failed to forward pane focus event");
+            return false;
         }
         true
     }
@@ -4498,6 +4511,35 @@ mod tests {
             tokio::time::timeout(std::time::Duration::from_millis(10), rx.recv())
                 .await
                 .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn focus_event_reports_failure_when_pane_input_channel_is_full() {
+        let (runtime, mut rx) = PaneRuntime::test_with_channel_capacity(80, 24, 1);
+        runtime.test_process_pty_bytes(b"\x1b[?1004h");
+        assert!(
+            runtime.focus_reporting_enabled(),
+            "the child asked for focus reports"
+        );
+        runtime
+            .try_send_bytes(Bytes::from_static(b"filler"))
+            .expect("fills the single channel slot");
+
+        assert!(
+            !runtime.try_send_focus_event(crate::ghostty::FocusEvent::Gained),
+            "a focus report that never reached the pane must be reported as failed"
+        );
+
+        assert_eq!(
+            rx.recv().await.expect("filler arrives"),
+            Bytes::from_static(b"filler")
+        );
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(10), rx.recv())
+                .await
+                .is_err(),
+            "a dropped focus report must not be replayed later as stale focus state"
         );
     }
 

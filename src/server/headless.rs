@@ -1243,8 +1243,14 @@ impl HeadlessServer {
                 };
                 if let Some(runtime) = self.runtime_for_terminal_id_string(terminal_id) {
                     let payload = paste_payload_for_runtime(runtime, &path);
-                    if let Err(err) = runtime.try_send_bytes(Bytes::from(payload)) {
-                        warn!(client_id, terminal_id = %terminal_id, err = %err, "terminal attach clipboard image paste failed");
+                    // Pasted content, not disposable state: queue it under
+                    // transient backpressure instead of discarding it.
+                    if !runtime.send_bytes_preserving_order(Bytes::from(payload)) {
+                        warn!(
+                            client_id,
+                            terminal_id = %terminal_id,
+                            "dropping terminal attach clipboard image paste: pane input closed"
+                        );
                     }
                 }
                 true
@@ -2078,10 +2084,16 @@ impl HeadlessServer {
             ),
             ServerEvent::ClientInput { client_id, data } => {
                 if self.handoff_in_progress {
-                    debug!(
+                    // The handoff swaps the server process out from under this
+                    // input, so there is nothing left to forward it to. Logged at
+                    // WARN because the exposure window is sub-second (measured:
+                    // 19 handoffs over 7.7 days, 4.41s of window in total) and a
+                    // line is emitted only when input actually lands inside it,
+                    // never on a quiet handoff.
+                    warn!(
                         client_id,
-                        len = data.len(),
-                        "ignored direct terminal input during handoff"
+                        dropped_bytes = data.len(),
+                        "dropping direct terminal input: live handoff in progress"
                     );
                     return false;
                 }
@@ -2094,7 +2106,12 @@ impl HeadlessServer {
                 };
                 if let Some(runtime) = self.runtime_for_terminal_id_string(terminal_id) {
                     if let Err(err) = apply_terminal_attach_input(runtime, data) {
-                        warn!(client_id, terminal_id = %terminal_id, err = %err);
+                        warn!(
+                            client_id,
+                            terminal_id = %terminal_id,
+                            err = %err,
+                            "failed to forward direct terminal input to pane"
+                        );
                     }
                 }
                 true

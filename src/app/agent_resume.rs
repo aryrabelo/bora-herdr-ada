@@ -265,17 +265,11 @@ impl App {
 
         let mut input = resume_command;
         input.push('\r');
-        if let Err(err) = runtime.try_send_bytes(Bytes::from(input)) {
-            tracing::warn!(
-                pane = pane_id.raw(),
-                terminal = %terminal_id,
-                agent = %plan.agent,
-                err = %err,
-                "failed to send deferred agent resume command to shell"
-            );
-            runtime.shutdown();
+        let Some(runtime) =
+            send_deferred_agent_resume_command(runtime, pane_id, &terminal_id, &plan.agent, input)
+        else {
             return false;
-        }
+        };
 
         self.terminal_runtimes.insert(terminal_id.clone(), runtime);
         if let Some(terminal) = self.state.terminals.get_mut(&terminal_id) {
@@ -284,6 +278,36 @@ impl App {
         }
         true
     }
+}
+
+/// Forwards the resume command to the freshly spawned shell, returning the
+/// runtime when the command is on its way and `None` after tearing the shell
+/// down because the command can never arrive.
+///
+/// `send_bytes_preserving_order` queues the command when the pane's input
+/// channel is momentarily full (`TrySendError::Full`) instead of discarding
+/// it, so a busy channel no longer costs a restored agent its resume command.
+/// It returns `false` only for `TrySendError::Closed`, which keeps the
+/// pre-existing teardown for that case: a shell that cannot be written to
+/// would sit there without the agent ever being resumed.
+fn send_deferred_agent_resume_command(
+    runtime: crate::terminal::TerminalRuntime,
+    pane_id: crate::layout::PaneId,
+    terminal_id: &crate::terminal::TerminalId,
+    agent: &str,
+    input: String,
+) -> Option<crate::terminal::TerminalRuntime> {
+    if runtime.send_bytes_preserving_order(Bytes::from(input)) {
+        return Some(runtime);
+    }
+    tracing::warn!(
+        pane = pane_id.raw(),
+        terminal = %terminal_id,
+        agent = %agent,
+        "failed to send deferred agent resume command to shell: pane input is closed"
+    );
+    runtime.shutdown();
+    None
 }
 
 fn derived_pending_agent_resume_pane_infos(
@@ -376,6 +400,37 @@ mod tests {
             "-c".into(),
             "printf '%s' 'restored agent: shell quoted | marker'; sleep 5".into(),
         ]
+    }
+
+    #[tokio::test]
+    async fn deferred_agent_resume_command_survives_a_full_pane_input_channel() {
+        let (runtime, mut rx) =
+            crate::terminal::TerminalRuntime::test_with_channel_capacity(80, 24, 1);
+        // Fill the only channel slot so the resume command observes `Full`.
+        runtime
+            .try_send_bytes(Bytes::from_static(b"filler"))
+            .expect("fills the single channel slot");
+        let terminal_id = crate::terminal::TerminalId::alloc();
+
+        let runtime = send_deferred_agent_resume_command(
+            runtime,
+            crate::layout::PaneId::from_raw(0),
+            &terminal_id,
+            "codex",
+            "codex resume --last\r".to_string(),
+        )
+        .expect("transient backpressure must not tear the restored shell down");
+
+        assert_eq!(rx.recv().await.expect("filler arrives").as_ref(), b"filler");
+        assert_eq!(
+            rx.recv()
+                .await
+                .expect("the queued resume command reaches the shell")
+                .as_ref(),
+            b"codex resume --last\r",
+            "a momentarily full channel must not cost the restored agent its resume command"
+        );
+        runtime.shutdown();
     }
 
     #[cfg(unix)]

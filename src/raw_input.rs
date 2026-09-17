@@ -222,7 +222,40 @@ impl RawInputByteFramer {
     pub(crate) fn flush_timeout(&mut self) -> Vec<Vec<u8>> {
         let mut chunks = self.drain_available_chunks();
 
+        // A host reply tail arrives in the same burst as its head, or in the read
+        // right after the flush that armed this window; only human typing arrives
+        // after a whole idle gap. An empty buffer here means the arming flush's
+        // reassembly window went by with nothing to discard, so no tail is coming:
+        // give up the window, the same way the lone escape below gives up its hold
+        // once no continuation arrived. Otherwise the window outlives the reply and
+        // starts eating the keystrokes that follow -- `discard_host_reply_csi_tail`
+        // swallows every byte in `0x20..=0x3f` and `plausible_control_string_tail`
+        // accepts digits for `Osc`, which is exactly what a human types, so `2345678`
+        // reached a pane as `34`.
+        //
+        // This sits before the per-family branches below because none of them can
+        // expire on their own: `HostReplyCsi` returns the window untouched, and the
+        // generic branch treats an empty buffer as a still-plausible tail, so its
+        // byte ceiling never advances and the window never closes. Keying the
+        // expiry on an empty buffer is what still grants one reassembly window per
+        // arming flush: a tail that really arrived is either already consumed by the
+        // drain above or sitting in the buffer, and in the latter case the generic
+        // branch below keeps discarding it under the unchanged byte ceiling.
+        if self.discard_until.is_some() && self.buffer.is_empty() {
+            tracing::debug!(
+                family = ?self.discard_until,
+                discarded_tail_bytes = self.discarded_tail_bytes,
+                "giving up host reply tail discard after an idle flush with no tail"
+            );
+            self.discard_until = None;
+            self.discarded_tail_bytes = 0;
+        }
+
         if let Some(family) = self.discard_until {
+            // Unreachable today: `discard_host_reply_csi_tail` only leaves the window
+            // armed after draining the whole buffer, so the expiry above already took
+            // it. Kept because that is an internal invariant, not a promise: if it
+            // ever stops holding, this keeps a real tail buffered instead of eating it.
             if family == ControlStringFamily::HostReplyCsi {
                 return chunks;
             }
@@ -2350,6 +2383,68 @@ mod tests {
             framer.push(&[b'2'; 67]),
             vec![b"2".to_vec(), b"2".to_vec(), b"2".to_vec()]
         );
+    }
+
+    #[test]
+    fn typing_survives_a_host_reply_tail_discard_window_that_never_terminated() {
+        let typed: Vec<Vec<u8>> = b"23456789".iter().map(|byte| vec![*byte]).collect();
+        let mut framer = RawInputByteFramer::default();
+        framer.host_cell_size_query_sent();
+
+        // The head of an XTWINOPS reply times out and arms the tail discard.
+        assert!(framer.push(b"\x1b[6;21").is_empty());
+        assert!(framer.flush_timeout().is_empty());
+        // A whole idle gap passes with no tail, so the window is gone and the
+        // digits typed next are input, not a reply tail.
+        assert!(framer.flush_timeout().is_empty());
+
+        assert_eq!(framer.push(b"23456789"), typed);
+
+        // Same expiry for the control string families, whose plausible-tail test
+        // accepts digits too.
+        let mut osc = RawInputByteFramer::default();
+        assert!(osc.push(b"\x1b]").is_empty());
+        assert!(osc.flush_timeout().is_empty());
+        assert!(osc.flush_timeout().is_empty());
+
+        assert_eq!(osc.push(b"23456789"), typed);
+    }
+
+    #[test]
+    fn host_reply_tail_reaching_the_reassembly_window_is_still_discarded() {
+        let mut framer = RawInputByteFramer::default();
+        framer.host_cell_size_query_sent();
+
+        assert!(framer.push(b"\x1b[6;21").is_empty());
+        assert!(framer.flush_timeout().is_empty());
+        // The tail arrives inside the window the arming flush granted: it is
+        // swallowed instead of leaking into the pane as `;10t`.
+        assert!(framer.push(b";10t").is_empty());
+        assert_eq!(framer.push(b"a"), vec![b"a".to_vec()]);
+
+        // A tail that keeps arriving in the same burst as the head never even
+        // reaches an idle flush.
+        let mut same_burst = RawInputByteFramer::default();
+        same_burst.host_cell_size_query_sent();
+        assert!(same_burst.push(b"\x1b[6;21").is_empty());
+        assert!(same_burst.flush_timeout().is_empty());
+        assert_eq!(same_burst.push(b";10ta"), vec![b"a".to_vec()]);
+    }
+
+    #[test]
+    fn host_reply_tail_discard_is_bounded_inside_one_burst() {
+        let mut framer = RawInputByteFramer::default();
+        framer.host_cell_size_query_sent();
+
+        assert!(framer.push(b"\x1b[6;21").is_empty());
+        assert!(framer.flush_timeout().is_empty());
+
+        // No idle flush splits this burst, so only the byte ceiling bounds the
+        // discard: the first 128 bytes are eaten as tail, the rest is input.
+        let chunks = framer.push(&[b'1'; MAX_DISCARDED_CONTROL_TAIL_BYTES + 72]);
+
+        assert_eq!(chunks.len(), 72);
+        assert!(chunks.iter().all(|chunk| chunk.as_slice() == b"1"));
     }
 
     #[test]

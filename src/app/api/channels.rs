@@ -8,6 +8,9 @@ use crate::api::schema::{
 use crate::app::App;
 use crate::persist::channels;
 use bytes::Bytes;
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::{LazyLock, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use super::responses::{encode_error, encode_success};
@@ -1046,8 +1049,9 @@ impl App {
     /// briefing and the message travel together and the agent always reads
     /// the protocol BEFORE its first message, whichever mode the sender
     /// chose. Standalone callers (`channel join`) pass `Some(true)` so
-    /// joining never types into a running turn. Always appends one system
-    /// line to the channel's transcript recording the delivery.
+    /// joining never types into a running turn. Appends one system line to
+    /// the channel's transcript recording the delivery — but only when the
+    /// briefing actually reached the pane; see the delivery gate below.
     /// `ws_idx` is the channel's own workspace, kept only for tracing
     /// context — the pane is always addressed by its already-resolved
     /// public id.
@@ -1062,6 +1066,13 @@ impl App {
             .into_iter()
             .any(|entry| entry.pane == public_pane_id && entry.version >= CHANNEL_PROTOCOL_VERSION);
         if already_sent {
+            return;
+        }
+        // A briefing already waiting in this pane's pending-prompt queue
+        // is neither delivered (no stamp yet) nor lost, and sending a
+        // second one would stack a duplicate ahead of the messages behind
+        // it — and past `PENDING_AGENT_PROMPT_CAP` evict the first copy.
+        if self.deferred_briefing_in_flight(channel, public_pane_id) {
             return;
         }
         tracing::debug!(
@@ -1082,7 +1093,7 @@ impl App {
             "\n\nThe human on this channel is @{}.",
             self.state.chat_name
         );
-        self.handle_agent_prompt(
+        let response = self.handle_agent_prompt(
             format!("channel-protocol:{channel}:{public_pane_id}"),
             AgentPromptParams {
                 target: public_pane_id.to_string(),
@@ -1097,6 +1108,66 @@ impl App {
                 origin_channel: None,
             },
         );
+        // Delivery decides the bookkeeping, because the stamp is keyed on
+        // `CHANNEL_PROTOCOL_VERSION` and not on what the pane actually
+        // read. `handle_agent_prompt` answers with `agent_prompt_failed`
+        // when the pane's input channel is full or closed
+        // (`TrySendError`), and the briefing bytes are gone with it;
+        // marking the pane anyway satisfied the version gate forever, so a
+        // pane that never saw the protocol counted as briefed for the rest
+        // of its life and operated without the channel's rules. That is
+        // strictly worse than the stale-briefing case this version gate
+        // exists for: a stale briefing at least re-sends on the next bump.
+        // On failure nothing is recorded and no transcript line is
+        // appended, so the next `channel.send`/`channel.join` retries the
+        // briefing.
+        let delivery = classify_delivery(public_pane_id.to_string(), &response);
+        match delivery.status {
+            ChannelDeliveryStatus::Failed => {
+                tracing::warn!(
+                    channel = %channel,
+                    pane = %public_pane_id,
+                    version = CHANNEL_PROTOCOL_VERSION,
+                    detail = delivery.detail.as_deref().unwrap_or("no detail"),
+                    "channel protocol briefing not delivered; pane stays unbriefed for a retry"
+                );
+            }
+            // A `deferred` receipt is NOT a delivery: the briefing is in
+            // the target's pending-prompt queue, and three paths kill a
+            // queued prompt without ever injecting it — capacity eviction
+            // (`App::enqueue_pending_agent_prompt`, where the briefing is
+            // by construction the queue's OLDEST entry and therefore the
+            // first evicted), a pane that closes
+            // (`App::fail_pending_agent_prompts`), and a terminal replay
+            // failure (`App::drain_pending_agent_prompts`, e.g. the pane
+            // swapped agents, which is the moment a briefing matters
+            // most). So the stamp waits for the queue's terminal fate,
+            // which arrives at [`Self::note_queued_prompt_delivered`] or
+            // [`Self::note_queued_prompt_dropped`] under this receipt's
+            // `queue_id`. Re-sending meanwhile is still wrong (it would
+            // queue a second copy, and past the cap evict the first), so
+            // the in-flight record also suppresses the next send.
+            ChannelDeliveryStatus::Deferred => match queued_prompt_queue_id(&response) {
+                Some(queue_id) => self.note_deferred_briefing(channel, public_pane_id, queue_id),
+                None => tracing::warn!(
+                    channel = %channel,
+                    pane = %public_pane_id,
+                    "deferred channel protocol briefing carries no queue_id; leaving the pane unstamped for a retry"
+                ),
+            },
+            ChannelDeliveryStatus::Delivered => {
+                self.record_protocol_delivery(channel, public_pane_id);
+            }
+        }
+    }
+
+    /// Records `pane` as briefed on `channel` at the current version and
+    /// appends the one system line to the channel's transcript saying so.
+    /// The only writer of either, so both halves of the delivery ledger
+    /// always agree: shared by the immediate path
+    /// ([`Self::send_channel_protocol`]) and the deferred one
+    /// ([`Self::note_queued_prompt_delivered`]).
+    fn record_protocol_delivery(&mut self, channel: &str, public_pane_id: &str) {
         if let Err(err) =
             channels::mark_protocol_sent(channel, public_pane_id, CHANNEL_PROTOCOL_VERSION)
         {
@@ -1128,6 +1199,93 @@ impl App {
         } else {
             self.push_chat_message(channel, line);
         }
+    }
+
+    /// Remembers that `channel`'s briefing for `pane` is sitting in the
+    /// pending-prompt queue under `queue_id`, waiting for the terminal fate
+    /// that decides whether it may be stamped. Replaces any earlier record
+    /// for the same pane: only the newest in-flight briefing can still be
+    /// delivered.
+    fn note_deferred_briefing(&mut self, channel: &str, public_pane_id: &str, queue_id: u64) {
+        let scope = channels::channel_protocol_file_path(channel);
+        let mut in_flight = deferred_briefings();
+        in_flight
+            .retain(|_, briefing| !(briefing.scope == scope && briefing.pane == public_pane_id));
+        in_flight.insert(
+            queue_id,
+            DeferredBriefing {
+                scope,
+                channel: channel.to_string(),
+                pane: public_pane_id.to_string(),
+                queued_at: Instant::now(),
+            },
+        );
+        tracing::debug!(
+            channel = %channel,
+            pane = %public_pane_id,
+            queue_id,
+            "channel protocol briefing queued; stamp withheld until the queue reports its fate"
+        );
+    }
+
+    /// The queue reported `queue_id` as injected. If it was a briefing,
+    /// that is the delivery the stamp was waiting for. Any other
+    /// `queue_id` — the overwhelming majority of deferred prompts — is a
+    /// silent no-op.
+    pub(crate) fn note_queued_prompt_delivered(&mut self, queue_id: u64) {
+        let Some(briefing) = deferred_briefings().remove(&queue_id) else {
+            return;
+        };
+        tracing::debug!(
+            channel = %briefing.channel,
+            pane = %briefing.pane,
+            queue_id,
+            "queued channel protocol briefing delivered; stamping the pane"
+        );
+        let (channel, pane) = (briefing.channel, briefing.pane);
+        self.record_protocol_delivery(&channel, &pane);
+    }
+
+    /// The queue reported `queue_id` as dropped: the briefing never reached
+    /// the pane, so nothing is stamped and the in-flight record goes away —
+    /// which is what lets the next `channel.send`/`channel.join` brief the
+    /// pane again. `reason` is logged because the three causes need
+    /// different operator action: `Capacity` means the target is falling
+    /// behind, `PaneClosed` means the recipient is gone, and
+    /// `AgentChanged` means the pane is now hosting someone who has never
+    /// been briefed. Unknown `queue_id` is a silent no-op.
+    pub(crate) fn note_queued_prompt_dropped(
+        &mut self,
+        queue_id: u64,
+        reason: crate::api::schema::QueuedAgentPromptDropReason,
+    ) {
+        let Some(briefing) = deferred_briefings().remove(&queue_id) else {
+            return;
+        };
+        tracing::warn!(
+            channel = %briefing.channel,
+            pane = %briefing.pane,
+            queue_id,
+            reason = ?reason,
+            version = CHANNEL_PROTOCOL_VERSION,
+            "queued channel protocol briefing dropped; pane stays unbriefed for a re-briefing"
+        );
+    }
+
+    /// Whether `pane` already has a briefing for `channel` waiting in the
+    /// pending-prompt queue, in which case sending another would only
+    /// stack a duplicate. Expired records do not suppress: see
+    /// [`DEFERRED_BRIEFING_FATE_WINDOW`].
+    fn deferred_briefing_in_flight(&self, channel: &str, public_pane_id: &str) -> bool {
+        let scope = channels::channel_protocol_file_path(channel);
+        let now = Instant::now();
+        let mut in_flight = deferred_briefings();
+        in_flight.retain(|_, briefing| {
+            now.duration_since(briefing.queued_at) < DEFERRED_BRIEFING_FATE_WINDOW
+        });
+        in_flight
+            .values()
+            .any(|briefing| briefing.scope == scope && briefing.pane == public_pane_id)
     }
 
     /// Canonical public id and owning workspace of `pane`, accepting every
@@ -1663,6 +1821,85 @@ fn agent_status_key(status: AgentStatus) -> &'static str {
         AgentStatus::Done => "done",
         AgentStatus::Unknown => "unknown",
     }
+}
+
+/// How long an in-flight (`deferred`) briefing suppresses a re-send while
+/// it waits for the queue's verdict. Finite as a net under an UNPROVEN
+/// assumption, not as a fix for a known hole: it holds only while every
+/// queued prompt reaches exactly one of `App::note_queued_prompt_delivered`
+/// or `App::note_queued_prompt_dropped`, and a record whose verdict never
+/// arrives — for any reason nobody has measured yet — would otherwise
+/// suppress this pane's briefing for the process's whole life.
+///
+/// The cost is asymmetric, which is the whole argument. Expiring wrongly
+/// costs one duplicate briefing: benign, self-healing, and visible. Not
+/// expiring costs a pane that is never briefed and never stamped again —
+/// exactly the defect this path exists to prevent, and silent. Keep the net
+/// until real use shows it never fires; that evidence, not the absence of a
+/// known hole, is what would justify removing it.
+///
+/// Must stay well above any single replay round: a transient `Full`/`Closed`
+/// on the target's input channel re-queues the same entry, with its
+/// `queue_id` intact, for a later drain, so one briefing legitimately stays
+/// in flight across many ticks. Each retry costs a whole
+/// `PENDING_AGENT_PROMPT_DRAIN_SETTLE` (1200ms), so this window is roughly
+/// 500 rounds of margin — redo that arithmetic before lowering it.
+const DEFERRED_BRIEFING_FATE_WINDOW: Duration = Duration::from_secs(600);
+
+/// A channel-protocol briefing that only got a `deferred` receipt: it is in
+/// the target's pending-prompt queue, not in the target.
+struct DeferredBriefing {
+    /// The channel's own protocol-record path — the state dir the stamp
+    /// would be written to. Two state dirs are two independent scopes, so
+    /// this is what keeps one server's (or one test's) in-flight record
+    /// from suppressing a briefing in another's.
+    scope: PathBuf,
+    channel: String,
+    pane: String,
+    queued_at: Instant,
+}
+
+/// In-flight briefings by `queue_id`, the id their terminal fate arrives
+/// with. Module-private so the briefing ledger has exactly one writer
+/// (`App::note_deferred_briefing` / `note_queued_prompt_*`). Holds only
+/// briefings still awaiting a verdict: normally none, at most one per
+/// (channel, pane).
+///
+/// This is per-`App` state living in a process-global map, so every entry
+/// carries the state dir it belongs to (`DeferredBriefing::scope`) and
+/// lookups match on it. Without that key, two `App`s on different state
+/// dirs — production and every `IsolatedDirs` test — would suppress each
+/// other's briefings through a shared channel name. Moving this to a field
+/// on `App` would make the scope key redundant and is the better shape.
+///
+/// Deliberately NOT durable, unlike the prompt queue it shadows
+/// (`persist_pending_agent_prompts`). A restart therefore loses the
+/// in-flight record while the queue itself survives, and the restored
+/// entry's terminal fate arrives for a `queue_id` this map no longer
+/// knows: a silent no-op, so the pane is never stamped and the next
+/// `channel.send` re-briefs it — one duplicate briefing, the same benign
+/// cost as an expired record. The dangerous variant is impossible by
+/// construction: `App::load_pending_agent_prompts` restores each entry's
+/// original `queue_id` and lifts `next_pending_agent_prompt_queue_id` to
+/// `highest + 1`, so a fresh briefing can never be handed an id a restored
+/// queue entry still answers to, and no unrelated fate can stamp a pane.
+static DEFERRED_BRIEFINGS: LazyLock<Mutex<HashMap<u64, DeferredBriefing>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn deferred_briefings() -> MutexGuard<'static, HashMap<u64, DeferredBriefing>> {
+    DEFERRED_BRIEFINGS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// The `queue_id` a `deferred` receipt carries, naming the queue entry
+/// whose fate decides the briefing's stamp.
+fn queued_prompt_queue_id(response: &str) -> Option<u64> {
+    serde_json::from_str::<serde_json::Value>(response)
+        .ok()?
+        .get("result")?
+        .get("queue_id")?
+        .as_u64()
 }
 
 /// Classifies a `handle_agent_prompt` response into a `ChannelDelivery`
@@ -3591,10 +3828,22 @@ mod tests {
     /// An idle agent pane in its own non-channel workspace — the
     /// pre-existing agent `channel.join` exists for. Returns its public pane
     /// id and the runtime receiver, which must stay alive for the pane to
-    /// stay promptable.
+    /// stay promptable. `4` is `test_with_channel`'s own input-channel
+    /// capacity, so this stays byte-for-byte the fixture it always was.
     fn outside_agent_pane(
         app: &mut App,
         name: &str,
+    ) -> (String, tokio::sync::mpsc::Receiver<bytes::Bytes>) {
+        outside_agent_pane_with_capacity(app, name, 4)
+    }
+
+    /// [`outside_agent_pane`] with an explicit input-channel capacity, for
+    /// tests that need to saturate it and observe `TrySendError::Full` —
+    /// the transient backpressure a real pane hits under a burst.
+    fn outside_agent_pane_with_capacity(
+        app: &mut App,
+        name: &str,
+        capacity: usize,
     ) -> (String, tokio::sync::mpsc::Receiver<bytes::Bytes>) {
         app.handle_workspace_create(
             "req".into(),
@@ -3621,7 +3870,8 @@ mod tests {
             Some(crate::detect::Agent::OpenCode),
             crate::detect::AgentState::Idle,
         );
-        let (runtime, rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        let (runtime, rx) =
+            crate::terminal::TerminalRuntime::test_with_channel_capacity(80, 24, capacity);
         app.state.insert_test_runtime(pane, runtime);
         (app.public_pane_id(ws_idx, pane).unwrap(), rx)
     }
@@ -4529,7 +4779,13 @@ mod tests {
         let _isolated = IsolatedDirs::new("protocol-restart");
         let mut app = test_app();
         create_channel(&mut app, "eng");
-        app.send_channel_protocol("eng", 0, "w1A:p2", None);
+        // A real agent pane, because the notice and the persisted record
+        // now follow an actual delivery (see
+        // `channel_protocol_failed_delivery_is_never_marked_as_sent`): a
+        // synthetic pane id is a failed send, and a failed send correctly
+        // leaves nothing for the restart to read back.
+        let (briefed, _briefed_rx) = outside_agent_pane(&mut app, "brandos");
+        app.send_channel_protocol("eng", 0, &briefed, None);
         let history = channels::read_tail("eng", 10).unwrap();
         assert_eq!(
             history.iter().filter(|m| m.from_pane == "system").count(),
@@ -4542,7 +4798,10 @@ mod tests {
         // persisted protocol.json record must suppress a resend for the
         // same pane, even though this App instance never saw that pane.
         let mut restarted = test_app();
-        restarted.send_channel_protocol("eng", 0, "w1A:p2", None);
+        // No pane is recreated here on purpose: the persisted record must
+        // short-circuit `send_channel_protocol` before it ever looks for a
+        // runtime, which is exactly what this asserts.
+        restarted.send_channel_protocol("eng", 0, &briefed, None);
         let history_after = channels::read_tail("eng", 10).unwrap();
         assert_eq!(
             history_after
@@ -4557,8 +4816,13 @@ mod tests {
         // before a `CHANNEL_PROTOCOL_VERSION` bump) must get a resend: the
         // `entry.version >= CHANNEL_PROTOCOL_VERSION` gate is strict, not
         // pane-presence, so v1-briefed panes see the v2 scope-aware text.
-        channels::mark_protocol_sent("eng", "w1A:p3", CHANNEL_PROTOCOL_VERSION - 1).unwrap();
-        restarted.send_channel_protocol("eng", 0, "w1A:p3", None);
+        let (rebriefed, _rebriefed_rx) = outside_agent_pane(&mut restarted, "second");
+        assert_ne!(
+            rebriefed, briefed,
+            "the resend half must use a different pane than the suppressed half"
+        );
+        channels::mark_protocol_sent("eng", &rebriefed, CHANNEL_PROTOCOL_VERSION - 1).unwrap();
+        restarted.send_channel_protocol("eng", 0, &rebriefed, None);
         let history_bump = channels::read_tail("eng", 10).unwrap();
         assert_eq!(
             history_bump
@@ -4570,7 +4834,7 @@ mod tests {
         );
         let recorded = channels::read_protocol_sent("eng")
             .into_iter()
-            .find(|entry| entry.pane == "w1A:p3")
+            .find(|entry| entry.pane == rebriefed)
             .expect("resend must record the new version");
         assert_eq!(recorded.version, CHANNEL_PROTOCOL_VERSION);
         super::super::test_support::shutdown_test_runtimes(&mut restarted);
@@ -4589,6 +4853,166 @@ mod tests {
             "a Working target must have the protocol block queued, not dropped"
         );
         assert_eq!(app.pending_agent_prompts[&worker].len(), 1);
+        super::super::test_support::shutdown_test_runtimes(&mut app);
+    }
+
+    /// Sets `pane`'s detected agent state, for tests that need a target to
+    /// be busy (so a briefing defers) and then idle (so it delivers).
+    fn set_agent_state(app: &mut App, pane: &str, state: crate::detect::AgentState) {
+        let (ws_idx, pane_id) = app.parse_pane_id(pane).expect("pane must resolve");
+        let terminal_id = app.state.workspaces[ws_idx]
+            .pane_state(pane_id)
+            .unwrap()
+            .attached_terminal_id
+            .clone();
+        let terminal = app.state.terminals.get_mut(&terminal_id).unwrap();
+        terminal.set_detected_state(Some(crate::detect::Agent::OpenCode), state);
+    }
+
+    /// The discriminating case for withholding the stamp on a `deferred`
+    /// receipt: the briefing is queued, then evicted by
+    /// `PENDING_AGENT_PROMPT_CAP` — and since the briefing is by
+    /// construction the queue's OLDEST entry, capacity eviction kills it
+    /// first, i.e. the policy preferentially destroys the most important
+    /// message. Stamping on the receipt left that pane marked as briefed
+    /// forever while it had read nothing. Here the drop must leave it
+    /// unstamped so the next send re-briefs it, and the assertions read the
+    /// stamp and the injected bytes, not the absence of an error.
+    #[tokio::test]
+    async fn deferred_briefing_dropped_by_capacity_is_rebriefed_not_stamped() {
+        let _isolated = IsolatedDirs::new("protocol-capacity-drop");
+        let mut app = test_app();
+        create_channel(&mut app, "eng");
+        let (worker, mut rx) = outside_agent_pane(&mut app, "worker");
+        let stamped = |pane: &str| -> Vec<u32> {
+            channels::read_protocol_sent("eng")
+                .into_iter()
+                .filter(|entry| entry.pane == pane)
+                .map(|entry| entry.version)
+                .collect()
+        };
+
+        // Busy target: the briefing is queued, not injected.
+        set_agent_state(&mut app, &worker, crate::detect::AgentState::Working);
+        app.send_channel_protocol("eng", 0, &worker, Some(true));
+        assert_eq!(
+            app.pending_agent_prompts[&worker].len(),
+            1,
+            "the briefing must be queued for a Working target"
+        );
+        assert!(
+            stamped(&worker).is_empty(),
+            "a queued briefing is not a read briefing; the stamp must wait for the queue's verdict"
+        );
+
+        // Fill the queue past its cap. The briefing is the oldest entry, so
+        // it is the one evicted, with reason `Capacity`.
+        for filler in 0..crate::app::PENDING_AGENT_PROMPT_CAP {
+            app.enqueue_pending_agent_prompt(
+                worker.clone(),
+                AgentPromptParams {
+                    target: worker.clone(),
+                    text: format!("filler {filler}"),
+                    wait: None,
+                    from_pane: None,
+                    when_idle: Some(true),
+                    when_idle_timeout_ms: None,
+                    peer_pid: None,
+                    origin_channel: None,
+                },
+            );
+        }
+        assert!(
+            !app.pending_agent_prompts[&worker]
+                .iter()
+                .any(|pending| pending.params.text.contains("channel protocol")),
+            "fixture guard: the briefing must actually have been evicted, or this test proves nothing"
+        );
+        assert!(
+            stamped(&worker).is_empty(),
+            "an evicted briefing was never read, so it must never be stamped"
+        );
+
+        // The pane settles, and the next send re-briefs it for real — which
+        // is only possible because the drop cleared the in-flight record.
+        set_agent_state(&mut app, &worker, crate::detect::AgentState::Idle);
+        app.send_channel_protocol("eng", 0, &worker, None);
+        let injected = rx
+            .try_recv()
+            .expect("the dropped briefing must be re-sent, for real, to the pane");
+        let injected = String::from_utf8_lossy(&injected);
+        assert!(
+            injected.contains("channel protocol for #eng"),
+            "got: {injected}"
+        );
+        assert_eq!(
+            stamped(&worker),
+            vec![CHANNEL_PROTOCOL_VERSION],
+            "the re-briefing that landed is the one that stamps"
+        );
+        super::super::test_support::shutdown_test_runtimes(&mut app);
+    }
+
+    /// The other half of withholding the stamp on a `deferred` receipt: the
+    /// stamp must still happen, just later — when the queue actually
+    /// injects the briefing. The pane is briefed exactly once, by the
+    /// replay, and only then is it recorded; nothing here is a re-send,
+    /// which is why the injected bytes are asserted alongside the stamp.
+    #[tokio::test]
+    async fn deferred_briefing_is_stamped_when_the_replay_delivers_it() {
+        let _isolated = IsolatedDirs::new("protocol-replay-stamp");
+        let mut app = test_app();
+        create_channel(&mut app, "eng");
+        let (worker, mut rx) = outside_agent_pane(&mut app, "worker");
+        let stamped = |pane: &str| -> Vec<u32> {
+            channels::read_protocol_sent("eng")
+                .into_iter()
+                .filter(|entry| entry.pane == pane)
+                .map(|entry| entry.version)
+                .collect()
+        };
+
+        set_agent_state(&mut app, &worker, crate::detect::AgentState::Working);
+        app.send_channel_protocol("eng", 0, &worker, Some(true));
+        assert_eq!(
+            app.pending_agent_prompts[&worker].len(),
+            1,
+            "fixture guard: the briefing must be in the queue, not in the pane"
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "a deferred briefing writes nothing to the pane yet"
+        );
+        assert!(
+            stamped(&worker).is_empty(),
+            "and nothing may record it as read"
+        );
+
+        set_agent_state(&mut app, &worker, crate::detect::AgentState::Idle);
+        app.drain_pending_agent_prompts(&worker);
+
+        let injected = rx
+            .try_recv()
+            .expect("the replay must inject the queued briefing");
+        let injected = String::from_utf8_lossy(&injected);
+        assert!(
+            injected.contains("channel protocol for #eng"),
+            "got: {injected}"
+        );
+        assert_eq!(
+            stamped(&worker),
+            vec![CHANNEL_PROTOCOL_VERSION],
+            "a briefing the queue delivered is exactly when the stamp is earned"
+        );
+        assert_eq!(
+            channels::read_tail("eng", 10)
+                .unwrap()
+                .iter()
+                .filter(|message| message.from_pane == "system")
+                .count(),
+            1,
+            "one delivery, one transcript line — written at delivery, not at the receipt"
+        );
         super::super::test_support::shutdown_test_runtimes(&mut app);
     }
 
@@ -4611,6 +5035,149 @@ mod tests {
                 .keys()
                 .any(|(_, target)| target == &outsider),
             "protocol delivery must use from_pane: None and never record a rate-limit entry"
+        );
+        super::super::test_support::shutdown_test_runtimes(&mut app);
+    }
+
+    /// The protocol stamp is an assertion about what a pane READ, and the
+    /// only thing that ever clears it is a `CHANNEL_PROTOCOL_VERSION` bump
+    /// — so a briefing dropped on backpressure but recorded as sent
+    /// silences the gate for that pane's whole life: it works the channel
+    /// having never been told the channel's rules. Both halves are
+    /// asserted on the stamp and the transcript, not on an absence of
+    /// errors (`send_channel_protocol` returns `()`, so an assertion that
+    /// only checked "no panic" would pass without the briefing ever
+    /// reaching a send): a failed delivery records nothing and is retried,
+    /// and the retry that lands records exactly one entry, once.
+    #[tokio::test]
+    async fn channel_protocol_failed_delivery_is_never_marked_as_sent() {
+        let _isolated = IsolatedDirs::new("protocol-backpressure");
+        let mut app = test_app();
+        create_channel(&mut app, "eng");
+        // A one-slot input channel, and `rx` is deliberately not drained:
+        // the slot below keeps it full, so the next write fails with
+        // `TrySendError::Full` — the transient backpressure of a burst, not
+        // the `Closed` a dropped receiver would fake.
+        let (outsider, mut rx) = outside_agent_pane_with_capacity(&mut app, "brandos", 1);
+        let prompt = |text: &str| AgentPromptParams {
+            target: outsider.clone(),
+            text: text.to_string(),
+            wait: None,
+            from_pane: None,
+            when_idle: None,
+            when_idle_timeout_ms: None,
+            peer_pid: None,
+            origin_channel: None,
+        };
+        let stamped = |pane: &str| -> Vec<u32> {
+            channels::read_protocol_sent("eng")
+                .into_iter()
+                .filter(|entry| entry.pane == pane)
+                .map(|entry| entry.version)
+                .collect()
+        };
+        let system_lines = || {
+            channels::read_tail("eng", 10)
+                .unwrap()
+                .iter()
+                .filter(|message| message.from_pane == "system")
+                .count()
+        };
+
+        // Fixture guard: the first prompt fills the only slot, and the
+        // second must fail at the write itself (`agent_prompt_failed` from
+        // `TrySendError::Full`) rather than earlier at target resolution or
+        // the busy gate. Without this, the assertions below could pass on a
+        // pane that never reached the branch under test.
+        let occupied = app.handle_agent_prompt("occupy".into(), prompt("occupy the slot"));
+        let occupied: serde_json::Value = serde_json::from_str(&occupied).unwrap();
+        assert_eq!(
+            occupied["result"]["outcome"],
+            serde_json::json!("injected"),
+            "the fixture pane must be promptable: {occupied}"
+        );
+        let saturated = app.handle_agent_prompt("saturated".into(), prompt("one too many"));
+        let saturated: serde_json::Value = serde_json::from_str(&saturated).unwrap();
+        assert_eq!(
+            saturated["error"]["code"],
+            serde_json::json!("agent_prompt_failed"),
+            "a full input channel must fail the write, not something earlier: {saturated}"
+        );
+
+        // Half one: the briefing cannot be delivered, so nothing may claim
+        // it was.
+        app.send_channel_protocol("eng", 0, &outsider, None);
+        assert!(
+            stamped(&outsider).is_empty(),
+            "a dropped briefing must leave the pane unstamped, or the version gate is satisfied forever by a briefing nobody read"
+        );
+        assert_eq!(
+            system_lines(),
+            0,
+            "the transcript must not record a delivery that never happened"
+        );
+
+        // And the measured cost of retrying forever, for a pane that can
+        // never receive: nothing persisted grows. Three more attempts must
+        // leave both on-disk files at exactly the same length and record no
+        // rate-limit entry — `admit_agent_prompt` only calls
+        // `check_agent_prompt_rate_limit` under `from_pane: Some(_)`, and
+        // the briefing passes `None`. Without this, a channel with one dead
+        // member pane would grow the transcript once per `channel.send`.
+        let file_lengths = || {
+            let len = |path: std::path::PathBuf| {
+                std::fs::metadata(path).map(|meta| meta.len()).unwrap_or(0)
+            };
+            (
+                len(channels::channel_file_path("eng")),
+                len(channels::channel_protocol_file_path("eng")),
+            )
+        };
+        let before = file_lengths();
+        for _ in 0..3 {
+            app.send_channel_protocol("eng", 0, &outsider, None);
+        }
+        assert_eq!(
+            file_lengths(),
+            before,
+            "a retried briefing that keeps failing must not write a byte"
+        );
+        assert!(
+            stamped(&outsider).is_empty(),
+            "still unstamped after the retries"
+        );
+        assert!(
+            !app.agent_prompt_rate_limits
+                .keys()
+                .any(|(_, target)| target == &outsider),
+            "a retried briefing must never record a rate-limit entry"
+        );
+
+        // Half two: the retry the missing stamp buys lands, and stamps once.
+        while rx.try_recv().is_ok() {}
+        app.send_channel_protocol("eng", 0, &outsider, None);
+        let injected = rx
+            .try_recv()
+            .expect("the retry must inject the briefing for real");
+        let injected = String::from_utf8_lossy(&injected);
+        assert!(
+            injected.contains("channel protocol for #eng"),
+            "got: {injected}"
+        );
+        assert_eq!(
+            stamped(&outsider),
+            vec![CHANNEL_PROTOCOL_VERSION],
+            "a delivered briefing stamps the pane at the current version"
+        );
+        assert_eq!(system_lines(), 1, "one delivery, one transcript line");
+
+        // And exactly once: the stamp now suppresses further sends.
+        app.send_channel_protocol("eng", 0, &outsider, None);
+        assert_eq!(stamped(&outsider), vec![CHANNEL_PROTOCOL_VERSION]);
+        assert_eq!(system_lines(), 1, "a stamped pane is never re-briefed");
+        assert!(
+            rx.try_recv().is_err(),
+            "a stamped pane receives nothing further"
         );
         super::super::test_support::shutdown_test_runtimes(&mut app);
     }

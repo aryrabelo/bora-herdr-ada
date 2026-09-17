@@ -10,12 +10,17 @@ fn row_text(frame: &crate::protocol::FrameData, y: u16) -> String {
         .collect()
 }
 
-/// The sidebar header row is the one carrying the " spaces" title; the badge
-/// shares it, so locate it by content rather than by re-deriving layout math.
+/// The sidebar header row is the one carrying the live view-mode label; the
+/// badge shares it, so locate it by content rather than by re-deriving layout
+/// math. That label was a static " spaces" title until the view-mode toggle was
+/// restored onto this row (it now cycles with `prefix+shift+v`), so the row is
+/// found by what the default config actually renders instead of by a word the
+/// header no longer contains.
 fn header_row(frame: &crate::protocol::FrameData) -> (u16, String) {
+    let mode_label = Config::default().ui.view_mode.as_str();
     (0..frame.height)
         .map(|y| (y, row_text(frame, y)))
-        .find(|(_, text)| text.contains("spaces"))
+        .find(|(_, text)| text.contains(mode_label))
         .expect("sidebar header row")
 }
 
@@ -103,7 +108,6 @@ fn waiting_badge_is_absent_when_no_pane_is_waiting() {
     // Default snapshot: no idle_seconds anywhere, nothing blocked.
     let (_state, frame) = compose_with(snapshot());
     let (_, header) = header_row(&frame);
-    assert!(header.contains("spaces"));
     assert!(!header.contains("waiting"), "header was {header:?}");
 }
 

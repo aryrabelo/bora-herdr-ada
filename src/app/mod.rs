@@ -103,6 +103,42 @@ fn queued_prompt_drop_reason_text(
     }
 }
 
+/// Whether a failed replay of a queued `when_idle` prompt
+/// (`App::drain_pending_agent_prompts`) must be retried on a later drain
+/// instead of reported as a terminal drop. Keyed on the wire error code, which
+/// is the stable contract — the underlying `tokio::sync::mpsc::TrySendError`
+/// reaches here only as its `Display` text, which is not.
+///
+/// - `agent_prompt_failed` is the pane's input channel refusing the bytes right
+///   now: `Full` while the child is behind on stdin, or `Closed` while a live
+///   handoff holds the write gate shut (`crate::pty::actor`). Both pass on
+///   their own, and the prompt text was not written, so replaying it is safe.
+/// - `agent_prompt_rate_limited` passes when the per-(sender, target) window
+///   elapses.
+/// - `agent_blocked` passes when the human answers whatever the agent is
+///   blocked on.
+///
+/// None of the three says the target changed, so none of them may be reported
+/// as `QueuedAgentPromptDropReason::AgentChanged`.
+fn queued_prompt_replay_is_retryable(code: &str) -> bool {
+    matches!(
+        code,
+        "agent_prompt_failed" | "agent_prompt_rate_limited" | "agent_blocked"
+    )
+}
+
+/// The truthful drop reason for a replay failure that a retry cannot fix.
+/// `agent_not_found` means the target pane (or its runtime) is gone;
+/// `agent_not_ready` means the pane no longer hosts the agent it was queued
+/// for, which is what `AgentChanged` actually claims.
+fn queued_prompt_replay_drop_reason(code: &str) -> crate::api::schema::QueuedAgentPromptDropReason {
+    use crate::api::schema::QueuedAgentPromptDropReason as Reason;
+    match code {
+        "agent_not_found" => Reason::PaneClosed,
+        _ => Reason::AgentChanged,
+    }
+}
+
 use ratatui::layout::Rect;
 use tokio::sync::{mpsc, Notify};
 use tracing::info;
@@ -1224,36 +1260,59 @@ impl App {
     }
 
     /// Replays every prompt queued for `target_pane`, oldest first, through
-    /// `handle_agent_prompt`. A queued prompt that lands mid-`Working` again (the
-    /// target flipped back busy between drains) is simply re-queued by
-    /// `handle_agent_prompt`'s own busy check — reported as an `outcome: "deferred"`
-    /// receipt, not an error — so ordering degrades but nothing is lost; not a
-    /// terminal fate, so no event yet. A successful replay is terminal: reports
-    /// `agent_prompt.delivered`. Any other failure (rate-limited, pane gone, agent
-    /// swapped out) is also terminal — a retry cannot fix it — so it is logged and
-    /// reported via `report_queued_prompt_dropped`.
+    /// `handle_agent_prompt`, and stops at the first entry that is not
+    /// delivered — everything behind it stays queued in order, so a replay
+    /// never overtakes an older prompt.
+    ///
+    /// A successful replay is terminal: reports `agent_prompt.delivered`. A
+    /// prompt that lands mid-`Working` again (the target flipped back busy
+    /// between drains) is re-queued by `handle_agent_prompt`'s own busy check —
+    /// an `outcome: "deferred"` receipt, not an error — which is not a terminal
+    /// fate, so no event yet. A replay that failed for a reason that passes on
+    /// its own (`queued_prompt_replay_is_retryable`) is also NOT a drop: the
+    /// entry keeps its `queue_id`, goes back on the queue, and the settle
+    /// deadline is re-armed so the tick retries it. Reporting those as drops is
+    /// what used to destroy a prompt whenever the target pane's input channel
+    /// was momentarily full, under the false reason `AgentChanged`. Only a
+    /// failure a retry cannot fix (pane gone, agent swapped out) is terminal:
+    /// logged and reported via `report_queued_prompt_dropped` with the reason
+    /// `queued_prompt_replay_drop_reason` derives from the wire error code.
     pub(crate) fn drain_pending_agent_prompts(&mut self, target_pane: &str) {
-        let Some(queue) = self.pending_agent_prompts.remove(target_pane) else {
+        let Some(mut queue) = self.pending_agent_prompts.remove(target_pane) else {
             return;
         };
         // Persist the removal BEFORE replaying: a crash mid-drain must not
         // leave a stored queue that redelivers prompts already written to the
-        // pane. A re-queue (target flipped busy again) goes back through
-        // `enqueue_pending_agent_prompt`, which persists on its own.
+        // pane. Anything put back — a busy target, or a delivery that has to be
+        // retried — is re-persisted by `requeue_pending_agent_prompts`.
         self.persist_pending_agent_prompts();
-        for pending in queue {
+        while let Some(pending) = queue.pop_front() {
             let queue_id = pending.queue_id;
             let from_pane = pending.params.from_pane.clone();
             let origin_channel = pending.params.origin_channel.clone();
             let waited_ms = pending.enqueued_at.elapsed().as_millis();
             let request_id = format!("deferred:{target_pane}:{waited_ms}");
-            let response = self.handle_agent_prompt(request_id, pending.params);
+            // Cloned because `handle_agent_prompt` consumes the params and a
+            // retryable failure needs this entry back, intact, on the queue.
+            let response = self.handle_agent_prompt(request_id, pending.params.clone());
             let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&response) else {
                 continue;
             };
             if let Some(error) = parsed.get("error") {
                 let code = error.get("code").and_then(|c| c.as_str()).unwrap_or("");
                 let message = error.get("message").and_then(|m| m.as_str()).unwrap_or("");
+                if queued_prompt_replay_is_retryable(code) {
+                    tracing::warn!(
+                        target = %target_pane,
+                        waited_ms,
+                        code,
+                        message,
+                        "deferred agent prompt not delivered yet; keeping it queued for a later drain"
+                    );
+                    queue.push_front(pending);
+                    self.requeue_pending_agent_prompts(target_pane, queue);
+                    return;
+                }
                 tracing::warn!(
                     target = %target_pane,
                     waited_ms,
@@ -1271,7 +1330,7 @@ impl App {
                     target_pane,
                     from_pane,
                     origin_channel,
-                    crate::api::schema::QueuedAgentPromptDropReason::AgentChanged,
+                    queued_prompt_replay_drop_reason(code),
                     Some(detail),
                 );
                 continue;
@@ -1286,10 +1345,59 @@ impl App {
                     waited_ms,
                     "deferred agent prompt re-queued; target busy again"
                 );
-                continue;
+                // `handle_agent_prompt` re-queued a COPY of this prompt with a
+                // fresh queue_id and threw the receipt away, so that id is one
+                // nobody holds while the sender still holds the original — and
+                // a terminal-fate event under an id nobody holds is a fate
+                // nobody can observe. Discard the copy and put the original
+                // entry back, `queue_id` and `enqueued_at` intact, so the id on
+                // the receipt stays an identity across any number of re-queues
+                // and eviction order still ranks by real queue age. Safe
+                // because this drain removed the whole queue up front and
+                // nothing else can enqueue in between: the only other prompt
+                // this function can emit is the drop notice, which goes out
+                // with `when_idle: None` and so never reaches the busy gate.
+                self.pending_agent_prompts.remove(target_pane);
+                queue.push_front(pending);
+                self.requeue_pending_agent_prompts(target_pane, queue);
+                return;
             }
             self.report_queued_prompt_delivered(queue_id, target_pane, from_pane);
         }
+    }
+
+    /// Puts undelivered entries back on `target_pane`'s queue, in order, and
+    /// re-arms the settle deadline so the scheduled-task tick drains the target
+    /// again. Entries keep their original `queue_id`, so the `deferred` receipt
+    /// the sender already holds still names the entry that is waiting.
+    ///
+    /// The deadline re-arm is load-bearing: `drain_settled_pending_agent_prompts`
+    /// consumes a target's deadline before draining it, so without re-arming,
+    /// a prompt put back here would sit until some unrelated status change
+    /// happened to drain the target again — which for a quiet target is never.
+    fn requeue_pending_agent_prompts(
+        &mut self,
+        target_pane: &str,
+        remaining: std::collections::VecDeque<PendingAgentPrompt>,
+    ) {
+        if !remaining.is_empty() {
+            self.pending_agent_prompts
+                .entry(target_pane.to_string())
+                .or_default()
+                .extend(remaining);
+            self.persist_pending_agent_prompts();
+        }
+        if self
+            .pending_agent_prompts
+            .get(target_pane)
+            .is_none_or(std::collections::VecDeque::is_empty)
+        {
+            return;
+        }
+        self.pending_agent_prompt_drain_deadlines.insert(
+            target_pane.to_string(),
+            Instant::now() + PENDING_AGENT_PROMPT_DRAIN_SETTLE,
+        );
     }
 
     /// Called on every `pane.agent_status_changed` observation for
@@ -1384,6 +1492,11 @@ impl App {
                 from_pane,
             },
         });
+        // After the event, never before: the event is the durable record and
+        // the briefing stamp is a consequence of it. Stamping first would let a
+        // panic in between leave a pane marked as briefed with nothing emitted
+        // to explain it.
+        self.note_queued_prompt_delivered(queue_id);
     }
 
     /// Reports the terminal drop of a queued prompt — this is what keeps a
@@ -1418,6 +1531,10 @@ impl App {
                 detail: detail.clone(),
             },
         });
+        // Same ordering as the delivered path, for the same reason: the event
+        // first, then the briefing bookkeeping that clears the withheld stamp
+        // so the next `channel.send` re-briefs the pane.
+        self.note_queued_prompt_dropped(queue_id, reason);
         let reason_text = queued_prompt_drop_reason_text(reason, detail.as_deref());
         if let Some(from_pane) = from_pane.as_deref() {
             self.notify_pane_of_queue_drop(from_pane, target_pane, &reason_text);
@@ -3490,6 +3607,214 @@ mod tests {
         assert_eq!(
             app.state.terminals[&terminal_id].agent_name.as_deref(),
             Some("worker")
+        );
+    }
+
+    fn when_idle_prompt_params(target: &str, text: &str) -> crate::api::schema::AgentPromptParams {
+        crate::api::schema::AgentPromptParams {
+            target: target.into(),
+            text: text.into(),
+            wait: None,
+            from_pane: None,
+            when_idle: Some(true),
+            when_idle_timeout_ms: None,
+            peer_pid: None,
+            origin_channel: None,
+        }
+    }
+
+    /// The `queue_id` on a `deferred` receipt is an identity, not the number of
+    /// one attempt: a replay that finds the target busy again must put the
+    /// SAME entry back. `handle_agent_prompt` re-queues a copy under a fresh id
+    /// whose receipt it throws away, and a terminal-fate event under an id
+    /// nobody holds is a fate nobody can observe — which is how a queued
+    /// briefing ends up waiting forever on an event that can never name it.
+    #[tokio::test]
+    async fn busy_again_replay_keeps_the_queue_id_the_sender_was_given() {
+        let _isolated = crate::config::IsolatedDirs::new("when-idle-replay-busy-again");
+        let mut app = test_app();
+        app.state.workspaces = vec![Workspace::test_new("when-idle-replay-busy")];
+        app.state.ensure_test_terminals();
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        let terminal_id = app.state.workspaces[0].tabs[0].panes[&pane_id]
+            .attached_terminal_id
+            .clone();
+        let terminal = app.state.terminals.get_mut(&terminal_id).unwrap();
+        terminal.set_agent_name("reviewer".into());
+        terminal.set_detected_state(Some(Agent::OpenCode), AgentState::Working);
+        let (runtime, mut rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        app.state.insert_test_runtime(pane_id, runtime);
+        let target_pane = app.public_pane_id(0, pane_id).unwrap();
+
+        let (_, queue_id) = app.enqueue_pending_agent_prompt(
+            target_pane.clone(),
+            when_idle_prompt_params(&target_pane, "still busy"),
+        );
+        // A drain trigger while the target is still `Working`.
+        app.drain_pending_agent_prompts(&target_pane);
+
+        assert!(
+            rx.try_recv().is_err(),
+            "fixture guard: a busy target must not have been written to, or this \
+             test is asserting the delivered path instead of the busy one"
+        );
+        let queue = app
+            .pending_agent_prompts
+            .get(&target_pane)
+            .expect("a busy target re-queues, never drops");
+        assert_eq!(queue.len(), 1, "re-queued once, not duplicated");
+        assert_eq!(
+            queue.front().unwrap().queue_id,
+            queue_id,
+            "the re-queued entry must keep the queue_id the sender holds"
+        );
+        assert_eq!(queue.front().unwrap().params.text, "still busy");
+    }
+
+    /// A `when_idle` prompt replayed into a pane whose input channel is full
+    /// right then used to be destroyed: the drain had already removed and
+    /// persisted the queue, so the `Full` came back as a terminal
+    /// `agent_prompt.dropped` with the reason `agent_changed` — a reason that
+    /// was simply false, since the agent had not changed at all. The prompt has
+    /// to survive the tick that could not write it and land on the next one.
+    #[tokio::test]
+    async fn queued_prompt_survives_a_full_pane_input_channel_and_lands_on_the_next_tick() {
+        let _isolated = crate::config::IsolatedDirs::new("when-idle-replay-full-channel");
+        let mut app = test_app();
+        app.state.workspaces = vec![Workspace::test_new("when-idle-replay")];
+        app.state.ensure_test_terminals();
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        let terminal_id = app.state.workspaces[0].tabs[0].panes[&pane_id]
+            .attached_terminal_id
+            .clone();
+        let terminal = app.state.terminals.get_mut(&terminal_id).unwrap();
+        terminal.set_agent_name("reviewer".into());
+        terminal.set_detected_state(Some(Agent::OpenCode), AgentState::Working);
+        // Capacity 1, already occupied: the replay's write hits `Full`.
+        let (runtime, mut rx) =
+            crate::terminal::TerminalRuntime::test_with_channel_capacity(80, 24, 1);
+        runtime
+            .try_send_bytes(bytes::Bytes::from_static(b"occupied"))
+            .unwrap();
+        app.state.insert_test_runtime(pane_id, runtime);
+        let target_pane = app.public_pane_id(0, pane_id).unwrap();
+
+        let (_, queue_id) = app.enqueue_pending_agent_prompt(
+            target_pane.clone(),
+            when_idle_prompt_params(&target_pane, "deliver me when idle"),
+        );
+        app.state
+            .terminals
+            .get_mut(&terminal_id)
+            .unwrap()
+            .set_detected_state(Some(Agent::OpenCode), AgentState::Idle);
+        let t0 = Instant::now();
+        app.sync_pending_agent_prompt_drain_deadline(
+            &target_pane,
+            crate::api::schema::AgentStatus::Idle,
+            t0,
+        );
+        assert!(app.drain_settled_pending_agent_prompts(
+            t0 + PENDING_AGENT_PROMPT_DRAIN_SETTLE + Duration::from_millis(50)
+        ));
+
+        let queued = app
+            .pending_agent_prompts
+            .get(&target_pane)
+            .expect("a prompt the pane could not accept yet must stay queued");
+        assert_eq!(queued.len(), 1);
+        assert_eq!(queued.front().unwrap().queue_id, queue_id);
+        assert_eq!(
+            queued.front().unwrap().params.text,
+            "deliver me when idle",
+            "the queued entry must be the original prompt, not a rewritten one"
+        );
+        assert!(
+            !app.event_hub
+                .events_after(0)
+                .iter()
+                .any(|(_, envelope)| envelope.event
+                    == crate::api::schema::EventKind::QueuedPromptDropped),
+            "a momentarily full pane input channel is not a terminal fate and \
+             must never be reported as a drop"
+        );
+        assert!(
+            app.pending_agent_prompt_drain_deadlines
+                .contains_key(&target_pane),
+            "the settle deadline must be re-armed, or no later tick would retry"
+        );
+
+        // The pane drains its input; the next tick delivers the prompt itself.
+        assert_eq!(
+            rx.try_recv().unwrap(),
+            bytes::Bytes::from_static(b"occupied")
+        );
+        assert!(app.drain_settled_pending_agent_prompts(
+            Instant::now() + PENDING_AGENT_PROMPT_DRAIN_SETTLE + Duration::from_millis(50)
+        ));
+        assert_eq!(
+            rx.try_recv().unwrap(),
+            bytes::Bytes::from_static(b"deliver me when idle")
+        );
+        assert!(
+            !app.pending_agent_prompts.contains_key(&target_pane),
+            "a delivered prompt must leave the queue"
+        );
+        assert!(
+            app.event_hub
+                .events_after(0)
+                .iter()
+                .any(|(_, envelope)| matches!(
+                    &envelope.data,
+                    crate::api::schema::EventData::QueuedPromptDelivered { queue_id: id, .. }
+                        if *id == queue_id
+                )),
+            "the retried prompt must report delivered under its original queue_id"
+        );
+    }
+
+    /// The drop that stays a drop: the target pane is gone, so no retry can
+    /// help. The reported reason must name what actually happened.
+    #[tokio::test]
+    async fn queued_prompt_for_a_vanished_pane_is_dropped_as_pane_closed() {
+        let _isolated = crate::config::IsolatedDirs::new("when-idle-replay-vanished-pane");
+        let mut app = test_app();
+        app.state.workspaces = vec![Workspace::test_new("when-idle-replay-gone")];
+        app.state.ensure_test_terminals();
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        let vanished = "w1:p9";
+
+        let (_, queue_id) = app.enqueue_pending_agent_prompt(
+            vanished.into(),
+            when_idle_prompt_params(vanished, "nobody is home"),
+        );
+        app.drain_pending_agent_prompts(vanished);
+
+        assert!(
+            !app.pending_agent_prompts.contains_key(vanished),
+            "an unresolvable target must not be retried forever"
+        );
+        let reason = app
+            .event_hub
+            .events_after(0)
+            .iter()
+            .find_map(|(_, envelope)| match &envelope.data {
+                crate::api::schema::EventData::QueuedPromptDropped {
+                    queue_id: id,
+                    reason,
+                    ..
+                } if *id == queue_id => Some(*reason),
+                _ => None,
+            })
+            .expect("a terminal replay failure must still be reported");
+        assert_eq!(
+            reason,
+            crate::api::schema::QueuedAgentPromptDropReason::PaneClosed
         );
     }
 
