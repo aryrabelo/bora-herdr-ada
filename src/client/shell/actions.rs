@@ -1,6 +1,17 @@
 use super::*;
 
 impl ClientShellState {
+    /// Cycle the live sidebar view mode. Shared by `prefix+shift+v` and the
+    /// header toggle click so the two entry points can never disagree about
+    /// the manual-override flag or the persistence that goes with it.
+    pub(super) fn cycle_view_mode(&mut self, outcome: &mut ClientShellInput) {
+        self.view_mode = self.view_mode.cycle();
+        self.view_mode_manual = true;
+        self.reveal_focused_workspace = true;
+        outcome.repaint = true;
+        self.persist_chrome_preferences(outcome);
+    }
+
     pub(super) fn record_binding(
         &mut self,
         binding: crate::input::KeybindMatch,
@@ -19,11 +30,7 @@ impl ClientShellState {
                 self.persist_chrome_preferences(outcome);
             }
             crate::input::KeybindMatch::Action(crate::input::KeybindAction::CycleViewMode) => {
-                self.view_mode = self.view_mode.cycle();
-                self.view_mode_manual = true;
-                self.reveal_focused_workspace = true;
-                outcome.repaint = true;
-                self.persist_chrome_preferences(outcome);
+                self.cycle_view_mode(outcome);
             }
             crate::input::KeybindMatch::Action(action) => {
                 if matches!(

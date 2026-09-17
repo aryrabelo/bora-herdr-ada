@@ -695,6 +695,49 @@ fn cycle_view_mode_action_cycles_flat_folders_repo_flat() {
     assert_eq!(state.view_mode, crate::config::ViewMode::Repo);
 }
 
+/// Restores the click target `27c65c27` (the 0.9.0 sync) dropped: the
+/// workspace-list header label names the live view mode and cycles it on
+/// click. Two-sided on purpose -- the rect is narrow and left-aligned, so a
+/// click one column PAST the label must not cycle, because that cell belongs
+/// to the header row's remaining width (and, at narrow widths, to the
+/// attention badge) rather than to the toggle.
+#[test]
+fn view_mode_header_click_cycles_and_one_column_past_the_label_does_not() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(folders_snapshot()));
+    state.set_pane_surface(surface());
+    state.compose(106, 24).expect("initial render");
+
+    let toggle = state.hits.view_mode_toggle;
+    assert!(toggle.width > 0, "toggle rect must be non-empty");
+    assert_eq!(toggle.height, 1, "toggle occupies only the header row");
+    let before = state.view_mode;
+
+    let click = |state: &mut ClientShellState, column: u16, row: u16| {
+        state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        })])
+    };
+
+    click(&mut state, toggle.x, toggle.y);
+    assert_eq!(
+        state.view_mode,
+        before.cycle(),
+        "click on the label must cycle the live view mode"
+    );
+
+    state.compose(106, 24).expect("render after cycle");
+    let after_cycle = state.view_mode;
+    click(&mut state, toggle.x + toggle.width, toggle.y);
+    assert_eq!(
+        state.view_mode, after_cycle,
+        "click one column past the label must not cycle"
+    );
+}
+
 /// The Repo path in `render_sidebar` is untouched by the Folders/Flat
 /// dispatch above -- it stays the exact `workspace_entries` call it was
 /// before. This composes a grouped-worktree snapshot (the one Repo-mode

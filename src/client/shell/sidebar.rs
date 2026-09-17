@@ -199,26 +199,44 @@ pub(crate) fn render_sidebar(
         crate::ui::expanded_sidebar_sections(area, state.sidebar_section_split);
     hits.sidebar_section_divider =
         crate::ui::sidebar_section_divider_rect(area, state.sidebar_section_split);
+    // Restored fork toggle (lost in the 0.9.0 sync): the header names the LIVE
+    // view mode instead of a static " spaces" title, and the label itself is
+    // the click target that cycles it. Left-aligned and sized to the label, so
+    // a click one column past it still belongs to the list below.
+    let mode_label = format!(" {}", state.view_mode.as_str());
+    let mode_width = display_width(&mode_label);
     put_text(
         buffer,
         workspace_area.x,
         workspace_area.y,
         workspace_area.width,
-        " spaces",
+        &mode_label,
         Style::default()
             .fg(palette.overlay0)
             .add_modifier(Modifier::BOLD),
     );
+    hits.view_mode_toggle = if config.mouse_capture && workspace_area.height > 0 {
+        Rect::new(
+            workspace_area.x,
+            workspace_area.y,
+            mode_width.min(workspace_area.width),
+            1,
+        )
+    } else {
+        Rect::default()
+    };
     // Aggregate attention badge (ceo-bora#302): right-aligned on the same
-    // header row as " spaces" so `WORKSPACE_HEADER_ROWS` -- and therefore
-    // `body`/`hits.workspace_body` below -- keeps its layout untouched.
+    // header row as the view-mode label so `WORKSPACE_HEADER_ROWS` -- and
+    // therefore `body`/`hits.workspace_body` below -- keeps its layout
+    // untouched.
     let (waiting, blocked) = attention::attention_counts(snapshot, config.idle_attention_seconds);
     if waiting > 0 {
         let badge = format!("{waiting} waiting");
         let badge_width = display_width(&badge);
-        // " spaces" is 7 columns; keep at least one blank column between it
-        // and the badge, otherwise the header is too narrow to say both.
-        if workspace_area.width >= badge_width.saturating_add(8) {
+        // Derive the clearance from the LIVE label (" folders" is 8 columns,
+        // " repo" is 5), never a literal: keep one blank column between the
+        // label and the badge, otherwise the header cannot say both.
+        if workspace_area.width >= badge_width.saturating_add(mode_width + 1) {
             put_text(
                 buffer,
                 workspace_area.right().saturating_sub(badge_width),

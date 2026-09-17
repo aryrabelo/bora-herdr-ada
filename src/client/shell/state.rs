@@ -171,6 +171,13 @@ pub(super) struct ShellHitMap {
     pub(super) agent_scroll_metrics: Option<crate::pane::ScrollMetrics>,
     pub(super) agent_max_scroll: usize,
     pub(super) agent_sort_toggle: Rect,
+    /// Click target restoring the fork's sidebar view-mode toggle, lost in the
+    /// 0.9.0 upstream sync (`27c65c27`, "theirs on the client shell"): the
+    /// workspace-list header label, which names the live view mode and cycles
+    /// it on click. Added 2026-08-23 (`4cd238ca`), last fixed 2026-08-26
+    /// (`b5ffa519`). Left-aligned so it cannot collide with the right-aligned
+    /// attention badge that ceo-bora#302 put on the same row.
+    pub(super) view_mode_toggle: Rect,
     pub(super) sidebar_divider: Rect,
     pub(super) sidebar_section_divider: Rect,
     pub(super) sidebar_toggle: Rect,

@@ -2053,6 +2053,14 @@ impl ClientShellState {
                     outcome.repaint = true;
                     return;
                 }
+                if super::contains(self.hits.view_mode_toggle, point) {
+                    // Restored fork behavior: clicking the workspace-list
+                    // header label cycles the view mode and drops the list
+                    // back to the top, because the row order changes under it.
+                    self.workspace_scroll = 0;
+                    self.cycle_view_mode(outcome);
+                    return;
+                }
                 if self.handle_endpoint_machine_click(point, outcome) {
                     return;
                 }
