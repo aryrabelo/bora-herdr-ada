@@ -18,6 +18,11 @@ import { beforeAll, afterEach, expect, jest, mock, test } from "bun:test";
 process.env.HERDR_ENV = "1";
 process.env.HERDR_SOCKET_PATH = "/tmp/herdr-agent-state-test.sock"; // unused; net is mocked
 process.env.HERDR_PANE_ID = "test-pane";
+// The asset treats OMPCODE=1 as "nested omp session" and stays silent. Tests
+// drive the ROOT session, and a developer running these tests from inside an
+// omp-launched pane has OMPCODE=1 in the inherited environment (learned
+// 2026-09-18), so it must be explicitly cleared here.
+delete process.env.OMPCODE;
 process.env.HERDR_OMP_IDLE_DEBOUNCE_MS = "50";
 process.env.HERDR_PI_IDLE_DEBOUNCE_MS = "50";
 process.env.HERDR_OMP_HEARTBEAT_MS = "5000";
