@@ -994,6 +994,18 @@ impl<'de> Deserialize<'de> for PaneBordersConfig {
     }
 }
 
+/// Where a workspace created from a source workspace lands in the sidebar
+/// order. Default: `end` (the historical behavior — pushed to the end of
+/// the list); `after_source` keeps it immediately after the workspace it
+/// inherits from, mirroring `workspace.move` source+1 semantics.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NewWorkspacePositionConfig {
+    #[default]
+    End,
+    AfterSource,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(default)]
 pub struct UiConfig {
@@ -1012,6 +1024,10 @@ pub struct UiConfig {
     pub mouse_capture: bool,
     /// Copy text selected with the mouse. Default: true.
     pub copy_on_select: bool,
+    /// Placement of a workspace created from a source workspace: `end`
+    /// (default) appends it to the list, `after_source` keeps it right
+    /// after the source workspace.
+    pub new_workspace_position: NewWorkspacePositionConfig,
     /// Host cursor policy. Default: auto.
     pub host_cursor: HostCursorModeConfig,
     /// Modifier that lets right-click gestures pass through to pane apps. Empty disables it.
@@ -1313,6 +1329,7 @@ impl Default for UiConfig {
             mobile_width_threshold: DEFAULT_MOBILE_WIDTH_THRESHOLD,
             mouse_capture: true,
             copy_on_select: true,
+            new_workspace_position: NewWorkspacePositionConfig::End,
             host_cursor: HostCursorModeConfig::Auto,
             right_click_passthrough_modifier: RightClickPassthroughModifierConfig::default(),
             redraw_on_focus_gained: true,
@@ -1779,6 +1796,36 @@ prompt_new_tab_name = false
 "#;
         let config: Config = toml::from_str(toml).unwrap();
         assert!(!config.ui.prompt_new_tab_name);
+    }
+
+    #[test]
+    fn new_workspace_position_defaults_end_and_parses_after_source() {
+        let default_config = Config::default();
+        assert_eq!(
+            default_config.ui.new_workspace_position,
+            NewWorkspacePositionConfig::End
+        );
+
+        let toml = r#"
+[ui]
+new_workspace_position = "after_source"
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert_eq!(
+            config.ui.new_workspace_position,
+            NewWorkspacePositionConfig::AfterSource
+        );
+
+        let invalid = toml::from_str::<Config>(
+            r#"
+[ui]
+new_workspace_position = "beside"
+"#,
+        );
+        assert!(
+            invalid.is_err(),
+            "unknown value must fail loudly, not fall back"
+        );
     }
 
     #[test]
