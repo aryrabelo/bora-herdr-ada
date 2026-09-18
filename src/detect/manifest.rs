@@ -469,7 +469,7 @@ fn osc_title_state_for_loaded(loaded: &LoadedManifest, osc_title: &str) -> Optio
         return None;
     }
     let mut matched: Option<&ManifestRule> = None;
-    for (rule, compiled_rule) in rules.iter().zip(&loaded.compiled_rules) {
+    for (rule, compiled_rule) in rules.iter().zip(loaded.compiled_rules.iter()) {
         if rule.region.trim() != OSC_TITLE_REGION
             || !compiled_rule_matches(compiled_rule, osc_title)
         {

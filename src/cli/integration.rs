@@ -144,16 +144,16 @@ enum IntegrationCommandTarget {
 fn parse_integration_target(
     args: &[String],
     action: &str,
-) -> std::io::Result<Option<IntegrationTarget>> {
+) -> std::io::Result<Option<IntegrationCommandTarget>> {
     let Some(target) = args.first().map(std::string::String::as_str) else {
         eprintln!(
-            "usage: bora integration {action} <pi|omp|claude|codex|copilot|devin|droid|kimi|opencode|kilo|hermes|qodercli|qwen|cursor|mastracode|grok>"
+            "usage: bora integration {action} <pi|omp|claude|codex|copilot|devin|droid|kimi|opencode|kilo|hermes|qodercli|qwen|letta|cursor|mastracode|grok>"
         );
         return Ok(None);
     };
     if args.len() != 1 {
         eprintln!(
-            "usage: bora integration {action} <pi|omp|claude|codex|copilot|devin|droid|kimi|opencode|kilo|hermes|qodercli|qwen|cursor|mastracode|grok>"
+            "usage: bora integration {action} <pi|omp|claude|codex|copilot|devin|droid|kimi|opencode|kilo|hermes|qodercli|qwen|letta|cursor|mastracode|grok>"
         );
         return Ok(None);
     }
@@ -206,6 +206,7 @@ fn print_integration_help() {
     eprintln!("  bora integration install hermes");
     eprintln!("  bora integration install qodercli");
     eprintln!("  bora integration install qwen");
+    eprintln!("  bora integration install letta");
     eprintln!("  bora integration install cursor");
     eprintln!("  bora integration install mastracode");
     eprintln!("  bora integration install antigravity-cli");
@@ -223,6 +224,7 @@ fn print_integration_help() {
     eprintln!("  bora integration uninstall hermes");
     eprintln!("  bora integration uninstall qodercli");
     eprintln!("  bora integration uninstall qwen");
+    eprintln!("  bora integration uninstall letta");
     eprintln!("  bora integration uninstall cursor");
     eprintln!("  bora integration uninstall mastracode");
     eprintln!("  bora integration uninstall antigravity-cli");

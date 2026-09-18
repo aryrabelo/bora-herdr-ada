@@ -390,7 +390,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn update_preserves_symlink_and_existing_plugin_settings() {
-        let _guard = crate::config::test_config_env_lock().lock().unwrap();
+        let _guard = crate::config::test_config_env_lock().lock();
         let base = temp_registry_path("update");
         let base = base.parent().unwrap();
         let previous_config_home = std::env::var_os("XDG_CONFIG_HOME");

@@ -1315,7 +1315,7 @@ mouse_capture = false
 
     #[test]
     fn config_load_recovers_from_a_mid_file_bom() {
-        let _guard = crate::config::test_config_env_lock().lock().unwrap();
+        let _guard = crate::config::test_config_env_lock().lock();
         let path = std::env::temp_dir().join(format!(
             "herdr-config-mid-file-bom-{}.toml",
             std::process::id()
