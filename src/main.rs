@@ -289,6 +289,12 @@ const DEFAULT_CONFIG: &str = r##"# bora configuration
 # Ask for a workspace name before interactive creation.
 # prompt_new_workspace_name = false
 
+# Where a new workspace lands in the sidebar.
+# "end" appends it to the bottom of the list, "after_source" inserts it right
+# after the workspace it was created from. Only applies when the creation
+# has a source workspace; creates with an explicit cwd always append.
+# new_workspace_position = "end"
+
 # Draw borders around split panes.
 # "auto" draws them only for split panes, "always" also frames a lone pane
 # (only while pane_outer_borders is enabled), "off" disables them.

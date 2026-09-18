@@ -854,6 +854,8 @@ pub struct AppState {
     pub default_shell: String,
     pub shell_mode: crate::config::ShellModeConfig,
     pub new_terminal_cwd: NewTerminalCwdConfig,
+    /// Placement of workspaces created from a source workspace (ui config).
+    pub new_workspace_position: crate::config::NewWorkspacePositionConfig,
     pub pane_scrollback_limit_bytes: usize,
     pub sound: SoundConfig,
     pub toast_config: ToastConfig,
@@ -1104,6 +1106,7 @@ impl AppState {
             default_shell: String::new(),
             shell_mode: crate::config::ShellModeConfig::Auto,
             new_terminal_cwd: NewTerminalCwdConfig::Follow,
+            new_workspace_position: crate::config::NewWorkspacePositionConfig::End,
             pane_scrollback_limit_bytes: crate::config::DEFAULT_SCROLLBACK_LIMIT_BYTES,
             sound: SoundConfig {
                 enabled: false,
