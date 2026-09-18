@@ -1,185 +1,125 @@
 {
   "schema_version": 1,
   "channel": "preview",
-  "base_version": "0.46.8",
-  "build_id": "2026-09-10-d3a2bde6c945",
-  "commit": "d3a2bde6c94504407fd0184c28c904eedbdb2597",
-  "built_at": "2026-09-10T21:03:43Z",
-  "protocol": 25,
+  "base_version": "0.9.0",
+  "build_id": "2026-09-08-62431dbd033b",
+  "commit": "62431dbd033bf1be2fe87fbc526df28084214e49",
+  "built_at": "2026-09-07T21:49:44Z",
+  "protocol": 22,
   "endpoint_generation": 1,
-  "notes": "Preview build 2026-09-10-d3a2bde6c945\n\nBuilt from `d3a2bde6c945` on `master`.\nBase stable: v0.46.8\nCompare: https://github.com/aryrabelo/bora-herdr-ada/compare/f6d8f35b29c2c0dc3a993bbc34827bff8a2c5379...d3a2bde6c94504407fd0184c28c904eedbdb2597\n\n### Added\n- Copy pane reference from the pane context menu (#36)\n- Folder context menu, nested folders and group inheritance on new workspaces (#32)\n- Re-port sidebar row templates and pane attention onto the client shell (#31)\n- Re-port folders view and pane dots onto the client shell (#30)\n\n### Fixed\n- Carry osc title evidence across a live handoff (#38)\n- Stop a dropped idle report from leaving a pane Working forever (#37)\n- Advertise workspace.set_group as a client_shell endpoint method (#35)\n- Allow linked worktree drag in Flat/Folders view modes (#34)\n- Install copies the release binary instead of symlinking into the shared target dir\n\n### Maintenance\n- Record the hook-title reconcile contract, copy reference, and worktree build traps\n- Name the gate allowlists as sync conflict surface (#33)\n- Record the shared-target-dir clobber and the copy-based install\n- Publish preview documentation",
+  "notes": "Preview build 2026-09-08-62431dbd033b\n\nBuilt from `62431dbd033b` on `master`.\nBase stable: v0.9.0\nCompare: https://github.com/herdrdev/herdr/compare/v0.9.0...62431dbd033bf1be2fe87fbc526df28084214e49\n\n### Fixed\n- Reduce idle ssh cpu without dropping final output (#3728)",
   "assets": {
     "linux-x86_64": {
-      "url": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/preview-2026-09-10-d3a2bde6c945/bora-linux-x86_64",
-      "sha256": "5f8ecbffd87c3eab46236749de7b6c77b61612ab6996d96602f090cb0c9f22ca"
+      "url": "https://github.com/herdrdev/herdr/releases/download/preview-2026-09-08-62431dbd033b/herdr-linux-x86_64",
+      "sha256": "3f56cab5d1d27b87f6cd2addfa3809bf48a58b345b13746419d1b8e951e0667d"
     },
     "linux-aarch64": {
-      "url": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/preview-2026-09-10-d3a2bde6c945/bora-linux-aarch64",
-      "sha256": "4db0fc90d371811fe2d9b946de770de9499437f5513edff4aeebe93939c2b590"
+      "url": "https://github.com/herdrdev/herdr/releases/download/preview-2026-09-08-62431dbd033b/herdr-linux-aarch64",
+      "sha256": "47f075a0531ab6c36ec8f3144e634ea02c1307a1de405e29db3fd4d80efeb068"
     },
     "macos-x86_64": {
-      "url": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/preview-2026-09-10-d3a2bde6c945/bora-macos-x86_64",
-      "sha256": "b73c64fdac6e4022a6c9dbff91350b38d2ff2f27b71368e32536ddc2382ff3df"
+      "url": "https://github.com/herdrdev/herdr/releases/download/preview-2026-09-08-62431dbd033b/herdr-macos-x86_64",
+      "sha256": "6b68aaf84ad62198773d9a710dea3d364dbd6c1ff65abdff8eb6e5a71a57830d"
     },
     "macos-aarch64": {
-      "url": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/preview-2026-09-10-d3a2bde6c945/bora-macos-aarch64",
-      "sha256": "eee4e14bc7d99c4ab8b9e1e6d53ef9cd8bdc176314f168963ca19af04c302ad8"
+      "url": "https://github.com/herdrdev/herdr/releases/download/preview-2026-09-08-62431dbd033b/herdr-macos-aarch64",
+      "sha256": "d6b6ad08961e7b491fc19a4cd8570f0231734672cfc4d6c0db6327437ac11065"
     },
     "windows-x86_64": {
-      "url": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/preview-2026-09-10-d3a2bde6c945/bora-windows-x86_64.zip",
-      "sha256": "723cf0eb867e27ca1234b009f6b667105b37b056afa648203e280a7c8ab481ac",
+      "url": "https://github.com/herdrdev/herdr/releases/download/preview-2026-09-08-62431dbd033b/herdr-windows-x86_64.zip",
+      "sha256": "5904ceb4fdb3aa4c377f88ee8d2676bb39fcf62c6a8f034e6147cf21a98e6cb0",
       "format": "zip"
     }
   },
   "builds": {
-    "2026-09-10-d3a2bde6c945": {
-      "base_version": "0.46.8",
-      "commit": "d3a2bde6c94504407fd0184c28c904eedbdb2597",
-      "built_at": "2026-09-10T21:03:43Z",
-      "protocol": 25,
+    "2026-09-08-62431dbd033b": {
+      "base_version": "0.9.0",
+      "commit": "62431dbd033bf1be2fe87fbc526df28084214e49",
+      "built_at": "2026-09-07T21:49:44Z",
+      "protocol": 22,
       "endpoint_generation": 1,
-      "tag": "preview-2026-09-10-d3a2bde6c945",
+      "tag": "preview-2026-09-08-62431dbd033b",
       "assets": {
         "linux-x86_64": {
-          "url": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/preview-2026-09-10-d3a2bde6c945/bora-linux-x86_64",
-          "sha256": "5f8ecbffd87c3eab46236749de7b6c77b61612ab6996d96602f090cb0c9f22ca"
+          "url": "https://github.com/herdrdev/herdr/releases/download/preview-2026-09-08-62431dbd033b/herdr-linux-x86_64",
+          "sha256": "3f56cab5d1d27b87f6cd2addfa3809bf48a58b345b13746419d1b8e951e0667d"
         },
         "linux-aarch64": {
-          "url": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/preview-2026-09-10-d3a2bde6c945/bora-linux-aarch64",
-          "sha256": "4db0fc90d371811fe2d9b946de770de9499437f5513edff4aeebe93939c2b590"
+          "url": "https://github.com/herdrdev/herdr/releases/download/preview-2026-09-08-62431dbd033b/herdr-linux-aarch64",
+          "sha256": "47f075a0531ab6c36ec8f3144e634ea02c1307a1de405e29db3fd4d80efeb068"
         },
         "macos-x86_64": {
-          "url": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/preview-2026-09-10-d3a2bde6c945/bora-macos-x86_64",
-          "sha256": "b73c64fdac6e4022a6c9dbff91350b38d2ff2f27b71368e32536ddc2382ff3df"
+          "url": "https://github.com/herdrdev/herdr/releases/download/preview-2026-09-08-62431dbd033b/herdr-macos-x86_64",
+          "sha256": "6b68aaf84ad62198773d9a710dea3d364dbd6c1ff65abdff8eb6e5a71a57830d"
         },
         "macos-aarch64": {
-          "url": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/preview-2026-09-10-d3a2bde6c945/bora-macos-aarch64",
-          "sha256": "eee4e14bc7d99c4ab8b9e1e6d53ef9cd8bdc176314f168963ca19af04c302ad8"
+          "url": "https://github.com/herdrdev/herdr/releases/download/preview-2026-09-08-62431dbd033b/herdr-macos-aarch64",
+          "sha256": "d6b6ad08961e7b491fc19a4cd8570f0231734672cfc4d6c0db6327437ac11065"
         },
         "windows-x86_64": {
-          "url": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/preview-2026-09-10-d3a2bde6c945/bora-windows-x86_64.zip",
-          "sha256": "723cf0eb867e27ca1234b009f6b667105b37b056afa648203e280a7c8ab481ac",
+          "url": "https://github.com/herdrdev/herdr/releases/download/preview-2026-09-08-62431dbd033b/herdr-windows-x86_64.zip",
+          "sha256": "5904ceb4fdb3aa4c377f88ee8d2676bb39fcf62c6a8f034e6147cf21a98e6cb0",
           "format": "zip"
         }
       }
     },
-    "2026-09-09-f6d8f35b29c2": {
-      "base_version": "0.46.0",
-      "commit": "f6d8f35b29c2c0dc3a993bbc34827bff8a2c5379",
-      "built_at": "2026-09-09T17:09:49Z",
-      "protocol": 23,
+    "2026-09-06-9e9bc8a14466": {
+      "base_version": "0.8.2",
+      "commit": "9e9bc8a144667a6b7debfd4f0c7a31ff0e11493a",
+      "built_at": "2026-09-06T10:25:52Z",
+      "protocol": 22,
       "endpoint_generation": 1,
-      "tag": "preview-2026-09-09-f6d8f35b29c2",
+      "tag": "preview-2026-09-06-9e9bc8a14466",
       "assets": {
         "linux-x86_64": {
-          "url": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/preview-2026-09-09-f6d8f35b29c2/bora-linux-x86_64",
-          "sha256": "75367b49fd3efb3bb8703ad6af0888fbe258d9b55a816f45c5729b5d44f87d2d"
+          "url": "https://github.com/herdrdev/herdr/releases/download/preview-2026-09-06-9e9bc8a14466/herdr-linux-x86_64",
+          "sha256": "a517cef9f178e7339d855a927ae9f3cc541c7b5d8e757c75b405fdc64a2f79ec"
         },
         "linux-aarch64": {
-          "url": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/preview-2026-09-09-f6d8f35b29c2/bora-linux-aarch64",
-          "sha256": "ff1a546d81ec0129e2713f5917a4abfcdd5e70147521240354bb5c9e369653b4"
+          "url": "https://github.com/herdrdev/herdr/releases/download/preview-2026-09-06-9e9bc8a14466/herdr-linux-aarch64",
+          "sha256": "390c596e198d5487bce08ee1e411fae0cade80e838312f594e1bcf3377548aa3"
         },
         "macos-x86_64": {
-          "url": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/preview-2026-09-09-f6d8f35b29c2/bora-macos-x86_64",
-          "sha256": "a49384179550b2b1f1ac3dbcde1e279fd56eafa4ea8ef528e1a4bd3fa9a549b4"
+          "url": "https://github.com/herdrdev/herdr/releases/download/preview-2026-09-06-9e9bc8a14466/herdr-macos-x86_64",
+          "sha256": "917800c568ef8971c7323cd35453d73cabea60ed5e62f6e3307fbbb2f78cf5d4"
         },
         "macos-aarch64": {
-          "url": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/preview-2026-09-09-f6d8f35b29c2/bora-macos-aarch64",
-          "sha256": "90dc022cf611e4e4ae33cb17ff7e77fe031d9c51beccfe7acef528d3c92cce74"
+          "url": "https://github.com/herdrdev/herdr/releases/download/preview-2026-09-06-9e9bc8a14466/herdr-macos-aarch64",
+          "sha256": "889ccc0ee7d5feb9a74aa38ceb729c57ce0d64415f3b88ac0564523db17d68e0"
         },
         "windows-x86_64": {
-          "url": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/preview-2026-09-09-f6d8f35b29c2/bora-windows-x86_64.zip",
-          "sha256": "84b8584c12b229f92d8440b032199a522784d7c210b2201b33eaaf2d4bca6952",
+          "url": "https://github.com/herdrdev/herdr/releases/download/preview-2026-09-06-9e9bc8a14466/herdr-windows-x86_64.zip",
+          "sha256": "991abaf23ef7008a6ef91e6c0dbc6caac7f8bfebe9d14e54294ccc6b5352d99e",
           "format": "zip"
         }
       }
     },
-    "2026-08-28-8bdafea4c844": {
-      "base_version": "0.45.23",
-      "commit": "8bdafea4c8443a2187a831a9dc7314ab1906dbcd",
-      "built_at": "2026-08-28T18:04:51Z",
+    "2026-08-31-b1ff4582e968": {
+      "base_version": "0.8.2",
+      "commit": "b1ff4582e9688f52ffb943cfa8bee4871ae122e4",
+      "built_at": "2026-08-31T15:59:38Z",
       "protocol": 21,
-      "tag": "preview-2026-08-28-8bdafea4c844",
+      "tag": "preview-2026-08-31-b1ff4582e968",
       "assets": {
         "linux-x86_64": {
-          "url": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/preview-2026-08-28-8bdafea4c844/bora-linux-x86_64",
-          "sha256": "6a35d1dab827397de260ad02b95d011bfbdd77d8576b0fb7edca218789998b19"
+          "url": "https://github.com/herdrdev/herdr/releases/download/preview-2026-08-31-b1ff4582e968/herdr-linux-x86_64",
+          "sha256": "61c1c9181c0cf62a00882f21f2c6e19ce8ee6360410736a4c6c5a1387a0fc388"
         },
         "linux-aarch64": {
-          "url": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/preview-2026-08-28-8bdafea4c844/bora-linux-aarch64",
-          "sha256": "780d32ca28932d12ad1fb61be6f12056a6f7fcea1245c28757f5a550f9793619"
+          "url": "https://github.com/herdrdev/herdr/releases/download/preview-2026-08-31-b1ff4582e968/herdr-linux-aarch64",
+          "sha256": "32609bf5f564aaafe951a79cf8e51163319f82bfad8e8c3877b87938a5952a43"
         },
         "macos-x86_64": {
-          "url": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/preview-2026-08-28-8bdafea4c844/bora-macos-x86_64",
-          "sha256": "83e6011f23645f22669f9a39d16e306b231da6b2b104600299630536498331c4"
+          "url": "https://github.com/herdrdev/herdr/releases/download/preview-2026-08-31-b1ff4582e968/herdr-macos-x86_64",
+          "sha256": "b00cc237c04fecaa3385a80d38d3352483a4250cbf21edef37a1c2fa3019ddce"
         },
         "macos-aarch64": {
-          "url": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/preview-2026-08-28-8bdafea4c844/bora-macos-aarch64",
-          "sha256": "59eb5589eab8fe3aa1f5f75f26fd2165a8748fba87fb5035e9ee581c7f5022c3"
+          "url": "https://github.com/herdrdev/herdr/releases/download/preview-2026-08-31-b1ff4582e968/herdr-macos-aarch64",
+          "sha256": "93bb174c2962e1282a0fa4df5f986956a4253e08aaf7eecdca3d919d2704106b"
         },
         "windows-x86_64": {
-          "url": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/preview-2026-08-28-8bdafea4c844/bora-windows-x86_64.zip",
-          "sha256": "8a2beab4ac552abfc9a72a9e473d8eb2acbacc25bdd81e1055e867823d473d2d",
-          "format": "zip"
-        }
-      }
-    },
-    "2026-08-28-36d2f57a74e0": {
-      "base_version": "0.45.22",
-      "commit": "36d2f57a74e0f2c94c0ac0d5c49b681176728baa",
-      "built_at": "2026-08-28T17:40:31Z",
-      "protocol": 21,
-      "tag": "preview-2026-08-28-36d2f57a74e0",
-      "assets": {
-        "linux-x86_64": {
-          "url": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/preview-2026-08-28-36d2f57a74e0/bora-linux-x86_64",
-          "sha256": "9c2144e41cf4bf38aa89eebf98e28f46a06cebd5beb8fea1e642abb6b974ff83"
-        },
-        "linux-aarch64": {
-          "url": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/preview-2026-08-28-36d2f57a74e0/bora-linux-aarch64",
-          "sha256": "b0047ccc4e08e4e934748f11fb6803c7be1e96a7c3d5e35fbb8cdbc62e9746df"
-        },
-        "macos-x86_64": {
-          "url": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/preview-2026-08-28-36d2f57a74e0/bora-macos-x86_64",
-          "sha256": "22328d2a9a68266007fa822dd95a159f57379c4431efc8f25cdc759dce792435"
-        },
-        "macos-aarch64": {
-          "url": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/preview-2026-08-28-36d2f57a74e0/bora-macos-aarch64",
-          "sha256": "80cd7c2ca91f6dd363fc286ac64bae251b07b7dcd99451bb68322e336ded1674"
-        },
-        "windows-x86_64": {
-          "url": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/preview-2026-08-28-36d2f57a74e0/bora-windows-x86_64.zip",
-          "sha256": "e4cb5374a71ad8f551a17424ce695df2043493be06d2284c6ece3ba0cf241356",
-          "format": "zip"
-        }
-      }
-    },
-    "2026-08-27-fe85ca263b6a": {
-      "base_version": "0.45.13",
-      "commit": "fe85ca263b6a2c95b67ca9ccd4c31f49d8db8122",
-      "built_at": "2026-08-27T18:48:11Z",
-      "protocol": 21,
-      "tag": "preview-2026-08-27-fe85ca263b6a",
-      "assets": {
-        "linux-x86_64": {
-          "url": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/preview-2026-08-27-fe85ca263b6a/bora-linux-x86_64",
-          "sha256": "ccfecca308a4a28cd331ef415d5af29c61d68f5593565327f734f5e0527d99eb"
-        },
-        "linux-aarch64": {
-          "url": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/preview-2026-08-27-fe85ca263b6a/bora-linux-aarch64",
-          "sha256": "c36789fa5349ea8b4363a1ffb9ad30eed860f06008f69ac4557c8b6ef7766dbd"
-        },
-        "macos-x86_64": {
-          "url": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/preview-2026-08-27-fe85ca263b6a/bora-macos-x86_64",
-          "sha256": "c7f5e8b097b1a512e2c612bc1cdcbfcf502ce2d7da0fdbd8596deff0dc7be430"
-        },
-        "macos-aarch64": {
-          "url": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/preview-2026-08-27-fe85ca263b6a/bora-macos-aarch64",
-          "sha256": "b745e2401e583020dabf320235700a6ac992f4277db15a7d5c540a0e37efcb5c"
-        },
-        "windows-x86_64": {
-          "url": "https://github.com/aryrabelo/bora-herdr-ada/releases/download/preview-2026-08-27-fe85ca263b6a/bora-windows-x86_64.zip",
-          "sha256": "e342edd122962e546b2dcd15b4ecd7b3ad2310ed0508dae971ef76179b6e2623",
+          "url": "https://github.com/herdrdev/herdr/releases/download/preview-2026-08-31-b1ff4582e968/herdr-windows-x86_64.zip",
+          "sha256": "e35e9d92a9f77c559cf814f36d0e5f6e66ab3a6f61eadac58ab5be9bb9223f7e",
           "format": "zip"
         }
       }
@@ -895,6 +835,56 @@
         "macos-aarch64": {
           "url": "https://github.com/herdrdev/herdr/releases/download/preview-2026-06-03-5b2fce600f76/herdr-macos-aarch64",
           "sha256": "29f3979e08420a6182f9dd0925a15d101dcbbb1eb75948cdf58f927b9f319da8"
+        }
+      }
+    },
+    "2026-06-03-fc82cbad2179": {
+      "base_version": "0.6.6",
+      "commit": "fc82cbad21791ed58c08905469055eb9357cd350",
+      "built_at": "2026-06-03T04:35:19Z",
+      "protocol": 12,
+      "tag": "preview-2026-06-03-fc82cbad2179",
+      "assets": {
+        "linux-x86_64": {
+          "url": "https://github.com/herdrdev/herdr/releases/download/preview-2026-06-03-fc82cbad2179/herdr-linux-x86_64",
+          "sha256": "c2291bc05f417329a233d09d769933ccccdc4e1f03e6f2d9a8223464b141728d"
+        },
+        "linux-aarch64": {
+          "url": "https://github.com/herdrdev/herdr/releases/download/preview-2026-06-03-fc82cbad2179/herdr-linux-aarch64",
+          "sha256": "bce62864bf3cff6046799acd0e8eb2d6eab546f4be9fe0e37a026704a85db3b2"
+        },
+        "macos-x86_64": {
+          "url": "https://github.com/herdrdev/herdr/releases/download/preview-2026-06-03-fc82cbad2179/herdr-macos-x86_64",
+          "sha256": "7990bdc39fa96322b37a497f85bc1963cb40f9f298d400f8da8fe13dac2adaf6"
+        },
+        "macos-aarch64": {
+          "url": "https://github.com/herdrdev/herdr/releases/download/preview-2026-06-03-fc82cbad2179/herdr-macos-aarch64",
+          "sha256": "c8bcd63323c6daf671022a6872134c6178c153ddd89c4260fbb9b28fe162c18a"
+        }
+      }
+    },
+    "2026-06-02-cce3eacc49d2": {
+      "base_version": "0.6.6",
+      "commit": "cce3eacc49d281fd087ebf0d43eea3e08038033f",
+      "built_at": "2026-06-02T20:59:19Z",
+      "protocol": 12,
+      "tag": "preview-2026-06-02-cce3eacc49d2",
+      "assets": {
+        "linux-x86_64": {
+          "url": "https://github.com/herdrdev/herdr/releases/download/preview-2026-06-02-cce3eacc49d2/herdr-linux-x86_64",
+          "sha256": "c22aa4b2e5fadd6e04910f92bbc125aa749c6a9a9edd281082f07a839e37cbff"
+        },
+        "linux-aarch64": {
+          "url": "https://github.com/herdrdev/herdr/releases/download/preview-2026-06-02-cce3eacc49d2/herdr-linux-aarch64",
+          "sha256": "26a15f394fd27425ab252424fd090913c1ae5cf644f4f3aac0f06c086bdaabb7"
+        },
+        "macos-x86_64": {
+          "url": "https://github.com/herdrdev/herdr/releases/download/preview-2026-06-02-cce3eacc49d2/herdr-macos-x86_64",
+          "sha256": "c89a97b730e7e3b132a2eca53d49448ec2fb969362e903ce99b5b7b0fbd4d5b1"
+        },
+        "macos-aarch64": {
+          "url": "https://github.com/herdrdev/herdr/releases/download/preview-2026-06-02-cce3eacc49d2/herdr-macos-aarch64",
+          "sha256": "0f6c260d9cc65d01c1a58baca5f3ae8150b91f0a16a2ae223b71e76c9dda444f"
         }
       }
     }

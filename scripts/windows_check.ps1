@@ -51,8 +51,6 @@ Invoke-CargoWithZigCacheRecovery @(
     "--bin",
     "bora",
     "--locked",
-    "--target",
-    "x86_64-pc-windows-msvc",
     "--",
     "-D",
     "clippy::unwrap_used"

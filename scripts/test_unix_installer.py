@@ -163,7 +163,7 @@ exec {sha256sum} "$@"
     def test_android_is_rejected_before_replacing_existing_binary(self) -> None:
         self.install_dir.mkdir()
         installed = self.install_dir / "bora"
-        installed.write_bytes(b"existing-herdr\n")
+        installed.write_bytes(b"existing-bora\n")
 
         result = self._run_installer(
             self.expected_sha256,
@@ -173,7 +173,31 @@ exec {sha256sum} "$@"
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("Android/Termux is not currently supported", result.stderr)
         self.assertFalse((self.root / "curl-called").exists())
-        self.assertEqual(installed.read_bytes(), b"existing-herdr\n")
+        self.assertEqual(installed.read_bytes(), b"existing-bora\n")
+
+    def test_missing_uname_operating_system_flag_keeps_linux_supported(self) -> None:
+        result = self._run_installer(
+            self.expected_sha256,
+            extra_env={"FAKE_UNAME_OS_UNAVAILABLE": "1"},
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.install_dir / "bora").read_bytes(), self.payload.read_bytes())
+
+    def test_android_is_rejected_before_replacing_existing_binary(self) -> None:
+        self.install_dir.mkdir()
+        installed = self.install_dir / "bora"
+        installed.write_bytes(b"existing-bora\n")
+
+        result = self._run_installer(
+            self.expected_sha256,
+            extra_env={"FAKE_UNAME_OS": "Android"},
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Android/Termux is not currently supported", result.stderr)
+        self.assertFalse((self.root / "curl-called").exists())
+        self.assertEqual(installed.read_bytes(), b"existing-bora\n")
 
     def test_missing_uname_operating_system_flag_keeps_linux_supported(self) -> None:
         result = self._run_installer(
@@ -187,24 +211,24 @@ exec {sha256sum} "$@"
     def test_checksum_mismatch_does_not_replace_existing_binary(self) -> None:
         self.install_dir.mkdir()
         installed = self.install_dir / "bora"
-        installed.write_bytes(b"existing-herdr\n")
+        installed.write_bytes(b"existing-bora\n")
 
         result = self._run_installer("0" * 64)
 
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("checksum did not match", result.stderr)
-        self.assertEqual(installed.read_bytes(), b"existing-herdr\n")
+        self.assertEqual(installed.read_bytes(), b"existing-bora\n")
 
     def test_missing_checksum_fails_without_replacing_existing_binary(self) -> None:
         self.install_dir.mkdir()
         installed = self.install_dir / "bora"
-        installed.write_bytes(b"existing-herdr\n")
+        installed.write_bytes(b"existing-bora\n")
 
         result = self._run_installer(None)
 
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("valid SHA-256 checksum", result.stderr)
-        self.assertEqual(installed.read_bytes(), b"existing-herdr\n")
+        self.assertEqual(installed.read_bytes(), b"existing-bora\n")
 
 
 if __name__ == "__main__":

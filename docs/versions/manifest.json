@@ -1,90 +1,18 @@
 {
   "schema_version": 1,
   "stable_source": "snapshot",
-  "current": "0.46.9",
+  "current": "0.9.0",
   "versions": [
     {
-      "version": "0.46.9",
-      "tag": "v0.46.9",
-      "commit": "c1297c4b23b9bdfa21bc80799d1837b583ec0bee",
+      "version": "0.9.0",
+      "tag": "v0.9.0",
+      "commit": "b99002ac99b09e00b4ca692436cb15a6b0d676f1",
       "source": "docs/next/website/src/content/docs"
     },
     {
-      "version": "0.45.5",
-      "tag": "v0.45.5",
-      "commit": "40972cd9de72fdeb86d057b10b13d633b513a5a7",
-      "source": "docs/next/website/src/content/docs"
-    },
-    {
-      "version": "0.32.0",
-      "tag": "v0.32.0",
-      "commit": "776cee6676752442f9ee262561ab5a217b9282b9",
-      "source": "docs/next/website/src/content/docs"
-    },
-    {
-      "version": "0.31.0",
-      "tag": "v0.31.0",
-      "commit": "f8b2df7ee442287bc0c8f504a20858cfbd1807b6",
-      "source": "docs/next/website/src/content/docs"
-    },
-    {
-      "version": "0.30.0",
-      "tag": "v0.30.0",
-      "commit": "5e979243c381d22c27f16f489ee566e723bc6967",
-      "source": "docs/next/website/src/content/docs"
-    },
-    {
-      "version": "0.29.0",
-      "tag": "v0.29.0",
-      "commit": "65e4d88cd0db2a7245c8db76c15cf73148db1d3c",
-      "source": "docs/next/website/src/content/docs"
-    },
-    {
-      "version": "0.28.0",
-      "tag": "v0.28.0",
-      "commit": "84c77b49c6cbe05bb6e1e2f73acffe6216381f69",
-      "source": "docs/next/website/src/content/docs"
-    },
-    {
-      "version": "0.26.0",
-      "tag": "v0.26.0",
-      "commit": "b7e83459bababa93161eb6b6490b241ea62e3b62",
-      "source": "docs/next/website/src/content/docs"
-    },
-    {
-      "version": "0.24.0",
-      "tag": "v0.24.0",
-      "commit": "035fdfa25dda7e0ed3df24a64fe4e0aeb11961e4",
-      "source": "docs/next/website/src/content/docs"
-    },
-    {
-      "version": "0.23.0",
-      "tag": "v0.23.0",
-      "commit": "c94d86f234da544c2ae4ae1c80cc88fc527d6a97",
-      "source": "docs/next/website/src/content/docs"
-    },
-    {
-      "version": "0.14.4",
-      "tag": "v0.14.4",
-      "commit": "a251bd2cd047ba900cb0d99865a1e37e136ddfd7",
-      "source": "docs/next/website/src/content/docs"
-    },
-    {
-      "version": "0.14.3",
-      "tag": "v0.14.3",
-      "commit": "9f7aa4835c313b0416a66da458799a7b51f506cd",
-      "source": "docs/next/website/src/content/docs"
-    },
-    {
-      "version": "0.13.2",
-      "tag": "v0.13.2",
-      "commit": "74bd54739ad495aea6969c56edd282deee80006a",
-      "source": "docs/next/website/src/content/docs"
-    },
-    {
-      "version": "0.13.1",
-      "tag": "v0.13.1",
-      "commit": "c32fba1fe8e51fc06854b8f8d5045afda33e99db",
+      "version": "0.8.2",
+      "tag": "v0.8.2",
+      "commit": "9eb521456ac0d19d3ab3d9d7cea3cca10baa8a4c",
       "source": "docs/next/website/src/content/docs"
     },
     {

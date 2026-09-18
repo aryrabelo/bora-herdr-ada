@@ -554,3 +554,16 @@ test("omp: socket requests are serialized through the retrying queue", async () 
   expect(reportedStates).toEqual(["idle"]);
   fire("session_shutdown");
 });
+
+// Upstream regression (herdrdev/herdr): a Windows agent reports a session path
+// that is absolute without starting with "/". The asset must not drop it.
+test("omp: isAbsoluteSessionPath accepts POSIX and Windows session paths", async () => {
+  const { isAbsoluteSessionPath } = await import("./omp/herdr-agent-state.ts");
+
+  expect(isAbsoluteSessionPath("/tmp/omp-session.jsonl")).toBe(true);
+  expect(isAbsoluteSessionPath("C:\\Users\\User\\.omp\\agent\\sessions\\omp-session.jsonl")).toBe(
+    true,
+  );
+  expect(isAbsoluteSessionPath("C:/Users/User/.omp/agent/sessions/omp-session.jsonl")).toBe(true);
+  expect(isAbsoluteSessionPath("relative/omp-session.jsonl")).toBe(false);
+});

@@ -768,8 +768,7 @@ fn verify_installed_binary(exe: &Path) -> Result<(), String> {
     ))
 }
 
-#[cfg(windows)]
-const WINDOWS_INSTALLER: &str = include_str!("../distribution/install.ps1");
+pub(crate) const WINDOWS_INSTALLER: &str = include_str!("../distribution/install.ps1");
 
 #[cfg(windows)]
 struct DownloadedWindowsUpdate {

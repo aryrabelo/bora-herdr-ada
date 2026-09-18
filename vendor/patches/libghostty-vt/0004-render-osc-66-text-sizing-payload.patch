@@ -1,8 +1,10 @@
 diff --git a/vendor/libghostty-vt/src/terminal/stream.zig b/vendor/libghostty-vt/src/terminal/stream.zig
-index efb06ecd..e0f6ec39 100644
+index 29bdde7d..37902692 100644
 --- a/vendor/libghostty-vt/src/terminal/stream.zig
 +++ b/vendor/libghostty-vt/src/terminal/stream.zig
-@@ -2366,2 +2366,28 @@ pub fn Stream(comptime H: type) type {
+@@ -2675,6 +2675,32 @@ pub fn Stream(comptime H: type) type {
+                     self.handler.vt(.progress_report, v);
+                 },
  
 +                .kitty_text_sizing => |v| {
 +                    // We don't implement the Kitty text sizing protocol
@@ -30,12 +32,20 @@ index efb06ecd..e0f6ec39 100644
 +                    while (it.nextCodepoint()) |cp| self.print(cp);
 +                },
 +
-                 .conemu_sleep,
-@@ -2375,3 +2401,2 @@ pub fn Stream(comptime H: type) type {
+                 .kitty_clipboard_protocol => |v| {
+                     self.handler.vt(.kitty_clipboard, v);
+                 },
+@@ -2692,7 +2718,6 @@ pub fn Stream(comptime H: type) type {
+                 .conemu_xterm_emulation,
+                 .conemu_output_environment_variable,
                  .conemu_run_process,
 -                .kitty_text_sizing,
-                 .kitty_clipboard_protocol,
-@@ -3332,2 +3357,62 @@ test "stream: change window title with invalid utf-8" {
+                 .kitty_desktop_notification,
+                 .context_signal,
+                 => {
+@@ -3808,6 +3833,66 @@ test "stream: change window title with invalid utf-8" {
+     }
+ }
  
 +test "stream: OSC 66 prints payload when text sizing is unsupported" {
 +    const H = struct {
@@ -63,52 +73,56 @@ index efb06ecd..e0f6ec39 100644
 +
 +    // Sizing attributes are ignored, but the text is still printed.
 +    {
-+        var s: Stream(H) = .init(.{});
++        var s: Stream(H) = .init(.{ .handler = .{} });
 +        s.nextSlice("\x1b]66;s=2;SCALE-TWO\x1b\\");
 +        try testing.expectEqualStrings("SCALE-TWO", s.handler.written());
 +    }
 +
 +    // No attributes at all.
 +    {
-+        var s: Stream(H) = .init(.{});
++        var s: Stream(H) = .init(.{ .handler = .{} });
 +        s.nextSlice("\x1b]66;;PLAIN\x1b\\");
 +        try testing.expectEqualStrings("PLAIN", s.handler.written());
 +    }
 +
 +    // Multi-byte UTF-8 payload.
 +    {
-+        var s: Stream(H) = .init(.{});
++        var s: Stream(H) = .init(.{ .handler = .{} });
 +        s.nextSlice("\x1b]66;s=3:w=2;héllo\x1b\\");
 +        try testing.expectEqualStrings("héllo", s.handler.written());
 +    }
 +
 +    // Empty payload prints nothing and does not panic.
 +    {
-+        var s: Stream(H) = .init(.{});
++        var s: Stream(H) = .init(.{ .handler = .{} });
 +        s.nextSlice("\x1b]66;s=2;\x1b\\");
 +        try testing.expectEqualStrings("", s.handler.written());
 +    }
 +
 +    // Invalid UTF-8 is rejected by the parser, so nothing is printed.
 +    {
-+        var s: Stream(H) = .init(.{});
++        var s: Stream(H) = .init(.{ .handler = .{} });
 +        s.nextSlice("\x1b]66;s=2;ab\xc0\x1b\\");
 +        try testing.expectEqualStrings("", s.handler.written());
 +    }
 +}
 +
- test "stream: insert characters" {
+ test "stream: osc 52 large payload in chunks" {
+     const alloc = testing.allocator;
+ 
 diff --git a/vendor/libghostty-vt/src/terminal/stream_terminal.zig b/vendor/libghostty-vt/src/terminal/stream_terminal.zig
-index 91cfb21c..c44f3a7f 100644
+index 61172423..d8d825e8 100644
 --- a/vendor/libghostty-vt/src/terminal/stream_terminal.zig
 +++ b/vendor/libghostty-vt/src/terminal/stream_terminal.zig
-@@ -899,2 +899,49 @@ test "basic print" {
+@@ -2175,6 +2175,53 @@ test "basic print" {
+     try testing.expectEqualStrings("Hello", str);
+ }
  
 +test "OSC 66 text sizing prints payload" {
-+    var t: Terminal = try .init(testing.allocator, .{ .cols = 20, .rows = 3 });
++    var t: Terminal = try .init(testing.io, testing.allocator, .{ .cols = 20, .rows = 3 });
 +    defer t.deinit(testing.allocator);
 +
-+    var s: Stream = .initAlloc(testing.allocator, .init(&t));
++    var s: Stream = .init(.{ .allocator = testing.allocator, .handler = .init(&t) });
 +    defer s.deinit();
 +
 +    // We don't implement the sizing attributes, but the protocol requires
@@ -123,10 +137,10 @@ index 91cfb21c..c44f3a7f 100644
 +}
 +
 +test "OSC 66 text sizing with no attributes prints payload" {
-+    var t: Terminal = try .init(testing.allocator, .{ .cols = 20, .rows = 3 });
++    var t: Terminal = try .init(testing.io, testing.allocator, .{ .cols = 20, .rows = 3 });
 +    defer t.deinit(testing.allocator);
 +
-+    var s: Stream = .initAlloc(testing.allocator, .init(&t));
++    var s: Stream = .init(.{ .allocator = testing.allocator, .handler = .init(&t) });
 +    defer s.deinit();
 +
 +    s.nextSlice("\x1b]66;;PLAIN\x1b\\");
@@ -137,10 +151,10 @@ index 91cfb21c..c44f3a7f 100644
 +}
 +
 +test "OSC 66 text sizing empty payload prints nothing" {
-+    var t: Terminal = try .init(testing.allocator, .{ .cols = 20, .rows = 3 });
++    var t: Terminal = try .init(testing.io, testing.allocator, .{ .cols = 20, .rows = 3 });
 +    defer t.deinit(testing.allocator);
 +
-+    var s: Stream = .initAlloc(testing.allocator, .init(&t));
++    var s: Stream = .init(.{ .allocator = testing.allocator, .handler = .init(&t) });
 +    defer s.deinit();
 +
 +    s.nextSlice("\x1b]66;s=2;\x1b\\");
@@ -151,4 +165,6 @@ index 91cfb21c..c44f3a7f 100644
 +    try testing.expectEqualStrings("after", str);
 +}
 +
- test "cursor movement" {
+ test "semantic failure is sticky while processing continues" {
+     var failing = testing.FailingAllocator.init(testing.allocator, .{});
+     const alloc = failing.allocator();
