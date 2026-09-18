@@ -1517,7 +1517,7 @@ impl HeadlessServer {
             .filter(|client_id| {
                 self.clients
                     .get(client_id)
-                    .is_some_and(|client| client.is_active_shell_client())
+                    .is_some_and(super::clients::ClientConnection::is_active_shell_client)
             })
             .and_then(|client_id| self.shell_target_for_client(client_id))
     }

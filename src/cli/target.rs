@@ -107,7 +107,7 @@ pub(super) fn remote_error(error: io::Error) -> io::Error {
         let error = target
             .bridge
             .as_ref()
-            .and_then(|bridge| bridge.reported_failure())
+            .and_then(super::super::remote::saved::SavedSshApiBridge::reported_failure)
             .unwrap_or(error);
         io::Error::new(
             error.kind(),

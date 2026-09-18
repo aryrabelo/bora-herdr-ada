@@ -891,7 +891,7 @@ mod tests {
                     SurfaceGraphicsTarget::Pane {
                         pane_id: format!("pane-{index}"),
                     },
-                    index as u64,
+                    u64::from(index),
                     vec![1, 2, 3, 4],
                 );
                 let pane = scene(image, index * 4, 0);

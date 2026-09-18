@@ -959,7 +959,7 @@ fn federated_client_starts_without_local_and_survives_its_restart() {
     let screen_text = || {
         let bytes = output
             .lock()
-            .unwrap_or_else(|p| p.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .bytes
             .clone();
         terminal_screen::text(&bytes, 80, 24)
