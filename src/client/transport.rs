@@ -59,7 +59,7 @@ pub(super) fn server_reader_thread(
             Ok(msg) => {
                 if event_tx
                     .blocking_send(ClientLoopEvent::ServerMessage {
-                        endpoint_id,
+                        endpoint_id: endpoint_id.clone(),
                         generation,
                         message: Box::new(msg),
                     })
@@ -81,7 +81,7 @@ pub(super) fn server_reader_thread(
             Err(err) => {
                 warn!(err = %err, "server read error");
                 let _ = event_tx.blocking_send(ClientLoopEvent::ServerDisconnected {
-                    endpoint_id: endpoint_id.clone(),
+                    endpoint_id,
                     generation,
                 });
                 break;
