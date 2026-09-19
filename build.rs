@@ -198,7 +198,7 @@ fn main() {
     let target = env::var("TARGET").expect("TARGET");
     let zig_target = zig_target(&target);
 
-    // ponytail: prebuilt bypass — stopgap because vendored libghostty-vt requires zig 0.15.2
+    // ponytail: prebuilt bypass — stopgap because ambient zig lacked the SDK link for the vendored libghostty-vt
     // which cannot link the macOS 26 SDK, and zig 0.16 is rejected by the vendored build.zig.
     // Remove once upstream Ghostty's zig-0.16 migration (PR #12726) lands and we vendor-update;
     // at that point delete this block and return to from-source build.
@@ -265,7 +265,7 @@ fn main() {
                 panic!(
                     "zig executable not found (looked for {zig:?}; set the ZIG \
                      environment variable to point at the zig binary). Building \
-                     the vendored libghostty-vt requires Zig 0.15.2: on macOS run \
+                     the vendored libghostty-vt requires Zig 0.16.0: on macOS run \
                      `brew install zig@0.15`, elsewhere install it from \
                      https://ziglang.org/download/, then retry the build"
                 );

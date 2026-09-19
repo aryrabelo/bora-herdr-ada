@@ -82,7 +82,7 @@ setup-windows-cross *args:
 [unix]
 windows-lint:
     rustup target add x86_64-pc-windows-msvc
-    LIBGHOSTTY_VT_SIMD=false cargo clippy --bin bora --locked --target x86_64-pc-windows-msvc -- -D warnings \
+    LIBGHOSTTY_VT_SIMD=false LIBGHOSTTY_VT_WINDOWS_LIBC=$(test -f ~/.local/share/bora/windows-cross/libc.txt && echo ~/.local/share/bora/windows-cross/libc.txt) cargo clippy --bin bora --locked --target x86_64-pc-windows-msvc -- -D warnings \
         -A clippy::dbg_macro \
         -A clippy::todo \
         -A clippy::cognitive_complexity \
