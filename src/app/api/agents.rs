@@ -17,16 +17,24 @@ const AGENT_PROMPT_SUBMIT_DELAY: Duration = Duration::from_millis(300);
 /// `crate::terminal::state::HOOK_TITLE_IDLE_RECONCILE_GRACE`).
 pub(crate) const HOOK_TITLE_IDLE_RECONCILE_REASON: &str = "osc_title_idle_reconciled_stale_hook";
 
-fn agent_prompt_submit_delay(agent: crate::detect::Agent, prompt_bytes: usize) -> Duration {
-    #[cfg(windows)]
-    if agent == crate::detect::Agent::Codex {
-        // Codex consumes Windows paste bursts at about 4 bytes/ms, then suppresses Enter briefly.
-        // ponytail: best-effort ConPTY timing; remove when Codex exposes a paste-complete boundary.
-        return Duration::from_millis(600 + prompt_bytes as u64 / 4);
+// Codex's Windows input reader does not surface bracketed paste. It detects the prompt as a
+// "paste burst" and, while that burst is buffered, rewrites a following Enter into a newline
+// instead of submitting. The burst only flushes after an idle timeout, so any size-based delay is
+// a timing guess that fails when ConPTY delivery lags it. Codex flushes a buffered burst
+// synchronously when it receives a non-character key, so appending one after the paste gives the
+// submission a deterministic paste boundary regardless of prompt size or delivery speed.
+#[cfg(windows)]
+fn append_codex_paste_boundary(runtime: &crate::terminal::TerminalRuntime, text: &mut Vec<u8>) {
+    let keys = match crate::app::api_helpers::encode_api_keys(runtime, &["right".to_string()]) {
+        Ok(keys) => keys,
+        Err(key) => {
+            tracing::warn!(key = %key, "failed to encode Codex paste boundary key");
+            return;
+        }
+    };
+    if let Some(key) = keys.into_iter().find(|bytes| !bytes.is_empty()) {
+        text.extend_from_slice(&key);
     }
-    #[cfg(not(windows))]
-    let _ = (agent, prompt_bytes);
-    AGENT_PROMPT_SUBMIT_DELAY
 }
 
 /// Submission deadline honoured by the Windows ConPTY actor. The unix actor has
@@ -54,8 +62,10 @@ struct AdmittedAgentPrompt {
 
 /// Encodes `text` plus a separate Enter for the pane's current input mode,
 /// after nudging GitHub Copilot with a focus-gained report — Copilot ignores a
-/// synthetic Enter after focus loss until it receives focus gained. `Err` is
-/// the `agent_prompt_failed` message.
+/// synthetic Enter after focus loss until it receives focus gained. On Windows
+/// a Codex prompt also carries the paste boundary key, so both delivery paths
+/// get the deterministic flush described on `append_codex_paste_boundary`.
+/// `Err` is the `agent_prompt_failed` message.
 fn encode_agent_prompt_submission(
     runtime: &crate::terminal::TerminalRuntime,
     expected_agent: crate::detect::Agent,
@@ -68,9 +78,16 @@ fn encode_agent_prompt_submission(
             .try_send_bytes(Bytes::from(focus))
             .map_err(|err| err.to_string())?;
     }
-    Ok(crate::app::api_helpers::encode_api_submission_parts(
-        runtime, text,
-    ))
+    let (text, enter) = crate::app::api_helpers::encode_api_submission_parts(runtime, text);
+    #[cfg(windows)]
+    let text = if expected_agent == crate::detect::Agent::Codex {
+        let mut text = text;
+        append_codex_paste_boundary(runtime, &mut text);
+        text
+    } else {
+        text
+    };
+    Ok((text, enter))
 }
 
 impl App {
@@ -135,7 +152,6 @@ impl App {
         let Some(runtime) = self.lookup_runtime_sender(admitted.ws_idx, admitted.pane_id) else {
             return agent_not_found(id, &target);
         };
-        let submit_delay = agent_prompt_submit_delay(admitted.expected_agent, admitted.text.len());
         let (text, enter) = match encode_agent_prompt_submission(
             runtime,
             admitted.expected_agent,
@@ -147,7 +163,7 @@ impl App {
         if let Err(err) = runtime.try_send_bytes(Bytes::from(text)) {
             return encode_error(id, "agent_prompt_failed", err.to_string());
         }
-        runtime.send_bytes_after(Bytes::from(enter), submit_delay);
+        runtime.send_bytes_after(Bytes::from(enter), AGENT_PROMPT_SUBMIT_DELAY);
         self.emit_agent_prompted(&admitted);
         let Some(agent) = self.agent_info(admitted.ws_idx, admitted.pane_id) else {
             return agent_not_found(id, &target);
@@ -434,7 +450,6 @@ impl App {
         let Some(runtime) = self.lookup_runtime_sender(admitted.ws_idx, admitted.pane_id) else {
             return Err(agent_not_found(id, &target));
         };
-        let submit_delay = agent_prompt_submit_delay(admitted.expected_agent, admitted.text.len());
         let submit_deadline = agent_prompt_submit_deadline(admitted.wait.as_ref());
         let (text, enter) =
             encode_agent_prompt_submission(runtime, admitted.expected_agent, &admitted.text)
@@ -446,7 +461,7 @@ impl App {
             .queue_user_input_submission(
                 Bytes::from(text),
                 Bytes::from(enter),
-                submit_delay,
+                AGENT_PROMPT_SUBMIT_DELAY,
                 submit_deadline,
             )
             .map_err(|err| encode_error(id.clone(), "agent_prompt_failed", err.to_string()))?;
@@ -733,16 +748,98 @@ mod tests {
             .expect("agent prompt responds after submission")
     }
 
-    #[test]
-    fn prompt_delay_only_scales_for_windows_codex() {
-        let codex_delay = agent_prompt_submit_delay(Agent::Codex, 4_096);
-        #[cfg(windows)]
-        assert_eq!(codex_delay, Duration::from_millis(1_624));
-        #[cfg(not(windows))]
-        assert_eq!(codex_delay, AGENT_PROMPT_SUBMIT_DELAY);
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn windows_codex_prompt_flushes_paste_burst_before_enter() {
+        let mut app = app_with_agent();
+        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        let terminal_id = app.state.workspaces[0].tabs[0].panes[&pane_id]
+            .attached_terminal_id
+            .clone();
+        let terminal = app.state.terminals.get_mut(&terminal_id).unwrap();
+        terminal.set_agent_name("reviewer".into());
+        terminal.set_detected_state(Some(Agent::Codex), AgentState::Idle);
+        let (runtime, mut rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        app.state.insert_test_runtime(pane_id, runtime);
+
+        let response = run_deferred_agent_prompt(
+            &mut app,
+            "req",
+            AgentPromptParams {
+                target: "reviewer".into(),
+                text: "A != B".into(),
+                wait: None,
+            },
+        );
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        assert!(matches!(
+            success.result,
+            ResponseResult::AgentPrompted { .. }
+        ));
+        // The non-character key must precede Enter so Codex commits the paste burst first.
+        assert_eq!(rx.try_recv().unwrap(), Bytes::from_static(b"A != B\x1b[C"));
+        assert_eq!(rx.try_recv().unwrap(), Bytes::from_static(b"\r"));
+    }
+
+    #[tokio::test]
+    async fn a_false_process_exit_makes_a_named_live_agent_unreachable_by_name() {
+        // Reproduces the registration loss reported on #3225 by rszrszrsz:
+        // a live agent pane with an assigned name stops resolving by that name
+        // while its process keeps running, and renaming is the only recovery.
+        let mut app = app_with_agent();
+        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        let terminal_id = app.state.workspaces[0].tabs[0].panes[&pane_id]
+            .attached_terminal_id
+            .clone();
+        let observed_at = std::time::Instant::now();
+        let terminal = app.state.terminals.get_mut(&terminal_id).unwrap();
+        terminal.set_detected_state(Some(Agent::Pi), AgentState::Working);
+        terminal.set_agent_name("reviewer".into());
+
+        let found = app.handle_agent_get(
+            "req:before".into(),
+            AgentTarget {
+                target: "reviewer".into(),
+            },
+        );
+        assert!(
+            serde_json::from_str::<SuccessResponse>(&found).is_ok(),
+            "the assigned name must resolve while the agent is running: {found}"
+        );
+
+        // One process-exit observation, then the same agent is observed alive
+        // again on the next probe - the process never actually went away.
+        app.handle_internal_event(crate::events::AppEvent::StateChanged {
+            pane_id,
+            agent: Some(Agent::Pi),
+            state: AgentState::Idle,
+            visible_blocker: false,
+            visible_working: false,
+            process_exited: true,
+            observed_at,
+        });
+        app.handle_internal_event(crate::events::AppEvent::AgentProcessDetected {
+            pane_id,
+            agent: Agent::Pi,
+            observed_at: observed_at + std::time::Duration::from_secs(1),
+        });
+
+        let terminal = &app.state.terminals[&terminal_id];
         assert_eq!(
-            agent_prompt_submit_delay(Agent::OpenCode, 4_096),
-            AGENT_PROMPT_SUBMIT_DELAY
+            terminal.detected_agent,
+            Some(Agent::Pi),
+            "the agent process is still there"
+        );
+
+        let after = app.handle_agent_get(
+            "req:after".into(),
+            AgentTarget {
+                target: "reviewer".into(),
+            },
+        );
+        assert!(
+            serde_json::from_str::<SuccessResponse>(&after).is_ok(),
+            "a live agent must stay reachable by its assigned name: {after}"
         );
     }
 

@@ -18,6 +18,11 @@ import { beforeAll, afterEach, expect, jest, mock, test } from "bun:test";
 process.env.HERDR_ENV = "1";
 process.env.HERDR_SOCKET_PATH = "/tmp/herdr-agent-state-test.sock"; // unused; net is mocked
 process.env.HERDR_PANE_ID = "test-pane";
+// The asset treats OMPCODE=1 as "nested omp session" and stays silent. Tests
+// drive the ROOT session, and a developer running these tests from inside an
+// omp-launched pane has OMPCODE=1 in the inherited environment (learned
+// 2026-09-18), so it must be explicitly cleared here.
+delete process.env.OMPCODE;
 process.env.HERDR_OMP_IDLE_DEBOUNCE_MS = "50";
 process.env.HERDR_PI_IDLE_DEBOUNCE_MS = "50";
 process.env.HERDR_OMP_HEARTBEAT_MS = "5000";
@@ -553,4 +558,17 @@ test("omp: socket requests are serialized through the retrying queue", async () 
   expect(requestMethods).toEqual(["pane.report_agent_session", "pane.report_agent"]);
   expect(reportedStates).toEqual(["idle"]);
   fire("session_shutdown");
+});
+
+// Upstream regression (herdrdev/herdr): a Windows agent reports a session path
+// that is absolute without starting with "/". The asset must not drop it.
+test("omp: isAbsoluteSessionPath accepts POSIX and Windows session paths", async () => {
+  const { isAbsoluteSessionPath } = await import("./omp/herdr-agent-state.ts");
+
+  expect(isAbsoluteSessionPath("/tmp/omp-session.jsonl")).toBe(true);
+  expect(isAbsoluteSessionPath("C:\\Users\\User\\.omp\\agent\\sessions\\omp-session.jsonl")).toBe(
+    true,
+  );
+  expect(isAbsoluteSessionPath("C:/Users/User/.omp/agent/sessions/omp-session.jsonl")).toBe(true);
+  expect(isAbsoluteSessionPath("relative/omp-session.jsonl")).toBe(false);
 });

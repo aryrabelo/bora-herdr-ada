@@ -267,6 +267,19 @@ def check_allow_justification(
                 continue
             if "//" in text:
                 continue  # trailing same-line comment
+            following_index = lineno  # lineno is 1-based; next line is lineno (0-based index)
+            following = head_lines[following_index] if 0 <= following_index < len(head_lines) else ""
+            # Bindgen emits `#[allow(clippy::unnecessary_operation, clippy::identity_op)]`
+            # directly above its generated `const _: () = { ... }` size assertions; the
+            # lints are inherent to machine-generated code and the file is regenerated on
+            # every vendored update, so hand comments there would be sync churn with no
+            # informational value. The rule stays strict for hand-written Rust.
+            if (
+                "clippy::unnecessary_operation" in text
+                and "clippy::identity_op" in text
+                and following.lstrip().startswith("const _: () = {")
+            ):
+                continue
             preceding_index = lineno - 2  # lineno is 1-based; preceding line is lineno-1
             preceding = head_lines[preceding_index] if 0 <= preceding_index < len(head_lines) else ""
             if preceding.strip().startswith("//"):

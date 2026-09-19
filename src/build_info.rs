@@ -6,7 +6,7 @@ pub const BASE_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// upstream commit that merge brought in. Both are updated by hand during an
 /// upstream sync — see the "Fork version identity" rule in AGENTS.md.
 pub const UPSTREAM_HERDR_VERSION: &str = "0.9.0";
-pub const UPSTREAM_HERDR_COMMIT: &str = "68c7b78e";
+pub const UPSTREAM_HERDR_COMMIT: &str = "ad415672";
 
 /// Human-facing fork identity, e.g. `v0.8.1[a5c69bea].bora-24`: the upstream
 /// herdr release, the upstream commit merged into this fork, and this fork's
