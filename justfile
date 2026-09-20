@@ -13,7 +13,7 @@ test:
 
 # Run repository maintenance contract tests
 maintenance-test:
-    {{python}} -m unittest scripts.test_agent_detection_manifest_check scripts.test_changelog scripts.test_config_reference_check scripts.test_docs_translation_parity scripts.test_hermes_integration_asset scripts.test_package_windows_conpty scripts.test_preview scripts.test_unix_installer scripts.test_vendor_libghostty_vt scripts.test_vendor_portable_pty
+    {{python}} -m unittest scripts.test_agent_detection_manifest_check scripts.test_changelog scripts.test_config_reference_check scripts.test_docs_translation_parity scripts.test_hermes_integration_asset scripts.test_package_windows_conpty scripts.test_preview scripts.test_unix_installer scripts.test_vendor_libghostty_vt scripts.test_vendor_portable_pty scripts.test_windows_cross
 
 # Run one nextest filter, e.g. `just test-one codex_stale_working`
 test-one filter:
@@ -64,16 +64,25 @@ lint:
 
 # Run PR CI checks
 ci filter='all()': lint
+    just ci-tests "{{filter}}"
+
+# Keep the test build independently configurable from clippy in CI.
+ci-tests filter='all()':
     cargo nextest run --locked -E "{{filter}}" --status-level fail --final-status-level slow --failure-output final --success-output never
     just maintenance-test
     just ui-hot-path-architecture-test
     just integration-assets-test
 
+# Download the Windows SDK once (requires xwin; prompts for Microsoft's SDK license)
+[unix]
+setup-windows-cross *args:
+    {{python}} scripts/windows_cross.py setup {{args}}
+
 # Run Windows target lint from Unix/macOS to catch cfg(windows) compile and clippy failures before CI
 [unix]
 windows-lint:
     rustup target add x86_64-pc-windows-msvc
-    LIBGHOSTTY_VT_SIMD=false cargo clippy --bin bora --locked --target x86_64-pc-windows-msvc -- -D warnings \
+    LIBGHOSTTY_VT_SIMD=false LIBGHOSTTY_VT_WINDOWS_LIBC=$(test -f ~/.local/share/bora/windows-cross/libc.txt && echo ~/.local/share/bora/windows-cross/libc.txt) cargo clippy --bin bora --locked --target x86_64-pc-windows-msvc -- -D warnings \
         -A clippy::dbg_macro \
         -A clippy::todo \
         -A clippy::cognitive_complexity \
@@ -156,20 +165,23 @@ plugin-marketplace-test:
     cd workers/plugin-marketplace && bun install --frozen-lockfile && bun test
 
 
+# Regenerate the C API bindings with bindgen-cli 0.72.1
+libghostty-bindings *clang_args:
+    bash scripts/generate_libghostty_bindings.sh {{clang_args}}
+
 # Build the vendored libghostty-vt source dist
 build-libghostty-vt:
     scripts/build_vendored_libghostty_vt.sh
 
 # Fetch the prebuilt libghostty-vt static lib (+ .vendor-hash stamp) for this
-# host into prebuilt/ (fallback when zig 0.15.2 cannot build locally — remove
-# when upstream zig-0.16 port lands)
+# host into prebuilt/ (fallback when the local zig cannot build the vendored
+# tree; removal condition documented in BORA.md)
 fetch-libghostty-vt:
     scripts/fetch_libghostty_vt_prebuilt.sh
 
 # Cross-build prebuilt/libghostty-vt-<target>.a + its .vendor-hash stamp
-# locally in a Linux container (zig 0.15.2), no GitHub Actions. macOS 26 fast
-# dev loop; remove with the rest of the prebuilt fallback when upstream
-# zig-0.16 port lands.
+# locally in a Linux container (zig 0.16.0), no GitHub Actions. macOS 26 fast
+# dev loop; remove with the rest of the prebuilt fallback (see BORA.md).
 build-libghostty-vt-prebuilt:
     scripts/build_libghostty_vt_prebuilt.sh
 

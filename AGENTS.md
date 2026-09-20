@@ -238,6 +238,33 @@ classes, and how to resolve them, so the next sync is cheap:
   `Subscription` variants (`pane.result_reported`, `channel.message`) stay anchored ahead
   of upstream's four-variant tail, never appended past it — full analysis in
   `.local/prd/channel-identity-and-subscribe.md`.
+- **The merge BASE ancestral to a sync is a LIE after a squash sync, and every
+  AA/"reescrita-total" conflict it produces may be pure artifact.** Stage 2 of the 0.9.0
+  sync was a SQUASH merge (`27c65c27`), so `git merge-base HEAD upstream/master` falls
+  back to `8a6d6973` even though the fork's client-shell content is really at `68c7b78e`.
+  The 2026-09-18 sync (`ad415672`) measured the consequence: 202 conflicted files, and
+  re-merging with `git show 68c7b78e:<path>` as base collapsed whole files to ZERO real
+  conflicts (e.g. `src/remote/attach.rs` 1451->13 marker lines, `src/ui/sidebar.rs`
+  3324->2; `src/pane.rs` and `src/app/state.rs` remerged clean). Two checks settle any
+  doubtful file in seconds: `git diff --numstat 68c7b78e upstream/master -- <path>` empty
+  means upstream never touched it since the real base — take OURS, never a triage
+  "theirs" (that verdict deleted fork features when trusted blindly: notifications.rs,
+  context_menu.rs); the reverse empty means the fork has no delta — take THEIRS safely.
+  The recipe for a doubtful file: `git show` the three sides (base=68c7b78e, ours=HEAD,
+  theirs=upstream/master) + `git merge-file --diff3`. Caveat: a block that LOOKS like a
+  fork feature may be old upstream code the upstream replaced (e.g. `local_cover` in
+  `graphics.rs` was upstream, superseded by `occlusion` — theirs, nothing lost).
+  (learned 2026-09-18, binding.)
+- **The zig 0.15.2 pin is GONE as of the `ad415672` sync.** Upstream re-vendored
+  libghostty-vt (44f2a44) whose `build.zig.zon` demands `minimum_zig_version = 0.16.0`,
+  so CI (ci.yml, release.yml, preview.yml) and `scripts/windows_cross.py` follow 0.16.0;
+  local builds still ride the `prebuilt/` bypass. The fork's reflow-on-resize C ABI
+  option was renumbered `GHOSTTY_TERMINAL_OPT_REFLOW_ON_RESIZE = 40` because upstream
+  now occupies 27..39 — `src/ghostty/bindings.rs` must keep matching
+  `vendor/libghostty-vt/include/ghostty/vt/terminal.h`. Both fork vendor patches
+  (0003 reflow, 0004 OSC 66) remain necessary and were regenerated against 44f2a44;
+  `vendor/libghostty-vt.patches.md` "vendored base" lines must move with the vendor.json.
+  (learned 2026-09-18, binding.)
 - **After an upstream merge, every `dead_code` warning is a suspect disconnected fork
   feature until proven a leftover.** Stage 2 compiled and passed all 3377 tests with 32
   warnings, and three of them were fork SERVER features whose only call site lived in a
@@ -563,8 +590,8 @@ Before validating a fix on Windows, sync or apply the Linux worktree changes
 into `C:\work\repo`, then run the needed Windows build or test commands there.
 Reuse the shared Rust caches under `C:\Users\herdr\.cargo` and
 `C:\Users\herdr\.rustup`. Do not use WSL on the VM. The VM may have a newer
-Zig on `PATH`; Herdr currently requires Zig 0.15.2, so set
-`$env:ZIG = "C:\Users\herdr\zig-0.15.2\zig.exe"` before running Cargo commands
+Zig on `PATH`; Herdr requires Zig 0.16.0 (vendored libghostty-vt minimum since 44f2a44); set
+`$env:ZIG = "C:\Users\herdr\zig-0.16.0\zig.exe"` before running Cargo commands
 that build the vendored libghostty-vt.
 
 After validation, leave `C:\work\repo` clean. Remove temporary files and delete

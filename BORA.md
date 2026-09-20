@@ -54,10 +54,10 @@ scripts/bora run          # run it on the dedicated "bora" session (own socket)
 
 > [!NOTE]
 > **macOS 26 — prebuilt fallback required.** The vendored `libghostty-vt`
-> requires zig 0.15.2, which cannot link against the macOS 26 SDK. zig 0.16 is
-> rejected by the vendored `build.zig`. Upstream Ghostty's zig-0.16 migration
-> ([PR #12726](https://github.com/ghostty-org/ghostty/pull/12726)) is still
-> open/WIP, so a vendor-update does not help yet.
+> requires zig 0.16.0 (upstream's zig-0.16 migration landed in the ad415672
+> vendor sync); zig 0.15.2 is rejected by the vendored `build.zig.zon`. If the
+> local zig 0.16.0 cannot link against the macOS 26 SDK, keep using the
+> prebuilt fallback below.
 >
 > **Local builds now work via a prebuilt static lib:**
 >
@@ -80,10 +80,9 @@ scripts/bora run          # run it on the dedicated "bora" session (own socket)
 
 **Local, no-CI (fast dev loop here).** `just build-libghostty-vt-prebuilt`
 cross-builds `prebuilt/libghostty-vt-<target>.a` for the macOS host target
-inside a Linux container with zig 0.15.2 (zig 0.15.2 cannot link its own build
-runner on macOS 26, but cross-builds the macOS `.a` fine from Linux). Requires
-Docker; no GitHub Actions, no network beyond the zig download. After a vendor
-update, just re-run it.
+inside a Linux container with zig 0.16.0 (the version the vendored tree
+requires). Requires Docker; no GitHub Actions, no network beyond the zig
+download. After a vendor update, just re-run it.
 
 ```sh
 just build-libghostty-vt-prebuilt   # or: scripts/build_libghostty_vt_prebuilt.sh
@@ -91,16 +90,17 @@ scripts/bora build                  # build.rs auto-detects the prebuilt
 ```
 
 **CI (other contributors / non-macOS targets).** The `libghostty-vt-prebuilts`
-GitHub Actions workflow cross-builds `libghostty-vt.a` for each target using zig
-0.15.2 and publishes them as assets on the `libghostty-vt-prebuilts` release,
-keyed by the vendored commit (8-char prefix). After a vendor update, re-run that
-workflow, then run `just fetch-libghostty-vt`.
+GitHub Actions workflow cross-builds `libghostty-vt.a` for each target using
+zig 0.16.0 and publishes them as assets on the `libghostty-vt-prebuilts`
+release, keyed by the vendored commit (8-char prefix). After a vendor update,
+re-run that workflow, then run `just fetch-libghostty-vt`.
 
-**Removal condition:** when upstream's zig-0.16 port lands and we vendor-update to a
-0.16-capable commit, delete the prebuilt fallback in `build.rs`, the
+**Removal condition:** the zig-0.16 port has landed and the vendored tree now
+requires 0.16.0; delete the prebuilt fallback in `build.rs`, the
 `fetch-libghostty-vt` and `build-libghostty-vt-prebuilt` just recipes,
 `scripts/build_libghostty_vt_prebuilt.sh`, and the `libghostty-vt-prebuilts`
-workflow, and return to a pure from-source build.
+workflow, and return to a pure from-source build — once a local zig 0.16.0
+build is proven to link on macOS 26.
 
 ## Keeping current with upstream
 

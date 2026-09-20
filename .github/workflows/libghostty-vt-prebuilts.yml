@@ -37,13 +37,14 @@ jobs:
           echo "commit8=${COMMIT8}" >> "${GITHUB_OUTPUT}"
           echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
 
-      - name: Install Zig 0.15.2
-        # Same action+SHA pinned in ci.yml and release.yml; version overridden to
-        # 0.15.2 (the vendored build.zig requirement) instead of the repo's mise
-        # 0.16 pin, which the vendored build.zig rejects.
+      - name: Install Zig 0.16.0
+        # Same Zig version (0.16.0) and SHA-pinned setup-zig practice as the ci.yml
+        # and release.yml steps, though through a different action (vercel-labs
+        # v1.0.2 there, mlugg v2.2.1 here). 0.16.0 is the vendored build.zig.zon
+        # `minimum_zig_version` (since 44f2a44), matching dev machines' mise pin.
         uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:
-          version: 0.15.2
+          version: 0.16.0
 
       - name: Build libghostty-vt for all targets
         # Cross-building aarch64-macos and x86_64-macos from ubuntu-latest.

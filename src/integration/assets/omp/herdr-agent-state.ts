@@ -14,9 +14,13 @@ const socketEndpoint =
   process.platform === "win32" && socketPath ? `\\\\.\\pipe\\${socketPath}` : socketPath;
 const paneId = process.env.HERDR_PANE_ID;
 const source = "herdr:omp";
+// OMP marks every shell it spawns with OMPCODE=1. A nested `omp` launched from
+// a parent session's shell inherits it, so that process is not the pane's root
+// agent and must not report its short-lived session over the parent's.
+const nestedOmpSession = process.env.OMPCODE === "1";
 
 function enabled() {
-  return HERDR_ENV === "1" && !!socketPath && !!paneId;
+  return HERDR_ENV === "1" && !!socketPath && !!paneId && !nestedOmpSession;
 }
 
 let requestQueue = Promise.resolve();
