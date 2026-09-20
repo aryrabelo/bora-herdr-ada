@@ -62,8 +62,9 @@ def setup(accept_license: bool) -> None:
         subprocess.run(command + ["splat", "--copy", "--output", str(SDK_ROOT)], check=True)
     config = SDK_ROOT / "libc.txt"
     config.write_text(libc_contents(SDK_ROOT))
-    # libc_contents ja valida a configuracao gerada; `zig libc` nao e' um
-    # subcomando suportado e faz todo setup sair com erro depois do download.
+    # `zig libc` e' um subcomando valido, mas so' faz o parse do arquivo
+    # passado; chama-lo aqui re-validaria apenas o libc.txt que nos mesmos
+    # acabamos de gerar. A validacao real da SDK acontece no clippy/build.
     print(f"Windows SDK configured at {config}. Run `just windows-lint` or `just check`.")
 
 

@@ -2,14 +2,13 @@
 set -euo pipefail
 
 # ponytail: local no-CI prebuilt producer; remove with the rest of the prebuilt
-# fallback when upstream zig-0.16 port lands (ghostty PR #12726) and we
-# vendor-update — at that point build.rs compiles from source again on all hosts.
+# fallback once a local zig 0.16.0 build is proven to link on macOS 26 (see
+# BORA.md) — at that point build.rs compiles from source again on all hosts.
 #
 # Cross-builds libghostty-vt.a for the macOS host target from inside a Linux
-# container with zig 0.15.2. zig 0.15.2 cannot link its own build runner on
-# macOS 26 (Xcode 26 SDK linker break), but it cross-builds the macOS .a fine
-# from Linux. Output lands in prebuilt/libghostty-vt-<target>.a, which build.rs
-# auto-detects. Fully local, no GitHub Actions required.
+# container with zig 0.16.0 (the version the vendored build.zig.zon requires;
+# zig 0.15.2 is rejected). Output lands in prebuilt/libghostty-vt-<target>.a,
+# which build.rs auto-detects. Fully local, no GitHub Actions required.
 
 ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 
@@ -47,7 +46,7 @@ docker run --rm -i --platform "$PLATFORM" \
   -e "ZIGTARGET=$ZIGTARGET" \
   alpine:3.20 sh -s <<'INNER'
 set -eu
-ZIG_VER=0.15.2
+ZIG_VER=0.16.0
 ARCH=$(uname -m)   # aarch64 or x86_64 of the linux/<arch> container
 apk add --no-cache curl tar xz >/dev/null
 URL="https://ziglang.org/download/${ZIG_VER}/zig-${ARCH}-linux-${ZIG_VER}.tar.xz"

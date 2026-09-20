@@ -24,9 +24,9 @@
 #   scripts/bora reload      live-handoff the running server to the installed binary
 #
 # ponytail: a thin sh wrapper, not a framework. Build needs a working zig
-# toolchain; on macOS 26 the vendored libghostty (zig 0.15.2) does not link
-# locally, so use the prebuilt (`just build-libghostty-vt-prebuilt`) or
-# `ci-build` + `ci-install` until the toolchain is fixed.
+# toolchain (the vendored libghostty-vt requires zig 0.16.0); when the local
+# zig cannot link it on macOS 26, use the prebuilt fallback or `ci-build` +
+# `ci-install` (see BORA.md).
 
 set -eu
 
