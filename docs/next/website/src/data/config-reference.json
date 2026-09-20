@@ -924,6 +924,16 @@
           "description": "Automatically copy text selected by mouse drag or double-click. When disabled, Ctrl+C or a host-forwarded Cmd+C copies and clears the retained selection."
         },
         {
+          "key": "ui.new_workspace_position",
+          "type": "enum",
+          "default": "end",
+          "description": "Where a workspace created from a source workspace lands: `end` appends it to the list (historical behavior); `after_source` keeps it immediately after the source workspace.",
+          "values": [
+            "end",
+            "after_source"
+          ]
+        },
+        {
           "key": "ui.host_cursor",
           "type": "enum",
           "default": "auto",

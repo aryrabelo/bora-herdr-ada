@@ -612,6 +612,7 @@ impl App {
             default_shell: config.terminal.default_shell.clone(),
             shell_mode: config.terminal.shell_mode,
             new_terminal_cwd: config.terminal.new_cwd.clone(),
+            new_workspace_position: config.ui.new_workspace_position,
             pane_scrollback_limit_bytes: config.advanced.scrollback_limit_bytes,
             sound: config.ui.sound.clone(),
             toast_config: config.ui.toast.clone(),
@@ -975,6 +976,7 @@ impl App {
                 self.state.sidebar_spaces = config.ui.sidebar.spaces.clone();
                 self.state.sound = config.ui.sound.clone();
                 self.state.toast_config = config.ui.toast.clone();
+                self.state.new_workspace_position = config.ui.new_workspace_position;
                 self.state.view_mode = config.ui.view_mode;
                 self.state.chat_name = config.ui.effective_chat_name();
                 self.state.channel_burst_messages = config.ui.channel_burst_messages;
@@ -2778,6 +2780,34 @@ mod tests {
         assert_eq!(
             app.state.toast_config.delivery,
             crate::config::ToastDelivery::Terminal
+        );
+        std::env::remove_var(crate::config::CONFIG_PATH_ENV_VAR);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    // `[ui] new_workspace_position` must be REAPPLIED on reload, not only
+    // seeded at startup: without the reload line, editing the config and
+    // running `bora server reload-config` would silently keep the old
+    // placement until a full server restart.
+    #[test]
+    fn reload_config_applies_new_workspace_position() {
+        let _guard = config_env_lock().lock();
+        let path = temp_config_path("reload-config-new-workspace-position");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "[ui]\nnew_workspace_position = \"after_source\"\n").unwrap();
+        std::env::set_var(crate::config::CONFIG_PATH_ENV_VAR, &path);
+
+        let mut app = test_app();
+        assert_eq!(
+            app.state.new_workspace_position,
+            crate::config::NewWorkspacePositionConfig::End
+        );
+        let report = app.reload_config();
+
+        assert_eq!(report.status, crate::config::ConfigReloadStatus::Applied);
+        assert_eq!(
+            app.state.new_workspace_position,
+            crate::config::NewWorkspacePositionConfig::AfterSource
         );
         std::env::remove_var(crate::config::CONFIG_PATH_ENV_VAR);
         let _ = std::fs::remove_dir_all(path.parent().unwrap());

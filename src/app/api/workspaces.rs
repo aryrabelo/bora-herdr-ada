@@ -85,6 +85,7 @@ impl App {
                     self.state.mark_session_dirty();
                 }
                 self.emit_workspace_open_events(index);
+                let index = self.place_new_workspace(index, source_workspace_index);
                 encode_success(
                     id,
                     self.workspace_created_result(index)
@@ -93,6 +94,50 @@ impl App {
             }
             Err(err) => encode_error(id, "workspace_create_failed", err.to_string()),
         }
+    }
+
+    /// Places a newly created workspace relative to the workspace it was
+    /// created from, honoring `[ui] new_workspace_position`; returns the
+    /// workspace's final index.
+    ///
+    /// `end` (the default) keeps the historical behavior: the workspace
+    /// stays where `create_workspace_with_launch_env` pushed it — the end
+    /// of the list. `after_source` moves it to `source_index + 1` reusing
+    /// `WorkspaceState::move_workspace` and emits the SAME
+    /// `WorkspaceMoved` event `handle_workspace_move` emits, so every
+    /// other client's sidebar stays in sync. Without a source workspace
+    /// (CLI create with an explicit `--cwd` resolves no source), no mode
+    /// acts and nothing moves.
+    fn place_new_workspace(&mut self, created_index: usize, source_index: Option<usize>) -> usize {
+        let Some(source_index) = source_index else {
+            return created_index;
+        };
+        if self.state.new_workspace_position
+            != crate::config::NewWorkspacePositionConfig::AfterSource
+        {
+            return created_index;
+        }
+        // The created workspace is pushed last; when the source is the
+        // workspace right before it, `source_index + 1` is already where
+        // it lives and moving would be a no-op.
+        if source_index + 1 >= created_index {
+            return created_index;
+        }
+        let workspace_id = self.public_workspace_id(created_index);
+        let insert_index = source_index + 1;
+        if !self.state.move_workspace(created_index, insert_index) {
+            return created_index;
+        }
+        let workspaces = self.workspace_list_info();
+        self.emit_event(EventEnvelope {
+            event: EventKind::WorkspaceMoved,
+            data: EventData::WorkspaceMoved {
+                workspace_id,
+                insert_index,
+                workspaces,
+            },
+        });
+        insert_index
     }
 
     pub(super) fn handle_workspace_focus(&mut self, id: String, target: WorkspaceTarget) -> String {
@@ -589,6 +634,264 @@ mod tests {
         );
         shutdown_test_runtimes(&mut app);
         let _ = std::fs::remove_dir_all(&source_cwd);
+    }
+
+    // Regression guard for `[ui] new_workspace_position = "end"` (the
+    // factory default): a workspace created from a source in the MIDDLE of
+    // the list must keep the historical placement — appended last, away
+    // from its source — and no move event may be emitted.
+    #[tokio::test]
+    async fn workspace_create_end_keeps_new_workspace_last() {
+        use super::super::test_support::{exiting_test_command, shutdown_test_runtimes};
+        use crate::config::ShellModeConfig;
+
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(
+            &Config::default(),
+            crate::app::AppPolicy::TEST,
+            None,
+            api_rx,
+            crate::api::EventHub::default(),
+        );
+        app.state.default_shell = exiting_test_command().into();
+        app.state.shell_mode = ShellModeConfig::NonLogin;
+        assert_eq!(
+            app.state.new_workspace_position,
+            crate::config::NewWorkspacePositionConfig::End
+        );
+        app.state.workspaces = vec![
+            Workspace::test_new("source"),
+            Workspace::test_new("middle"),
+            Workspace::test_new("last"),
+        ];
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.ensure_test_terminals();
+        shutdown_test_runtimes(&mut app);
+
+        let source_cwd =
+            std::env::temp_dir().join(format!("herdr-ws-pos-end-{}", std::process::id()));
+        std::fs::create_dir_all(&source_cwd).unwrap();
+        let pane_id = app.state.workspaces[0].focused_pane_id().unwrap();
+        let terminal_id = app.state.workspaces[0]
+            .terminal_id(pane_id)
+            .cloned()
+            .unwrap();
+        app.state.terminals.get_mut(&terminal_id).unwrap().cwd = source_cwd.clone();
+        let source_workspace_id = app.public_workspace_id(0);
+        let source_sequence = app.event_hub.current_sequence();
+
+        let response = app.handle_workspace_create(
+            "req".into(),
+            WorkspaceCreateParams {
+                group: None,
+                source_workspace_id: Some(source_workspace_id),
+                cwd: None,
+                focus: false,
+                label: None,
+                env: Default::default(),
+            },
+        );
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        let ResponseResult::WorkspaceCreated { workspace, .. } = success.result else {
+            panic!("expected WorkspaceCreated");
+        };
+        assert_eq!(workspace.number, 4, "end mode must append last");
+        assert_eq!(
+            crate::worktree::canonical_or_original(&app.state.workspaces[3].identity_cwd),
+            crate::worktree::canonical_or_original(&source_cwd)
+        );
+        assert!(
+            app.event_hub
+                .events_after(source_sequence)
+                .iter()
+                .all(|(_, envelope)| !matches!(envelope.event, EventKind::WorkspaceMoved)),
+            "end mode must not emit workspace.moved"
+        );
+        shutdown_test_runtimes(&mut app);
+        let _ = std::fs::remove_dir_all(&source_cwd);
+    }
+
+    // `after_source` set through the real config path (`App::new` seed,
+    // not a state poke): the created workspace moves to `source_index + 1`,
+    // the response describes its FINAL position, and the SAME
+    // `workspace.moved` event `handle_workspace_move` emits reaches the
+    // hub AFTER the created events. An invalid source id must keep the
+    // `end` behavior — an error response, no workspace created, no panic.
+    #[tokio::test]
+    async fn workspace_create_after_source_inserts_right_after_source() {
+        use super::super::test_support::{exiting_test_command, shutdown_test_runtimes};
+        use crate::config::ShellModeConfig;
+
+        let mut config = Config::default();
+        config.ui.new_workspace_position = crate::config::NewWorkspacePositionConfig::AfterSource;
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(
+            &config,
+            crate::app::AppPolicy::TEST,
+            None,
+            api_rx,
+            crate::api::EventHub::default(),
+        );
+        app.state.default_shell = exiting_test_command().into();
+        app.state.shell_mode = ShellModeConfig::NonLogin;
+        assert_eq!(
+            app.state.new_workspace_position,
+            crate::config::NewWorkspacePositionConfig::AfterSource,
+            "the ui config key must reach AppState through App::new"
+        );
+        app.state.workspaces = vec![Workspace::test_new("first"), Workspace::test_new("last")];
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.ensure_test_terminals();
+        shutdown_test_runtimes(&mut app);
+
+        let source_cwd =
+            std::env::temp_dir().join(format!("herdr-ws-pos-after-{}", std::process::id()));
+        std::fs::create_dir_all(&source_cwd).unwrap();
+        let pane_id = app.state.workspaces[0].focused_pane_id().unwrap();
+        let terminal_id = app.state.workspaces[0]
+            .terminal_id(pane_id)
+            .cloned()
+            .unwrap();
+        app.state.terminals.get_mut(&terminal_id).unwrap().cwd = source_cwd.clone();
+        let source_workspace_id = app.public_workspace_id(0);
+        let source_sequence = app.event_hub.current_sequence();
+
+        let response = app.handle_workspace_create(
+            "req".into(),
+            WorkspaceCreateParams {
+                group: None,
+                source_workspace_id: Some(source_workspace_id),
+                cwd: None,
+                focus: false,
+                label: None,
+                env: Default::default(),
+            },
+        );
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        let ResponseResult::WorkspaceCreated { workspace, .. } = success.result else {
+            panic!("expected WorkspaceCreated");
+        };
+        let created_workspace_id = workspace.workspace_id.clone();
+        assert_eq!(app.state.workspaces.len(), 3);
+        assert_eq!(
+            crate::worktree::canonical_or_original(&app.state.workspaces[1].identity_cwd),
+            crate::worktree::canonical_or_original(&source_cwd)
+        );
+        assert_eq!(
+            workspace.number, 2,
+            "the create response must describe the FINAL position (source+1)"
+        );
+
+        let events: Vec<_> = app
+            .event_hub
+            .events_after(source_sequence)
+            .into_iter()
+            .map(|(_, envelope)| envelope)
+            .collect();
+        let created_pos = events
+            .iter()
+            .position(|envelope| matches!(envelope.event, EventKind::WorkspaceCreated));
+        let moved_pos = events
+            .iter()
+            .position(|envelope| matches!(envelope.event, EventKind::WorkspaceMoved));
+        let created_pos = created_pos.expect("workspace.created must be emitted");
+        let moved_pos = moved_pos.expect("workspace.moved must be emitted");
+        assert!(
+            created_pos < moved_pos,
+            "created events must precede the moved event"
+        );
+        match &events[moved_pos].data {
+            EventData::WorkspaceMoved {
+                workspace_id,
+                insert_index,
+                ..
+            } => {
+                assert_eq!(workspace_id, &created_workspace_id);
+                assert_eq!(*insert_index, 1, "the new workspace lands at source+1");
+            }
+            other => panic!("expected WorkspaceMoved data, got {other:?}"),
+        }
+
+        let invalid = app.handle_workspace_create(
+            "invalid".into(),
+            WorkspaceCreateParams {
+                group: None,
+                source_workspace_id: Some("w_999".into()),
+                cwd: None,
+                focus: false,
+                label: None,
+                env: Default::default(),
+            },
+        );
+        let error: ErrorResponse = serde_json::from_str(&invalid).unwrap();
+        assert_eq!(error.error.code, "workspace_not_found");
+        assert_eq!(app.state.workspaces.len(), 3);
+        shutdown_test_runtimes(&mut app);
+        let _ = std::fs::remove_dir_all(&source_cwd);
+    }
+
+    // Explicit `--cwd` resolves no source workspace (the CLI create path),
+    // so `after_source` must not act even when configured: the created
+    // workspace stays last and no move event is emitted.
+    #[tokio::test]
+    async fn workspace_create_after_source_with_explicit_cwd_stays_last() {
+        use super::super::test_support::{exiting_test_command, shutdown_test_runtimes};
+        use crate::config::ShellModeConfig;
+
+        let mut config = Config::default();
+        config.ui.new_workspace_position = crate::config::NewWorkspacePositionConfig::AfterSource;
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(
+            &config,
+            crate::app::AppPolicy::TEST,
+            None,
+            api_rx,
+            crate::api::EventHub::default(),
+        );
+        app.state.default_shell = exiting_test_command().into();
+        app.state.shell_mode = ShellModeConfig::NonLogin;
+        app.state.workspaces = vec![Workspace::test_new("first"), Workspace::test_new("last")];
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.ensure_test_terminals();
+        shutdown_test_runtimes(&mut app);
+
+        let cwd = std::env::temp_dir().join(format!("herdr-ws-pos-cwd-{}", std::process::id()));
+        std::fs::create_dir_all(&cwd).unwrap();
+        let source_sequence = app.event_hub.current_sequence();
+
+        let response = app.handle_workspace_create(
+            "req".into(),
+            WorkspaceCreateParams {
+                group: None,
+                source_workspace_id: None,
+                cwd: Some(cwd.display().to_string()),
+                focus: false,
+                label: None,
+                env: Default::default(),
+            },
+        );
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        let ResponseResult::WorkspaceCreated { workspace, .. } = success.result else {
+            panic!("expected WorkspaceCreated");
+        };
+        assert_eq!(app.state.workspaces.len(), 3);
+        assert_eq!(
+            crate::worktree::canonical_or_original(&app.state.workspaces[2].identity_cwd),
+            crate::worktree::canonical_or_original(&cwd)
+        );
+        assert_eq!(workspace.number, 3, "no source: the workspace stays last");
+        assert!(
+            app.event_hub
+                .events_after(source_sequence)
+                .iter()
+                .all(|(_, envelope)| !matches!(envelope.event, EventKind::WorkspaceMoved)),
+            "without a source no mode may act, so no move event"
+        );
+        shutdown_test_runtimes(&mut app);
+        let _ = std::fs::remove_dir_all(&cwd);
     }
 
     fn app_with_linked_worktree() -> App {
