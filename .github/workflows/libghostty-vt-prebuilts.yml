@@ -38,9 +38,10 @@ jobs:
           echo "version=${VERSION}" >> "${GITHUB_OUTPUT}"
 
       - name: Install Zig 0.16.0
-        # Same action+SHA pinned in ci.yml and release.yml. 0.16.0 is the vendored
-        # build.zig.zon `minimum_zig_version` (since 44f2a44), the same version the
-        # repo's shared mise pin provides on dev machines.
+        # Same Zig version (0.16.0) and SHA-pinned setup-zig practice as the ci.yml
+        # and release.yml steps, though through a different action (vercel-labs
+        # v1.0.2 there, mlugg v2.2.1 here). 0.16.0 is the vendored build.zig.zon
+        # `minimum_zig_version` (since 44f2a44), matching dev machines' mise pin.
         uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:
           version: 0.16.0
