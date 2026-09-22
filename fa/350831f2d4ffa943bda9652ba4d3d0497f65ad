@@ -1,0 +1,36 @@
+Cargo.lock
+  h_b156936c57c455 135
+Cargo.toml
+  h_b156936c57c455 3
+src/app/agent_resume.rs
+  h_b156936c57c455 268-270,272,283-312,405-435
+src/app/api/channels.rs
+  h_b156936c57c455 11-13,1052-1054,1071-1077,1096,1111-1170,1204-1290,1826-1904,3831-3832,3836-3846,3873-3874,4782-4788,4801-4804,4819-4825,4837,4859-5018,5042-5184
+src/app/mod.rs
+  h_b156936c57c455 106-141,1263-1279,1281,1286-1287,1289,1295-1297,1304-1315,1333,1348-1363,1369-1402,1495-1499,1534-1537,3613-3820
+src/client/shell/tests/attention_badge.rs
+  h_b156936c57c455 13-18,20,23
+src/client/shell/tests/popup_focus_projection.rs
+  h_b156936c57c455 169-171
+src/pane.rs
+  h_b156936c57c455 3433-3441,3455-3459,3470,4517-4545
+src/raw_input.rs
+  h_b156936c57c455 225-253,255-258,2388-2449
+src/server/headless.rs
+  h_b156936c57c455 1246-1253,2087-2093,2095-2096,2109-2114
+src/server/pane_input.rs
+  h_b156936c57c455 193-201,203,333-335,519-637
+src/terminal/runtime.rs
+  h_b156936c57c455 477-480
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "fa350831f2d4ffa943bda9652ba4d3d0497f65ad",
+  "prompts": {},
+  "humans": {
+    "h_b156936c57c455": {
+      "author": "Ary Rabelo <aryrabelo@gmail.com>"
+    }
+  }
+}
