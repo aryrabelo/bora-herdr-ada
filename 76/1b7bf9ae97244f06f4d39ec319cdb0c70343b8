@@ -1,0 +1,24 @@
+Cargo.toml
+  h_b156936c57c455 3
+src/client/shell/actions.rs
+  h_b156936c57c455 4-14,33
+src/client/shell/mouse.rs
+  h_b156936c57c455 2056-2063
+src/client/shell/sidebar.rs
+  h_b156936c57c455 202-207,213,218-227,229-231,236-239
+src/client/shell/state.rs
+  h_b156936c57c455 174-180
+src/client/shell/tests/folders.rs
+  h_b156936c57c455 698-740
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "761b7bf9ae97244f06f4d39ec319cdb0c70343b8",
+  "prompts": {},
+  "humans": {
+    "h_b156936c57c455": {
+      "author": "Ary Rabelo <aryrabelo@gmail.com>"
+    }
+  }
+}
