@@ -273,12 +273,6 @@ fn worktree_create(args: &[String]) -> std::io::Result<i32> {
                 return Ok(2);
             }
         };
-    if prompt.is_some() && agent.is_none() {
-        eprintln!(
-            "--prompt/--prompt-file requires an agent; pass --agent KIND or --agent-name NAME"
-        );
-        return Ok(2);
-    }
 
     // The caller's own folder, resolved before anything is created so a
     // failure here never leaves a stray ungrouped workspace behind.
@@ -388,6 +382,11 @@ fn caller_repo_root(trust_repository: bool) -> Option<String> {
 /// next to the work that dispatched it. `None` outside a bora pane, or when
 /// the caller's own workspace is ungrouped.
 fn caller_group() -> Option<String> {
+    // A remote target has its own panes; the local `$HERDR_PANE_ID` names
+    // nothing there, exactly as remote commands never inherit local pane IDs.
+    if super::target::is_remote() {
+        return None;
+    }
     let pane_id = std::env::var("HERDR_PANE_ID")
         .ok()
         .filter(|value| !value.trim().is_empty())
