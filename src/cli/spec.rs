@@ -322,13 +322,24 @@ fn worktree_command() -> Command {
         )
         .subcommand(
             Command::new("create")
-                .about("Create and open a Git worktree")
+                .about("Create and open a Git worktree, optionally with an agent and a prompt")
                 .arg(option("workspace", "ID"))
                 .arg(path_option("cwd", "PATH"))
                 .arg(option("branch", "NAME"))
                 .arg(option("base", "REF"))
                 .arg(path_option("path", "PATH"))
                 .arg(option("label", "TEXT"))
+                .arg(option("group", "NAME").help("Sidebar folder; defaults to the caller pane's"))
+                .arg(flag("no-group").help("Do not inherit the caller pane's folder"))
+                .arg(option("agent", "KIND").help("Run an agent on the new pane"))
+                .arg(
+                    option("agent-name", "NAME").help("Name for that agent; defaults to the label"),
+                )
+                .arg(option("prompt", "TEXT").help("Prompt to deliver once the agent is ready"))
+                .arg(
+                    path_option("prompt-file", "PATH")
+                        .help("Send a pointer to this spec file instead"),
+                )
                 .arg(flag("focus"))
                 .arg(flag("no-focus"))
                 .arg(flag("trust-repository")),

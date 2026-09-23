@@ -4,6 +4,9 @@ Bora is a fork of [herdr](https://github.com/ogulcancelik/herdr). This changelog
 
 ## Unreleased
 
+### Added
+- `bora worktree create` is the whole dispatch chain in one command. It resolves the repository from the caller's own directory (a linked worktree resolves its parent repo) instead of the workspace focused in the app; defaults the workspace label to the branch slug; inherits the sidebar folder of the calling pane (`$HERDR_PANE_ID`, `--group`/`--no-group` to override); and with `--agent`/`--agent-name`/`--prompt`/`--prompt-file` also puts a named agent on the new pane and delivers the prompt once it is interactive. A pane that already runs an agent is renamed rather than reported as `agent_pane_busy`. The response gained `branch_source`, `head` and `already_open`: a branch that exists as `origin/<branch>` now starts at the remote tip with upstream tracking instead of being branched off the trunk, a new branch without `--base` starts from the remote's default branch, and re-running the same command reuses the existing worktree and workspace.
+
 ### Fixed
 - `bora update` works again from 0.45.5 and earlier: those builds fetch the release manifest at `website/latest.json`, which the 0.9.0 sync had moved to `distribution/`. Both paths are now published and kept identical.
 - Panes restored from a saved session no longer inherit `HERDR_STARTUP_CWD` from the server. A nested `bora server` launched from such a pane saw the variable and seeded an unexpected workspace at that path.

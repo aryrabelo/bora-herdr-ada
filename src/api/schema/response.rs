@@ -20,7 +20,7 @@ use super::server::ServerCapabilities;
 use super::session::SessionSnapshot;
 use super::tabs::TabInfo;
 use super::workspaces::WorkspaceInfo;
-use super::worktrees::{WorktreeInfo, WorktreeSourceInfo};
+use super::worktrees::{WorktreeBranchSource, WorktreeInfo, WorktreeSourceInfo};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct SuccessResponse {
@@ -72,6 +72,16 @@ pub enum ResponseResult {
         tab: TabInfo,
         root_pane: PaneInfo,
         worktree: WorktreeInfo,
+        /// How the branch was obtained; `existing` when the worktree was
+        /// already there and this call only opened it.
+        branch_source: WorktreeBranchSource,
+        /// Commit the checkout points at, so the caller can verify it landed
+        /// on the tip it asked for.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        head: Option<String>,
+        /// True when the worktree (and its workspace) already existed: a
+        /// re-run reuses them instead of creating a second one.
+        already_open: bool,
     },
     WorktreeOpened {
         workspace: WorkspaceInfo,

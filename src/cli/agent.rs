@@ -700,6 +700,156 @@ fn send_new_agent_prompt(target: &str, text: &str) -> std::io::Result<serde_json
     })
 }
 
+/// Prompt delivery for composed commands: same verb `agent prompt` uses,
+/// attributed to the caller pane so the receiving agent sees who dispatched it.
+pub(super) fn send_agent_prompt(target: &str, text: &str) -> std::io::Result<serde_json::Value> {
+    send_new_agent_prompt(target, text)
+}
+
+/// A named agent living on a pane, and how it got there.
+pub(super) struct PaneAgent {
+    pub(super) name: String,
+    /// The `AgentInfo` JSON as the server reports it.
+    pub(super) agent: serde_json::Value,
+    /// `true` when this call started the process; `false` when an agent was
+    /// already living on the pane and was only renamed.
+    pub(super) started: bool,
+}
+
+/// Puts an agent named `name` on `pane_id`, whether or not the pane already
+/// runs one of its own.
+///
+/// Both outcomes are success. A pane whose shell launches an agent by itself
+/// answers `agent.start` with `agent_pane_busy` — reuse, not failure (the same
+/// reading `agent_name_taken` gets on the get-or-create path). On that answer
+/// this waits for the server's own registration instead of sleeping a fixed
+/// amount, then renames what registered. A genuinely bare pane never pays that
+/// wait: `agent.start` succeeds on the first try.
+///
+/// `Err` is transport failure; `Ok(Err(json))` is a wire error to report.
+pub(super) fn ensure_named_agent_on_pane(
+    pane_id: &str,
+    kind: &str,
+    name: &str,
+    registration_timeout: Duration,
+) -> std::io::Result<Result<PaneAgent, serde_json::Value>> {
+    let Some(parsed_kind) = crate::detect::parse_agent_label(kind) else {
+        return Ok(Err(cli_agent_error(
+            "cli:agent:ensure",
+            "agent_kind_mismatch",
+            format!("unsupported interactive agent kind: {kind}"),
+        )));
+    };
+    let kind = crate::detect::agent_label(parsed_kind).to_string();
+
+    // An agent already registered here (a re-dispatch onto a workspace that
+    // was still open) is the agent to reuse: starting a second one on the same
+    // pane is impossible anyway.
+    let existing = resolve_agent_target_unchecked(pane_id, "cli:agent:ensure")?;
+    if existing.get("error").is_none() && !existing["result"]["agent"].is_null() {
+        return adopt_pane_agent(
+            pane_id,
+            name,
+            existing["result"]["agent"].clone(),
+            registration_timeout,
+        );
+    }
+
+    let started = start_agent_core(name, &kind, pane_id, Vec::new(), None)?;
+    if started.get("error").is_none() {
+        return Ok(Ok(PaneAgent {
+            name: name.to_owned(),
+            agent: started["result"]["agent"].clone(),
+            started: true,
+        }));
+    }
+    if started["error"]["code"].as_str() != Some("agent_pane_busy") {
+        return Ok(Err(started));
+    }
+    // The pane runs its own agent. Wait for the server to register it, then
+    // rename rather than report the busy pane as a failure.
+    let Some(agent) = wait_for_pane_agent(pane_id, registration_timeout)? else {
+        return Ok(Err(started));
+    };
+    adopt_pane_agent(pane_id, name, agent, registration_timeout)
+}
+
+/// Renames the agent already on the pane to `name`, waits for it to become
+/// interactive, and returns its refreshed info. A pane whose agent is already
+/// named `name` is left alone. Not becoming ready inside the window is not an
+/// error: the caller reports the status it actually observed.
+fn adopt_pane_agent(
+    pane_id: &str,
+    name: &str,
+    agent: serde_json::Value,
+    ready_timeout: Duration,
+) -> std::io::Result<Result<PaneAgent, serde_json::Value>> {
+    if agent["name"].as_str() != Some(name) {
+        let renamed = super::send_request(&Request {
+            id: "cli:agent:rename".into(),
+            method: Method::AgentRename(AgentRenameParams {
+                target: pane_id.to_owned(),
+                name: Some(name.to_owned()),
+            }),
+        })?;
+        if renamed.get("error").is_some() {
+            return Ok(Err(renamed));
+        }
+    }
+    Ok(Ok(PaneAgent {
+        name: name.to_owned(),
+        agent: wait_for_interactive_agent(pane_id, ready_timeout)?.unwrap_or(agent),
+        started: false,
+    }))
+}
+
+/// Polls until the pane's agent reports `interactive_ready`, so a prompt is
+/// not typed into a process that is still drawing its first screen. Returns
+/// the last snapshot it saw either way.
+fn wait_for_interactive_agent(
+    pane_id: &str,
+    timeout: Duration,
+) -> std::io::Result<Option<serde_json::Value>> {
+    let deadline = Instant::now().checked_add(timeout);
+    let mut last = None;
+    loop {
+        let response = resolve_agent_target_unchecked(pane_id, "cli:agent:ensure")?;
+        if response.get("error").is_none() && !response["result"]["agent"].is_null() {
+            let agent = response["result"]["agent"].clone();
+            let ready = agent["interactive_ready"].as_bool() == Some(true);
+            last = Some(agent);
+            if ready {
+                return Ok(last);
+            }
+        }
+        if deadline.is_none_or(|deadline| Instant::now() >= deadline) {
+            return Ok(last);
+        }
+        std::thread::sleep(AGENT_START_POLL_INTERVAL);
+    }
+}
+
+/// Polls the server's own agent registry until the pane reports an agent, or
+/// the deadline passes. `agent_not_found` inside the window is "not yet", not
+/// "never": concluding "bare pane" from a single early snapshot is what leads
+/// straight into `agent_pane_busy`.
+fn wait_for_pane_agent(
+    pane_id: &str,
+    timeout: Duration,
+) -> std::io::Result<Option<serde_json::Value>> {
+    let deadline = Instant::now().checked_add(timeout);
+    loop {
+        let response = resolve_agent_target_unchecked(pane_id, "cli:agent:ensure")?;
+        if response.get("error").is_none() && !response["result"]["agent"].is_null() {
+            return Ok(Some(response["result"]["agent"].clone()));
+        }
+        if deadline.is_none_or(|deadline| Instant::now() >= deadline) {
+            return Ok(None);
+        }
+        std::thread::sleep(AGENT_START_POLL_INTERVAL);
+    }
+}
+
 /// Default agent name for `agent --new`: the cwd's basename reduced to a
 /// pane-friendly token (`My Proj!` → `my-proj`), `agent` when nothing
 /// survives. Collision suffixes are the caller's loop.

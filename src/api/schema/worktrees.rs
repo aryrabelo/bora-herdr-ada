@@ -59,6 +59,34 @@ pub struct WorktreeRemoveParams {
     pub trust_repository: bool,
 }
 
+/// Where the branch a `worktree.create` landed on came from. Reported so a
+/// caller opening an existing PR branch can tell "you are on the remote tip"
+/// apart from "I branched you off the trunk" — the two look identical in the
+/// response otherwise, and only the second one silently rewrites the PR on the
+/// next push.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum WorktreeBranchSource {
+    /// A local branch of that name already existed and was checked out as-is.
+    Local,
+    /// The local branch was created at `origin/<branch>` and tracks it.
+    Remote,
+    /// The branch is new, created from the base ref.
+    New,
+    /// Nothing was created: a worktree for this branch was already there.
+    Existing,
+}
+
+impl From<crate::worktree::BranchSource> for WorktreeBranchSource {
+    fn from(source: crate::worktree::BranchSource) -> Self {
+        match source {
+            crate::worktree::BranchSource::Local => Self::Local,
+            crate::worktree::BranchSource::Remote => Self::Remote,
+            crate::worktree::BranchSource::New => Self::New,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct WorktreeSourceInfo {
     pub repo_key: String,

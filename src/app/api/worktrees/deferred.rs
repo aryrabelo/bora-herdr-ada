@@ -132,14 +132,49 @@ impl App {
             );
             return;
         }
-        let base = params.base.unwrap_or_else(|| "HEAD".into());
-        let source = match self.resolve_worktree_source(params.workspace_id, params.cwd) {
+        let base = params.base;
+        let mut source = match self.resolve_worktree_source(params.workspace_id, params.cwd) {
             Ok(source) => source,
             Err(err) => {
                 Self::send_api_response(respond_to, encode_error(id, err.code, err.message));
                 return;
             }
         };
+        // Idempotent re-dispatch: git refuses a second worktree for a branch
+        // that already has one, so a re-run must reuse it (and the workspace
+        // already bound to it) instead of failing the whole chain on
+        // `git worktree add`. PR creates resolve their real branch inside the
+        // worker and do their own reuse there.
+        if pr.is_none() {
+            if let Ok(entries) = crate::worktree::list_existing_worktrees(
+                &source.source_repo_root,
+                params.trust_repository,
+            ) {
+                if let Some(entry) = entries.into_iter().find(|entry| {
+                    !entry.is_bare
+                        && !entry.is_prunable
+                        && entry.branch.as_deref() == Some(branch.as_str())
+                }) {
+                    let head = crate::worktree::head_sha(&entry.path, params.trust_repository);
+                    let response = match self.attach_worktree_entry(
+                        &mut source,
+                        entry,
+                        params.label,
+                        params.focus,
+                    ) {
+                        Ok(attached) => self.encode_worktree_created(
+                            id,
+                            attached,
+                            crate::api::schema::WorktreeBranchSource::Existing,
+                            head,
+                        ),
+                        Err(err) => encode_error(id, err.code, err.message),
+                    };
+                    Self::send_api_response(respond_to, response);
+                    return;
+                }
+            }
+        }
         let checkout_path = match params.path {
             Some(path) => match absolute_user_path(&path) {
                 Ok(path) => path,
@@ -222,19 +257,22 @@ impl App {
                     &source_checkout_path,
                     &path,
                     &branch,
-                    &base,
+                    base.as_deref(),
                     params.trust_repository,
                 ),
             });
+            let mut head = None;
             if result.is_ok() {
                 crate::worktree::copy_worktree_includes(&source_repo_root, &path);
                 crate::worktree::ensure_context_dir(&source_repo_root, &path);
+                head = crate::worktree::head_sha(&path, params.trust_repository);
             }
             let _ = event_tx.blocking_send(AppEvent::WorktreeAddFinished(Box::new(
                 crate::events::WorktreeAddResult {
                     path,
                     api_request: Some(api_request),
                     result,
+                    head,
                 },
             )));
         });
@@ -391,6 +429,37 @@ impl App {
         });
     }
 
+    /// One `worktree_created` response shape for both paths: the freshly added
+    /// checkout and the reuse of one that already existed. Reuse reports
+    /// `already_open: true` so an idempotent re-dispatch is distinguishable
+    /// from a first run without diffing workspace lists.
+    fn encode_worktree_created(
+        &mut self,
+        id: String,
+        attached: super::AttachedWorktree,
+        branch_source: crate::api::schema::WorktreeBranchSource,
+        head: Option<String>,
+    ) -> String {
+        let ws_idx = attached.ws_idx;
+        let tab_idx = self.state.workspaces[ws_idx].active_tab;
+        encode_success(
+            id,
+            ResponseResult::WorktreeCreated {
+                workspace: self.workspace_info(ws_idx),
+                tab: self
+                    .tab_info(ws_idx, tab_idx)
+                    .expect("worktree workspace should have an active tab"),
+                root_pane: self
+                    .root_pane_info(ws_idx, tab_idx)
+                    .expect("worktree workspace should have an active root pane"),
+                worktree: attached.worktree,
+                branch_source,
+                head,
+                already_open: attached.already_open,
+            },
+        )
+    }
+
     pub(crate) fn handle_api_worktree_add_finished(
         &mut self,
         mut result: crate::events::WorktreeAddResult,
@@ -416,13 +485,16 @@ impl App {
         }
         self.pending_api_worktree_creates.remove(&checkout_key);
 
-        if let Err(err) = result.result {
-            Self::send_api_response(
-                api.respond_to,
-                encode_error(api.id, "worktree_create_failed", err),
-            );
-            return;
-        }
+        let branch_source = match result.result {
+            Ok(source) => crate::api::schema::WorktreeBranchSource::from(source),
+            Err(err) => {
+                Self::send_api_response(
+                    api.respond_to,
+                    encode_error(api.id, "worktree_create_failed", err),
+                );
+                return;
+            }
+        };
 
         let source_workspace_idx = self.api_create_source_workspace_idx(&api);
         let mut source = WorktreeSource {
@@ -500,6 +572,9 @@ impl App {
                     .root_pane_info(ws_idx, tab_idx)
                     .expect("created worktree workspace should have an active root pane"),
                 worktree,
+                branch_source,
+                head: result.head,
+                already_open: false,
             },
         );
         Self::send_api_response(api.respond_to, response);

@@ -85,7 +85,10 @@ fn worktree_created_result() -> crate::api::schema::ResponseResult {
             "path": "/repo-feature", "branch": "feature/reconnect", "is_bare": false,
             "is_detached": false, "is_prunable": false, "is_linked_worktree": true,
             "open_workspace_id": "ws_2", "label": "worktree"
-        }
+        },
+        "branch_source": "remote",
+        "head": "0123456789abcdef0123456789abcdef01234567",
+        "already_open": false
     }))
     .unwrap()
 }
