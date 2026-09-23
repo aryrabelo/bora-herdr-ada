@@ -284,14 +284,13 @@ pub(crate) fn build_worktree_add_existing_branch_command(
     }
 }
 
-fn local_branch_exists(
-    repo_root: &Path,
-    branch: &str,
-    trust_repository: bool,
-) -> Result<bool, String> {
+/// Whether a ref exists in the repository, without touching the network.
+/// `show-ref --verify --quiet` exits 0 when present, 1 when absent; anything
+/// else is a real git failure and must not be read as "absent".
+fn ref_exists(repo_root: &Path, reference: &str, trust_repository: bool) -> Result<bool, String> {
     let output = repository_git_command(repo_root, trust_repository)
         .args(["show-ref", "--verify", "--quiet"])
-        .arg(format!("refs/heads/{branch}"))
+        .arg(reference)
         .output()
         .map_err(|err| err.to_string())?;
 
@@ -313,19 +312,131 @@ fn local_branch_exists(
     }
 }
 
+fn local_branch_exists(
+    repo_root: &Path,
+    branch: &str,
+    trust_repository: bool,
+) -> Result<bool, String> {
+    ref_exists(repo_root, &format!("refs/heads/{branch}"), trust_repository)
+}
+
+/// True when `origin/<branch>` is already in this clone's remote-tracking
+/// refs. Local only: a clone that never fetched the branch answers "no" and
+/// the caller creates a new branch, which is the honest outcome for what this
+/// repository actually knows.
+pub(crate) fn remote_branch_exists(
+    repo_root: &Path,
+    branch: &str,
+    trust_repository: bool,
+) -> Result<bool, String> {
+    ref_exists(
+        repo_root,
+        &format!("refs/remotes/origin/{branch}"),
+        trust_repository,
+    )
+}
+
+/// Where a brand-new branch starts when the caller gave no base: `origin/HEAD`
+/// (the remote's default branch, recorded at clone time) so a dispatch from a
+/// repo sitting on some other branch still branches from the trunk. Falls back
+/// to `HEAD` when the clone has no `origin/HEAD`.
+pub(crate) fn default_base_ref(repo_root: &Path, trust_repository: bool) -> String {
+    let output = repository_git_command(repo_root, trust_repository)
+        .args(["symbolic-ref", "--quiet", "--short"])
+        .arg("refs/remotes/origin/HEAD")
+        .output();
+    let Ok(output) = output else {
+        return "HEAD".to_string();
+    };
+    if !output.status.success() {
+        return "HEAD".to_string();
+    }
+    let reference = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if reference.is_empty() {
+        "HEAD".to_string()
+    } else {
+        reference
+    }
+}
+
+/// Commit the checkout currently points at, so a caller can compare against
+/// the remote tip instead of trusting that the worktree landed where it asked.
+pub(crate) fn head_sha(checkout_path: &Path, trust_repository: bool) -> Option<String> {
+    let output = repository_git_command(checkout_path, trust_repository)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let sha = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    (!sha.is_empty()).then_some(sha)
+}
+
+/// Root of the repository's MAIN checkout for any path inside it, linked
+/// worktrees included: `git worktree list` always reports the main worktree
+/// first. Worktree creation starts from the parent repo, so a caller standing
+/// in a linked worktree still resolves a usable source.
+pub(crate) fn main_worktree_root(cwd: &Path, trust_repository: bool) -> Option<PathBuf> {
+    list_existing_worktrees(cwd, trust_repository)
+        .ok()?
+        .into_iter()
+        .next()
+        .map(|entry| entry.path)
+}
+
+/// How the branch backing a fresh worktree came to be. The distinction is
+/// load-bearing: a caller opening a PR branch must land on the remote tip, and
+/// silently getting `New` off the trunk means a later push rewrites someone
+/// else's PR.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BranchSource {
+    /// A local branch of that name already existed; it was checked out as-is.
+    Local,
+    /// No local branch, but `origin/<branch>` did: the new local branch starts
+    /// at the remote tip and tracks it.
+    Remote,
+    /// Neither existed: a new branch off the base ref.
+    New,
+}
+
 pub(crate) fn run_worktree_add_command(
     repo_root: &Path,
     path: &Path,
     branch: &str,
-    base: &str,
+    base: Option<&str>,
     trust_repository: bool,
-) -> Result<(), String> {
-    let command = if local_branch_exists(repo_root, branch, trust_repository)? {
-        build_worktree_add_existing_branch_command(repo_root, path, branch, trust_repository)
-    } else {
-        build_worktree_add_new_branch_command(repo_root, path, branch, base, trust_repository)
+) -> Result<BranchSource, String> {
+    if local_branch_exists(repo_root, branch, trust_repository)? {
+        run_worktree_command(&build_worktree_add_existing_branch_command(
+            repo_root,
+            path,
+            branch,
+            trust_repository,
+        ))?;
+        return Ok(BranchSource::Local);
+    }
+    if remote_branch_exists(repo_root, branch, trust_repository)? {
+        run_worktree_command(&build_worktree_add_tracking_branch_command(
+            repo_root,
+            path,
+            branch,
+            trust_repository,
+        ))?;
+        return Ok(BranchSource::Remote);
+    }
+    let base = match base {
+        Some(base) => base.to_string(),
+        None => default_base_ref(repo_root, trust_repository),
     };
-    run_worktree_command(&command)
+    run_worktree_command(&build_worktree_add_new_branch_command(
+        repo_root,
+        path,
+        branch,
+        &base,
+        trust_repository,
+    ))?;
+    Ok(BranchSource::New)
 }
 
 /// Head metadata for a pull request, resolved authoritatively via `gh pr view`
@@ -483,7 +594,7 @@ pub(crate) fn run_worktree_add_for_pull_request(
     path: &Path,
     pr_number: u64,
     trust_repository: bool,
-) -> Result<(), String> {
+) -> Result<BranchSource, String> {
     let head = resolve_pull_request_head(source_checkout, pr_number)?;
     let local_branch = if head.is_cross_repository {
         pr_fork_branch_name(pr_number)
@@ -498,7 +609,7 @@ pub(crate) fn run_worktree_add_for_pull_request(
         existing_worktree_path_on_branch(source_checkout, &local_branch, trust_repository)?
     {
         return if canonical_or_original(&existing) == canonical_or_original(path) {
-            Ok(())
+            Ok(BranchSource::Local)
         } else {
             Err(format!(
                 "PR #{pr_number} branch '{local_branch}' is already checked out at {}",
@@ -512,34 +623,43 @@ pub(crate) fn run_worktree_add_for_pull_request(
             pr_number,
             trust_repository,
         ))?;
-        return run_worktree_command(&build_worktree_add_existing_branch_command(
+        run_worktree_command(&build_worktree_add_existing_branch_command(
             source_checkout,
             path,
             &local_branch,
             trust_repository,
-        ));
+        ))?;
+        return Ok(BranchSource::Remote);
     }
     run_worktree_command(&build_pr_branch_fetch_command(
         source_checkout,
         &head.head_ref_name,
         trust_repository,
     ))?;
-    let command = if local_branch_exists(source_checkout, &head.head_ref_name, trust_repository)? {
-        build_worktree_add_existing_branch_command(
-            source_checkout,
-            path,
-            &head.head_ref_name,
-            trust_repository,
-        )
-    } else {
-        build_worktree_add_tracking_branch_command(
-            source_checkout,
-            path,
-            &head.head_ref_name,
-            trust_repository,
-        )
-    };
-    run_worktree_command(&command)
+    let (command, source) =
+        if local_branch_exists(source_checkout, &head.head_ref_name, trust_repository)? {
+            (
+                build_worktree_add_existing_branch_command(
+                    source_checkout,
+                    path,
+                    &head.head_ref_name,
+                    trust_repository,
+                ),
+                BranchSource::Local,
+            )
+        } else {
+            (
+                build_worktree_add_tracking_branch_command(
+                    source_checkout,
+                    path,
+                    &head.head_ref_name,
+                    trust_repository,
+                ),
+                BranchSource::Remote,
+            )
+        };
+    run_worktree_command(&command)?;
+    Ok(source)
 }
 
 /// Path of an existing worktree currently checked out on `branch` in this

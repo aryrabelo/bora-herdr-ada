@@ -11,3 +11,4 @@ mod protocol_guard;
 mod sessions;
 mod surface;
 mod workspace;
+mod worktree_create;

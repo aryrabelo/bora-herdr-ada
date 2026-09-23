@@ -29,7 +29,10 @@ pub struct ApiWorktreeAddRequest {
 pub struct WorktreeAddResult {
     pub path: std::path::PathBuf,
     pub api_request: Option<ApiWorktreeAddRequest>,
-    pub result: Result<(), String>,
+    pub result: Result<crate::worktree::BranchSource, String>,
+    /// HEAD of the new checkout, read in the worker right after `git worktree
+    /// add` so the response can prove where the branch actually landed.
+    pub head: Option<String>,
 }
 
 #[derive(Debug)]

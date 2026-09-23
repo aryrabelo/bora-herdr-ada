@@ -344,6 +344,32 @@ pub(super) fn run_cli_in_dir(
     command.output().unwrap()
 }
 
+pub(super) fn run_cli_in_dir_with_env(
+    socket_path: &Path,
+    args: &[&str],
+    current_dir: &Path,
+    envs: &[(&str, &str)],
+) -> std::process::Output {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_bora"));
+    command.args(args);
+    command.current_dir(current_dir);
+    command.env("HERDR_SOCKET_PATH", socket_path);
+    for (key, value) in envs {
+        command.env(key, value);
+    }
+    command.output().unwrap()
+}
+
+pub(super) fn run_cli_json_in_dir_with_env(
+    socket_path: &Path,
+    args: &[&str],
+    current_dir: &Path,
+    envs: &[(&str, &str)],
+) -> serde_json::Value {
+    let output = run_cli_in_dir_with_env(socket_path, args, current_dir, envs);
+    parse_cli_json_output(args, output)
+}
+
 pub(super) fn pane_topology_snapshot(list_response: &serde_json::Value) -> Vec<serde_json::Value> {
     list_response["result"]["panes"]
         .as_array()

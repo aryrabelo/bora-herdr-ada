@@ -173,12 +173,20 @@ A workspace is a top-level project or work context. Creating one also creates it
 
 ```bash
 herdr worktree list [--workspace ID | --cwd PATH] [--trust-repository]
-herdr worktree create [--workspace ID | --cwd PATH] [--branch NAME] [--base REF] [--path PATH] [--label TEXT] [--focus] [--no-focus] [--trust-repository]
+herdr worktree create [--workspace ID | --cwd PATH] [--branch NAME] [--base REF] [--path PATH] [--label TEXT] [--group NAME] [--no-group] [--agent KIND] [--agent-name NAME] [--prompt TEXT | --prompt-file PATH] [--focus] [--no-focus] [--trust-repository]
 herdr worktree open [--workspace ID | --cwd PATH] (--path PATH | --branch NAME) [--label TEXT] [--focus] [--no-focus] [--trust-repository]
 herdr worktree remove --workspace ID [--force] [--trust-repository]
 ```
 
-Worktrees are normal Herdr workspaces with Git checkout provenance. `worktree create` creates a Git worktree checkout, opens it as a workspace, and groups it with the parent repo workspace. If `--branch` names an existing local branch, Herdr checks it out; otherwise it creates the branch from `--base` or `HEAD`. Without `--path`, Herdr creates the checkout under `<worktrees.directory>/<repo>/<branch-slug>`.
+Worktrees are normal Herdr workspaces with Git checkout provenance. `worktree create` creates a Git worktree checkout, opens it as a workspace, and groups it with the parent repo workspace. Without `--path`, Herdr creates the checkout under `<worktrees.directory>/<repo>/<branch-slug>`; without `--label`, the workspace is labelled with the branch slug.
+
+Neither `--workspace` nor `--cwd`: the repository is the one the command was run in, not the workspace focused in the app. Running inside a linked worktree resolves its parent repo, so dispatching a second worktree from inside the first works.
+
+`--branch` resolves in three steps, reported back as `.result.branch_source`: an existing local branch is checked out (`local`); otherwise an existing `origin/<branch>` becomes a local branch at the remote tip with upstream tracking (`remote`), so opening a published PR branch lands on the PR instead of silently branching off the trunk; otherwise the branch is new (`new`), created from `--base`, or from the remote's default branch when `--base` is absent. `.result.head` reports the commit the checkout actually points at. A branch that already has a worktree is reused rather than recreated (`existing`, with `.result.already_open` true), so re-running the same command is safe.
+
+`--group` places the new workspace in a sidebar folder. Without it, the workspace inherits the folder of the pane that ran the command (`$HERDR_PANE_ID`), so dispatched work lands next to the work that dispatched it; `--no-group` opts out.
+
+`--agent` runs an agent on the new workspace's root pane and `--agent-name` names it (default: the label). A pane whose shell already launches an agent is not an error: the agent that registers is renamed instead of being started twice. `--prompt` is delivered verbatim once the agent is interactive; `--prompt-file` delivers a pointer to the absolute path instead of the contents, so the spec survives the agent compacting its own context. The whole chain answers with one JSON object carrying `ok`, `workspace_id`, `pane_id`, `path`, `branch`, `branch_source`, `head`, `label`, `group`, `agent`, and `prompt_sent`; when a link fails after the checkout exists, that object is still printed with `ok: false` and `failed_step`, and the exit code is 1.
 
 `workspace close` closes only Herdr state. Closing a primary workspace closes only that workspace; pass `--group` to also close the linked-worktree workspaces sharing its checkout. To delete the checkout, run `worktree remove`. It runs `git worktree remove`, never deletes the branch, and requires `--force` when Git refuses a dirty checkout.
 

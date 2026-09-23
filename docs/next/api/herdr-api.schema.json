@@ -10669,6 +10669,21 @@
             },
             {
               "properties": {
+                "already_open": {
+                  "description": "True when the worktree (and its workspace) already existed: a\nre-run reuses them instead of creating a second one.",
+                  "type": "boolean"
+                },
+                "branch_source": {
+                  "$ref": "#/schemas/success_response/$defs/WorktreeBranchSource",
+                  "description": "How the branch was obtained; `existing` when the worktree was\nalready there and this call only opened it."
+                },
+                "head": {
+                  "description": "Commit the checkout points at, so the caller can verify it landed\non the tip it asked for.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
                 "root_pane": {
                   "$ref": "#/schemas/success_response/$defs/PaneInfo"
                 },
@@ -10691,7 +10706,9 @@
                 "workspace",
                 "tab",
                 "root_pane",
-                "worktree"
+                "worktree",
+                "branch_source",
+                "already_open"
               ],
               "type": "object"
             },
@@ -12397,6 +12414,31 @@
             "is_linked_worktree"
           ],
           "type": "object"
+        },
+        "WorktreeBranchSource": {
+          "description": "Where the branch a `worktree.create` landed on came from. Reported so a\ncaller opening an existing PR branch can tell \"you are on the remote tip\"\napart from \"I branched you off the trunk\" — the two look identical in the\nresponse otherwise, and only the second one silently rewrites the PR on the\nnext push.",
+          "oneOf": [
+            {
+              "const": "local",
+              "description": "A local branch of that name already existed and was checked out as-is.",
+              "type": "string"
+            },
+            {
+              "const": "remote",
+              "description": "The local branch was created at `origin/<branch>` and tracks it.",
+              "type": "string"
+            },
+            {
+              "const": "new",
+              "description": "The branch is new, created from the base ref.",
+              "type": "string"
+            },
+            {
+              "const": "existing",
+              "description": "Nothing was created: a worktree for this branch was already there.",
+              "type": "string"
+            }
+          ]
         },
         "WorktreeInfo": {
           "properties": {

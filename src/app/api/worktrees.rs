@@ -44,6 +44,15 @@ struct WorktreeSource {
     repo_name: String,
 }
 
+/// Result of binding an existing checkout to a workspace: which workspace it
+/// landed in, the worktree snapshot to report, and whether the workspace was
+/// already open (a reuse, not a new workspace).
+struct AttachedWorktree {
+    ws_idx: usize,
+    worktree: WorktreeInfo,
+    already_open: bool,
+}
+
 impl App {
     pub(super) fn handle_worktree_list(
         &mut self,
@@ -104,8 +113,46 @@ impl App {
             Ok(entry) => entry,
             Err(err) => return encode_error(id, err.code, err.message),
         };
+        let attached =
+            match self.attach_worktree_entry(&mut source, entry, params.label, params.focus) {
+                Ok(attached) => attached,
+                Err(err) => return encode_error(id, err.code, err.message),
+            };
+
+        let tab_idx = self.state.workspaces[attached.ws_idx].active_tab;
+        encode_success(
+            id,
+            ResponseResult::WorktreeOpened {
+                workspace: self.workspace_info(attached.ws_idx),
+                tab: self
+                    .tab_info(attached.ws_idx, tab_idx)
+                    .expect("opened worktree workspace should have an active tab"),
+                root_pane: self
+                    .root_pane_info(attached.ws_idx, tab_idx)
+                    .expect("opened worktree workspace should have an active root pane"),
+                worktree: attached.worktree,
+                already_open: attached.already_open,
+            },
+        )
+    }
+
+    /// Binds an existing worktree checkout to a workspace: reuses the open one
+    /// when there is one, otherwise creates it, records the membership, applies
+    /// the label, and emits the `worktree_opened` event. Shared by
+    /// `worktree.open` and by `worktree.create`'s reuse path, which must land
+    /// on the same workspace a plain open would.
+    fn attach_worktree_entry(
+        &mut self,
+        source: &mut WorktreeSource,
+        entry: crate::worktree::ExistingWorktree,
+        label: Option<String>,
+        focus: bool,
+    ) -> Result<AttachedWorktree, ApiFailure> {
         if entry.is_bare || entry.is_prunable {
-            return encode_error(id, "worktree_not_found", "worktree cannot be opened");
+            return Err(ApiFailure::new(
+                "worktree_not_found",
+                "worktree cannot be opened",
+            ));
         }
         let canonical_path = crate::worktree::canonical_or_original(&entry.path);
         let canonical_source = crate::worktree::canonical_or_original(&source.source_checkout_path);
@@ -113,12 +160,9 @@ impl App {
         let already_open = self.open_workspace_idx_for_checkout(&canonical_path);
         let defer_source_created_event = target_is_source && already_open.is_none();
         let created_source_workspace =
-            match self.ensure_source_parent_membership(&mut source, !defer_source_created_event) {
-                Ok(created) => created,
-                Err(err) => return encode_error(id, err.code, err.message),
-            };
+            self.ensure_source_parent_membership(source, !defer_source_created_event)?;
         let (ws_idx, created_workspace) = if let Some(ws_idx) = already_open {
-            if params.focus {
+            if focus {
                 self.state.switch_workspace(ws_idx);
             }
             (ws_idx, false)
@@ -126,24 +170,26 @@ impl App {
             let ws_idx = source
                 .workspace_idx
                 .expect("source workspace should exist after membership ensure");
-            if params.focus {
+            if focus {
                 self.state.switch_workspace(ws_idx);
             }
             (ws_idx, created_source_workspace)
         } else {
-            match self.create_workspace_with_options(entry.path.clone(), params.focus) {
+            match self.create_workspace_with_options(entry.path.clone(), focus) {
                 Ok(ws_idx) => (ws_idx, true),
-                Err(err) => return encode_error(id, "worktree_open_failed", err.to_string()),
+                Err(err) => {
+                    return Err(ApiFailure::new("worktree_open_failed", err.to_string()));
+                }
             }
         };
         self.mark_worktree_membership(
-            &source,
+            source,
             ws_idx,
             entry.path.clone(),
             canonical_path != crate::worktree::canonical_or_original(&source.source_repo_root),
             !created_workspace,
         );
-        if let Some(label) = params.label {
+        if let Some(label) = label {
             let workspace_id = self.public_workspace_id(ws_idx);
             if let Some(ws) = self.state.workspaces.get_mut(ws_idx) {
                 ws.set_custom_name(label.clone());
@@ -164,23 +210,13 @@ impl App {
             self.emit_workspace_open_events(ws_idx);
         }
 
-        let tab_idx = self.state.workspaces[ws_idx].active_tab;
-        let worktree = self.worktree_info_for_entry(&source, entry);
+        let worktree = self.worktree_info_for_entry(source, entry);
         self.emit_worktree_opened_event(ws_idx, worktree.clone(), already_open.is_some());
-        encode_success(
-            id,
-            ResponseResult::WorktreeOpened {
-                workspace: self.workspace_info(ws_idx),
-                tab: self
-                    .tab_info(ws_idx, tab_idx)
-                    .expect("opened worktree workspace should have an active tab"),
-                root_pane: self
-                    .root_pane_info(ws_idx, tab_idx)
-                    .expect("opened worktree workspace should have an active root pane"),
-                worktree,
-                already_open: already_open.is_some(),
-            },
-        )
+        Ok(AttachedWorktree {
+            ws_idx,
+            worktree,
+            already_open: already_open.is_some(),
+        })
     }
 
     fn resolve_worktree_source(
@@ -776,6 +812,22 @@ mod tests {
         );
     }
 
+    fn git_stdout(repo: &Path, args: &[&str]) -> String {
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(repo)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git command failed: git -C {} {}",
+            repo.display(),
+            args.join(" ")
+        );
+        String::from_utf8(output.stdout).unwrap().trim().to_string()
+    }
+
     fn create_committed_repo(name: &str) -> PathBuf {
         let repo = unique_temp_path(name);
         std::fs::create_dir_all(&repo).unwrap();
@@ -1170,21 +1222,162 @@ mod tests {
         let _ = std::fs::remove_dir_all(repo);
     }
 
+    #[tokio::test]
+    async fn api_worktree_create_lands_on_the_published_tip_when_the_branch_is_on_origin() {
+        let repo = create_committed_repo("api-worktree-remote-branch-repo");
+        let worktree_root = unique_temp_path("api-worktree-remote-branch-root");
+        run_git(
+            &repo,
+            &["remote", "add", "origin", "https://example.invalid/r.git"],
+        );
+        // A commit this clone knows only through `origin/<branch>`: the branch
+        // is published and nothing local points at it. Branching from the
+        // trunk instead would silently orphan that work.
+        run_git(&repo, &["checkout", "--quiet", "-b", "feature/published"]);
+        std::fs::write(repo.join("PUBLISHED.md"), "published\n").unwrap();
+        run_git(&repo, &["add", "PUBLISHED.md"]);
+        run_git(&repo, &["commit", "--quiet", "-m", "published tip"]);
+        let published_tip = git_stdout(&repo, &["rev-parse", "HEAD"]);
+        run_git(&repo, &["checkout", "--quiet", "-"]);
+        let trunk_tip = git_stdout(&repo, &["rev-parse", "HEAD"]);
+        run_git(
+            &repo,
+            &[
+                "update-ref",
+                "refs/remotes/origin/feature/published",
+                &published_tip,
+            ],
+        );
+        run_git(&repo, &["branch", "--quiet", "-D", "feature/published"]);
+        assert_ne!(published_tip, trunk_tip);
+
+        let mut app = app_with_parent(&repo);
+        app.state.worktree_directory = worktree_root.clone();
+        let workspace_id = app.state.workspaces[0].id.clone();
+
+        let response = run_deferred_api_request(
+            &mut app,
+            Request {
+                id: "req".into(),
+                method: crate::api::schema::Method::WorktreeCreate(WorktreeCreateParams {
+                    workspace_id: Some(workspace_id),
+                    branch: Some("feature/published".into()),
+                    ..WorktreeCreateParams::default()
+                }),
+            },
+        );
+
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        let ResponseResult::WorktreeCreated {
+            worktree,
+            branch_source,
+            head,
+            ..
+        } = success.result
+        else {
+            panic!("expected worktree_created response");
+        };
+        assert_eq!(
+            branch_source,
+            crate::api::schema::WorktreeBranchSource::Remote
+        );
+        assert_eq!(head.as_deref(), Some(published_tip.as_str()));
+        let checkout = PathBuf::from(&worktree.path);
+        assert!(checkout.join("PUBLISHED.md").exists());
+        assert_eq!(
+            git_stdout(
+                &checkout,
+                &[
+                    "rev-parse",
+                    "--abbrev-ref",
+                    "--symbolic-full-name",
+                    "@{upstream}"
+                ]
+            ),
+            "origin/feature/published"
+        );
+
+        for (_, runtime) in app.terminal_runtimes.drain() {
+            runtime.shutdown();
+        }
+        let _ = std::fs::remove_dir_all(worktree_root);
+        let _ = std::fs::remove_dir_all(repo);
+    }
+
+    #[tokio::test]
+    async fn api_worktree_create_reuses_the_worktree_that_already_holds_the_branch() {
+        let repo = create_committed_repo("api-worktree-reuse-repo");
+        let worktree_root = unique_temp_path("api-worktree-reuse-root");
+        let mut app = app_with_parent(&repo);
+        app.state.worktree_directory = worktree_root.clone();
+        let workspace_id = app.state.workspaces[0].id.clone();
+        let request = || Request {
+            id: "req".into(),
+            method: crate::api::schema::Method::WorktreeCreate(WorktreeCreateParams {
+                workspace_id: Some(workspace_id.clone()),
+                branch: Some("worktree/reuse".into()),
+                ..WorktreeCreateParams::default()
+            }),
+        };
+
+        let first = run_deferred_api_request(&mut app, request());
+        let first: SuccessResponse = serde_json::from_str(&first).unwrap();
+        let ResponseResult::WorktreeCreated {
+            workspace: first_workspace,
+            worktree: first_worktree,
+            already_open: first_already_open,
+            ..
+        } = first.result
+        else {
+            panic!("expected worktree_created response");
+        };
+        assert!(!first_already_open);
+        let workspace_count = app.state.workspaces.len();
+
+        let second = run_deferred_api_request(&mut app, request());
+        let second: SuccessResponse = serde_json::from_str(&second).unwrap();
+        let ResponseResult::WorktreeCreated {
+            workspace: second_workspace,
+            worktree: second_worktree,
+            already_open,
+            branch_source,
+            head,
+            ..
+        } = second.result
+        else {
+            panic!("re-running create for the same branch should reuse, not fail");
+        };
+        assert!(already_open);
+        assert_eq!(
+            branch_source,
+            crate::api::schema::WorktreeBranchSource::Existing
+        );
+        assert!(head.is_some());
+        assert_eq!(second_workspace.workspace_id, first_workspace.workspace_id);
+        // Reuse reports the path git itself lists, which on macOS is the
+        // resolved `/private/var/...` form of the requested `/var/...`; the
+        // subject here is that both name the same checkout.
+        assert_eq!(
+            crate::worktree::canonical_or_original(Path::new(&second_worktree.path)),
+            crate::worktree::canonical_or_original(Path::new(&first_worktree.path))
+        );
+        assert_eq!(app.state.workspaces.len(), workspace_count);
+
+        for (_, runtime) in app.terminal_runtimes.drain() {
+            runtime.shutdown();
+        }
+        let _ = std::fs::remove_dir_all(worktree_root);
+        let _ = std::fs::remove_dir_all(repo);
+    }
+
     #[test]
     fn deferred_api_worktree_create_failure_clears_pending_checkout() {
         let repo = create_committed_repo("api-worktree-create-failure-repo");
         let worktree_root = unique_temp_path("api-worktree-create-failure-root");
-        let branch_name = std::process::Command::new("git")
-            .arg("-C")
-            .arg(&repo)
-            .args(["branch", "--show-current"])
-            .output()
-            .unwrap();
-        assert!(branch_name.status.success());
-        let branch = String::from_utf8(branch_name.stdout)
-            .unwrap()
-            .trim()
-            .to_string();
+        // A base ref that does not resolve: `git worktree add` fails, which is
+        // the point. A branch that already has a worktree would instead be
+        // reused, and reuse is a success.
+        let branch = "worktree/create-failure".to_string();
         let mut app = test_app();
         let mut parent = Workspace::test_new("main");
         parent.identity_cwd = repo.clone();
@@ -1197,6 +1390,7 @@ mod tests {
             method: crate::api::schema::Method::WorktreeCreate(WorktreeCreateParams {
                 workspace_id: Some(parent_id.clone()),
                 branch: Some(branch.clone()),
+                base: Some("refs/heads/definitely-missing".into()),
                 ..WorktreeCreateParams::default()
             }),
         };
@@ -1267,7 +1461,8 @@ mod tests {
                 focus: false,
                 respond_to,
             }),
-            result: Ok(()),
+            result: Ok(crate::worktree::BranchSource::New),
+            head: None,
         });
 
         let response = response_rx

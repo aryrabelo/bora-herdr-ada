@@ -892,6 +892,9 @@ fn worktree_request_and_response_round_trip() {
                 open_workspace_id: Some("w_1".into()),
                 label: "herdr".into(),
             },
+            branch_source: WorktreeBranchSource::Remote,
+            head: Some("abc123".into()),
+            already_open: false,
         },
     };
     let json = serde_json::to_string(&response).unwrap();

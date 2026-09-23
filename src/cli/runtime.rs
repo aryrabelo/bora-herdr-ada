@@ -3,7 +3,7 @@ use crate::api::schema::{
     PaneRenameParams, PaneResizeParams, PaneSplitParams, PaneSwapParams, PaneTarget,
     PaneZoomParams, Request, TabCreateParams, TabListParams, TabRenameParams, TabTarget,
     WorkspaceCloseParams, WorkspaceCreateParams, WorkspaceRenameParams, WorkspaceTarget,
-    WorktreeCreateParams, WorktreeListParams, WorktreeOpenParams, WorktreeRemoveParams,
+    WorktreeListParams, WorktreeOpenParams, WorktreeRemoveParams,
 };
 
 fn print_method_response(id: &'static str, method: Method) -> std::io::Result<i32> {
@@ -72,10 +72,6 @@ pub(super) fn tab_close(tab_id: String) -> std::io::Result<i32> {
 
 pub(super) fn worktree_list(params: WorktreeListParams) -> std::io::Result<i32> {
     print_method_response("cli:worktree:list", Method::WorktreeList(params))
-}
-
-pub(super) fn worktree_create(params: WorktreeCreateParams) -> std::io::Result<i32> {
-    print_method_response("cli:worktree:create", Method::WorktreeCreate(params))
 }
 
 pub(super) fn worktree_open(params: WorktreeOpenParams) -> std::io::Result<i32> {
