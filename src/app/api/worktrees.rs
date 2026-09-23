@@ -1354,7 +1354,13 @@ mod tests {
         );
         assert!(head.is_some());
         assert_eq!(second_workspace.workspace_id, first_workspace.workspace_id);
-        assert_eq!(second_worktree.path, first_worktree.path);
+        // Reuse reports the path git itself lists, which on macOS is the
+        // resolved `/private/var/...` form of the requested `/var/...`; the
+        // subject here is that both name the same checkout.
+        assert_eq!(
+            crate::worktree::canonical_or_original(Path::new(&second_worktree.path)),
+            crate::worktree::canonical_or_original(Path::new(&first_worktree.path))
+        );
         assert_eq!(app.state.workspaces.len(), workspace_count);
 
         for (_, runtime) in app.terminal_runtimes.drain() {
