@@ -1,0 +1,14 @@
+src/cli/worktree.rs
+  h_b156936c57c455 385-389
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "0953407d2aa77cc0f19c9689f08f70efed7589c4",
+  "prompts": {},
+  "humans": {
+    "h_b156936c57c455": {
+      "author": "Ary Rabelo <aryrabelo@gmail.com>"
+    }
+  }
+}
