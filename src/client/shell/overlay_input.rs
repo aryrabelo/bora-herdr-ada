@@ -1102,9 +1102,23 @@ impl ClientShellState {
                 );
                 return;
             }
-            crate::api::schema::Method::TabClose(crate::api::schema::TabTarget {
-                tab_id: target.tab_id,
-            })
+            if target.closes_group {
+                // The dialog read "Close worktree group?" (this tab is the
+                // last tab of a non-linked group-root workspace), so
+                // accepting must close the WHOLE group, not just this tab -
+                // otherwise the title lied and the sibling worktrees are
+                // left open.
+                crate::api::schema::Method::WorkspaceClose(
+                    crate::api::schema::WorkspaceCloseParams {
+                        workspace_id: confirm.workspace_id,
+                        close_group: true,
+                    },
+                )
+            } else {
+                crate::api::schema::Method::TabClose(crate::api::schema::TabTarget {
+                    tab_id: target.tab_id,
+                })
+            }
         } else {
             crate::api::schema::Method::WorkspaceClose(crate::api::schema::WorkspaceCloseParams {
                 workspace_id: confirm.workspace_id,
@@ -1155,7 +1169,11 @@ impl ClientShellState {
             else {
                 return false;
             };
-            Some(ClientTabCloseConfirmation { tab_id, workspace })
+            Some(ClientTabCloseConfirmation {
+                tab_id,
+                workspace,
+                closes_group,
+            })
         } else {
             None
         };

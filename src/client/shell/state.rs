@@ -641,6 +641,13 @@ pub(super) struct ClientContextMenuItem {
 pub(super) struct ClientTabCloseConfirmation {
     pub(super) tab_id: String,
     pub(super) workspace: WorkspaceNavigationTarget,
+    /// Whether accepting this confirmation must close the entire
+    /// worktree group (a group-root's last tab), not just this one tab.
+    /// `open_close_confirmation` computes this once when the dialog is
+    /// built; `accept_close_confirmation` must not re-derive it, since by
+    /// accept time the tab already looks like the workspace's only tab
+    /// either way.
+    pub(super) closes_group: bool,
 }
 
 #[derive(Debug)]

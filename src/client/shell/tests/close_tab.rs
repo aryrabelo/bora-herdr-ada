@@ -65,6 +65,23 @@ fn assert_tab_close(outcome: &ClientShellInput) {
     assert!(matches!(methods.as_slice(), [Method::TabClose(target)] if target.tab_id == "tab_1"));
 }
 
+fn assert_workspace_close_group(outcome: &ClientShellInput, workspace_id: &str) {
+    let methods = outcome
+        .actions
+        .iter()
+        .filter_map(|action| match action {
+            ClientShellAction::Endpoint { request, .. } => Some(&request.method),
+            _ => None,
+        })
+        .filter(|method| !matches!(method, Method::TabFocus(_)))
+        .collect::<Vec<_>>();
+    assert!(matches!(
+        methods.as_slice(),
+        [Method::WorkspaceClose(params)]
+            if params.workspace_id == workspace_id && params.close_group
+    ));
+}
+
 #[test]
 fn last_tab_close_waits_for_keyboard_or_mouse_confirmation() {
     for menu in [false, true] {
@@ -225,11 +242,16 @@ fn last_tab_close_preserves_parent_group_and_linked_workspace_scope() {
                 state.overlay,
                 Some(ClientShellOverlay::ConfirmClose(_))
             ));
+            assert_tab_close(&state.handle_input_bytes(b"\r"));
         } else {
+            // Non-linked group root: the dialog reads "Close worktree
+            // group?", so accepting must close the WHOLE group
+            // (WorkspaceClose{close_group:true}), not just this tab -
+            // otherwise the title lies and the sibling worktree stays open.
             assert!(matches!(state.overlay.as_ref(),
                 Some(ClientShellOverlay::ConfirmClose(confirm)) if confirm.title == "Close worktree group?"));
+            assert_workspace_close_group(&state.handle_input_bytes(b"\r"), "ws_1");
         }
-        assert_tab_close(&state.handle_input_bytes(b"\r"));
         assert!(state.overlay.is_none());
     }
 }
