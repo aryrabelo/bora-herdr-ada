@@ -769,6 +769,11 @@ mod tests {
                 target: "reviewer".into(),
                 text: "A != B".into(),
                 wait: None,
+                from_pane: None,
+                when_idle: None,
+                when_idle_timeout_ms: None,
+                peer_pid: None,
+                origin_channel: None,
             },
         );
         let success: SuccessResponse = serde_json::from_str(&response).unwrap();
