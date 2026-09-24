@@ -790,7 +790,6 @@ contains = ["active"]
     assert!(parse_manifest(manifest).is_err());
 }
 
-
 // ---------------------------------------------------------------------------
 // Fork-authored tests (git log -S confirms these did not exist upstream;
 // added between ad415672 and this fork's own pre-sync tip). Ported forward

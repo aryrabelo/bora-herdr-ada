@@ -27,7 +27,6 @@ use serde::{Deserialize, Serialize};
 /// bump rule, even though nothing ever set the field to anything but false.
 pub const PROTOCOL_VERSION: u32 = 26;
 
-
 /// Maximum allowed frame payload size (2 MB). Frames larger than this are
 /// rejected to prevent denial-of-service via oversized length prefixes.
 pub const MAX_FRAME_SIZE: usize = 2 * 1024 * 1024;

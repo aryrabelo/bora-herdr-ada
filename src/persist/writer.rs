@@ -459,11 +459,10 @@ mod tests {
         // an otherwise perfectly readable session. Route through
         // parse_snapshot()'s tolerant RawSessionSnapshot boundary instead.
         let mut writer = writer(false);
-        let mut raw: serde_json::Value =
-            serde_json::from_str(include_str!(
-                "../../tests/fixtures/session/current-herdr-session.json"
-            ))
-            .unwrap();
+        let mut raw: serde_json::Value = serde_json::from_str(include_str!(
+            "../../tests/fixtures/session/current-herdr-session.json"
+        ))
+        .unwrap();
         raw["view_mode"] = serde_json::Value::String("project".into());
         std::fs::write(&writer.path, serde_json::to_vec(&raw).unwrap()).unwrap();
 
