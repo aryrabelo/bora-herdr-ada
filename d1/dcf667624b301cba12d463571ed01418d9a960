@@ -1,0 +1,30 @@
+src/app/api/worktrees/deferred.rs
+  h_b156936c57c455 315
+src/app/mod.rs
+  h_b156936c57c455 1005,1016,2483,2504
+src/client/shell/tests/agents_worktrees_notifications.rs
+  h_b156936c57c455 1174
+src/client/shell/worktrees.rs
+  h_b156936c57c455 211,460
+src/platform/linux.rs
+  h_b156936c57c455 986,2253
+src/platform/linux/shutdown.rs
+  h_b156936c57c455 53
+src/platform/windows.rs
+  h_b156936c57c455 2485
+src/server/headless.rs
+  h_b156936c57c455 2199
+src/server/headless/tests/mod.rs
+  h_b156936c57c455 7102,7132
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "d1dcf667624b301cba12d463571ed01418d9a960",
+  "prompts": {},
+  "humans": {
+    "h_b156936c57c455": {
+      "author": "Ary Rabelo <aryrabelo@gmail.com>"
+    }
+  }
+}
