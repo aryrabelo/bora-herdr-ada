@@ -44,17 +44,17 @@ mod workspace;
 mod worktree;
 
 const TERMINAL_SESSION_OBSERVE_USAGE: &str =
-    "usage: herdr terminal session observe <target> [--cols N] [--rows N]";
+    "usage: bora terminal session observe <target> [--cols N] [--rows N]";
 const TERMINAL_SESSION_CONTROL_USAGE: &str =
-    "usage: herdr terminal session control <target> [--takeover] [--cols N] [--rows N]";
+    "usage: bora terminal session control <target> [--takeover] [--cols N] [--rows N]";
 pub(crate) const AGENT_HELP_FOOTER: &str = concat!(
     "Are you an AI? Use these resources ONLY IF your task specifically asks you to:\n",
-    "  Help a human understand or set up Herdr for the first time:\n",
+    "  Help a human understand or set up Bora for the first time:\n",
     "    https://herdr.dev/agent-guide.md\n",
-    "  Debug or investigate a problem with Herdr:\n",
+    "  Debug or investigate a problem with Bora:\n",
     "    https://herdr.dev/llms.txt\n",
-    "  Control Herdr panes, agents, or workspaces:\n",
-    "    SKIP if a Herdr skill is already in your context. Otherwise run: herdr --skill",
+    "  Control Bora panes, agents, or workspaces:\n",
+    "    SKIP if a Bora skill is already in your context. Otherwise run: bora --skill",
 );
 
 pub(crate) fn parse_token_assignment(raw: &str) -> Result<(String, Option<String>), String> {
@@ -942,11 +942,11 @@ fn config_check(args: &[String]) -> std::io::Result<i32> {
     match args {
         [] => {}
         [flag] if matches!(flag.as_str(), "help" | "--help" | "-h") => {
-            eprintln!("usage: herdr config check");
+            eprintln!("usage: bora config check");
             return Ok(0);
         }
         _ => {
-            eprintln!("usage: herdr config check");
+            eprintln!("usage: bora config check");
             return Ok(2);
         }
     }
@@ -1478,8 +1478,7 @@ pub(super) fn send_request_unchecked(request: &Request) -> std::io::Result<serde
 }
 
 fn ensure_server_protocol_compatible(client: &ApiClient, request_id: &str) -> std::io::Result<()> {
-    let status = client
-        .status()
+    let status = target::server_status(client)
         .map_err(|err| map_server_not_running_or_io(err, request_id, client))?;
     let server_protocol = status
         .protocol

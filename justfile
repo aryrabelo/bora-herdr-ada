@@ -13,7 +13,21 @@ test:
 
 # Run repository maintenance contract tests
 maintenance-test:
-    {{python}} -m unittest scripts.test_agent_detection_manifest_check scripts.test_changelog scripts.test_config_reference_check scripts.test_docs_translation_parity scripts.test_hermes_integration_asset scripts.test_package_windows_conpty scripts.test_preview scripts.test_unix_installer scripts.test_vendor_libghostty_vt scripts.test_vendor_portable_pty scripts.test_windows_cross
+    {{python}} -m unittest scripts.test_agent_detection_manifest_check scripts.test_changelog scripts.test_config_reference_check scripts.test_docs_translation_parity scripts.test_hermes_integration_asset scripts.test_package_windows_conpty scripts.test_preview scripts.test_release scripts.test_unix_installer scripts.test_vendor_libghostty_vt scripts.test_vendor_portable_pty scripts.test_windows_cross scripts.test_windows_input
+
+# scripts/release-workflows.test.ts is NOT run here: it asserts upstream's
+# tag-only push-triggered publishing model (on: push: tags, herdr-* asset
+# names, github.event_name == 'push' actor rechecks) that this fork
+# deliberately does not use (preview.yml stays on workflow_dispatch, keeps
+# bora-* names, gates on github.repository instead). Kept the file (not
+# deleted) so a future upstream sync has less conflict surface here, but
+# it is not wired into any `just` recipe until it is rewritten to assert
+# this fork's actual workflow shape.
+
+# Local interactive Windows Terminal input qualification (never runs in normal CI).
+[windows]
+test-windows-input *args:
+    pwsh -NoProfile -File scripts/test_windows_input.ps1 -AllowInputInjection {{args}}
 
 # Run one nextest filter, e.g. `just test-one codex_stale_working`
 test-one filter:
@@ -160,6 +174,7 @@ integration-assets-test:
     bun test src/integration/assets/herdr-agent-state.test.ts
     bun test src/integration/assets/opencode/herdr-agent-state.test.ts
     bun test src/integration/assets/opencode/herdr-tui-session.test.ts
+    bun test src/integration/assets/windows-socket-marker-path.test.ts
 # Run plugin marketplace Worker tests
 plugin-marketplace-test:
     cd workers/plugin-marketplace && bun install --frozen-lockfile && bun test

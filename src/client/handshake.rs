@@ -182,6 +182,8 @@ pub(super) fn do_handshake(
             endpoint_keybindings,
             mouse_capture,
             surface_active,
+            surface_reuse: true,
+            surface_delta: true,
             snapshot_codecs: vec![SNAPSHOT_CODEC_V1.into()],
             surface_codecs: vec![SURFACE_CODEC_V1.into()],
             input_codecs: vec![INPUT_CODEC_V1.into()],
@@ -228,7 +230,7 @@ pub(super) fn do_handshake(
             return Err(ClientError::Protocol(protocol::FramingError::Io(
                 io::Error::new(
                     io::ErrorKind::InvalidData,
-                    "server does not support the stable Herdr endpoint protocol; update this machine",
+                    "server does not support the stable Bora endpoint protocol; update this machine",
                 ),
             )));
         };

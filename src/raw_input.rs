@@ -150,6 +150,7 @@ pub(crate) struct RawInputByteFramer {
     host_color_scheme_change_tracking: bool,
     host_appearance_query_on_focus: bool,
     split_coalesced_escape: bool,
+    host_escape_disambiguation_active: bool,
 }
 
 const HOST_COLOR_QUERY_REPLIES: u16 = 258;
@@ -216,6 +217,11 @@ impl RawInputByteFramer {
 
     pub(crate) fn has_pending_input(&self) -> bool {
         !self.buffer.is_empty()
+    }
+
+    #[cfg(any(unix, test))]
+    pub(crate) fn set_host_escape_disambiguation_active(&mut self, active: bool) {
+        self.host_escape_disambiguation_active = active;
     }
 
     #[cfg(unix)]
@@ -297,6 +303,31 @@ impl RawInputByteFramer {
         }
 
         if self.buffer.is_empty() {
+            return chunks;
+        }
+
+        // starts_with_bounded_incomplete_escape_sequence accepts "\x1b[" plus
+        // any byte in 0x20..=0x3f, which also matches a truncated host-reply
+        // head (a cell-size XTWINOPS or color-scheme report's params look
+        // identical to an ambiguous kitty-protocol-adjacent sequence at this
+        // point). When we are actively awaiting one of those replies AND the
+        // buffer specifically looks like ITS truncated shape, let the more
+        // specific host-reply discard-arming checks below run instead of
+        // holding here forever: holding would never discard the truncated
+        // head, so whatever the user types next gets appended to the SAME
+        // held buffer and never reaches the pane as real keystrokes.
+        let awaiting_matching_host_reply = (self.host_cell_size_replies_awaited > 0
+            && starts_with_incomplete_host_cell_size_report(&self.buffer))
+            || (self.host_appearance_reply_awaited
+                && starts_with_incomplete_host_color_scheme_report(&self.buffer));
+        if self.host_escape_disambiguation_active
+            && !awaiting_matching_host_reply
+            && starts_with_bounded_incomplete_escape_sequence(&self.buffer)
+        {
+            tracing::trace!(
+                len = self.buffer.len(),
+                "holding incomplete host escape sequence with disambiguation active"
+            );
             return chunks;
         }
 
@@ -501,6 +532,15 @@ impl RawInputByteFramer {
 
             if self.split_coalesced_escape && self.buffer.starts_with(b"\x1b\x1b") {
                 chunks.push(vec![ESC]);
+                self.buffer.drain(..1);
+                continue;
+            }
+
+            if self.host_escape_disambiguation_active
+                && self.buffer.first() == Some(&ESC)
+                && self.buffer.len() > 1
+                && !starts_with_known_escape_introducer(&self.buffer)
+            {
                 self.buffer.drain(..1);
                 continue;
             }
@@ -862,6 +902,25 @@ fn starts_with_incomplete_sgr_mouse_sequence(buffer: &[u8]) -> bool {
         && buffer[3..]
             .iter()
             .all(|byte| byte.is_ascii_digit() || *byte == b';')
+}
+
+fn starts_with_known_escape_introducer(buffer: &[u8]) -> bool {
+    buffer
+        .get(1)
+        .is_some_and(|byte| matches!(*byte, b'[' | b'O' | b']' | b'P' | b'_' | b'^' | b'X' | ESC))
+}
+
+fn starts_with_bounded_incomplete_escape_sequence(buffer: &[u8]) -> bool {
+    if buffer.len() >= MAX_DISCARDED_CONTROL_TAIL_BYTES {
+        return false;
+    }
+    if buffer == [ESC] || buffer == b"\x1bO" {
+        return true;
+    }
+    let Some(body) = buffer.strip_prefix(b"\x1b[") else {
+        return false;
+    };
+    body.iter().all(|byte| matches!(*byte, 0x20..=0x3f))
 }
 
 #[cfg(any(unix, windows, test))]
@@ -2050,6 +2109,71 @@ mod tests {
     }
 
     #[test]
+    fn confirmed_host_disambiguation_retains_split_sgr_mouse_without_escape() {
+        for (prefix, tail) in [
+            (b"\x1b".as_slice(), b"[<0;5;5M".as_slice()),
+            (b"\x1b[".as_slice(), b"<0;5;5M".as_slice()),
+            (b"\x1b[<0;".as_slice(), b"5;5M".as_slice()),
+        ] {
+            let mut framer = RawInputFramer::default();
+            framer
+                .byte_framer
+                .set_host_escape_disambiguation_active(true);
+
+            assert!(framer.push(prefix).is_empty());
+            assert!(framer.flush_timeout().is_empty());
+            assert!(framer.flush_timeout().is_empty());
+            let events = framer.push(tail);
+
+            assert!(matches!(
+                events.as_slice(),
+                [RawInputEvent::Mouse(MouseEvent {
+                    kind: MouseEventKind::Down(MouseButton::Left),
+                    column: 4,
+                    row: 4,
+                    ..
+                })]
+            ));
+        }
+    }
+
+    #[test]
+    fn confirmed_host_disambiguation_drops_stale_escape_before_plain_input() {
+        let mut framer = RawInputFramer::default();
+        framer
+            .byte_framer
+            .set_host_escape_disambiguation_active(true);
+
+        assert!(framer.push(b"\x1b").is_empty());
+        assert!(framer.flush_timeout().is_empty());
+        let events = framer.push(b"x");
+
+        assert_eq!(events.len(), 1);
+        assert_raw_key(
+            events.into_iter().next().unwrap(),
+            KeyCode::Char('x'),
+            KeyModifiers::empty(),
+        );
+    }
+
+    #[test]
+    fn confirmed_host_disambiguation_keeps_kitty_escape_immediate() {
+        let mut framer = RawInputFramer::default();
+        framer
+            .byte_framer
+            .set_host_escape_disambiguation_active(true);
+
+        let events = framer.push(b"\x1b[27u");
+
+        assert_eq!(events.len(), 1);
+        assert_raw_key(
+            events.into_iter().next().unwrap(),
+            KeyCode::Esc,
+            KeyModifiers::empty(),
+        );
+    }
+
+    #[test]
     fn sgr_mouse_tail_after_lone_escape_timeout_is_discarded() {
         let mut framer = RawInputFramer::default();
 
@@ -2536,6 +2660,29 @@ mod tests {
     fn malformed_host_reply_tail_preserves_following_input() {
         let mut framer = RawInputByteFramer::default();
         framer.host_cell_size_query_sent();
+
+        assert!(framer.push(b"\x1b[6;21").is_empty());
+        assert!(framer.flush_timeout().is_empty());
+        assert_eq!(
+            framer.push(b";10xabc"),
+            vec![b"a".to_vec(), b"b".to_vec(), b"c".to_vec()]
+        );
+    }
+
+    #[test]
+    fn malformed_host_reply_tail_preserves_following_input_under_disambiguation() {
+        // Same scenario as malformed_host_reply_tail_preserves_following_input,
+        // but with kitty-keyboard disambiguation active. Before this fix, the
+        // disambiguation hold ran first and matched this exact truncated
+        // reply head too (it accepts "\x1b[" plus any byte in 0x20..=0x3f,
+        // which a cell-size XTWINOPS reply's digit/`;` params satisfy), so
+        // flush_timeout never reached the host-cell-size discard-arming
+        // branch below it and held the head forever - "abc" (typed after the
+        // reply's real terminator "x" arrived) got appended to that same
+        // held buffer and never reached the pane as real keystrokes.
+        let mut framer = RawInputByteFramer::default();
+        framer.host_cell_size_query_sent();
+        framer.set_host_escape_disambiguation_active(true);
 
         assert!(framer.push(b"\x1b[6;21").is_empty());
         assert!(framer.flush_timeout().is_empty());

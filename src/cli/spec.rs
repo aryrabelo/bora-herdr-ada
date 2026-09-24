@@ -1368,7 +1368,7 @@ mod tests {
             let worktree_command = command_path(&cmd, &["worktree", subcommand]);
             assert!(
                 !has_option(worktree_command, "json"),
-                "herdr worktree {subcommand} should not advertise --json"
+                "bora worktree {subcommand} should not advertise --json"
             );
         }
     }

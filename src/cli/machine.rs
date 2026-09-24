@@ -4,17 +4,19 @@ use crate::client::endpoint::{EndpointCatalog, ProfileId};
 
 const HELP: &str = "Usage:
   bora machine list [--json]
+  bora machine status [<label-or-id>] [--json]
+  bora machine reconnect <label-or-id>
   bora machine add <ssh-target> --label <label> [--remote-session <name>]
   bora machine rename <profile-id> --label <label>
   bora machine remove <profile-id>
   bora machine enable <profile-id>
   bora machine disable <profile-id>
 
-Add prepares the remote Herdr installation and starts its server before saving.
+Add prepares the remote Bora installation and starts its server before saving.
 Missing or incompatible installations require approval in an interactive terminal.
-Changes apply automatically to open local Herdr clients.
+Changes apply automatically to open local Bora clients.
 Removing or disabling a machine leaves its remote sessions running.
-Saved machines contain only a label, SSH target, explicit Herdr session, and enabled state.
+Saved machines contain only a label, SSH target, explicit Bora session, and enabled state.
 SSH credentials and key material remain owned by OpenSSH.";
 
 #[derive(Serialize)]
@@ -30,6 +32,8 @@ struct MachineListRow<'a> {
 pub(super) fn run_machine_command(args: &[String]) -> std::io::Result<i32> {
     match args.first().map(String::as_str) {
         Some("list") => list(&args[1..]),
+        Some("status") => status(&args[1..]),
+        Some("reconnect") => reconnect(&args[1..]),
         Some("add") => add(&args[1..]),
         Some("rename") => rename(&args[1..]),
         Some("remove") => remove(&args[1..]),
@@ -86,6 +90,115 @@ fn list(args: &[String]) -> std::io::Result<i32> {
             row.id, row.label, row.target, row.session, state
         );
     }
+    Ok(0)
+}
+
+#[derive(Serialize)]
+struct MachineStatusRow<'a> {
+    id: &'a str,
+    label: &'a str,
+    status: &'static str,
+    error: Option<String>,
+}
+
+fn status(args: &[String]) -> std::io::Result<i32> {
+    let mut json = false;
+    let mut selector = None;
+    for arg in args {
+        if arg == "--json" && !json {
+            json = true;
+        } else if !arg.starts_with('-') && selector.is_none() {
+            selector = Some(arg.as_str());
+        } else {
+            eprintln!("usage: bora machine status [<label-or-id>] [--json]");
+            return Ok(2);
+        }
+    }
+    let catalog = load_catalog()?;
+    let profiles = match selector {
+        Some(selector) => match super::target::resolve_machine(&catalog.ssh, selector) {
+            Ok(profile) => vec![profile],
+            Err(error) => {
+                eprintln!("{error}");
+                return Ok(2);
+            }
+        },
+        None => catalog.ssh.iter().collect(),
+    };
+    let rows = profiles
+        .into_iter()
+        .map(|profile| {
+            let (status, error) = if !profile.enabled {
+                ("disabled", None)
+            } else {
+                match crate::remote::check_saved_ssh(&profile.target, &profile.session) {
+                    Ok(()) => ("reachable", None),
+                    Err(error) => {
+                        let message = error.to_string();
+                        let status = if crate::remote::ssh_error_requires_authentication(&message) {
+                            "auth required"
+                        } else {
+                            "error"
+                        };
+                        (status, Some(message))
+                    }
+                }
+            };
+            MachineStatusRow {
+                id: profile.id.as_str(),
+                label: &profile.label,
+                status,
+                error,
+            }
+        })
+        .collect::<Vec<_>>();
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&rows).map_err(std::io::Error::other)?
+        );
+    } else {
+        for row in &rows {
+            println!("{}\t{}\t{}", row.id, row.label, row.status);
+            if let Some(error) = &row.error {
+                println!("  {}", error.escape_debug());
+            }
+        }
+        if rows.is_empty() {
+            println!("No saved SSH machines.");
+        }
+    }
+    Ok(i32::from(rows.iter().any(|row| row.error.is_some())))
+}
+
+fn reconnect(args: &[String]) -> std::io::Result<i32> {
+    use std::io::IsTerminal;
+    let [selector] = args else {
+        eprintln!("usage: bora machine reconnect <label-or-id>");
+        return Ok(2);
+    };
+    let catalog = load_catalog()?;
+    let profile = match super::target::resolve_machine(&catalog.ssh, selector) {
+        Ok(profile) => profile,
+        Err(error) => {
+            eprintln!("{error}");
+            return Ok(2);
+        }
+    };
+    if !std::io::stdin().is_terminal() {
+        eprintln!("reconnect requires an interactive terminal; use bora machine status for noninteractive checks");
+        return Ok(2);
+    }
+    let mut authentication = crate::remote::ssh_authentication_command(&profile.target)?;
+    if !authentication.command.status()?.success() {
+        eprintln!("SSH authentication failed; the saved machine was not changed.");
+        return Ok(1);
+    }
+    crate::remote::check_saved_ssh(&profile.target, &profile.session)?;
+    println!(
+        "Machine {} is reachable. Open Bora clients retry within 30 seconds.",
+        profile.id
+    );
     Ok(0)
 }
 
@@ -164,18 +277,21 @@ fn add(args: &[String]) -> std::io::Result<i32> {
             return Ok(2);
         }
     }
-    if let Err(error) = crate::remote::prepare_saved_ssh(&target, &session) {
-        eprintln!("error: {error}; machine was not saved");
-        crate::remote::print_saved_ssh_error_hint(&error, &target);
-        return Ok(1);
-    }
+    let metadata = match crate::remote::prepare_saved_ssh(&target, &session) {
+        Ok(metadata) => metadata,
+        Err(error) => {
+            eprintln!("error: {error}; machine was not saved");
+            crate::remote::print_saved_ssh_error_hint(&error, &target);
+            return Ok(1);
+        }
+    };
     // Setup can wait for human approval. Do not overwrite catalog edits made meanwhile.
     let mut catalog = load_catalog().map_err(|error| {
         std::io::Error::other(format!(
             "remote prepared, but machine was not saved: {error}"
         ))
     })?;
-    let id = match catalog.add_ssh(label, target, session) {
+    let id = match catalog.add_ssh(label, &target, &session) {
         Ok(id) => id,
         Err(error) => {
             eprintln!("error: {error}");
@@ -187,8 +303,12 @@ fn add(args: &[String]) -> std::io::Result<i32> {
             "remote prepared, but machine was not saved: {error}"
         ))
     })?;
+    if let Some(metadata) = metadata {
+        crate::client::endpoint::SshMetadataCache::new(id.as_str(), &target, &session)?
+            .store(&metadata);
+    }
     println!("Saved SSH machine {id}. Remote server is ready.");
-    println!("Open Herdr clients connect automatically.");
+    println!("Open Bora clients connect automatically.");
     Ok(0)
 }
 
@@ -232,11 +352,26 @@ fn remove(args: &[String]) -> std::io::Result<i32> {
     };
     let mut catalog = load_catalog()?;
     let previous_selection = catalog.selected_profile.clone();
+    let metadata_cache = catalog
+        .ssh
+        .iter()
+        .find(|profile| profile.id == id)
+        .map(|profile| {
+            crate::client::endpoint::SshMetadataCache::new(
+                id.as_str(),
+                &profile.target,
+                &profile.session,
+            )
+        })
+        .transpose()?;
     if !catalog.remove_ssh(&id) {
         eprintln!("machine profile {id} was not found");
         return Ok(1);
     }
     store_catalog(&catalog)?;
+    if let Some(cache) = metadata_cache {
+        cache.invalidate();
+    }
     if catalog.selected_profile != previous_selection {
         catalog.store_selection().map_err(std::io::Error::other)?;
     }

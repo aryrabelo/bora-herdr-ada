@@ -1,5 +1,5 @@
 {
-  description = "herdr — terminal workspace manager for AI coding agents";
+  description = "bora — terminal workspace manager for AI coding agents";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -22,7 +22,7 @@
         "aarch64-linux"
         # x86_64-darwin dropped: nixpkgs 26.11 removed the platform, and the
         # only nixpkgs that still fetches crates from static.crates.io is 26.11+.
-        # Intel Mac users keep the cargo-built herdr-macos-x86_64 release asset.
+        # Intel Mac users keep the cargo-built bora-macos-x86_64 release asset.
         "aarch64-darwin"
       ];
       forAllSystems = lib.genAttrs systems;
@@ -56,27 +56,27 @@
         system:
         let
           pkgs = pkgsFor system;
-          herdr = pkgs.callPackage ./nix/package.nix {
+          bora = pkgs.callPackage ./nix/package.nix {
             rustPlatform = rustPlatformFor pkgs;
           };
         in
         {
-          inherit herdr;
-          default = herdr;
+          inherit bora;
+          default = bora;
         }
       );
 
       apps = forAllSystems (system: {
         default = {
           type = "app";
-          program = "${self.packages.${system}.default}/bin/herdr";
-          meta.description = "Run Herdr";
+          program = "${self.packages.${system}.default}/bin/bora";
+          meta.description = "Run Bora";
         };
       });
 
       checks = forAllSystems (system: {
-        herdr = self.packages.${system}.default;
-        default = self.checks.${system}.herdr;
+        bora = self.packages.${system}.default;
+        default = self.checks.${system}.bora;
       });
 
       devShells = forAllSystems (
@@ -87,7 +87,7 @@
         in
         {
           default = pkgs.mkShell {
-            name = "herdr-dev";
+            name = "bora-dev";
             packages = with pkgs; [
               cargo-nextest
               cmake
@@ -110,7 +110,7 @@
 
       overlays.default = lib.composeExtensions rust-overlay.overlays.default (
         final: _prev: {
-          herdr = final.callPackage ./nix/package.nix {
+          bora = final.callPackage ./nix/package.nix {
             rustPlatform = rustPlatformFor final;
           };
         }

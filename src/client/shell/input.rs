@@ -14,9 +14,10 @@ pub(super) fn is_modal_paste_shortcut_for_platform(
     key: &crate::input::TerminalKey,
     macos: bool,
 ) -> bool {
-    matches!(key.code, KeyCode::Char('v' | 'V'))
-        && (key.modifiers.contains(KeyModifiers::CONTROL)
-            || macos && key.modifiers.contains(KeyModifiers::SUPER))
+    key.generated_text.as_deref().is_none_or(str::is_empty)
+        && matches!(key.code, KeyCode::Char('v' | 'V'))
+        && (key.modifiers.difference(KeyModifiers::SHIFT) == KeyModifiers::CONTROL
+            || macos && key.modifiers.difference(KeyModifiers::SHIFT) == KeyModifiers::SUPER)
 }
 
 fn is_modal_paste_shortcut(key: &crate::input::TerminalKey) -> bool {
@@ -162,6 +163,9 @@ impl ClientShellState {
             outcome.repaint = true;
         }
         for event in events {
+            if self.handle_machine_badge_event(&event, &mut outcome) {
+                continue;
+            }
             if let Some(update) = host_theme_update(&event) {
                 push_host_theme_update(&mut outcome.requests, update);
             }
@@ -444,12 +448,14 @@ impl ClientShellState {
         {
             return false;
         }
-        if self
-            .copy_mode
-            .as_ref()
-            .is_some_and(|copy_mode| copy_mode.search_prompt.is_some())
+        if self.mode == ClientShellMode::Copy
+            && self.overlay.is_none()
+            && self
+                .copy_mode
+                .as_ref()
+                .is_some_and(|copy_mode| copy_mode.search_prompt.is_some())
         {
-            return self.overlay.is_none();
+            return true;
         }
         matches!(
             self.overlay.as_ref(),
@@ -609,7 +615,12 @@ impl ClientShellState {
                 None
             }
             ClientShellMode::Copy => {
-                if crate::config::terminal_key_matches_combo(key, self.config.keybinds.prefix) {
+                if self
+                    .copy_mode
+                    .as_ref()
+                    .is_none_or(|copy_mode| copy_mode.search_prompt.is_none())
+                    && crate::config::terminal_key_matches_combo(key, self.config.keybinds.prefix)
+                {
                     self.mode = ClientShellMode::Prefix;
                     outcome.repaint = true;
                 } else {
@@ -637,6 +648,7 @@ impl ClientShellState {
     ) {
         use crate::input::{KeybindAction, KeybindDispatch, KeybindMatch};
 
+        self.pending_workspace_highlight = None;
         if key.code == KeyCode::Esc
             || crate::config::terminal_key_matches_combo(key, self.config.keybinds.prefix)
         {

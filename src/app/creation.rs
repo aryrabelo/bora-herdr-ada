@@ -336,6 +336,7 @@ impl App {
             // process scan is the multiplicative fan-out AGENTS.md forbids.
             // `foreground_process` is filled on demand in `handle_pane_list`.
             foreground_process: None,
+            restore_error: terminal.restore_error.clone(),
             label: terminal.manual_label.clone(),
             agent: terminal.effective_agent_label().map(str::to_string),
             title: presentation.title,

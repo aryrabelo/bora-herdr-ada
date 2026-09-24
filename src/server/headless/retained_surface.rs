@@ -206,6 +206,20 @@ struct RetainedRecipientUpdate {
     )>,
 }
 
+fn has_synchronized_pane(app: &app::App, surface: &protocol::PaneSurfaceFrame) -> bool {
+    surface.panes.iter().any(|pane| {
+        app.parse_pane_id(&pane.pane_id)
+            .and_then(|(workspace_index, pane_id)| {
+                app.state.runtime_for_pane_in_workspace(
+                    &app.terminal_runtimes,
+                    workspace_index,
+                    pane_id,
+                )
+            })
+            .is_some_and(crate::terminal::TerminalRuntime::synchronized_output_active)
+    })
+}
+
 impl HeadlessServer {
     /// Applies terminal dirty rows to the committed origin-relative pane surface.
     /// Any presentation or geometry uncertainty falls back to the complete renderer.
@@ -265,6 +279,9 @@ impl HeadlessServer {
                 crate::render_prof::event("retained_surface.recipient_deferred");
                 continue;
             }
+            if client.render_state.requires_recompute() {
+                fallback!("recompute_pending");
+            }
             let Some(surface) = client.render_state.last_pane_surface() else {
                 fallback!("no_baseline");
             };
@@ -277,6 +294,9 @@ impl HeadlessServer {
                 || !surface.frame.graphics.is_empty()
             {
                 fallback!("baseline_mismatch");
+            }
+            if has_synchronized_pane(&self.app, surface) {
+                fallback!("synchronized_visible");
             }
             recipients.push(RetainedRecipient {
                 client_id: *client_id,
@@ -343,7 +363,7 @@ impl HeadlessServer {
         }
 
         let mut updates = Vec::with_capacity(recipients.len());
-        for recipient in recipients {
+        for recipient in &recipients {
             let client_id = recipient.client_id;
             let surface = recipient.surface;
             let mut panes = surface.panes.clone();
@@ -456,6 +476,12 @@ impl HeadlessServer {
         if updates.is_empty() {
             success!("unchanged");
         }
+        if recipients
+            .iter()
+            .any(|recipient| has_synchronized_pane(&self.app, recipient.surface))
+        {
+            fallback!("synchronized_during_patch");
+        }
 
         let mut sent = 0u64;
         let mut deferred = 0u64;
@@ -564,7 +590,6 @@ mod tests {
     #[test]
     fn retained_rows_send_only_changed_cell_spans() {
         let frame = FrameData {
-            force_full_repaint: false,
             width: 6,
             height: 2,
             cells: vec![cell(" "); 12],
@@ -602,7 +627,6 @@ mod tests {
     #[test]
     fn retained_rows_include_the_cell_after_a_width_transition() {
         let frame = FrameData {
-            force_full_repaint: false,
             width: 3,
             height: 1,
             cells: vec![cell("界"), cell("z"), cell("q")],
@@ -639,7 +663,6 @@ mod tests {
     #[test]
     fn retained_rows_omit_unchanged_full_dirty_rows() {
         let frame = FrameData {
-            force_full_repaint: false,
             width: 4,
             height: 2,
             cells: vec![cell(" "); 8],

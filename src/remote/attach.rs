@@ -44,7 +44,7 @@ pub(crate) fn run_remote(remote: RemoteLaunch) -> io::Result<()> {
     let local_socket = local_forward_socket_path(&remote.target, &session_name);
     let program = std::env::args()
         .next()
-        .unwrap_or_else(|| "herdr".to_string());
+        .unwrap_or_else(|| "bora".to_string());
     let reattach_command = reattach_command(
         &program,
         &remote.target,
@@ -86,7 +86,43 @@ pub(crate) fn run_remote(remote: RemoteLaunch) -> io::Result<()> {
     run_client_process(&local_socket, &reattach_command, remote.keybindings)
 }
 
-pub(crate) fn prepare_saved_ssh(target: &str, session_name: &str) -> io::Result<()> {
+pub(crate) fn check_saved_ssh(target: &str, session: &str) -> io::Result<()> {
+    super::validate_remote_target(target)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+    crate::session::validate_name(session)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+    let mut ssh = RemoteSsh::new_noninteractive(target.to_owned());
+    ssh.session_name = session.to_owned();
+    let remote = find_installed_remote_herdr(&ssh)?;
+    match remote_server_status(&ssh, &remote, false)? {
+        RemoteServerStatus::Running {
+            endpoint_protocol_generation,
+            surface_interest,
+            health_check,
+            detached_server_daemon,
+            ..
+        } if remote_server_restart_reason(
+            endpoint_protocol_generation,
+            detached_server_daemon,
+            true,
+            surface_interest,
+            health_check,
+        )
+        .is_none() =>
+        {
+            Ok(())
+        }
+        _ => Err(io::Error::other(format!(
+            "remote Bora server is stopped or incompatible; run `{}`",
+            super::saved_ssh_bootstrap_command(target, session),
+        ))),
+    }
+}
+
+pub(crate) fn prepare_saved_ssh(
+    target: &str,
+    session_name: &str,
+) -> io::Result<Option<crate::client::endpoint::SshMachineMetadata>> {
     super::validate_remote_target(target)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
     crate::session::validate_name(session_name)
@@ -135,7 +171,13 @@ pub(crate) fn prepare_saved_ssh(target: &str, session_name: &str) -> io::Result<
         )
         .is_none() =>
         {
-            Ok(())
+            Ok(prepared.remote_herdr.machine_metadata().or_else(|| {
+                discover_remote_api_metadata(&ssh, session_name)
+                    .inspect_err(
+                        |error| tracing::debug!(%error, "could not capture SSH setup metadata"),
+                    )
+                    .ok()
+            }))
         }
         _ => Err(io::Error::other(
             "remote server is not ready for saved machines",
@@ -318,36 +360,49 @@ impl RemoteExecutable {
 pub(super) struct RemoteHerdr {
     install_suffix: String,
     executable: RemoteExecutable,
+    resolved_executable: Option<String>,
     platform: RemotePlatform,
     bridge_idle_timeout: bool,
 }
 
 impl RemoteHerdr {
+    pub(super) fn machine_metadata(&self) -> Option<crate::client::endpoint::SshMachineMetadata> {
+        let executable = self.resolved_executable.clone()?;
+        let metadata = crate::client::endpoint::SshMachineMetadata {
+            os: self.platform.os.to_owned(),
+            executable,
+        };
+        metadata.is_valid().then_some(metadata)
+    }
+
     fn for_platform(platform: RemotePlatform) -> Self {
         let (install_suffix, executable) = if platform.is_windows() {
             (
                 String::new(),
-                RemoteExecutable::WindowsPath("herdr.exe".to_string()),
+                RemoteExecutable::WindowsPath("bora.exe".to_string()),
             )
         } else {
-            let install_suffix = ".local/bin/herdr".to_string();
+            let install_suffix = ".local/bin/bora".to_string();
             let shell_path = format!("\"$HOME/{install_suffix}\"");
             (install_suffix, RemoteExecutable::PosixShellPath(shell_path))
         };
         Self {
             install_suffix,
             executable,
+            resolved_executable: None,
             platform,
             bridge_idle_timeout: false,
         }
     }
 
-    fn with_shell_path(mut self, shell_path: String) -> Self {
-        self.executable = RemoteExecutable::PosixShellPath(shell_path);
+    fn with_posix_path(mut self, path: &str) -> Self {
+        self.executable = RemoteExecutable::PosixShellPath(shell_quote(path));
+        self.resolved_executable = Some(path.to_owned());
         self
     }
 
     fn with_windows_path(mut self, path: String) -> Self {
+        self.resolved_executable = Some(path.clone());
         self.executable = RemoteExecutable::WindowsPath(path);
         self
     }
@@ -364,6 +419,10 @@ fn windows_powershell_application_script(path: &str, args: &[&str]) -> String {
 }
 
 fn windows_powershell_streaming_application_command(path: &str, args: &[&str]) -> String {
+    windows_powershell_script_command(&windows_powershell_streaming_application_script(path, args))
+}
+
+fn windows_powershell_streaming_application_script(path: &str, args: &[&str]) -> String {
     let command_line = args
         .iter()
         .map(|arg| crate::platform::quote_windows_command_line_arg(arg))
@@ -371,11 +430,11 @@ fn windows_powershell_streaming_application_command(path: &str, args: &[&str]) -
         .join(" ");
     // Start-Process -Wait waits for descendants, including a cold-started server.
     // Retain the handle so Windows PowerShell 5.1 keeps the application's exit code.
-    windows_powershell_script_command(&format!(
+    format!(
         "$process = Start-Process -FilePath {} -ArgumentList {} -NoNewWindow -PassThru -ErrorAction Stop; $null = $process.Handle; $process.WaitForExit(); exit $process.ExitCode",
         crate::platform::quote_powershell_arg(path),
         crate::platform::quote_powershell_arg(&command_line),
-    ))
+    )
 }
 
 fn posix_remote_output_command(command: &str) -> String {
@@ -528,17 +587,92 @@ pub(super) struct PreparedRemoteHerdr {
 pub(super) struct ManagedSshOptions {
     config_path: PathBuf,
     control_path: Option<PathBuf>,
+    // Bridge workers may launch SSH after the helper that created this config
+    // has gone away. The last options owner removes only the temporary config.
+    _directory: Arc<ManagedSshConfigDirectory>,
 }
 
 struct ManagedSshConfig {
     options: ManagedSshOptions,
 }
 
-impl Drop for ManagedSshConfig {
+struct ManagedSshConfigDirectory(PathBuf);
+
+impl Drop for ManagedSshConfigDirectory {
     fn drop(&mut self) {
-        if let Some(dir) = self.options.config_path.parent() {
-            let _ = fs::remove_dir_all(dir);
-        }
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+/// Classify only SSH authentication diagnostics, not transport failures or
+/// unknown/changed host keys. This does not imply permission to prompt.
+pub(crate) fn ssh_error_requires_authentication(message: &str) -> bool {
+    let message = message.to_ascii_lowercase();
+    if message.contains("host key verification failed")
+        || message.contains("remote host identification has changed")
+    {
+        return false;
+    }
+    (message.contains("permission denied")
+        && ["(publickey", "(keyboard-interactive", "(password"]
+            .iter()
+            .any(|method| message.contains(method)))
+        || (message.contains("signing failed")
+            && (message.contains("sign_and_send_pubkey") || message.contains("agent")))
+}
+
+/// Keep this owner alive until the child has exited: OpenSSH reads its temporary
+/// config after spawn. Dropping it never stops the shared authenticated master.
+pub(crate) struct SshAuthenticationCommand {
+    pub(crate) command: Command,
+    _config: ManagedSshConfig,
+}
+
+pub(crate) fn ssh_authentication_command(target: &str) -> io::Result<SshAuthenticationCommand> {
+    if target.is_empty() || target.starts_with('-') || target.chars().any(char::is_control) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid SSH target",
+        ));
+    }
+    if !crate::platform::remote_ssh_config_paths().multiplexing {
+        return Err(io::Error::new(io::ErrorKind::Unsupported, "interactive SSH recovery requires Unix OpenSSH multiplexing; authenticate outside Bora on this platform"));
+    }
+    if !crate::config::Config::load()
+        .config
+        .remote
+        .manage_ssh_config
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "interactive SSH recovery requires remote.manage_ssh_config=true",
+        ));
+    }
+    let config = write_managed_ssh_config(target)?;
+    Ok(authentication_command_with_config(target, config))
+}
+
+fn authentication_command_with_config(
+    target: &str,
+    config: ManagedSshConfig,
+) -> SshAuthenticationCommand {
+    let mut command = Command::new("ssh");
+    apply_managed_ssh_options(&mut command, Some(&config.options));
+    command
+        .env("SSH_ASKPASS_REQUIRE", "never")
+        .env_remove("SSH_ASKPASS")
+        .arg("-o")
+        .arg("BatchMode=no")
+        .arg("-o")
+        .arg("StrictHostKeyChecking=yes")
+        .arg("-o")
+        .arg("NumberOfPasswordPrompts=3")
+        .arg("-T")
+        .arg(target)
+        .arg("exit");
+    SshAuthenticationCommand {
+        command,
+        _config: config,
     }
 }
 
@@ -552,7 +686,7 @@ pub(super) struct RemoteSsh {
 impl RemoteSsh {
     fn new(target: String, manage_ssh_config: bool, session_name: String) -> Self {
         let managed_config = if manage_ssh_config {
-            write_managed_ssh_config()
+            write_managed_ssh_config(&target)
                 .inspect_err(|err| {
                     tracing::debug!(%err, "could not write managed ssh config; using plain ssh");
                 })
@@ -570,12 +704,14 @@ impl RemoteSsh {
     }
 
     pub(super) fn new_noninteractive(target: String) -> Self {
-        Self {
-            target,
-            session_name: crate::session::DEFAULT_SESSION_NAME.into(),
-            managed_config: None,
-            noninteractive: true,
-        }
+        let manage = crate::platform::remote_ssh_config_paths().multiplexing
+            && crate::config::Config::load()
+                .config
+                .remote
+                .manage_ssh_config;
+        let mut ssh = Self::new(target, manage, crate::session::DEFAULT_SESSION_NAME.into());
+        ssh.noninteractive = true;
+        ssh
     }
 
     fn target(&self) -> &str {
@@ -975,31 +1111,6 @@ fn decode_windows_remote_path(encoded: &str) -> io::Result<String> {
     Ok(path)
 }
 
-impl Drop for RemoteSsh {
-    fn drop(&mut self) {
-        let Some(_options) = self
-            .managed_config
-            .as_ref()
-            .map(|config| &config.options)
-            .filter(|options| options.control_path.is_some())
-        else {
-            return;
-        };
-
-        let _ = self
-            .base_command()
-            .arg("-O")
-            .arg("exit")
-            .arg("-o")
-            .arg("BatchMode=yes")
-            .arg(&self.target)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
-    }
-}
-
 fn apply_noninteractive_ssh_options(command: &mut Command) {
     command
         .arg("-o")
@@ -1019,23 +1130,29 @@ fn apply_noninteractive_ssh_options(command: &mut Command) {
 }
 
 fn apply_managed_ssh_options(command: &mut Command, options: Option<&ManagedSshOptions>) {
+    // Compress the first connection too: multiplexed bridges inherit the master's transport.
+    command.arg("-C");
     let Some(options) = options else {
         return;
     };
 
     command.arg("-F").arg(&options.config_path);
     if let Some(control_path) = &options.control_path {
+        // User ControlPaths may be shared across isolated Herdr configs (or
+        // explicitly disabled). Managed auth must use our scoped transport;
+        // never stop or unlink a master belonging to the user's SSH setup.
         command
             .arg("-S")
             .arg(control_path)
             .arg("-o")
             .arg("ControlMaster=auto")
             .arg("-o")
-            .arg("ControlPersist=yes");
+            .arg("ControlPersist=600");
     }
 }
 
 fn apply_managed_scp_options(command: &mut Command, options: Option<&ManagedSshOptions>) {
+    command.arg("-C");
     let Some(options) = options else {
         return;
     };
@@ -1051,7 +1168,7 @@ fn apply_managed_scp_options(command: &mut Command, options: Option<&ManagedSshO
             .arg("-o")
             .arg("ControlMaster=auto")
             .arg("-o")
-            .arg("ControlPersist=yes");
+            .arg("ControlPersist=600");
     }
 }
 
@@ -1145,7 +1262,7 @@ pub(super) fn prepare_remote_herdr(
 
     if !remote_binary_supports_endpoint_requirement(ssh, &remote_herdr, require_surface_interest)? {
         return Err(io::Error::other(format!(
-            "installed remote herdr at {}, but it does not support saved SSH endpoint federation",
+            "installed remote bora at {}, but it does not support saved SSH endpoint federation",
             remote_herdr.executable.display()
         )));
     }
@@ -1172,7 +1289,7 @@ pub(super) fn find_installed_remote_herdr(ssh: &RemoteSsh) -> io::Result<RemoteH
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
         format!(
-            "matching Herdr is not ready on {}; run `herdr --remote {}` interactively to install or update it",
+            "matching Bora is not ready on {}; run `bora --remote {}` interactively to install or update it",
             ssh.target(),
             ssh.target()
         ),
@@ -1238,7 +1355,7 @@ fn prepare_windows_remote_herdr(
     let remote_herdr = install_result?;
     if !remote_binary_supports_endpoint_requirement(ssh, &remote_herdr, require_surface_interest)? {
         return Err(io::Error::other(format!(
-            "installed remote herdr at {}, but it does not support the required remote hosting capabilities",
+            "installed remote bora at {}, but it does not support the required remote hosting capabilities",
             remote_herdr.executable.display()
         )));
     }
@@ -1248,11 +1365,29 @@ fn prepare_windows_remote_herdr(
     })
 }
 
-pub(super) fn find_installed_remote_api_herdr(
+pub(super) fn discover_remote_api_metadata(
     ssh: &RemoteSsh,
     session: &str,
-) -> io::Result<RemoteHerdr> {
+) -> io::Result<crate::client::endpoint::SshMachineMetadata> {
     let platform = detect_remote_platform(ssh)?;
+    if !platform.is_windows() {
+        let output =
+            ssh.framed_user_shell_output(&posix_remote_api_discovery_command(&platform, session))?;
+        if !output.status.success() {
+            return Err(command_failed("remote binary discovery failed", &output));
+        }
+        let metadata = crate::client::endpoint::SshMachineMetadata {
+            os: platform.os.to_owned(),
+            executable: String::from_utf8_lossy(&output.stdout).trim().to_owned(),
+        };
+        if !metadata.is_valid() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid remote Bora executable path",
+            ));
+        }
+        return Ok(metadata);
+    }
     let remote_herdr = RemoteHerdr::for_platform(platform);
     let candidates = remote_binary_candidates(ssh, &remote_herdr)?;
     for candidate in candidates {
@@ -1264,12 +1399,15 @@ pub(super) fn find_installed_remote_api_herdr(
         if probe.status.success()
             && String::from_utf8_lossy(&probe.stdout).trim() == "herdr-api-bridge-v1"
         {
-            return Ok(candidate);
+            return Ok(crate::client::endpoint::SshMachineMetadata {
+                os: "windows".into(),
+                executable: candidate.executable.display().to_owned(),
+            });
         }
     }
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
-        "remote Herdr does not support machine API forwarding; update Herdr on this machine",
+        "remote Bora does not support machine API forwarding; update Bora on this machine",
     ))
 }
 
@@ -1386,7 +1524,7 @@ fn remote_binary_candidates(
 
 fn windows_remote_binary_candidate_command() -> String {
     windows_powershell_script_command(&format!(
-        r#"function Emit-HerdrPath([string]$CandidatePath) {{ if ([string]::IsNullOrWhiteSpace($CandidatePath) -or -not (Test-Path -LiteralPath $CandidatePath -PathType Leaf)) {{ return }}; $candidateFullPath = [System.IO.Path]::GetFullPath($CandidatePath); $encodedCandidate = [System.Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($candidateFullPath)); [Console]::Out.WriteLine('{WINDOWS_REMOTE_PATH_MARKER}' + $encodedCandidate) }}; $pathCommand = Get-Command herdr.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1; if ($null -ne $pathCommand) {{ Emit-HerdrPath $pathCommand.Source }}; $herdrHome = if ([string]::IsNullOrWhiteSpace($env:HERDR_HOME)) {{ Join-Path $env:USERPROFILE '.herdr' }} else {{ $env:HERDR_HOME }}; $activeJunction = Get-Item -LiteralPath (Join-Path $herdrHome 'packages\standalone\current') -Force -ErrorAction SilentlyContinue; if ($null -ne $activeJunction -and -not [string]::IsNullOrWhiteSpace([string]$activeJunction.Target)) {{ Emit-HerdrPath (Join-Path ([string]$activeJunction.Target) 'herdr.exe') }}; exit 0"#
+        r#"function Emit-HerdrPath([string]$CandidatePath) {{ if ([string]::IsNullOrWhiteSpace($CandidatePath) -or -not (Test-Path -LiteralPath $CandidatePath -PathType Leaf)) {{ return }}; $candidateFullPath = [System.IO.Path]::GetFullPath($CandidatePath); $encodedCandidate = [System.Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($candidateFullPath)); [Console]::Out.WriteLine('{WINDOWS_REMOTE_PATH_MARKER}' + $encodedCandidate) }}; $pathCommandBora = Get-Command bora.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1; if ($null -ne $pathCommandBora) {{ Emit-HerdrPath $pathCommandBora.Source }}; $pathCommand = Get-Command herdr.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1; if ($null -ne $pathCommand) {{ Emit-HerdrPath $pathCommand.Source }}; $herdrHome = if ([string]::IsNullOrWhiteSpace($env:HERDR_HOME)) {{ Join-Path $env:USERPROFILE '.herdr' }} else {{ $env:HERDR_HOME }}; $activeJunction = Get-Item -LiteralPath (Join-Path $herdrHome 'packages\standalone\current') -Force -ErrorAction SilentlyContinue; if ($null -ne $activeJunction -and -not [string]::IsNullOrWhiteSpace([string]$activeJunction.Target)) {{ Emit-HerdrPath (Join-Path ([string]$activeJunction.Target) 'bora.exe'); Emit-HerdrPath (Join-Path ([string]$activeJunction.Target) 'herdr.exe') }}; exit 0"#
     ))
 }
 
@@ -1430,6 +1568,7 @@ emit() {
     fi
 }
 if [ -n "$home" ]; then
+    emit "$home/.local/bin/bora"
     emit "$home/.local/bin/herdr"
 fi
 "#,
@@ -1464,11 +1603,29 @@ emit "/run/current-system/sw/bin/herdr"
     script
 }
 
+// Probe the current binary name first, then fall back to the pre-rename
+// `herdr` name so hosts that installed this fork before the bora rename are
+// still discoverable on PATH without a fresh install.
+const REMOTE_BINARY_PATH_PROBE_NAMES: [&str; 2] = ["bora", "herdr"];
+
 fn remote_binary_on_path_any(
     ssh: &RemoteSsh,
     remote_herdr: &RemoteHerdr,
 ) -> io::Result<Option<RemoteHerdr>> {
-    let output = ssh.posix_user_shell_output("command -v herdr")?;
+    for command_name in REMOTE_BINARY_PATH_PROBE_NAMES {
+        if let Some(candidate) = remote_binary_on_path(ssh, remote_herdr, command_name)? {
+            return Ok(Some(candidate));
+        }
+    }
+    Ok(None)
+}
+
+fn remote_binary_on_path(
+    ssh: &RemoteSsh,
+    remote_herdr: &RemoteHerdr,
+    command_name: &str,
+) -> io::Result<Option<RemoteHerdr>> {
+    let output = ssh.posix_user_shell_output(&format!("command -v {command_name}"))?;
     if output.status.success() {
         let stdout = String::from_utf8_lossy(&output.stdout);
         if let Some(candidate) = remote_herdr_from_path_discovery(remote_herdr, &stdout) {
@@ -1478,7 +1635,7 @@ fn remote_binary_on_path_any(
 
     // Non-POSIX login shells such as xonsh reject `command -v`; retry through
     // /bin/sh while retaining the login-shell probe for shell-initialized PATHs.
-    let output = ssh.sh_output("command -v herdr\n")?;
+    let output = ssh.sh_output(&format!("command -v {command_name}\n"))?;
     if !output.status.success() {
         return Ok(None);
     }
@@ -1511,7 +1668,7 @@ fn remote_herdr_from_path(remote_herdr: &RemoteHerdr, path: &str) -> Option<Remo
     if is_mise_shim_path(path) {
         return None;
     }
-    Some(remote_herdr.clone().with_shell_path(shell_quote(path)))
+    Some(remote_herdr.clone().with_posix_path(path))
 }
 
 fn is_mise_shim_path(path: &str) -> bool {
@@ -1607,7 +1764,7 @@ fn install_source_description_for(
     }
 
     if local_binary_can_seed_remote {
-        "the current local herdr binary".to_string()
+        "the current local bora binary".to_string()
     } else {
         format!(
             "the {} {} asset for {}",
@@ -1748,13 +1905,13 @@ fn confirm_remote_install_with_running_server(
         Err(err) => {
             if !io::stdin().is_terminal() {
                 return Err(io::Error::other(format!(
-                    "could not inspect the running remote herdr server on {target} before installing: {err}; run from an interactive terminal to approve updating the remote binary"
+                    "could not inspect the running remote bora server on {target} before installing: {err}; run from an interactive terminal to approve updating the remote binary"
                 )));
             }
             eprintln!(
-                "could not inspect the running remote herdr server on {target} before installing: {err}"
+                "could not inspect the running remote bora server on {target} before installing: {err}"
             );
-            eprint!("continue installing the remote herdr binary? [y/N] ");
+            eprint!("continue installing the remote bora binary? [y/N] ");
             io::stderr().flush()?;
 
             let mut answer = String::new();
@@ -1763,7 +1920,7 @@ fn confirm_remote_install_with_running_server(
             if answer != "y" && answer != "yes" {
                 return Err(io::Error::new(
                     io::ErrorKind::Interrupted,
-                    "remote herdr install cancelled",
+                    "remote bora install cancelled",
                 ));
             }
             return Ok(false);
@@ -1792,10 +1949,10 @@ fn confirm_remote_install_with_running_server(
 
     if plan == RemoteInstallRunningServerPlan::KeepRunning {
         if io::stdin().is_terminal() {
-            eprintln!("remote herdr server on {target} is already compatible:");
+            eprintln!("remote bora server on {target} is already compatible:");
             eprintln!("  server: v{}", version_label(version.as_deref()));
             eprintln!(
-                "Herdr will install {} without stopping the running remote server.",
+                "Bora will install {} without stopping the running remote server.",
                 current_version()
             );
         }
@@ -1807,7 +1964,7 @@ fn confirm_remote_install_with_running_server(
             RemoteInstallRunningServerPlan::LiveHandoff => return Ok(false),
             RemoteInstallRunningServerPlan::StopRequired(_) => {
                 return Err(io::Error::other(format!(
-                    "remote herdr server on {target} is running v{}; run from an interactive terminal to approve stopping it for the update",
+                    "remote bora server on {target} is running v{}; run from an interactive terminal to approve stopping it for the update",
                     version_label(version.as_deref())
                 )));
             }
@@ -1816,19 +1973,19 @@ fn confirm_remote_install_with_running_server(
     }
 
     if plan == RemoteInstallRunningServerPlan::LiveHandoff {
-        eprintln!("remote herdr server on {target} is currently running:");
+        eprintln!("remote bora server on {target} is currently running:");
         eprintln!("  server: v{}", version_label(version.as_deref()));
         eprintln!(
-            "Herdr will install {} and hand off live pane processes to the prepared server.",
+            "Bora will install {} and hand off live pane processes to the prepared server.",
             current_version()
         );
         return Ok(false);
     }
 
-    eprintln!("remote herdr server on {target} is currently running:");
+    eprintln!("remote bora server on {target} is currently running:");
     eprintln!("  server: v{}", version_label(version.as_deref()));
     eprintln!(
-        "To complete the remote update, Herdr must stop the running remote server after installing."
+        "To complete the remote update, Bora must stop the running remote server after installing."
     );
     eprintln!("This stops active remote pane processes, including shells, agents, dev servers, and tests.");
     eprintln!();
@@ -1844,7 +2001,7 @@ fn confirm_remote_install_with_running_server(
     if answer != "y" && answer != "yes" {
         return Err(io::Error::new(
             io::ErrorKind::Interrupted,
-            "remote herdr install cancelled",
+            "remote bora install cancelled",
         ));
     }
 
@@ -1897,7 +2054,7 @@ fn probe_remote_endpoint(
         remote_herdr.clone(),
         path.clone(),
         ssh.session_name.clone(),
-        None,
+        ssh.options(),
         true,
     )?;
     let mut stream = crate::ipc::connect_local_stream(&path)?;
@@ -2029,19 +2186,19 @@ fn confirm_remote_server_stop(
     if !io::stdin().is_terminal() {
         if required_upgrade {
             return Err(io::Error::other(format!(
-                "remote herdr server on {target} needs one final update before this client can attach; run from an interactive terminal to approve updating it"
+                "remote bora server on {target} needs one final update before this client can attach; run from an interactive terminal to approve updating it"
             )));
         }
 
         eprintln!(
-            "remote herdr server on {target} is still running v{}; it will use {} after it restarts.",
+            "remote bora server on {target} is still running v{}; it will use {} after it restarts.",
             version_label(version),
             current_version()
         );
         return Ok(false);
     }
 
-    eprintln!("remote herdr server on {target} is currently running:");
+    eprintln!("remote bora server on {target} is currently running:");
     eprintln!("  server: v{}", version_label(version));
     eprintln!("  prepared binary: {}", current_version());
     eprintln!();
@@ -2049,7 +2206,7 @@ fn confirm_remote_server_stop(
     match reason {
         RemoteServerRestartReason::EndpointProtocol => {
             eprintln!(
-                "the remote server predates Herdr's stable endpoint protocol and must update before this client can attach."
+                "the remote server predates Bora's stable endpoint protocol and must update before this client can attach."
             );
         }
         RemoteServerRestartReason::SurfaceInterest => {
@@ -2062,7 +2219,7 @@ fn confirm_remote_server_stop(
         }
         RemoteServerRestartReason::DaemonDetach => {
             eprintln!(
-                "the remote server was started by a herdr build that may not survive SSH connection loss. restart it so network drops disconnect only this client."
+                "the remote server was started by a bora build that may not survive SSH connection loss. restart it so network drops disconnect only this client."
             );
         }
     }
@@ -2082,7 +2239,7 @@ fn confirm_remote_server_stop(
     if required_upgrade {
         return Err(io::Error::new(
             io::ErrorKind::Interrupted,
-            "remote herdr server stop cancelled",
+            "remote bora server stop cancelled",
         ));
     }
 
@@ -2091,15 +2248,15 @@ fn confirm_remote_server_stop(
 
 fn live_handoff_remote_server(ssh: &RemoteSsh, remote_herdr: &RemoteHerdr) -> io::Result<()> {
     let status = remote_client_status(ssh, remote_herdr)?.ok_or_else(|| {
-        io::Error::other("could not inspect the prepared remote herdr binary before live handoff")
+        io::Error::other("could not inspect the prepared remote bora binary before live handoff")
     })?;
     let protocol = status.protocol.ok_or_else(|| {
-        io::Error::other("prepared remote herdr did not report its private protocol")
+        io::Error::other("prepared remote bora did not report its private protocol")
     })?;
     let version = status
         .version
         .filter(|version| !version.is_empty())
-        .ok_or_else(|| io::Error::other("prepared remote herdr did not report its version"))?;
+        .ok_or_else(|| io::Error::other("prepared remote bora did not report its version"))?;
     let command =
         remote_herdr
             .executable
@@ -2110,7 +2267,7 @@ fn live_handoff_remote_server(ssh: &RemoteSsh, remote_herdr: &RemoteHerdr) -> io
     }
 
     eprintln!(
-        "handed off the remote herdr server on {}; reconnecting to the prepared server.",
+        "handed off the remote bora server on {}; reconnecting to the prepared server.",
         ssh.target()
     );
     Ok(())
@@ -2127,7 +2284,7 @@ fn stop_remote_server(ssh: &RemoteSsh, remote_herdr: &RemoteHerdr) -> io::Result
 
     wait_for_remote_server_shutdown(ssh, remote_herdr)?;
     eprintln!(
-        "stopped the remote herdr server on {}; it will restart when the remote client bridge attaches.",
+        "stopped the remote bora server on {}; it will restart when the remote client bridge attaches.",
         ssh.target()
     );
     Ok(())
@@ -2143,7 +2300,7 @@ fn wait_for_remote_server_shutdown(ssh: &RemoteSsh, remote_herdr: &RemoteHerdr) 
             return Err(io::Error::new(
                 io::ErrorKind::TimedOut,
                 format!(
-                    "shutdown was requested, but the old remote herdr server on {target} is still responding after {} seconds",
+                    "shutdown was requested, but the old remote bora server on {target} is still responding after {} seconds",
                     REMOTE_SERVER_SHUTDOWN_CONFIRM_TIMEOUT.as_secs(),
                     target = ssh.target()
                 ),
@@ -2158,7 +2315,7 @@ fn version_label(version: Option<&str>) -> &str {
 }
 
 fn warn_if_remote_bin_not_on_path(ssh: &RemoteSsh) -> io::Result<()> {
-    let output = ssh.posix_user_shell_output("command -v herdr")?;
+    let output = ssh.posix_user_shell_output("command -v bora")?;
     if output.status.success()
         && remote_shell_resolves_managed_install(&String::from_utf8_lossy(&output.stdout))
     {
@@ -2166,7 +2323,7 @@ fn warn_if_remote_bin_not_on_path(ssh: &RemoteSsh) -> io::Result<()> {
     }
 
     eprintln!(
-        "herdr: installed remote binary to ~/.local/bin/herdr, but the remote shell does not resolve `herdr` to that path"
+        "bora: installed remote binary to ~/.local/bin/bora, but the remote shell does not resolve `bora` to that path"
     );
     Ok(())
 }
@@ -2176,7 +2333,7 @@ fn remote_shell_resolves_managed_install(stdout: &str) -> bool {
         .lines()
         .next()
         .map(str::trim)
-        .is_some_and(|path| path.ends_with("/.local/bin/herdr"))
+        .is_some_and(|path| path.ends_with("/.local/bin/bora"))
 }
 
 fn download_release_asset(platform: &RemotePlatform) -> io::Result<InstallSource> {
@@ -2244,7 +2401,7 @@ fn preview_assets_for_build<'a>(
     }
     let build = manifest.builds.get(build_id).ok_or_else(|| {
         io::Error::other(format!(
-            "preview manifest no longer includes build {build_id}; run `bora update` locally or set {REMOTE_BINARY_ENV_VAR}=target/release/herdr"
+            "preview manifest no longer includes build {build_id}; run `bora update` locally or set {REMOTE_BINARY_ENV_VAR}=target/release/bora"
         ))
     })?;
     Ok((build.protocol, &build.assets))
@@ -2253,7 +2410,7 @@ fn preview_assets_for_build<'a>(
 fn remote_release_asset(asset_key: &str) -> io::Result<RemoteReleaseAsset> {
     if crate::build_info::is_preview() {
         let build_id = crate::build_info::build_id().ok_or_else(|| {
-            io::Error::other("preview client has no build id; set HERDR_REMOTE_BINARY or install Herdr on the remote manually")
+            io::Error::other("preview client has no build id; set HERDR_REMOTE_BINARY or install Bora on the remote manually")
         })?;
         let manifest_bytes = fetch_remote_manifest(PREVIEW_UPDATE_MANIFEST_URL)?;
         let manifest: RemotePreviewManifest =
@@ -2263,7 +2420,7 @@ fn remote_release_asset(asset_key: &str) -> io::Result<RemoteReleaseAsset> {
         let (protocol, assets) = preview_assets_for_build(&manifest, build_id)?;
         if protocol != CURRENT_PROTOCOL {
             return Err(io::Error::other(format!(
-                "preview manifest has build {build_id} protocol {protocol}, but this client needs protocol {CURRENT_PROTOCOL}; set {REMOTE_BINARY_ENV_VAR}=target/release/herdr or install a matching Herdr on the remote host manually"
+                "preview manifest has build {build_id} protocol {protocol}, but this client needs protocol {CURRENT_PROTOCOL}; set {REMOTE_BINARY_ENV_VAR}=target/release/bora or install a matching Bora on the remote host manually"
             )));
         }
         return assets.get(asset_key).map(remote_asset_info).ok_or_else(|| {
@@ -2279,20 +2436,20 @@ fn remote_release_asset(asset_key: &str) -> io::Result<RemoteReleaseAsset> {
         .map_err(|err| io::Error::other(format!("failed to parse update manifest JSON: {err}")))?;
     let release = manifest.release_for_version(&current_version).ok_or_else(|| {
         io::Error::other(format!(
-            "release manifest does not include herdr {current_version}; build herdr for {} or install it there manually",
+            "release manifest does not include bora {current_version}; build bora for {} or install it there manually",
             asset_key
         ))
     })?;
     if let Some(protocol) = release.protocol {
         if protocol != CURRENT_PROTOCOL {
             return Err(io::Error::other(format!(
-                "release manifest has herdr {current_version} protocol {protocol}, but this client needs protocol {CURRENT_PROTOCOL}; set {REMOTE_BINARY_ENV_VAR}=target/release/herdr or install a matching herdr on the remote host manually"
+                "release manifest has bora {current_version} protocol {protocol}, but this client needs protocol {CURRENT_PROTOCOL}; set {REMOTE_BINARY_ENV_VAR}=target/release/bora or install a matching bora on the remote host manually"
             )));
         }
     }
     let asset = release.assets.get(asset_key).ok_or_else(|| {
         io::Error::other(format!(
-            "no {asset_key} binary in the release manifest for herdr {current_version}"
+            "no {asset_key} binary in the release manifest for bora {current_version}"
         ))
     })?;
     let mut asset = remote_asset_info(asset);
@@ -2325,7 +2482,7 @@ fn private_download_dir(asset_key: &str) -> io::Result<PathBuf> {
 
     Err(io::Error::new(
         io::ErrorKind::AlreadyExists,
-        "failed to create private herdr remote download directory",
+        "failed to create private bora remote download directory",
     ))
 }
 
@@ -2355,14 +2512,14 @@ fn confirm_remote_install(
 ) -> io::Result<()> {
     if !io::stdin().is_terminal() {
         return Err(io::Error::other(format!(
-            "matching remote herdr {} is not installed at {}; run from an interactive terminal to approve installation",
+            "matching remote bora {} is not installed at {}; run from an interactive terminal to approve installation",
             current_version(),
             remote_herdr.executable.display()
         )));
     }
 
     eprintln!(
-        "matching herdr {} is not installed on {target} for {}.",
+        "matching bora {} is not installed on {target} for {}.",
         current_version(),
         remote_herdr.platform.asset_key()
     );
@@ -2376,11 +2533,73 @@ fn confirm_remote_install(
     if !read_remote_confirmation(&mut io::stdin().lock(), true)? {
         return Err(io::Error::new(
             io::ErrorKind::Interrupted,
-            "remote herdr installation cancelled",
+            "remote bora installation cancelled",
         ));
     }
 
     Ok(())
+}
+
+fn posix_remote_api_discovery_command(platform: &RemotePlatform, session: &str) -> String {
+    let script = format!(
+        r#"set -f
+candidates=$(
+command -v bora
+command -v herdr
+{discovery}
+)
+IFS='
+'
+for candidate in $candidates; do
+    case "$candidate" in
+        */mise/shims/herdr) continue ;;
+        /*) ;;
+        *) continue ;;
+    esac
+    [ -x "$candidate" ] || continue
+    if capability=$("$candidate" --session {session} remote-api-bridge --check </dev/null 2>/dev/null) && [ "$capability" = herdr-api-bridge-v1 ]; then
+        printf '%s\n' "$candidate"
+        exit 0
+    fi
+done
+printf '%s\n' 'remote Bora does not support machine API forwarding; update Bora on this machine' >&2
+exit 2"#,
+        discovery = known_remote_binary_candidate_script(platform),
+        session = shell_quote(session),
+    );
+    format!(
+        "/bin/sh -c {}",
+        shell_quote(&posix_remote_output_command(&script))
+    )
+}
+
+pub(super) const STALE_API_METADATA: &str = "herdr-machine-metadata-stale-v1";
+
+pub(super) fn cached_remote_api_command(
+    metadata: &crate::client::endpoint::SshMachineMetadata,
+    session: &str,
+) -> String {
+    if metadata.os == "windows" {
+        let path = crate::platform::quote_powershell_arg(&metadata.executable);
+        let session_arg = crate::platform::quote_powershell_arg(session);
+        let probe = format!(
+            "$capability = & {path} --session {session_arg} remote-api-bridge --check 2>$null; if ($LASTEXITCODE -ne 0 -or $capability -ne 'herdr-api-bridge-v1') {{ [Console]::Error.WriteLine('{STALE_API_METADATA}'); exit 78 }}; "
+        );
+        return windows_powershell_script_command(&format!(
+            "{probe}{}",
+            windows_powershell_streaming_application_script(
+                &metadata.executable,
+                &["--session", session, "remote-api-bridge"]
+            ),
+        ));
+    }
+    let path = shell_quote(&metadata.executable);
+    let session = shell_quote(session);
+    let script = format!(
+        "if capability=$({path} --session {session} remote-api-bridge --check </dev/null 2>/dev/null) && [ \"$capability\" = herdr-api-bridge-v1 ]; then\n{}\nelse\n    printf '%s\\n' '{STALE_API_METADATA}' >&2\n    exit 78\nfi",
+        posix_remote_output_command(&format!("exec {path} --session {session} remote-api-bridge")),
+    );
+    format!("/bin/sh -c {}", shell_quote(&script))
 }
 
 pub(super) fn remote_api_bridge_command(
@@ -2521,7 +2740,7 @@ impl SshStdioBridge {
                             if noninteractive {
                                 tracing::warn!(error = %err, "saved SSH endpoint bridge failed");
                             } else {
-                                eprintln!("herdr: remote bridge failed: {err}");
+                                eprintln!("bora: remote bridge failed: {err}");
                             }
                         }
                     }
@@ -2532,7 +2751,7 @@ impl SshStdioBridge {
                         if noninteractive {
                             tracing::warn!(error = %err, "saved SSH endpoint listener failed");
                         } else {
-                            eprintln!("herdr: remote bridge listener failed: {err}");
+                            eprintln!("bora: remote bridge listener failed: {err}");
                         }
                         break;
                     }
@@ -2612,14 +2831,19 @@ fn ssh_user_config_include(path: Option<&Path>) -> Option<String> {
 
 /// Builds a temporary ssh config that includes the user's settings first, so
 /// OpenSSH's first-value-wins behavior preserves explicit user keepalives.
-fn write_managed_ssh_config() -> io::Result<ManagedSshConfig> {
+fn write_managed_ssh_config(target: &str) -> io::Result<ManagedSshConfig> {
     let paths = crate::platform::remote_ssh_config_paths();
+    let control_path = if paths.multiplexing {
+        Some(crate::platform::shared_ssh_control_path(
+            &crate::config::config_path(),
+            target,
+        )?)
+    } else {
+        None
+    };
+
     let dir = crate::platform::create_remote_ssh_config_dir(SSH_CONTROL_SOCKET_NAME)?;
     let path = dir.join("config");
-    let control_path = paths
-        .multiplexing
-        .then(|| dir.join(SSH_CONTROL_SOCKET_NAME));
-
     let mut contents = String::new();
     if let Some(include) = ssh_user_config_include(paths.user_config.as_deref()) {
         contents.push_str(&format!("Include {include}\n"));
@@ -2646,6 +2870,7 @@ fn write_managed_ssh_config() -> io::Result<ManagedSshConfig> {
         options: ManagedSshOptions {
             config_path: path,
             control_path,
+            _directory: Arc::new(ManagedSshConfigDirectory(dir)),
         },
     })
 }
@@ -3420,7 +3645,7 @@ mod tests {
     fn managed_ssh_config_includes_user_config_then_fallback() {
         use std::os::unix::fs::PermissionsExt;
 
-        let managed_config = write_managed_ssh_config().expect("write managed config");
+        let managed_config = write_managed_ssh_config("example").expect("write managed config");
         let path = managed_config.options.config_path.clone();
         let control_path = managed_config
             .options
@@ -3458,7 +3683,7 @@ mod tests {
                 let fallback_at = contents.find("Host *").expect("fallback present");
                 assert!(
                     include_at < fallback_at,
-                    "user config must be Included before herdr's fallback: {contents}"
+                    "user config must be Included before bora's fallback: {contents}"
                 );
             }
         }
@@ -3480,6 +3705,106 @@ mod tests {
         drop(managed_config);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn shared_ssh_transport_survives_helper_config_drop() {
+        let first = write_managed_ssh_config("example").unwrap();
+        let second = write_managed_ssh_config("example").unwrap();
+        let socket = first.options.control_path.clone().unwrap();
+        assert_eq!(Some(&socket), second.options.control_path.as_ref());
+        assert_ne!(socket.parent(), first.options.config_path.parent());
+        let config_path = first.options.config_path.clone();
+        drop(first);
+        assert!(!config_path.exists());
+        assert!(socket.parent().unwrap().is_dir());
+    }
+
+    #[test]
+    fn ssh_authentication_diagnostics_are_narrow() {
+        for message in [
+            "user@host: Permission denied (publickey).",
+            "Permission denied (keyboard-interactive,password).",
+            "Permission denied (password).",
+            "sign_and_send_pubkey: signing failed for ED25519 from agent: agent refused operation",
+        ] {
+            assert!(ssh_error_requires_authentication(message), "{message}");
+        }
+        for message in [
+            "Host key verification failed.",
+            "REMOTE HOST IDENTIFICATION HAS CHANGED!",
+            "Permission denied opening /tmp/file",
+            "Connection refused",
+            "agent disconnected",
+            "Permission denied (publickey). Host key verification failed.",
+        ] {
+            assert!(!ssh_error_requires_authentication(message), "{message}");
+        }
+    }
+
+    #[test]
+    fn bridge_options_keep_temporary_config_alive_after_helper_drop() {
+        let config = write_managed_ssh_config("example").unwrap();
+        let path = config.options.config_path.clone();
+        let worker_options = config.options.clone();
+        drop(config);
+        assert!(path.is_file());
+        drop(worker_options);
+        assert!(!path.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn authentication_command_uses_shared_transport_without_askpass_or_host_key_relaxation() {
+        let config = write_managed_ssh_config("example").unwrap();
+        let setup = RemoteSsh::new("example".into(), true, "other-session".into());
+        assert_eq!(
+            config.options.control_path,
+            setup.options().unwrap().control_path
+        );
+        let authentication = authentication_command_with_config("example", config);
+        let command = &authentication.command;
+        assert_eq!(command.get_program(), "ssh");
+        let args = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy())
+            .collect::<Vec<_>>();
+        for required in [
+            "ControlMaster=auto",
+            "ControlPersist=600",
+            "BatchMode=no",
+            "StrictHostKeyChecking=yes",
+        ] {
+            assert!(args.iter().any(|arg| arg == required), "missing {required}");
+        }
+        assert_eq!(&args[args.len() - 3..], &["-T", "example", "exit"]);
+        let env = command.get_envs().collect::<Vec<_>>();
+        assert!(env.iter().any(
+            |(key, value)| *key == std::ffi::OsStr::new("SSH_ASKPASS_REQUIRE")
+                && *value == Some(std::ffi::OsStr::new("never"))
+        ));
+        assert!(env
+            .iter()
+            .any(|(key, value)| *key == std::ffi::OsStr::new("SSH_ASKPASS") && value.is_none()));
+    }
+
+    #[test]
+    fn authentication_command_rejects_option_injection() {
+        assert_eq!(
+            ssh_authentication_command("-oProxyCommand=bad")
+                .err()
+                .unwrap()
+                .kind(),
+            io::ErrorKind::InvalidInput
+        );
+    }
+
+    #[test]
+    fn unmanaged_ssh_setup_preserves_plain_transport() {
+        let ssh = RemoteSsh::new("example".into(), false, "main".into());
+        assert!(ssh.options().is_none());
+        assert!(!ssh.command().get_args().any(|arg| arg == "-F"));
+    }
+
     #[test]
     fn ssh_config_quote_wraps_path_with_spaces() {
         assert_eq!(
@@ -3491,14 +3816,9 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn remote_ssh_command_uses_managed_config_when_present() {
-        let mut managed_config = write_managed_ssh_config().expect("write managed config");
-        managed_config.options.control_path = Some(PathBuf::from("/tmp/herdr test/control"));
+        let managed_config = write_managed_ssh_config("example").expect("write managed config");
         let config_path = managed_config.options.config_path.clone();
-        let control_path = managed_config
-            .options
-            .control_path
-            .clone()
-            .expect("Unix managed config has a control path");
+        let control_path = managed_config.options.control_path.clone().unwrap();
         let ssh = RemoteSsh {
             target: "example".to_string(),
             session_name: crate::session::DEFAULT_SESSION_NAME.into(),
@@ -3515,6 +3835,7 @@ mod tests {
         assert_eq!(
             args,
             vec![
+                "-C".to_string(),
                 "-F".to_string(),
                 config_path.to_string_lossy().into_owned(),
                 "-S".to_string(),
@@ -3522,7 +3843,7 @@ mod tests {
                 "-o".to_string(),
                 "ControlMaster=auto".to_string(),
                 "-o".to_string(),
-                "ControlPersist=yes".to_string(),
+                "ControlPersist=600".to_string(),
                 "-T".to_string(),
                 "example".to_string(),
             ]
@@ -3536,6 +3857,7 @@ mod tests {
         assert_eq!(
             scp_args,
             vec![
+                "-C".to_string(),
                 "-F".to_string(),
                 config_path.to_string_lossy().into_owned(),
                 "-o".to_string(),
@@ -3543,7 +3865,7 @@ mod tests {
                 "-o".to_string(),
                 "ControlMaster=auto".to_string(),
                 "-o".to_string(),
-                "ControlPersist=yes".to_string(),
+                "ControlPersist=600".to_string(),
             ]
         );
     }
@@ -3551,7 +3873,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn windows_managed_ssh_config_uses_keepalives_without_control_socket() {
-        let managed_config = write_managed_ssh_config().expect("write managed config");
+        let managed_config = write_managed_ssh_config("example").expect("write managed config");
         let config_path = managed_config.options.config_path.clone();
         assert!(managed_config.options.control_path.is_none());
         let contents = std::fs::read_to_string(&config_path).expect("read managed config");
@@ -3565,7 +3887,7 @@ mod tests {
         let fallback_at = contents.find("Host *").expect("fallback present");
         assert!(
             include_at < fallback_at,
-            "user config must be Included before herdr's fallback: {contents}"
+            "user config must be Included before bora's fallback: {contents}"
         );
 
         let ssh = RemoteSsh {
@@ -3582,6 +3904,7 @@ mod tests {
         assert_eq!(
             args,
             vec![
+                "-C".to_string(),
                 "-F".to_string(),
                 config_path.to_string_lossy().into_owned(),
                 "-T".to_string(),
@@ -3595,7 +3918,11 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(
             scp_args,
-            vec!["-F".to_string(), config_path.to_string_lossy().into_owned(),]
+            vec![
+                "-C".to_string(),
+                "-F".to_string(),
+                config_path.to_string_lossy().into_owned(),
+            ]
         );
     }
 
@@ -3623,6 +3950,44 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn endpoint_probe_preserves_setup_ssh_options() {
+        let managed_config = write_managed_ssh_config("example").expect("write managed config");
+        let marker = managed_config
+            .options
+            .config_path
+            .with_file_name("probe-ran");
+        fs::write(
+            &managed_config.options.config_path,
+            format!(
+                "Host *\n  ProxyCommand /bin/sh -c {}\n",
+                shell_quote(&format!(
+                    ": > {}; exit 1",
+                    shell_quote(&marker.to_string_lossy())
+                ))
+            ),
+        )
+        .expect("write isolated probe config");
+        let ssh = RemoteSsh {
+            target: "herdr-probe.invalid".into(),
+            session_name: "probe-options".into(),
+            managed_config: Some(managed_config),
+            noninteractive: false,
+        };
+        let remote = RemoteHerdr::for_platform(RemotePlatform {
+            os: "linux",
+            arch: "x86_64",
+        });
+
+        let error = probe_remote_endpoint(&ssh, &remote).expect_err("proxy refuses connection");
+
+        assert!(
+            marker.exists(),
+            "endpoint probe discarded the authenticated setup's SSH options: {error}"
+        );
+    }
+
     #[test]
     fn noninteractive_ssh_stderr_capture_is_bounded() {
         let stderr = vec![b'x'; NONINTERACTIVE_SSH_STDERR_LIMIT + 4096];
@@ -3639,6 +4004,7 @@ mod tests {
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect::<Vec<_>>();
         for required in [
+            "-C",
             "BatchMode=yes",
             "NumberOfPasswordPrompts=0",
             "StrictHostKeyChecking=yes",
@@ -3649,8 +4015,7 @@ mod tests {
         ] {
             assert!(args.iter().any(|arg| arg == required), "missing {required}");
         }
-        assert!(!args.iter().any(|arg| arg == "-F"));
-        assert!(ssh.options().is_none());
+        assert_eq!(args.iter().any(|arg| arg == "-F"), ssh.options().is_some());
     }
 
     #[test]
@@ -3734,7 +4099,7 @@ mod tests {
     }
 
     #[test]
-    fn remote_ssh_command_is_plain_without_managed_config() {
+    fn remote_ssh_commands_compress_without_managed_config() {
         let ssh = RemoteSsh {
             target: "example".to_string(),
             session_name: crate::session::DEFAULT_SESSION_NAME.into(),
@@ -3748,8 +4113,8 @@ mod tests {
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect::<Vec<_>>();
 
-        assert_eq!(args, vec!["-T".to_string(), "example".to_string()]);
-        assert!(ssh.scp_command().get_args().next().is_none());
+        assert_eq!(args, vec!["-C", "-T", "example"]);
+        assert_eq!(ssh.scp_command().get_args().collect::<Vec<_>>(), vec!["-C"]);
     }
 
     #[test]
@@ -4070,6 +4435,63 @@ mod tests {
     }
 
     #[test]
+    fn machine_metadata_keeps_raw_resolved_paths_not_shell_expressions() {
+        let remote = RemoteHerdr::for_platform(RemotePlatform {
+            os: "linux",
+            arch: "x86_64",
+        });
+        assert!(remote.machine_metadata().is_none());
+        let path = "/home/user's files/$literal/herdr";
+        let resolved = remote.with_posix_path(path);
+        assert_eq!(resolved.machine_metadata().unwrap().executable, path);
+        assert_eq!(resolved.executable.display(), shell_quote(path));
+        let remote = RemoteHerdr::for_platform(RemotePlatform {
+            os: "windows",
+            arch: "x86_64",
+        });
+        assert!(remote.machine_metadata().is_none());
+        let path = r"C:\Users\A B\herdr.exe";
+        assert_eq!(
+            remote
+                .with_windows_path(path.into())
+                .machine_metadata()
+                .unwrap()
+                .executable,
+            path
+        );
+    }
+
+    #[test]
+    fn cached_windows_api_command_checks_before_starting_the_stream() {
+        let path = r"C:\Users\A'B\herdr.exe";
+        let command = cached_remote_api_command(
+            &crate::client::endpoint::SshMachineMetadata {
+                os: "windows".into(),
+                executable: path.into(),
+            },
+            "fleet",
+        );
+        let encoded = command.split_whitespace().last().unwrap();
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .unwrap();
+        let words = bytes
+            .chunks_exact(2)
+            .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
+            .collect::<Vec<_>>();
+        let script = String::from_utf16(&words).unwrap();
+        assert!(script.contains(&crate::platform::quote_powershell_arg(path)));
+        assert!(script.contains(STALE_API_METADATA));
+        assert!(
+            script.find("remote-api-bridge --check").unwrap()
+                < script.find("Start-Process").unwrap()
+        );
+        assert!(script.contains("$LASTEXITCODE -ne 0"));
+        assert!(script.contains("-NoNewWindow -PassThru"));
+        assert!(script.contains("--session fleet remote-api-bridge"));
+    }
+
+    #[test]
     fn windows_remote_commands_use_one_encoded_powershell_grammar() {
         let executable = RemoteExecutable::WindowsPath("herdr.exe".to_string());
         let commands = [
@@ -4106,12 +4528,12 @@ mod tests {
             (
                 "API bridge with explicit default session",
                 remote_api_bridge_command(&RemoteHerdr::for_platform(RemotePlatform { os: "windows", arch: "x86_64" }), "default", false),
-                "$process = Start-Process -FilePath herdr.exe -ArgumentList '--session default remote-api-bridge' -NoNewWindow -PassThru -ErrorAction Stop; $null = $process.Handle; $process.WaitForExit(); exit $process.ExitCode",
+                "$process = Start-Process -FilePath bora.exe -ArgumentList '--session default remote-api-bridge' -NoNewWindow -PassThru -ErrorAction Stop; $null = $process.Handle; $process.WaitForExit(); exit $process.ExitCode",
             ),
             (
                 "API bridge capability probe",
                 remote_api_bridge_command(&RemoteHerdr::for_platform(RemotePlatform { os: "windows", arch: "x86_64" }), "agents", true),
-                "$process = Start-Process -FilePath herdr.exe -ArgumentList '--session agents remote-api-bridge --check' -NoNewWindow -PassThru -ErrorAction Stop; $null = $process.Handle; $process.WaitForExit(); exit $process.ExitCode",
+                "$process = Start-Process -FilePath bora.exe -ArgumentList '--session agents remote-api-bridge --check' -NoNewWindow -PassThru -ErrorAction Stop; $null = $process.Handle; $process.WaitForExit(); exit $process.ExitCode",
             ),
             (
                 "saved bridge with closed stdin",
@@ -4317,7 +4739,7 @@ mod tests {
             assert_eq!(
                 remote_api_bridge_command(&remote_herdr, session, false),
                 posix_remote_output_command(&format!(
-                    "exec \"$HOME/.local/bin/herdr\" --session {session} remote-api-bridge"
+                    "exec \"$HOME/.local/bin/bora\" --session {session} remote-api-bridge"
                 ))
             );
         }
@@ -4352,11 +4774,11 @@ mod tests {
             remote_herdr
                 .executable
                 .bridge_command(crate::session::DEFAULT_SESSION_NAME),
-            "printf '\n%s\n' 'herdr-remote-output-ready:1'\nexec \"$HOME/.local/bin/herdr\" remote-client-bridge"
+            "printf '\n%s\n' 'herdr-remote-output-ready:1'\nexec \"$HOME/.local/bin/bora\" remote-client-bridge"
         );
         assert_eq!(
             remote_herdr.executable.saved_bridge_command("agents"),
-            "exec \"$HOME/.local/bin/herdr\" --session agents remote-client-bridge </dev/null"
+            "exec \"$HOME/.local/bin/bora\" --session agents remote-client-bridge </dev/null"
         );
     }
 
@@ -4463,6 +4885,7 @@ mod tests {
             arch: "x86_64",
         });
 
+        assert!(script.contains("emit \"$home/.local/bin/bora\""));
         assert!(script.contains("emit \"$home/.local/bin/herdr\""));
         assert!(!script.contains("mise/shims/herdr"));
         assert!(script.contains(&format!("version={}", shell_quote(&current_version()))));
@@ -4478,6 +4901,93 @@ mod tests {
         assert!(script.contains("emit \"/run/current-system/sw/bin/herdr\""));
         assert!(script.contains("emit \"/home/linuxbrew/.linuxbrew/bin/herdr\""));
         assert!(!script.contains("emit \"/opt/homebrew/bin/herdr\""));
+    }
+
+    #[test]
+    fn known_remote_binary_candidate_script_probes_bora_before_legacy_herdr_direct_install() {
+        // A host that installed this fork before the herdr->bora rename has
+        // its direct install at `~/.local/bin/herdr`; a host installed after
+        // the rename has it at `~/.local/bin/bora`. The bora candidate must
+        // be emitted first so a host with both present (e.g. a stale herdr
+        // binary left behind after an update) prefers the current binary.
+        let script = known_remote_binary_candidate_script(&RemotePlatform {
+            os: "linux",
+            arch: "x86_64",
+        });
+
+        let bora_pos = script
+            .find("emit \"$home/.local/bin/bora\"")
+            .expect("bora direct-install path missing");
+        let herdr_pos = script
+            .find("emit \"$home/.local/bin/herdr\"")
+            .expect("legacy herdr direct-install path missing");
+        assert!(
+            bora_pos < herdr_pos,
+            "bora direct-install candidate must be emitted before the legacy herdr fallback"
+        );
+    }
+
+    #[test]
+    fn remote_binary_path_probe_names_prefers_bora_then_falls_back_to_herdr() {
+        assert_eq!(REMOTE_BINARY_PATH_PROBE_NAMES, ["bora", "herdr"]);
+    }
+
+    #[test]
+    fn posix_remote_api_discovery_command_probes_bora_then_falls_back_to_herdr() {
+        // A remote host that got this fork before the herdr->bora rename
+        // still has its PATH-resolved binary literally named `herdr`; the
+        // machine-API bridge discovery script must probe `bora` first (the
+        // current name) but retain a `command -v herdr` fallback, or such a
+        // host silently loses machine-API forwarding entirely.
+        let script = posix_remote_api_discovery_command(
+            &RemotePlatform {
+                os: "linux",
+                arch: "x86_64",
+            },
+            "work",
+        );
+        let bora_pos = script
+            .find("command -v bora")
+            .expect("bora PATH probe missing");
+        let herdr_pos = script
+            .find("command -v herdr")
+            .expect("legacy herdr PATH probe fallback missing");
+        assert!(
+            bora_pos < herdr_pos,
+            "bora PATH probe must run before the legacy herdr fallback"
+        );
+    }
+
+    #[test]
+    fn windows_remote_binary_candidate_command_probes_bora_then_falls_back_to_herdr() {
+        // Mirrors posix_remote_api_discovery_command_probes_bora_then_falls_back_to_herdr:
+        // a Windows remote host that got this fork before the herdr->bora
+        // rename still has its PATH-resolved and standalone-junction binary
+        // literally named herdr.exe. The PATH probe and the junction-target
+        // probe must each try bora.exe first, then fall back to herdr.exe.
+        let script = decode_windows_command(&windows_remote_binary_candidate_command());
+
+        let path_bora_pos = script
+            .find("Get-Command bora.exe")
+            .expect("bora.exe PATH probe missing");
+        let path_herdr_pos = script
+            .find("Get-Command herdr.exe")
+            .expect("legacy herdr.exe PATH probe fallback missing");
+        assert!(
+            path_bora_pos < path_herdr_pos,
+            "bora.exe PATH probe must run before the legacy herdr.exe fallback"
+        );
+
+        let junction_bora_pos = script
+            .find("'bora.exe'")
+            .expect("bora.exe junction-target probe missing");
+        let junction_herdr_pos = script
+            .find("'herdr.exe'")
+            .expect("legacy herdr.exe junction-target probe fallback missing");
+        assert!(
+            junction_bora_pos < junction_herdr_pos,
+            "bora.exe junction-target probe must run before the legacy herdr.exe fallback"
+        );
     }
 
     #[test]
@@ -4535,13 +5045,13 @@ mod tests {
     #[test]
     fn remote_shell_path_warning_accepts_managed_install() {
         assert!(remote_shell_resolves_managed_install(
-            "/home/can/.local/bin/herdr\n"
+            "/home/can/.local/bin/bora\n"
         ));
         assert!(remote_shell_resolves_managed_install(
-            "/Users/can/.local/bin/herdr\n"
+            "/Users/can/.local/bin/bora\n"
         ));
         assert!(!remote_shell_resolves_managed_install(
-            "/usr/local/bin/herdr\n"
+            "/usr/local/bin/bora\n"
         ));
         assert!(!remote_shell_resolves_managed_install(""));
     }
@@ -4898,7 +5408,7 @@ mod tests {
 
         assert_eq!(
             install_source_description_for(&platform, None, true),
-            "the current local herdr binary"
+            "the current local bora binary"
         );
     }
 

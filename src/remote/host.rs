@@ -20,13 +20,15 @@ pub(crate) fn run_remote_client_bridge(args: &[String]) -> io::Result<()> {
         }
     };
     ensure_remote_server_running()?;
+    #[cfg(unix)]
+    let _ssh_agent = super::ssh_agent::Registration::start();
 
     let socket_path = crate::server::socket_paths::client_socket_path();
     let stream = crate::ipc::connect_local_stream(&socket_path).map_err(|err| {
         io::Error::new(
             err.kind(),
             format!(
-                "failed to connect to remote Herdr client socket {}: {err}",
+                "failed to connect to remote Bora client socket {}: {err}",
                 socket_path.display()
             ),
         )
@@ -52,7 +54,7 @@ fn ensure_remote_server_running() -> io::Result<()> {
             return Ok(());
         }
         return Err(io::Error::other(
-            "remote herdr server needs one final update before this bridge can attach; rerun `herdr --remote` from an interactive terminal to approve it",
+            "remote bora server needs one final update before this bridge can attach; rerun `bora --remote` from an interactive terminal to approve it",
         ));
     }
 

@@ -5,7 +5,7 @@
 
 ## Project
 
-herdr is a terminal-based agent runtime for coding agents, written in Rust. Core surfaces: `src/app/` (server-side state and actions), `src/client/shell/` (the TUI, rendered from a `ClientShellSnapshot`; since herdr 0.9.0), `src/platform/<os>.rs` (OS-specific behavior), `src/detect/manifests/` (agent detection), `src/protocol/wire.rs` (server/client wire protocol), and the vendored `vendor/libghostty-vt`. Build, test, and validate through `just` recipes (`just test`, `just check`). Stable/preview both build from `master`.
+herdr is a terminal-based agent runtime for coding agents, written in Rust. Core surfaces: `src/app/` (server-side state and actions), `src/client/shell/` (the TUI, rendered from a `ClientShellSnapshot`; since herdr 0.9.0), `src/platform/<os>.rs` (OS-specific behavior), `src/detect/manifests/` (agent detection), `src/protocol/wire.rs` (server/client wire protocol), and the vendored `vendor/libghostty-vt`. Build, test, and validate through `just` recipes (`just test`, `just check`). Stable/preview both build from `main`.
 
 ## Core Contract
 
@@ -64,8 +64,8 @@ These instructions are layered.
 - **Detection is decoupled.** The detector reads a screen snapshot, never touches the parser or viewport state.
 - **Screen detection is evidence-based.** When changing `src/detect/manifests/`, first capture the relevant bottom-buffer state with `herdr agent read <pane> --source detection --format text` and, when styling or alternate screen behavior matters, `--format ansi`. Decide which visible controls are invariant, which are alternatives, and encode them as explicit AND/OR gates. Do not match whole-pane incidental text, and do not use the user-visible viewport for agent status because users can scroll it.
 - **UI patterns should be reused.** Herdr is a mouse-first TUI. New dialogs, onboarding, settings, and post-update flows should follow the existing UI/UX language and interaction patterns instead of inventing one-off screens. Prefer reusing existing modal/screen structure, affordances, and close actions so the app feels consistent.
-- **Layout changes must force a repaint, not just a re-render.** Any `AppState` mutation that reflows pane content (sidebar/right-panel toggle, or anything else that changes pane column/row allocation) without changing the outer terminal's `(cols, rows)` must explicitly signal a full repaint to every attached client. Both transport encoders (`ClientRenderState::TerminalAnsi`'s `BlitEncoder` and the default `SemanticFrame` client's local `BlitEncoder`) decide full-vs-diff repaint purely from whether the outer frame's dimensions changed; a layout change alone never trips that check, so the diff/scroll-shift path runs against already-reflowed content and desyncs the physical terminal from the encoder's model until an unrelated full redraw happens to fire. Route new layout-affecting mutations through `AppState::request_full_repaint()` (sets `force_full_repaint`, bridged into per-client `ClientRenderState::request_repaint()` in `HeadlessServer::render_and_stream`, and carried over the wire on `FrameData.force_full_repaint` for `SemanticFrame` clients) instead of assuming a dimension check will catch it. (learned 2026-08-13, binding: this exact gap caused a persistent, reproducible flicker — sidebar toggle open→close would desync the terminal until a workspace switch forced a full redraw — that survived two earlier throughput-focused render fixes because neither touched the full-repaint decision itself.)
-  **Switching workspace and switching tab are in scope and were missed for months.** The rule above was written from the sidebar-toggle case and named only "sidebar/right-panel toggle", so the two mutations that reflow the ENTIRE terminal area — `AppState::switch_workspace` and `switch_workspace_tab` in `src/app/actions.rs` — went unrouted, and the bug reached the owner as "I have to click a workspace two to five times to switch". Every click worked: `self.active` changed, `workspace.focus` was logged each time, and three log lines 82ms apart for the same workspace id is what a user retrying a click that appears to do nothing looks like. Diagnosing it from the code alone is close to impossible, because the state transition is correct; the evidence that cracked it was the server log showing repeated successful focus events for one workspace, which says the input path is fine and the output path is not. Note the irony recorded in the original rule — a workspace switch was what accidentally repaired the sidebar-toggle desync — which is exactly why nobody suspected that a workspace switch had the same defect. When adding any mutation that changes which panes occupy the terminal area, assume it is in scope and gate the repaint on an actual change so re-selecting what is already active stays free. `toggle_zoom` and `close_pane` are the two remaining unrouted candidates; they are filed rather than fixed because there is no observed report for them and they may be covered by per-pane resize instead. (learned 2026-08-25, binding.)
+- **Layout changes must force a repaint, not just a re-render (mechanism removed in `27c65c27`; history kept as a design constraint).** The 0.9.0 client-shell rewrite made the client own rendering: it composes its own frame from a `ClientShellSnapshot` instead of the server pushing wire-protocol `FrameData` diffs, so the old `AppState::request_full_repaint()` signal this bullet used to describe has no producer or reader anywhere in the current tree (confirmed by `git grep`) and was deleted for real in `27c65c27`; the analogous wire-protocol field, `FrameData.force_full_repaint`, was separately deleted later in `29206adf` (the PROTOCOL_VERSION 25->26 bump). The underlying constraint still holds under the new architecture: any client-shell mutation that reflows pane content without a terminal-dimension change (sidebar/right-panel toggle, workspace/tab switch, anything else that changes pane column/row allocation) must set `outcome.repaint = true` on the `ClientShellInput` the mutation is dispatched through (`src/client/shell/actions.rs`) so `compose()` (`src/client/shell/composition.rs`) recomputes the frame on this pass instead of silently reusing stale layout until an unrelated redraw happens to fire. (learned 2026-08-13, binding: this exact gap caused a persistent, reproducible flicker — sidebar toggle open->close would desync the terminal until a workspace switch forced a full redraw — that survived two earlier throughput-focused render fixes because neither touched the full-repaint decision itself. Superseding note added 2026-09-24: the specific mechanism above was already gone before this note was written; verify against `outcome.repaint`, not the removed wire-protocol field, before trusting this bullet's code references.)
+  **Switching workspace and switching tab were in scope and were missed for months, under the OLD mechanism.** The rule above was written from the sidebar-toggle case and named only "sidebar/right-panel toggle", so the two mutations that reflowed the ENTIRE terminal area — `AppState::switch_workspace` and `switch_workspace_tab` in `src/app/actions.rs`, back when the server owned rendering — went unrouted, and the bug reached the owner as "I have to click a workspace two to five times to switch". Every click worked: `self.active` changed, `workspace.focus` was logged each time, and three log lines 82ms apart for the same workspace id is what a user retrying a click that appears to do nothing looks like. Diagnosing it from the code alone was close to impossible, because the state transition was correct; the evidence that cracked it was the server log showing repeated successful focus events for one workspace, which says the input path is fine and the output path is not. When adding any mutation that changes which panes occupy the terminal area, assume it is in scope and gate the repaint on an actual change so re-selecting what is already active stays free. Re-verify this class of bug against the CURRENT client-owned repaint path (`outcome.repaint`) rather than assuming the architecture change alone prevents it. (learned 2026-08-25, binding.)
 
 ### Prior art before building
 
@@ -194,6 +194,9 @@ classes, and how to resolve them, so the next sync is cheap:
   in CLI output, docs, and config. Upstream merges reintroduce `herdr` in touched strings —
   grep the merged diff for `herdr` in string literals and rename to `bora`, but leave
   `herdrdev/herdr` repository/URL references and internal upstream identifiers alone.
+  `TERM_PROGRAM` (`src/pane.rs`) stays `herdr` on purpose: it is an ecosystem/terminfo
+  identifier other tools key off (the way they key off `iTerm.app` or `tmux`), not a
+  user-facing string — do not rename it on a merge. (decided 2026-09-24, binding.)
 - **Fork-only struct fields** (e.g. `change_set` on `WorkspaceGitStatusSnapshot`). Upstream
   restructuring a type we've extended produces a field-shape conflict. Keep the fork-only
   field, re-apply it to upstream's new shape, and re-verify its call sites compile.
@@ -333,6 +336,65 @@ today's upstream sync.)
   three separate selection-background call sites. An `unused import` warning after
   resolving such a conflict usually means a real upstream delta was dropped; a merged
   upstream test that fails afterward points at the fork site still missing the port.
+- **A conflict resolved correctly can still sit next to a silent semantic swap from a
+  DIFFERENT, non-conflicting hunk in the same file, and `cargo check` does not catch
+  it when Rust's own type coercions (auto-reborrow `&mut T`->`&T`, `From`-based
+  round-tripping) paper over the mismatch.** The 2026-09-24 sync (`b7781a67`) hit this
+  three times: (1) `src/client/endpoint/activation.rs` — the conflict marker covered
+  only the `fn begin`/`fn prepare` name line; the REST of the function body (a real
+  architectural split from one-shot `&mut`-taking mutation into a two-phase
+  `prepare(&EndpointRegistry)` + `start(&mut EndpointRegistry)`) auto-merged from
+  upstream with zero markers, and every one of the fork's 17 pre-existing tests still
+  *compiled* against the new body because Rust reborrows `&mut endpoints` down to `&`
+  — only running the test suite (2 of 42 failed) proved the semantics had changed.
+  (2) `src/app/api/worktrees.rs` — resolving a conflict whose `theirs` side was empty
+  to `@ours` left OTHER non-conflicting hunks (an upstream function rename + a new
+  safety check) still in the file, producing Rust that compiled as nonsense until
+  traced by hand. (3) `src/detect/manifests/codex.toml` — a whole-file silent
+  replacement with `theirs` (no markers at all, because the fork's local delta from
+  the sync's merge-base happened to be zero) dropped a fork-authored manifest rule
+  that 9 tests depended on; only running those tests, not `cargo check`, surfaced it.
+  **Rule going forward**: after resolving conflicts in a file, diff the WHOLE merged
+  file against both `ours` and `theirs` (not just the marked hunks) for any function/
+  struct whose conflict resolution kept a name but not a body, and run the file's own
+  test module (`cargo nextest run -E 'test(<area>)'`) before trusting `cargo check`.
+  A green compile is evidence the tree builds; it is not evidence the tree still does
+  what its tests claim. (learned 2026-09-24, binding.)
+- **Upstream-only release machinery stays verbatim and unwired.** `validate-release-source`,
+  `update-nix-package` (`.github/workflows/release.yml`), `scripts/release.py`
+  (+`scripts/test_release.py`, kept in `maintenance-test` so a sync can't silently break
+  it), `scripts/release-workflows.test.ts` implement upstream's preview-promotion model:
+  `origin/master`, `herdr-*` release assets, `Preview:`/`Previous-Stable:` tag trailers,
+  a tag-triggered `preview.yml`. None of that is true here — this fork releases by an
+  admin tag push, `release` needs `[build, flake-check, validate-release-inputs]`, and
+  `release-publish` tags with a plain `-m` message. Both upstream-only jobs are already
+  gated `github.repository == 'herdrdev/herdr'` and inert on this fork's real repo;
+  `release.py` has no fork caller. Adapting any of them would diverge ~10 upstream-owned
+  regions and conflict on every future sync; deleting them causes modify/delete
+  conflicts instead. Keep them byte-identical. When a review bot (cubic etc.) flags a
+  bug inside this cluster, reply that it's upstream-only and unwired — do not fix it.
+  (learned 2026-09-24, binding.)
+- **A `herdr`→`bora` brand-consistency pass is not a find-and-replace; every
+  occurrence needs a truth source before renaming, and blanket regex substitution will
+  both under- and over-fire.** Under-fires: user-facing strings only get caught by
+  grepping for a bare `herdr` in prose/usage text, but the *default values themselves*
+  can silently diverge from what a doc or error message says — `RemoteHerdr::for_platform()`
+  (`src/remote/attach.rs`) hardcoded `~/.local/bin/herdr`/`herdr.exe` as the fork's own
+  remote-install target long after `distribution/install.sh` started installing as
+  `bora`, so `bora --remote` could never find or correctly report its own fresh install
+  — a functional bug hiding behind stale branding, not just a doc typo; the fix has to
+  touch the Rust default, its `command -v` probe, and every cascading test assertion
+  together, or the suite goes red. Over-fires: `herdrdev/herdr` in a GitHub URL protects
+  that one segment, not the rest of the path — `.../blob/master/skills/herdr/SKILL.md`
+  still has a second, unprotected `herdr` that a blanket rename turns into a dead link;
+  verify every remaining string against its real source before committing
+  (`src/config/model.rs`'s `~/.herdr/worktrees` default, `src/agent_resume.rs`'s
+  `"herdr:codex"` wire values, `ToastDelivery::Herdr`'s `ui.toast.delivery = "herdr"`
+  config value, the `src/integration/mod.rs` hook/extension filenames, and
+  `distribution/install.ps1`'s own `Programs\Herdr\bin` Windows path are all real,
+  current, and must stay `herdr` unless the file that defines them is also in scope).
+  (learned 2026-09-24, binding.)
+
 ### Stable client endpoint contract
 
 The client-owned TUI endpoint generation is independent from the private same-install protocol. Generation 1 is the compatibility floor for Local, SSH, and Cloud connections and must remain available unless retired for a security reason.
@@ -603,7 +665,9 @@ manual testing, reset `C:\work\repo` back to a clean checkout before finishing.
 
 Agent detection changes should use the manifest hot-reload loop. Use the project-local `herdr-throwaway-repro` skill to create a disposable named session and drive the real agent UI through Herdr's CLI/API into the target state. Read the pane with `herdr agent read <pane> --source detection --format text` and inspect matching with `herdr agent explain <pane> --json`. Update the bundled manifest in `src/detect/manifests/<agent>.toml`, copy that manifest to the local override path at `~/.config/herdr/agent-detection/<agent>.toml`, then run `herdr server reload-agent-manifests` against the session under test. Before writing the override, check whether one already exists; never overwrite or remove a pre-existing override without alignment. Once the rule is correct, remove the temporary override or restore the previous one exactly so the committed bundled manifest remains the source of truth.
 
-Do not add large agent-specific full-screen fixture suites for routine manifest tuning. Keep Rust tests focused on manifest parsing, rule semantics, skip-state semantics, source precedence, cache reload behavior, and update flow. Use live pane reads for agent-specific screen evidence.
+Unit-test Herdr's detection engine, not individual CLI agents' screen or title conventions. Use synthetic manifests and minimal input strings to test parsing, regions, matching, AND/OR/NOT gates, rule priority, skip-state semantics, source precedence, cache reload behavior, and update flow. Keep bundled-manifest schema validation, process identification, and integration hook/protocol tests. Do not add tests that classify captured or invented CLI screens against bundled agent rules, or freeze an agent's specific detection rule IDs and priorities.
+
+Validate agent-specific detection behavior with live smoke tests through the manifest hot-reload loop above. Exercise the changed state and nearby transitions (idle, working, blocked, and background work where supported), including relevant optional OSC settings. Record the CLI version, observed signals, and outcomes. Passing engine tests proves the rules execute as written; it does not prove compatibility with the current CLI.
 
 `distribution/agent-detection/` is the remotely published catalog for released clients. Keep changes for already released agents aligned with their bundled manifests unless the validator records an exact compatibility exception. A newly bundled agent that current stable clients cannot identify may remain unpublished behind an exact version-and-digest exception, but it must be added to the catalog and the exception removed before the first stable release that ships it. `just release-docs-check` enforces that no unpublished exceptions remain.
 
@@ -774,7 +838,7 @@ account is not a verified maintainer, do not run release commands, push release
 assets, or modify release channel files; follow the external contributor
 guardrail.
 
-Herdr has one main branch and two update channels. Stable and preview both build from `master`; there is no long-lived preview branch.
+Herdr has one main branch and two update channels. Stable and preview both build from `main`; there is no long-lived preview branch.
 
 Normal users default to stable. Stable docs are `/docs/`, stable updates use `distribution/latest.json`, and Homebrew/Nix stay stable-only.
 
@@ -792,7 +856,7 @@ herdr channel set stable
 herdr update
 ```
 
-Preview releases are GitHub prereleases produced by `.github/workflows/preview.yml` on manual dispatch and the Wednesday/Friday schedule. The workflow updates `distribution/preview.json`, which the private website publishes as `/preview.json`. Do not hand-edit `distribution/preview.json`; fix the workflow or `scripts/preview.py` and rerun Preview.
+Preview releases are GitHub prereleases produced by `.github/workflows/preview.yml` on manual dispatch. The workflow updates `distribution/preview.json`, which the private website publishes as `/preview.json`. Do not hand-edit `distribution/preview.json`; fix the workflow or `scripts/preview.py` and rerun Preview.
 
 Stable releases use:
 
@@ -807,13 +871,13 @@ Before the first stable Windows release, publish and verify a preview containing
 
 The release workflows must publish these five assets:
 
-- `herdr-linux-x86_64`
-- `herdr-linux-aarch64`
-- `herdr-macos-x86_64`
-- `herdr-macos-aarch64`
-- `herdr-windows-x86_64.zip`
+- `bora-linux-x86_64`
+- `bora-linux-aarch64`
+- `bora-macos-x86_64`
+- `bora-macos-aarch64`
+- `bora-windows-x86_64.zip`
 
-The Windows archive must contain `herdr.exe` and its app-local ConPTY runtime. Do not publish a bare executable as the stable Windows asset.
+The Windows archive must contain `bora.exe` and its app-local ConPTY runtime. Do not publish a bare executable as the stable Windows asset.
 
 `nix/package.nix` imports `Cargo.lock` directly with `cargoLock.lockFile`, so release version bumps do not require a separate Nix cargo hash update. If Cargo git dependencies are added later, add the required `cargoLock.outputHashes` entries as part of that dependency change.
 

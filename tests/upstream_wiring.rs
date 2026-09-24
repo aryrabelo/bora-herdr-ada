@@ -45,6 +45,22 @@ const PLATFORM_GATED_ALLOWLIST: &[(&str, &str)] = &[
         "src/pane/terminal/windows_recent_fallback.rs",
         "windows-only pty fallback, not compiled on macOS",
     ),
+    (
+        "src/platform/linux/config_file_tests.rs",
+        "child of linux.rs, linux-only, not compiled on macOS",
+    ),
+    (
+        "src/platform/linux/shutdown.rs",
+        "child of linux.rs, logind delay-inhibitor shutdown save, linux-only, not compiled on macOS",
+    ),
+    (
+        "src/platform/windows/config_backup.rs",
+        "child of windows.rs, windows-only config backup, not compiled on macOS",
+    ),
+    (
+        "src/platform/windows/config_backup/tests.rs",
+        "child of windows/config_backup.rs, windows-only, not compiled on macOS",
+    ),
 ];
 
 /// Linux CI host: same contract as the macOS list above -- windows-only
@@ -60,6 +76,14 @@ const PLATFORM_GATED_ALLOWLIST: &[(&str, &str)] = &[
         "macos-only platform backend, not compiled on Linux",
     ),
     (
+        "src/platform/macos/bootstrap.rs",
+        "child of macos.rs, macos-only server-daemon bootstrap, not compiled on Linux",
+    ),
+    (
+        "src/platform/macos/config_file_tests.rs",
+        "child of macos.rs, macos-only, not compiled on Linux",
+    ),
+    (
         "src/platform/fallback.rs",
         "non-windows/linux/macos fallback backend, not compiled on Linux",
     ),
@@ -70,6 +94,14 @@ const PLATFORM_GATED_ALLOWLIST: &[(&str, &str)] = &[
     (
         "src/pane/terminal/windows_recent_fallback.rs",
         "windows-only pty fallback, not compiled on Linux",
+    ),
+    (
+        "src/platform/windows/config_backup.rs",
+        "child of windows.rs, windows-only config backup, not compiled on Linux",
+    ),
+    (
+        "src/platform/windows/config_backup/tests.rs",
+        "child of windows/config_backup.rs, windows-only, not compiled on Linux",
     ),
 ];
 

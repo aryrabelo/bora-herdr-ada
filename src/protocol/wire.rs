@@ -17,7 +17,26 @@ use serde::{Deserialize, Serialize};
 // ---------------------------------------------------------------------------
 
 /// Current protocol version. Bumped when wire format changes incompatibly.
-pub const PROTOCOL_VERSION: u32 = 25;
+///
+/// Bumped 25 -> 26 removing the dead `FrameData.force_full_repaint` field
+/// (never had a producer or reader; the merge that added it hardcoded the
+/// decoder to `false` too, desyncing every surface-delta connection - see
+/// AGENTS.md "Stable client endpoint contract"). 25 was already published in
+/// both distribution/latest.json and distribution/preview.json, so removing
+/// a bincode field over it is an incompatible shape change per the version-
+/// bump rule, even though nothing ever set the field to anything but false.
+pub const PROTOCOL_VERSION: u32 = 26;
+
+/// Oldest server `PROTOCOL_VERSION` a client at `PROTOCOL_VERSION` 26+ may
+/// stay attached to. Below this, the running server still encodes
+/// `PaneSurface` frames in the pre-26 shape (with the now-removed
+/// `FrameData.force_full_repaint` field). The `shell.surface.v1` endpoint
+/// codec does not compare `PROTOCOL_VERSION` at all - only endpoint
+/// generation and capability names - so an old server paired with a new
+/// client would otherwise silently misdecode every `PaneSurface` frame
+/// instead of failing the handshake with a clear "needs one final update"
+/// error. See AGENTS.md's R2-M2 note on this sync.
+pub const MIN_COMPATIBLE_SERVER_PROTOCOL: u32 = 26;
 
 /// Maximum allowed frame payload size (2 MB). Frames larger than this are
 /// rejected to prevent denial-of-service via oversized length prefixes.
@@ -699,7 +718,7 @@ pub enum AttachScrollSource {
 
 /// A single cell in a rendered frame, serialized independently from ratatui's
 /// `Cell` type to keep the wire protocol stable.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize, bincode::Decode)]
 pub struct CellData {
     /// Grapheme cluster displayed in this cell (usually 1–2 chars).
     pub symbol: String,
@@ -713,6 +732,21 @@ pub struct CellData {
     pub skip: bool,
     /// Index into `FrameData::hyperlinks` for this cell's OSC 8 target, if any.
     pub hyperlink: Option<u32>,
+}
+
+impl Clone for CellData {
+    fn clone(&self) -> Self {
+        Self {
+            symbol: self.symbol.clone(),
+            ..*self
+        }
+    }
+
+    fn clone_from(&mut self, source: &Self) {
+        let mut symbol = std::mem::take(&mut self.symbol);
+        symbol.clone_from(&source.symbol);
+        *self = Self { symbol, ..*source };
+    }
 }
 
 impl CellData {
@@ -736,7 +770,7 @@ impl CellData {
 pub type CursorShapeParam = u8;
 
 /// Cursor position within a rendered frame.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, bincode::Decode)]
 pub struct CursorState {
     /// Column offset (0-based) of the cursor.
     pub x: u16,
@@ -764,12 +798,6 @@ pub struct FrameData {
     pub hyperlinks: Vec<String>,
     /// Kitty graphics protocol bytes to apply after the text frame.
     pub graphics: Vec<u8>,
-    /// True when the receiving client must repaint every cell from scratch
-    /// instead of diffing against its previously rendered frame. Set when a
-    /// layout change (e.g. sidebar toggle) reflows pane content without
-    /// changing the outer terminal size, so encoders that key off dimension
-    /// changes alone would otherwise miss it.
-    pub force_full_repaint: bool,
 }
 
 impl FrameData {
@@ -830,7 +858,6 @@ impl FrameData {
             cursor,
             hyperlinks: hyperlink_uris,
             graphics: Vec::new(),
-            force_full_repaint: false,
         }
     }
 
@@ -1098,7 +1125,7 @@ pub struct ClientShellAgent {
 }
 
 /// Origin-relative geometry for one pane in a rendered pane surface.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, bincode::Decode)]
 pub struct PaneSurfacePane {
     pub pane_id: String,
     pub content_revision: u64,
@@ -1114,7 +1141,7 @@ pub struct PaneSurfacePane {
     pub pixel_height: u32,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, bincode::Decode)]
 pub struct PaneSurfaceScrollMetrics {
     pub offset_from_bottom: u64,
     pub max_offset_from_bottom: u64,
@@ -1131,14 +1158,14 @@ pub struct PaneSurfaceSplit {
     pub path: Vec<bool>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, bincode::Decode)]
 pub enum PaneSurfaceSplitDirection {
     Horizontal,
     Vertical,
 }
 
 /// Wire-safe rectangle relative to a pane surface.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, bincode::Decode)]
 pub struct SurfaceRect {
     pub x: u16,
     pub y: u16,
@@ -1157,13 +1184,13 @@ impl From<ratatui::layout::Rect> for SurfaceRect {
     }
 }
 
-#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize, bincode::Decode)]
 pub enum SurfaceGraphicsTarget {
     Pane { pane_id: String },
     Popup { terminal_id: String },
 }
 
-#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize, bincode::Decode)]
 pub enum SurfaceGraphicsSource {
     Terminal {
         target: SurfaceGraphicsTarget,
@@ -1175,14 +1202,14 @@ pub enum SurfaceGraphicsSource {
     },
 }
 
-#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, Serialize, Deserialize, bincode::Decode)]
 pub enum SurfaceGraphicsFormat {
     Rgb,
     Rgba,
     Png,
 }
 
-#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize, bincode::Decode)]
 pub struct SurfaceGraphicsAssetKey {
     pub source: SurfaceGraphicsSource,
     pub image_width: u32,
@@ -1200,7 +1227,7 @@ pub struct SurfaceGraphicsAsset {
 }
 
 /// One already-clipped desired placement relative to its target surface.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, bincode::Decode)]
 pub struct SurfaceGraphicsPlacement {
     pub asset: SurfaceGraphicsAssetKey,
     pub logical_placement_id: u32,
@@ -1245,7 +1272,7 @@ pub struct PaneSurfaceFrame {
     pub graphics: SurfaceGraphicsScene,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, bincode::Decode)]
 pub enum ClientShellPopupSize {
     Cells(u16),
     Percent(u8),
@@ -1723,11 +1750,11 @@ pub fn check_client_version(client_version: u32) -> VersionCheck {
         VersionCheck::Compatible
     } else if client_version < PROTOCOL_VERSION {
         VersionCheck::Incompatible(format!(
-            "client version {client_version} is older than server version {PROTOCOL_VERSION}; please upgrade your herdr client"
+            "client version {client_version} is older than server version {PROTOCOL_VERSION}; please upgrade your bora client"
         ))
     } else {
         VersionCheck::Incompatible(format!(
-            "client version {client_version} is newer than server version {PROTOCOL_VERSION}; please upgrade the herdr server"
+            "client version {client_version} is newer than server version {PROTOCOL_VERSION}; please upgrade the bora server"
         ))
     }
 }
@@ -2457,7 +2484,6 @@ mod tests {
             }),
             hyperlinks: vec!["https://example.com".to_owned()],
             graphics: Vec::new(),
-            force_full_repaint: false,
         };
         let msg = ServerMessage::PaneSurface(PaneSurfaceFrame {
             boot_id: "boot-1".into(),
@@ -2473,13 +2499,9 @@ mod tests {
         let (decoded, _): (ServerMessage, _) =
             bincode::serde::decode_from_slice(&encoded, bincode::config::standard()).unwrap();
         assert_eq!(msg, decoded);
-        // Digest diverges from upstream's own frozen value for the same
-        // reason as `client_shell_graphics_payload_codec_is_frozen`: this
-        // fork keeps `FrameData.force_full_repaint`, bumping PROTOCOL_VERSION
-        // 22 -> 23 (merge decision, ceo-bora#274).
         assert_eq!(
             encoded_sha256(&msg),
-            "3b0136ffaeb7420c1a7be7a2a487e5499e26d1486b9daf6d4c06161993a238b1"
+            "7c016f7b21ddb5ac79212cf65a968b93eb292b5305b941263e89ffaa40158ee3"
         );
         match decoded {
             ServerMessage::PaneSurface(surface) => {
@@ -2550,7 +2572,6 @@ mod tests {
             projection_revision: 2,
             surface_revision: 3,
             frame: FrameData {
-                force_full_repaint: false,
                 cells: Vec::new(),
                 width: 0,
                 height: 0,
@@ -2586,15 +2607,9 @@ mod tests {
             },
         });
 
-        // Digest diverges from upstream's own frozen value here because this
-        // fork keeps `FrameData.force_full_repaint` (upstream deleted it when
-        // the sidebar/render loop moved fully client-side); PROTOCOL_VERSION
-        // was bumped 22 -> 23 for exactly this retained field (merge decision,
-        // ceo-bora#274). The struct literal above is otherwise unchanged from
-        // upstream's version of this test.
         assert_eq!(
             encoded_sha256(&message),
-            "e37dc1a2e75d4f97ad3593b75d30371f62721fb606028d56f1a34340056699e6"
+            "49c4efec0f1456c8ca4112ddf6ead1ab75d0224007576c2ccc18c3fca55a69f0"
         );
     }
 
@@ -2636,7 +2651,6 @@ mod tests {
             projection_revision: 1,
             surface_revision: 1,
             frame: FrameData {
-                force_full_repaint: false,
                 cells: Vec::new(),
                 width: 0,
                 height: 0,
@@ -3006,7 +3020,6 @@ mod tests {
             }),
             hyperlinks: Vec::new(),
             graphics: Vec::new(),
-            force_full_repaint: false,
         };
         let msg = ServerMessage::PaneSurface(PaneSurfaceFrame {
             boot_id: "boot-1".into(),
@@ -3359,7 +3372,6 @@ mod tests {
             cursor: None,
             hyperlinks: Vec::new(),
             graphics: Vec::new(),
-            force_full_repaint: false,
         };
         assert!(frame.to_ratatui_buffer().is_none());
     }

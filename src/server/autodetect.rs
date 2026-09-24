@@ -142,10 +142,20 @@ fn client_protocol_accepts_hello(socket_path: &Path) -> io::Result<bool> {
     }
 }
 
+/// Whether a running server's reported `protocol` is too old for a client at
+/// `MIN_COMPATIBLE_SERVER_PROTOCOL`+ to stay attached to safely. An unknown
+/// protocol (`None`) is never treated as too old - this preserves this
+/// function's pre-existing behavior for status responses that don't report
+/// one, matching every other capability check here (missing data does not
+/// itself refuse a connection; only a known-incompatible value does).
+fn server_protocol_too_old(protocol: Option<u32>) -> bool {
+    protocol.is_some_and(|protocol| protocol < crate::protocol::MIN_COMPATIBLE_SERVER_PROTOCOL)
+}
+
 fn validate_running_server_compatibility(saved_federation: bool) -> io::Result<()> {
     let Some(status) = read_server_status()? else {
         return Err(io::Error::other(format!(
-            "a herdr server is listening, but its status API is unavailable.\n\n{}\nIf that fails, stop the old server process manually.",
+            "a bora server is listening, but its status API is unavailable.\n\n{}\nIf that fails, stop the old server process manually.",
             crate::session::active_restart_after_update_guidance()
         )));
     };
@@ -154,19 +164,23 @@ fn validate_running_server_compatibility(saved_federation: bool) -> io::Result<(
     let endpoint_generation =
         capabilities.and_then(|capabilities| capabilities.endpoint_protocol_generation);
     let surface_interest = capabilities.is_some_and(|capabilities| capabilities.surface_interest);
-    if endpoint_generation == Some(crate::protocol::endpoint::ENDPOINT_PROTOCOL_GENERATION)
+    let protocol_too_old = server_protocol_too_old(status.protocol);
+    if !protocol_too_old
+        && endpoint_generation == Some(crate::protocol::endpoint::ENDPOINT_PROTOCOL_GENERATION)
         && (!saved_federation || surface_interest)
     {
         return Ok(());
     }
 
-    let requirement = if saved_federation && !surface_interest {
+    let requirement = if protocol_too_old {
+        "the PaneSurface wire encoding changed"
+    } else if saved_federation && !surface_interest {
         "saved SSH machines require surface lifecycle support"
     } else {
         "the stable endpoint generation is incompatible"
     };
     Err(io::Error::other(format!(
-        "This session needs one final server update before Herdr can attach ({requirement}).\n\nserver: v{} endpoint generation {}\nclient: v{} endpoint generation {}\n\n{}",
+        "This session needs one final server update before Bora can attach ({requirement}).\n\nserver: v{} endpoint generation {}\nclient: v{} endpoint generation {}\n\n{}",
         status.version.as_deref().unwrap_or("unknown"),
         endpoint_generation
             .map(|value| value.to_string())
@@ -205,7 +219,7 @@ pub fn spawn_server_daemon() -> io::Result<u32> {
 
     let pid =
         crate::platform::launch_server_daemon_command(&mut command).map_err(|err: io::Error| {
-            io::Error::new(err.kind(), format!("failed to spawn herdr server: {err}"))
+            io::Error::new(err.kind(), format!("failed to spawn bora server: {err}"))
         })?;
     info!(pid, "server daemon spawned");
 
@@ -293,6 +307,14 @@ pub fn wait_for_server_socket(socket_path: &Path, timeout: Duration) -> io::Resu
 /// 2. If no server → spawn server daemon → wait for socket readiness
 /// 3. Run the thin client (which connects to the server)
 pub fn auto_detect_launch(saved_federation: bool) -> io::Result<()> {
+    // The client requires terminal geometry before it can attach. Reject an
+    // unusable terminal before socket lookup creates directories or starts a daemon.
+    crate::platform::terminal_grid_size().map_err(|err| {
+        io::Error::new(
+            err.kind(),
+            format!("cannot attach without a usable terminal: {err}; run inside a terminal"),
+        )
+    })?;
     let socket_path = client_socket_path();
     info!(path = %socket_path.display(), "auto-detect launch starting");
 
@@ -592,6 +614,94 @@ test "$sid" = "$$"
         std::env::remove_var(crate::session::SESSION_ENV_VAR);
         std::env::remove_var(crate::api::SOCKET_PATH_ENV_VAR);
         crate::session::clear_explicit_session_for_test();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn server_protocol_too_old_refuses_below_min() {
+        assert!(server_protocol_too_old(Some(
+            crate::protocol::MIN_COMPATIBLE_SERVER_PROTOCOL - 1
+        )));
+    }
+
+    #[test]
+    fn server_protocol_too_old_accepts_min() {
+        assert!(!server_protocol_too_old(Some(
+            crate::protocol::MIN_COMPATIBLE_SERVER_PROTOCOL
+        )));
+    }
+
+    #[test]
+    fn server_protocol_too_old_accepts_unknown_protocol() {
+        // A status response that doesn't report a protocol never existed on the
+        // real wire (the `Pong` response's `protocol` field is required), but
+        // this keeps the function's pre-existing permissive behavior for
+        // missing data explicit and locked in.
+        assert!(!server_protocol_too_old(None));
+    }
+
+    #[test]
+    fn validate_running_server_compatibility_refuses_protocol_below_min() {
+        let _guard = env_lock().lock();
+        let dir = unique_test_dir("protocol-too-old");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("api.sock");
+        std::env::set_var(crate::api::SOCKET_PATH_ENV_VAR, &path);
+        let listener = UnixListener::bind(&path).unwrap();
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = String::new();
+            BufReader::new(stream.try_clone().unwrap())
+                .read_line(&mut request)
+                .unwrap();
+            let body = format!(
+                "{{\"id\":\"autodetect:server:status\",\"result\":{{\"type\":\"pong\",\"version\":\"0.49.2\",\"protocol\":{},\"capabilities\":{{\"live_handoff\":true,\"endpoint_protocol_generation\":{}}}}}}}\n",
+                crate::protocol::MIN_COMPATIBLE_SERVER_PROTOCOL - 1,
+                crate::protocol::endpoint::ENDPOINT_PROTOCOL_GENERATION
+            );
+            stream.write_all(body.as_bytes()).unwrap();
+            stream.flush().unwrap();
+        });
+
+        let err = validate_running_server_compatibility(false).unwrap_err();
+        let message = err.to_string();
+        let _ = handle.join();
+
+        assert!(
+            message.contains("the PaneSurface wire encoding changed"),
+            "unexpected error: {message}"
+        );
+        std::env::remove_var(crate::api::SOCKET_PATH_ENV_VAR);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn validate_running_server_compatibility_accepts_min_protocol() {
+        let _guard = env_lock().lock();
+        let dir = unique_test_dir("protocol-min-ok");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("api.sock");
+        std::env::set_var(crate::api::SOCKET_PATH_ENV_VAR, &path);
+        let listener = UnixListener::bind(&path).unwrap();
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = String::new();
+            BufReader::new(stream.try_clone().unwrap())
+                .read_line(&mut request)
+                .unwrap();
+            let body = format!(
+                "{{\"id\":\"autodetect:server:status\",\"result\":{{\"type\":\"pong\",\"version\":\"0.49.3\",\"protocol\":{},\"capabilities\":{{\"live_handoff\":true,\"endpoint_protocol_generation\":{}}}}}}}\n",
+                crate::protocol::MIN_COMPATIBLE_SERVER_PROTOCOL,
+                crate::protocol::endpoint::ENDPOINT_PROTOCOL_GENERATION
+            );
+            stream.write_all(body.as_bytes()).unwrap();
+            stream.flush().unwrap();
+        });
+
+        validate_running_server_compatibility(false).unwrap();
+        let _ = handle.join();
+
+        std::env::remove_var(crate::api::SOCKET_PATH_ENV_VAR);
         let _ = std::fs::remove_dir_all(dir);
     }
 }

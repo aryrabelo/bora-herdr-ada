@@ -19,6 +19,7 @@ pub(crate) fn connect_saved_ssh(
 ) -> io::Result<SavedSshStream> {
     let ssh = validated_saved_ssh(profile_id, target, session)?;
     let remote_herdr = find_installed_remote_herdr(&ssh)?;
+    let metadata = remote_herdr.machine_metadata();
     let path = saved_bridge_path(profile_id);
     let bridge = SshStdioBridge::start(
         target.to_owned(),
@@ -29,6 +30,10 @@ pub(crate) fn connect_saved_ssh(
         true,
     )?;
     let stream = crate::ipc::connect_local_stream(&path)?;
+    if let Some(metadata) = metadata {
+        crate::client::endpoint::SshMetadataCache::new(profile_id, target, session)?
+            .store(&metadata);
+    }
     Ok(SavedSshStream {
         stream,
         bridge: SavedSshBridge { _bridge: bridge },
@@ -38,13 +43,31 @@ pub(crate) fn connect_saved_ssh(
 pub(crate) struct SavedSshApiBridge {
     path: PathBuf,
     bridge: SshStdioBridge,
+    metadata_cache: crate::client::endpoint::SshMetadataCache,
+    pub(crate) used_cached_metadata: bool,
 }
 
 impl SavedSshApiBridge {
-    pub(crate) fn start(profile_id: &str, target: &str, session: &str) -> io::Result<Self> {
+    pub(crate) fn start(
+        profile_id: &str,
+        target: &str,
+        session: &str,
+        use_cached_metadata: bool,
+    ) -> io::Result<Self> {
         let ssh = validated_saved_ssh(profile_id, target, session)?;
-        let remote_herdr = super::attach::find_installed_remote_api_herdr(&ssh, session)?;
-        let command = super::attach::remote_api_bridge_command(&remote_herdr, session, false);
+        let metadata_cache =
+            crate::client::endpoint::SshMetadataCache::new(profile_id, target, session)?;
+        let cached = use_cached_metadata.then(|| metadata_cache.load()).flatten();
+        let used_cached_metadata = cached.is_some();
+        let metadata = match cached {
+            Some(metadata) => metadata,
+            None => {
+                let metadata = super::attach::discover_remote_api_metadata(&ssh, session)?;
+                metadata_cache.store(&metadata);
+                metadata
+            }
+        };
+        let command = super::attach::cached_remote_api_command(&metadata, session);
         let path = crate::platform::remote_bridge_endpoint_path(
             &format!("herdr-api-ssh-{}-{profile_id}.sock", std::process::id()),
             &format!(
@@ -60,7 +83,12 @@ impl SavedSshApiBridge {
             ssh.options(),
             true,
         )?;
-        Ok(Self { path, bridge })
+        Ok(Self {
+            path,
+            bridge,
+            metadata_cache,
+            used_cached_metadata,
+        })
     }
 
     pub(crate) fn socket_path(&self) -> &std::path::Path {
@@ -70,11 +98,21 @@ impl SavedSshApiBridge {
     pub(crate) fn reported_failure(&self) -> Option<io::Error> {
         self.bridge.reported_failure()
     }
+
+    pub(crate) fn invalidate_metadata(&self) {
+        self.metadata_cache.invalidate();
+    }
+
+    pub(crate) fn stale_metadata_failure(error: &io::Error) -> bool {
+        error
+            .to_string()
+            .contains(super::attach::STALE_API_METADATA)
+    }
 }
 
 pub(crate) fn saved_ssh_bootstrap_command(target: &str, session: &str) -> String {
     format!(
-        "herdr --remote {} --session {}",
+        "bora --remote {} --session {}",
         super::shell_quote(target),
         super::shell_quote(session)
     )
@@ -153,7 +191,7 @@ mod tests {
     fn bootstrap_command_preserves_the_explicit_remote_session() {
         assert_eq!(
             saved_ssh_bootstrap_command("build host", "agent work"),
-            "herdr --remote 'build host' --session 'agent work'"
+            "bora --remote 'build host' --session 'agent work'"
         );
     }
 
@@ -162,7 +200,7 @@ mod tests {
         for message in [
             "Permission denied (publickey)",
             "Host key verification failed",
-            "matching Herdr is not ready; install or update",
+            "matching Bora is not ready; install or update",
             "handshake rejected",
         ] {
             assert!(saved_ssh_failure_needs_attention(&io::Error::other(

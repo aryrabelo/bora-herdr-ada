@@ -177,6 +177,7 @@ const DEFAULT_CONFIG: &str = r##"# bora configuration
 # close_tab = "prefix+shift+x"
 # rename_pane = "prefix+shift+p"
 # edit_scrollback = "prefix+e"
+# clear_pane = ""                  # unbound; e.g. "prefix+ctrl+k"
 # focus_pane_left = "prefix+h"
 # focus_pane_down = "prefix+j"
 # focus_pane_up = "prefix+k"
@@ -411,6 +412,8 @@ const DEFAULT_CONFIG: &str = r##"# bora configuration
 # Resume supported AI-agent panes into their native conversation sessions after
 # a Bora server restart. Requires official integrations that report session refs.
 # resume_agents_on_restore = true
+# Milliseconds between automatic agent restores; 0 starts them without spacing.
+# startup_per_agent_delay_ms = 100
 
 [remote]
 # Whether bora manages the ssh config used for `bora --remote`.

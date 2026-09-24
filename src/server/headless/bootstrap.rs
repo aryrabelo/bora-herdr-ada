@@ -2,11 +2,20 @@ use super::*;
 
 /// Run the headless server. This is the entry point called from main.rs.
 pub fn run_server() -> io::Result<()> {
+    let args: Vec<String> = std::env::args().collect();
+    let handoff_import = args.get(2).map(String::as_str) == Some("--handoff-import");
+    let process_context = crate::platform::prepare_server_process(handoff_import);
     init_logging();
+    match process_context {
+        Ok(true) => info!("server using persistent user service context"),
+        Ok(false) => {}
+        Err(err) => {
+            warn!(%err, "could not select persistent user service context; retaining inherited context")
+        }
+    }
     crate::platform::raise_server_nofile_limit();
 
-    let args: Vec<String> = std::env::args().collect();
-    if args.get(2).map(String::as_str) == Some("--handoff-import") {
+    if handoff_import {
         let socket_path = args
             .get(3)
             .map(PathBuf::from)
@@ -80,7 +89,7 @@ pub fn run_server() -> io::Result<()> {
         info!(
             api_socket = %api::socket_path().display(),
             client_socket = %client_socket_path().display(),
-            "herdr server started"
+            "bora server started"
         );
         print_ready_message(&api::socket_path(), &client_socket_path());
         server.app.run_plugin_startup_hooks();
@@ -207,7 +216,7 @@ fn run_handoff_import_server(_socket_path: &Path, _token: &str) -> io::Result<()
 }
 
 fn print_ready_message(api_socket: &Path, client_socket: &Path) {
-    eprintln!("herdr server running; you can use any herdr CLI command in another terminal.");
+    eprintln!("bora server running; you can use any bora CLI command in another terminal.");
     eprintln!("api socket: {}", api_socket.display());
     eprintln!("client socket: {}", client_socket.display());
     eprintln!(
@@ -216,7 +225,7 @@ fn print_ready_message(api_socket: &Path, client_socket: &Path) {
             .join("herdr-server.log")
             .display()
     );
-    eprintln!("did you mean to open the Herdr TUI? run `herdr`; you do not need `herdr server`.");
+    eprintln!("did you mean to open the Bora TUI? run `bora`; you do not need `bora server`.");
 }
 
 /// Initialize logging for the server process.

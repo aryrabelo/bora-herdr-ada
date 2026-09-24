@@ -922,7 +922,7 @@ fn named_workspace_overlay_targets_projected_source_workspace() {
                 ..
             },
             ..
-        })) if value == "repo" && source_workspace_id.as_deref() == Some("ws_1")
+        })) if value.as_str() == "repo" && source_workspace_id.as_deref() == Some("ws_1")
     ));
     let create = state.handle_input_bytes(b"\r");
     let [ClientShellAction::Endpoint { request, .. }] = &create.actions[..] else {
@@ -1171,7 +1171,7 @@ fn worktree_action_errors_expire_without_more_input() {
         crate::input::KeybindMatch::Action(crate::input::KeybindAction::RemoveWorktree),
         &mut guard,
     );
-    let message = "This workspace is not a Herdr-managed worktree checkout.";
+    let message = "This workspace is not a Bora-managed worktree checkout.";
     assert_eq!(state.endpoint_error.as_deref(), Some(message));
 
     let deadline = state.endpoint_error_deadline.expect("deadline");
@@ -1210,7 +1210,7 @@ fn worktree_prepare_rejection_notice_expires() {
         &request_id,
         Err(ClientShellEndpointError {
             code: Some("not_git_worktree".into()),
-            message: "Herdr worktree actions require a workspace inside a Git work tree".into(),
+            message: "Bora worktree actions require a workspace inside a Git work tree".into(),
         }),
     );
     let notice = state

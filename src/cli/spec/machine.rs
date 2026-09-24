@@ -11,8 +11,19 @@ pub(super) fn command() -> Command {
                 .arg(json_flag()),
         )
         .subcommand(
+            Command::new("status")
+                .about("Check saved machines without prompting for authentication")
+                .arg(Arg::new("machine").value_name("LABEL_OR_ID"))
+                .arg(json_flag()),
+        )
+        .subcommand(
+            Command::new("reconnect")
+                .about("Authenticate a saved machine in this terminal and verify connectivity")
+                .arg(Arg::new("machine").value_name("LABEL_OR_ID").required(true)),
+        )
+        .subcommand(
             Command::new("add")
-                .about("Prepare the remote Herdr server and save an SSH machine")
+                .about("Prepare the remote Bora server and save an SSH machine")
                 .arg(
                     Arg::new("ssh-target")
                         .value_name("SSH_TARGET")
@@ -25,7 +36,7 @@ pub(super) fn command() -> Command {
                 )
                 .arg(
                     option("remote-session", "NAME")
-                        .help("Set the explicit Herdr session on the remote machine"),
+                        .help("Set the explicit Bora session on the remote machine"),
                 ),
         )
         .subcommand(

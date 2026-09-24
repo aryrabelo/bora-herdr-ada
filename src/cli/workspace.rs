@@ -154,7 +154,7 @@ fn workspace_rename(args: &[String]) -> std::io::Result<i32> {
 
 fn workspace_report_metadata(args: &[String]) -> std::io::Result<i32> {
     let Some(raw_workspace_id) = args.first() else {
-        eprintln!("usage: herdr workspace report-metadata <workspace_id> --source ID [--token NAME=VALUE] [--clear-token NAME] [--seq N] [--ttl-ms N]");
+        eprintln!("usage: bora workspace report-metadata <workspace_id> --source ID [--token NAME=VALUE] [--clear-token NAME] [--seq N] [--ttl-ms N]");
         return Ok(2);
     };
     let workspace_id = super::normalize_workspace_id(raw_workspace_id);

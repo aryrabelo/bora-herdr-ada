@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "protocol": 25,
+  "protocol": 26,
   "schema_version": 1,
   "schemas": {
     "error_response": {
@@ -1013,6 +1013,12 @@
             },
             "pane_id": {
               "type": "string"
+            },
+            "restore_error": {
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "revision": {
               "format": "uint64",
@@ -4528,6 +4534,18 @@
           },
           "type": "object"
         },
+        "ServerSshAgentRegisterParams": {
+          "properties": {
+            "socket_path": {
+              "description": "Absolute remote-host agent socket. Registration lasts until this API connection closes.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "socket_path"
+          ],
+          "type": "object"
+        },
         "SplitDirection": {
           "enum": [
             "right",
@@ -5427,6 +5445,22 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/EmptyParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "server.ssh_agent.register",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/ServerSshAgentRegisterParams"
             }
           },
           "required": [
@@ -6339,6 +6373,22 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/PaneScrollParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "pane.clear",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/PaneTarget"
             }
           },
           "required": [
@@ -7490,6 +7540,15 @@
             },
             "agent_status": {
               "$ref": "#/schemas/success_response/$defs/AgentStatus"
+            },
+            "completion_seq": {
+              "description": "The current idle transition completed work, independently of who has viewed it.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
             },
             "cwd": {
               "type": [
@@ -9270,6 +9329,12 @@
             },
             "pane_id": {
               "type": "string"
+            },
+            "restore_error": {
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "revision": {
               "format": "uint64",
@@ -12179,6 +12244,11 @@
               "type": "boolean"
             },
             "live_handoff": {
+              "type": "boolean"
+            },
+            "ssh_agent_registration": {
+              "default": false,
+              "description": "Supports connection-scoped `server.ssh_agent.register` on the local JSON API.",
               "type": "boolean"
             },
             "surface_interest": {
