@@ -1,0 +1,14 @@
+tests/cli/surface.rs
+  h_b156936c57c455 293
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "c3ac8a5bfb03d0d78388d8d7b9752d4d6c1e8296",
+  "prompts": {},
+  "humans": {
+    "h_b156936c57c455": {
+      "author": "Ary Rabelo <aryrabelo@gmail.com>"
+    }
+  }
+}
