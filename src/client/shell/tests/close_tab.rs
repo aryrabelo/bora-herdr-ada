@@ -207,35 +207,29 @@ fn last_tab_close_preserves_parent_group_and_linked_workspace_scope() {
         projected.tabs.push(tab);
         state.set_snapshot(Box::new(projected));
 
+        // Both branches must confirm client-side: the fork removed the
+        // server's confirmation_required round trip in 2d839ce6
+        // (close_selected_workspace just closes, it never asks), so
+        // open_close_confirmation is the ONLY place a group-root tab close
+        // gets a chance to confirm. A regression here (an early return
+        // before this dialog builds for the tab_id+closes_group case) means
+        // the last tab of a non-linked group-root workspace closes with
+        // zero confirmation even when confirm_close is on.
         let close = request_close(&mut state, false);
+        assert_no_close(&close);
         if linked {
-            assert_no_close(&close);
+            // The closing workspace is itself a linked worktree, so it is
+            // excluded from grouping (open_close_confirmation's group_key
+            // filter): a normal single-workspace confirmation, not a group one.
             assert!(matches!(
                 state.overlay,
                 Some(ClientShellOverlay::ConfirmClose(_))
             ));
-            assert_tab_close(&state.handle_input_bytes(b"\r"));
         } else {
-            assert_tab_close(&close);
-            assert!(state.overlay.is_none());
-            let [ClientShellAction::Endpoint { request, .. }] = close.actions.as_slice() else {
-                panic!("tab close request");
-            };
-            state.handle_endpoint_result(
-                "boot-1",
-                &request.id,
-                Err(ClientShellEndpointError {
-                    code: Some("confirmation_required".into()),
-                    message: "closing this tab would close a worktree group".into(),
-                }),
-            );
             assert!(matches!(state.overlay.as_ref(),
                 Some(ClientShellOverlay::ConfirmClose(confirm)) if confirm.title == "Close worktree group?"));
-            let accepted = state.handle_input_bytes(b"\r");
-            assert!(matches!(accepted.actions.as_slice(),
-                [ClientShellAction::Endpoint { request, .. }]
-                    if matches!(&request.method, Method::WorkspaceClose(params)
-                        if params.workspace_id == "ws_1" && params.close_group)));
         }
+        assert_tab_close(&state.handle_input_bytes(b"\r"));
+        assert!(state.overlay.is_none());
     }
 }

@@ -1150,10 +1150,6 @@ impl ClientShellState {
             })
             .unwrap_or_else(|| vec![workspace]);
         let closes_group = group.len() > 1;
-        // Keep parent-group tab closes on the existing server confirmation path.
-        if tab_id.is_some() && closes_group {
-            return false;
-        }
         let tab_target = if let Some(tab_id) = tab_id {
             let Some(workspace) = self.navigation_target(&self.active_endpoint_id, &workspace_id)
             else {
