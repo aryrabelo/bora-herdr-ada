@@ -12,11 +12,11 @@ const HELP: &str = "Usage:
   bora machine enable <profile-id>
   bora machine disable <profile-id>
 
-Add prepares the remote Herdr installation and starts its server before saving.
+Add prepares the remote Bora installation and starts its server before saving.
 Missing or incompatible installations require approval in an interactive terminal.
-Changes apply automatically to open local Herdr clients.
+Changes apply automatically to open local Bora clients.
 Removing or disabling a machine leaves its remote sessions running.
-Saved machines contain only a label, SSH target, explicit Herdr session, and enabled state.
+Saved machines contain only a label, SSH target, explicit Bora session, and enabled state.
 SSH credentials and key material remain owned by OpenSSH.";
 
 #[derive(Serialize)]
@@ -196,7 +196,7 @@ fn reconnect(args: &[String]) -> std::io::Result<i32> {
     }
     crate::remote::check_saved_ssh(&profile.target, &profile.session)?;
     println!(
-        "Machine {} is reachable. Open Herdr clients retry within 30 seconds.",
+        "Machine {} is reachable. Open Bora clients retry within 30 seconds.",
         profile.id
     );
     Ok(0)
@@ -308,7 +308,7 @@ fn add(args: &[String]) -> std::io::Result<i32> {
             .store(&metadata);
     }
     println!("Saved SSH machine {id}. Remote server is ready.");
-    println!("Open Herdr clients connect automatically.");
+    println!("Open Bora clients connect automatically.");
     Ok(0)
 }
 

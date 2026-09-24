@@ -21,7 +21,7 @@ pub(crate) fn run_remote_api_bridge(args: &[String]) -> std::io::Result<()> {
                 std::io::Error::new(
                     error.kind(),
                     format!(
-                        "failed to connect to remote Herdr API socket {}: {error}",
+                        "failed to connect to remote Bora API socket {}: {error}",
                         path.display()
                     ),
                 )
@@ -34,7 +34,7 @@ pub(crate) fn run_remote_api_bridge(args: &[String]) -> std::io::Result<()> {
         }
         _ => Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
-            "usage: herdr remote-api-bridge [--check]",
+            "usage: bora remote-api-bridge [--check]",
         )),
     }
 }

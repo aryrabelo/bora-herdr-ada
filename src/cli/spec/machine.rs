@@ -23,7 +23,7 @@ pub(super) fn command() -> Command {
         )
         .subcommand(
             Command::new("add")
-                .about("Prepare the remote Herdr server and save an SSH machine")
+                .about("Prepare the remote Bora server and save an SSH machine")
                 .arg(
                     Arg::new("ssh-target")
                         .value_name("SSH_TARGET")
@@ -36,7 +36,7 @@ pub(super) fn command() -> Command {
                 )
                 .arg(
                     option("remote-session", "NAME")
-                        .help("Set the explicit Herdr session on the remote machine"),
+                        .help("Set the explicit Bora session on the remote machine"),
                 ),
         )
         .subcommand(

@@ -44,7 +44,7 @@ pub(crate) fn run_remote(remote: RemoteLaunch) -> io::Result<()> {
     let local_socket = local_forward_socket_path(&remote.target, &session_name);
     let program = std::env::args()
         .next()
-        .unwrap_or_else(|| "herdr".to_string());
+        .unwrap_or_else(|| "bora".to_string());
     let reattach_command = reattach_command(
         &program,
         &remote.target,
@@ -113,7 +113,7 @@ pub(crate) fn check_saved_ssh(target: &str, session: &str) -> io::Result<()> {
             Ok(())
         }
         _ => Err(io::Error::other(format!(
-            "remote Herdr server is stopped or incompatible; run `{}`",
+            "remote Bora server is stopped or incompatible; run `{}`",
             super::saved_ssh_bootstrap_command(target, session),
         ))),
     }
@@ -379,10 +379,10 @@ impl RemoteHerdr {
         let (install_suffix, executable) = if platform.is_windows() {
             (
                 String::new(),
-                RemoteExecutable::WindowsPath("herdr.exe".to_string()),
+                RemoteExecutable::WindowsPath("bora.exe".to_string()),
             )
         } else {
-            let install_suffix = ".local/bin/herdr".to_string();
+            let install_suffix = ".local/bin/bora".to_string();
             let shell_path = format!("\"$HOME/{install_suffix}\"");
             (install_suffix, RemoteExecutable::PosixShellPath(shell_path))
         };
@@ -636,7 +636,7 @@ pub(crate) fn ssh_authentication_command(target: &str) -> io::Result<SshAuthenti
         ));
     }
     if !crate::platform::remote_ssh_config_paths().multiplexing {
-        return Err(io::Error::new(io::ErrorKind::Unsupported, "interactive SSH recovery requires Unix OpenSSH multiplexing; authenticate outside Herdr on this platform"));
+        return Err(io::Error::new(io::ErrorKind::Unsupported, "interactive SSH recovery requires Unix OpenSSH multiplexing; authenticate outside Bora on this platform"));
     }
     if !crate::config::Config::load()
         .config
@@ -1262,7 +1262,7 @@ pub(super) fn prepare_remote_herdr(
 
     if !remote_binary_supports_endpoint_requirement(ssh, &remote_herdr, require_surface_interest)? {
         return Err(io::Error::other(format!(
-            "installed remote herdr at {}, but it does not support saved SSH endpoint federation",
+            "installed remote bora at {}, but it does not support saved SSH endpoint federation",
             remote_herdr.executable.display()
         )));
     }
@@ -1289,7 +1289,7 @@ pub(super) fn find_installed_remote_herdr(ssh: &RemoteSsh) -> io::Result<RemoteH
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
         format!(
-            "matching Herdr is not ready on {}; run `bora --remote {}` interactively to install or update it",
+            "matching Bora is not ready on {}; run `bora --remote {}` interactively to install or update it",
             ssh.target(),
             ssh.target()
         ),
@@ -1355,7 +1355,7 @@ fn prepare_windows_remote_herdr(
     let remote_herdr = install_result?;
     if !remote_binary_supports_endpoint_requirement(ssh, &remote_herdr, require_surface_interest)? {
         return Err(io::Error::other(format!(
-            "installed remote herdr at {}, but it does not support the required remote hosting capabilities",
+            "installed remote bora at {}, but it does not support the required remote hosting capabilities",
             remote_herdr.executable.display()
         )));
     }
@@ -1383,7 +1383,7 @@ pub(super) fn discover_remote_api_metadata(
         if !metadata.is_valid() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "invalid remote Herdr executable path",
+                "invalid remote Bora executable path",
             ));
         }
         return Ok(metadata);
@@ -1407,7 +1407,7 @@ pub(super) fn discover_remote_api_metadata(
     }
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
-        "remote Herdr does not support machine API forwarding; update Herdr on this machine",
+        "remote Bora does not support machine API forwarding; update Bora on this machine",
     ))
 }
 
@@ -1606,7 +1606,7 @@ fn remote_binary_on_path_any(
     ssh: &RemoteSsh,
     remote_herdr: &RemoteHerdr,
 ) -> io::Result<Option<RemoteHerdr>> {
-    let output = ssh.posix_user_shell_output("command -v herdr")?;
+    let output = ssh.posix_user_shell_output("command -v bora")?;
     if output.status.success() {
         let stdout = String::from_utf8_lossy(&output.stdout);
         if let Some(candidate) = remote_herdr_from_path_discovery(remote_herdr, &stdout) {
@@ -1616,7 +1616,7 @@ fn remote_binary_on_path_any(
 
     // Non-POSIX login shells such as xonsh reject `command -v`; retry through
     // /bin/sh while retaining the login-shell probe for shell-initialized PATHs.
-    let output = ssh.sh_output("command -v herdr\n")?;
+    let output = ssh.sh_output("command -v bora\n")?;
     if !output.status.success() {
         return Ok(None);
     }
@@ -1745,7 +1745,7 @@ fn install_source_description_for(
     }
 
     if local_binary_can_seed_remote {
-        "the current local herdr binary".to_string()
+        "the current local bora binary".to_string()
     } else {
         format!(
             "the {} {} asset for {}",
@@ -1886,13 +1886,13 @@ fn confirm_remote_install_with_running_server(
         Err(err) => {
             if !io::stdin().is_terminal() {
                 return Err(io::Error::other(format!(
-                    "could not inspect the running remote herdr server on {target} before installing: {err}; run from an interactive terminal to approve updating the remote binary"
+                    "could not inspect the running remote bora server on {target} before installing: {err}; run from an interactive terminal to approve updating the remote binary"
                 )));
             }
             eprintln!(
-                "could not inspect the running remote herdr server on {target} before installing: {err}"
+                "could not inspect the running remote bora server on {target} before installing: {err}"
             );
-            eprint!("continue installing the remote herdr binary? [y/N] ");
+            eprint!("continue installing the remote bora binary? [y/N] ");
             io::stderr().flush()?;
 
             let mut answer = String::new();
@@ -1901,7 +1901,7 @@ fn confirm_remote_install_with_running_server(
             if answer != "y" && answer != "yes" {
                 return Err(io::Error::new(
                     io::ErrorKind::Interrupted,
-                    "remote herdr install cancelled",
+                    "remote bora install cancelled",
                 ));
             }
             return Ok(false);
@@ -1930,10 +1930,10 @@ fn confirm_remote_install_with_running_server(
 
     if plan == RemoteInstallRunningServerPlan::KeepRunning {
         if io::stdin().is_terminal() {
-            eprintln!("remote herdr server on {target} is already compatible:");
+            eprintln!("remote bora server on {target} is already compatible:");
             eprintln!("  server: v{}", version_label(version.as_deref()));
             eprintln!(
-                "Herdr will install {} without stopping the running remote server.",
+                "Bora will install {} without stopping the running remote server.",
                 current_version()
             );
         }
@@ -1945,7 +1945,7 @@ fn confirm_remote_install_with_running_server(
             RemoteInstallRunningServerPlan::LiveHandoff => return Ok(false),
             RemoteInstallRunningServerPlan::StopRequired(_) => {
                 return Err(io::Error::other(format!(
-                    "remote herdr server on {target} is running v{}; run from an interactive terminal to approve stopping it for the update",
+                    "remote bora server on {target} is running v{}; run from an interactive terminal to approve stopping it for the update",
                     version_label(version.as_deref())
                 )));
             }
@@ -1954,19 +1954,19 @@ fn confirm_remote_install_with_running_server(
     }
 
     if plan == RemoteInstallRunningServerPlan::LiveHandoff {
-        eprintln!("remote herdr server on {target} is currently running:");
+        eprintln!("remote bora server on {target} is currently running:");
         eprintln!("  server: v{}", version_label(version.as_deref()));
         eprintln!(
-            "Herdr will install {} and hand off live pane processes to the prepared server.",
+            "Bora will install {} and hand off live pane processes to the prepared server.",
             current_version()
         );
         return Ok(false);
     }
 
-    eprintln!("remote herdr server on {target} is currently running:");
+    eprintln!("remote bora server on {target} is currently running:");
     eprintln!("  server: v{}", version_label(version.as_deref()));
     eprintln!(
-        "To complete the remote update, Herdr must stop the running remote server after installing."
+        "To complete the remote update, Bora must stop the running remote server after installing."
     );
     eprintln!("This stops active remote pane processes, including shells, agents, dev servers, and tests.");
     eprintln!();
@@ -1982,7 +1982,7 @@ fn confirm_remote_install_with_running_server(
     if answer != "y" && answer != "yes" {
         return Err(io::Error::new(
             io::ErrorKind::Interrupted,
-            "remote herdr install cancelled",
+            "remote bora install cancelled",
         ));
     }
 
@@ -2167,19 +2167,19 @@ fn confirm_remote_server_stop(
     if !io::stdin().is_terminal() {
         if required_upgrade {
             return Err(io::Error::other(format!(
-                "remote herdr server on {target} needs one final update before this client can attach; run from an interactive terminal to approve updating it"
+                "remote bora server on {target} needs one final update before this client can attach; run from an interactive terminal to approve updating it"
             )));
         }
 
         eprintln!(
-            "remote herdr server on {target} is still running v{}; it will use {} after it restarts.",
+            "remote bora server on {target} is still running v{}; it will use {} after it restarts.",
             version_label(version),
             current_version()
         );
         return Ok(false);
     }
 
-    eprintln!("remote herdr server on {target} is currently running:");
+    eprintln!("remote bora server on {target} is currently running:");
     eprintln!("  server: v{}", version_label(version));
     eprintln!("  prepared binary: {}", current_version());
     eprintln!();
@@ -2187,7 +2187,7 @@ fn confirm_remote_server_stop(
     match reason {
         RemoteServerRestartReason::EndpointProtocol => {
             eprintln!(
-                "the remote server predates Herdr's stable endpoint protocol and must update before this client can attach."
+                "the remote server predates Bora's stable endpoint protocol and must update before this client can attach."
             );
         }
         RemoteServerRestartReason::SurfaceInterest => {
@@ -2200,7 +2200,7 @@ fn confirm_remote_server_stop(
         }
         RemoteServerRestartReason::DaemonDetach => {
             eprintln!(
-                "the remote server was started by a herdr build that may not survive SSH connection loss. restart it so network drops disconnect only this client."
+                "the remote server was started by a bora build that may not survive SSH connection loss. restart it so network drops disconnect only this client."
             );
         }
     }
@@ -2220,7 +2220,7 @@ fn confirm_remote_server_stop(
     if required_upgrade {
         return Err(io::Error::new(
             io::ErrorKind::Interrupted,
-            "remote herdr server stop cancelled",
+            "remote bora server stop cancelled",
         ));
     }
 
@@ -2229,15 +2229,15 @@ fn confirm_remote_server_stop(
 
 fn live_handoff_remote_server(ssh: &RemoteSsh, remote_herdr: &RemoteHerdr) -> io::Result<()> {
     let status = remote_client_status(ssh, remote_herdr)?.ok_or_else(|| {
-        io::Error::other("could not inspect the prepared remote herdr binary before live handoff")
+        io::Error::other("could not inspect the prepared remote bora binary before live handoff")
     })?;
     let protocol = status.protocol.ok_or_else(|| {
-        io::Error::other("prepared remote herdr did not report its private protocol")
+        io::Error::other("prepared remote bora did not report its private protocol")
     })?;
     let version = status
         .version
         .filter(|version| !version.is_empty())
-        .ok_or_else(|| io::Error::other("prepared remote herdr did not report its version"))?;
+        .ok_or_else(|| io::Error::other("prepared remote bora did not report its version"))?;
     let command =
         remote_herdr
             .executable
@@ -2248,7 +2248,7 @@ fn live_handoff_remote_server(ssh: &RemoteSsh, remote_herdr: &RemoteHerdr) -> io
     }
 
     eprintln!(
-        "handed off the remote herdr server on {}; reconnecting to the prepared server.",
+        "handed off the remote bora server on {}; reconnecting to the prepared server.",
         ssh.target()
     );
     Ok(())
@@ -2265,7 +2265,7 @@ fn stop_remote_server(ssh: &RemoteSsh, remote_herdr: &RemoteHerdr) -> io::Result
 
     wait_for_remote_server_shutdown(ssh, remote_herdr)?;
     eprintln!(
-        "stopped the remote herdr server on {}; it will restart when the remote client bridge attaches.",
+        "stopped the remote bora server on {}; it will restart when the remote client bridge attaches.",
         ssh.target()
     );
     Ok(())
@@ -2281,7 +2281,7 @@ fn wait_for_remote_server_shutdown(ssh: &RemoteSsh, remote_herdr: &RemoteHerdr) 
             return Err(io::Error::new(
                 io::ErrorKind::TimedOut,
                 format!(
-                    "shutdown was requested, but the old remote herdr server on {target} is still responding after {} seconds",
+                    "shutdown was requested, but the old remote bora server on {target} is still responding after {} seconds",
                     REMOTE_SERVER_SHUTDOWN_CONFIRM_TIMEOUT.as_secs(),
                     target = ssh.target()
                 ),
@@ -2296,7 +2296,7 @@ fn version_label(version: Option<&str>) -> &str {
 }
 
 fn warn_if_remote_bin_not_on_path(ssh: &RemoteSsh) -> io::Result<()> {
-    let output = ssh.posix_user_shell_output("command -v herdr")?;
+    let output = ssh.posix_user_shell_output("command -v bora")?;
     if output.status.success()
         && remote_shell_resolves_managed_install(&String::from_utf8_lossy(&output.stdout))
     {
@@ -2304,7 +2304,7 @@ fn warn_if_remote_bin_not_on_path(ssh: &RemoteSsh) -> io::Result<()> {
     }
 
     eprintln!(
-        "herdr: installed remote binary to ~/.local/bin/herdr, but the remote shell does not resolve `herdr` to that path"
+        "bora: installed remote binary to ~/.local/bin/bora, but the remote shell does not resolve `bora` to that path"
     );
     Ok(())
 }
@@ -2314,7 +2314,7 @@ fn remote_shell_resolves_managed_install(stdout: &str) -> bool {
         .lines()
         .next()
         .map(str::trim)
-        .is_some_and(|path| path.ends_with("/.local/bin/herdr"))
+        .is_some_and(|path| path.ends_with("/.local/bin/bora"))
 }
 
 fn download_release_asset(platform: &RemotePlatform) -> io::Result<InstallSource> {
@@ -2382,7 +2382,7 @@ fn preview_assets_for_build<'a>(
     }
     let build = manifest.builds.get(build_id).ok_or_else(|| {
         io::Error::other(format!(
-            "preview manifest no longer includes build {build_id}; run `bora update` locally or set {REMOTE_BINARY_ENV_VAR}=target/release/herdr"
+            "preview manifest no longer includes build {build_id}; run `bora update` locally or set {REMOTE_BINARY_ENV_VAR}=target/release/bora"
         ))
     })?;
     Ok((build.protocol, &build.assets))
@@ -2391,7 +2391,7 @@ fn preview_assets_for_build<'a>(
 fn remote_release_asset(asset_key: &str) -> io::Result<RemoteReleaseAsset> {
     if crate::build_info::is_preview() {
         let build_id = crate::build_info::build_id().ok_or_else(|| {
-            io::Error::other("preview client has no build id; set HERDR_REMOTE_BINARY or install Herdr on the remote manually")
+            io::Error::other("preview client has no build id; set HERDR_REMOTE_BINARY or install Bora on the remote manually")
         })?;
         let manifest_bytes = fetch_remote_manifest(PREVIEW_UPDATE_MANIFEST_URL)?;
         let manifest: RemotePreviewManifest =
@@ -2401,7 +2401,7 @@ fn remote_release_asset(asset_key: &str) -> io::Result<RemoteReleaseAsset> {
         let (protocol, assets) = preview_assets_for_build(&manifest, build_id)?;
         if protocol != CURRENT_PROTOCOL {
             return Err(io::Error::other(format!(
-                "preview manifest has build {build_id} protocol {protocol}, but this client needs protocol {CURRENT_PROTOCOL}; set {REMOTE_BINARY_ENV_VAR}=target/release/herdr or install a matching Herdr on the remote host manually"
+                "preview manifest has build {build_id} protocol {protocol}, but this client needs protocol {CURRENT_PROTOCOL}; set {REMOTE_BINARY_ENV_VAR}=target/release/bora or install a matching Bora on the remote host manually"
             )));
         }
         return assets.get(asset_key).map(remote_asset_info).ok_or_else(|| {
@@ -2417,20 +2417,20 @@ fn remote_release_asset(asset_key: &str) -> io::Result<RemoteReleaseAsset> {
         .map_err(|err| io::Error::other(format!("failed to parse update manifest JSON: {err}")))?;
     let release = manifest.release_for_version(&current_version).ok_or_else(|| {
         io::Error::other(format!(
-            "release manifest does not include herdr {current_version}; build herdr for {} or install it there manually",
+            "release manifest does not include bora {current_version}; build bora for {} or install it there manually",
             asset_key
         ))
     })?;
     if let Some(protocol) = release.protocol {
         if protocol != CURRENT_PROTOCOL {
             return Err(io::Error::other(format!(
-                "release manifest has herdr {current_version} protocol {protocol}, but this client needs protocol {CURRENT_PROTOCOL}; set {REMOTE_BINARY_ENV_VAR}=target/release/herdr or install a matching herdr on the remote host manually"
+                "release manifest has bora {current_version} protocol {protocol}, but this client needs protocol {CURRENT_PROTOCOL}; set {REMOTE_BINARY_ENV_VAR}=target/release/bora or install a matching bora on the remote host manually"
             )));
         }
     }
     let asset = release.assets.get(asset_key).ok_or_else(|| {
         io::Error::other(format!(
-            "no {asset_key} binary in the release manifest for herdr {current_version}"
+            "no {asset_key} binary in the release manifest for bora {current_version}"
         ))
     })?;
     let mut asset = remote_asset_info(asset);
@@ -2463,7 +2463,7 @@ fn private_download_dir(asset_key: &str) -> io::Result<PathBuf> {
 
     Err(io::Error::new(
         io::ErrorKind::AlreadyExists,
-        "failed to create private herdr remote download directory",
+        "failed to create private bora remote download directory",
     ))
 }
 
@@ -2493,14 +2493,14 @@ fn confirm_remote_install(
 ) -> io::Result<()> {
     if !io::stdin().is_terminal() {
         return Err(io::Error::other(format!(
-            "matching remote herdr {} is not installed at {}; run from an interactive terminal to approve installation",
+            "matching remote bora {} is not installed at {}; run from an interactive terminal to approve installation",
             current_version(),
             remote_herdr.executable.display()
         )));
     }
 
     eprintln!(
-        "matching herdr {} is not installed on {target} for {}.",
+        "matching bora {} is not installed on {target} for {}.",
         current_version(),
         remote_herdr.platform.asset_key()
     );
@@ -2514,7 +2514,7 @@ fn confirm_remote_install(
     if !read_remote_confirmation(&mut io::stdin().lock(), true)? {
         return Err(io::Error::new(
             io::ErrorKind::Interrupted,
-            "remote herdr installation cancelled",
+            "remote bora installation cancelled",
         ));
     }
 
@@ -2525,7 +2525,7 @@ fn posix_remote_api_discovery_command(platform: &RemotePlatform, session: &str) 
     let script = format!(
         r#"set -f
 candidates=$(
-command -v herdr
+command -v bora
 {discovery}
 )
 IFS='
@@ -2542,7 +2542,7 @@ for candidate in $candidates; do
         exit 0
     fi
 done
-printf '%s\n' 'remote Herdr does not support machine API forwarding; update Herdr on this machine' >&2
+printf '%s\n' 'remote Bora does not support machine API forwarding; update Bora on this machine' >&2
 exit 2"#,
         discovery = known_remote_binary_candidate_script(platform),
         session = shell_quote(session),
@@ -2720,7 +2720,7 @@ impl SshStdioBridge {
                             if noninteractive {
                                 tracing::warn!(error = %err, "saved SSH endpoint bridge failed");
                             } else {
-                                eprintln!("herdr: remote bridge failed: {err}");
+                                eprintln!("bora: remote bridge failed: {err}");
                             }
                         }
                     }
@@ -2731,7 +2731,7 @@ impl SshStdioBridge {
                         if noninteractive {
                             tracing::warn!(error = %err, "saved SSH endpoint listener failed");
                         } else {
-                            eprintln!("herdr: remote bridge listener failed: {err}");
+                            eprintln!("bora: remote bridge listener failed: {err}");
                         }
                         break;
                     }
@@ -3663,7 +3663,7 @@ mod tests {
                 let fallback_at = contents.find("Host *").expect("fallback present");
                 assert!(
                     include_at < fallback_at,
-                    "user config must be Included before herdr's fallback: {contents}"
+                    "user config must be Included before bora's fallback: {contents}"
                 );
             }
         }
@@ -3867,7 +3867,7 @@ mod tests {
         let fallback_at = contents.find("Host *").expect("fallback present");
         assert!(
             include_at < fallback_at,
-            "user config must be Included before herdr's fallback: {contents}"
+            "user config must be Included before bora's fallback: {contents}"
         );
 
         let ssh = RemoteSsh {
@@ -4508,12 +4508,12 @@ mod tests {
             (
                 "API bridge with explicit default session",
                 remote_api_bridge_command(&RemoteHerdr::for_platform(RemotePlatform { os: "windows", arch: "x86_64" }), "default", false),
-                "$process = Start-Process -FilePath herdr.exe -ArgumentList '--session default remote-api-bridge' -NoNewWindow -PassThru -ErrorAction Stop; $null = $process.Handle; $process.WaitForExit(); exit $process.ExitCode",
+                "$process = Start-Process -FilePath bora.exe -ArgumentList '--session default remote-api-bridge' -NoNewWindow -PassThru -ErrorAction Stop; $null = $process.Handle; $process.WaitForExit(); exit $process.ExitCode",
             ),
             (
                 "API bridge capability probe",
                 remote_api_bridge_command(&RemoteHerdr::for_platform(RemotePlatform { os: "windows", arch: "x86_64" }), "agents", true),
-                "$process = Start-Process -FilePath herdr.exe -ArgumentList '--session agents remote-api-bridge --check' -NoNewWindow -PassThru -ErrorAction Stop; $null = $process.Handle; $process.WaitForExit(); exit $process.ExitCode",
+                "$process = Start-Process -FilePath bora.exe -ArgumentList '--session agents remote-api-bridge --check' -NoNewWindow -PassThru -ErrorAction Stop; $null = $process.Handle; $process.WaitForExit(); exit $process.ExitCode",
             ),
             (
                 "saved bridge with closed stdin",
@@ -4719,7 +4719,7 @@ mod tests {
             assert_eq!(
                 remote_api_bridge_command(&remote_herdr, session, false),
                 posix_remote_output_command(&format!(
-                    "exec \"$HOME/.local/bin/herdr\" --session {session} remote-api-bridge"
+                    "exec \"$HOME/.local/bin/bora\" --session {session} remote-api-bridge"
                 ))
             );
         }
@@ -4754,11 +4754,11 @@ mod tests {
             remote_herdr
                 .executable
                 .bridge_command(crate::session::DEFAULT_SESSION_NAME),
-            "printf '\n%s\n' 'herdr-remote-output-ready:1'\nexec \"$HOME/.local/bin/herdr\" remote-client-bridge"
+            "printf '\n%s\n' 'herdr-remote-output-ready:1'\nexec \"$HOME/.local/bin/bora\" remote-client-bridge"
         );
         assert_eq!(
             remote_herdr.executable.saved_bridge_command("agents"),
-            "exec \"$HOME/.local/bin/herdr\" --session agents remote-client-bridge </dev/null"
+            "exec \"$HOME/.local/bin/bora\" --session agents remote-client-bridge </dev/null"
         );
     }
 
@@ -4937,13 +4937,13 @@ mod tests {
     #[test]
     fn remote_shell_path_warning_accepts_managed_install() {
         assert!(remote_shell_resolves_managed_install(
-            "/home/can/.local/bin/herdr\n"
+            "/home/can/.local/bin/bora\n"
         ));
         assert!(remote_shell_resolves_managed_install(
-            "/Users/can/.local/bin/herdr\n"
+            "/Users/can/.local/bin/bora\n"
         ));
         assert!(!remote_shell_resolves_managed_install(
-            "/usr/local/bin/herdr\n"
+            "/usr/local/bin/bora\n"
         ));
         assert!(!remote_shell_resolves_managed_install(""));
     }
@@ -5300,7 +5300,7 @@ mod tests {
 
         assert_eq!(
             install_source_description_for(&platform, None, true),
-            "the current local herdr binary"
+            "the current local bora binary"
         );
     }
 
