@@ -860,8 +860,8 @@ fn windows_installed_herdr_exe_path() -> Result<PathBuf, String> {
         return Ok(PathBuf::from(install_dir).join("herdr.exe"));
     }
 
-    let local_app_data = env::var_os("LOCALAPPDATA")
-        .ok_or("LOCALAPPDATA is not set; cannot locate Herdr install")?;
+    let local_app_data =
+        env::var_os("LOCALAPPDATA").ok_or("LOCALAPPDATA is not set; cannot locate Bora install")?;
     Ok(PathBuf::from(local_app_data)
         .join("Programs")
         .join("Herdr")
@@ -1066,7 +1066,7 @@ fn plan_running_server_updates(
 
     if plans.is_empty() && target_client_protocol_server_is_running()? {
         return Err(format!(
-            "a herdr server is listening, but its status API is unavailable; try `{}`, or stop the old server process manually, then run `bora update` again",
+            "a bora server is listening, but its status API is unavailable; try `{}`, or stop the old server process manually, then run `bora update` again",
             crate::session::local_stop_command()
         ));
     }
@@ -1107,7 +1107,7 @@ fn running_update_targets() -> Result<Vec<RunningUpdateTarget>, String> {
             name: None,
             label: socket_path.display().to_string(),
             stop_command: format!(
-                "{}={} herdr server stop",
+                "{}={} bora server stop",
                 crate::api::SOCKET_PATH_ENV_VAR,
                 socket_path.display()
             ),
@@ -1122,7 +1122,7 @@ fn running_update_targets() -> Result<Vec<RunningUpdateTarget>, String> {
     }
 
     let sessions = crate::session::list_sessions()
-        .map_err(|err| format!("failed to list herdr sessions: {err}"))?;
+        .map_err(|err| format!("failed to list bora sessions: {err}"))?;
     Ok(sessions
         .into_iter()
         .map(|session| RunningUpdateTarget {
@@ -1137,9 +1137,9 @@ fn running_update_targets() -> Result<Vec<RunningUpdateTarget>, String> {
                 Some(&session.name)
             }),
             attach_command: Some(if session.default {
-                "herdr".to_string()
+                "bora".to_string()
             } else {
-                format!("herdr session attach {}", session.name)
+                format!("bora session attach {}", session.name)
             }),
             label: session.name.clone(),
             client_socket_path: crate::session::client_socket_path_for(if session.default {
@@ -1162,7 +1162,7 @@ fn target_client_protocol_server_is_running() -> Result<bool, String> {
     }
 
     let sessions = crate::session::list_sessions()
-        .map_err(|err| format!("failed to list herdr sessions: {err}"))?;
+        .map_err(|err| format!("failed to list bora sessions: {err}"))?;
     Ok(sessions.into_iter().any(|session| {
         let client_socket = crate::session::client_socket_path_for(if session.default {
             None
@@ -1542,13 +1542,13 @@ fn recover_failed_live_handoff_for_update(
         FailedHandoffServerState::NoServerResponding => {
             if let Some(command) = plan.attach_command() {
                 eprintln!(
-                    "no herdr server is responding for session {}. the binary was updated; run `{command}` to start {}.",
+                    "no bora server is responding for session {}. the binary was updated; run `{command}` to start {}.",
                     plan.label(),
                     release.label()
                 );
             } else {
                 eprintln!(
-                    "no herdr server is responding at {}. the binary was updated; restart with the same socket override to use {}.",
+                    "no bora server is responding at {}. the binary was updated; restart with the same socket override to use {}.",
                     plan.socket_path().display(),
                     release.label()
                 );
@@ -3011,7 +3011,7 @@ mod tests {
                 name: Some("work".to_string()),
                 label: "work".to_string(),
                 stop_command: "bora session stop work".to_string(),
-                attach_command: Some("herdr session attach work".to_string()),
+                attach_command: Some("bora session attach work".to_string()),
                 socket_path: crate::session::api_socket_path_for(Some("work")),
                 client_socket_path: crate::session::client_socket_path_for(Some("work")),
                 must_be_running: true,
@@ -3234,7 +3234,7 @@ mod tests {
                 name: Some("work".to_string()),
                 label: "work".to_string(),
                 stop_command: "bora session stop work".to_string(),
-                attach_command: Some("herdr session attach work".to_string()),
+                attach_command: Some("bora session attach work".to_string()),
                 socket_path: crate::session::api_socket_path_for(Some("work")),
                 client_socket_path: crate::session::client_socket_path_for(Some("work")),
                 must_be_running: true,
@@ -3269,8 +3269,8 @@ mod tests {
             target: RunningUpdateTarget {
                 name: Some("work".to_string()),
                 label: "work".to_string(),
-                stop_command: "herdr session stop work".to_string(),
-                attach_command: Some("herdr session attach work".to_string()),
+                stop_command: "bora session stop work".to_string(),
+                attach_command: Some("bora session attach work".to_string()),
                 socket_path: crate::session::api_socket_path_for(Some("work")),
                 client_socket_path: crate::session::client_socket_path_for(Some("work")),
                 must_be_running: true,

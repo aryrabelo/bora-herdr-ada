@@ -7215,7 +7215,7 @@ fn update_notification_is_semantic_for_system_delivery() {
                 notification.kind,
                 protocol::SemanticNotificationKind::UpdateInstalled
             );
-            assert_eq!(notification.title, "Herdr v9.9.9 available");
+            assert_eq!(notification.title, "Bora v9.9.9 available");
             assert_eq!(
                 notification.body.as_deref(),
                 Some("detach, run `herdr update`, then run Bora again to reconnect")

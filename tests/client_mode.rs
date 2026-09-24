@@ -469,7 +469,7 @@ fn client_sees_headless_startup_config_diagnostic() {
     assert!(
         wait_until(Duration::from_secs(8), Duration::from_millis(20), || {
             let output = read_output(&output);
-            output.contains("config.toml") && output.contains("herdr config check")
+            output.contains("config.toml") && output.contains("bora config check")
         }),
         "client shell should render startup config diagnostic; output: {:?}",
         read_output(&output)
@@ -984,7 +984,7 @@ fn federated_client_starts_without_local_and_survives_its_restart() {
     let bin = base.join("bin");
     fs::create_dir_all(&bin).unwrap();
     fs::create_dir_all(base.join("home")).unwrap();
-    std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_bora"), bin.join("herdr")).unwrap();
+    std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_bora"), bin.join("bora")).unwrap();
     let quote =
         |path: &std::path::Path| format!("'{}'", path.display().to_string().replace('\'', "'\\''"));
     let ssh_commands = base.join("ssh-commands");

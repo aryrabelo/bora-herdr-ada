@@ -64,7 +64,7 @@ pub(crate) fn uninstall_experimental_letta() -> io::Result<Vec<String>> {
             ));
         } else {
             messages.push(format!(
-                "no herdr letta hook entry found in {}",
+                "no bora letta hook entry found in {}",
                 result.settings_path.display()
             ));
         }
@@ -376,7 +376,7 @@ pub(crate) fn uninstall_target(
                 ));
             } else {
                 messages.push(format!(
-                    "no herdr claude hook entries found in {}",
+                    "no bora claude hook entries found in {}",
                     result.settings_path.display()
                 ));
             }
@@ -403,7 +403,7 @@ pub(crate) fn uninstall_target(
                 ));
             } else {
                 messages.push(format!(
-                    "no herdr codex hook entries found in {}",
+                    "no bora codex hook entries found in {}",
                     result.hooks_path.display()
                 ));
             }
@@ -434,7 +434,7 @@ pub(crate) fn uninstall_target(
                 ));
             } else {
                 messages.push(format!(
-                    "no herdr copilot hook entries found in {}",
+                    "no bora copilot hook entries found in {}",
                     result.settings_path.display()
                 ));
             }
@@ -461,7 +461,7 @@ pub(crate) fn uninstall_target(
                 ));
             } else {
                 messages.push(format!(
-                    "no herdr devin hook entries found in {}",
+                    "no bora devin hook entries found in {}",
                     result.settings_path.display()
                 ));
             }
@@ -488,7 +488,7 @@ pub(crate) fn uninstall_target(
                 ));
             } else {
                 messages.push(format!(
-                    "no herdr kimi hook entries found in {}",
+                    "no bora kimi hook entries found in {}",
                     result.config_path.display()
                 ));
             }
@@ -526,7 +526,7 @@ pub(crate) fn uninstall_target(
                 ));
             } else {
                 messages.push(format!(
-                    "no herdr droid hook entries found in {}",
+                    "no bora droid hook entries found in {}",
                     result.settings_path.display()
                 ));
             }
@@ -626,7 +626,7 @@ pub(crate) fn uninstall_target(
                 ));
             } else {
                 messages.push(format!(
-                    "no herdr qodercli hook entries found in {}",
+                    "no bora qodercli hook entries found in {}",
                     result.settings_path.display()
                 ));
             }
@@ -653,7 +653,7 @@ pub(crate) fn uninstall_target(
                 ));
             } else {
                 messages.push(format!(
-                    "no herdr qwen hook entries found in {}",
+                    "no bora qwen hook entries found in {}",
                     result.settings_path.display()
                 ));
             }
@@ -680,7 +680,7 @@ pub(crate) fn uninstall_target(
                 ));
             } else {
                 messages.push(format!(
-                    "no herdr cursor hook entries found in {}",
+                    "no bora cursor hook entries found in {}",
                     result.hooks_path.display()
                 ));
             }
@@ -707,7 +707,7 @@ pub(crate) fn uninstall_target(
                 ));
             } else {
                 messages.push(format!(
-                    "no herdr mastracode hook entries found in {}",
+                    "no bora mastracode hook entries found in {}",
                     result.hooks_path.display()
                 ));
             }
@@ -734,7 +734,7 @@ pub(crate) fn uninstall_target(
                 ));
             } else {
                 messages.push(format!(
-                    "no herdr antigravity-cli hook entries found in {}",
+                    "no bora antigravity-cli hook entries found in {}",
                     result.hooks_path.display()
                 ));
             }

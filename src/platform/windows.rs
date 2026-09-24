@@ -2451,7 +2451,7 @@ fn show_desktop_notification_on_thread(
     ready_tx: std::sync::mpsc::SyncSender<std::io::Result<bool>>,
 ) {
     let class_name = wide_null("STATIC");
-    let window_name = wide_null("Herdr notifications");
+    let window_name = wide_null("Bora notifications");
     let hwnd = unsafe {
         CreateWindowExW(
             0,
@@ -2486,7 +2486,7 @@ fn show_desktop_notification_on_thread(
 
     if unsafe { Shell_NotifyIconW(NIM_ADD, &notification) } == 0 {
         let _ = ready_tx.send(Err(std::io::Error::other(
-            "failed to add Herdr notification-area icon",
+            "failed to add Bora notification-area icon",
         )));
         unsafe {
             DestroyWindow(hwnd);
@@ -2504,7 +2504,7 @@ fn show_desktop_notification_on_thread(
             DestroyWindow(hwnd);
         }
         let _ = ready_tx.send(Err(std::io::Error::other(
-            "failed to show Herdr desktop notification",
+            "failed to show Bora desktop notification",
         )));
         return;
     }

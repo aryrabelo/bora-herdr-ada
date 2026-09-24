@@ -210,7 +210,7 @@ fn dead_server_cli_reports_one_session_aware_json_line() {
         assert_eq!(
             response["error"]["message"],
             format!(
-                "no herdr server is running at {}; run `{attach_command}` to start or attach it",
+                "no bora server is running at {}; run `{attach_command}` to start or attach it",
                 socket_path.display()
             )
         );
@@ -339,7 +339,7 @@ fn integration_status_outdated_only_prints_action_for_legacy_install() {
     assert_eq!(output.status.code(), Some(0));
     assert!(output.stdout.is_empty());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("installed herdr integrations need updating"));
+    assert!(stderr.contains("installed bora integrations need updating"));
     assert!(stderr.contains("bora integration install pi"));
 
     cleanup_test_base(&base);

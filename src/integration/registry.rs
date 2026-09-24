@@ -394,7 +394,7 @@ pub(crate) fn print_outdated_update_notice() -> bool {
         .map(|integration| integration.target)
         .collect::<Vec<_>>();
     eprintln!(
-        "installed herdr integrations need updating; {}.",
+        "installed bora integrations need updating; {}.",
         integration_update_instructions(&targets).replace('`', "")
     );
     true
