@@ -164,97 +164,6 @@ line_regex = ["^exact line$"]
 }
 
 #[test]
-fn omp_manifest_reads_state_from_title_not_body() {
-    with_manifest_dirs("omp-states", || {
-        // The body carries no state anchor: a themed status bar, a spinner
-        // line, and prior output all fall back to known-agent idle.
-        for screen in [
-            " ⠸ doing a thing\n╭── π  / ⬢ Opus 4.8 · ◒ med ─╮\n",
-            "prior output\n╭── π  / ⬢ Opus 4.8 ─╮\n",
-        ] {
-            let result = explain(Agent::Omp, screen);
-            assert_eq!(result.state, AgentState::Idle);
-            assert!(
-                result.matched_rule.is_none(),
-                "body screens must not match a state rule: {screen:?}"
-            );
-        }
-
-        // Blocked: the selection footer is the one body signal that stands.
-        let blocked = " ⠸ choosing\n  enter select   esc cancel\n╭── π  / ─╮\n";
-        let b = explain(Agent::Omp, blocked);
-        assert_eq!(
-            b.state,
-            AgentState::Blocked,
-            "selection prompt should read blocked"
-        );
-        assert_eq!(
-            b.matched_rule.as_ref().map(|rule| rule.id.as_str()),
-            Some("selection_prompt")
-        );
-    });
-}
-
-#[test]
-fn osc_title_state_reads_only_title_rules() {
-    with_manifest_dirs("omp-title-only", || {
-        // Idle prompt title: the visible_idle osc_title rule wins.
-        assert_eq!(
-            osc_title_state(Agent::Omp, "π > Confirmar opção A do broker"),
-            Some(AgentState::Idle)
-        );
-        // Spinner and attention titles outrank idle and never read as Idle.
-        assert_eq!(
-            osc_title_state(Agent::Omp, "π ⠹ thinking"),
-            Some(AgentState::Working)
-        );
-        assert_eq!(
-            osc_title_state(Agent::Omp, "π ! approve?"),
-            Some(AgentState::Blocked)
-        );
-        // No title, or a title with tui.titleState off, matches nothing.
-        assert_eq!(osc_title_state(Agent::Omp, ""), None);
-        assert_eq!(osc_title_state(Agent::Omp, "π: label"), None);
-    });
-}
-
-#[test]
-fn osc_title_state_is_none_for_manifests_without_a_title_idle_rule() {
-    // A manifest whose only osc_title rules are working/blocked carries no
-    // title evidence for idle, so even a non-matching title yields None
-    // rather than a state the reconcile path could act on.
-    let manifest = parse_manifest(
-        r#"
-id = "codex"
-
-[[rules]]
-id = "osc_title_working"
-state = "working"
-priority = 1050
-region = "osc_title"
-regex = ['spin']
-
-[[rules]]
-id = "prompt_idle"
-state = "idle"
-priority = 100
-region = "whole_recent"
-visible_idle = true
-contains = ["›"]
-"#,
-    )
-    .unwrap();
-    let loaded = loaded_manifest(manifest, ManifestSource::Bundled, None, None, false).unwrap();
-    assert_eq!(osc_title_state_for_loaded(&loaded, "spin"), None);
-    assert_eq!(osc_title_state_for_loaded(&loaded, "quiet title"), None);
-
-    // The bundled pi manifest has no osc_title rules at all.
-    with_manifest_dirs("pi-no-title-rules", || {
-        assert_eq!(osc_title_state(Agent::Pi, "π > prompt"), None);
-    });
-}
-
-#[test]
 fn remote_manifest_loads_between_local_override_and_bundled() {
     with_manifest_dirs("remote-source", || {
         write_remote_codex(&remote_manifest("9999.01.01.1", "blocked", "remote-ready"));
@@ -881,9 +790,21 @@ contains = ["active"]
     assert!(parse_manifest(manifest).is_err());
 }
 
+
 // ---------------------------------------------------------------------------
-// OSC rule tests — exercise the new osc_title / osc_progress regions against
-// the bundled Claude and Codex manifests.
+// Fork-authored tests (git log -S confirms these did not exist upstream;
+// added between ad415672 and this fork's own pre-sync tip). Ported forward
+// across the 2026-09-24 sync (b7781a67) after review found the merge had
+// instead kept this whole file at its pre-consolidation ("ours") shape,
+// wrongly resurrecting ~37 tests upstream deliberately deleted (7201907b,
+// 9c96f7dd) alongside the osc_title_idle rule upstream's own #4563 removed
+// for correctness (herdrdev/herdr#4507). `osc_explain` is a local test-only
+// helper (upstream's own version of it, at this fork's merge-base, was a
+// thin wrapper over `explain_with_input` that upstream's consolidation
+// dropped along with the OSC-focused test section it served); every other
+// helper these tests use (`osc_title_state`, `osc_title_state_for_loaded`,
+// `with_manifest_dirs`, `explain`, `parse_manifest`, `loaded_manifest`) is
+// still current, unmoved production or shared-test code.
 // ---------------------------------------------------------------------------
 
 fn osc_explain(
@@ -902,709 +823,95 @@ fn osc_explain(
     )
 }
 
-// --- Claude OSC rules ---
-
 #[test]
-fn claude_idle_prompt_with_background_shell_is_idle() {
-    // Captured from Claude Code 2.1.251 after its foreground turn ended while
-    // a long-lived background shell remained active (issue #3414).
-    let screen = concat!(
-        "✻ Sautéed for 10s · 1 shell still running\n\n",
-        "──────────────────────────────────────────────────────── WINDOWS ─\n",
-        "❯\n",
-        "────────────────────────────────────────────────────────────────\n",
-        "  ⏵⏵ auto mode on · 1 shell · ← for agents                     /rc\n",
-    );
-    let result = osc_explain(Agent::Claude, screen, "", "");
-
-    assert_eq!(result.state, AgentState::Idle);
-    assert_eq!(
-        result.matched_rule.as_ref().map(|rule| rule.id.as_str()),
-        Some("live_prompt_box")
-    );
-    assert!(result.visible_idle);
-    assert!(!result.visible_working);
-}
-
-#[test]
-fn claude_background_shell_without_foreground_evidence_is_idle_fallback() {
-    let result = osc_explain(
-        Agent::Claude,
-        "  ⏵⏵ auto mode on · 1 shell · ← for agents\n",
-        "",
-        "",
-    );
-
-    assert_eq!(result.state, AgentState::Idle);
-    assert_eq!(result.matched_rule, None);
-    assert_eq!(
-        result.fallback_reason.as_deref(),
-        Some(DEFAULT_KNOWN_AGENT_IDLE_FALLBACK)
-    );
-    assert!(!result.visible_working);
-}
-
-#[test]
-fn claude_live_turn_with_background_shell_remains_working() {
-    let screen = concat!(
-        "────────────────────────────────────────────────────────────────\n",
-        "❯\n",
-        "────────────────────────────────────────────────────────────────\n",
-        "  ⏵⏵ auto mode on · 1 shell · esc to interrupt\n",
-    );
-    let result = osc_explain(Agent::Claude, screen, "", "");
-
-    assert_eq!(result.state, AgentState::Working);
-    assert_eq!(
-        result.matched_rule.as_ref().map(|rule| rule.id.as_str()),
-        Some("live_turn_working")
-    );
-    assert!(result.visible_working);
-}
-
-#[test]
-fn claude_blocker_with_background_shell_remains_blocked() {
-    let screen = concat!(
-        "do you want to proceed?\n",
-        "bash command: rm -rf /tmp/test\n",
-        "❯ 1. Yes\n",
-        "  2. No\n\n",
-        "Esc to cancel · Tab to amend · ctrl+e to explain\n",
-        "  ⏵⏵ auto mode on · 1 shell · ← for agents\n",
-    );
-    let result = osc_explain(Agent::Claude, screen, "", "");
-
-    assert_eq!(result.state, AgentState::Blocked);
-    assert_eq!(
-        result.matched_rule.as_ref().map(|rule| rule.id.as_str()),
-        Some("bash_permission_prompt")
-    );
-    assert!(result.visible_blocker);
-    assert!(!result.visible_working);
-}
-
-#[test]
-fn claude_bash_prompt_with_dont_ask_again_option_matches_bash_rule() {
-    // Captured from a Bash approval prompt at its resting cursor position. The
-    // "don't ask again" choice pushes No to option 3, so the only cursor-free
-    // option line is one bash_permission_prompt used not to cover, which let
-    // the narrower generic_permission_prompt claim the prompt instead (#2650).
-    let screen = concat!(
-        "────────────────────────────────────────────────────────────────
-",
-        " Bash command
-
-",
-        "   curl -sS -o /tmp/probe.html https://example.com
-",
-        "   Download example.com to /tmp/probe.html
-
-",
-        " This command requires approval
-
-",
-        " Do you want to proceed?
-",
-        " ❯ 1. Yes
-",
-        "   2. Yes, and don't ask again for: curl *
-",
-        "   3. No
-
-",
-        " Esc to cancel · Tab to amend · ctrl+e to explain
-",
-    );
-    let result = osc_explain(Agent::Claude, screen, "", "");
-
-    assert_eq!(result.state, AgentState::Blocked);
-    assert_eq!(
-        result.matched_rule.as_ref().map(|rule| rule.id.as_str()),
-        Some("bash_permission_prompt")
-    );
-    assert!(result.visible_blocker);
-}
-
-#[test]
-fn claude_permission_prompt_matches_at_every_cursor_position() {
-    // The selected option carries "❯", so no option branch may assume its line
-    // is cursor-free. Walk the cursor across both option layouts.
-    let layouts: [&[&str]; 2] = [
-        &[" ❯ 1. Yes", "   2. No"],
-        &[
-            " ❯ 1. Yes",
-            "   2. Yes, and don't ask again for: curl *",
-            "   3. No",
-        ],
-    ];
-
-    for layout in layouts {
-        for selected in 0..layout.len() {
-            let options: Vec<String> = layout
-                .iter()
-                .enumerate()
-                .map(|(index, line)| {
-                    let bare = line.trim_start().trim_start_matches('❯').trim_start();
-                    if index == selected {
-                        format!(" ❯ {bare}")
-                    } else {
-                        format!("   {bare}")
-                    }
-                })
-                .collect();
-            let screen = format!(
-                concat!(
-                    "────────────────────────────────────────────────────────────────
-",
-                    " Bash command
-
-",
-                    "   curl -sS https://example.com
-
-",
-                    " Do you want to proceed?
-",
-                    "{}
-
-",
-                    " Esc to cancel · Tab to amend · ctrl+e to explain
-",
-                ),
-                options.join("\n"),
-            );
-            let result = osc_explain(Agent::Claude, &screen, "", "");
-
-            assert_eq!(
-                result.matched_rule.as_ref().map(|rule| rule.id.as_str()),
-                Some("bash_permission_prompt"),
-                "{options:?} selected={selected}"
-            );
-            assert_eq!(result.state, AgentState::Blocked, "selected={selected}");
-            assert!(result.visible_blocker, "selected={selected}");
-        }
-    }
-}
-
-#[test]
-fn claude_osc_title_braille_prefix_is_working() {
-    // "⠂" is U+2802, in the braille block U+2800-U+28FF
-    let result = osc_explain(Agent::Claude, "", "⠂ project", "");
-    assert_eq!(result.state, AgentState::Working);
-    assert_eq!(
-        result.matched_rule.as_ref().map(|r| r.id.as_str()),
-        Some("osc_title_working")
-    );
-    assert!(result.visible_working);
-}
-
-#[test]
-fn claude_osc_title_half_circle_frames_are_working() {
-    for frame in ['◐', '◓', '◑', '◒'] {
-        let title = format!("{frame} Initial conversation with Claude");
-        let result = osc_explain(Agent::Claude, "", &title, "");
-        assert_eq!(result.state, AgentState::Working, "frame {frame}");
-        assert_eq!(
-            result.matched_rule.as_ref().map(|rule| rule.id.as_str()),
-            Some("osc_title_working"),
-            "frame {frame}"
-        );
-        assert!(result.visible_working, "frame {frame}");
-    }
-}
-
-#[test]
-fn claude_osc_title_static_prefix_is_idle() {
-    // "✳" is U+2733, static prefix when Claude is not working
-    let result = osc_explain(Agent::Claude, "", "✳ Claude Code", "");
-    assert_eq!(result.state, AgentState::Idle);
-    assert_eq!(
-        result.matched_rule.as_ref().map(|r| r.id.as_str()),
-        Some("osc_title_idle")
-    );
-    assert!(result.visible_idle);
-}
-
-#[test]
-fn claude_osc_progress_4_3_alone_does_not_force_working() {
-    // Claude leaves progress stuck at 4;3 while waiting for permission, so
-    // 4;3 must not be a working signal on its own. With no other evidence it
-    // falls back to idle; blocked screen rules can win when present.
-    let result = osc_explain(Agent::Claude, "", "", "4;3;");
-    assert_eq!(result.state, AgentState::Idle);
-    assert_eq!(
-        result.fallback_reason.as_deref(),
-        Some(DEFAULT_KNOWN_AGENT_IDLE_FALLBACK)
-    );
-    assert!(!result.visible_working);
-}
-
-#[test]
-fn claude_blocker_screen_outranks_stale_osc_progress() {
-    // Regression: progress 4;3 persists during permission prompts. The
-    // blocked form on screen must win because no rule treats 4;3 as working.
-    let blocker_screen =
-        "──────────\n  1. Yes\n  2. No\n\nEnter to select · ↑/↓ to navigate · Esc to cancel\n";
-    let result = osc_explain(Agent::Claude, blocker_screen, "✳ Task title", "4;3;");
-    assert_eq!(result.state, AgentState::Blocked);
-    assert!(result.visible_blocker);
-}
-
-#[test]
-fn claude_osc_progress_4_0_is_idle() {
-    let result = osc_explain(Agent::Claude, "", "", "4;0;");
-    assert_eq!(result.state, AgentState::Idle);
-    assert_eq!(
-        result.matched_rule.as_ref().map(|r| r.id.as_str()),
-        Some("osc_progress_idle")
-    );
-}
-
-#[test]
-fn claude_blocker_screen_outranks_osc_idle_title() {
-    // When the OSC title shows ✳ (idle) but the screen has a bash permission
-    // prompt, the blocked rule at priority 850 beats osc_title_idle at 250.
-    let blocker_screen = "do you want to proceed?\n\
-        bash command: rm -rf /tmp/test\n\
-        ❯ 1. Yes\n   2. No\n\n\
-        Esc to cancel · Tab to amend · ctrl+e to explain\n";
-    let result = osc_explain(Agent::Claude, blocker_screen, "✳ Claude Code", "");
-    assert_eq!(result.state, AgentState::Blocked);
-    assert!(result.visible_blocker);
-}
-
-#[test]
-fn claude_mcp_elicitation_is_blocked() {
-    // Regression for issue #3283: an MCP elicitation dialog has Accept/Decline
-    // controls and an "Esc to cancel" footer but no Enter hint, so no blocked
-    // rule matched and the static OSC title reported idle.
-    // Live capture uses curly quotes around the server name; the issue report
-    // transcribed straight quotes. Both must classify as blocked.
-    for screen in [
-        "MCP server \u{201c}my-server\u{201d} requests your input\n\nGrant temporary access to the demo gateway for 15 minutes?\n\n\u{276f} Accept    Decline\n\nEsc to cancel \u{b7} \u{2191}/\u{2193} to navigate\n",
-        "MCP server \"my-server\" requests your input\n\nserver-supplied message\n\n\u{276f} Accept    Decline\n\nEsc to cancel \u{b7} \u{2191}/\u{2193} to navigate\n",
-    ] {
-        let result = with_manifest_dirs("claude-mcp-elicitation", || {
-            osc_explain(Agent::Claude, screen, "\u{2733} Claude Code", "")
-        });
-        assert_eq!(result.state, AgentState::Blocked, "{result:#?}");
-        assert!(result.visible_blocker, "{result:#?}");
-        assert_eq!(
-            result.matched_rule.as_ref().map(|r| r.id.as_str()),
-            Some("mcp_elicitation_prompt"),
-            "{result:#?}"
-        );
-    }
-}
-
-#[test]
-fn claude_empty_osc_empty_screen_is_idle_fallback() {
-    // No OSC data, no matching screen rule → fallback idle (unchanged V3 behavior)
-    let result = osc_explain(Agent::Claude, "", "", "");
-    assert_eq!(result.state, AgentState::Idle);
-    assert_eq!(
-        result.fallback_reason.as_deref(),
-        Some(DEFAULT_KNOWN_AGENT_IDLE_FALLBACK)
-    );
-    assert!(!result.visible_idle);
-}
-
-// --- Codex OSC rules ---
-
-#[test]
-fn codex_osc_title_braille_spinner_is_working() {
-    // "⠋" is U+280B, in the braille block
-    let result = osc_explain(Agent::Codex, "", "⠋ llm-proxy", "");
-    assert_eq!(result.state, AgentState::Working);
-    assert_eq!(
-        result.matched_rule.as_ref().map(|r| r.id.as_str()),
-        Some("osc_title_working")
-    );
-    assert!(result.visible_working);
-}
-
-#[test]
-fn codex_osc_title_action_required_is_blocked() {
-    let result = osc_explain(Agent::Codex, "", "[ . ] Action Required | llm-proxy", "");
-    assert_eq!(result.state, AgentState::Blocked);
-    assert_eq!(
-        result.matched_rule.as_ref().map(|r| r.id.as_str()),
-        Some("osc_title_blocked")
-    );
-    assert!(result.visible_blocker);
-}
-
-#[test]
-fn codex_osc_title_plain_is_idle() {
-    let result = osc_explain(Agent::Codex, "", "llm-proxy", "");
-    assert_eq!(result.state, AgentState::Idle);
-    assert_eq!(
-        result.matched_rule.as_ref().map(|r| r.id.as_str()),
-        Some("osc_title_idle")
-    );
-    assert!(result.visible_idle);
-}
-
-#[test]
-fn codex_trust_directory_requires_live_top_region() {
-    let screen = "> You are in C:\\Users\\user\\project\n\n\
-        Do you trust the contents of this\n\
-        directory? Working with untrusted\n\
-        contents comes with higher risk of\n\
-        prompt injection. Trusting the\n\
-        directory allows project-local config,\n\
-        hooks, and exec policies to load.\n\n\
-        › 1. Yes, continue\n\
-          2. No, quit\n\n\
-        Press enter to continue\n";
-    let result = osc_explain(Agent::Codex, screen, "project", "");
-
-    assert_eq!(result.state, AgentState::Blocked);
-    assert_eq!(
-        result.matched_rule.as_ref().map(|rule| rule.id.as_str()),
-        Some("trust_directory")
-    );
-    assert!(result.visible_blocker);
-
-    let transcript = "› > You are in C:\\Users\\user\\project\n\n\
-        Do you trust the contents of this\n\
-        directory? Working with untrusted contents comes with higher risk.\n";
-    let result = osc_explain(Agent::Codex, transcript, "project", "");
-
-    assert_eq!(result.state, AgentState::Idle);
-    assert_ne!(
-        result.matched_rule.as_ref().map(|rule| rule.id.as_str()),
-        Some("trust_directory")
-    );
-    assert!(!result.visible_blocker);
-}
-
-#[test]
-fn codex_startup_update_requires_complete_live_chooser() {
-    let chooser = "Update available! 0.153.0 -> 9.8.7\n\
-        Run bun add -g @openai/codex to update.\n\n\
-        › 1. Update now\n\
-          2. Skip until next version\n\n\
-        Press enter to continue   \n";
-    let wrapped = "✨ Update available! 0.153.0\n\n\
-        Release notes: https://example\n\n\
-        › 1. Update now (runs `npm\n\
-             install -g\n\
-             @openai/codex`)\n\
-          2. Skip\n\
-          3. Skip until next\n\
-             version\n\n\
-        Press enter to continue\n";
-
-    for screen in [chooser, wrapped] {
-        let result = osc_explain(Agent::Codex, screen, "project", "");
-        assert_eq!(result.state, AgentState::Blocked);
-        assert_eq!(
-            result.matched_rule.as_ref().map(|rule| rule.id.as_str()),
-            Some("startup_update")
-        );
-        assert!(result.visible_blocker);
-    }
-
-    for screen in [
-        chooser.replace("Update now", "Install"),
-        format!("{wrapped}\n› Ask Codex to do anything\n"),
-    ] {
-        let result = osc_explain(Agent::Codex, &screen, "project", "");
-        assert_eq!(result.state, AgentState::Idle);
-        assert_ne!(
-            result.matched_rule.as_ref().map(|rule| rule.id.as_str()),
-            Some("startup_update")
-        );
-        assert!(!result.visible_blocker);
-    }
-}
-
-#[test]
-fn codex_background_terminal_screen_does_not_override_osc_idle() {
-    // Background terminal tasks can be long-lived helpers such as dev servers.
-    // They should not make Codex look busy once the foreground turn is idle.
-    let screen = "background terminal running · /ps to view · /stop to close\n";
-    let result = osc_explain(Agent::Codex, screen, "llm-proxy", "");
-    assert_eq!(result.state, AgentState::Idle);
-    assert_eq!(
-        result.matched_rule.as_ref().map(|r| r.id.as_str()),
-        Some("osc_title_idle")
-    );
-    assert!(result.visible_idle);
-}
-
-#[test]
-fn codex_screen_working_fallback_handles_static_osc_title() {
-    let screen = "• I’ll run it and wait for completion.\n\n\
-        ◦ Working (1m 16s • esc to interrupt) · 1 background…\n\n\
-        › Use /skills to list available skills\n\n\
-        gpt-5.6-sol default · /work\n";
-    let result = osc_explain(Agent::Codex, screen, "project", "");
-
-    assert_eq!(result.state, AgentState::Working);
-    assert_eq!(
-        result.matched_rule.as_ref().map(|r| r.id.as_str()),
-        Some("screen_working_fallback")
-    );
-    assert!(result.visible_working);
-}
-
-#[test]
-fn codex_screen_working_fallback_handles_activity_labels_and_queued_inputs() {
-    for prefix in ["", "• ", "◦ "] {
-        for label in ["Working", "Fixing bug in queue region"] {
-            for queue in [
-                "",
-                "\n• Queued follow-up inputs\n  ↳ Follow up after this turn\n    alt + ↑ edit last queued message\n",
-                "\n• Messages to be submitted after next tool call\n  (press esc to interrupt and send immediately)\n  ↳ Keep waiting until the sleep finishes.\n",
-                "\n• Messages to be submitted after next tool call (press esc to interrupt and send immediately)\n  ↳ Keep waiting until the sleep finishes.\n",
-                "\n• Messages to be submitted after next tool call (press esc to interrupt\n  and send immediately)\n  ↳ Keep waiting until the sleep finishes.\n",
-                "\n• Messages to be submitted after next\n  tool call (press esc to interrupt and\n  send immediately)\n  ↳ Keep waiting until the sleep finishes.\n",
-                "\n• Messages to be submitted at end of turn\n  ↳ Follow up after this turn\n",
-                "\n• Messages to be submitted after next tool call\n  (press esc to interrupt and send immediately)\n  ↳ Keep waiting until the sleep finishes.\n\n• Queued follow-up inputs\n  ↳ After this turn reply ok.\n    alt + ↑ edit last queued message\n",
-            ] {
-                let screen = format!(
-                    "{prefix}{label} (1m 16s • esc to interrupt) · 1 background terminal running · /ps to view · /stop to close\n\
-                     {queue}\n› Ask Codex to do anything\n\n  model · /work\n"
-                );
-                let result = osc_explain(Agent::Codex, &screen, "project", "");
-
-                assert_eq!(result.state, AgentState::Working, "{screen}");
-                assert_eq!(
-                    result.matched_rule.as_ref().map(|rule| rule.id.as_str()),
-                    Some("screen_working_fallback"),
-                    "{screen}"
-                );
-                assert!(result.visible_working);
-            }
-        }
-    }
-}
-
-#[test]
-fn codex_screen_working_fallback_uses_latest_activity_after_interruption() {
-    let screen = "■ Conversation interrupted\n\n\
-        › Try again\n\n\
-        Working (4s • esc to interrupt)\n\n\
-        › Ask Codex to do anything\n\n  model · /work\n";
-    let result = osc_explain(Agent::Codex, screen, "project", "");
-
-    assert_eq!(result.state, AgentState::Working);
-    assert!(result.visible_working);
-}
-
-#[test]
-fn codex_osc_working_remains_preferred_over_screen_fallback() {
-    let screen = "• Working (4s • esc to interrupt)\n\n\
-        › Use /skills to list available skills\n\n\
-        gpt-5.6-sol default · /work\n";
-    let result = osc_explain(Agent::Codex, screen, "⠸ project", "");
-
-    assert_eq!(result.state, AgentState::Working);
-    assert_eq!(
-        result.matched_rule.as_ref().map(|r| r.id.as_str()),
-        Some("osc_title_working")
-    );
-    assert!(result.visible_working);
-}
-
-#[test]
-fn codex_screen_blocker_outranks_working_fallback() {
-    let screen = "• Working (4s • esc to interrupt)\n\
-        › 1. Yes, proceed\n\
-        Press enter to confirm or esc to cancel\n";
-    let result = osc_explain(Agent::Codex, screen, "project", "");
-
-    assert_eq!(result.state, AgentState::Blocked);
-    assert_eq!(
-        result.matched_rule.as_ref().map(|r| r.id.as_str()),
-        Some("live_strong_blocker")
-    );
-    assert!(result.visible_blocker);
-    assert!(!result.visible_working);
-}
-
-#[test]
-fn codex_weak_blocker_without_current_prompt_is_blocked() {
-    let result = osc_explain(
-        Agent::Codex,
-        "do you want to continue? [y/n]\n",
-        "project",
-        "",
-    );
-
-    assert_eq!(result.state, AgentState::Blocked);
-    assert_eq!(
-        result.matched_rule.as_ref().map(|r| r.id.as_str()),
-        Some("weak_blocker")
-    );
-}
-
-#[test]
-fn codex_current_prompt_keeps_weak_text_from_overriding_working_fallback() {
-    let screen = "• Working (4s • esc to interrupt)\n\
-        do you want to continue? [y/n]\n\
-        › Use /skills to list available skills\n";
-    let result = osc_explain(Agent::Codex, screen, "project", "");
-
-    assert_eq!(result.state, AgentState::Working);
-    assert_eq!(
-        result.matched_rule.as_ref().map(|r| r.id.as_str()),
-        Some("screen_working_fallback")
-    );
-    assert!(result.visible_working);
-}
-
-#[test]
-fn codex_weak_blocker_ignores_finished_response_above_current_prompt() {
-    let screen = "• The `wt rm` transcript now shows [y/N] / esc, matching the real prompt.\n\n\
-        ─ Worked for 4m 59s ─\n\n\
-        › Ask Codex to do anything\n";
-    let result = osc_explain(Agent::Codex, screen, "project", "");
-
-    assert_eq!(result.state, AgentState::Idle);
-    assert_eq!(
-        result.matched_rule.as_ref().map(|r| r.id.as_str()),
-        Some("osc_title_idle")
-    );
-}
-
-#[test]
-fn codex_weak_blocker_ignores_wrapped_current_prompt_text() {
-    let screen = "› Explain why this prompt wraps before quoting the confirmation text\n\
-          [y/N] / esc and whether the docs should include it\n\n\
-          gpt-5.6-sol default · /work\n";
-    let result = osc_explain(Agent::Codex, screen, "project", "");
-
-    assert_eq!(result.state, AgentState::Idle);
-    assert_eq!(
-        result.matched_rule.as_ref().map(|r| r.id.as_str()),
-        Some("osc_title_idle")
-    );
-}
-
-#[test]
-fn codex_sparkle_prompt_preserves_live_states() {
-    for marker in ["› ", "›⠁", "›⠂", "›⠄", "›⠈", "›⠐", "›⠠", "›⡀", "›⢀"]
-    {
-        let screen = format!("Do you want to proceed? [y/n]\n{marker}unsent draft\n");
-        let result = osc_explain(Agent::Codex, &screen, "project | Ready", "");
-        assert_eq!(result.state, AgentState::Idle, "{marker}");
-
-        let working = format!(
-            "Do you want to proceed? [y/n]\n• Working (4s • esc to interrupt)\n{marker}draft\n"
-        );
-        let result = osc_explain(Agent::Codex, &working, "project", "");
-        assert_eq!(result.state, AgentState::Working, "{marker}");
-
-        let approval = format!("{screen}Press enter to confirm or esc to cancel\n");
-        let result = osc_explain(Agent::Codex, &approval, "project", "");
-        assert_eq!(result.state, AgentState::Blocked, "{marker}");
-        assert!(result.visible_blocker);
-
-        for response_marker in ['•', '■', '✗', '✓'] {
-            let response = format!("{screen}{response_marker} Do you want to proceed? [y/n]\n");
-            let result = osc_explain(Agent::Codex, &response, "project", "");
-            assert_eq!(
-                result.state,
-                AgentState::Blocked,
-                "{marker} {response_marker}"
+fn omp_manifest_reads_state_from_title_not_body() {
+    with_manifest_dirs("omp-states", || {
+        // The body carries no state anchor: a themed status bar, a spinner
+        // line, and prior output all fall back to known-agent idle.
+        for screen in [
+            " ⠸ doing a thing\n╭── π  / ⬢ Opus 4.8 · ◒ med ─╮\n",
+            "prior output\n╭── π  / ⬢ Opus 4.8 ─╮\n",
+        ] {
+            let result = explain(Agent::Omp, screen);
+            assert_eq!(result.state, AgentState::Idle);
+            assert!(
+                result.matched_rule.is_none(),
+                "body screens must not match a state rule: {screen:?}"
             );
         }
-    }
-}
 
-#[test]
-fn codex_weak_blocker_does_not_ignore_arbitrary_prompt_suffixes() {
-    for line in ["›text", "›⠋draft", "›⠀draft", " ›⠁draft", "quoted ›⠁draft"] {
-        let screen = format!("Do you want to proceed? [y/n]\n{line}\n");
-        let result = osc_explain(Agent::Codex, &screen, "project", "");
-        assert_eq!(result.state, AgentState::Blocked, "{line}");
-    }
-}
-
-#[test]
-fn codex_transcript_viewer_outranks_working_fallback() {
-    let screen = "• Working (4s • esc to interrupt)\n\
-        › transcript\n\
-        ↑/↓ to scroll · pgup/pgdn to move · home/end to jump · q to quit · esc to edit prev\n";
-    let result = osc_explain(Agent::Codex, screen, "project", "");
-
-    assert_eq!(result.state, AgentState::Unknown);
-    assert_eq!(
-        result.matched_rule.as_ref().map(|r| r.id.as_str()),
-        Some("transcript_viewer")
-    );
-    assert!(result.skip_state_update);
-    assert!(!result.visible_working);
-}
-
-#[test]
-fn codex_screen_working_fallback_ignores_stale_and_prompt_text() {
-    let screens = [
-        "◦ Working (1m 16s • esc to interrupt)\n\
-         ■ Conversation interrupted\n\
-         › Use /skills to list available skills\n\
-         gpt-5.6-sol default · /work\n",
-        "› Explain the text ◦ Working (1m 16s • esc to interrupt)\n\
-         gpt-5.6-sol default · /work\n",
-        "  ◦ Working (1m 16s • esc to interrupt)\n\
-         › Use /skills to list available skills\n\
-         gpt-5.6-sol default · /work\n",
-        "Working (1m 16s • esc to interrupt)\n\
-         • Finished the task\n\
-         › Ask Codex to do anything\n",
-        "Working (1m 16s • esc to interrupt)\n\
-         ■ Conversation interrupted\n\
-         › Ask Codex to do anything\n",
-        "Working (1m 16s • esc to interrupt)\n\
-         ─ Worked for 1m 16s ─\n\
-         › Ask Codex to do anything\n",
-        "Working (1m 16s • esc to interrupt)\n•\nMessages to be submitted after next tool call\n› Ask Codex to do anything\n",
-        "› Explain this status:\n  Working (1m 16s • esc to interrupt)\n",
-        "• Example (press esc to interrupt)\n\
-         › Ask Codex to do anything\n",
-    ];
-
-    for screen in screens {
-        let result = osc_explain(Agent::Codex, screen, "project", "");
-        assert_eq!(result.state, AgentState::Idle);
+        // Blocked: the selection footer is the one body signal that stands.
+        let blocked = " ⠸ choosing\n  enter select   esc cancel\n╭── π  / ─╮\n";
+        let b = explain(Agent::Omp, blocked);
         assert_eq!(
-            result.matched_rule.as_ref().map(|r| r.id.as_str()),
-            Some("osc_title_idle")
+            b.state,
+            AgentState::Blocked,
+            "selection prompt should read blocked"
         );
-        assert!(result.visible_idle);
-        assert!(!result.visible_working);
-    }
+        assert_eq!(
+            b.matched_rule.as_ref().map(|rule| rule.id.as_str()),
+            Some("selection_prompt")
+        );
+    });
 }
 
 #[test]
-fn codex_screen_working_fallback_ignores_interrupted_short_terminal() {
-    let screen = "◦ Working (1m 16s • esc to interrupt)\n\
-        ■ Conversation interrupted\n\
-        ›\n";
-    let result = osc_explain(Agent::Codex, screen, "project", "");
-
-    assert_eq!(result.state, AgentState::Idle);
-    assert_eq!(
-        result.matched_rule.as_ref().map(|r| r.id.as_str()),
-        Some("osc_title_idle")
-    );
-    assert!(result.visible_idle);
-    assert!(!result.visible_working);
+fn osc_title_state_reads_only_title_rules() {
+    with_manifest_dirs("omp-title-only", || {
+        // Idle prompt title: the visible_idle osc_title rule wins.
+        assert_eq!(
+            osc_title_state(Agent::Omp, "π > Confirmar opção A do broker"),
+            Some(AgentState::Idle)
+        );
+        // Spinner and attention titles outrank idle and never read as Idle.
+        assert_eq!(
+            osc_title_state(Agent::Omp, "π ⠹ thinking"),
+            Some(AgentState::Working)
+        );
+        assert_eq!(
+            osc_title_state(Agent::Omp, "π ! approve?"),
+            Some(AgentState::Blocked)
+        );
+        // No title, or a title with tui.titleState off, matches nothing.
+        assert_eq!(osc_title_state(Agent::Omp, ""), None);
+        assert_eq!(osc_title_state(Agent::Omp, "π: label"), None);
+    });
 }
 
 #[test]
-fn codex_osc_working_beats_weak_blocker_screen() {
-    // A stale [y/n] on screen triggers weak_blocker at priority 600, but an
-    // active braille spinner in the OSC title is priority 1050 — OSC wins.
-    let screen = "do you want to continue? [y/n]\n";
-    let result = osc_explain(Agent::Codex, screen, "⠋ llm-proxy", "");
-    assert_eq!(result.state, AgentState::Working);
-    assert_eq!(
-        result.matched_rule.as_ref().map(|r| r.id.as_str()),
-        Some("osc_title_working")
-    );
+fn osc_title_state_is_none_for_manifests_without_a_title_idle_rule() {
+    // A manifest whose only osc_title rules are working/blocked carries no
+    // title evidence for idle, so even a non-matching title yields None
+    // rather than a state the reconcile path could act on.
+    let manifest = parse_manifest(
+        r#"
+id = "codex"
+
+[[rules]]
+id = "osc_title_working"
+state = "working"
+priority = 1050
+region = "osc_title"
+regex = ['spin']
+
+[[rules]]
+id = "prompt_idle"
+state = "idle"
+priority = 100
+region = "whole_recent"
+visible_idle = true
+contains = ["›"]
+"#,
+    )
+    .unwrap();
+    let loaded = loaded_manifest(manifest, ManifestSource::Bundled, None, None, false).unwrap();
+    assert_eq!(osc_title_state_for_loaded(&loaded, "spin"), None);
+    assert_eq!(osc_title_state_for_loaded(&loaded, "quiet title"), None);
+
+    // The bundled pi manifest has no osc_title rules at all.
+    with_manifest_dirs("pi-no-title-rules", || {
+        assert_eq!(osc_title_state(Agent::Pi, "π > prompt"), None);
+    });
 }
 
 // --- omp OSC rules ---
