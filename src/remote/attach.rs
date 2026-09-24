@@ -1568,6 +1568,7 @@ emit() {
     fi
 }
 if [ -n "$home" ]; then
+    emit "$home/.local/bin/bora"
     emit "$home/.local/bin/herdr"
 fi
 "#,
@@ -1602,11 +1603,29 @@ emit "/run/current-system/sw/bin/herdr"
     script
 }
 
+// Probe the current binary name first, then fall back to the pre-rename
+// `herdr` name so hosts that installed this fork before the bora rename are
+// still discoverable on PATH without a fresh install.
+const REMOTE_BINARY_PATH_PROBE_NAMES: [&str; 2] = ["bora", "herdr"];
+
 fn remote_binary_on_path_any(
     ssh: &RemoteSsh,
     remote_herdr: &RemoteHerdr,
 ) -> io::Result<Option<RemoteHerdr>> {
-    let output = ssh.posix_user_shell_output("command -v bora")?;
+    for command_name in REMOTE_BINARY_PATH_PROBE_NAMES {
+        if let Some(candidate) = remote_binary_on_path(ssh, remote_herdr, command_name)? {
+            return Ok(Some(candidate));
+        }
+    }
+    Ok(None)
+}
+
+fn remote_binary_on_path(
+    ssh: &RemoteSsh,
+    remote_herdr: &RemoteHerdr,
+    command_name: &str,
+) -> io::Result<Option<RemoteHerdr>> {
+    let output = ssh.posix_user_shell_output(&format!("command -v {command_name}"))?;
     if output.status.success() {
         let stdout = String::from_utf8_lossy(&output.stdout);
         if let Some(candidate) = remote_herdr_from_path_discovery(remote_herdr, &stdout) {
@@ -1616,7 +1635,7 @@ fn remote_binary_on_path_any(
 
     // Non-POSIX login shells such as xonsh reject `command -v`; retry through
     // /bin/sh while retaining the login-shell probe for shell-initialized PATHs.
-    let output = ssh.sh_output("command -v bora\n")?;
+    let output = ssh.sh_output(&format!("command -v {command_name}\n"))?;
     if !output.status.success() {
         return Ok(None);
     }
@@ -4865,6 +4884,7 @@ mod tests {
             arch: "x86_64",
         });
 
+        assert!(script.contains("emit \"$home/.local/bin/bora\""));
         assert!(script.contains("emit \"$home/.local/bin/herdr\""));
         assert!(!script.contains("mise/shims/herdr"));
         assert!(script.contains(&format!("version={}", shell_quote(&current_version()))));
@@ -4880,6 +4900,35 @@ mod tests {
         assert!(script.contains("emit \"/run/current-system/sw/bin/herdr\""));
         assert!(script.contains("emit \"/home/linuxbrew/.linuxbrew/bin/herdr\""));
         assert!(!script.contains("emit \"/opt/homebrew/bin/herdr\""));
+    }
+
+    #[test]
+    fn known_remote_binary_candidate_script_probes_bora_before_legacy_herdr_direct_install() {
+        // A host that installed this fork before the herdr->bora rename has
+        // its direct install at `~/.local/bin/herdr`; a host installed after
+        // the rename has it at `~/.local/bin/bora`. The bora candidate must
+        // be emitted first so a host with both present (e.g. a stale herdr
+        // binary left behind after an update) prefers the current binary.
+        let script = known_remote_binary_candidate_script(&RemotePlatform {
+            os: "linux",
+            arch: "x86_64",
+        });
+
+        let bora_pos = script
+            .find("emit \"$home/.local/bin/bora\"")
+            .expect("bora direct-install path missing");
+        let herdr_pos = script
+            .find("emit \"$home/.local/bin/herdr\"")
+            .expect("legacy herdr direct-install path missing");
+        assert!(
+            bora_pos < herdr_pos,
+            "bora direct-install candidate must be emitted before the legacy herdr fallback"
+        );
+    }
+
+    #[test]
+    fn remote_binary_path_probe_names_prefers_bora_then_falls_back_to_herdr() {
+        assert_eq!(REMOTE_BINARY_PATH_PROBE_NAMES, ["bora", "herdr"]);
     }
 
     #[test]
