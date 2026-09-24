@@ -1,13 +1,18 @@
 import { afterEach, beforeEach, expect, mock, test } from "bun:test";
 
 const originalArgv = process.argv;
-afterEach(() => { process.argv = originalArgv; });
+const originalPlatform = process.platform;
+afterEach(() => {
+  process.argv = originalArgv;
+  Object.defineProperty(process, "platform", { value: originalPlatform });
+});
 
 const requests: unknown[] = [];
 const clients: FakeClient[] = [];
 const requestWaiters: Array<() => void> = [];
 let autoAcknowledge = true;
 let importCounter = 0;
+let connectedPath: string | undefined;
 
 type FakeClient = {
   emit: (event: string) => void;
@@ -15,7 +20,8 @@ type FakeClient = {
 
 mock.module("node:net", () => ({
   default: {
-    createConnection(_path: string, onConnect: () => void) {
+    createConnection(path: string, onConnect: () => void) {
+      connectedPath = path;
       const handlers = new Map<string, () => void>();
       const client = {
         write(input: string) {
@@ -45,6 +51,7 @@ beforeEach(() => {
   requests.length = 0;
   clients.length = 0;
   requestWaiters.length = 0;
+  connectedPath = undefined;
   autoAcknowledge = true;
   process.argv = ["bun", "/$bunfs/root/src/index.js", "run"];
   process.env.HERDR_ENV = "1";
@@ -260,6 +267,37 @@ test("dual server entrypoint keeps V1 hooks and never reports from the V2 shared
   const hooks = await module.default.server();
   await hooks["chat.message"]({ sessionID: "v1-root" });
   expect(requests.map(requestState)).toEqual(["working"]);
+});
+
+// Ported from upstream's shared herdr-agent-state.test.ts (the fork's own
+// rewrite of that shared file, above, dropped OpenCode's two generic-harness
+// cases; both are load-bearing regression coverage, not upstream test debt).
+test("stays disabled without the Herdr socket environment", async () => {
+  process.env.HERDR_ENV = "1";
+  process.env.HERDR_PANE_ID = "test:p1";
+  delete process.env.HERDR_SOCKET_PATH;
+
+  const plugin = await loadPlugin();
+
+  expect(plugin).toEqual({});
+});
+
+test("maps the Windows socket marker path to a named pipe endpoint", async () => {
+  const markerPath = `herdr-opencode-${process.pid}.sock`;
+  process.env.HERDR_SOCKET_PATH = markerPath;
+  Object.defineProperty(process, "platform", { value: "win32" });
+
+  const plugin = await loadPlugin();
+  const dispatched = waitForNextRequest();
+  plugin.event({
+    event: {
+      type: "session.status",
+      properties: { sessionID: "windows-marker-session", status: { type: "busy" } },
+    },
+  });
+  await dispatched;
+
+  expect(connectedPath).toBe(`\\\\.\\pipe\\${markerPath}`);
 });
 
 function requestState(request: unknown): unknown {

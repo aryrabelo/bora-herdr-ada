@@ -166,6 +166,7 @@ integration-assets-test:
     bun test src/integration/assets/herdr-agent-state.test.ts
     bun test src/integration/assets/opencode/herdr-agent-state.test.ts
     bun test src/integration/assets/opencode/herdr-tui-session.test.ts
+    bun test src/integration/assets/windows-socket-marker-path.test.ts
 # Run plugin marketplace Worker tests
 plugin-marketplace-test:
     cd workers/plugin-marketplace && bun install --frozen-lockfile && bun test
