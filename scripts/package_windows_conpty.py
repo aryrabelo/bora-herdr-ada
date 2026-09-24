@@ -337,7 +337,7 @@ def validate_stage(metadata_path: Path, architecture: str, stage_dir: Path) -> N
     # The executable is not hash-pinned (it changes every build), so re-check
     # it here to cover a direct archive of an existing stage or a swap after
     # staging.
-    validate_static_msvc_runtime((stage_dir / "herdr.exe").read_bytes(), "herdr.exe")
+    validate_static_msvc_runtime((stage_dir / "bora.exe").read_bytes(), "bora.exe")
     for item in metadata["bundles"][architecture]["files"]:
         path = stage_dir / PurePosixPath(item["destination"])
         actual_hash = sha256_file(path)

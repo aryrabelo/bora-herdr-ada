@@ -134,12 +134,12 @@ class WindowsConptyPackageTests(unittest.TestCase):
             package.stage_bundle(metadata_path, "x86_64", nupkg, herdr, stage)
             package.validate_stage(metadata_path, "x86_64", stage)
 
-            (stage / "herdr.exe").write_bytes(
+            (stage / "bora.exe").write_bytes(
                 self._pe_with_imports(0x8664, ["MSVCP140D.dll"])
             )
             with self.assertRaisesRegex(ValueError, "dynamic Microsoft"):
                 package.validate_stage(metadata_path, "x86_64", stage)
-            (stage / "herdr.exe").write_bytes(
+            (stage / "bora.exe").write_bytes(
                 self._pe_with_imports(0x8664, ["KERNEL32.dll"])
             )
 
