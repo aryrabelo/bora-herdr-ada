@@ -1002,7 +1002,7 @@ impl App {
                 != self.startup_per_agent_delay
         {
             diagnostics.push(
-                "session.startup_per_agent_delay_ms changes require restarting Herdr; kept current setting"
+                "session.startup_per_agent_delay_ms changes require restarting Bora; kept current setting"
                     .into(),
             );
         }
@@ -1013,7 +1013,7 @@ impl App {
             && config.kitty_graphics_enabled() != self.state.kitty_graphics_enabled
         {
             diagnostics.push(
-                "terminal.kitty_graphics changes require restarting Herdr; kept current setting"
+                "terminal.kitty_graphics changes require restarting Bora; kept current setting"
                     .into(),
             );
         }
@@ -2480,7 +2480,7 @@ mod tests {
         assert_eq!(
             report.diagnostics,
             vec![
-                "terminal.kitty_graphics changes require restarting Herdr; kept current setting"
+                "terminal.kitty_graphics changes require restarting Bora; kept current setting"
                     .to_owned()
             ]
         );
@@ -2501,7 +2501,7 @@ mod tests {
         assert_eq!(report.status, crate::config::ConfigReloadStatus::Partial);
         assert_eq!(app.startup_per_agent_delay, Duration::from_millis(100));
         assert_eq!(report.diagnostics, vec![
-            "session.startup_per_agent_delay_ms changes require restarting Herdr; kept current setting"
+            "session.startup_per_agent_delay_ms changes require restarting Bora; kept current setting"
         ]);
 
         let report = app.apply_live_config(&config, &[], &["session".into()], false);

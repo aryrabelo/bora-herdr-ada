@@ -2482,7 +2482,7 @@ fn show_desktop_notification_on_thread(
     if !notification.hIcon.is_null() {
         notification.uFlags |= NIF_ICON;
     }
-    copy_wide_truncated(&mut notification.szTip, "Herdr");
+    copy_wide_truncated(&mut notification.szTip, "Bora");
 
     if unsafe { Shell_NotifyIconW(NIM_ADD, &notification) } == 0 {
         let _ = ready_tx.send(Err(std::io::Error::other(

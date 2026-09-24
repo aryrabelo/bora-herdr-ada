@@ -7099,7 +7099,7 @@ fn oversized_paste_rejection_notifies_only_the_sending_client() {
     ) {
         ServerMessage::ClientShellError { message } => assert_eq!(
             message,
-            "Paste rejected: Input message is 5000012 bytes; Herdr's limit is 1048576 bytes"
+            "Paste rejected: Input message is 5000012 bytes; Bora's limit is 1048576 bytes"
         ),
         other => panic!("expected client shell paste error, got {other:?}"),
     }
@@ -7129,7 +7129,7 @@ fn oversized_paste_rejection_notifies_only_the_sending_client() {
     ) {
         ServerMessage::ClientShellError { message } => assert_eq!(
             message,
-            "Paste rejected: Input message is 7000000 bytes; Herdr's limit is 1048576 bytes"
+            "Paste rejected: Input message is 7000000 bytes; Bora's limit is 1048576 bytes"
         ),
         other => panic!("expected client shell paste error, got {other:?}"),
     }
