@@ -179,6 +179,7 @@ impl PendingEndpointActivation {
     /// Combined `prepare` + `start` in one call, matching the pre-split
     /// single-phase shape fork's own test suite is written against.
     #[cfg(test)]
+    // Mirrors prepare()'s own argument list one-for-one.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn begin(
         shell: &crate::client::shell::ClientShellState,
