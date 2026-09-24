@@ -243,7 +243,7 @@ fn session_attach_without_terminal_leaves_no_session() {
     register_runtime_dir(&runtime_dir);
     let name = "no-tty";
     let app_dir = if cfg!(debug_assertions) {
-        "herdr-dev"
+        "bora-dev"
     } else {
         "herdr"
     };

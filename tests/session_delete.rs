@@ -31,7 +31,7 @@ impl SessionConfig {
 
     fn session_dir(&self, name: &str) -> PathBuf {
         let app_dir = if cfg!(debug_assertions) {
-            "herdr-dev"
+            "bora-dev"
         } else {
             "herdr"
         };
