@@ -306,7 +306,22 @@ impl RawInputByteFramer {
             return chunks;
         }
 
+        // starts_with_bounded_incomplete_escape_sequence accepts "\x1b[" plus
+        // any byte in 0x20..=0x3f, which also matches a truncated host-reply
+        // head (a cell-size XTWINOPS or color-scheme report's params look
+        // identical to an ambiguous kitty-protocol-adjacent sequence at this
+        // point). When we are actively awaiting one of those replies AND the
+        // buffer specifically looks like ITS truncated shape, let the more
+        // specific host-reply discard-arming checks below run instead of
+        // holding here forever: holding would never discard the truncated
+        // head, so whatever the user types next gets appended to the SAME
+        // held buffer and never reaches the pane as real keystrokes.
+        let awaiting_matching_host_reply = (self.host_cell_size_replies_awaited > 0
+            && starts_with_incomplete_host_cell_size_report(&self.buffer))
+            || (self.host_appearance_reply_awaited
+                && starts_with_incomplete_host_color_scheme_report(&self.buffer));
         if self.host_escape_disambiguation_active
+            && !awaiting_matching_host_reply
             && starts_with_bounded_incomplete_escape_sequence(&self.buffer)
         {
             tracing::trace!(
@@ -2645,6 +2660,29 @@ mod tests {
     fn malformed_host_reply_tail_preserves_following_input() {
         let mut framer = RawInputByteFramer::default();
         framer.host_cell_size_query_sent();
+
+        assert!(framer.push(b"\x1b[6;21").is_empty());
+        assert!(framer.flush_timeout().is_empty());
+        assert_eq!(
+            framer.push(b";10xabc"),
+            vec![b"a".to_vec(), b"b".to_vec(), b"c".to_vec()]
+        );
+    }
+
+    #[test]
+    fn malformed_host_reply_tail_preserves_following_input_under_disambiguation() {
+        // Same scenario as malformed_host_reply_tail_preserves_following_input,
+        // but with kitty-keyboard disambiguation active. Before this fix, the
+        // disambiguation hold ran first and matched this exact truncated
+        // reply head too (it accepts "\x1b[" plus any byte in 0x20..=0x3f,
+        // which a cell-size XTWINOPS reply's digit/`;` params satisfy), so
+        // flush_timeout never reached the host-cell-size discard-arming
+        // branch below it and held the head forever - "abc" (typed after the
+        // reply's real terminator "x" arrived) got appended to that same
+        // held buffer and never reached the pane as real keystrokes.
+        let mut framer = RawInputByteFramer::default();
+        framer.host_cell_size_query_sent();
+        framer.set_host_escape_disambiguation_active(true);
 
         assert!(framer.push(b"\x1b[6;21").is_empty());
         assert!(framer.flush_timeout().is_empty());
