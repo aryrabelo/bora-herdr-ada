@@ -290,7 +290,7 @@ fn root_and_command_group_help_point_agents_to_plain_text_docs() {
             "Are you an AI? Use these resources ONLY IF your task specifically asks you to:",
             "https://herdr.dev/agent-guide.md",
             "https://herdr.dev/llms.txt",
-            "herdr --skill",
+            "bora --skill",
         ] {
             assert!(
                 stdout.contains(expected),
