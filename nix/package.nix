@@ -15,7 +15,7 @@
 let
   manifest = lib.importTOML ../Cargo.toml;
   zigDeps = callPackage ../vendor/libghostty-vt/build.zig.zon.nix {
-    name = "herdr-libghostty-vt-zig-cache";
+    name = "bora-libghostty-vt-zig-cache";
     inherit zstd;
     linkFarm =
       name: entries:
@@ -32,7 +32,7 @@ let
   ];
 in
 rustPlatform.buildRustPackage {
-  pname = "herdr";
+  pname = "bora";
   version = manifest.package.version;
 
   src = lib.fileset.toSource {
@@ -84,7 +84,7 @@ rustPlatform.buildRustPackage {
     description = "Terminal workspace manager for AI coding agents";
     homepage = "https://herdr.dev";
     license = lib.licenses.asl20;
-    mainProgram = "herdr";
+    mainProgram = "bora";
     platforms = lib.platforms.linux ++ lib.platforms.darwin;
   };
 }
