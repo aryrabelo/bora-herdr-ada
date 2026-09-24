@@ -360,6 +360,21 @@ today's upstream sync.)
   test module (`cargo nextest run -E 'test(<area>)'`) before trusting `cargo check`.
   A green compile is evidence the tree builds; it is not evidence the tree still does
   what its tests claim. (learned 2026-09-24, binding.)
+- **Upstream-only release machinery stays verbatim and unwired.** `validate-release-source`,
+  `update-nix-package` (`.github/workflows/release.yml`), `scripts/release.py`
+  (+`scripts/test_release.py`, kept in `maintenance-test` so a sync can't silently break
+  it), `scripts/release-workflows.test.ts` implement upstream's preview-promotion model:
+  `origin/master`, `herdr-*` release assets, `Preview:`/`Previous-Stable:` tag trailers,
+  a tag-triggered `preview.yml`. None of that is true here — this fork releases by an
+  admin tag push, `release` needs `[build, flake-check, validate-release-inputs]`, and
+  `release-publish` tags with a plain `-m` message. Both upstream-only jobs are already
+  gated `github.repository == 'herdrdev/herdr'` and inert on this fork's real repo;
+  `release.py` has no fork caller. Adapting any of them would diverge ~10 upstream-owned
+  regions and conflict on every future sync; deleting them causes modify/delete
+  conflicts instead. Keep them byte-identical. When a review bot (cubic etc.) flags a
+  bug inside this cluster, reply that it's upstream-only and unwired — do not fix it.
+  (learned 2026-09-24, binding.)
+
 ### Stable client endpoint contract
 
 The client-owned TUI endpoint generation is independent from the private same-install protocol. Generation 1 is the compatibility floor for Local, SSH, and Cloud connections and must remain available unless retired for a security reason.
