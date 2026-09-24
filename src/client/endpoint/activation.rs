@@ -35,10 +35,14 @@ fn release_surface_best_effort(
 }
 
 impl PendingEndpointActivation {
-    // Upstream signature: the activation takes every collaborator it wires
-    // (shell, registry, transport, clocks) explicitly instead of a context struct.
+    // Two-phase activation: `prepare` validates and builds pending requests
+    // without any network I/O or registry mutation (so a caller can abandon a
+    // stale pending activation in between); `start` sends the prepared
+    // requests and mutates the registry. `begin` below is the pre-split
+    // single-call convenience fork's own tests were written against, kept as
+    // a thin wrapper so that shape does not have to be relearned everywhere.
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn begin(
+    pub(crate) fn prepare(
         shell: &crate::client::shell::ClientShellState,
         endpoints: &EndpointRegistry,
         target: ClientEndpointId,
@@ -170,6 +174,22 @@ impl PendingEndpointActivation {
         }
         endpoints.set_surface_active(&self.source.endpoint_id, false);
         Ok(())
+    }
+
+    /// Combined `prepare` + `start` in one call, matching the pre-split
+    /// single-phase shape fork's own test suite is written against.
+    #[cfg(test)]
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn begin(
+        shell: &crate::client::shell::ClientShellState,
+        endpoints: &mut EndpointRegistry,
+        target: ClientEndpointId,
+        focus: Option<crate::client::shell::ClientEndpointFocusTarget>,
+        resize: crate::protocol::ClientMessage,
+        serial: u64,
+        now: Instant,
+    ) -> Result<Self, ActivationBeginError> {
+        Self::prepare(shell, endpoints, target, focus, resize, serial, now)?.start(endpoints)
     }
 
     pub(crate) fn abandon(&self, endpoints: &mut EndpointRegistry) {

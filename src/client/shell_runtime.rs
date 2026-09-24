@@ -288,7 +288,7 @@ pub(super) fn begin_endpoint_activation(
         state.reported_cell_size.1,
         state.pixel_geometry_exact,
     );
-    match endpoint::PendingEndpointActivation::begin(
+    match endpoint::PendingEndpointActivation::prepare(
         shell,
         endpoints,
         endpoint_id.clone(),
