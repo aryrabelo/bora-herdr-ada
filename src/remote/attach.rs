@@ -1524,7 +1524,7 @@ fn remote_binary_candidates(
 
 fn windows_remote_binary_candidate_command() -> String {
     windows_powershell_script_command(&format!(
-        r#"function Emit-HerdrPath([string]$CandidatePath) {{ if ([string]::IsNullOrWhiteSpace($CandidatePath) -or -not (Test-Path -LiteralPath $CandidatePath -PathType Leaf)) {{ return }}; $candidateFullPath = [System.IO.Path]::GetFullPath($CandidatePath); $encodedCandidate = [System.Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($candidateFullPath)); [Console]::Out.WriteLine('{WINDOWS_REMOTE_PATH_MARKER}' + $encodedCandidate) }}; $pathCommand = Get-Command herdr.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1; if ($null -ne $pathCommand) {{ Emit-HerdrPath $pathCommand.Source }}; $herdrHome = if ([string]::IsNullOrWhiteSpace($env:HERDR_HOME)) {{ Join-Path $env:USERPROFILE '.herdr' }} else {{ $env:HERDR_HOME }}; $activeJunction = Get-Item -LiteralPath (Join-Path $herdrHome 'packages\standalone\current') -Force -ErrorAction SilentlyContinue; if ($null -ne $activeJunction -and -not [string]::IsNullOrWhiteSpace([string]$activeJunction.Target)) {{ Emit-HerdrPath (Join-Path ([string]$activeJunction.Target) 'herdr.exe') }}; exit 0"#
+        r#"function Emit-HerdrPath([string]$CandidatePath) {{ if ([string]::IsNullOrWhiteSpace($CandidatePath) -or -not (Test-Path -LiteralPath $CandidatePath -PathType Leaf)) {{ return }}; $candidateFullPath = [System.IO.Path]::GetFullPath($CandidatePath); $encodedCandidate = [System.Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($candidateFullPath)); [Console]::Out.WriteLine('{WINDOWS_REMOTE_PATH_MARKER}' + $encodedCandidate) }}; $pathCommandBora = Get-Command bora.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1; if ($null -ne $pathCommandBora) {{ Emit-HerdrPath $pathCommandBora.Source }}; $pathCommand = Get-Command herdr.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1; if ($null -ne $pathCommand) {{ Emit-HerdrPath $pathCommand.Source }}; $herdrHome = if ([string]::IsNullOrWhiteSpace($env:HERDR_HOME)) {{ Join-Path $env:USERPROFILE '.herdr' }} else {{ $env:HERDR_HOME }}; $activeJunction = Get-Item -LiteralPath (Join-Path $herdrHome 'packages\standalone\current') -Force -ErrorAction SilentlyContinue; if ($null -ne $activeJunction -and -not [string]::IsNullOrWhiteSpace([string]$activeJunction.Target)) {{ Emit-HerdrPath (Join-Path ([string]$activeJunction.Target) 'bora.exe'); Emit-HerdrPath (Join-Path ([string]$activeJunction.Target) 'herdr.exe') }}; exit 0"#
     ))
 }
 
@@ -4955,6 +4955,38 @@ mod tests {
         assert!(
             bora_pos < herdr_pos,
             "bora PATH probe must run before the legacy herdr fallback"
+        );
+    }
+
+    #[test]
+    fn windows_remote_binary_candidate_command_probes_bora_then_falls_back_to_herdr() {
+        // Mirrors posix_remote_api_discovery_command_probes_bora_then_falls_back_to_herdr:
+        // a Windows remote host that got this fork before the herdr->bora
+        // rename still has its PATH-resolved and standalone-junction binary
+        // literally named herdr.exe. The PATH probe and the junction-target
+        // probe must each try bora.exe first, then fall back to herdr.exe.
+        let script = decode_windows_command(&windows_remote_binary_candidate_command());
+
+        let path_bora_pos = script
+            .find("Get-Command bora.exe")
+            .expect("bora.exe PATH probe missing");
+        let path_herdr_pos = script
+            .find("Get-Command herdr.exe")
+            .expect("legacy herdr.exe PATH probe fallback missing");
+        assert!(
+            path_bora_pos < path_herdr_pos,
+            "bora.exe PATH probe must run before the legacy herdr.exe fallback"
+        );
+
+        let junction_bora_pos = script
+            .find("'bora.exe'")
+            .expect("bora.exe junction-target probe missing");
+        let junction_herdr_pos = script
+            .find("'herdr.exe'")
+            .expect("legacy herdr.exe junction-target probe fallback missing");
+        assert!(
+            junction_bora_pos < junction_herdr_pos,
+            "bora.exe junction-target probe must run before the legacy herdr.exe fallback"
         );
     }
 
