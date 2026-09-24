@@ -333,6 +333,30 @@ today's upstream sync.)
   three separate selection-background call sites. An `unused import` warning after
   resolving such a conflict usually means a real upstream delta was dropped; a merged
   upstream test that fails afterward points at the fork site still missing the port.
+- **A conflict resolved correctly can still sit next to a silent semantic swap from a
+  DIFFERENT, non-conflicting hunk in the same file, and `cargo check` does not catch
+  it when Rust's own type coercions (auto-reborrow `&mut T`->`&T`, `From`-based
+  round-tripping) paper over the mismatch.** The 2026-09-24 sync (`b7781a67`) hit this
+  three times: (1) `src/client/endpoint/activation.rs` — the conflict marker covered
+  only the `fn begin`/`fn prepare` name line; the REST of the function body (a real
+  architectural split from one-shot `&mut`-taking mutation into a two-phase
+  `prepare(&EndpointRegistry)` + `start(&mut EndpointRegistry)`) auto-merged from
+  upstream with zero markers, and every one of the fork's 17 pre-existing tests still
+  *compiled* against the new body because Rust reborrows `&mut endpoints` down to `&`
+  — only running the test suite (2 of 42 failed) proved the semantics had changed.
+  (2) `src/app/api/worktrees.rs` — resolving a conflict whose `theirs` side was empty
+  to `@ours` left OTHER non-conflicting hunks (an upstream function rename + a new
+  safety check) still in the file, producing Rust that compiled as nonsense until
+  traced by hand. (3) `src/detect/manifests/codex.toml` — a whole-file silent
+  replacement with `theirs` (no markers at all, because the fork's local delta from
+  the sync's merge-base happened to be zero) dropped a fork-authored manifest rule
+  that 9 tests depended on; only running those tests, not `cargo check`, surfaced it.
+  **Rule going forward**: after resolving conflicts in a file, diff the WHOLE merged
+  file against both `ours` and `theirs` (not just the marked hunks) for any function/
+  struct whose conflict resolution kept a name but not a body, and run the file's own
+  test module (`cargo nextest run -E 'test(<area>)'`) before trusting `cargo check`.
+  A green compile is evidence the tree builds; it is not evidence the tree still does
+  what its tests claim. (learned 2026-09-24, binding.)
 ### Stable client endpoint contract
 
 The client-owned TUI endpoint generation is independent from the private same-install protocol. Generation 1 is the compatibility floor for Local, SSH, and Cloud connections and must remain available unless retired for a security reason.
