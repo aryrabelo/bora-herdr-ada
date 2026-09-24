@@ -245,7 +245,7 @@ fn session_attach_without_terminal_leaves_no_session() {
     let app_dir = if cfg!(debug_assertions) {
         "bora-dev"
     } else {
-        "herdr"
+        "bora"
     };
     let session_dir = config_home.join(app_dir).join("sessions").join(name);
     let run = |args: &[&str]| {

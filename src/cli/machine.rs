@@ -110,7 +110,7 @@ fn status(args: &[String]) -> std::io::Result<i32> {
         } else if !arg.starts_with('-') && selector.is_none() {
             selector = Some(arg.as_str());
         } else {
-            eprintln!("usage: herdr machine status [<label-or-id>] [--json]");
+            eprintln!("usage: bora machine status [<label-or-id>] [--json]");
             return Ok(2);
         }
     }
@@ -174,7 +174,7 @@ fn status(args: &[String]) -> std::io::Result<i32> {
 fn reconnect(args: &[String]) -> std::io::Result<i32> {
     use std::io::IsTerminal;
     let [selector] = args else {
-        eprintln!("usage: herdr machine reconnect <label-or-id>");
+        eprintln!("usage: bora machine reconnect <label-or-id>");
         return Ok(2);
     };
     let catalog = load_catalog()?;
@@ -186,7 +186,7 @@ fn reconnect(args: &[String]) -> std::io::Result<i32> {
         }
     };
     if !std::io::stdin().is_terminal() {
-        eprintln!("reconnect requires an interactive terminal; use herdr machine status for noninteractive checks");
+        eprintln!("reconnect requires an interactive terminal; use bora machine status for noninteractive checks");
         return Ok(2);
     }
     let mut authentication = crate::remote::ssh_authentication_command(&profile.target)?;

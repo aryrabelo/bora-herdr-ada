@@ -33,7 +33,7 @@ impl SessionConfig {
         let app_dir = if cfg!(debug_assertions) {
             "bora-dev"
         } else {
-            "herdr"
+            "bora"
         };
         self.root.join(app_dir).join("sessions").join(name)
     }
