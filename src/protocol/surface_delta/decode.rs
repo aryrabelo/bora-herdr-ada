@@ -171,6 +171,7 @@ fn decode_frame<D: Decoder<Context = DecodeContext>>(
         MAX_GRAPHICS_FRAME_SIZE,
         "graphics payload too large",
     )?;
+    let force_full_repaint = bool::decode(decoder)?;
     Ok(FrameData {
         cells: Vec::new(),
         width,
@@ -178,7 +179,7 @@ fn decode_frame<D: Decoder<Context = DecodeContext>>(
         cursor,
         hyperlinks,
         graphics,
-        force_full_repaint: false,
+        force_full_repaint,
     })
 }
 
