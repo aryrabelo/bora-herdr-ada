@@ -27,6 +27,17 @@ use serde::{Deserialize, Serialize};
 /// bump rule, even though nothing ever set the field to anything but false.
 pub const PROTOCOL_VERSION: u32 = 26;
 
+/// Oldest server `PROTOCOL_VERSION` a client at `PROTOCOL_VERSION` 26+ may
+/// stay attached to. Below this, the running server still encodes
+/// `PaneSurface` frames in the pre-26 shape (with the now-removed
+/// `FrameData.force_full_repaint` field). The `shell.surface.v1` endpoint
+/// codec does not compare `PROTOCOL_VERSION` at all - only endpoint
+/// generation and capability names - so an old server paired with a new
+/// client would otherwise silently misdecode every `PaneSurface` frame
+/// instead of failing the handshake with a clear "needs one final update"
+/// error. See AGENTS.md's R2-M2 note on this sync.
+pub const MIN_COMPATIBLE_SERVER_PROTOCOL: u32 = 26;
+
 /// Maximum allowed frame payload size (2 MB). Frames larger than this are
 /// rejected to prevent denial-of-service via oversized length prefixes.
 pub const MAX_FRAME_SIZE: usize = 2 * 1024 * 1024;
