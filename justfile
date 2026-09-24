@@ -251,20 +251,9 @@ pre-release-check:
     @echo "release review required: update skills/herdr/SKILL.md for this stable release so it matches the current CLI, IDs, agent lifecycle semantics, and safety guidance."
     @echo "release policy: do not update skills/herdr/SKILL.md between stable releases; preview builds keep the latest stable skill."
 
-# Publish a preview by pushing an admin-owned tag at the selected source commit.
-preview $ref='HEAD':
-    git fetch --prune origin '+refs/heads/master:refs/remotes/origin/master' '+refs/heads/release/*:refs/remotes/origin/release/*' --tags
-    @set -eu; \
-    commit="$(python3 scripts/release.py preview-source --commit "$ref")"; \
-    day="$(git show -s --format=%cs "$commit")"; \
-    short="$(git rev-parse --short=12 "$commit")"; \
-    tag="preview-$day-$short"; \
-    git tag -a "$tag" "$commit" -m "$tag"; \
-    git push origin "refs/tags/$tag"
-
-# In a checkout based on the selected preview, prepare release-only metadata.
-release-prepare $version $preview:
-    @printf '%s\n' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || { \
+# Prepare the release commit without tagging or pushing (usage: just release-prepare 0.1.1)
+release-prepare version:
+    @printf '%s\n' '{{version}}' | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || { \
         echo "error: version must look like 0.6.6 without a v prefix"; \
         exit 1; \
     }
@@ -279,7 +268,6 @@ release-prepare $version $preview:
         echo "error: tag v{{version}} already exists"; \
         exit 1; \
     fi
-    python3 scripts/release.py check-source --preview "$preview"
     just pre-release-check
     python3 scripts/changelog.py prepare --version {{version}} --path docs/next/CHANGELOG.md
     cp docs/next/CHANGELOG.md CHANGELOG.md
@@ -287,13 +275,12 @@ release-prepare $version $preview:
     cargo update -p bora --offline
     just check
     git add CHANGELOG.md docs/next/CHANGELOG.md Cargo.toml Cargo.lock skills/herdr/SKILL.md
-    git diff --cached --quiet || git commit -m "release: v$version"
-    python3 scripts/release.py check-source --preview "$preview"
-    @echo "v$version release commit prepared. Review it, then run: just release-publish $version $preview"
+    git diff --cached --quiet || git commit -m "release: v{{version}}"
+    @echo "v{{version}} release commit prepared. Review it, then run: just release-publish {{version}}"
 
-# Tag a prepared preview-based release; never move master to the release candidate.
-release-publish $version $preview:
-    @printf '%s\n' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || { \
+# Tag and push an already-prepared release commit (usage: just release-publish 0.1.1)
+release-publish version:
+    @printf '%s\n' '{{version}}' | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || { \
         echo "error: version must look like 0.6.6 without a v prefix"; \
         exit 1; \
     }
@@ -312,12 +299,12 @@ release-publish $version $preview:
         exit 1; \
     fi
     @cargo_version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"; \
-    if [ "$cargo_version" != "$version" ]; then \
-        echo "error: Cargo.toml version $cargo_version does not match $version"; \
+    if [ "$cargo_version" != "{{version}}" ]; then \
+        echo "error: Cargo.toml version $cargo_version does not match {{version}}"; \
         exit 1; \
     fi
     just release-docs-check
-    python3 scripts/changelog.py extract --version "$version" --output /tmp/herdr-release-notes-check.md
+    python3 scripts/changelog.py extract --version {{version}} --output /tmp/herdr-release-notes-check.md
     rm -f /tmp/herdr-release-notes-check.md
     @local_head="$(git rev-parse HEAD)"; \
     remote_head="$(git rev-parse origin/main)"; \
@@ -333,10 +320,10 @@ release-publish $version $preview:
     git push origin v{{version}}
     @echo "v{{version}} released — GitHub Actions building binaries and updating distribution/latest.json"
 
-# Prepare and promote a published preview, not the latest master.
-release $version $preview:
-    just release-prepare "$version" "$preview"
-    just release-publish "$version" "$preview"
+# Prepare, verify, tag, push, and trigger the GitHub Release workflow (usage: just release 0.1.1)
+release version:
+    just release-prepare {{version}}
+    just release-publish {{version}}
 
 # Print default config
 default-config:
