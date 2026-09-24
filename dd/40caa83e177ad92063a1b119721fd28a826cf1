@@ -1,0 +1,14 @@
+src/remote/attach.rs
+  h_b156936c57c455 1527,4961-4992
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "dd40caa83e177ad92063a1b119721fd28a826cf1",
+  "prompts": {},
+  "humans": {
+    "h_b156936c57c455": {
+      "author": "Ary Rabelo <aryrabelo@gmail.com>"
+    }
+  }
+}
