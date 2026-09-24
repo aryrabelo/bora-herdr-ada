@@ -194,6 +194,9 @@ classes, and how to resolve them, so the next sync is cheap:
   in CLI output, docs, and config. Upstream merges reintroduce `herdr` in touched strings —
   grep the merged diff for `herdr` in string literals and rename to `bora`, but leave
   `herdrdev/herdr` repository/URL references and internal upstream identifiers alone.
+  `TERM_PROGRAM` (`src/pane.rs`) stays `herdr` on purpose: it is an ecosystem/terminfo
+  identifier other tools key off (the way they key off `iTerm.app` or `tmux`), not a
+  user-facing string — do not rename it on a merge. (decided 2026-09-24, binding.)
 - **Fork-only struct fields** (e.g. `change_set` on `WorkspaceGitStatusSnapshot`). Upstream
   restructuring a type we've extended produces a field-shape conflict. Keep the fork-only
   field, re-apply it to upstream's new shape, and re-verify its call sites compile.
