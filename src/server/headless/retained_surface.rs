@@ -590,7 +590,6 @@ mod tests {
     #[test]
     fn retained_rows_send_only_changed_cell_spans() {
         let frame = FrameData {
-            force_full_repaint: false,
             width: 6,
             height: 2,
             cells: vec![cell(" "); 12],
@@ -628,7 +627,6 @@ mod tests {
     #[test]
     fn retained_rows_include_the_cell_after_a_width_transition() {
         let frame = FrameData {
-            force_full_repaint: false,
             width: 3,
             height: 1,
             cells: vec![cell("界"), cell("z"), cell("q")],
@@ -665,7 +663,6 @@ mod tests {
     #[test]
     fn retained_rows_omit_unchanged_full_dirty_rows() {
         let frame = FrameData {
-            force_full_repaint: false,
             width: 4,
             height: 2,
             cells: vec![cell(" "); 8],

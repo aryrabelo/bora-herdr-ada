@@ -17,7 +17,16 @@ use serde::{Deserialize, Serialize};
 // ---------------------------------------------------------------------------
 
 /// Current protocol version. Bumped when wire format changes incompatibly.
-pub const PROTOCOL_VERSION: u32 = 25;
+///
+/// Bumped 25 -> 26 removing the dead `FrameData.force_full_repaint` field
+/// (never had a producer or reader; the merge that added it hardcoded the
+/// decoder to `false` too, desyncing every surface-delta connection - see
+/// AGENTS.md "Stable client endpoint contract"). 25 was already published in
+/// both distribution/latest.json and distribution/preview.json, so removing
+/// a bincode field over it is an incompatible shape change per the version-
+/// bump rule, even though nothing ever set the field to anything but false.
+pub const PROTOCOL_VERSION: u32 = 26;
+
 
 /// Maximum allowed frame payload size (2 MB). Frames larger than this are
 /// rejected to prevent denial-of-service via oversized length prefixes.
@@ -779,12 +788,6 @@ pub struct FrameData {
     pub hyperlinks: Vec<String>,
     /// Kitty graphics protocol bytes to apply after the text frame.
     pub graphics: Vec<u8>,
-    /// True when the receiving client must repaint every cell from scratch
-    /// instead of diffing against its previously rendered frame. Set when a
-    /// layout change (e.g. sidebar toggle) reflows pane content without
-    /// changing the outer terminal size, so encoders that key off dimension
-    /// changes alone would otherwise miss it.
-    pub force_full_repaint: bool,
 }
 
 impl FrameData {
@@ -845,7 +848,6 @@ impl FrameData {
             cursor,
             hyperlinks: hyperlink_uris,
             graphics: Vec::new(),
-            force_full_repaint: false,
         }
     }
 
@@ -2472,7 +2474,6 @@ mod tests {
             }),
             hyperlinks: vec!["https://example.com".to_owned()],
             graphics: Vec::new(),
-            force_full_repaint: false,
         };
         let msg = ServerMessage::PaneSurface(PaneSurfaceFrame {
             boot_id: "boot-1".into(),
@@ -2488,13 +2489,9 @@ mod tests {
         let (decoded, _): (ServerMessage, _) =
             bincode::serde::decode_from_slice(&encoded, bincode::config::standard()).unwrap();
         assert_eq!(msg, decoded);
-        // Digest diverges from upstream's own frozen value for the same
-        // reason as `client_shell_graphics_payload_codec_is_frozen`: this
-        // fork keeps `FrameData.force_full_repaint`, bumping PROTOCOL_VERSION
-        // 22 -> 23 (merge decision, ceo-bora#274).
         assert_eq!(
             encoded_sha256(&msg),
-            "3b0136ffaeb7420c1a7be7a2a487e5499e26d1486b9daf6d4c06161993a238b1"
+            "7c016f7b21ddb5ac79212cf65a968b93eb292b5305b941263e89ffaa40158ee3"
         );
         match decoded {
             ServerMessage::PaneSurface(surface) => {
@@ -2565,7 +2562,6 @@ mod tests {
             projection_revision: 2,
             surface_revision: 3,
             frame: FrameData {
-                force_full_repaint: false,
                 cells: Vec::new(),
                 width: 0,
                 height: 0,
@@ -2601,15 +2597,9 @@ mod tests {
             },
         });
 
-        // Digest diverges from upstream's own frozen value here because this
-        // fork keeps `FrameData.force_full_repaint` (upstream deleted it when
-        // the sidebar/render loop moved fully client-side); PROTOCOL_VERSION
-        // was bumped 22 -> 23 for exactly this retained field (merge decision,
-        // ceo-bora#274). The struct literal above is otherwise unchanged from
-        // upstream's version of this test.
         assert_eq!(
             encoded_sha256(&message),
-            "e37dc1a2e75d4f97ad3593b75d30371f62721fb606028d56f1a34340056699e6"
+            "49c4efec0f1456c8ca4112ddf6ead1ab75d0224007576c2ccc18c3fca55a69f0"
         );
     }
 
@@ -2651,7 +2641,6 @@ mod tests {
             projection_revision: 1,
             surface_revision: 1,
             frame: FrameData {
-                force_full_repaint: false,
                 cells: Vec::new(),
                 width: 0,
                 height: 0,
@@ -3021,7 +3010,6 @@ mod tests {
             }),
             hyperlinks: Vec::new(),
             graphics: Vec::new(),
-            force_full_repaint: false,
         };
         let msg = ServerMessage::PaneSurface(PaneSurfaceFrame {
             boot_id: "boot-1".into(),
@@ -3374,7 +3362,6 @@ mod tests {
             cursor: None,
             hyperlinks: Vec::new(),
             graphics: Vec::new(),
-            force_full_repaint: false,
         };
         assert!(frame.to_ratatui_buffer().is_none());
     }

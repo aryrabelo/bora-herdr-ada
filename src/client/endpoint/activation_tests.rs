@@ -193,7 +193,6 @@ fn surface(boot_id: &str, revision: u64, pane: &str) -> crate::protocol::PaneSur
         projection_revision: revision,
         surface_revision: revision,
         frame: crate::protocol::FrameData {
-            force_full_repaint: false,
             cells: Vec::new(),
             width: 80,
             height: 24,

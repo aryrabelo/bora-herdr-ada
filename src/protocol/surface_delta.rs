@@ -492,13 +492,9 @@ mod tests {
         let update = reconstruct(&last, &next);
         let mut bytes = Vec::new();
         crate::protocol::write_message(&mut bytes, &update).unwrap();
-        // Digest diverges from upstream's own frozen value for the same reason as
-        // `client_shell_graphics_payload_codec_is_frozen`: this fork keeps
-        // `FrameData.force_full_repaint`, already accounted for by the
-        // PROTOCOL_VERSION 22 -> 23 bump (merge decision, ceo-bora#274).
         assert_eq!(
             format!("{:x}", Sha256::digest(bytes)),
-            "509629fb365bfd23fe253971afa8d6a9534ac817a79cb70929520a9397255053"
+            "1effe2cbf998ff334bda9151995b87d54e646a1b90c10d853723d5bc1c8a84bf"
         );
     }
 

@@ -246,7 +246,6 @@ mod tests {
             projection_revision: revision,
             surface_revision: 1,
             frame: FrameData {
-                force_full_repaint: false,
                 cells: Vec::new(),
                 width: 0,
                 height: 0,

@@ -784,7 +784,6 @@ mod client_render_state_tests {
             cursor: None,
             hyperlinks: Vec::new(),
             graphics: Vec::new(),
-            force_full_repaint: false,
         }
     }
 
