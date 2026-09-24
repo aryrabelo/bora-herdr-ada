@@ -85,10 +85,6 @@ jobs:
           built_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           build_id="$day-$short_sha"
           tag="preview-$build_id"
-          if [ "$GITHUB_REF_NAME" != "$tag" ]; then
-            echo "error: expected preview tag $tag; use just preview" >&2
-            exit 1
-          fi
           base_version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
           protocol="$(python3 -c 'import re; print(re.search(r"pub const PROTOCOL_VERSION: u32 = (\d+);", open("src/protocol/wire.rs").read()).group(1))')"
           endpoint_generation="$(python3 -c 'import re; print(re.search(r"pub const ENDPOINT_PROTOCOL_GENERATION: u32 = (\d+);", open("src/protocol/endpoint.rs").read()).group(1))')"
@@ -556,3 +552,26 @@ jobs:
               continue
             fi
           done
+
+      - name: Prune old preview prereleases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release list --repo "$GITHUB_REPOSITORY" --limit 100 --json tagName,isPrerelease,createdAt > preview-releases.json
+          python3 - <<'PY' > old-preview-tags.txt
+          import json
+          with open("preview-releases.json", encoding="utf-8") as handle:
+              data = json.load(handle)
+          releases = [
+              release for release in data
+              if release.get("isPrerelease") and str(release.get("tagName", "")).startswith("preview-")
+          ]
+          releases.sort(key=lambda release: str(release.get("createdAt", "")), reverse=True)
+          for release in releases[30:]:
+              print(release["tagName"])
+          PY
+          while IFS= read -r tag; do
+            [ -n "$tag" ] || continue
+            gh release delete "$tag" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag
+          done < old-preview-tags.txt

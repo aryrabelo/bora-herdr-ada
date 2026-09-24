@@ -11,12 +11,53 @@ import scripts.preview as preview
 
 
 class PreviewNotesTests(unittest.TestCase):
-    def test_notes_contain_only_build_and_comparison_link(self):
+    def test_humanize_groups_conventional_subjects(self):
         self.assertEqual(
-            preview.build_notes("previous-sha", "current-sha", "2026-09-16-abcdef123456", "herdrdev/herdr"),
-            "Preview build 2026-09-16-abcdef123456\n\n"
-            "[View changes](https://github.com/herdrdev/herdr/compare/previous-sha...current-sha)\n",
+            preview.humanize_subject("feat(update): add preview channel"),
+            ("Added", "Add preview channel"),
         )
+        self.assertEqual(
+            preview.humanize_subject("fix: handle preview manifest"),
+            ("Fixed", "Handle preview manifest"),
+        )
+        self.assertEqual(
+            preview.humanize_subject("not conventional"),
+            ("Other", "Not conventional"),
+        )
+
+    def test_hidden_subjects_include_preview_manifest_commits(self):
+        self.assertTrue(preview.hidden_subject("docs: update preview manifest"))
+        self.assertTrue(preview.hidden_subject("chore: approve contributor"))
+        self.assertFalse(preview.hidden_subject("fix: handle preview manifest"))
+
+    def test_build_notes_groups_conventional_subjects_by_heading(self):
+        with mock.patch.object(
+            preview,
+            "commit_subjects",
+            return_value=["fix: handle preview manifest", "docs: update readme"],
+        ):
+            notes = preview.build_notes(
+                "previous-sha", "current-sha", "2026-09-16-abcdef123456", "0.6.6", "herdrdev/herdr"
+            )
+        self.assertIn("Preview build 2026-09-16-abcdef123456", notes)
+        self.assertIn("Built from `current-sha` on `main`.", notes)
+        self.assertIn("Base stable: v0.6.6", notes)
+        self.assertIn(
+            "Compare: https://github.com/herdrdev/herdr/compare/previous-sha...current-sha",
+            notes,
+        )
+        self.assertIn("### Fixed", notes)
+        self.assertIn("- Handle preview manifest", notes)
+        self.assertIn("### Maintenance", notes)
+        self.assertIn("- Update readme", notes)
+
+    def test_build_notes_falls_back_to_a_generic_summary_with_no_commits(self):
+        with mock.patch.object(preview, "commit_subjects", return_value=[]):
+            notes = preview.build_notes(
+                "previous-sha", "current-sha", "2026-09-16-abcdef123456", "0.6.6", "herdrdev/herdr"
+            )
+        self.assertIn("### Changed", notes)
+        self.assertIn("Rebuilt preview from the current main branch.", notes)
 
     def test_build_manifest_archives_assets_with_selected_source_generation(self):
         with tempfile.TemporaryDirectory() as tmp:
