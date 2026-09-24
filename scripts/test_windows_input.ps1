@@ -61,20 +61,20 @@ if (-not $ExePath) {
         if ($LASTEXITCODE -ne 0) { throw "cargo build failed with exit code $LASTEXITCODE" }
     } finally { Pop-Location }
     $targetRoot = if ($env:CARGO_TARGET_DIR) { [IO.Path]::GetFullPath($env:CARGO_TARGET_DIR, $repo) } else { Join-Path $repo 'target' }
-    $builtExe = Join-Path $targetRoot 'release/herdr.exe'
+    $builtExe = Join-Path $targetRoot 'release/bora.exe'
     $package = Join-Path $repo '.local/windows-input/cache/Microsoft.Windows.Console.ConPTY.nupkg'
     $stage = Join-Path $root 'package'
     Write-Host 'Staging the current binary with the pinned ConPTY runtime'
     $null = Invoke-GauntletProcess $python @((Join-Path $PSScriptRoot 'package_windows_conpty.py'), 'stage', '--package', $package, '--herdr-exe', $builtExe, '--output-dir', $stage) -Timeout 300
-    $ExePath = Join-Path $stage 'herdr.exe'
+    $ExePath = Join-Path $stage 'bora.exe'
 }
 $exe = (Resolve-Path -LiteralPath $ExePath).Path
 $conpty = Join-Path ([IO.Path]::GetDirectoryName($exe)) 'conpty/conpty.dll'
-if (-not (Test-Path -LiteralPath $conpty -PathType Leaf)) { throw "Selected Herdr binary has no adjacent bundled ConPTY runtime: $exe. Pass -ExePath to a packaged herdr.exe" }
+if (-not (Test-Path -LiteralPath $conpty -PathType Leaf)) { throw "Selected Herdr binary has no adjacent bundled ConPTY runtime: $exe. Pass -ExePath to a packaged bora.exe" }
 $pwsh = (Get-Process -Id $PID).Path
 $exeHash = (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash
 if ($sourceCommit) { Write-Host "Source: $sourceCommit$(if ($sourceDirty) { ' + working tree changes' })" }
-Write-Host "Herdr under test: $exe"
+Write-Host "Bora under test: $exe"
 Write-Host "SHA-256: $exeHash"
 Write-Host "Modes: $($Modes -join ', '); widths: $($Widths -join ', '); heights: $($Heights -join ', ')"
 Write-Host "Channels: $($Channels -join ', '); paths: $($Paths -join ', '); cases: $(if (@($Cases).Count) { $Cases -join ', ' } else { 'all' })"

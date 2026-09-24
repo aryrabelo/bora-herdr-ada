@@ -70,7 +70,7 @@ Or invoke the script directly:
 
 ```powershell
 pwsh -NoProfile -File scripts/test_windows_input.ps1 `
-  -ExePath 'C:\test-app\herdr.exe' -AllowInputInjection `
+  -ExePath 'C:\test-app\bora.exe' -AllowInputInjection `
   -StablePath 'C:\TerminalStable\WindowsTerminal.exe' `
   -PreviewPath 'C:\TerminalPreview\WindowsTerminal.exe'
 ```
@@ -82,7 +82,7 @@ use `-Profile win32` or `-Profile vt`; they do not replace the default run.
 arrays normally:
 
 ```powershell
-.\scripts\test_windows_input.ps1 -ExePath 'C:\test-app\herdr.exe' `
+.\scripts\test_windows_input.ps1 -ExePath 'C:\test-app\bora.exe' `
   -AllowInputInjection -Modes legacy,kitty -Cases mouse-interleave,mode-transitions `
   -Widths 120 -Heights 30
 ```
