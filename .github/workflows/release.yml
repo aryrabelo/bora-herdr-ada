@@ -16,6 +16,39 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
 
 jobs:
+  validate-release-source:
+    if: github.repository == 'herdrdev/herdr' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    outputs:
+      preview_commit: ${{ steps.source.outputs.preview_commit }}
+      previous_tag: ${{ steps.source.outputs.previous_tag }}
+    steps:
+      - &require-release-admins
+        name: Require repository admins for publishing and reruns
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          for actor in "$GITHUB_ACTOR" "$GITHUB_TRIGGERING_ACTOR"; do
+            permission="$(gh api "repos/$GITHUB_REPOSITORY/collaborators/$actor/permission" --jq .permission)"
+            if [ "$permission" != "admin" ]; then
+              echo "error: $actor must have repository admin permission to publish" >&2
+              exit 1
+            fi
+          done
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require a published preview and release-only changes
+        id: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git fetch origin master:refs/remotes/origin/master --tags
+          python3 scripts/release.py check-tag --tag "$GITHUB_REF_NAME" --github-output "$GITHUB_OUTPUT"
+
   flake-check:
     if: github.repository == 'aryrabelo/bora-herdr-ada'
     runs-on: ubuntu-latest
@@ -210,6 +243,7 @@ jobs:
       contents: write
 
     steps:
+      - *require-release-admins
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           persist-credentials: false
@@ -233,13 +267,14 @@ jobs:
 
   update-nix-package:
     needs: release
-    if: github.repository == 'herdrdev/herdr'
+    if: github.repository == 'herdrdev/herdr' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     timeout-minutes: 2
     continue-on-error: true
     permissions: {}
 
     steps:
+      - *require-release-admins
       - name: Trigger stable Nix package update
         env:
           GH_TOKEN: ${{ secrets.HERDR_NIX_DISPATCH_TOKEN }}
@@ -261,6 +296,7 @@ jobs:
       issues: write
 
     steps:
+      - *require-release-admins
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           fetch-depth: 0
@@ -400,6 +436,7 @@ jobs:
       contents: write
 
     steps:
+      - *require-release-admins
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           ref: main
@@ -423,6 +460,7 @@ jobs:
           cp "$ANNOUNCEMENT_PATH" "$ANNOUNCEMENT_ORIGINAL_PATH"
           python3 scripts/changelog.py validate-product-announcement --path "$ANNOUNCEMENT_PATH"
           RELEASE_PROTOCOL=$(git show "${GITHUB_REF_NAME}:src/protocol/wire.rs" | python3 -c 'import re, sys; match = re.search(r"pub const PROTOCOL_VERSION: u32 = (\d+);", sys.stdin.read()); sys.exit(1) if match is None else print(match.group(1))')
+          RELEASE_ENDPOINT_GENERATION=$(git show "${GITHUB_REF_NAME}:src/protocol/endpoint.rs" | python3 -c 'import re, sys; match = re.search(r"pub const ENDPOINT_PROTOCOL_GENERATION: u32 = (\d+);", sys.stdin.read()); sys.exit(1) if match is None else print(match.group(1))')
 
           DOCS_CURRENT=$(node scripts/docs/versions.mjs current)
           if [ "$DOCS_CURRENT" != "$VERSION" ]; then
@@ -434,7 +472,7 @@ jobs:
             echo "distribution/latest.json is already at v$VERSION"
             exit 0
           fi
-          python3 scripts/changelog.py sync-latest-json --version "$VERSION" --repo "${{ github.repository }}" --output distribution/latest.json --announcement "$ANNOUNCEMENT_PATH" --protocol "$RELEASE_PROTOCOL"
+          python3 scripts/changelog.py sync-latest-json --version "$VERSION" --repo "${{ github.repository }}" --output distribution/latest.json --announcement "$ANNOUNCEMENT_PATH" --protocol "$RELEASE_PROTOCOL" --endpoint-generation "$RELEASE_ENDPOINT_GENERATION"
           if cmp -s "$ANNOUNCEMENT_ORIGINAL_PATH" docs/next/product-announcement.json; then
             printf 'null\n' > docs/next/product-announcement.json
           else

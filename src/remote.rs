@@ -5,6 +5,8 @@ mod process;
 mod restart_policy;
 mod saved;
 pub(crate) use saved::SavedSshApiBridge;
+#[cfg(unix)]
+mod ssh_agent;
 
 pub(crate) use args::*;
 pub(crate) use attach::*;

@@ -4,6 +4,26 @@ use ratatui::{
     widgets::{Paragraph, Widget},
 };
 
+fn workspace_selection_background(palette: &Palette) -> ratatui::style::Color {
+    if palette.selection_bg == ratatui::style::Color::Reset {
+        palette.active_row_bg
+    } else {
+        palette.selection_bg
+    }
+}
+
+pub(in crate::client::shell) fn workspace_active_background(
+    palette: &Palette,
+    navigating: bool,
+) -> ratatui::style::Color {
+    // The fallback cursor shares the active-row color; only fill the cursor while navigating.
+    if navigating && palette.selection_bg == ratatui::style::Color::Reset {
+        palette.sidebar_bg
+    } else {
+        palette.active_row_bg
+    }
+}
+
 pub(in crate::client::shell) fn collapsed_sidebar_sections(
     area: Rect,
 ) -> (Rect, Option<u16>, Rect) {
@@ -33,6 +53,8 @@ pub(crate) fn render_collapsed_sidebar(
     hits: &mut ShellHitMap,
 ) {
     let palette = &config.palette;
+    let selection_background = workspace_selection_background(palette);
+    let active_background = workspace_active_background(palette, selected_workspace_id.is_some());
     render_sidebar_background(buffer, area, palette);
     let (workspace_area, divider_y, detail_area) = collapsed_sidebar_sections(area);
     for (index, workspace) in snapshot
@@ -48,23 +70,17 @@ pub(crate) fn render_collapsed_sidebar(
             1,
         );
         let selected = selected_workspace_id == Some(workspace.workspace_id.as_str());
-        let selection_background =
-            if workspace.focused && palette.selection_bg == ratatui::style::Color::Reset {
-                palette.active_row_bg
-            } else {
-                palette.selection_bg
-            };
         if selected {
             buffer.set_style(rect, Style::default().bg(selection_background));
         } else if workspace.focused {
-            buffer.set_style(rect, Style::default().bg(palette.active_row_bg));
+            buffer.set_style(rect, Style::default().bg(active_background));
         }
         let number_style = if selected {
             Style::default()
                 .fg(palette.overlay1)
                 .bg(selection_background)
         } else if workspace.focused {
-            Style::default().fg(palette.text).bg(palette.active_row_bg)
+            Style::default().fg(palette.text).bg(active_background)
         } else {
             Style::default().fg(palette.overlay0)
         };
@@ -371,14 +387,14 @@ pub(crate) fn render_sidebar(
             render_workspace_rows(
                 buffer,
                 rect,
-                workspace,
                 status,
                 config.status_indicators,
                 entry,
                 rows,
                 WorkspaceRowRenderOptions {
-                    endpoint_active: true,
+                    focused: workspace.focused,
                     selected,
+                    navigating: state.selected_workspace_id.is_some(),
                     dragged,
                     first_row_reserved_width: 0,
                     tick: state.tick,
@@ -707,8 +723,16 @@ pub(in crate::client::shell) fn workspace_rows(
 /// Per-call render flags for `render_workspace_rows`, bundled to keep the
 /// function under clippy's argument-count lint (ceo-bora#302 cubic review).
 pub(in crate::client::shell) struct WorkspaceRowRenderOptions {
-    pub(in crate::client::shell) endpoint_active: bool,
+    /// Combined "this row should read as focused" flag: the caller
+    /// pre-combines endpoint activity with `workspace.focused` so this
+    /// function does not need a `&ClientShellWorkspace` of its own.
+    pub(in crate::client::shell) focused: bool,
     pub(in crate::client::shell) selected: bool,
+    /// True while the keyboard workspace-navigation highlight is active
+    /// (`prefix+w`); feeds `workspace_active_background`'s cursor-fallback
+    /// fill so the active row still reads as selectable without a themed
+    /// `selection_bg`.
+    pub(in crate::client::shell) navigating: bool,
     pub(in crate::client::shell) dragged: bool,
     /// Columns reserved on ROW 0 ONLY (ceo-bora#302 cubic review): a
     /// Folders entry's pane dots share row 0 with the row-template text, so
@@ -724,7 +748,6 @@ pub(in crate::client::shell) struct WorkspaceRowRenderOptions {
 pub(in crate::client::shell) fn render_workspace_rows(
     buffer: &mut Buffer,
     area: Rect,
-    workspace: &ClientShellWorkspace,
     status: crate::api::schema::AgentStatus,
     indicators: crate::config::StatusIndicatorStyle,
     entry: &WorkspaceEntry,
@@ -733,8 +756,9 @@ pub(in crate::client::shell) fn render_workspace_rows(
     palette: &Palette,
 ) {
     let WorkspaceRowRenderOptions {
-        endpoint_active,
+        focused,
         selected,
+        navigating,
         dragged,
         first_row_reserved_width,
         tick,
@@ -775,7 +799,7 @@ pub(in crate::client::shell) fn render_workspace_rows(
         } else {
             0
         };
-        let highlighted = endpoint_active && workspace.focused || dragged;
+        let highlighted = focused || dragged;
         let workspace_style = Style::default()
             .fg(if highlighted {
                 palette.text
@@ -787,7 +811,7 @@ pub(in crate::client::shell) fn render_workspace_rows(
             } else {
                 Modifier::empty()
             });
-        let secondary_style = Style::default().fg(if endpoint_active && workspace.focused {
+        let secondary_style = Style::default().fg(if focused {
             palette.mauve
         } else {
             palette.overlay0
@@ -814,11 +838,11 @@ pub(in crate::client::shell) fn render_workspace_rows(
     }
 
     let background = if selected {
-        Some(palette.selection_bg)
+        Some(workspace_selection_background(palette))
     } else if dragged {
         Some(palette.surface1)
-    } else if endpoint_active && workspace.focused {
-        Some(palette.active_row_bg)
+    } else if focused {
+        Some(workspace_active_background(palette, navigating))
     } else {
         None
     };
@@ -1296,7 +1320,6 @@ pub(in crate::client::shell) fn render_folders_workspace_list(
                 render_workspace_rows(
                     buffer,
                     text_rect,
-                    workspace,
                     status,
                     config.status_indicators,
                     &WorkspaceEntry {
@@ -1306,8 +1329,9 @@ pub(in crate::client::shell) fn render_folders_workspace_list(
                     },
                     rows,
                     WorkspaceRowRenderOptions {
-                        endpoint_active: true,
+                        focused: workspace.focused,
                         selected,
+                        navigating: state.selected_workspace_id.is_some(),
                         dragged,
                         first_row_reserved_width: reserved,
                         tick: state.tick,

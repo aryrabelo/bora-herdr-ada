@@ -35,7 +35,22 @@ jobs:
       built_at: ${{ steps.plan.outputs.built_at }}
       base_version: ${{ steps.plan.outputs.base_version }}
       protocol: ${{ steps.plan.outputs.protocol }}
+      endpoint_generation: ${{ steps.plan.outputs.endpoint_generation }}
     steps:
+      - &require-release-admins
+        name: Require repository admins for publishing and reruns
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          for actor in "$GITHUB_ACTOR" "$GITHUB_TRIGGERING_ACTOR"; do
+            permission="$(gh api "repos/$GITHUB_REPOSITORY/collaborators/$actor/permission" --jq .permission)"
+            if [ "$permission" != "admin" ]; then
+              echo "error: $actor must have repository admin permission to publish" >&2
+              exit 1
+            fi
+          done
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           ref: main
@@ -70,8 +85,13 @@ jobs:
           built_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           build_id="$day-$short_sha"
           tag="preview-$build_id"
+          if [ "$GITHUB_REF_NAME" != "$tag" ]; then
+            echo "error: expected preview tag $tag; use just preview" >&2
+            exit 1
+          fi
           base_version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
           protocol="$(python3 -c 'import re; print(re.search(r"pub const PROTOCOL_VERSION: u32 = (\d+);", open("src/protocol/wire.rs").read()).group(1))')"
+          endpoint_generation="$(python3 -c 'import re; print(re.search(r"pub const ENDPOINT_PROTOCOL_GENERATION: u32 = (\d+);", open("src/protocol/endpoint.rs").read()).group(1))')"
           {
             echo "should_publish=true"
             echo "commit=$commit"
@@ -81,6 +101,7 @@ jobs:
             echo "built_at=$built_at"
             echo "base_version=$base_version"
             echo "protocol=$protocol"
+            echo "endpoint_generation=$endpoint_generation"
           } >> "$GITHUB_OUTPUT"
 
       - name: Install Rust
@@ -116,7 +137,9 @@ jobs:
 
       - name: Run checks
         if: steps.plan.outputs.should_publish == 'true'
-        run: just check
+        run: |
+          just ci
+          just docs-contract-test
 
   build:
     needs: preflight
@@ -275,6 +298,7 @@ jobs:
       contents: write
       issues: write
     steps:
+      - *require-release-admins
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           ref: main
@@ -348,7 +372,7 @@ jobs:
             echo "error: $PREVIEW_TAG exists as an immutable release with the wrong release type" >&2
             exit 1
           fi
-          tag_commit="$(git ls-remote origin "refs/tags/${PREVIEW_TAG}" | awk 'NR == 1 {print $1}')"
+          tag_commit="$(git rev-parse "refs/tags/${PREVIEW_TAG}^{commit}")"
           if [ "$tag_commit" != "$PREVIEW_COMMIT" ]; then
             echo "error: immutable release $PREVIEW_TAG points at $tag_commit, expected $PREVIEW_COMMIT" >&2
             exit 1
@@ -410,6 +434,7 @@ jobs:
             --built-at '${{ needs.preflight.outputs.built_at }}' \
             --base-version '${{ needs.preflight.outputs.base_version }}' \
             --protocol '${{ needs.preflight.outputs.protocol }}' \
+            --endpoint-generation '${{ needs.preflight.outputs.endpoint_generation }}' \
             --notes PREVIEW_NOTES.md \
             --sha-file preview-sha256.json \
             --repo "${{ github.repository }}" \
@@ -531,26 +556,3 @@ jobs:
               continue
             fi
           done
-
-      - name: Prune old preview prereleases
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          gh release list --repo "$GITHUB_REPOSITORY" --limit 100 --json tagName,isPrerelease,createdAt > preview-releases.json
-          python3 - <<'PY' > old-preview-tags.txt
-          import json
-          with open("preview-releases.json", encoding="utf-8") as handle:
-              data = json.load(handle)
-          releases = [
-              release for release in data
-              if release.get("isPrerelease") and str(release.get("tagName", "")).startswith("preview-")
-          ]
-          releases.sort(key=lambda release: str(release.get("createdAt", "")), reverse=True)
-          for release in releases[30:]:
-              print(release["tagName"])
-          PY
-          while IFS= read -r tag; do
-            [ -n "$tag" ] || continue
-            gh release delete "$tag" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag
-          done < old-preview-tags.txt

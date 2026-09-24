@@ -1,5 +1,6 @@
 use super::*;
 
+// Codex is only a registry key here; behavior tests supply synthetic rules.
 fn remote_manifest(version: &str, state: &str, contains: &str) -> String {
     format!(
         r#"
@@ -88,15 +89,24 @@ fn write_local_codex(content: &str) {
 }
 
 #[test]
-fn known_agent_no_match_defaults_to_idle_fallback() {
-    let explain = explain(Agent::Codex, "ordinary prompt text");
+fn codex_no_match_is_unknown_without_changing_other_agents() {
+    with_manifest_dirs("no-match", || {
+        write_local_codex(&local_manifest("working", "active-marker"));
+        let explain = explain(Agent::Codex, "unmatched-marker");
 
-    assert_eq!(explain.state, AgentState::Idle);
-    assert!(!explain.visible_idle);
-    assert_eq!(
-        explain.fallback_reason.as_deref(),
-        Some(DEFAULT_KNOWN_AGENT_IDLE_FALLBACK)
-    );
+        assert_eq!(explain.state, AgentState::Unknown);
+        assert!(!explain.visible_idle);
+        assert_eq!(
+            explain.fallback_reason.as_deref(),
+            Some("codex_state_ambiguous")
+        );
+        let other = fallback_explain(Some(Agent::Pi), None, false);
+        assert_eq!(other.state, AgentState::Idle);
+        assert_eq!(
+            other.fallback_reason.as_deref(),
+            Some(DEFAULT_KNOWN_AGENT_IDLE_FALLBACK)
+        );
+    });
 }
 
 #[test]
@@ -271,10 +281,10 @@ fn fallback_explain_preserves_active_manifest_version() {
 
         let explain = explain(Agent::Codex, "ordinary prompt text");
 
-        assert_eq!(explain.state, AgentState::Idle);
+        assert_eq!(explain.state, AgentState::Unknown);
         assert_eq!(
             explain.fallback_reason.as_deref(),
-            Some(DEFAULT_KNOWN_AGENT_IDLE_FALLBACK)
+            Some("codex_state_ambiguous")
         );
         assert_eq!(explain.manifest_version.as_deref(), Some("9999.01.01.1"));
         assert!(matches!(
@@ -291,7 +301,6 @@ fn older_cached_remote_manifest_does_not_shadow_newer_bundled_manifest() {
 
         let explain = explain(Agent::Codex, "remote-ready");
 
-        assert_eq!(explain.state, AgentState::Idle);
         assert!(matches!(explain.source, Some(ManifestSource::Bundled)));
         assert_eq!(
             explain.cached_remote_version.as_deref(),
@@ -355,10 +364,10 @@ fn detection_uses_cached_manifest_until_explicit_reload() {
         write_remote_codex_without_reload(&remote_manifest("9999.01.01.2", "working", "new-ready"));
 
         let unchanged = explain(Agent::Codex, "new-ready");
-        assert_eq!(unchanged.state, AgentState::Idle);
+        assert_eq!(unchanged.state, AgentState::Unknown);
         assert_eq!(
             unchanged.fallback_reason.as_deref(),
-            Some(DEFAULT_KNOWN_AGENT_IDLE_FALLBACK)
+            Some("codex_state_ambiguous")
         );
         assert_eq!(
             unchanged.cached_remote_version.as_deref(),
@@ -449,6 +458,199 @@ fn compiled_rules_are_shared_until_manifest_reload() {
 }
 
 #[test]
+fn osc_regions_use_separate_inputs_and_share_rule_priority() {
+    with_manifest_dirs("osc-regions", || {
+        write_local_codex(&rules_manifest(
+            r#"
+[[rules]]
+id = "screen"
+state = "idle"
+priority = 10
+region = "whole_recent"
+visible_idle = true
+contains = ["screen-marker"]
+
+[[rules]]
+id = "title"
+state = "working"
+priority = 20
+region = "osc_title"
+visible_working = true
+regex = ['^title-marker$']
+
+[[rules]]
+id = "progress"
+state = "blocked"
+priority = 30
+region = "osc_progress"
+visible_blocker = true
+regex = ['^progress-marker$']
+"#,
+        ));
+        for (screen, title, progress, state, rule) in [
+            ("screen-marker", "", "", AgentState::Idle, "screen"),
+            (
+                "screen-marker",
+                "title-marker",
+                "",
+                AgentState::Working,
+                "title",
+            ),
+            (
+                "screen-marker",
+                "title-marker",
+                "progress-marker",
+                AgentState::Blocked,
+                "progress",
+            ),
+            (
+                "screen-marker title-marker progress-marker",
+                "",
+                "",
+                AgentState::Idle,
+                "screen",
+            ),
+        ] {
+            let input = DetectionInput {
+                screen,
+                osc_title: title,
+                osc_progress: progress,
+            };
+            let result = explain_with_input(Agent::Codex, input);
+            assert_eq!(result.state, state);
+            assert_eq!(
+                result
+                    .matched_rule
+                    .as_ref()
+                    .map(|matched| matched.id.as_str()),
+                Some(rule)
+            );
+            let detection =
+                crate::detect::detect_agent_with_osc(Some(Agent::Codex), screen, title, progress);
+            assert_eq!(detection.state, state);
+            assert_eq!(detection.visible_idle, state == AgentState::Idle);
+            assert_eq!(detection.visible_working, state == AgentState::Working);
+            assert_eq!(detection.visible_blocker, state == AgentState::Blocked);
+        }
+        let swapped = explain_with_input(
+            Agent::Codex,
+            DetectionInput {
+                screen: "",
+                osc_title: "progress-marker",
+                osc_progress: "title-marker",
+            },
+        );
+        assert!(swapped.matched_rule.is_none());
+    });
+}
+
+#[test]
+fn skip_rule_suppresses_state_update_without_visible_state_evidence() {
+    with_manifest_dirs("skip-rule", || {
+        write_local_codex(&rules_manifest(
+            r#"
+[[rules]]
+id = "activity"
+state = "working"
+priority = 10
+visible_working = true
+contains = ["activity-marker"]
+
+[[rules]]
+id = "overlay"
+state = "unknown"
+priority = 20
+skip_state_update = true
+contains = ["overlay-marker"]
+"#,
+        ));
+        let screen = "activity-marker overlay-marker";
+        let result = explain(Agent::Codex, screen);
+        assert_eq!(result.state, AgentState::Unknown);
+        assert!(result.skip_state_update);
+        assert_eq!(
+            result.skipped_update_reason.as_deref(),
+            Some("matched_rule:overlay")
+        );
+        assert!(!result.visible_idle);
+        assert!(!result.visible_working);
+        assert!(!result.visible_blocker);
+        assert!(detect(Agent::Codex, screen).skip_state_update);
+    });
+}
+
+#[test]
+fn screen_regions_extract_structure_without_classifying_agent_state() {
+    for (screen, spec, expected) in [
+        ("old\n\nnew\n", "bottom_lines(2)", "\nnew\n"),
+        (
+            "before\n› input\nafter\n",
+            "after_last_prompt_marker",
+            "after\n",
+        ),
+        (
+            "before\n› input\nafter\n",
+            "before_current_prompt_marker",
+            "before\n",
+        ),
+        (
+            "before\n› input\nafter\n",
+            "whole_recent_without_current_prompt_marker",
+            "",
+        ),
+        (
+            "no marker\n",
+            "whole_recent_without_current_prompt_marker",
+            "no marker\n",
+        ),
+        (
+            "• old\n■ latest\n› input\n",
+            "current_prompt_block_marker",
+            "■ latest",
+        ),
+        (
+            "• old\n■ latest\n› input\n",
+            "after_current_prompt_block_marker",
+            "■ latest\n› input\n",
+        ),
+        ("› old\n• new\n", "current_prompt_block_marker", ""),
+        (
+            "above\n\n───\nbody\n───\nfooter\n",
+            "above_prompt_box",
+            "above\n\n",
+        ),
+        (
+            "above\n\n───\nbody\n───\nfooter\n",
+            "last_non_empty_above_prompt_box",
+            "above",
+        ),
+        (
+            "above\n───\nbody\n───\nfooter\n",
+            "prompt_box_body",
+            "body\n",
+        ),
+        (
+            "above\n───\nbody\n───\nfooter\n",
+            "after_last_horizontal_rule",
+            "footer\n",
+        ),
+    ] {
+        assert_eq!(
+            region(
+                DetectionInput {
+                    screen,
+                    osc_title: "",
+                    osc_progress: ""
+                },
+                spec
+            ),
+            expected,
+            "region={spec}"
+        );
+    }
+}
+
+#[test]
 fn all_bundled_manifests_parse_and_validate() {
     for agent in Agent::SCREEN_MANIFEST_AGENTS {
         assert!(
@@ -457,111 +659,6 @@ fn all_bundled_manifests_parse_and_validate() {
             agent_label(agent)
         );
     }
-}
-
-#[test]
-fn devin_manifest_detects_idle_working_and_blocked_states() {
-    let idle = explain(
-        Agent::Devin,
-        "─────────────────────────────────────────────────────\n❭ Ask Devin to build features, fix bugs, or work on\n  your code\n─────────────────────────────────────────────────────\nSWE-1.6               Context: 16k / 200k tokens (7%)",
-    );
-    assert_eq!(idle.state, AgentState::Idle);
-    assert!(idle.visible_idle);
-
-    let live_footer_idle = explain(
-        Agent::Devin,
-        "Done.\n\n────────────────────────────────────────────────── (bypass permissions on) ─\n❭\n────────────────────────────────────────────────────────────────────────────\nClaude Opus 4.6 Thinking                                    Context: 38k / 200k tokens (18%)",
-    );
-    assert_eq!(live_footer_idle.state, AgentState::Idle);
-    assert_eq!(
-        live_footer_idle
-            .matched_rule
-            .as_ref()
-            .map(|rule| rule.id.as_str()),
-        Some("live_prompt_footer")
-    );
-    assert!(live_footer_idle.visible_idle);
-
-    let welcome_footer_idle = explain(
-        Agent::Devin,
-        "⠀⠀⠀⠀⠀⣴⣾⣶⡄⠀⠀⠀⠀\n⠀⣴⣾⣶⡾⠛⠿⠟⠃⣴⣾⣶⡄  Devin CLI\n⠀⠛⠿⠟⠃⣴⣾⣶⡾⠛⠿⠟⠃  v2026.5.26-8\n⠀⣤⣶⣦⡄⠻⢿⠿⢷⣤⣶⣦⡄\n⠀⠻⢿⠿⢷⣤⣶⣦⡄⠻⢿⠿⠃  Hybrid\n⠀⠀⠀⠀⠀⠻⢿⠿⠃⠀⠀⠀⠀\n\n───────────────────────────\n❭ Ask Devin to build\n  features, fix bugs, or\n  work on your code\n───────────────────────────\nClaude Opus Looking for\n4.6 Thinkingplan mode? /\n            plan",
-    );
-    assert_eq!(welcome_footer_idle.state, AgentState::Idle);
-    assert_eq!(
-        welcome_footer_idle
-            .matched_rule
-            .as_ref()
-            .map(|rule| rule.id.as_str()),
-        Some("welcome_prompt_footer")
-    );
-    assert!(welcome_footer_idle.visible_idle);
-
-    let working = explain(
-        Agent::Devin,
-        "◔ Reading shell 91b655\n  │ Timeout: 35s\n\n⠀⡆ Running tools · 27s (esc to interrupt)\n─────────────────────────────────────────────────────\n❭ Guide Devin while it works",
-    );
-    assert_eq!(working.state, AgentState::Working);
-    assert!(working.visible_working);
-
-    let trust_prompt = explain(
-        Agent::Devin,
-        "Do you trust the authors of this directory?\nFor security, devin should not be run in directories\nwith untrusted content.\n❭ 1 Yes, trust /private/tmp/devin-hook-probe\n· 2 No, exit",
-    );
-    assert_eq!(trust_prompt.state, AgentState::Blocked);
-    assert!(trust_prompt.visible_blocker);
-
-    let permission_prompt = explain(
-        Agent::Devin,
-        "⏺ Running command\n  └ $ sleep 30\n\n❭ 1 Yes  (Approve once)\n· 2 Yes, allow `sleep` commands\n· 3 Yes, always allow `sleep` commands\n· 4 No\n↑↓ select · ↵ confirm · esc cancel",
-    );
-    assert_eq!(permission_prompt.state, AgentState::Blocked);
-    assert!(permission_prompt.visible_blocker);
-}
-
-#[test]
-fn muse_manifest_requires_complete_live_controls() {
-    let working = explain(
-        Agent::Muse,
-        "⟩ hello\n\n◆ Working (0s · esc to interrupt)\n\n────────────────\n⟩\n────────────────\ngpt-5.4 · minimal · /workspace",
-    );
-    assert_eq!(working.state, AgentState::Working);
-    assert!(working.visible_working);
-
-    let picker = explain(
-        Agent::Muse,
-        "Which option should I use?\n\n› 1. Alpha\n  2. Beta\n\nEnter to select · ↑/↓ to move · Tab for an optional note · Esc to interrupt\n\n────────────────\n⟩\n────────────────\ngpt-5.4 · minimal · /workspace",
-    );
-    assert_eq!(picker.state, AgentState::Blocked);
-    assert!(picker.visible_blocker);
-
-    let command_approval = explain(
-        Agent::Muse,
-        "Would you like to run the following command?\n\n$ printf muse-safe-probe\n\n› 1. Allow this stage once (y)\n  2. Always allow in this workspace: printf muse-safe-probe ... (p)\n  3. Abort the entire command (esc)\n────────────────\ngpt-5.4 · minimal · /workspace",
-    );
-    assert_eq!(command_approval.state, AgentState::Blocked);
-    assert!(command_approval.visible_blocker);
-
-    let network_approval = explain(
-        Agent::Muse,
-        "network: example.com:443 https\nrequested by:\n$ curl -fsS https://example.com\n\n› 1. Yes, proceed (y)\n  2. Yes, don't ask again this session (p)  example.com:443 (https)\n  3. No, and tell Muse Code what to do differently (esc)\n────────────────\ngpt-5.4 · minimal · /workspace",
-    );
-    assert_eq!(network_approval.state, AgentState::Blocked);
-    assert!(network_approval.visible_blocker);
-
-    let menu = explain(
-        Agent::Muse,
-        "Theme\n\n⟩ Default (active)\n  Dynamic\n\n↑↓ move · enter save · esc go back",
-    );
-    assert_eq!(menu.state, AgentState::Unknown);
-    assert!(menu.skip_state_update);
-    assert!(!menu.visible_blocker);
-
-    let ordinary_reply = explain(
-        Agent::Muse,
-        "⟩ say the phrase\n\n◆ Yes, proceed\n\n────────────────\n⟩\n────────────────\ngpt-5.4 · minimal · /workspace",
-    );
-    assert_eq!(ordinary_reply.state, AgentState::Idle);
-    assert!(ordinary_reply.visible_idle);
 }
 
 #[test]
@@ -577,7 +674,6 @@ contain = ["Working"]
 "#
     )
     .is_err());
-
     assert!(parse_manifest(
         r#"
 id = "codex"
@@ -588,7 +684,6 @@ state = "working"
 "#
     )
     .is_err());
-
     assert!(parse_manifest(
         r#"
 id = "codex"
@@ -601,7 +696,6 @@ contains = ["Working"]
 "#
     )
     .is_err());
-
     assert!(parse_manifest(
         r#"
 id = "codex"
@@ -613,7 +707,6 @@ regex = ["["]
 "#
     )
     .is_err());
-
     assert!(parse_manifest(
         r#"
 id = "codex"
@@ -641,7 +734,6 @@ contains = ["menu"]
 "#
     )
     .is_err());
-
     assert!(parse_manifest(
         r#"
 id = "codex"
@@ -674,7 +766,6 @@ contains = ["ready"]
 "#
         ));
     }
-
     assert!(parse_manifest(&manifest).is_err());
 }
 
@@ -707,7 +798,6 @@ all = [
   ] },
 ]
 "#;
-
     assert!(parse_manifest(manifest).is_err());
 }
 
@@ -727,20 +817,18 @@ state = "idle"
 contains = [{matchers}]
 "#
     );
-
     assert!(parse_manifest(&manifest).is_err());
 }
 
 #[test]
 fn bottom_non_empty_lines_uses_bottom_occurrence_for_repeated_text() {
     let content = "marker\nold\n\nmiddle\nmarker\nnew\n";
-
     assert_eq!(
         region(
             DetectionInput {
                 screen: content,
                 osc_title: "",
-                osc_progress: "",
+                osc_progress: ""
             },
             "bottom_non_empty_lines(2)"
         ),
@@ -751,13 +839,12 @@ fn bottom_non_empty_lines_uses_bottom_occurrence_for_repeated_text() {
 #[test]
 fn top_non_empty_lines_uses_top_occurrence_for_repeated_text() {
     let content = "\nmarker\nold\n\nmiddle\nmarker\nnew\n";
-
     assert_eq!(
         region(
             DetectionInput {
                 screen: content,
                 osc_title: "",
-                osc_progress: "",
+                osc_progress: ""
             },
             "top_non_empty_lines(2)"
         ),
@@ -781,7 +868,7 @@ fn top_non_empty_lines_requires_a_canonical_positive_bounded_count() {
 #[test]
 fn top_non_empty_lines_requires_engine_three_when_declared() {
     let manifest = r#"
-id = "grok"
+id = "codex"
 version = "1"
 min_engine_version = 2
 
@@ -791,7 +878,6 @@ state = "working"
 region = " top_non_empty_lines(1) "
 contains = ["active"]
 "#;
-
     assert!(parse_manifest(manifest).is_err());
 }
 

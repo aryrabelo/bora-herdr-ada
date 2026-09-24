@@ -457,6 +457,50 @@ fn wait_for_file_contains(path: &Path, needle: &str, timeout: Duration) -> Strin
     );
 }
 
+fn wait_for_pid_marker(path: &Path, timeout: Duration) -> u32 {
+    // Shell redirection creates the file before echo writes the PID. Wait for
+    // the newline too, so a partially written PID cannot be accepted.
+    let text = wait_for_file_contains(path, "\n", timeout);
+    text.lines()
+        .next()
+        .and_then(|line| line.split_whitespace().last())
+        .and_then(|pid| pid.parse().ok())
+        .filter(|pid| *pid > 0)
+        .unwrap_or_else(|| panic!("invalid PID marker at {}: {text:?}", path.display()))
+}
+
+#[test]
+fn pid_marker_waits_for_complete_line() {
+    let base = unique_test_dir();
+    fs::create_dir_all(&base).unwrap();
+    let marker = base.join("child.pid");
+    // Keep each incomplete marker unchanged throughout the wait. In particular,
+    // READY 12 must time out rather than return a truncated but parseable PID.
+    for partial in ["", "READY ", "READY 12"] {
+        fs::write(&marker, partial).unwrap();
+        let timeout = Duration::from_millis(100);
+        let started = Instant::now();
+        let panic = std::panic::catch_unwind(|| wait_for_pid_marker(&marker, timeout))
+            .expect_err("incomplete marker should time out");
+        assert!(
+            started.elapsed() >= timeout,
+            "marker {partial:?} failed early"
+        );
+        let message = panic.downcast_ref::<String>().expect("timeout diagnostic");
+        assert_eq!(
+            message,
+            &format!(
+                "{} did not contain {:?}; last text was {partial:?}",
+                marker.display(),
+                "\n"
+            )
+        );
+    }
+    fs::write(&marker, "READY 1234\n").unwrap();
+    assert_eq!(wait_for_pid_marker(&marker, Duration::from_secs(1)), 1234);
+    fs::remove_dir_all(base).unwrap();
+}
+
 #[cfg(target_os = "linux")]
 fn server_ptmx_fd_count(pid: u32) -> usize {
     let Ok(entries) = fs::read_dir(format!("/proc/{pid}/fd")) else {
@@ -1105,17 +1149,8 @@ fn live_handoff_preserves_pane_process_io() {
             "params": {"pane_id": second_pane_id, "text": second_command, "keys": ["Enter"]}
         }),
     ));
-    support::wait_for_file(&marker, Duration::from_secs(5));
-    support::wait_for_file(&second_marker, Duration::from_secs(5));
-    let pid_text = fs::read_to_string(&marker).unwrap();
-    let child_pid: u32 = pid_text.split_whitespace().last().unwrap().parse().unwrap();
-    let second_pid_text = fs::read_to_string(&second_marker).unwrap();
-    let second_child_pid: u32 = second_pid_text
-        .split_whitespace()
-        .last()
-        .unwrap()
-        .parse()
-        .unwrap();
+    let child_pid = wait_for_pid_marker(&marker, Duration::from_secs(5));
+    let second_child_pid = wait_for_pid_marker(&second_marker, Duration::from_secs(5));
     assert_eq!(unsafe { libc::kill(child_pid as libc::pid_t, 0) }, 0);
     assert_eq!(unsafe { libc::kill(second_child_pid as libc::pid_t, 0) }, 0);
 
@@ -1709,6 +1744,9 @@ fn live_handoff_keeps_agent_started_pane_after_agent_exits() {
     let shell_marker = base.join("shell-after-agent");
     let bin = base.join("bin");
     fs::create_dir_all(&bin).unwrap();
+    let delayed_shell = bin.join("delayed-shell");
+    fs::write(&delayed_shell, "#!/bin/sh\n/bin/sleep 0.4\nexec /bin/sh\n").unwrap();
+    fs::set_permissions(&delayed_shell, fs::Permissions::from_mode(0o755)).unwrap();
     let fake_pi = bin.join("pi");
     fs::write(
         &fake_pi,
@@ -1726,7 +1764,10 @@ fn live_handoff_keeps_agent_started_pane_after_agent_exits() {
         &config_home,
         &runtime_dir,
         &api_socket,
-        &[("PATH", path.as_str())],
+        &[
+            ("PATH", path.as_str()),
+            ("SHELL", delayed_shell.to_str().unwrap()),
+        ],
     );
     wait_for_socket(&api_socket, Duration::from_secs(10));
     register_runtime_dir(&runtime_dir);
@@ -2051,9 +2092,7 @@ fn live_handoff_bad_expected_protocol_rolls_back_old_server() {
             "params": {"pane_id": pane_id, "text": command, "keys": ["Enter"]}
         }),
     ));
-    support::wait_for_file(&marker, Duration::from_secs(5));
-    let pid_text = fs::read_to_string(&marker).unwrap();
-    let child_pid: u32 = pid_text.split_whitespace().last().unwrap().parse().unwrap();
+    let child_pid = wait_for_pid_marker(&marker, Duration::from_secs(5));
 
     let failed = request(
         &api_socket,
@@ -2137,9 +2176,7 @@ fn live_handoff_import_failure_rolls_back_old_server_at(failure_point: &str) {
             "params": {"pane_id": pane_id, "text": command, "keys": ["Enter"]}
         }),
     ));
-    support::wait_for_file(&marker, Duration::from_secs(5));
-    let pid_text = fs::read_to_string(&marker).unwrap();
-    let child_pid: u32 = pid_text.split_whitespace().last().unwrap().parse().unwrap();
+    let child_pid = wait_for_pid_marker(&marker, Duration::from_secs(5));
 
     let failed = request(
         &api_socket,
