@@ -374,6 +374,26 @@ today's upstream sync.)
   conflicts instead. Keep them byte-identical. When a review bot (cubic etc.) flags a
   bug inside this cluster, reply that it's upstream-only and unwired — do not fix it.
   (learned 2026-09-24, binding.)
+- **A `herdr`→`bora` brand-consistency pass is not a find-and-replace; every
+  occurrence needs a truth source before renaming, and blanket regex substitution will
+  both under- and over-fire.** Under-fires: user-facing strings only get caught by
+  grepping for a bare `herdr` in prose/usage text, but the *default values themselves*
+  can silently diverge from what a doc or error message says — `RemoteHerdr::for_platform()`
+  (`src/remote/attach.rs`) hardcoded `~/.local/bin/herdr`/`herdr.exe` as the fork's own
+  remote-install target long after `distribution/install.sh` started installing as
+  `bora`, so `bora --remote` could never find or correctly report its own fresh install
+  — a functional bug hiding behind stale branding, not just a doc typo; the fix has to
+  touch the Rust default, its `command -v` probe, and every cascading test assertion
+  together, or the suite goes red. Over-fires: `herdrdev/herdr` in a GitHub URL protects
+  that one segment, not the rest of the path — `.../blob/master/skills/herdr/SKILL.md`
+  still has a second, unprotected `herdr` that a blanket rename turns into a dead link;
+  verify every remaining string against its real source before committing
+  (`src/config/model.rs`'s `~/.herdr/worktrees` default, `src/agent_resume.rs`'s
+  `"herdr:codex"` wire values, `ToastDelivery::Herdr`'s `ui.toast.delivery = "herdr"`
+  config value, the `src/integration/mod.rs` hook/extension filenames, and
+  `distribution/install.ps1`'s own `Programs\Herdr\bin` Windows path are all real,
+  current, and must stay `herdr` unless the file that defines them is also in scope).
+  (learned 2026-09-24, binding.)
 
 ### Stable client endpoint contract
 
