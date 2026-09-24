@@ -358,7 +358,7 @@ fn capture_tab(
         let terminal = terminal_id.and_then(|id| terminals.get(id));
         let cwd = terminal_id
             .and_then(|id| terminal_runtimes.get(id))
-            .and_then(|runtime| runtime.cwd_for_persistence())
+            .and_then(crate::terminal::TerminalRuntime::cwd_for_persistence)
             .or_else(|| terminal.map(|terminal| terminal.cwd.clone()))
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| "/".into()));
         let label = terminal.and_then(|terminal| terminal.manual_label.clone());

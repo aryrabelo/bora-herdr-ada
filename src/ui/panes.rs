@@ -936,7 +936,11 @@ mod tests {
         );
         let (buffer, cursor, _, _) =
             crate::server::render_stream::render_tab_surface_virtual(&app, &runtimes, layout, area);
-        let text: String = buffer.content.iter().map(|cell| cell.symbol()).collect();
+        let text: String = buffer
+            .content
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect();
         assert!(text.contains("Saved directory is unavailable."));
         assert!(cursor.is_none_or(|cursor| !cursor.visible));
     }

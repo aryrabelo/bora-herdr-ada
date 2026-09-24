@@ -1968,12 +1968,12 @@ fn is_windows_executable_file_for_host(path: &std::path::Path, native_machine: u
     if file.read_exact(&mut dos_header).is_err() || &dos_header[..2] != b"MZ" {
         return false;
     }
-    let pe_offset = u32::from_le_bytes([
+    let pe_offset = u64::from(u32::from_le_bytes([
         dos_header[PE_OFFSET_FIELD],
         dos_header[PE_OFFSET_FIELD + 1],
         dos_header[PE_OFFSET_FIELD + 2],
         dos_header[PE_OFFSET_FIELD + 3],
-    ]) as u64;
+    ]));
     let pe_header_len = PE_SIGNATURE.len() as u64 + COFF_HEADER_LEN as u64;
     if pe_offset < DOS_HEADER_LEN || pe_offset.saturating_add(pe_header_len) > len {
         return false;
@@ -1988,7 +1988,7 @@ fn is_windows_executable_file_for_host(path: &std::path::Path, native_machine: u
     }
     let machine = u16::from_le_bytes([header[4], header[5]]);
     let number_of_sections = u16::from_le_bytes([header[4 + 2], header[4 + 3]]);
-    let optional_header_len = u16::from_le_bytes([header[4 + 16], header[4 + 17]]) as u64;
+    let optional_header_len = u64::from(u16::from_le_bytes([header[4 + 16], header[4 + 17]]));
     let characteristics = u16::from_le_bytes([header[4 + 18], header[4 + 19]]);
 
     if !windows_executable_machine_is_compatible(machine, native_machine)
@@ -1997,7 +1997,9 @@ fn is_windows_executable_file_for_host(path: &std::path::Path, native_machine: u
         || characteristics & IMAGE_FILE_DLL != 0
         || optional_header_len < OPTIONAL_HEADER_MAGIC_LEN
         || pe_offset.saturating_add(
-            pe_header_len + optional_header_len + number_of_sections as u64 * SECTION_HEADER_LEN,
+            pe_header_len
+                + optional_header_len
+                + u64::from(number_of_sections) * SECTION_HEADER_LEN,
         ) > len
     {
         return false;

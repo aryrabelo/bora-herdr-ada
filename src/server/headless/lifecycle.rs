@@ -92,7 +92,7 @@ impl HeadlessServer {
                 .state
                 .terminals
                 .get(terminal_id)
-                .and_then(|terminal| terminal.handoff_agent_state());
+                .and_then(crate::terminal::state::TerminalState::handoff_agent_state);
             let has_agent_session = self
                 .app
                 .state

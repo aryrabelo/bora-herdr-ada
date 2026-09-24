@@ -210,7 +210,7 @@ impl App {
         };
         match runtime.clear_screen() {
             Ok(()) => encode_success(id, ResponseResult::Ok {}),
-            Err(err) => encode_error(id, "pane_clear_failed", err.to_string()),
+            Err(err) => encode_error(id, "pane_clear_failed", err),
         }
     }
 

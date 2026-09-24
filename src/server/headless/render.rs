@@ -458,7 +458,9 @@ impl HeadlessServer {
                                 target.workspace_index,
                                 pane.id,
                             )
-                            .is_some_and(|runtime| runtime.synchronized_output_active())
+                            .is_some_and(
+                                crate::terminal::TerminalRuntime::synchronized_output_active,
+                            )
                     }) {
                         continue;
                     }
