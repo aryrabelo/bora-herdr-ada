@@ -99,19 +99,30 @@ fn preserve_snapshot_history(path: &Path) -> io::Result<()> {
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(()),
         Err(err) => return Err(err),
     };
-    let Ok(snapshot) = serde_json::from_slice::<SessionSnapshot>(&bytes) else {
+    // Route through the tolerant parse_snapshot() boundary, not a strict
+    // serde_json::from_slice::<SessionSnapshot> - an unknown/retired
+    // view_mode value (e.g. the retired ViewMode::Project, ceo-bora#270)
+    // fails a strict parse for the WHOLE document, silently skipping this
+    // snapshot-history write instead of preserving history for a session
+    // that is otherwise perfectly readable.
+    let Ok(content) = std::str::from_utf8(&bytes) else {
         return Ok(());
     };
-    if snapshot.version > super::snapshot::SNAPSHOT_VERSION || snapshot.workspaces.is_empty() {
+    let Ok(snapshot) = super::snapshot::parse_snapshot(content) else {
+        return Ok(());
+    };
+    if snapshot.workspaces.is_empty() {
         return Ok(());
     }
     if let Some((_, latest)) = existing.last() {
         let previous_bytes = std::fs::read(latest)?;
-        if let Ok(previous) = serde_json::from_slice::<SessionSnapshot>(&previous_bytes) {
-            if super::snapshot::layout_fingerprint(&snapshot).is_some_and(|fingerprint| {
-                super::snapshot::layout_fingerprint(&previous).as_ref() == Some(&fingerprint)
-            }) {
-                return Ok(());
+        if let Ok(previous_content) = std::str::from_utf8(&previous_bytes) {
+            if let Ok(previous) = super::snapshot::parse_snapshot(previous_content) {
+                if super::snapshot::layout_fingerprint(&snapshot).is_some_and(|fingerprint| {
+                    super::snapshot::layout_fingerprint(&previous).as_ref() == Some(&fingerprint)
+                }) {
+                    return Ok(());
+                }
             }
         }
     }
@@ -435,6 +446,34 @@ mod tests {
         assert!(locked.exists());
         assert!(!removable.exists());
         assert!(prune_backups(&[(1, locked)], 1).is_err());
+        std::fs::remove_dir_all(writer.path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn snapshot_history_tolerates_an_unknown_view_mode_on_the_existing_file() {
+        // preserve_snapshot_history() reads the file already on disk BEFORE
+        // save() overwrites it. A strict serde_json::from_slice::<SessionSnapshot>
+        // there fails the whole document on an unrecognized view_mode value
+        // (e.g. a retired one, like ViewMode::Project - ceo-bora#270 measured
+        // this costing every workspace/tab/pane) and silently skips archiving
+        // an otherwise perfectly readable session. Route through
+        // parse_snapshot()'s tolerant RawSessionSnapshot boundary instead.
+        let mut writer = writer(false);
+        let mut raw: serde_json::Value =
+            serde_json::from_str(include_str!(
+                "../../tests/fixtures/session/current-herdr-session.json"
+            ))
+            .unwrap();
+        raw["view_mode"] = serde_json::Value::String("project".into());
+        std::fs::write(&writer.path, serde_json::to_vec(&raw).unwrap()).unwrap();
+
+        writer.save(&snapshot(), None);
+
+        assert_eq!(
+            snapshots(&writer).len(),
+            1,
+            "an unknown view_mode on the pre-existing file must not skip snapshot history"
+        );
         std::fs::remove_dir_all(writer.path.parent().unwrap()).unwrap();
     }
 
