@@ -20,18 +20,6 @@ visible_working = true
 regex = ['(?:^| )[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏](?: |$)']
 
 [[rules]]
-id = "osc_title_idle"
-state = "idle"
-priority = 100
-region = "osc_title"
-visible_idle = true
-regex = ['\S']
-not = [
-  { regex = ['(?:^| )[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏](?: |$)'] },
-  { contains = ["Action Required"] },
-]
-
-[[rules]]
 id = "transcript_viewer"
 state = "unknown"
 priority = 1000
