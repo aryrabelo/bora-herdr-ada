@@ -206,7 +206,6 @@ impl App {
         })
     }
 
-
     fn resolve_worktree_source(
         &mut self,
         workspace_id: Option<String>,
