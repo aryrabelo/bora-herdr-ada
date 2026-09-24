@@ -2545,6 +2545,7 @@ fn posix_remote_api_discovery_command(platform: &RemotePlatform, session: &str) 
         r#"set -f
 candidates=$(
 command -v bora
+command -v herdr
 {discovery}
 )
 IFS='
@@ -4929,6 +4930,32 @@ mod tests {
     #[test]
     fn remote_binary_path_probe_names_prefers_bora_then_falls_back_to_herdr() {
         assert_eq!(REMOTE_BINARY_PATH_PROBE_NAMES, ["bora", "herdr"]);
+    }
+
+    #[test]
+    fn posix_remote_api_discovery_command_probes_bora_then_falls_back_to_herdr() {
+        // A remote host that got this fork before the herdr->bora rename
+        // still has its PATH-resolved binary literally named `herdr`; the
+        // machine-API bridge discovery script must probe `bora` first (the
+        // current name) but retain a `command -v herdr` fallback, or such a
+        // host silently loses machine-API forwarding entirely.
+        let script = posix_remote_api_discovery_command(
+            &RemotePlatform {
+                os: "linux",
+                arch: "x86_64",
+            },
+            "work",
+        );
+        let bora_pos = script
+            .find("command -v bora")
+            .expect("bora PATH probe missing");
+        let herdr_pos = script
+            .find("command -v herdr")
+            .expect("legacy herdr PATH probe fallback missing");
+        assert!(
+            bora_pos < herdr_pos,
+            "bora PATH probe must run before the legacy herdr fallback"
+        );
     }
 
     #[test]
