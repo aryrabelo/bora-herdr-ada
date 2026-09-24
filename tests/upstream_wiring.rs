@@ -76,6 +76,14 @@ const PLATFORM_GATED_ALLOWLIST: &[(&str, &str)] = &[
         "macos-only platform backend, not compiled on Linux",
     ),
     (
+        "src/platform/macos/bootstrap.rs",
+        "child of macos.rs, macos-only server-daemon bootstrap, not compiled on Linux",
+    ),
+    (
+        "src/platform/macos/config_file_tests.rs",
+        "child of macos.rs, macos-only, not compiled on Linux",
+    ),
+    (
         "src/platform/fallback.rs",
         "non-windows/linux/macos fallback backend, not compiled on Linux",
     ),
