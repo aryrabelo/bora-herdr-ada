@@ -1,0 +1,16 @@
+AGENTS.md
+  h_b156936c57c455 275-277
+scripts/build_libghostty_vt_prebuilt.sh
+  h_b156936c57c455 59-62
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "e12c188d55c7194712b33d38b01f3f90bab0bae7",
+  "prompts": {},
+  "humans": {
+    "h_b156936c57c455": {
+      "author": "Ary Rabelo <aryrabelo@gmail.com>"
+    }
+  }
+}
