@@ -18,14 +18,13 @@ cannot change it.
 Vendored base: 44f2a44df7e8c4a0c6df3f7d872ef3d7ead88e51
 ---
 diff --git a/vendor/libghostty-vt/include/ghostty/vt/terminal.h b/vendor/libghostty-vt/include/ghostty/vt/terminal.h
-index ad5eec54..8f006eee 100644
+index 6404af53..2b58a373 100644
 --- a/vendor/libghostty-vt/include/ghostty/vt/terminal.h
 +++ b/vendor/libghostty-vt/include/ghostty/vt/terminal.h
-@@ -1545,6 +1545,19 @@ typedef enum GHOSTTY_ENUM_TYPED {
-    * Input type: size_t*
+@@ -1556,6 +1556,19 @@ typedef enum GHOSTTY_ENUM_TYPED {
     */
-   GHOSTTY_TERMINAL_OPT_CLIPBOARD_WRITE_MAX_BYTES = 39,
-+
+   GHOSTTY_TERMINAL_OPT_CLIPBOARD_READ = 38,
+ 
 +  /**
 +   * Whether a column change in ghostty_terminal_resize() reflows (rewraps)
 +   * the existing grid contents.
@@ -37,10 +36,11 @@ index ad5eec54..8f006eee 100644
 +   *
 +   * Input type: bool*
 +   */
-+  GHOSTTY_TERMINAL_OPT_REFLOW_ON_RESIZE = 40,
-   GHOSTTY_TERMINAL_OPT_MAX_VALUE = GHOSTTY_ENUM_MAX_VALUE,
- } GhosttyTerminalOption;
- 
++  GHOSTTY_TERMINAL_OPT_REFLOW_ON_RESIZE = 42,
++
+   /**
+    * Set the maximum total decoded bytes a single Kitty clipboard protocol
+    * (OSC 5522) write transaction may accumulate. The limit is captured
 diff --git a/vendor/libghostty-vt/src/terminal/Terminal.zig b/vendor/libghostty-vt/src/terminal/Terminal.zig
 index e9cc3b8e..c48b190a 100644
 --- a/vendor/libghostty-vt/src/terminal/Terminal.zig
@@ -119,18 +119,21 @@ index e9cc3b8e..c48b190a 100644
      const alloc = testing.allocator;
      const io_impl = testing.io;
 diff --git a/vendor/libghostty-vt/src/terminal/c/terminal.zig b/vendor/libghostty-vt/src/terminal/c/terminal.zig
-index 73097573..816bbe01 100644
+index e825183e..8703ef9e 100644
 --- a/vendor/libghostty-vt/src/terminal/c/terminal.zig
 +++ b/vendor/libghostty-vt/src/terminal/c/terminal.zig
-@@ -1174,6 +1174,7 @@ pub const Option = enum(c_int) {
+@@ -1181,6 +1181,10 @@ pub const Option = enum(c_int) {
+     mode = 34,
+     unknown_sequence = 35,
+     unknown_max_bytes = 36,
++    // bora fork (patch 0003): kept out of numeric order, away from the
++    // enum tail upstream appends to, so upstream option additions and
++    // their vendor patches never share a hunk with it.
++    reflow_on_resize = 42,
      terminfo_name = 37,
      clipboard_read = 38,
      clipboard_write_max_bytes = 39,
-+    reflow_on_resize = 40,
- 
-     /// Input type expected for setting the option.
-     pub fn InType(comptime self: Option) type {
-@@ -1201,6 +1202,7 @@ pub const Option = enum(c_int) {
+@@ -1215,6 +1219,7 @@ pub const Option = enum(c_int) {
              .kitty_image_medium_shared_mem,
              .glyph_protocol,
              .title_report,
@@ -138,7 +141,7 @@ index 73097573..816bbe01 100644
              => ?*const bool,
              .kitty_image_medium_temp_file => ?*const lib.String,
              .apc_max_bytes,
-@@ -1434,6 +1436,9 @@ fn setTyped(
+@@ -1461,6 +1466,9 @@ fn setTyped(
                  else => unreachable,
              }
          },
@@ -148,7 +151,7 @@ index 73097573..816bbe01 100644
      }
      return .success;
  }
-@@ -2579,6 +2584,45 @@ test "resize shrinks both axes with cursor at bottom" {
+@@ -2640,6 +2648,45 @@ test "resize shrinks both axes with cursor at bottom" {
      try testing.expectEqual(23, t.?.terminal.rows);
  }
  
