@@ -262,3 +262,49 @@ just test-one clear_pane
 just maintenance-test
 just check
 ```
+
+## 0007 remap tracked pins when a no-reflow backfill stops early
+
+status: active
+
+patch: `vendor/patches/libghostty-vt/0007-remap-pins-when-no-reflow-backfill-stops-early.patch`
+
+herdr issue: none; fixes the bora server SIGSEGV of 2026-09-25 14:50:19Z
+(`Screen.cursorReload` <- `Terminal.resize` <- `ghostty_terminal_resize`,
+faulting read of an unmapped page at the stale cursor pin's row)
+
+upstream discussion: not opened
+
+upstream pr: not opened; upstream `main` still has the early `break :prev`
+before the remap loop in `resizeWithoutReflowGrowCols`
+
+vendored base: `44f2a44df7e8c4a0c6df3f7d872ef3d7ead88e51`
+
+local files:
+
+- `vendor/libghostty-vt/src/terminal/PageList.zig`
+
+reason: Widening a pane without reflow (`terminal.reflow_on_resize = false`,
+patch 0003) goes through `PageList.resizeWithoutReflowGrowCols`. When a page
+lacks the column capacity, it first backfills rows into the previous page's
+spare row capacity. If cloning a row into that previous page fails (its style,
+hyperlink, or grapheme storage is full), the loop left with `break :prev`,
+skipping the tracked-pin remap for the rows it had already moved. The source
+page is destroyed at the end of the call, so every tracked pin on those rows,
+including the cursor pin, kept pointing at a freed node. `Screen.resize` then
+called `cursorReload`, which could not find the pin in the active area and
+read the freed page memory. The patch remaps pins for however many rows were
+backfilled, after all fallible work, and adds a regression test that fails with
+`PageList integrity check failed: error.TrackedPinInvalid` without the fix.
+
+remove when: the vendored source remaps tracked pins for a partial backfill
+in `resizeWithoutReflowGrowCols` and the verification below passes without
+this patch.
+
+verification:
+
+```sh
+(cd vendor/libghostty-vt && zig build test-lib-vt -Dtest-filter="backfill")
+just maintenance-test
+just check
+```
