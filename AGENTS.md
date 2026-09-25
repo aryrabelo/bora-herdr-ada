@@ -272,10 +272,9 @@ classes, and how to resolve them, so the next sync is cheap:
   stops applying. Keep upstream patch files byte-identical; regenerate 0003 instead.
   Both fork vendor patches (0003 reflow, 0004 OSC 66) remain necessary;
   `vendor/libghostty-vt.patches.md` "vendored base" lines must move with the vendor.json.
-  A vendor change also invalidates `prebuilt/`'s `.vendor-hash`; `scripts/build_libghostty_vt_prebuilt.sh`
-  mounts the tree read-only and fails with `ReadOnlyFileSystem` on `zig-pkg/.tmp-*`, so
-  rebuild from a writable copy of `vendor/libghostty-vt` (same docker/zig 0.16.0 command)
-  and stamp with `scripts/write_libghostty_vt_stamp.sh aarch64-macos`.
+  A vendor change also invalidates `prebuilt/`'s `.vendor-hash`; rebuild with
+  `just build-libghostty-vt-prebuilt` (it copies the read-only-mounted vendor tree to a
+  writable dir inside the container, since zig writes `zig-pkg/.tmp-*` next to the package).
   (learned 2026-09-18, updated 2026-09-25, binding.)
 - **After an upstream merge, every `dead_code` warning is a suspect disconnected fork
   feature until proven a leftover.** Stage 2 compiled and passed all 3377 tests with 32

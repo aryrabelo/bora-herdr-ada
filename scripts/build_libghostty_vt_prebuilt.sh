@@ -56,7 +56,10 @@ curl -fsSL "$URL" -o zig.tar.xz
 mkdir -p zig && tar xf zig.tar.xz -C zig --strip-components=1
 ZIG=/tmp/zig/zig
 "$ZIG" version
-cd /work/vendor/libghostty-vt
+# /work is mounted read-only, but zig writes zig-pkg/.tmp-* next to the
+# package, so build from a writable copy inside the container.
+cp -a /work/vendor/libghostty-vt /tmp/vt
+cd /tmp/vt
 "$ZIG" build -Demit-lib-vt -Doptimize=ReleaseFast -Dsimd=true \
   "-Dtarget=${ZIGTARGET}" "-Dversion-string=$(cat VERSION)" \
   -Demit-xcframework=false \
