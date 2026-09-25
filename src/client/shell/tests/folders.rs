@@ -783,7 +783,7 @@ fn repo_view_mode_matches_default_rendering() {
         .compose(106, 24)
         .expect("explicit repo frame");
 
-    assert_eq!(default_frame, explicit_frame);
+    assert_eq!(default_frame.frame, explicit_frame.frame);
     // Independent signal beyond the two-frame equality above (which alone
     // would also pass if both dispatches were equally broken): assert the
     // Repo-specific content directly. `indented: true` is a hit shape

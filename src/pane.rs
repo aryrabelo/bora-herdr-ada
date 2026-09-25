@@ -3397,10 +3397,22 @@ impl PaneRuntime {
         let rows = rows.max(2);
         let cols = cols.max(4);
         let size = (rows, cols, cell_width_px, cell_height_px);
-        if self.current_size.get() == size {
+        let previous = self.current_size.get();
+        if previous == size {
             return;
         }
         self.current_size.set(size);
+        // One line per real size change (deduplicated above), so the last
+        // entry before a crash inside the terminal resize names the pane and
+        // the transition that triggered it.
+        debug!(
+            pane = self.pane_id.raw(),
+            from_rows = previous.0,
+            from_cols = previous.1,
+            rows,
+            cols,
+            "pane terminal resize"
+        );
         let _content_write_guard = match self.content_write_lock.lock() {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
@@ -3954,6 +3966,13 @@ impl PaneRuntime {
 
 #[cfg(test)]
 impl PaneRuntime {
+    #[cfg(unix)]
+    pub(crate) fn test_enable_kitty_source_forwarding(&self) {
+        let mut core = self.terminal.ghostty.core.lock().unwrap();
+        core.terminal.enable_kitty_graphics().unwrap();
+        core.terminal.set_kitty_source_forwarding(true).unwrap();
+    }
+
     pub(crate) fn test_with_channel(cols: u16, rows: u16) -> (Self, mpsc::Receiver<Bytes>) {
         Self::test_with_channel_and_scrollback_bytes(cols, rows, 0, &[], 4)
     }

@@ -54,6 +54,10 @@ const PLATFORM_GATED_ALLOWLIST: &[(&str, &str)] = &[
         "child of linux.rs, logind delay-inhibitor shutdown save, linux-only, not compiled on macOS",
     ),
     (
+        "src/platform/linux/native_image_sources.rs",
+        "child of linux.rs, linux-only CoW kitty image source snapshots, not compiled on macOS",
+    ),
+    (
         "src/platform/windows/config_backup.rs",
         "child of windows.rs, windows-only config backup, not compiled on macOS",
     ),

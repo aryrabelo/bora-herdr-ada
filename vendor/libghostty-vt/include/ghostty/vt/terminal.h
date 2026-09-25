@@ -27,6 +27,39 @@
 extern "C" {
 #endif
 
+/** Borrowed opened descriptor; size is sizeof this request. No path is supplied. */
+typedef struct {
+  size_t size;
+  int64_t fd;
+  uint64_t expected_len;
+} GhosttyKittyImageSnapshotFileRequest;
+
+typedef bool (*GhosttyKittyImageFileReadFn)(void *context, uint8_t *dest, size_t len);
+typedef void (*GhosttyKittyImageFileReleaseFn)(void *context);
+
+typedef struct {
+  void *context;
+  uint64_t identity;
+  size_t len;
+  GhosttyKittyImageFileReadFn read;
+  GhosttyKittyImageFileReleaseFn release;
+} GhosttyKittyImageFileBacking;
+
+/** Optional synchronous callback, default NULL. Verify exact descriptor size
+ * and snapshot immutable bytes before returning true. True transfers one context
+ * reference; false transfers nothing. Do not close the borrowed descriptor or
+ * reenter the terminal. Both read and release MUST be non-NULL on success.
+ * Read must fill exactly len bytes; release is called once. An incomplete
+ * backing is rejected and ordinary file loading is used instead. If release
+ * is provided, rejection calls it once; without release, the host remains
+ * responsible for cleanup (the terminal cannot release that context).
+ * identity identifies the immutable revision, not a pathname or source inode.
+ */
+typedef bool (*GhosttyKittyImageSnapshotFileFn)(
+    GhosttyTerminal terminal, void *userdata,
+    const GhosttyKittyImageSnapshotFileRequest *request,
+    GhosttyKittyImageFileBacking *out_backing);
+
 /** @defgroup terminal Terminal
  *
  * Complete terminal emulator state and rendering.
@@ -1524,6 +1557,19 @@ typedef enum GHOSTTY_ENUM_TYPED {
   GHOSTTY_TERMINAL_OPT_CLIPBOARD_READ = 38,
 
   /**
+   * Whether a column change in ghostty_terminal_resize() reflows (rewraps)
+   * the existing grid contents.
+   *
+   * When disabled, a narrowing resize truncates each row at the new width
+   * instead of rewrapping it into additional rows, leaving the running
+   * program to repaint. Enabled by default. A NULL value pointer restores
+   * the default.
+   *
+   * Input type: bool*
+   */
+  GHOSTTY_TERMINAL_OPT_REFLOW_ON_RESIZE = 42,
+
+  /**
    * Set the maximum total decoded bytes a single Kitty clipboard protocol
    * (OSC 5522) write transaction may accumulate. The limit is captured
    * when a transaction begins; an in-flight transaction keeps the limit
@@ -1546,18 +1592,13 @@ typedef enum GHOSTTY_ENUM_TYPED {
    */
   GHOSTTY_TERMINAL_OPT_CLIPBOARD_WRITE_MAX_BYTES = 39,
 
-  /**
-   * Whether a column change in ghostty_terminal_resize() reflows (rewraps)
-   * the existing grid contents.
-   *
-   * When disabled, a narrowing resize truncates each row at the new width
-   * instead of rewrapping it into additional rows, leaving the running
-   * program to repaint. Enabled by default. A NULL value pointer restores
-   * the default.
-   *
-   * Input type: bool*
+  /** Experimental, default-off PNG retention for quiet base transmissions.
+   * Input type: bool*. NULL is a no-op. Corrupt compressed pixels may only
+   * be detected when an animation operation materializes the image.
    */
-  GHOSTTY_TERMINAL_OPT_REFLOW_ON_RESIZE = 40,
+  GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_PRESERVE_PNG = 40,
+  /** Optional synchronous GhosttyKittyImageSnapshotFileFn; NULL disables. */
+  GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_SNAPSHOT_FILE = 41,
   GHOSTTY_TERMINAL_OPT_MAX_VALUE = GHOSTTY_ENUM_MAX_VALUE,
 } GhosttyTerminalOption;
 

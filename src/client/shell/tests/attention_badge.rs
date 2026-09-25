@@ -99,7 +99,7 @@ fn compose_with(projected: ClientShellSnapshot) -> (ClientShellState, crate::pro
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
     state.set_snapshot(Box::new(projected));
     state.set_pane_surface(surface());
-    let frame = state.compose(106, 24).expect("sidebar layout");
+    let frame = state.compose(106, 24).expect("sidebar layout").frame;
     (state, frame)
 }
 

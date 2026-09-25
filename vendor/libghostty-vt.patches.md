@@ -166,6 +166,15 @@ existing `PageList.resizeWithoutReflow` path, plus a
 configuration: `fullReset` (RIS) does not clear it and the running program
 cannot change it. It backs the `terminal.reflow_on_resize` config key.
 
+The option value is `42` (upstream occupies 27..41 since patch 0007 added
+`KITTY_IMAGE_PRESERVE_PNG = 40` and `KITTY_IMAGE_SNAPSHOT_FILE = 41`), and its
+enum entries sit out of numeric order — before `CLIPBOARD_WRITE_MAX_BYTES` in
+`terminal.h` and before `terminfo_name` in `c/terminal.zig` — on purpose: upstream appends new options
+at the enum tail, and `scripts.test_vendor_libghostty_vt` reverse-applies each
+patch on its own, so a fork entry adjacent to the tail would put this patch
+inside 0007's hunk context and one of the two would stop applying. Keep
+`src/ghostty/bindings.rs` matching the value.
+
 remove when: the vendored source exposes an equivalent host-level
 reflow-on-resize control through the C ABI and Herdr can set it without this
 patch.
@@ -259,6 +268,110 @@ verification:
 
 ```sh
 just test-one clear_pane
+just maintenance-test
+just check
+```
+
+## 0007 experimental encoded PNG and immutable source retention
+
+status: active
+
+patch: `vendor/patches/libghostty-vt/0007-experimental-png-retention.patch`
+
+herdr issue: none; maintainer-directed native Kitty forwarding experiment
+
+upstream discussion: not opened
+
+upstream pr: not opened
+
+vendored base: `44f2a44df7e8c4a0c6df3f7d872ef3d7ead88e51`
+
+local files:
+
+- `vendor/libghostty-vt/include/ghostty/vt/terminal.h`
+- `vendor/libghostty-vt/include/ghostty/vt/kitty_graphics.h`
+- `vendor/libghostty-vt/src/terminal/c/terminal.zig`
+- `vendor/libghostty-vt/src/terminal/c/kitty_graphics.zig`
+- `vendor/libghostty-vt/src/terminal/kitty/graphics_image.zig`
+- `vendor/libghostty-vt/src/terminal/kitty/graphics_exec.zig`
+- `vendor/libghostty-vt/src/terminal/kitty/graphics_storage.zig`
+
+reason: An explicitly enabled embedding mode retains structurally validated,
+quiet PNG uploads as encoded bytes, avoiding pixel decoding before forwarding
+through a multiplexer. The existing raw getters retain their meaning; separate
+getters expose retained PNG bytes. Queries and response-bearing uploads retain
+full validation, and animation operations materialize pixels transactionally.
+Storage reserves both encoded bytes and expected decoded size.
+
+This is default-off and experimental: CRC-valid corrupt compressed pixels may
+be rejected later than in normal mode, including after placement. Quiet mode
+suppresses replies, not validation semantics; this patch is not a claim of full
+protocol-equivalent transparent forwarding. Herdr exercises this mode only in
+tests; production PNG uploads retain full decoding and validation.
+
+A separate default-off snapshot callback retains host-owned immutable raw RGBA
+file backing before reading pixels. Herdr installs this callback automatically
+on Linux, using same-filesystem CoW snapshots. It never retains a mutable producer pathname. Unsupported snapshots
+use the original loader; animation materializes pixels transactionally. Backing
+ownership and bounded reads are explicit in the embedding ABI.
+
+remove when: upstream provides an equivalent opt-in owned encoded-image
+representation and immutable host-backed raw sources with bounded storage,
+strict query handling and lazy pixel materialization, or this experiment is retired.
+
+verification:
+
+```sh
+just test-one native_source
+just test-one png_forward_tests
+just test-one kitty_png_replacement
+just test-one kitty_file_image_survives
+(cd vendor/libghostty-vt && zig build test-lib-vt -Dtest-filter='experimental PNG')
+just check
+```
+
+## 0008 remap tracked pins when a no-reflow backfill stops early
+
+status: active
+
+patch: `vendor/patches/libghostty-vt/0008-remap-pins-when-no-reflow-backfill-stops-early.patch`
+
+herdr issue: none; fixes the bora server SIGSEGV of 2026-09-25 14:50:19Z
+(`Screen.cursorReload` <- `Terminal.resize` <- `ghostty_terminal_resize`,
+faulting read of an unmapped page at the stale cursor pin's row)
+
+upstream discussion: not opened
+
+upstream pr: not opened; upstream `main` still has the early `break :prev`
+before the remap loop in `resizeWithoutReflowGrowCols`
+
+vendored base: `44f2a44df7e8c4a0c6df3f7d872ef3d7ead88e51`
+
+local files:
+
+- `vendor/libghostty-vt/src/terminal/PageList.zig`
+
+reason: Widening a pane without reflow (`terminal.reflow_on_resize = false`,
+patch 0003) goes through `PageList.resizeWithoutReflowGrowCols`. When a page
+lacks the column capacity, it first backfills rows into the previous page's
+spare row capacity. If cloning a row into that previous page fails (its style,
+hyperlink, or grapheme storage is full), the loop left with `break :prev`,
+skipping the tracked-pin remap for the rows it had already moved. The source
+page is destroyed at the end of the call, so every tracked pin on those rows,
+including the cursor pin, kept pointing at a freed node. `Screen.resize` then
+called `cursorReload`, which could not find the pin in the active area and
+read the freed page memory. The patch remaps pins for however many rows were
+backfilled, after all fallible work, and adds a regression test that fails with
+`PageList integrity check failed: error.TrackedPinInvalid` without the fix.
+
+remove when: the vendored source remaps tracked pins for a partial backfill
+in `resizeWithoutReflowGrowCols` and the verification below passes without
+this patch.
+
+verification:
+
+```sh
+(cd vendor/libghostty-vt && zig build test-lib-vt -Dtest-filter="backfill")
 just maintenance-test
 just check
 ```
