@@ -1,0 +1,24 @@
+Cargo.lock
+  h_b156936c57c455 169
+Cargo.toml
+  h_b156936c57c455 3
+src/pane.rs
+  h_b156936c57c455 3400-3401,3405-3415
+vendor/libghostty-vt.patches.md
+  h_b156936c57c455 265-310
+vendor/libghostty-vt/src/terminal/PageList.zig
+  h_b156936c57c455 3110-3123,19370-19458
+vendor/patches/libghostty-vt/0007-remap-pins-when-no-reflow-backfill-stops-early.patch
+  h_b156936c57c455 1-136
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "845da0e29e5578e5d78d1e7dde9f6e548155853a",
+  "prompts": {},
+  "humans": {
+    "h_b156936c57c455": {
+      "author": "Ary Rabelo <aryrabelo@gmail.com>"
+    }
+  }
+}
