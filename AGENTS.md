@@ -262,12 +262,21 @@ classes, and how to resolve them, so the next sync is cheap:
   libghostty-vt (44f2a44) whose `build.zig.zon` demands `minimum_zig_version = 0.16.0`,
   so CI (ci.yml, release.yml, preview.yml) and `scripts/windows_cross.py` follow 0.16.0;
   local builds still ride the `prebuilt/` bypass. The fork's reflow-on-resize C ABI
-  option was renumbered `GHOSTTY_TERMINAL_OPT_REFLOW_ON_RESIZE = 40` because upstream
-  now occupies 27..39 — `src/ghostty/bindings.rs` must keep matching
-  `vendor/libghostty-vt/include/ghostty/vt/terminal.h`. Both fork vendor patches
-  (0003 reflow, 0004 OSC 66) remain necessary and were regenerated against 44f2a44;
+  option is `GHOSTTY_TERMINAL_OPT_REFLOW_ON_RESIZE = 42` (renumbered 40 -> 42 in the
+  `8d95e9bd` sync because upstream's patch 0007 took 40/41) — `src/ghostty/bindings.rs`
+  must keep matching `vendor/libghostty-vt/include/ghostty/vt/terminal.h`. Its enum
+  entries sit OUT of numeric order, away from the enum tail, in both `terminal.h` and
+  `c/terminal.zig`: upstream appends options (and their vendor patches) at the tail, and
+  `scripts.test_vendor_libghostty_vt` reverse-applies each patch on its own, so a tail
+  entry puts fork patch 0003 inside an upstream patch's hunk context and one of them
+  stops applying. Keep upstream patch files byte-identical; regenerate 0003 instead.
+  Both fork vendor patches (0003 reflow, 0004 OSC 66) remain necessary;
   `vendor/libghostty-vt.patches.md` "vendored base" lines must move with the vendor.json.
-  (learned 2026-09-18, binding.)
+  A vendor change also invalidates `prebuilt/`'s `.vendor-hash`; `scripts/build_libghostty_vt_prebuilt.sh`
+  mounts the tree read-only and fails with `ReadOnlyFileSystem` on `zig-pkg/.tmp-*`, so
+  rebuild from a writable copy of `vendor/libghostty-vt` (same docker/zig 0.16.0 command)
+  and stamp with `scripts/write_libghostty_vt_stamp.sh aarch64-macos`.
+  (learned 2026-09-18, updated 2026-09-25, binding.)
 - **After an upstream merge, every `dead_code` warning is a suspect disconnected fork
   feature until proven a leftover.** Stage 2 compiled and passed all 3377 tests with 32
   warnings, and three of them were fork SERVER features whose only call site lived in a
