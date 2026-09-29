@@ -1,0 +1,37 @@
+id = "ary.pane-timer"
+name = "Pane timer"
+version = "0.1.0"
+# Needs `pane.set_status` (added to bora in 0.47.0) plus popup plugin panes and
+# `[[startup]]` hooks, both older than that.
+min_herdr_version = "0.47.0"
+platforms = ["macos", "linux"]
+description = "Arm a per-pane timer that turns the pane's sidebar status blocked (red) or done after a delay."
+
+# Installed with `bora plugin link examples/bora/plugins/pane-timer`; plain
+# python3 (3.9+, stdlib only), no build step.
+
+# The daemon fires due timers. Startup hooks are not supervised and run again
+# on every live handoff, so the daemon takes an flock and a second copy exits 0.
+[[startup]]
+command = ["python3", "timer.py", "daemon"]
+
+# Opens the `prompt` popup for the pane the action was invoked on.
+[[actions]]
+id = "set"
+title = "Pane timer: set"
+contexts = ["pane"]
+command = ["python3", "timer.py", "open-prompt"]
+
+[[actions]]
+id = "cancel"
+title = "Pane timer: cancel"
+contexts = ["pane"]
+command = ["python3", "timer.py", "cancel", "--focused"]
+
+[[panes]]
+id = "prompt"
+title = "Pane timer"
+placement = "popup"
+width = 74
+height = 12
+command = ["python3", "timer.py", "prompt"]

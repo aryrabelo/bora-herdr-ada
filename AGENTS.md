@@ -415,6 +415,7 @@ The client-owned TUI endpoint generation is independent from the private same-in
 - Frozen endpoint fixtures, bincode digests, wire-tag tests, and `tests/fixtures/endpoint-method-shapes-v1.json` are compatibility contracts. Never update a generation-1 expectation merely to bless a wire change; create and negotiate a new codec or method.
 - Stable and preview update manifests advertise `endpoint_generation`. Keep release tooling aligned so an older updater knows when a new server generation really requires replacement.
 - Existing-value digests cannot detect an appended enum variant. Review every enum reachable from a frozen codec as append-closed even when tests remain green.
+- **A client-shell action is only real once its method is in `CLIENT_SHELL_METHODS` (`src/server/client_commands.rs`); the schema, the handler and the menu row are not enough.** That list is both the handshake advertisement and the server-side gate (`endpoint_requests.rs`), so a method missing from it shows the client's "This server does not support <method> yet. Update and restart it" notice on a server of the SAME version — the text blames the version, the cause is the list. `pane.set_status` (a6e52e18) shipped its context-menu rows this way and every click was refused. A new advertised method is additive: insert it in sorted order, freeze its digest beside `pane.clear` in `advertised_client_shell_method_shapes_stay_at_the_v1_contract` (never in the v1 fixture), and assert it in `client_shell_lane_excludes_api_front_door_and_lifecycle_methods`; a test that drives the socket API directly cannot see this gap because that lane has no allowlist. (learned 2026-09-29, binding.)
 
 ## Maintainer Workflow
 
@@ -912,7 +913,7 @@ These rules are final for anyone who is not a verified maintainer under Scope an
 
 ## Child DOX Index
 
-<!-- No child AGENTS.md installed yet. Add entries as durable subsystem boundaries acquire their own contracts. -->
+- `examples/bora/plugins/AGENTS.md` — fork-owned example plugins (`ary.gitui`, `ary.pane-timer`, `ary.auto-group`): stdlib-Python contract, socket-only API client, startup/link semantics, plugin test recipe.
 
 ## graphify
 

@@ -1,0 +1,36 @@
+id = "ary.auto-group"
+name = "auto-group"
+version = "0.1.0"
+# Verified against bora 0.50.2 only (workspace.set_group, WorkspaceInfo.worktree
+# and the workspace.created / worktree.created / worktree.opened hooks). Older
+# builds may work but were not exercised.
+min_herdr_version = "0.50.2"
+platforms = ["macos", "linux"]
+description = "Put workspaces into sidebar groups by repository, from a rules file; never overrides a group you set by hand."
+
+# Install with `bora plugin link examples/bora/plugins/auto-group`, then copy
+# rules.example.conf to `bora plugin config-dir ary.auto-group` as rules.conf.
+# Runtime is python3 (3.9+), stdlib only.
+
+# Apply the rules to every currently ungrouped workspace. "global" makes the
+# action visible from every menu. Bind it with `[[keys.command]]` (see README).
+[[actions]]
+id = "organize"
+title = "auto-group: organize ungrouped workspaces"
+contexts = ["global"]
+command = ["python3", "autogroup.py", "organize"]
+
+# A brand-new workspace, or a worktree that was just created / opened. Do not
+# add events that workspace.set_group emits: it emits none, and the hook would
+# loop if it did.
+[[events]]
+on = "workspace.created"
+command = ["python3", "autogroup.py", "hook"]
+
+[[events]]
+on = "worktree.created"
+command = ["python3", "autogroup.py", "hook"]
+
+[[events]]
+on = "worktree.opened"
+command = ["python3", "autogroup.py", "hook"]
