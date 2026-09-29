@@ -1,0 +1,18 @@
+Cargo.lock
+  h_b156936c57c455 169
+Cargo.toml
+  h_b156936c57c455 3
+src/server/client_commands.rs
+  h_b156936c57c455 35,302-305,382-387
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "53b4e8c133950579be60dc353d4878e733c6f439",
+  "prompts": {},
+  "humans": {
+    "h_b156936c57c455": {
+      "author": "Ary Rabelo <aryrabelo@gmail.com>"
+    }
+  }
+}
