@@ -32,6 +32,7 @@ const CLIENT_SHELL_METHODS: &[&str] = &[
     "pane.resize",
     "pane.scroll",
     "pane.selection.read",
+    "pane.set_status",
     "pane.split",
     "pane.swap",
     "pane.zoom",
@@ -298,6 +299,10 @@ mod tests {
             actual.remove("pane.link.resolve").as_deref(),
             Some("f5e4a3e01453ae7b188f127ce951c12c20e0bebcc17cc364eeb6d1a01fd5bf81")
         );
+        assert_eq!(
+            actual.remove("pane.set_status").as_deref(),
+            Some("2ad04033e5d474e520abf9dc74d1ae09dc41049d3f06ba9d39a96aae2e0c724b")
+        );
 
         assert_eq!(
             actual, expected,
@@ -372,6 +377,12 @@ mod tests {
                 col: 0,
                 content_revision: None,
                 offset_from_bottom: None,
+            },
+        )));
+        assert!(supports_client_shell_method(&Method::PaneSetStatus(
+            crate::api::schema::PaneSetStatusParams {
+                pane_id: "w1:p1".into(),
+                status: Some(crate::api::schema::AgentStatus::Idle),
             },
         )));
         assert!(!supports_client_shell_method(&Method::Ping(
