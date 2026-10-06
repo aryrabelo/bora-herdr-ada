@@ -71,6 +71,11 @@ describe("seal", () => {
 		await assert.rejects(seal({ title: "t", body: "b" }, "AAEC"), /32 bytes/);
 	});
 
+	test("refuses a message without a string title or body", () => {
+		assert.throws(() => sealWithNonce(/** @type {any} */ ({ body: "b" }), key, new Uint8Array(12)), /title and body/);
+		assert.throws(() => sealWithNonce(/** @type {any} */ ({ title: "t", body: 1 }), key, new Uint8Array(12)), /title and body/);
+	});
+
 	test("puts ask last in the plaintext and round-trips it (contract C6)", async () => {
 		const nonce = new Uint8Array(12);
 		const envelope = await sealWithNonce(

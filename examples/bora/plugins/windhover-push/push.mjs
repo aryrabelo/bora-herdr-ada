@@ -75,26 +75,34 @@ export function isAskToHuman(data) {
 }
 
 /**
- * Runs `fn` while holding `<stateDir>/state.lock` (O_EXCL lock file; a lock older than
- * LOCK_STALE_MS belongs to a dead process and is broken).
+ * Runs `fn` while holding `<stateDir>/state.lock`, an O_EXCL lock file holding a token unique
+ * to this holder. Release removes the file only while it still holds our token, so a holder that
+ * was presumed dead never removes its successor's lock. A lock older than LOCK_STALE_MS belongs
+ * to a dead process and is broken, again only if it still holds the token that was seen stale.
  * @template T
  * @param {string} stateDir
  * @param {() => Promise<T>} fn
  * @returns {Promise<T>}
  */
-async function withLock(stateDir, fn) {
+export async function withLock(stateDir, fn) {
 	const lock = path.join(stateDir, LOCK_FILE);
+	const token = `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+	/** Unlinks the lock if it still holds `expected`. @param {string} expected */
+	const unlinkIfHeldBy = async (expected) => {
+		if ((await fs.readFile(lock, "utf8").catch(() => undefined)) === expected) await fs.unlink(lock).catch(() => {});
+	};
 	await fs.mkdir(stateDir, { recursive: true });
 	const deadline = Date.now() + LOCK_WAIT_MS;
 	for (;;) {
 		try {
-			await fs.writeFile(lock, String(process.pid), { flag: "wx" });
+			await fs.writeFile(lock, token, { flag: "wx" });
 			break;
 		} catch (error) {
 			if (/** @type {NodeJS.ErrnoException} */ (error).code !== "EEXIST") throw error;
+			const holder = await fs.readFile(lock, "utf8").catch(() => undefined);
 			const stat = await fs.stat(lock).catch(() => undefined);
-			if (stat && Date.now() - stat.mtimeMs > LOCK_STALE_MS) {
-				await fs.unlink(lock).catch(() => {});
+			if (holder !== undefined && stat && Date.now() - stat.mtimeMs > LOCK_STALE_MS) {
+				await unlinkIfHeldBy(holder);
 				continue;
 			}
 			if (Date.now() > deadline) throw new Error(`timed out waiting for ${lock}`);
@@ -104,7 +112,7 @@ async function withLock(stateDir, fn) {
 	try {
 		return await fn();
 	} finally {
-		await fs.unlink(lock).catch(() => {});
+		await unlinkIfHeldBy(token);
 	}
 }
 
@@ -154,6 +162,8 @@ export async function handlePaneStatus(data, deps) {
 	}
 	const panesFile = path.join(deps.stateDir, PANES_FILE);
 	const now = deps.now();
+	// Loaded first: without a device nothing is sent, so the finished cooldown must not start.
+	const devices = await loadDevices(deps.pushDir, deps.log);
 	/** @type {{kind: "needsYou" | "finished" | null, gen: number}} */
 	const decision = await withLock(deps.stateDir, async () => {
 		/** @type {Record<string, PaneEntry>} */
@@ -167,9 +177,10 @@ export async function handlePaneStatus(data, deps) {
 		if (previous?.finishedAt !== undefined) entry.finishedAt = previous.finishedAt;
 		/** @type {"needsYou" | "finished" | null} */
 		let kind = null;
-		if (status === "blocked") {
+		const finished = status === "done" || (status === "idle" && previous?.status === "working");
+		if (devices.length > 0 && status === "blocked") {
 			kind = "needsYou";
-		} else if (status === "done" || (status === "idle" && previous?.status === "working")) {
+		} else if (devices.length > 0 && finished) {
 			if (entry.finishedAt === undefined || now - entry.finishedAt >= FINISHED_COOLDOWN_MS) {
 				kind = "finished";
 				entry.finishedAt = now;
@@ -180,9 +191,6 @@ export async function handlePaneStatus(data, deps) {
 		return { kind, gen: entry.gen };
 	});
 	if (decision.kind === null) return;
-
-	const devices = await loadDevices(deps.pushDir, deps.log);
-	if (devices.length === 0) return;
 
 	if (decision.kind === "needsYou") {
 		await deps.sleep(RECHECK_MS);

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { readFileSync, writeFileSync } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -16,6 +17,7 @@ import {
 	paneIds,
 	RECHECK_MS,
 	sha256Hex,
+	withLock,
 } from "../push.mjs";
 
 const CONNECTION_ID = "3F2504E0-4F89-11D3-9A0C-0305E82C3301";
@@ -231,6 +233,16 @@ describe("finished", () => {
 		assert.equal(w.requests.length, 2);
 	});
 
+	test("a finish with no device file does not start the cooldown", async () => {
+		const w = await world({ devices: [] });
+		await handlePaneStatus(paneEvent("done"), w.deps);
+		w.devices.phone = await writeDevice(w.deps.pushDir, "phone");
+		w.clock.now += 10_000;
+		await handlePaneStatus(paneEvent("working"), w.deps);
+		await handlePaneStatus(paneEvent("done"), w.deps);
+		assert.equal(w.requests.length, 1);
+	});
+
 	test("the cooldown is per pane", async () => {
 		const w = await world();
 		await handlePaneStatus(paneEvent("done"), w.deps);
@@ -403,6 +415,25 @@ describe("device files", () => {
 		assert.match(w.logs.join("\n"), /dead\.json \(dead\): 400 .*BadDeviceToken.*deleted the device file/);
 	});
 
+	test("keeps a device file the app rewrote with a new token while the push was in flight", async () => {
+		/** @type {string} */
+		let pushDir = "";
+		const w = await world({
+			answer: () => {
+				// The app registers a new token between the request and the relay's verdict.
+				const file = path.join(pushDir, "phone.json");
+				const device = JSON.parse(readFileSync(file, "utf8"));
+				writeFileSync(file, JSON.stringify({ ...device, deviceToken: "cd".repeat(32) }));
+				return { status: 410, body: { source: "apns", status: 410, reason: "Unregistered" } };
+			},
+		});
+		pushDir = w.deps.pushDir;
+		await handlePaneStatus(paneEvent("done"), w.deps);
+		const kept = parseDeviceFile(await fs.readFile(path.join(pushDir, "phone.json"), "utf8"));
+		assert.equal(kept.deviceToken, "cd".repeat(32));
+		assert.match(w.logs.join("\n"), /changed since, kept it/);
+	});
+
 	test("an invalid device file is skipped and kept", async () => {
 		const w = await world();
 		await fs.writeFile(path.join(w.deps.pushDir, "broken.json"), "{");
@@ -443,6 +474,30 @@ describe("device files", () => {
 		});
 		assert.match(outcome, /relay unreachable: ECONNREFUSED/);
 		assert.deepEqual(await fs.readdir(pushDir), ["phone.json"]);
+	});
+});
+
+describe("state lock", () => {
+	test("breaks a stale lock left by a dead hook", async () => {
+		const w = await world();
+		await fs.mkdir(w.deps.stateDir, { recursive: true });
+		const lock = path.join(w.deps.stateDir, "state.lock");
+		await fs.writeFile(lock, "dead-holder");
+		const old = new Date(Date.now() - 60_000);
+		await fs.utimes(lock, old, old);
+		await handlePaneStatus(paneEvent("done"), w.deps);
+		assert.equal(w.requests.length, 1);
+		await assert.rejects(fs.stat(lock));
+	});
+
+	test("a holder never removes a lock that is no longer its own", async () => {
+		const w = await world();
+		const lock = path.join(w.deps.stateDir, "state.lock");
+		await withLock(w.deps.stateDir, async () => {
+			// Another hook broke our lock as stale and took it.
+			await fs.writeFile(lock, "successor");
+		});
+		assert.equal(await fs.readFile(lock, "utf8"), "successor");
 	});
 });
 

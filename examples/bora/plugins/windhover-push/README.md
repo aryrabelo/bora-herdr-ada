@@ -69,8 +69,10 @@ Every push goes to every valid file, sealed with that file's `key`, as
 the relay answers `{"source":"apns","status":410}` or
 `{"source":"apns","status":400,"reason":"BadDeviceToken"}` the plugin deletes that file:
 the phone uninstalled the app or the token died, and the app writes a new file when it
-gets a new token. Relay-side errors (`"source":"relay"`, a timeout, an unreachable relay)
-never delete anything. A file that does not parse is skipped and left alone.
+gets a new token. The file is deleted only if it still holds the token that was sent, so a
+registration rewritten while the push was in flight survives. Relay-side errors
+(`"source":"relay"`, a timeout, an unreachable relay) never delete anything. A file that
+does not parse is skipped and left alone.
 
 ## Why hooks, not a startup daemon
 
@@ -85,15 +87,18 @@ memory, but:
 - A daemon holds one of the server's 32 plugin-command slots for its whole life and dies
   with its socket on every restart; nothing supervises startup commands.
 
-What hooks cost instead: two kinds of hook hold their slot for 3 s (a `blocked` hook
+What hooks cost instead: two kinds of hook hold their slot for 3 s more (a `blocked` hook
 before its `pane.get` recheck, and the first ask of a window before it flushes the
-batch), and both sleep only when a device file exists. Every other hook exits at once.
+batch), and both sleep only when a device file exists. A hook that sends holds its slot
+until every relay answers, at most 10 s (the request timeout) when a relay is slow or
+down; a hook that sends nothing exits at once.
 
-The recheck is exact under hooks. Every pane event bumps a per-pane generation number; a
+The recheck is best effort. Every pane event bumps a per-pane generation number; a
 `blocked` hook sends only when, after 3 s, bora still reports the pane `blocked` and no
-newer event for the pane arrived, so a flap (`blocked → working → blocked`) sends once,
-from the newest hook. Cooldown and coalescing are decided inside the lock, so concurrent
-hooks cannot both send.
+newer event for the pane arrived, so a flap (`blocked → working → blocked`) normally sends
+once, from the newest hook. A change that lands after that check, during the workspace
+lookup and the relay request, can still let a stale "needs you" through. The cooldown and
+the ask window are decided inside the lock, so concurrent hooks never both send them.
 
 ## State and logs
 
@@ -106,7 +111,8 @@ answer. Notification text and device tokens are never logged.
 ## Limits
 
 - Done after the 60 s cooldown only: two "finished" pushes for the same pane inside a
-  minute collapse into the first.
+  minute collapse into the first. The cooldown starts when a push is attempted (at least
+  one device file exists), even if the relay then fails; there is no retry.
 - Asks are coalesced across devices as a whole, because every device receives every push.
 - With no client attached, bora reports a finished pane in the active tab as `idle`, not
   `done`; that is why `idle` right after `working` counts as finished.

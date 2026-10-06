@@ -134,6 +134,17 @@ export async function deliver(target, notification, delivery, fetchFn) {
 		result = undefined;
 	}
 	if (!isDeadToken(result)) return `${name}: ${response.status} ${text}`;
+	// The app rewrites the file when its token changes; a verdict on the old token must not
+	// delete the new registration.
+	let current;
+	try {
+		current = parseDeviceFile(await fs.readFile(file, "utf8")).deviceToken;
+	} catch {
+		current = undefined;
+	}
+	if (current?.toLowerCase() !== device.deviceToken.toLowerCase()) {
+		return `${name}: ${response.status} ${text}; the device file changed since, kept it`;
+	}
 	try {
 		await fs.unlink(file);
 		return `${name}: ${response.status} ${text}; deleted the device file`;

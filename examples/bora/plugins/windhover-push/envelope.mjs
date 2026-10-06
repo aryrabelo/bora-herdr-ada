@@ -84,6 +84,11 @@ function isAsk(ask) {
  * @param {PushMessage} message
  */
 export function encodeMessage(message) {
+	// The TypeScript original leaves this to the compiler; plain JS checks it, or an undefined
+	// field would vanish from the JSON and seal an envelope that `open` rejects.
+	if (typeof message.title !== "string" || typeof message.body !== "string") {
+		throw new Error("title and body must be strings");
+	}
 	if (message.connectionId !== undefined && !UUID.test(message.connectionId)) {
 		throw new Error("connectionId must be a UUID");
 	}
