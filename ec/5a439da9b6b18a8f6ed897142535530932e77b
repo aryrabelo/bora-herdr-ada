@@ -1,0 +1,38 @@
+AGENTS.md
+  h_b156936c57c455 916
+examples/bora/plugins/AGENTS.md
+  h_b156936c57c455 14,25-30,52-53
+examples/bora/plugins/windhover-push/README.md
+  h_b156936c57c455 1-124
+examples/bora/plugins/windhover-push/bora_api.mjs
+  h_b156936c57c455 1-101
+examples/bora/plugins/windhover-push/devices.mjs
+  h_b156936c57c455 1-143
+examples/bora/plugins/windhover-push/envelope.mjs
+  h_b156936c57c455 1-178
+examples/bora/plugins/windhover-push/herdr-plugin.toml
+  h_b156936c57c455 1-23
+examples/bora/plugins/windhover-push/main.mjs
+  h_b156936c57c455 1-56
+examples/bora/plugins/windhover-push/push.mjs
+  h_b156936c57c455 1-307
+examples/bora/plugins/windhover-push/run.sh
+  h_b156936c57c455 1-16
+examples/bora/plugins/windhover-push/tests/envelope.test.mjs
+  h_b156936c57c455 1-124
+examples/bora/plugins/windhover-push/tests/fixtures/push-envelope-v1.json
+  h_b156936c57c455 1-101
+examples/bora/plugins/windhover-push/tests/push.test.mjs
+  h_b156936c57c455 1-458
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "ec5a439da9b6b18a8f6ed897142535530932e77b",
+  "prompts": {},
+  "humans": {
+    "h_b156936c57c455": {
+      "author": "Ary Rabelo <aryrabelo@gmail.com>"
+    }
+  }
+}
