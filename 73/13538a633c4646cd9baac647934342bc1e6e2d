@@ -1,0 +1,32 @@
+docs/next/api/herdr-api.schema.json
+  h_b156936c57c455 2019-2036,7185-7200,7679-7769,12147-12166
+docs/next/website/src/content/docs/cli-reference.mdx
+  h_b156936c57c455 385,396-397
+src/api/schema.rs
+  h_b156936c57c455 282-283
+src/api/schema/channels.rs
+  h_b156936c57c455 131-177
+src/api/schema/response.rs
+  h_b156936c57c455 374-378
+src/api/server.rs
+  h_b156936c57c455 637
+src/app/api.rs
+  h_b156936c57c455 1319-1321
+src/app/api/channels.rs
+  h_b156936c57c455 2-7,805-845,1772-1833,5680-5813
+src/cli.rs
+  h_b156936c57c455 5-9,158,406-475,980-986
+src/cli/spec.rs
+  h_b156936c57c455 208-219,1566-1567,1595-1602
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "7313538a633c4646cd9baac647934342bc1e6e2d",
+  "prompts": {},
+  "humans": {
+    "h_b156936c57c455": {
+      "author": "Ary Rabelo <aryrabelo@gmail.com>"
+    }
+  }
+}
