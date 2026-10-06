@@ -913,7 +913,7 @@ These rules are final for anyone who is not a verified maintainer under Scope an
 
 ## Child DOX Index
 
-- `examples/bora/plugins/AGENTS.md` — fork-owned example plugins (`ary.gitui`, `ary.pane-timer`, `ary.auto-group`): stdlib-Python contract, socket-only API client, startup/link semantics, plugin test recipe.
+- `examples/bora/plugins/AGENTS.md` — fork-owned example plugins (`ary.gitui`, `ary.pane-timer`, `ary.auto-group`, `ary.windhover-push`): stdlib-Python contract (WebCrypto JS exception for `windhover-push`), socket-only API client, startup/link semantics, plugin test recipe.
 
 ## graphify
 
