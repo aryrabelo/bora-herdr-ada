@@ -39,6 +39,7 @@ pub(super) fn snapshot() -> ClientShellSnapshot {
             tokens: Vec::new(),
             worktree: None,
             visual_group: None,
+            open_human_asks: 0,
             focused: true,
             agent_status: AgentStatus::Idle,
         }],

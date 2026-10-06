@@ -627,6 +627,7 @@ impl App {
         force_bell: bool,
     ) -> std::io::Result<RecordedChannelLine> {
         channels::append_message(name, &message)?;
+        self.note_open_human_ask_line(name, &message);
         self.push_chat_message(name, message.clone());
         self.notify_chat_to_human(name, &message);
 
@@ -721,6 +722,45 @@ impl App {
             deliveries,
             suppressed,
         })
+    }
+
+    /// How many asks to the human are open in `channel` (normalized name):
+    /// the server-side fact behind `ClientShellWorkspace.open_human_asks`
+    /// (ceo-bora#347). Served from `channel_open_human_asks`; a channel not
+    /// cached yet is read from its transcript once, with the same
+    /// definition of "answered" `channel.asks` uses.
+    pub(crate) fn channel_open_human_asks(&self, channel: &str) -> usize {
+        let mut cache = self
+            .channel_open_human_asks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(open) = cache.get(channel) {
+            return open.len();
+        }
+        let open = open_human_ask_seqs(channel);
+        let count = open.len();
+        cache.insert(channel.to_string(), open);
+        count
+    }
+
+    /// Keeps a cached channel's open-ask set current after `message` was
+    /// appended: an answering line closes its ask, a new ask to the human
+    /// opens one. A channel not cached yet is left alone, because its lazy
+    /// load reads this line from disk.
+    fn note_open_human_ask_line(&mut self, name: &str, message: &ChannelMessage) {
+        let cache = self
+            .channel_open_human_asks
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(open) = cache.get_mut(name) else {
+            return;
+        };
+        if let Some(seq) = message.in_reply_to {
+            open.remove(&seq);
+        }
+        if message.kind == ChannelMessageKind::Ask && message.to_human && message.seq > 0 {
+            open.insert(message.seq);
+        }
     }
 
     /// `channel.note`: append-only record, ZERO injection — the cheapest
@@ -1988,6 +2028,27 @@ pub(crate) fn channel_asks_from_transcript(
         }
     }
     asks
+}
+
+/// Seqs of `channel`'s asks to the human that no later line answers, read
+/// from the whole transcript. An unreadable transcript counts as none, so a
+/// broken file can only hide a question, never break the snapshot.
+fn open_human_ask_seqs(channel: &str) -> std::collections::BTreeSet<u64> {
+    match channels::read_tail(channel, usize::MAX) {
+        Ok(transcript) => channel_asks_from_transcript(channel, &transcript)
+            .into_iter()
+            .filter(|ask| ask.to_human && !ask.answered)
+            .map(|ask| ask.seq)
+            .collect(),
+        Err(err) => {
+            tracing::warn!(
+                channel = %channel,
+                error = %err,
+                "channel transcript unreadable; counting no open human asks"
+            );
+            std::collections::BTreeSet::new()
+        }
+    }
 }
 
 /// A member pane's addressable name: the single source of truth consumed
@@ -5933,6 +5994,52 @@ mod tests {
             answer_seq + 1,
             "refusals append nothing"
         );
+
+        super::super::test_support::shutdown_test_runtimes(&mut app);
+    }
+
+    /// ceo-bora#347 (contract C5): the attention count behind
+    /// `ClientShellWorkspace.open_human_asks` counts an open ask to the
+    /// human, drops it once `channel.reply` answers it, and ignores an ask
+    /// to a pane. The live cache and a fresh load from the transcript agree.
+    #[tokio::test]
+    async fn open_human_asks_attention_cache_drops_answered_and_ignores_pane_asks() {
+        let _isolated = IsolatedDirs::new("open-human-asks-cache");
+        let mut app = test_app();
+        app.state.chat_name = "ary".into();
+        app.state.chat_name_configured = true;
+        let (reviewer, worker, _rx) = channel_with_two_agents(&mut app, "reviewer", "worker");
+        skip_protocol("eng", &reviewer);
+        skip_protocol("eng", &worker);
+        let reload = |app: &mut App| {
+            app.channel_open_human_asks
+                .get_mut()
+                .expect("cache lock")
+                .clear();
+            app.channel_open_human_asks("eng")
+        };
+
+        let to_pane = app.handle_channel_ask_question(
+            "req".into(),
+            crate::api::schema::ChannelAskParams {
+                name: "#eng".into(),
+                to: "reviewer".into(),
+                text: "ready to merge?".into(),
+                from_pane: Some("w1A:p9".into()),
+                timeout_ms: None,
+            },
+        );
+        assert!(to_pane.contains("\"result\""), "{to_pane}");
+        assert_eq!(app.channel_open_human_asks("eng"), 0, "ask to a pane");
+
+        let question = ask_human(&mut app, "eng", "qual banco?");
+        assert_eq!(app.channel_open_human_asks("eng"), 1, "live cache");
+        assert_eq!(reload(&mut app), 1, "fresh load");
+
+        let answered = reply(&mut app, "eng", question, "postgres");
+        assert_eq!(answered["result"]["in_reply_to"], question, "{answered}");
+        assert_eq!(app.channel_open_human_asks("eng"), 0, "live cache");
+        assert_eq!(reload(&mut app), 0, "fresh load");
 
         super::super::test_support::shutdown_test_runtimes(&mut app);
     }

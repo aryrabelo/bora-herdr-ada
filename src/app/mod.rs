@@ -255,6 +255,15 @@ pub struct App {
     pub(crate) config_reloaded_from_disk: bool,
     client_shell_keybindings_profile: Option<String>,
     pub(crate) channels_in_burst: HashSet<String>,
+    /// Per-channel seqs of OPEN asks to the human (`kind: ask`, `to_human`,
+    /// no answering line yet), so the client-shell snapshot can report
+    /// `open_human_asks` without reading a channel JSONL per frame. Filled
+    /// lazily from the transcript by `App::channel_open_human_asks` and
+    /// kept current by `record_and_deliver_channel_line`, the only writer of
+    /// ask and answer lines (ceo-bora#347). A `Mutex` because the snapshot
+    /// builder only holds `&App`.
+    pub(crate) channel_open_human_asks:
+        std::sync::Mutex<HashMap<String, std::collections::BTreeSet<u64>>>,
     pub(crate) agent_prompt_rate_limits: HashMap<(String, String), Instant>,
     /// Per-channel send timestamps used to detect a burst (`ui.channel_burst_messages` within
     /// `ui.channel_burst_window_secs`) — see `App::record_channel_burst_send` in
@@ -749,6 +758,7 @@ impl App {
             next_pending_agent_prompt_queue_id: 1,
             pending_agent_prompt_drain_deadlines: HashMap::new(),
             channels_in_burst: HashSet::new(),
+            channel_open_human_asks: std::sync::Mutex::new(HashMap::new()),
             client_shell_keybindings_profile,
             endpoint_commands,
             channel_burst_history: HashMap::new(),

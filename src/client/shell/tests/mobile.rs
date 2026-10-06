@@ -371,6 +371,7 @@ fn mobile_background_workspace_uses_its_own_active_tab_status() {
         tokens: Vec::new(),
         worktree: None,
         visual_group: None,
+        open_human_asks: 0,
         focused: false,
         agent_status: AgentStatus::Idle,
     });
@@ -571,6 +572,7 @@ fn mobile_previous_workspace_action_wraps_across_expanded_entries() {
             tokens: Vec::new(),
             worktree: None,
             visual_group: None,
+            open_human_asks: 0,
             focused: false,
             agent_status: AgentStatus::Idle,
         });
@@ -612,6 +614,7 @@ fn mobile_switcher_scroll_close_and_width_transition_clear_mobile_hits() {
             tokens: Vec::new(),
             worktree: None,
             visual_group: None,
+            open_human_asks: 0,
             focused: false,
             agent_status: AgentStatus::Idle,
         });
