@@ -1,0 +1,36 @@
+AGENTS.md
+  h_b156936c57c455 419
+docs/next/CHANGELOG.md
+  h_b156936c57c455 9-10
+docs/next/website/src/content/docs/cli-reference.mdx
+  h_b156936c57c455 399-400
+src/app/api/channels.rs
+  h_b156936c57c455 630,727-765,2033-2053,6001-6046
+src/app/mod.rs
+  h_b156936c57c455 258-266,761
+src/client/shell/attention.rs
+  h_b156936c57c455 64-76,117-123
+src/client/shell/tests/agents_worktrees_notifications.rs
+  h_b156936c57c455 118,1569
+src/client/shell/tests/attention_badge.rs
+  h_b156936c57c455 148-188
+src/client/shell/tests/mobile.rs
+  h_b156936c57c455 374,575,617
+src/client/shell/tests/mod.rs
+  h_b156936c57c455 42
+src/protocol/wire.rs
+  h_b156936c57c455 1066-1072,2885
+src/server/client_shell.rs
+  h_b156936c57c455 98-105
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "4a5db0a7881715384f403c8a0e5525683d234020",
+  "prompts": {},
+  "humans": {
+    "h_b156936c57c455": {
+      "author": "Ary Rabelo <aryrabelo@gmail.com>"
+    }
+  }
+}
