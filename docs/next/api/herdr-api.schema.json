@@ -2161,6 +2161,28 @@
           ],
           "type": "object"
         },
+        "ChannelReplyParams": {
+          "description": "`channel.reply`: answer the `channel.ask` question `seq` of channel\n`name` AS THE HUMAN SEAT — the line is attributed to `ui.chat_name`\nwith `from_kind: human`, threads back through `in_reply_to = seq`, and\nis delivered only to the pane that asked. There is no sender field:\nthe method itself is the human seat, which is what a phone answering\nover SSH needs. Refused (nothing appended) with\n`channel_message_not_found`, `channel_not_an_ask`,\n`channel_ask_already_answered`, or `channel_no_human_seat` when\n`ui.chat_name` is unset.",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "seq": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "name",
+            "seq",
+            "text"
+          ],
+          "type": "object"
+        },
         "ChannelSendParams": {
           "properties": {
             "from_pane": {
@@ -7198,6 +7220,22 @@
             "params"
           ],
           "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "channel.reply",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/ChannelReplyParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
         }
       ],
       "properties": {
@@ -12162,6 +12200,42 @@
               "required": [
                 "type",
                 "asks"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "`channel.reply` result: `seq` is the appended answer, `in_reply_to`\nthe question it answers. `deliveries` holds at most the asking pane\n(empty when the question came from outside a pane, or when the\nasker is gone — the answer is recorded either way).",
+              "properties": {
+                "channel": {
+                  "type": "string"
+                },
+                "deliveries": {
+                  "items": {
+                    "$ref": "#/schemas/success_response/$defs/ChannelDelivery"
+                  },
+                  "type": "array"
+                },
+                "in_reply_to": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "seq": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "type": {
+                  "const": "channel_replied",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "channel",
+                "seq",
+                "in_reply_to",
+                "deliveries"
               ],
               "type": "object"
             }

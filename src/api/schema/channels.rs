@@ -175,6 +175,22 @@ pub struct ChannelAskReply {
     pub text: String,
 }
 
+/// `channel.reply`: answer the `channel.ask` question `seq` of channel
+/// `name` AS THE HUMAN SEAT — the line is attributed to `ui.chat_name`
+/// with `from_kind: human`, threads back through `in_reply_to = seq`, and
+/// is delivered only to the pane that asked. There is no sender field:
+/// the method itself is the human seat, which is what a phone answering
+/// over SSH needs. Refused (nothing appended) with
+/// `channel_message_not_found`, `channel_not_an_ask`,
+/// `channel_ask_already_answered`, or `channel_no_human_seat` when
+/// `ui.chat_name` is unset.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct ChannelReplyParams {
+    pub name: String,
+    pub seq: u64,
+    pub text: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ChannelHistoryParams {
     pub name: String,

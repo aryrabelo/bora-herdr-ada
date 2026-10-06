@@ -3,8 +3,8 @@ use crate::api::schema::{
     ChannelCreateParams, ChannelDelivery, ChannelDeliveryStatus, ChannelHistoryParams,
     ChannelJoinParams, ChannelLeaveParams, ChannelListParams, ChannelMember, ChannelMemberSource,
     ChannelMembersParams, ChannelMessage, ChannelMessageKind, ChannelNoteParams, ChannelOpenParams,
-    ChannelSendParams, ChannelSenderKind, ChannelSummary, PaneRightClickTarget, PaneSplitParams,
-    ResponseResult, SplitDirection,
+    ChannelReplyParams, ChannelSendParams, ChannelSenderKind, ChannelSummary, PaneRightClickTarget,
+    PaneSplitParams, ResponseResult, SplitDirection,
 };
 use crate::app::App;
 use crate::persist::channels;
@@ -563,37 +563,87 @@ impl App {
             ts: now_rfc3339(),
             seq: channels::next_seq(&name),
             from_pane: sender_pane.clone(),
-            from_name: sender_name.clone(),
+            from_name: sender_name,
             from_kind: if params.from_human {
                 ChannelSenderKind::Human
             } else {
                 ChannelSenderKind::Agent
             },
-            text: text.clone(),
+            text,
             kind,
             in_reply_to: params.in_reply_to,
             to_pane: to_pane.clone(),
             to_human,
         };
-        if let Err(err) = channels::append_message(&name, &message) {
-            return encode_error(id, "channel_send_failed", err.to_string());
+        // Targeted delivery reaches only the resolved pane — and never the
+        // sender's own. A message addressed to the human seat reaches no
+        // pane at all: the human reads it in the chat view transcript, and
+        // injecting it into agents would put words in the human's mouth.
+        // Broadcast reaches every agent member pane as before.
+        let targets: Vec<String> = if to_human {
+            Vec::new()
+        } else {
+            match &to_pane {
+                Some(target) if target != &sender_pane => vec![target.clone()],
+                Some(_) => Vec::new(),
+                None => self.channel_agent_member_pane_ids(ws_idx, &sender_pane),
+            }
+        };
+        match self.record_and_deliver_channel_line(
+            &id,
+            &name,
+            ws_idx,
+            message,
+            targets,
+            params.when_idle,
+            force_bell,
+        ) {
+            Ok(recorded) => encode_success(
+                id,
+                ResponseResult::ChannelSent {
+                    deliveries: recorded.deliveries,
+                    suppressed: recorded.suppressed,
+                    seq: recorded.seq,
+                },
+            ),
+            Err(err) => encode_error(id, "channel_send_failed", err.to_string()),
         }
-        self.push_chat_message(&name, message.clone());
-        self.notify_chat_to_human(&name, &message);
+    }
+
+    /// The shared second half of every bell-carrying channel line
+    /// (`channel.send`, `channel.ask`, `channel.reply`), after addressing
+    /// and attribution are settled: durable append, chat-view projection,
+    /// the `channel.message` event, burst bookkeeping, then delivery to
+    /// `targets`. Nothing is delivered or evented when the append fails.
+    #[allow(clippy::too_many_arguments)] // one call per verb; a params struct would only rename these
+    fn record_and_deliver_channel_line(
+        &mut self,
+        id: &str,
+        name: &str,
+        ws_idx: usize,
+        message: ChannelMessage,
+        targets: Vec<String>,
+        when_idle: Option<bool>,
+        force_bell: bool,
+    ) -> std::io::Result<RecordedChannelLine> {
+        channels::append_message(name, &message)?;
+        self.push_chat_message(name, message.clone());
+        self.notify_chat_to_human(name, &message);
 
         // Durable-record event, mirroring the QueuedPromptDelivered emission:
         // the message is on disk, so `channel.wait` followers (and events.wait
         // ChannelMessage filters) can wake on it. Emitted before fan-out —
         // delivery receipts are the deliveries list's job, not this event's.
+        let sender_pane = message.from_pane.clone();
         self.emit_event(crate::api::schema::EventEnvelope {
             event: crate::api::schema::EventKind::ChannelMessage,
             data: crate::api::schema::EventData::ChannelMessage {
-                channel: name.clone(),
+                channel: name.to_string(),
                 seq: message.seq,
                 from_pane: (!sender_pane.is_empty()).then(|| sender_pane.clone()),
-                from_name: sender_name.clone(),
+                from_name: message.from_name.clone(),
                 text: message.text.clone(),
-                to_pane: message.to_pane,
+                to_pane: message.to_pane.clone(),
                 kind: message.kind,
                 in_reply_to: message.in_reply_to,
                 to_human: message.to_human,
@@ -605,20 +655,19 @@ impl App {
         // `ui.channel_burst_window_secs`), mirroring orc's
         // `ORC_BURST_N`/`ORC_BURST_MIN`. The message is always recorded and
         // eventable above, regardless — this only decides whether the
-        // fan-out below bells member panes. `force_bell` pierces it; today
-        // only ever `false` from `channel.send` itself (see
-        // `handle_channel_send`'s doc comment).
-        let burst = self.record_channel_burst_send(&name, Instant::now());
+        // fan-out below bells member panes. `force_bell` pierces it
+        // (`channel.ask` and `channel.reply`; never `channel.send`).
+        let burst = self.record_channel_burst_send(name, Instant::now());
         let suppressed = burst && !force_bell;
         if burst {
-            if self.channels_in_burst.insert(name.clone()) {
+            if self.channels_in_burst.insert(name.to_string()) {
                 // Edge-triggered: only the transition into burst gets a
                 // system line, so a storm doesn't double the transcript
                 // with one line per suppressed message.
-                self.append_channel_burst_notice(&name);
+                self.append_channel_burst_notice(name);
             }
         } else {
-            self.channels_in_burst.remove(&name);
+            self.channels_in_burst.remove(name);
         }
 
         // The prefix is built here (not delegated to `handle_agent_prompt`'s
@@ -635,32 +684,21 @@ impl App {
         // recipient was handed. Field order is otherwise unchanged, so a
         // reader parsing `from <pane> <nick>` positionally still works.
         let seq = message.seq;
-        let prefixed = format!("[#{name} seq={seq} from {sender_pane} {sender_name}] {text}");
+        let prefixed = format!(
+            "[#{name} seq={seq} from {sender_pane} {}] {}",
+            message.from_name, message.text
+        );
 
-        // Targeted delivery reaches only the resolved pane — and never the
-        // sender's own. A message addressed to the human seat reaches no
-        // pane at all: the human reads it in the chat view transcript, and
-        // injecting it into agents would put words in the human's mouth.
-        // Broadcast reaches every agent member pane as before. A suppressed
-        // (burst-active, not pierced) send skips this loop entirely —
-        // including the protocol briefing — so nothing about a storm ever
-        // touches a pane, only its transcript.
+        // A suppressed (burst-active, not pierced) line skips delivery
+        // entirely — including the protocol briefing — so nothing about a
+        // storm ever touches a pane, only its transcript.
         let deliveries = if suppressed {
             Vec::new()
         } else {
-            let targets: Vec<String> = if to_human {
-                Vec::new()
-            } else {
-                match &to_pane {
-                    Some(target) if target != &sender_pane => vec![target.clone()],
-                    Some(_) => Vec::new(),
-                    None => self.channel_agent_member_pane_ids(ws_idx, &sender_pane),
-                }
-            };
             targets
                 .into_iter()
                 .map(|target| {
-                    self.send_channel_protocol(&name, ws_idx, &target, params.when_idle);
+                    self.send_channel_protocol(name, ws_idx, &target, when_idle);
                     let response = self.handle_agent_prompt(
                         format!("{id}:channel:{target}"),
                         AgentPromptParams {
@@ -668,24 +706,21 @@ impl App {
                             text: prefixed.clone(),
                             wait: None,
                             from_pane: None,
-                            when_idle: params.when_idle,
+                            when_idle,
                             when_idle_timeout_ms: None,
                             peer_pid: None,
-                            origin_channel: Some(name.clone()),
+                            origin_channel: Some(name.to_string()),
                         },
                     );
                     classify_delivery(target, &response)
                 })
                 .collect()
         };
-        encode_success(
-            id,
-            ResponseResult::ChannelSent {
-                deliveries,
-                suppressed,
-                seq: message.seq,
-            },
-        )
+        Ok(RecordedChannelLine {
+            seq,
+            deliveries,
+            suppressed,
+        })
     }
 
     /// `channel.note`: append-only record, ZERO injection — the cheapest
@@ -841,6 +876,121 @@ impl App {
         }
         asks.sort_by_cached_key(|ask| (rfc3339_sort_key(&ask.ts), ask.channel.clone(), ask.seq));
         encode_success(id, ResponseResult::ChannelAsks { asks })
+    }
+
+    /// `channel.reply`: the human seat answers question `seq`. Every refusal
+    /// happens before anything is appended. The answer threads through
+    /// `in_reply_to`, which is all a still-waiting `channel.ask`
+    /// (`wait::ask_channel` polls the transcript for it) needs to return
+    /// `answered: true`, and which flips the question to answered in
+    /// `channel.asks` — the same [`channel_asks_from_transcript`]
+    /// definition decides "already answered" here.
+    ///
+    /// Delivery goes to the asking pane only, held until it is idle: an
+    /// asker still blocked in `channel ask` already gets the answer as that
+    /// call's result, so the injected copy must not steer it mid-turn. An
+    /// asker outside any pane (or gone) gets no delivery; the answer is
+    /// recorded regardless. The method itself is the human seat — the
+    /// trust boundary is the owner-only session socket every CLI verb
+    /// crosses — so it is narrowed to answering one open question and
+    /// never posts free text.
+    pub(super) fn handle_channel_reply(
+        &mut self,
+        id: String,
+        params: ChannelReplyParams,
+    ) -> String {
+        if params.text.is_empty() {
+            return encode_error(
+                id,
+                "empty_channel_message",
+                "channel message must not be empty",
+            );
+        }
+        let name = channels::normalize_channel_name(&params.name);
+        let Some(ws_idx) = self.find_channel_workspace(&name) else {
+            return encode_error(
+                id,
+                "channel_not_found",
+                format!("channel #{name} not found"),
+            );
+        };
+        if !self.state.chat_name_configured {
+            return encode_error(
+                id,
+                "channel_no_human_seat",
+                "no human seat: set [ui] chat_name in config.toml to answer as yourself",
+            );
+        }
+        let transcript = match channels::read_tail(&name, usize::MAX) {
+            Ok(transcript) => transcript,
+            Err(err) => return encode_error(id, "channel_reply_failed", err.to_string()),
+        };
+        let seq = params.seq;
+        let Some(question) = transcript
+            .iter()
+            .find(|line| line.seq != 0 && line.seq == seq)
+        else {
+            return encode_error(
+                id,
+                "channel_message_not_found",
+                format!("#{name} has no message with seq {seq}"),
+            );
+        };
+        if question.kind != ChannelMessageKind::Ask {
+            return encode_error(
+                id,
+                "channel_not_an_ask",
+                format!("#{name} seq {seq} is a message, not a channel.ask question"),
+            );
+        }
+        if let Some(reply) = channel_asks_from_transcript(&name, &transcript)
+            .into_iter()
+            .find(|ask| ask.seq == seq)
+            .and_then(|ask| ask.reply)
+        {
+            return encode_error(
+                id,
+                "channel_ask_already_answered",
+                format!(
+                    "#{name} seq {seq} was already answered by {} at seq {}",
+                    reply.from_name, reply.seq
+                ),
+            );
+        }
+        let asker = (!question.from_pane.is_empty()).then(|| question.from_pane.clone());
+        let message = ChannelMessage {
+            ts: now_rfc3339(),
+            seq: channels::next_seq(&name),
+            from_pane: String::new(),
+            from_name: self.state.chat_name.clone(),
+            from_kind: ChannelSenderKind::Human,
+            text: params.text,
+            kind: ChannelMessageKind::Message,
+            in_reply_to: Some(seq),
+            to_pane: asker.clone(),
+            to_human: false,
+        };
+        let targets: Vec<String> = asker.into_iter().collect();
+        match self.record_and_deliver_channel_line(
+            &id,
+            &name,
+            ws_idx,
+            message,
+            targets,
+            Some(true),
+            true,
+        ) {
+            Ok(recorded) => encode_success(
+                id,
+                ResponseResult::ChannelReplied {
+                    channel: name,
+                    seq: recorded.seq,
+                    in_reply_to: seq,
+                    deliveries: recorded.deliveries,
+                },
+            ),
+            Err(err) => encode_error(id, "channel_reply_failed", err.to_string()),
+        }
     }
 
     /// Records `now` in `channel`'s burst-detection sliding window and
@@ -1767,6 +1917,15 @@ impl App {
         }
         NickResolution::Ambiguous(candidates)
     }
+}
+
+/// What [`App::record_and_deliver_channel_line`] did with one line: its
+/// assigned seq, per-target delivery receipts, and whether an active burst
+/// suppressed the fan-out.
+struct RecordedChannelLine {
+    seq: u64,
+    deliveries: Vec<ChannelDelivery>,
+    suppressed: bool,
 }
 
 /// Orderable key for the UTC RFC 3339 stamps `now_rfc3339` writes. Those
@@ -5698,6 +5857,84 @@ mod tests {
         let listed = app.handle_channel_asks("req".into(), params);
         let listed: serde_json::Value = serde_json::from_str(&listed).unwrap();
         listed["result"]["asks"].clone()
+    }
+
+    fn reply(app: &mut App, channel: &str, seq: u64, text: &str) -> serde_json::Value {
+        let replied = app.handle_channel_reply(
+            "req".into(),
+            ChannelReplyParams {
+                name: channel.into(),
+                seq,
+                text: text.into(),
+            },
+        );
+        serde_json::from_str(&replied).unwrap()
+    }
+
+    /// ceo-bora#346 (contract C4): `channel.reply` answers as the human
+    /// seat, flips the question to answered, and refuses (appending
+    /// nothing) a second answer, a non-question, an unknown seq, and a
+    /// missing `ui.chat_name`.
+    #[tokio::test]
+    async fn channel_reply_answers_as_human_seat_and_refuses_the_four_cases() {
+        let _isolated = IsolatedDirs::new("reply-human-seat");
+        let mut app = test_app();
+        app.state.chat_name = "ary".into();
+        create_channel(&mut app, "teste");
+        let question = ask_human(&mut app, "teste", "ok?");
+
+        app.state.chat_name_configured = false;
+        let refused = reply(&mut app, "teste", question, "sim");
+        assert_eq!(refused["error"]["code"], "channel_no_human_seat");
+        app.state.chat_name_configured = true;
+
+        let answered = reply(&mut app, "#teste", question, "sim");
+        let result = &answered["result"];
+        assert_eq!(result["channel"], "teste", "{answered}");
+        assert_eq!(result["in_reply_to"], question);
+        let answer_seq = result["seq"].as_u64().unwrap();
+        assert_eq!(answer_seq, question + 1, "no-seat refusal must not append");
+
+        let history = app.handle_channel_history(
+            "req".into(),
+            ChannelHistoryParams {
+                name: "teste".into(),
+                lines: None,
+                from_pane: None,
+            },
+        );
+        let history: serde_json::Value = serde_json::from_str(&history).unwrap();
+        let line = history["result"]["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|line| line["seq"] == answer_seq)
+            .cloned()
+            .unwrap();
+        assert_eq!(line["from_name"], "ary");
+        assert_eq!(line["from_kind"], "human");
+        assert_eq!(line["kind"], "message");
+        assert_eq!(line["in_reply_to"], question);
+
+        let asks = list_asks(&mut app, ChannelAsksParams::default());
+        assert_eq!(asks[0]["answered"], true);
+        assert_eq!(asks[0]["reply"]["text"], "sim");
+
+        for (seq, code) in [
+            (question, "channel_ask_already_answered"),
+            (answer_seq, "channel_not_an_ask"),
+            (answer_seq + 50, "channel_message_not_found"),
+        ] {
+            let refused = reply(&mut app, "teste", seq, "de novo");
+            assert_eq!(refused["error"]["code"], code, "seq {seq}: {refused}");
+        }
+        assert_eq!(
+            channels::next_seq("teste"),
+            answer_seq + 1,
+            "refusals append nothing"
+        );
+
+        super::super::test_support::shutdown_test_runtimes(&mut app);
     }
 
     /// ceo-bora#345 (contract C3): asks are derived from the transcript;

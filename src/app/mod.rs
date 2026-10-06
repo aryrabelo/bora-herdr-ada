@@ -639,6 +639,7 @@ impl App {
             terminal_runtime_shutdowns: Vec::new(),
             agent_commands: config.agents.clone(),
             chat_name: config.ui.effective_chat_name(),
+            chat_name_configured: config.ui.configured_chat_name().is_some(),
             channel_burst_messages: config.ui.channel_burst_messages,
             channel_burst_window: Duration::from_secs(config.ui.channel_burst_window_secs),
             sidebar_width: config.ui.sidebar_width,
@@ -984,6 +985,7 @@ impl App {
                 self.state.new_workspace_position = config.ui.new_workspace_position;
                 self.state.view_mode = config.ui.view_mode;
                 self.state.chat_name = config.ui.effective_chat_name();
+                self.state.chat_name_configured = config.ui.configured_chat_name().is_some();
                 self.state.channel_burst_messages = config.ui.channel_burst_messages;
                 self.state.channel_burst_window =
                     Duration::from_secs(config.ui.channel_burst_window_secs);

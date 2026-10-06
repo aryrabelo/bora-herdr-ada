@@ -635,6 +635,7 @@ pub(crate) fn api_method_name(method: &Method) -> &'static str {
         Method::ChannelNote(_) => "channel.note",
         Method::ChannelAsk(_) => "channel.ask",
         Method::ChannelAsks(_) => "channel.asks",
+        Method::ChannelReply(_) => "channel.reply",
     }
 }
 

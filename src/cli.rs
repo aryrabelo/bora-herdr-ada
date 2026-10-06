@@ -4,7 +4,7 @@ use crate::api::client::{ApiClient, ApiClientError};
 use crate::api::schema::{
     AgentStatus, ChannelAskParams, ChannelAsksParams, ChannelCreateParams, ChannelHistoryParams,
     ChannelJoinParams, ChannelLeaveParams, ChannelListParams, ChannelMembersParams,
-    ChannelNoteParams, ChannelOpenParams, ChannelSendParams, ChannelWaitParams,
+    ChannelNoteParams, ChannelOpenParams, ChannelReplyParams, ChannelSendParams, ChannelWaitParams,
     ClientWindowTitleSetParams, EmptyParams, Method, PaneAgentState, ReadFormat, ReadSource,
     Request, SplitDirection,
 };
@@ -156,6 +156,7 @@ fn run_channel_command(args: &[String]) -> std::io::Result<i32> {
         Some("note") => channel_note(&args[1..]),
         Some("ask") => channel_ask(&args[1..]),
         Some("asks") => channel_asks(&args[1..]),
+        Some("reply") => channel_reply(&args[1..]),
         Some("history") => channel_history(&args[1..]),
         Some("tail") => channel_tail(&args[1..]),
         Some("members") => channel_members(&args[1..]),
@@ -470,6 +471,46 @@ fn channel_asks(args: &[String]) -> std::io::Result<i32> {
             println!("    {reply_name}: {reply_text}");
         }
     }
+    Ok(0)
+}
+
+const CHANNEL_REPLY_USAGE: &str = "usage: bora channel reply <name> <seq> <text> [--json]";
+
+/// `bora channel reply`: answer a `channel.ask` question as the human seat
+/// (`ui.chat_name`). `<text>` is one argv string taken verbatim; only an
+/// exact `--json` is a flag, so an answer like `-1` is still text. Refusals
+/// print the server error (code included) on stderr and exit 1.
+fn channel_reply(args: &[String]) -> std::io::Result<i32> {
+    let json = args.iter().any(|arg| arg == "--json");
+    let positional: Vec<&String> = args.iter().filter(|arg| *arg != "--json").collect();
+    let [name, seq, text] = positional.as_slice() else {
+        eprintln!("{CHANNEL_REPLY_USAGE}");
+        return Ok(2);
+    };
+    let Ok(seq) = seq.parse::<u64>() else {
+        eprintln!("<seq> must be a non-negative integer");
+        eprintln!("{CHANNEL_REPLY_USAGE}");
+        return Ok(2);
+    };
+    let response = send_request(&Request {
+        id: "cli:channel:reply".into(),
+        method: Method::ChannelReply(ChannelReplyParams {
+            name: (*name).clone(),
+            seq,
+            text: (*text).clone(),
+        }),
+    })?;
+    if response.get("error").is_some() {
+        return print_response(&response);
+    }
+    let result = &response["result"];
+    if json {
+        println!("{}", encode_response_json(result));
+        return Ok(0);
+    }
+    let channel = result["channel"].as_str().unwrap_or(name.as_str());
+    let reply_seq = result["seq"].as_u64().unwrap_or(0);
+    println!("#{channel} seq={reply_seq} answers seq={seq}");
     Ok(0)
 }
 
@@ -983,6 +1024,10 @@ fn print_channel_help() {
     );
     eprintln!(
         "                                                (every #channel without <name>; --json is an array)"
+    );
+    eprintln!("  bora channel reply <name> <seq> <text> [--json]");
+    eprintln!(
+        "                                                answer a channel.ask as the human seat (ui.chat_name)"
     );
     eprintln!("  bora channel history <name> [--lines N] [--json]");
     eprintln!("                                                print a #channel's message history");

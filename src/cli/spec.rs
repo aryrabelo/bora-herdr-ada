@@ -218,6 +218,14 @@ fn channel_command() -> Command {
                 .arg(json_flag()),
         )
         .subcommand(
+            Command::new("reply")
+                .about("Answer a channel ask question as the human seat (ui.chat_name)")
+                .arg(required("name", "NAME"))
+                .arg(required("seq", "SEQ"))
+                .arg(required("text", "TEXT"))
+                .arg(json_flag()),
+        )
+        .subcommand(
             Command::new("history")
                 .about("Print a #channel's message history")
                 .arg(required("name", "NAME"))
@@ -1564,7 +1572,7 @@ mod tests {
 
         for name in [
             "show", "set", "create", "open", "list", "send", "note", "ask", "asks", "history",
-            "tail", "members", "join", "leave",
+            "tail", "members", "join", "leave", "reply",
         ] {
             assert!(
                 channel.get_subcommands().any(|sub| sub.get_name() == name),

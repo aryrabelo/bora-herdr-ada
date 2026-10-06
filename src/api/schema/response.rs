@@ -376,6 +376,16 @@ pub enum ResponseResult {
     ChannelAsks {
         asks: Vec<super::channels::ChannelAsk>,
     },
+    /// `channel.reply` result: `seq` is the appended answer, `in_reply_to`
+    /// the question it answers. `deliveries` holds at most the asking pane
+    /// (empty when the question came from outside a pane, or when the
+    /// asker is gone — the answer is recorded either way).
+    ChannelReplied {
+        channel: String,
+        seq: u64,
+        in_reply_to: u64,
+        deliveries: Vec<super::channels::ChannelDelivery>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
