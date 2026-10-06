@@ -79,6 +79,14 @@
           ],
           "type": "string"
         },
+        "ChannelMessageKind": {
+          "description": "What a channel line is: a plain message, or a `channel.ask` question\nwaiting for an `in_reply_to` answer. Lines written before this field\nexisted parse as `Message`; only `channel.ask` writes `Ask`, which is\nwhat makes an unanswered question listable after its asker stopped\nwaiting (`channel.asks`).",
+          "enum": [
+            "message",
+            "ask"
+          ],
+          "type": "string"
+        },
         "EventData": {
           "oneOf": [
             {
@@ -868,7 +876,7 @@
               "type": "object"
             },
             {
-              "description": "A message was appended to a `#`-channel transcript (emitted right\nafter the durable append, before fan-out). `channel` is the\nnormalized name without the leading `#`; `seq` is the message's\nmonotonic per-channel id; `from_pane` is `None` for unattributed\nsenders; `to_pane` is the resolved targeted pane id or `None` for\nbroadcast.",
+              "description": "A message was appended to a `#`-channel transcript (emitted right\nafter the durable append, before fan-out). `channel` is the\nnormalized name without the leading `#`; `seq` is the message's\nmonotonic per-channel id; `from_pane` is `None` for unattributed\nsenders; `to_pane` is the resolved targeted pane id or `None` for\nbroadcast. `kind`, `in_reply_to` and `to_human` mirror the stored\nline, so a consumer spots a question to the human\n(`kind == ask && to_human`) and its answer (`in_reply_to`) without\nre-reading the transcript.",
               "properties": {
                 "channel": {
                   "type": "string"
@@ -882,6 +890,18 @@
                     "null"
                   ]
                 },
+                "in_reply_to": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "kind": {
+                  "$ref": "#/schemas/event/$defs/ChannelMessageKind",
+                  "default": "message"
+                },
                 "seq": {
                   "format": "uint64",
                   "minimum": 0,
@@ -889,6 +909,10 @@
                 },
                 "text": {
                   "type": "string"
+                },
+                "to_human": {
+                  "default": false,
+                  "type": "boolean"
                 },
                 "to_pane": {
                   "type": [
@@ -7727,6 +7751,11 @@
                 "null"
               ]
             },
+            "kind": {
+              "$ref": "#/schemas/success_response/$defs/ChannelMessageKind",
+              "default": "message",
+              "description": "`ask` for a `channel.ask` question, `message` for everything else."
+            },
             "seq": {
               "default": 0,
               "description": "Monotonic per-channel sequence id, assigned server-side at append\ntime. Survives log rotation (`next = last + 1`, never a line count).\n`0` marks pre-seq history written before this field existed.",
@@ -7761,6 +7790,14 @@
             "text"
           ],
           "type": "object"
+        },
+        "ChannelMessageKind": {
+          "description": "What a channel line is: a plain message, or a `channel.ask` question\nwaiting for an `in_reply_to` answer. Lines written before this field\nexisted parse as `Message`; only `channel.ask` writes `Ask`, which is\nwhat makes an unanswered question listable after its asker stopped\nwaiting (`channel.asks`).",
+          "enum": [
+            "message",
+            "ask"
+          ],
+          "type": "string"
         },
         "ChannelSenderKind": {
           "description": "Who authored a channel message: a member agent pane, or the human at the\nTUI. Lines written before this field existed parse as `Agent`.",
@@ -8637,7 +8674,7 @@
               "type": "object"
             },
             {
-              "description": "A message was appended to a `#`-channel transcript (emitted right\nafter the durable append, before fan-out). `channel` is the\nnormalized name without the leading `#`; `seq` is the message's\nmonotonic per-channel id; `from_pane` is `None` for unattributed\nsenders; `to_pane` is the resolved targeted pane id or `None` for\nbroadcast.",
+              "description": "A message was appended to a `#`-channel transcript (emitted right\nafter the durable append, before fan-out). `channel` is the\nnormalized name without the leading `#`; `seq` is the message's\nmonotonic per-channel id; `from_pane` is `None` for unattributed\nsenders; `to_pane` is the resolved targeted pane id or `None` for\nbroadcast. `kind`, `in_reply_to` and `to_human` mirror the stored\nline, so a consumer spots a question to the human\n(`kind == ask && to_human`) and its answer (`in_reply_to`) without\nre-reading the transcript.",
               "properties": {
                 "channel": {
                   "type": "string"
@@ -8651,6 +8688,18 @@
                     "null"
                   ]
                 },
+                "in_reply_to": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "kind": {
+                  "$ref": "#/schemas/success_response/$defs/ChannelMessageKind",
+                  "default": "message"
+                },
                 "seq": {
                   "format": "uint64",
                   "minimum": 0,
@@ -8658,6 +8707,10 @@
                 },
                 "text": {
                   "type": "string"
+                },
+                "to_human": {
+                  "default": false,
+                  "type": "boolean"
                 },
                 "to_pane": {
                   "type": [

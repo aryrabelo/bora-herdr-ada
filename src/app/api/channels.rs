@@ -2,8 +2,8 @@ use crate::api::schema::{
     AgentInfo, AgentPromptParams, AgentStatus, ChannelCreateParams, ChannelDelivery,
     ChannelDeliveryStatus, ChannelHistoryParams, ChannelJoinParams, ChannelLeaveParams,
     ChannelListParams, ChannelMember, ChannelMemberSource, ChannelMembersParams, ChannelMessage,
-    ChannelNoteParams, ChannelOpenParams, ChannelSendParams, ChannelSenderKind, ChannelSummary,
-    PaneRightClickTarget, PaneSplitParams, ResponseResult, SplitDirection,
+    ChannelMessageKind, ChannelNoteParams, ChannelOpenParams, ChannelSendParams, ChannelSenderKind,
+    ChannelSummary, PaneRightClickTarget, PaneSplitParams, ResponseResult, SplitDirection,
 };
 use crate::app::App;
 use crate::persist::channels;
@@ -411,13 +411,14 @@ impl App {
     }
 
     /// Thin wrapper over [`Self::handle_channel_send_inner`] with
-    /// `force_bell: false` — `channel.send`'s own path. `channel.ask`
-    /// (`handle_channel_ask_question`) is the other caller of
+    /// `force_bell: false` and `kind: Message` — `channel.send`'s own path.
+    /// `channel.ask` (`handle_channel_ask_question`) is the other caller of
     /// `handle_channel_send_inner`, with `force_bell: true` so its question
-    /// always pierces an active burst; `force_bell` is never part of
-    /// `ChannelSendParams` itself.
+    /// always pierces an active burst, and `kind: Ask` so the stored line
+    /// stays a listable question after its asker stops waiting; neither is
+    /// ever part of `ChannelSendParams` itself.
     pub(super) fn handle_channel_send(&mut self, id: String, params: ChannelSendParams) -> String {
-        self.handle_channel_send_inner(id, params, false)
+        self.handle_channel_send_inner(id, params, false, ChannelMessageKind::Message)
     }
 
     fn handle_channel_send_inner(
@@ -425,6 +426,7 @@ impl App {
         id: String,
         params: ChannelSendParams,
         force_bell: bool,
+        kind: ChannelMessageKind,
     ) -> String {
         if params.text.is_empty() {
             return encode_error(
@@ -567,6 +569,7 @@ impl App {
                 ChannelSenderKind::Agent
             },
             text: text.clone(),
+            kind,
             in_reply_to: params.in_reply_to,
             to_pane: to_pane.clone(),
             to_human,
@@ -590,6 +593,9 @@ impl App {
                 from_name: sender_name.clone(),
                 text: message.text.clone(),
                 to_pane: message.to_pane,
+                kind: message.kind,
+                in_reply_to: message.in_reply_to,
+                to_human: message.to_human,
             },
         });
 
@@ -731,6 +737,7 @@ impl App {
             from_name: sender_name.clone(),
             from_kind: ChannelSenderKind::Agent,
             text,
+            kind: ChannelMessageKind::Message,
             in_reply_to: None,
             to_pane: None,
             to_human: false,
@@ -749,6 +756,9 @@ impl App {
                 from_name: sender_name,
                 text: message.text.clone(),
                 to_pane: None,
+                kind: ChannelMessageKind::Message,
+                in_reply_to: None,
+                to_human: false,
             },
         });
         encode_success(
@@ -787,6 +797,7 @@ impl App {
                 from_human: false,
             },
             true,
+            ChannelMessageKind::Ask,
         )
     }
 
@@ -833,6 +844,7 @@ impl App {
                 self.state.channel_burst_messages,
                 self.state.channel_burst_window.as_secs()
             ),
+            kind: ChannelMessageKind::Message,
             in_reply_to: None,
             to_pane: None,
             to_human: false,
@@ -879,6 +891,7 @@ impl App {
                 "{public_id} joined as @{} — the name @{} is shared, so address this pane by @{}",
                 member.addressable, member.base, member.addressable
             ),
+            kind: ChannelMessageKind::Message,
             in_reply_to: None,
             to_pane: None,
             to_human: false,
@@ -1185,6 +1198,7 @@ impl App {
             from_name: "bora".to_string(),
             from_kind: ChannelSenderKind::Agent,
             text: format!("channel protocol v{CHANNEL_PROTOCOL_VERSION} sent to {public_pane_id}"),
+            kind: ChannelMessageKind::Message,
             in_reply_to: None,
             to_pane: None,
             to_human: false,
@@ -2421,6 +2435,9 @@ mod tests {
                 from_name,
                 text,
                 to_pane,
+                kind,
+                in_reply_to,
+                to_human,
             } => {
                 assert_eq!(channel, "eng");
                 assert_eq!(*seq, 1);
@@ -2428,6 +2445,9 @@ mod tests {
                 assert_eq!(from_name, "unknown");
                 assert_eq!(text, "hello");
                 assert_eq!(to_pane, &None);
+                assert_eq!(*kind, ChannelMessageKind::Message);
+                assert_eq!(*in_reply_to, None);
+                assert!(!to_human);
             }
             other => panic!("expected ChannelMessage event data, got {other:?}"),
         }
@@ -5316,6 +5336,7 @@ mod tests {
                 from_human: true,
             },
             true,
+            ChannelMessageKind::Message,
         );
         let pierced: serde_json::Value = serde_json::from_str(&pierced).unwrap();
         // Omitted (skip_serializing_if) when false, same as the unsuppressed
@@ -5474,6 +5495,80 @@ mod tests {
         let history = channels::read_tail("eng", 10).unwrap();
         assert_eq!(history.len(), 1);
         assert_eq!(history[0].to_pane.as_deref(), Some(reviewer.as_str()));
+
+        super::super::test_support::shutdown_test_runtimes(&mut app);
+    }
+
+    /// ceo-bora#344 (contract C1+C2): `channel.ask` stores `kind: ask`, and
+    /// the `channel.message` event carries `kind`, `in_reply_to` and
+    /// `to_human`, so a hook can tell a question to the human and its
+    /// answer apart without re-reading the transcript. Old lines with no
+    /// `kind` still decode, as `message`.
+    #[tokio::test]
+    async fn channel_message_event_carries_kind_in_reply_to_and_to_human() {
+        let _isolated = IsolatedDirs::new("ask-event-fields");
+        let mut app = test_app();
+        app.state.chat_name = "ary".into();
+        create_channel(&mut app, "teste");
+
+        let asked = app.handle_channel_ask_question(
+            "req".into(),
+            crate::api::schema::ChannelAskParams {
+                name: "#teste".into(),
+                to: "ary".into(),
+                text: "qual banco?".into(),
+                from_pane: None,
+                timeout_ms: None,
+            },
+        );
+        let asked: serde_json::Value = serde_json::from_str(&asked).unwrap();
+        let question_seq = asked["result"]["seq"].as_u64().expect("ask reports seq");
+        let replied = app.handle_channel_send(
+            "req".into(),
+            ChannelSendParams {
+                name: "#teste".into(),
+                text: "postgres".into(),
+                from_pane: None,
+                to: None,
+                in_reply_to: Some(question_seq),
+                when_idle: None,
+                from_human: true,
+            },
+        );
+        assert!(replied.contains("\"result\""), "{replied}");
+
+        let history = channels::read_tail("teste", 10).unwrap();
+        assert_eq!(history[0].kind, ChannelMessageKind::Ask);
+        assert!(history[0].to_human);
+        assert_eq!(history[1].kind, ChannelMessageKind::Message);
+
+        let fields: Vec<_> = app
+            .event_hub
+            .events_after(0)
+            .into_iter()
+            .filter_map(|(_, envelope)| match envelope.data {
+                crate::api::schema::EventData::ChannelMessage {
+                    kind,
+                    in_reply_to,
+                    to_human,
+                    ..
+                } => Some((kind, in_reply_to, to_human)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            fields,
+            vec![
+                (ChannelMessageKind::Ask, None, true),
+                (ChannelMessageKind::Message, Some(question_seq), false),
+            ]
+        );
+
+        let old_line: ChannelMessage = serde_json::from_str(
+            r#"{"ts":"2026-08-15T00:00:00Z","seq":3,"from_pane":"w1:p1","from_name":"x","text":"t"}"#,
+        )
+        .unwrap();
+        assert_eq!(old_line.kind, ChannelMessageKind::Message);
 
         super::super::test_support::shutdown_test_runtimes(&mut app);
     }

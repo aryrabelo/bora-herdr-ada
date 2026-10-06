@@ -113,6 +113,21 @@ pub enum ChannelSenderKind {
     Human,
 }
 
+/// What a channel line is: a plain message, or a `channel.ask` question
+/// waiting for an `in_reply_to` answer. Lines written before this field
+/// existed parse as `Message`; only `channel.ask` writes `Ask`, which is
+/// what makes an unanswered question listable after its asker stopped
+/// waiting (`channel.asks`).
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum ChannelMessageKind {
+    #[default]
+    Message,
+    Ask,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ChannelHistoryParams {
     pub name: String,
@@ -253,6 +268,9 @@ pub struct ChannelMessage {
     #[serde(default)]
     pub from_kind: ChannelSenderKind,
     pub text: String,
+    /// `ask` for a `channel.ask` question, `message` for everything else.
+    #[serde(default)]
+    pub kind: ChannelMessageKind,
     /// Seq of the message being replied to, when this was sent as a reply.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub in_reply_to: Option<u64>,

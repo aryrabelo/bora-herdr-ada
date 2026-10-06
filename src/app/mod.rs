@@ -1564,6 +1564,7 @@ impl App {
                 from_name: "bora".to_string(),
                 from_kind: crate::api::schema::ChannelSenderKind::Agent,
                 text: format!("delivery to {target_pane} dropped: {reason_text}"),
+                kind: crate::api::schema::ChannelMessageKind::Message,
                 in_reply_to: None,
                 to_pane: None,
                 to_human: false,

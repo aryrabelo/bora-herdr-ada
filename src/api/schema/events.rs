@@ -638,7 +638,10 @@ pub enum EventData {
     /// normalized name without the leading `#`; `seq` is the message's
     /// monotonic per-channel id; `from_pane` is `None` for unattributed
     /// senders; `to_pane` is the resolved targeted pane id or `None` for
-    /// broadcast.
+    /// broadcast. `kind`, `in_reply_to` and `to_human` mirror the stored
+    /// line, so a consumer spots a question to the human
+    /// (`kind == ask && to_human`) and its answer (`in_reply_to`) without
+    /// re-reading the transcript.
     ChannelMessage {
         channel: String,
         seq: u64,
@@ -648,6 +651,12 @@ pub enum EventData {
         text: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         to_pane: Option<String>,
+        #[serde(default)]
+        kind: super::channels::ChannelMessageKind,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        in_reply_to: Option<u64>,
+        #[serde(default)]
+        to_human: bool,
     },
 }
 
@@ -831,6 +840,9 @@ mod event_matches_tests {
                 from_name: "brandos".into(),
                 text: "hello".into(),
                 to_pane: None,
+                kind: super::super::channels::ChannelMessageKind::Message,
+                in_reply_to: None,
+                to_human: false,
             },
         };
         let filter = EventMatch::ChannelMessage {
@@ -847,6 +859,51 @@ mod event_matches_tests {
             pane_id: "eng".into(),
         };
         assert!(!event_matches(&other_kind, &envelope));
+    }
+
+    /// Contract C2 (ceo-bora#344): `kind` and `to_human` are always on the
+    /// wire, `in_reply_to`/`to_pane`/`from_pane` only when present — the
+    /// exact object a plugin `[[events]]` hook reads from
+    /// `HERDR_PLUGIN_EVENT_JSON`.
+    #[test]
+    fn channel_message_event_json_always_carries_kind_and_to_human() {
+        let ask = serde_json::to_value(EventEnvelope {
+            event: EventKind::ChannelMessage,
+            data: EventData::ChannelMessage {
+                channel: "teste".into(),
+                seq: 12,
+                from_pane: Some("w1:p1".into()),
+                from_name: "builder".into(),
+                text: "qual banco?".into(),
+                to_pane: None,
+                kind: super::super::channels::ChannelMessageKind::Ask,
+                in_reply_to: None,
+                to_human: true,
+            },
+        })
+        .unwrap();
+        let data = &ask["data"];
+        assert_eq!(data["kind"], "ask");
+        assert_eq!(data["to_human"], true);
+        assert!(data.get("in_reply_to").is_none(), "{data}");
+        assert!(data.get("to_pane").is_none(), "{data}");
+
+        let reply = serde_json::to_value(EventData::ChannelMessage {
+            channel: "teste".into(),
+            seq: 13,
+            from_pane: None,
+            from_name: "ary".into(),
+            text: "postgres".into(),
+            to_pane: Some("w1:p1".into()),
+            kind: super::super::channels::ChannelMessageKind::Message,
+            in_reply_to: Some(12),
+            to_human: false,
+        })
+        .unwrap();
+        assert_eq!(reply["kind"], "message");
+        assert_eq!(reply["in_reply_to"], 12);
+        assert_eq!(reply["to_human"], false);
+        assert!(reply.get("from_pane").is_none(), "{reply}");
     }
 
     #[test]
