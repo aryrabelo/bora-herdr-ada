@@ -2016,6 +2016,24 @@
           ],
           "type": "object"
         },
+        "ChannelAsksParams": {
+          "description": "`channel.asks`: every `channel.ask` question still in a channel's\nretained JSONL transcript, derived on each call — no store of its own,\nso the list survives the asker's timeout and a server restart. `name`\nnarrows to one channel; absent means every `#channel` of the session.\n`open` keeps unanswered questions only, `to_human` keeps questions\naddressed to the human seat only. Ordered by `ts`, ties by\n`(channel, seq)`.",
+          "properties": {
+            "name": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "open": {
+              "type": "boolean"
+            },
+            "to_human": {
+              "type": "boolean"
+            }
+          },
+          "type": "object"
+        },
         "ChannelCreateParams": {
           "properties": {
             "name": {
@@ -7164,6 +7182,22 @@
             "params"
           ],
           "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "channel.asks",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/ChannelAsksParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
         }
       ],
       "properties": {
@@ -7641,6 +7675,97 @@
             "unknown"
           ],
           "type": "string"
+        },
+        "ChannelAsk": {
+          "description": "One question listed by `channel.asks`. `answered` is true once any\nlater line in the same channel carries `in_reply_to == seq`; `reply` is\nthe FIRST such line, `null` while the question is open.",
+          "properties": {
+            "answered": {
+              "type": "boolean"
+            },
+            "channel": {
+              "description": "Channel name without the leading `#`.",
+              "type": "string"
+            },
+            "from_name": {
+              "type": "string"
+            },
+            "from_pane": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "reply": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/ChannelAskReply"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "seq": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "text": {
+              "type": "string"
+            },
+            "to_human": {
+              "type": "boolean"
+            },
+            "to_pane": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "ts": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "channel",
+            "seq",
+            "ts",
+            "from_name",
+            "to_human",
+            "text",
+            "answered"
+          ],
+          "type": "object"
+        },
+        "ChannelAskReply": {
+          "description": "The answer to a [`ChannelAsk`], as stored in the transcript.",
+          "properties": {
+            "from_kind": {
+              "$ref": "#/schemas/success_response/$defs/ChannelSenderKind"
+            },
+            "from_name": {
+              "type": "string"
+            },
+            "seq": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "text": {
+              "type": "string"
+            },
+            "ts": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "seq",
+            "ts",
+            "from_name",
+            "from_kind",
+            "text"
+          ],
+          "type": "object"
         },
         "ChannelDelivery": {
           "properties": {
@@ -12017,6 +12142,26 @@
                 "type",
                 "answered",
                 "question_seq"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "`channel.asks` result: the matching questions, `[]` when none. See\n[`super::channels::ChannelAsksParams`] for filters and order.",
+              "properties": {
+                "asks": {
+                  "items": {
+                    "$ref": "#/schemas/success_response/$defs/ChannelAsk"
+                  },
+                  "type": "array"
+                },
+                "type": {
+                  "const": "channel_asks",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "asks"
               ],
               "type": "object"
             }

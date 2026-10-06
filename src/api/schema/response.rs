@@ -371,6 +371,11 @@ pub enum ResponseResult {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reply: Option<ChannelMessage>,
     },
+    /// `channel.asks` result: the matching questions, `[]` when none. See
+    /// [`super::channels::ChannelAsksParams`] for filters and order.
+    ChannelAsks {
+        asks: Vec<super::channels::ChannelAsk>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

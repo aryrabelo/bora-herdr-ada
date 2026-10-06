@@ -1,9 +1,10 @@
 use crate::api::schema::{
-    AgentInfo, AgentPromptParams, AgentStatus, ChannelCreateParams, ChannelDelivery,
-    ChannelDeliveryStatus, ChannelHistoryParams, ChannelJoinParams, ChannelLeaveParams,
-    ChannelListParams, ChannelMember, ChannelMemberSource, ChannelMembersParams, ChannelMessage,
-    ChannelMessageKind, ChannelNoteParams, ChannelOpenParams, ChannelSendParams, ChannelSenderKind,
-    ChannelSummary, PaneRightClickTarget, PaneSplitParams, ResponseResult, SplitDirection,
+    AgentInfo, AgentPromptParams, AgentStatus, ChannelAsk, ChannelAskReply, ChannelAsksParams,
+    ChannelCreateParams, ChannelDelivery, ChannelDeliveryStatus, ChannelHistoryParams,
+    ChannelJoinParams, ChannelLeaveParams, ChannelListParams, ChannelMember, ChannelMemberSource,
+    ChannelMembersParams, ChannelMessage, ChannelMessageKind, ChannelNoteParams, ChannelOpenParams,
+    ChannelSendParams, ChannelSenderKind, ChannelSummary, PaneRightClickTarget, PaneSplitParams,
+    ResponseResult, SplitDirection,
 };
 use crate::app::App;
 use crate::persist::channels;
@@ -799,6 +800,47 @@ impl App {
             true,
             ChannelMessageKind::Ask,
         )
+    }
+
+    /// `channel.asks`: questions derived from each channel's retained JSONL
+    /// on every call (see [`channel_asks_from_transcript`]). No store of its
+    /// own — the tombstoned todo store stays tombstoned — so the list is
+    /// exactly what the transcript says, before and after a restart.
+    pub(super) fn handle_channel_asks(&mut self, id: String, params: ChannelAsksParams) -> String {
+        let names: Vec<String> = match params.name.as_deref() {
+            Some(name) => {
+                let name = channels::normalize_channel_name(name);
+                if self.find_channel_workspace(&name).is_none() {
+                    return encode_error(
+                        id,
+                        "channel_not_found",
+                        format!("channel #{name} not found"),
+                    );
+                }
+                vec![name]
+            }
+            None => self
+                .state
+                .workspaces
+                .iter()
+                .filter_map(|ws| ws.channel_home_name().map(channels::normalize_channel_name))
+                .collect(),
+        };
+        let mut asks = Vec::new();
+        for name in names {
+            let transcript = match channels::read_tail(&name, usize::MAX) {
+                Ok(transcript) => transcript,
+                Err(err) => return encode_error(id, "channel_asks_failed", err.to_string()),
+            };
+            asks.extend(
+                channel_asks_from_transcript(&name, &transcript)
+                    .into_iter()
+                    .filter(|ask| !params.open || !ask.answered)
+                    .filter(|ask| !params.to_human || ask.to_human),
+            );
+        }
+        asks.sort_by_cached_key(|ask| (rfc3339_sort_key(&ask.ts), ask.channel.clone(), ask.seq));
+        encode_success(id, ResponseResult::ChannelAsks { asks })
     }
 
     /// Records `now` in `channel`'s burst-detection sliding window and
@@ -1725,6 +1767,68 @@ impl App {
         }
         NickResolution::Ambiguous(candidates)
     }
+}
+
+/// Orderable key for the UTC RFC 3339 stamps `now_rfc3339` writes. Those
+/// trim trailing zero subseconds (`…:05Z`, `…:05.1Z`, `…:05.123456789Z`),
+/// so plain string order puts `…:05Z` after `…:05.1Z`; padding the fraction
+/// to nine digits makes lexical order chronological again.
+fn rfc3339_sort_key(ts: &str) -> (String, String) {
+    let cut = if ts.is_char_boundary(19) {
+        19
+    } else {
+        ts.len()
+    };
+    let (seconds, rest) = ts.split_at(cut);
+    let fraction: String = rest
+        .strip_prefix('.')
+        .unwrap_or("")
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect();
+    (seconds.to_string(), format!("{fraction:0<9}"))
+}
+
+/// Every `kind: ask` line of one channel's transcript (in file order), each
+/// paired with its FIRST later line carrying `in_reply_to == seq`. Pure, so
+/// `channel.asks`, `channel.reply`'s double-answer guard and the attention
+/// count all read one definition of "answered". Pre-seq lines (`seq: 0`)
+/// can never be asked about and are skipped.
+pub(crate) fn channel_asks_from_transcript(
+    channel: &str,
+    transcript: &[ChannelMessage],
+) -> Vec<ChannelAsk> {
+    let mut asks: Vec<ChannelAsk> = Vec::new();
+    let mut open_by_seq: HashMap<u64, usize> = HashMap::new();
+    for message in transcript {
+        if let Some(index) = message.in_reply_to.and_then(|seq| open_by_seq.remove(&seq)) {
+            let ask = &mut asks[index];
+            ask.answered = true;
+            ask.reply = Some(ChannelAskReply {
+                seq: message.seq,
+                ts: message.ts.clone(),
+                from_name: message.from_name.clone(),
+                from_kind: message.from_kind,
+                text: message.text.clone(),
+            });
+        }
+        if message.kind == ChannelMessageKind::Ask && message.seq > 0 {
+            open_by_seq.insert(message.seq, asks.len());
+            asks.push(ChannelAsk {
+                channel: channel.to_string(),
+                seq: message.seq,
+                ts: message.ts.clone(),
+                from_pane: (!message.from_pane.is_empty()).then(|| message.from_pane.clone()),
+                from_name: message.from_name.clone(),
+                to_pane: message.to_pane.clone(),
+                to_human: message.to_human,
+                text: message.text.clone(),
+                answered: false,
+                reply: None,
+            });
+        }
+    }
+    asks
 }
 
 /// A member pane's addressable name: the single source of truth consumed
@@ -5571,6 +5675,140 @@ mod tests {
         assert_eq!(old_line.kind, ChannelMessageKind::Message);
 
         super::super::test_support::shutdown_test_runtimes(&mut app);
+    }
+
+    fn ask_human(app: &mut App, channel: &str, text: &str) -> u64 {
+        let asked = app.handle_channel_ask_question(
+            "req".into(),
+            crate::api::schema::ChannelAskParams {
+                name: channel.into(),
+                to: app.state.chat_name.clone(),
+                text: text.into(),
+                from_pane: None,
+                timeout_ms: None,
+            },
+        );
+        let asked: serde_json::Value = serde_json::from_str(&asked).unwrap();
+        asked["result"]["seq"]
+            .as_u64()
+            .unwrap_or_else(|| panic!("ask must append: {asked}"))
+    }
+
+    fn list_asks(app: &mut App, params: ChannelAsksParams) -> serde_json::Value {
+        let listed = app.handle_channel_asks("req".into(), params);
+        let listed: serde_json::Value = serde_json::from_str(&listed).unwrap();
+        listed["result"]["asks"].clone()
+    }
+
+    /// ceo-bora#345 (contract C3): asks are derived from the transcript;
+    /// `--open` hides a question answered with `--reply-to`, the reply is the
+    /// first answering line, `--to-human` hides agent-to-agent questions,
+    /// and the list spans every `#channel` in `(ts, channel, seq)` order.
+    #[tokio::test]
+    async fn channel_asks_derive_open_and_answered_questions_from_the_transcript() {
+        let _isolated = IsolatedDirs::new("asks-derived");
+        let mut app = test_app();
+        app.state.chat_name = "ary".into();
+        create_channel(&mut app, "teste");
+        create_channel(&mut app, "outro");
+
+        let first = ask_human(&mut app, "teste", "qual banco?");
+        let second = ask_human(&mut app, "outro", "pode subir?");
+        for (text, reply_to) in [("postgres", first), ("de novo", first)] {
+            app.handle_channel_send(
+                "req".into(),
+                ChannelSendParams {
+                    name: "teste".into(),
+                    text: text.into(),
+                    from_pane: None,
+                    to: None,
+                    in_reply_to: Some(reply_to),
+                    when_idle: None,
+                    from_human: true,
+                },
+            );
+        }
+
+        let all = list_asks(&mut app, ChannelAsksParams::default());
+        let all = all.as_array().unwrap();
+        assert_eq!(all.len(), 2, "{all:?}");
+        assert_eq!(all[0]["channel"], "teste");
+        assert_eq!(all[0]["seq"], first);
+        assert_eq!(all[0]["answered"], true);
+        assert_eq!(all[0]["reply"]["text"], "postgres");
+        assert_eq!(all[0]["reply"]["from_name"], "ary");
+        assert_eq!(all[0]["reply"]["from_kind"], "human");
+        assert!(all[0].get("from_pane").is_none(), "{:?}", all[0]);
+        assert_eq!(all[1]["channel"], "outro");
+        assert_eq!(all[1]["seq"], second);
+        assert_eq!(all[1]["answered"], false);
+        assert!(
+            all[1]["reply"].is_null(),
+            "reply must be null: {:?}",
+            all[1]
+        );
+
+        let open = list_asks(
+            &mut app,
+            ChannelAsksParams {
+                name: None,
+                open: true,
+                to_human: true,
+            },
+        );
+        assert_eq!(open.as_array().unwrap().len(), 1, "{open}");
+        assert_eq!(open[0]["text"], "pode subir?");
+
+        let one = list_asks(
+            &mut app,
+            ChannelAsksParams {
+                name: Some("#teste".into()),
+                open: true,
+                to_human: false,
+            },
+        );
+        assert_eq!(one, serde_json::json!([]));
+
+        let missing = app.handle_channel_asks(
+            "req".into(),
+            ChannelAsksParams {
+                name: Some("ghost".into()),
+                ..ChannelAsksParams::default()
+            },
+        );
+        assert!(missing.contains("channel_not_found"), "{missing}");
+
+        super::super::test_support::shutdown_test_runtimes(&mut app);
+    }
+
+    #[test]
+    fn channel_asks_from_transcript_keeps_agent_asks_and_skips_pre_seq_lines() {
+        let line = |seq: u64, kind: ChannelMessageKind, in_reply_to: Option<u64>| ChannelMessage {
+            ts: "2026-10-06T22:00:00Z".into(),
+            seq,
+            from_pane: "w1:p1".into(),
+            from_name: "builder".into(),
+            from_kind: ChannelSenderKind::Agent,
+            text: format!("line {seq}"),
+            kind,
+            in_reply_to,
+            to_pane: Some("w1:p2".into()),
+            to_human: false,
+        };
+        let asks = channel_asks_from_transcript(
+            "teste",
+            &[
+                line(0, ChannelMessageKind::Ask, None),
+                line(1, ChannelMessageKind::Ask, None),
+                line(2, ChannelMessageKind::Message, Some(1)),
+            ],
+        );
+        assert_eq!(asks.len(), 1);
+        assert_eq!(asks[0].seq, 1);
+        assert_eq!(asks[0].from_pane.as_deref(), Some("w1:p1"));
+        assert_eq!(asks[0].to_pane.as_deref(), Some("w1:p2"));
+        assert!(!asks[0].to_human);
+        assert_eq!(asks[0].reply.as_ref().map(|reply| reply.seq), Some(2));
     }
 
     #[tokio::test]

@@ -128,6 +128,53 @@ pub enum ChannelMessageKind {
     Ask,
 }
 
+/// `channel.asks`: every `channel.ask` question still in a channel's
+/// retained JSONL transcript, derived on each call — no store of its own,
+/// so the list survives the asker's timeout and a server restart. `name`
+/// narrows to one channel; absent means every `#channel` of the session.
+/// `open` keeps unanswered questions only, `to_human` keeps questions
+/// addressed to the human seat only. Ordered by `ts`, ties by
+/// `(channel, seq)`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct ChannelAsksParams {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub open: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub to_human: bool,
+}
+
+/// One question listed by `channel.asks`. `answered` is true once any
+/// later line in the same channel carries `in_reply_to == seq`; `reply` is
+/// the FIRST such line, `null` while the question is open.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct ChannelAsk {
+    /// Channel name without the leading `#`.
+    pub channel: String,
+    pub seq: u64,
+    pub ts: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_pane: Option<String>,
+    pub from_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to_pane: Option<String>,
+    pub to_human: bool,
+    pub text: String,
+    pub answered: bool,
+    pub reply: Option<ChannelAskReply>,
+}
+
+/// The answer to a [`ChannelAsk`], as stored in the transcript.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct ChannelAskReply {
+    pub seq: u64,
+    pub ts: String,
+    pub from_name: String,
+    pub from_kind: ChannelSenderKind,
+    pub text: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ChannelHistoryParams {
     pub name: String,

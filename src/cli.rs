@@ -2,10 +2,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::api::client::{ApiClient, ApiClientError};
 use crate::api::schema::{
-    AgentStatus, ChannelAskParams, ChannelCreateParams, ChannelHistoryParams, ChannelJoinParams,
-    ChannelLeaveParams, ChannelListParams, ChannelMembersParams, ChannelNoteParams,
-    ChannelOpenParams, ChannelSendParams, ChannelWaitParams, ClientWindowTitleSetParams,
-    EmptyParams, Method, PaneAgentState, ReadFormat, ReadSource, Request, SplitDirection,
+    AgentStatus, ChannelAskParams, ChannelAsksParams, ChannelCreateParams, ChannelHistoryParams,
+    ChannelJoinParams, ChannelLeaveParams, ChannelListParams, ChannelMembersParams,
+    ChannelNoteParams, ChannelOpenParams, ChannelSendParams, ChannelWaitParams,
+    ClientWindowTitleSetParams, EmptyParams, Method, PaneAgentState, ReadFormat, ReadSource,
+    Request, SplitDirection,
 };
 
 macro_rules! print {
@@ -154,6 +155,7 @@ fn run_channel_command(args: &[String]) -> std::io::Result<i32> {
         Some("send") => channel_send(&args[1..]),
         Some("note") => channel_note(&args[1..]),
         Some("ask") => channel_ask(&args[1..]),
+        Some("asks") => channel_asks(&args[1..]),
         Some("history") => channel_history(&args[1..]),
         Some("tail") => channel_tail(&args[1..]),
         Some("members") => channel_members(&args[1..]),
@@ -399,6 +401,76 @@ fn parse_channel_ask_flags(
         }
     }
     Ok((from_pane, timeout_ms))
+}
+
+const CHANNEL_ASKS_USAGE: &str = "usage: bora channel asks [<name>] [--open] [--to-human] [--json]";
+
+/// `bora channel asks`: `channel.ask` questions derived from the channel
+/// transcripts. `--json` prints exactly one JSON array (`[]` when none) so
+/// a caller over SSH (the Windhover app) can parse stdout strictly.
+fn channel_asks(args: &[String]) -> std::io::Result<i32> {
+    let mut params = ChannelAsksParams::default();
+    let mut json = false;
+    for arg in args {
+        match arg.as_str() {
+            "--open" => params.open = true,
+            "--to-human" => params.to_human = true,
+            "--json" => json = true,
+            option if option.starts_with('-') => {
+                eprintln!("unknown option: {option}");
+                eprintln!("{CHANNEL_ASKS_USAGE}");
+                return Ok(2);
+            }
+            name if params.name.is_none() => params.name = Some(name.to_string()),
+            _ => {
+                eprintln!("{CHANNEL_ASKS_USAGE}");
+                return Ok(2);
+            }
+        }
+    }
+    let response = send_request(&Request {
+        id: "cli:channel:asks".into(),
+        method: Method::ChannelAsks(params),
+    })?;
+    if response.get("error").is_some() {
+        return print_response(&response);
+    }
+    let asks = response["result"]["asks"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    if json {
+        println!("{}", encode_response_json(&serde_json::Value::Array(asks)));
+        return Ok(0);
+    }
+    for ask in asks {
+        let channel = ask["channel"].as_str().unwrap_or("?");
+        let seq = ask["seq"].as_u64().unwrap_or(0);
+        let ts = ask["ts"].as_str().unwrap_or("");
+        let hhmm = ts.get(11..16).unwrap_or(ts);
+        let from_name = ask["from_name"].as_str().unwrap_or("?");
+        let state = if ask["answered"].as_bool() == Some(true) {
+            "answered"
+        } else {
+            "open"
+        };
+        let to = if ask["to_human"].as_bool() == Some(true) {
+            " -> you"
+        } else {
+            ""
+        };
+        let text = ask["text"].as_str().unwrap_or("");
+        println!("#{channel} seq={seq} {hhmm} {from_name}{to} [{state}] {text}");
+        if let Some(reply) = ask["reply"].as_object() {
+            let reply_name = reply
+                .get("from_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
+            let reply_text = reply.get("text").and_then(|v| v.as_str()).unwrap_or("");
+            println!("    {reply_name}: {reply_text}");
+        }
+    }
+    Ok(0)
 }
 
 /// Parses the flags accepted by `bora channel send` after `<name> <text>`.
@@ -904,6 +976,13 @@ fn print_channel_help() {
     );
     eprintln!(
         "                                                (default timeout 300000ms, cap 600000ms)"
+    );
+    eprintln!("  bora channel asks [<name>] [--open] [--to-human] [--json]");
+    eprintln!(
+        "                                                list channel.ask questions from the transcripts"
+    );
+    eprintln!(
+        "                                                (every #channel without <name>; --json is an array)"
     );
     eprintln!("  bora channel history <name> [--lines N] [--json]");
     eprintln!("                                                print a #channel's message history");

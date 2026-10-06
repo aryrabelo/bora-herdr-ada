@@ -1316,6 +1316,9 @@ impl App {
             Method::ChannelAsk(params) => {
                 return self.handle_channel_ask_question(request.id, params);
             }
+            Method::ChannelAsks(params) => {
+                return self.handle_channel_asks(request.id, params);
+            }
             _ => {
                 return responses::encode_error(
                     request.id,

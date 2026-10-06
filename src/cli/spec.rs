@@ -206,6 +206,18 @@ fn channel_command() -> Command {
                 ),
         )
         .subcommand(
+            Command::new("asks")
+                .about("List channel ask questions derived from the #channel transcripts")
+                .arg(
+                    Arg::new("name")
+                        .value_name("NAME")
+                        .help("One #channel; every #channel of the session when omitted"),
+                )
+                .arg(flag("open").help("Only questions without a reply"))
+                .arg(flag("to-human").help("Only questions addressed to the human seat"))
+                .arg(json_flag()),
+        )
+        .subcommand(
             Command::new("history")
                 .about("Print a #channel's message history")
                 .arg(required("name", "NAME"))
@@ -1551,8 +1563,8 @@ mod tests {
         let channel = command_path(&cmd, &["channel"]);
 
         for name in [
-            "show", "set", "create", "open", "list", "send", "note", "ask", "history", "tail",
-            "members", "join", "leave",
+            "show", "set", "create", "open", "list", "send", "note", "ask", "asks", "history",
+            "tail", "members", "join", "leave",
         ] {
             assert!(
                 channel.get_subcommands().any(|sub| sub.get_name() == name),
@@ -1580,5 +1592,13 @@ mod tests {
             "channel ask spec is missing --timeout, accepted by parse_channel_ask_flags \
              in src/cli.rs"
         );
+
+        let asks = command_path(&cmd, &["channel", "asks"]);
+        for option in ["open", "to-human", "json"] {
+            assert!(
+                has_option(asks, option),
+                "channel asks spec is missing --{option}, accepted by channel_asks in src/cli.rs"
+            );
+        }
     }
 }
