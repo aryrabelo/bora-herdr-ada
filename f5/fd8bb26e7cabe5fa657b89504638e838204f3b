@@ -1,0 +1,28 @@
+docs/next/api/herdr-api.schema.json
+  h_b156936c57c455 12207
+docs/next/website/src/content/docs/cli-reference.mdx
+  h_b156936c57c455 401
+docs/next/website/src/content/docs/socket-api.mdx
+  h_b156936c57c455 843
+src/api/schema/response.rs
+  h_b156936c57c455 380-382
+src/app/api/channels.rs
+  h_b156936c57c455 629,745-757,762-768,776,834,1097,1144,1451,6060-6122
+src/app/mod.rs
+  h_b156936c57c455 262-264,1584
+src/cli.rs
+  h_b156936c57c455 448,451-452,463,466-473,480-494,498-501,503,515,517,528,534-544,2107-2151
+src/persist/channels.rs
+  h_b156936c57c455 53,56-60,63,70,81-82,88-90
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "f5fd8bb26e7cabe5fa657b89504638e838204f3b",
+  "prompts": {},
+  "humans": {
+    "h_b156936c57c455": {
+      "author": "Ary Rabelo <aryrabelo@gmail.com>"
+    }
+  }
+}
