@@ -445,11 +445,11 @@ fn channel_asks(args: &[String]) -> std::io::Result<i32> {
         return Ok(0);
     }
     for ask in asks {
-        let channel = ask["channel"].as_str().unwrap_or("?");
+        let channel = terminal_safe(ask["channel"].as_str().unwrap_or("?"));
         let seq = ask["seq"].as_u64().unwrap_or(0);
         let ts = ask["ts"].as_str().unwrap_or("");
-        let hhmm = ts.get(11..16).unwrap_or(ts);
-        let from_name = ask["from_name"].as_str().unwrap_or("?");
+        let hhmm = terminal_safe(ts.get(11..16).unwrap_or(ts));
+        let from_name = terminal_safe(ask["from_name"].as_str().unwrap_or("?"));
         let state = if ask["answered"].as_bool() == Some(true) {
             "answered"
         } else {
@@ -460,30 +460,47 @@ fn channel_asks(args: &[String]) -> std::io::Result<i32> {
         } else {
             ""
         };
-        let text = ask["text"].as_str().unwrap_or("");
+        let text = terminal_safe(ask["text"].as_str().unwrap_or(""));
         println!("#{channel} seq={seq} {hhmm} {from_name}{to} [{state}] {text}");
         if let Some(reply) = ask["reply"].as_object() {
-            let reply_name = reply
-                .get("from_name")
-                .and_then(|v| v.as_str())
-                .unwrap_or("?");
-            let reply_text = reply.get("text").and_then(|v| v.as_str()).unwrap_or("");
+            let reply_name = terminal_safe(
+                reply
+                    .get("from_name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("?"),
+            );
+            let reply_text =
+                terminal_safe(reply.get("text").and_then(|v| v.as_str()).unwrap_or(""));
             println!("    {reply_name}: {reply_text}");
         }
     }
     Ok(0)
 }
 
+/// Transcript text made safe to print as one terminal line: every control
+/// character (ESC, BEL, CR/LF, C1, ...) becomes U+FFFD, so an agent-written
+/// question or answer can neither inject OSC/ANSI sequences into the
+/// reader's terminal nor break the one-line-per-question listing.
+fn terminal_safe(text: &str) -> std::borrow::Cow<'_, str> {
+    if !text.chars().any(char::is_control) {
+        return std::borrow::Cow::Borrowed(text);
+    }
+    std::borrow::Cow::Owned(
+        text.chars()
+            .map(|ch| if ch.is_control() { '\u{FFFD}' } else { ch })
+            .collect(),
+    )
+}
+
 const CHANNEL_REPLY_USAGE: &str = "usage: bora channel reply <name> <seq> <text> [--json]";
 
 /// `bora channel reply`: answer a `channel.ask` question as the human seat
-/// (`ui.chat_name`). `<text>` is one argv string taken verbatim; only an
-/// exact `--json` is a flag, so an answer like `-1` is still text. Refusals
-/// print the server error (code included) on stderr and exit 1.
+/// (`ui.chat_name`). The three positionals are taken verbatim, so an answer
+/// like `-1` or even `--json` is still text; only a fourth argument equal to
+/// `--json` is the flag. Refusals print the server error (code included) on
+/// stderr and exit 1.
 fn channel_reply(args: &[String]) -> std::io::Result<i32> {
-    let json = args.iter().any(|arg| arg == "--json");
-    let positional: Vec<&String> = args.iter().filter(|arg| *arg != "--json").collect();
-    let [name, seq, text] = positional.as_slice() else {
+    let Some((name, seq, text, json)) = parse_channel_reply_args(args) else {
         eprintln!("{CHANNEL_REPLY_USAGE}");
         return Ok(2);
     };
@@ -495,9 +512,9 @@ fn channel_reply(args: &[String]) -> std::io::Result<i32> {
     let response = send_request(&Request {
         id: "cli:channel:reply".into(),
         method: Method::ChannelReply(ChannelReplyParams {
-            name: (*name).clone(),
+            name: name.to_string(),
             seq,
-            text: (*text).clone(),
+            text: text.to_string(),
         }),
     })?;
     if response.get("error").is_some() {
@@ -508,10 +525,21 @@ fn channel_reply(args: &[String]) -> std::io::Result<i32> {
         println!("{}", encode_response_json(result));
         return Ok(0);
     }
-    let channel = result["channel"].as_str().unwrap_or(name.as_str());
+    let channel = result["channel"].as_str().unwrap_or(name);
     let reply_seq = result["seq"].as_u64().unwrap_or(0);
     println!("#{channel} seq={reply_seq} answers seq={seq}");
     Ok(0)
+}
+
+/// Splits `bora channel reply` argv into `(name, seq, text, json)`; `None`
+/// is a usage error. See [`channel_reply`] for why only a trailing fourth
+/// `--json` is the flag.
+fn parse_channel_reply_args(args: &[String]) -> Option<(&str, &str, &str, bool)> {
+    match args {
+        [name, seq, text] => Some((name, seq, text, false)),
+        [name, seq, text, flag] if flag == "--json" => Some((name, seq, text, true)),
+        _ => None,
+    }
 }
 
 /// Parses the flags accepted by `bora channel send` after `<name> <text>`.
@@ -2075,5 +2103,50 @@ mod tests {
                 "5000",
             ]
         );
+    }
+
+    /// cubic review on aryrabelo/bora-herdr-ada#49: the reply text is taken
+    /// verbatim, so `--json` is text in the third slot and the flag only as
+    /// a fourth argument.
+    #[test]
+    fn channel_reply_args_take_json_as_text_unless_it_is_a_fourth_argument() {
+        let argv = |args: &[&str]| {
+            args.iter()
+                .map(ToString::to_string)
+                .collect::<Vec<String>>()
+        };
+        assert_eq!(
+            super::parse_channel_reply_args(&argv(&["#x", "5", "--json"])),
+            Some(("#x", "5", "--json", false))
+        );
+        assert_eq!(
+            super::parse_channel_reply_args(&argv(&["#x", "5", "--json", "--json"])),
+            Some(("#x", "5", "--json", true))
+        );
+        assert_eq!(
+            super::parse_channel_reply_args(&argv(&["#x", "5", "-1", "--json"])),
+            Some(("#x", "5", "-1", true))
+        );
+        assert_eq!(
+            super::parse_channel_reply_args(&argv(&["#x", "5", "sim", "extra"])),
+            None
+        );
+        assert_eq!(super::parse_channel_reply_args(&argv(&["#x", "5"])), None);
+    }
+
+    /// cubic review on aryrabelo/bora-herdr-ada#49: `channel asks` prints
+    /// agent-written text, so control characters must not reach the
+    /// terminal as escape sequences or extra lines.
+    #[test]
+    fn terminal_safe_replaces_control_characters() {
+        assert_eq!(
+            super::terminal_safe("ok\u{1b}]52;c;eA==\u{7}\nnext\u{9b}2J"),
+            "ok\u{FFFD}]52;c;eA==\u{FFFD}\u{FFFD}next\u{FFFD}2J"
+        );
+        assert_eq!(super::terminal_safe("qual banco?"), "qual banco?");
+        assert!(matches!(
+            super::terminal_safe("ação 中文"),
+            std::borrow::Cow::Borrowed("ação 中文")
+        ));
     }
 }

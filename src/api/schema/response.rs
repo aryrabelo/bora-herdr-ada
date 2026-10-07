@@ -377,9 +377,9 @@ pub enum ResponseResult {
         asks: Vec<super::channels::ChannelAsk>,
     },
     /// `channel.reply` result: `seq` is the appended answer, `in_reply_to`
-    /// the question it answers. `deliveries` holds at most the asking pane
-    /// (empty when the question came from outside a pane, or when the
-    /// asker is gone — the answer is recorded either way).
+    /// the question it answers. `deliveries` holds at most one receipt, for
+    /// the asking pane: empty when the question came from outside a pane,
+    /// `failed` when that pane is gone. The answer is recorded either way.
     ChannelReplied {
         channel: String,
         seq: u64,

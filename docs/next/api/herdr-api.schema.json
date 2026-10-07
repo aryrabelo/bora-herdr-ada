@@ -12204,7 +12204,7 @@
               "type": "object"
             },
             {
-              "description": "`channel.reply` result: `seq` is the appended answer, `in_reply_to`\nthe question it answers. `deliveries` holds at most the asking pane\n(empty when the question came from outside a pane, or when the\nasker is gone — the answer is recorded either way).",
+              "description": "`channel.reply` result: `seq` is the appended answer, `in_reply_to`\nthe question it answers. `deliveries` holds at most one receipt, for\nthe asking pane: empty when the question came from outside a pane,\n`failed` when that pane is gone. The answer is recorded either way.",
               "properties": {
                 "channel": {
                   "type": "string"

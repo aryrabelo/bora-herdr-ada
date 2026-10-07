@@ -626,8 +626,7 @@ impl App {
         when_idle: Option<bool>,
         force_bell: bool,
     ) -> std::io::Result<RecordedChannelLine> {
-        channels::append_message(name, &message)?;
-        self.note_open_human_ask_line(name, &message);
+        self.append_channel_line(name, &message)?;
         self.push_chat_message(name, message.clone());
         self.notify_chat_to_human(name, &message);
 
@@ -743,17 +742,30 @@ impl App {
         count
     }
 
-    /// Keeps a cached channel's open-ask set current after `message` was
-    /// appended: an answering line closes its ask, a new ask to the human
-    /// opens one. A channel not cached yet is left alone, because its lazy
-    /// load reads this line from disk.
-    fn note_open_human_ask_line(&mut self, name: &str, message: &ChannelMessage) {
+    /// The one way the server appends a channel line: the durable append,
+    /// then keeps a cached channel's open-ask set current. An answering line
+    /// closes its ask and a new ask to the human opens one. A channel not
+    /// cached yet is left alone, because its lazy load reads this line from
+    /// disk. A rotation that dropped older lines drops the entry too, so an
+    /// ask that aged out of the transcript stops counting exactly when
+    /// `channel.asks` stops listing it.
+    pub(crate) fn append_channel_line(
+        &mut self,
+        name: &str,
+        message: &ChannelMessage,
+    ) -> std::io::Result<()> {
+        let rotated = channels::append_message(name, message)?;
         let cache = self
             .channel_open_human_asks
             .get_mut()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let Some(open) = cache.get_mut(name) else {
-            return;
+        let key = name.trim().trim_start_matches('#');
+        if rotated {
+            cache.remove(key);
+            return Ok(());
+        }
+        let Some(open) = cache.get_mut(key) else {
+            return Ok(());
         };
         if let Some(seq) = message.in_reply_to {
             open.remove(&seq);
@@ -761,6 +773,7 @@ impl App {
         if message.kind == ChannelMessageKind::Ask && message.to_human && message.seq > 0 {
             open.insert(message.seq);
         }
+        Ok(())
     }
 
     /// `channel.note`: append-only record, ZERO injection — the cheapest
@@ -818,7 +831,7 @@ impl App {
             to_pane: None,
             to_human: false,
         };
-        if let Err(err) = channels::append_message(&name, &message) {
+        if let Err(err) = self.append_channel_line(&name, &message) {
             return encode_error(id, "channel_send_failed", err.to_string());
         }
         self.push_chat_message(&name, message.clone());
@@ -1081,7 +1094,7 @@ impl App {
             to_pane: None,
             to_human: false,
         };
-        if let Err(err) = channels::append_message(channel, &line) {
+        if let Err(err) = self.append_channel_line(channel, &line) {
             tracing::warn!(
                 channel = %channel,
                 error = %err,
@@ -1128,7 +1141,7 @@ impl App {
             to_pane: None,
             to_human: false,
         };
-        if let Err(err) = channels::append_message(channel, &line) {
+        if let Err(err) = self.append_channel_line(channel, &line) {
             tracing::warn!(
                 channel = %channel,
                 pane = %public_id,
@@ -1435,7 +1448,7 @@ impl App {
             to_pane: None,
             to_human: false,
         };
-        if let Err(err) = channels::append_message(channel, &line) {
+        if let Err(err) = self.append_channel_line(channel, &line) {
             tracing::warn!(
                 channel = %channel,
                 pane = %public_pane_id,
@@ -6040,6 +6053,69 @@ mod tests {
         assert_eq!(answered["result"]["in_reply_to"], question, "{answered}");
         assert_eq!(app.channel_open_human_asks("eng"), 0, "live cache");
         assert_eq!(reload(&mut app), 0, "fresh load");
+
+        super::super::test_support::shutdown_test_runtimes(&mut app);
+    }
+
+    /// cubic review on aryrabelo/bora-herdr-ada#49: an open ask that log
+    /// rotation drops from the transcript stops counting in the attention
+    /// cache, the same moment `channel.asks` stops listing it.
+    #[tokio::test]
+    async fn open_human_asks_attention_cache_forgets_asks_rotated_out_of_the_log() {
+        use std::io::Write as _;
+
+        let _isolated = IsolatedDirs::new("open-human-asks-rotation");
+        let mut app = test_app();
+        app.state.chat_name = "ary".into();
+        create_channel(&mut app, "teste");
+        let old = ask_human(&mut app, "teste", "velha?");
+        assert_eq!(app.channel_open_human_asks("teste"), 1);
+
+        // Fill the log to exactly the cap with plain lines in one write, so
+        // the next append is the one that rotates.
+        let retained = channels::read_tail("teste", usize::MAX).unwrap();
+        let mut filler_line = retained.last().cloned().unwrap();
+        filler_line.kind = ChannelMessageKind::Message;
+        filler_line.to_human = false;
+        filler_line.to_pane = None;
+        let mut filler = String::new();
+        let missing = channels::MAX_CHANNEL_LOG_LINES - retained.len();
+        for seq in (old + 1)..=(old + missing as u64) {
+            filler_line.seq = seq;
+            filler.push_str(&serde_json::to_string(&filler_line).unwrap());
+            filler.push('\n');
+        }
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(channels::channel_file_path("teste"))
+            .unwrap()
+            .write_all(filler.as_bytes())
+            .unwrap();
+        assert_eq!(app.channel_open_human_asks("teste"), 1, "cache untouched");
+
+        // Notes bypass delivery but must invalidate the same cache.
+        let noted = app.handle_channel_note(
+            "req".into(),
+            ChannelNoteParams {
+                name: "teste".into(),
+                text: "rotate".into(),
+                from_pane: None,
+            },
+        );
+        assert!(noted.contains("\"result\""), "{noted}");
+        assert_eq!(app.channel_open_human_asks("teste"), 0, "old ask expired");
+
+        let fresh = ask_human(&mut app, "teste", "nova?");
+        let open: Vec<u64> = channel_asks_from_transcript(
+            "teste",
+            &channels::read_tail("teste", usize::MAX).unwrap(),
+        )
+        .into_iter()
+        .filter(|ask| ask.to_human && !ask.answered)
+        .map(|ask| ask.seq)
+        .collect();
+        assert_eq!(open, vec![fresh], "rotation dropped the old ask");
+        assert_eq!(app.channel_open_human_asks("teste"), 1, "only the new ask");
 
         super::super::test_support::shutdown_test_runtimes(&mut app);
     }

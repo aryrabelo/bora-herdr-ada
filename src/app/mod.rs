@@ -259,9 +259,9 @@ pub struct App {
     /// no answering line yet), so the client-shell snapshot can report
     /// `open_human_asks` without reading a channel JSONL per frame. Filled
     /// lazily from the transcript by `App::channel_open_human_asks` and
-    /// kept current by `record_and_deliver_channel_line`, the only writer of
-    /// ask and answer lines (ceo-bora#347). A `Mutex` because the snapshot
-    /// builder only holds `&App`.
+    /// kept current (or dropped on log rotation) by `App::append_channel_line`,
+    /// the server's only channel-line writer (ceo-bora#347). A `Mutex`
+    /// because the snapshot builder only holds `&App`.
     pub(crate) channel_open_human_asks:
         std::sync::Mutex<HashMap<String, std::collections::BTreeSet<u64>>>,
     pub(crate) agent_prompt_rate_limits: HashMap<(String, String), Instant>,
@@ -1581,7 +1581,7 @@ impl App {
                 to_pane: None,
                 to_human: false,
             };
-            if let Err(err) = crate::persist::channels::append_message(&channel, &line) {
+            if let Err(err) = self.append_channel_line(&channel, &line) {
                 tracing::warn!(
                     channel = %channel,
                     target_pane = %target_pane,
