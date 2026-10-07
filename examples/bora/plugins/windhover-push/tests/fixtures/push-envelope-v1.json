@@ -1,0 +1,101 @@
+{
+  "format": "windhover-push-envelope",
+  "version": 1,
+  "aad": "windhover-push-v1",
+  "layout": "base64(version[1] || nonce[12] || AES-256-GCM ciphertext || tag[16]); AAD = UTF-8 of `aad`",
+  "generator": "WebCrypto (Bun) via gen-vectors.ts, 2026-10-06",
+  "valid": [
+    {
+      "name": "needs-you-ascii",
+      "key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+      "nonce": "oKGio6Slpqeoqaqr",
+      "plaintext": "{\"title\":\"bora: claude needs you\",\"body\":\"Approve running the test suite?\",\"connectionId\":\"3F2504E0-4F89-11D3-9A0C-0305E82C3301\"}",
+      "envelope": "AaChoqOkpaanqKmqq506CEQxp2edWEflvHUb+v4TwDhl9tJiAvlrQvVf0hp08FplncBGKh9lvkW4eQjsjyI7ND0MvnMQJn5/NsFQ8dXHyKUcRcyQhcvA0zrsoaLUqGjfzaqv0B7MTxyp96h4pLvBG4Y36Leis+o3FLal1GkUE0ye7QWueRf9nZeHZcNvuHKeISngkdOc23PSLDP5Duk=",
+      "message": {
+        "title": "bora: claude needs you",
+        "body": "Approve running the test suite?",
+        "connectionId": "3F2504E0-4F89-11D3-9A0C-0305E82C3301"
+      }
+    },
+    {
+      "name": "finished-unicode-multiline",
+      "key": "j04rfBnQWmPh+AcrnE1uOlGwjyfUyW4aO19wksjk0aY=",
+      "nonce": "Dx4tPEtaaXiHlqW0",
+      "plaintext": "{\"title\":\"Windhover — teste ✅\",\"body\":\"linha 1\\nlinha 2: acentuação çãõ 🚀\"}",
+      "envelope": "AQ8eLTxLWml4h5altEZDLJfGXx5k+FDE6ertZp3MPtpWVQqxGhZOnj6lDVdBxnC0g8Ll1UxMMLj6SdpDFx+gCfTDv5YvVvNNt9uYd+sb8v2VO7uLnW97NXYohoAFOKfdG2DW3zXdLiboL0tOIVsSoJYINcs=",
+      "message": {
+        "title": "Windhover — teste ✅",
+        "body": "linha 1\nlinha 2: acentuação çãõ 🚀",
+        "connectionId": null
+      }
+    },
+    {
+      "name": "empty-body",
+      "key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+      "nonce": "AAAAAAAAAAAAAAAB",
+      "plaintext": "{\"title\":\"codex finished\",\"body\":\"\"}",
+      "envelope": "AQAAAAAAAAAAAAAAAW70y5UwmFU8NAwyVojDQtdz9nI9F9ox4FEsIbtJVAp8ALRFjMW3iy6th9q5quJ3eeHzkwM=",
+      "message": {
+        "title": "codex finished",
+        "body": "",
+        "connectionId": null
+      }
+    },
+    {
+      "name": "unknown-field-is-ignored",
+      "key": "j04rfBnQWmPh+AcrnE1uOlGwjyfUyW4aO19wksjk0aY=",
+      "nonce": "EBESExQVFhcYGRob",
+      "plaintext": "{\"title\":\"t\",\"body\":\"b\",\"connectionId\":\"6BA7B810-9DAD-11D1-80B4-00C04FD430C8\",\"future\":{\"x\":1}}",
+      "envelope": "ARAREhMUFRYXGBkaG9SWcDjdpOmYcuxxhg9gpbwm1Td04+2U5eMk+3oL3mT9ZK+WjEVmoTb5Z6DMeeA2z6KSE8XSXHDSnTHyuRnNfRN2jisOYUvIg3ynDNlCMf00HZXMp3SJ34UKAfmwJy6yHwCO6AY9mk0AWO/rFkwPJQ==",
+      "message": {
+        "title": "t",
+        "body": "b",
+        "connectionId": "6BA7B810-9DAD-11D1-80B4-00C04FD430C8"
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "tampered-ciphertext",
+      "key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+      "envelope": "AaChoqOkpaanqKmqq506CEQxp2ecWEflvHUb+v4TwDhl9tJiAvlrQvVf0hp08FplncBGKh9lvkW4eQjsjyI7ND0MvnMQJn5/NsFQ8dXHyKUcRcyQhcvA0zrsoaLUqGjfzaqv0B7MTxyp96h4pLvBG4Y36Leis+o3FLal1GkUE0ye7QWueRf9nZeHZcNvuHKeISngkdOc23PSLDP5Duk=",
+      "error": "authentication"
+    },
+    {
+      "name": "tampered-tag",
+      "key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+      "envelope": "AaChoqOkpaanqKmqq506CEQxp2edWEflvHUb+v4TwDhl9tJiAvlrQvVf0hp08FplncBGKh9lvkW4eQjsjyI7ND0MvnMQJn5/NsFQ8dXHyKUcRcyQhcvA0zrsoaLUqGjfzaqv0B7MTxyp96h4pLvBG4Y36Leis+o3FLal1GkUE0ye7QWueRf9nZeHZcNvuHKeISngkdOc23PSLDP5Dmk=",
+      "error": "authentication"
+    },
+    {
+      "name": "wrong-key",
+      "key": "QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1xdXl8=",
+      "envelope": "AaChoqOkpaanqKmqq506CEQxp2edWEflvHUb+v4TwDhl9tJiAvlrQvVf0hp08FplncBGKh9lvkW4eQjsjyI7ND0MvnMQJn5/NsFQ8dXHyKUcRcyQhcvA0zrsoaLUqGjfzaqv0B7MTxyp96h4pLvBG4Y36Leis+o3FLal1GkUE0ye7QWueRf9nZeHZcNvuHKeISngkdOc23PSLDP5Duk=",
+      "error": "authentication"
+    },
+    {
+      "name": "unknown-version",
+      "key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+      "envelope": "AqChoqOkpaanqKmqq506CEQxp2edWEflvHUb+v4TwDhl9tJiAvlrQvVf0hp08FplncBGKh9lvkW4eQjsjyI7ND0MvnMQJn5/NsFQ8dXHyKUcRcyQhcvA0zrsoaLUqGjfzaqv0B7MTxyp96h4pLvBG4Y36Leis+o3FLal1GkUE0ye7QWueRf9nZeHZcNvuHKeISngkdOc23PSLDP5Duk=",
+      "error": "unsupportedVersion"
+    },
+    {
+      "name": "too-short",
+      "key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+      "envelope": "AaChoqOkpaanqKmqq506CEQxp2edWEflvHUb+g==",
+      "error": "malformed"
+    },
+    {
+      "name": "not-base64",
+      "key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+      "envelope": "%%not base64%%",
+      "error": "malformed"
+    },
+    {
+      "name": "empty",
+      "key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+      "envelope": "",
+      "error": "malformed"
+    }
+  ]
+}

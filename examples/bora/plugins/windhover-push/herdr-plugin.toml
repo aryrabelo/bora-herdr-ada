@@ -1,0 +1,23 @@
+id = "ary.windhover-push"
+name = "Windhover push"
+version = "0.1.0"
+# Verified against bora 0.50.2 (pane.agent_status_changed and channel.message hooks,
+# pane.get / workspace.get over the socket). The ask rule needs the channel.message
+# `kind` / `to_human` fields; older servers simply never send an ask push.
+min_herdr_version = "0.50.2"
+platforms = ["macos", "linux"]
+description = "End-to-end encrypted iPhone push (Windhover) when an agent needs you, finishes, or asks you a question."
+
+# Install with `bora plugin install aryrabelo/bora-herdr-ada/examples/bora/plugins/windhover-push`
+# (or `bora plugin link` a checkout). Runtime is bun or node >= 20, no npm dependencies,
+# WebCrypto only; run.sh picks whichever exists. No build step, no [[startup]] daemon: each
+# event runs one short hook, and the 3 s recheck, the cooldown and ask coalescing share state
+# under HERDR_PLUGIN_STATE_DIR (README › Why hooks).
+
+[[events]]
+on = "pane.agent_status_changed"
+command = ["sh", "run.sh", "hook"]
+
+[[events]]
+on = "channel.message"
+command = ["sh", "run.sh", "hook"]
