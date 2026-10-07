@@ -371,6 +371,21 @@ pub enum ResponseResult {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reply: Option<ChannelMessage>,
     },
+    /// `channel.asks` result: the matching questions, `[]` when none. See
+    /// [`super::channels::ChannelAsksParams`] for filters and order.
+    ChannelAsks {
+        asks: Vec<super::channels::ChannelAsk>,
+    },
+    /// `channel.reply` result: `seq` is the appended answer, `in_reply_to`
+    /// the question it answers. `deliveries` holds at most one receipt, for
+    /// the asking pane: empty when the question came from outside a pane,
+    /// `failed` when that pane is gone. The answer is recorded either way.
+    ChannelReplied {
+        channel: String,
+        seq: u64,
+        in_reply_to: u64,
+        deliveries: Vec<super::channels::ChannelDelivery>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

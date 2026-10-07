@@ -900,6 +900,11 @@ pub struct AppState {
     /// "you"). The chat UI itself returns in the re-port; the identity the
     /// channel API attributes human-seat messages to stays server-side.
     pub chat_name: String,
+    /// Whether `ui.chat_name` itself is set (see
+    /// `UiConfig::configured_chat_name`), not just the OS-username
+    /// fallback in `chat_name`. `channel.reply` answers as the human seat
+    /// only when it is.
+    pub chat_name_configured: bool,
     /// `ui.channel_burst_messages` — see `channel_burst_window`.
     pub channel_burst_messages: u32,
     /// `ui.channel_burst_window_secs`, as a `Duration`. Together with
@@ -1141,6 +1146,7 @@ impl AppState {
             terminal_runtime_shutdowns: Vec::new(),
             agent_commands: crate::config::AgentsConfig::default(),
             chat_name: "you".to_string(),
+            chat_name_configured: false,
             channel_burst_messages: 5,
             channel_burst_window: std::time::Duration::from_secs(10),
             sidebar_width: 26,

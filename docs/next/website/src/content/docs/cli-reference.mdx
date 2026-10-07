@@ -382,6 +382,8 @@ bora channel members <name> [--json]
 bora channel send <name> <text> [--pane ID|--current] [--to NICK] [--reply-to SEQ] [--when-idle]
 bora channel note <name> <text> [--pane ID|--current]
 bora channel ask <name> <nick> <text> [--pane ID|--current] [--timeout MS]
+bora channel asks [<name>] [--open] [--to-human] [--json]
+bora channel reply <name> <seq> <text> [--json]
 bora channel history <name> [--lines N] [--json]
 bora channel tail <name> [--after SEQ] [--follow] [--json]
 bora channel join <name> [--pane ID]
@@ -389,6 +391,14 @@ bora channel leave <name> [--pane ID]
 ```
 
 `channel send` injects immediately into every member agent pane, even one that is mid-turn — the receipt reports `delivered` per member. `--when-idle` opts into hold-until-idle delivery: a working target's message is queued (bounded per-target FIFO) and reported as `deferred` with its queue position instead. An unbriefed pane receives the channel protocol briefing and its first message in the same delivery mode, briefing first.
+
+Every transcript line carries a `kind`: `channel ask` stores its question as `ask`, every other line is `message` (lines written before the field existed read as `message`). `channel history --json` and the `channel.message` event both show it, next to `in_reply_to` and `to_human`.
+
+`channel asks` lists those questions, derived from the transcripts on every call — there is no separate store, so a question is still listed after its asker stopped waiting and after a server restart. Without `<name>` it covers every `#channel` of the session. A question is answered once any later line carries `in_reply_to == seq`, and `reply` is the first such line; `--open` keeps unanswered questions, `--to-human` keeps questions addressed to your seat. Order is `ts` ascending, ties by channel and seq. `--json` prints exactly one array (`[]` when none) of `{channel, seq, ts, from_pane?, from_name, to_pane?, to_human, text, answered, reply}`, with `reply` either `null` or `{seq, ts, from_name, from_kind, text}`.
+
+An open question addressed to your seat also counts in the sidebar header's `N waiting` badge, red like a blocked pane, until it is answered. The view never switches to the channel by itself, and a question in the workspace you are looking at does not count.
+
+`channel reply` answers question `<seq>` as the human seat: the line is attributed to `ui.chat_name` with `from_kind: human`, carries `in_reply_to: <seq>`, and is delivered only to the pane that asked (held until it is idle). A `channel ask` still waiting returns `answered: true` with that reply. `<text>` is taken verbatim, even `-1` or `--json`; only a fourth argument `--json` is the flag. It refuses, appending nothing, with `empty_channel_message` (empty text), `channel_not_found` (no such channel), `channel_message_not_found` (no such seq), `channel_not_an_ask` (the seq is a plain message), `channel_ask_already_answered` (the question already has a reply), or `channel_no_human_seat` (`ui.chat_name` is unset). `--json` prints one object with `channel`, `seq` (the answer), `in_reply_to`, and `deliveries` (empty when the question came from outside a pane, a `failed` receipt when the asking pane is gone; the answer is recorded either way). Any process that can reach the session socket can use it, the same trust boundary as every other CLI verb, so it only ever answers one open question.
 
 ## Direct terminal attach
 

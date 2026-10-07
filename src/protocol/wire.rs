@@ -1063,6 +1063,13 @@ pub struct ClientShellWorkspace {
     /// (which `ViewMode` honors it) is a client decision.
     #[serde(default)]
     pub visual_group: Option<String>,
+    /// Open `channel.ask` questions to the human in this `#`-channel
+    /// workspace (`kind: ask`, `to_human`, not answered yet). Server-side
+    /// FACT; how it is presented (the sidebar "N waiting" count, red like
+    /// Blocked) is a client decision (ceo-bora#347). Defaulted so older
+    /// servers' JSON snapshots still decode.
+    #[serde(default)]
+    pub open_human_asks: usize,
     pub focused: bool,
     #[serde(deserialize_with = "deserialize_client_shell_agent_status")]
     pub agent_status: crate::api::schema::AgentStatus,
@@ -2875,6 +2882,7 @@ mod tests {
                 tokens: Vec::new(),
                 worktree: None,
                 visual_group: None,
+                open_human_asks: 0,
                 focused: true,
                 agent_status: crate::api::schema::AgentStatus::Idle,
             }],

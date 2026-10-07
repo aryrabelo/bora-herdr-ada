@@ -61,14 +61,19 @@ pub(in crate::client::shell) fn pane_attention_color(
     }
 }
 
-/// Aggregate `(waiting, blocked)` pane counts across the whole snapshot,
-/// for the sidebar header's "N waiting" badge. Channel workspaces (label
-/// prefixed `#`, ceo-bora#31/#33) are excluded: their panes go quiet by
-/// design and carry their own unread badge, not this one. The focused
-/// workspace's panes are excluded too (see module doc) -- its promoted
-/// state clears itself on the very next render once focus moves away,
-/// since this is recomputed fresh every frame, never cached. Computed once
-/// per sidebar render, never per row.
+/// Aggregate `(waiting, blocked)` counts across the whole snapshot, for the
+/// sidebar header's "N waiting" badge. Channel workspaces (label prefixed
+/// `#`, ceo-bora#31/#33) contribute no panes: their panes go quiet by
+/// design and carry their own unread badge, not this one. What a channel
+/// does contribute is each open question to the human
+/// (`ClientShellWorkspace.open_human_asks`, ceo-bora#347), counted in BOTH
+/// numbers so the badge turns red like `Blocked`: an agent asked the
+/// operator something and is held on the answer. Only the count changes;
+/// the view never switches to that channel by itself. The focused
+/// workspace is excluded for panes and asks alike (see module doc) -- its
+/// promoted state clears itself on the very next render once focus moves
+/// away, since this is recomputed fresh every frame, never cached.
+/// Computed once per sidebar render, never per row.
 pub(in crate::client::shell) fn attention_counts(
     snapshot: &ClientShellSnapshot,
     idle_attention_seconds: u64,
@@ -108,6 +113,13 @@ pub(in crate::client::shell) fn attention_counts(
         if status == crate::api::schema::AgentStatus::Blocked {
             blocked += 1;
         }
+    }
+    for workspace in &snapshot.workspaces {
+        if workspace.focused || !workspace.label.starts_with('#') {
+            continue;
+        }
+        waiting += workspace.open_human_asks;
+        blocked += workspace.open_human_asks;
     }
     (waiting, blocked)
 }

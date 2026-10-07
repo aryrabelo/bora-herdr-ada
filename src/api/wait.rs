@@ -1523,6 +1523,7 @@ mod tests {
                 from_name: "brandos".into(),
                 from_kind: ChannelSenderKind::Agent,
                 text: text.into(),
+                kind: crate::api::schema::ChannelMessageKind::Message,
                 in_reply_to: None,
                 to_pane: None,
                 to_human: false,
@@ -1586,6 +1587,9 @@ mod tests {
                             from_name: "brandos".into(),
                             text: appended.text,
                             to_pane: None,
+                            kind: crate::api::schema::ChannelMessageKind::Message,
+                            in_reply_to: None,
+                            to_human: false,
                         },
                     });
                 });
@@ -1675,6 +1679,7 @@ mod tests {
                 from_name: "brandos".into(),
                 from_kind: ChannelSenderKind::Agent,
                 text: text.into(),
+                kind: crate::api::schema::ChannelMessageKind::Message,
                 in_reply_to,
                 to_pane: None,
                 to_human: false,
@@ -1698,6 +1703,9 @@ mod tests {
                     from_name: appended.from_name.clone(),
                     text: appended.text.clone(),
                     to_pane: None,
+                    kind: appended.kind,
+                    in_reply_to: appended.in_reply_to,
+                    to_human: appended.to_human,
                 },
             });
         }

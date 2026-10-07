@@ -279,6 +279,10 @@ pub enum Method {
     ChannelNote(ChannelNoteParams),
     #[serde(rename = "channel.ask")]
     ChannelAsk(ChannelAskParams),
+    #[serde(rename = "channel.asks")]
+    ChannelAsks(ChannelAsksParams),
+    #[serde(rename = "channel.reply")]
+    ChannelReply(ChannelReplyParams),
 }
 
 #[cfg(test)]

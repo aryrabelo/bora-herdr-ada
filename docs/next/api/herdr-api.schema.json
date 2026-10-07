@@ -79,6 +79,14 @@
           ],
           "type": "string"
         },
+        "ChannelMessageKind": {
+          "description": "What a channel line is: a plain message, or a `channel.ask` question\nwaiting for an `in_reply_to` answer. Lines written before this field\nexisted parse as `Message`; only `channel.ask` writes `Ask`, which is\nwhat makes an unanswered question listable after its asker stopped\nwaiting (`channel.asks`).",
+          "enum": [
+            "message",
+            "ask"
+          ],
+          "type": "string"
+        },
         "EventData": {
           "oneOf": [
             {
@@ -868,7 +876,7 @@
               "type": "object"
             },
             {
-              "description": "A message was appended to a `#`-channel transcript (emitted right\nafter the durable append, before fan-out). `channel` is the\nnormalized name without the leading `#`; `seq` is the message's\nmonotonic per-channel id; `from_pane` is `None` for unattributed\nsenders; `to_pane` is the resolved targeted pane id or `None` for\nbroadcast.",
+              "description": "A message was appended to a `#`-channel transcript (emitted right\nafter the durable append, before fan-out). `channel` is the\nnormalized name without the leading `#`; `seq` is the message's\nmonotonic per-channel id; `from_pane` is `None` for unattributed\nsenders; `to_pane` is the resolved targeted pane id or `None` for\nbroadcast. `kind`, `in_reply_to` and `to_human` mirror the stored\nline, so a consumer spots a question to the human\n(`kind == ask && to_human`) and its answer (`in_reply_to`) without\nre-reading the transcript.",
               "properties": {
                 "channel": {
                   "type": "string"
@@ -882,6 +890,18 @@
                     "null"
                   ]
                 },
+                "in_reply_to": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "kind": {
+                  "$ref": "#/schemas/event/$defs/ChannelMessageKind",
+                  "default": "message"
+                },
                 "seq": {
                   "format": "uint64",
                   "minimum": 0,
@@ -889,6 +909,10 @@
                 },
                 "text": {
                   "type": "string"
+                },
+                "to_human": {
+                  "default": false,
+                  "type": "boolean"
                 },
                 "to_pane": {
                   "type": [
@@ -1992,6 +2016,24 @@
           ],
           "type": "object"
         },
+        "ChannelAsksParams": {
+          "description": "`channel.asks`: every `channel.ask` question still in a channel's\nretained JSONL transcript, derived on each call — no store of its own,\nso the list survives the asker's timeout and a server restart. `name`\nnarrows to one channel; absent means every `#channel` of the session.\n`open` keeps unanswered questions only, `to_human` keeps questions\naddressed to the human seat only. Ordered by `ts`, ties by\n`(channel, seq)`.",
+          "properties": {
+            "name": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "open": {
+              "type": "boolean"
+            },
+            "to_human": {
+              "type": "boolean"
+            }
+          },
+          "type": "object"
+        },
         "ChannelCreateParams": {
           "properties": {
             "name": {
@@ -2116,6 +2158,28 @@
           },
           "required": [
             "name"
+          ],
+          "type": "object"
+        },
+        "ChannelReplyParams": {
+          "description": "`channel.reply`: answer the `channel.ask` question `seq` of channel\n`name` AS THE HUMAN SEAT — the line is attributed to `ui.chat_name`\nwith `from_kind: human`, threads back through `in_reply_to = seq`, and\nis delivered only to the pane that asked. There is no sender field:\nthe method itself is the human seat, which is what a phone answering\nover SSH needs. Refused (nothing appended) with\n`channel_message_not_found`, `channel_not_an_ask`,\n`channel_ask_already_answered`, or `channel_no_human_seat` when\n`ui.chat_name` is unset.",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "seq": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "name",
+            "seq",
+            "text"
           ],
           "type": "object"
         },
@@ -7140,6 +7204,38 @@
             "params"
           ],
           "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "channel.asks",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/ChannelAsksParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "channel.reply",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/ChannelReplyParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
         }
       ],
       "properties": {
@@ -7618,6 +7714,97 @@
           ],
           "type": "string"
         },
+        "ChannelAsk": {
+          "description": "One question listed by `channel.asks`. `answered` is true once any\nlater line in the same channel carries `in_reply_to == seq`; `reply` is\nthe FIRST such line, `null` while the question is open.",
+          "properties": {
+            "answered": {
+              "type": "boolean"
+            },
+            "channel": {
+              "description": "Channel name without the leading `#`.",
+              "type": "string"
+            },
+            "from_name": {
+              "type": "string"
+            },
+            "from_pane": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "reply": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/ChannelAskReply"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "seq": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "text": {
+              "type": "string"
+            },
+            "to_human": {
+              "type": "boolean"
+            },
+            "to_pane": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "ts": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "channel",
+            "seq",
+            "ts",
+            "from_name",
+            "to_human",
+            "text",
+            "answered"
+          ],
+          "type": "object"
+        },
+        "ChannelAskReply": {
+          "description": "The answer to a [`ChannelAsk`], as stored in the transcript.",
+          "properties": {
+            "from_kind": {
+              "$ref": "#/schemas/success_response/$defs/ChannelSenderKind"
+            },
+            "from_name": {
+              "type": "string"
+            },
+            "seq": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "text": {
+              "type": "string"
+            },
+            "ts": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "seq",
+            "ts",
+            "from_name",
+            "from_kind",
+            "text"
+          ],
+          "type": "object"
+        },
         "ChannelDelivery": {
           "properties": {
             "detail": {
@@ -7727,6 +7914,11 @@
                 "null"
               ]
             },
+            "kind": {
+              "$ref": "#/schemas/success_response/$defs/ChannelMessageKind",
+              "default": "message",
+              "description": "`ask` for a `channel.ask` question, `message` for everything else."
+            },
             "seq": {
               "default": 0,
               "description": "Monotonic per-channel sequence id, assigned server-side at append\ntime. Survives log rotation (`next = last + 1`, never a line count).\n`0` marks pre-seq history written before this field existed.",
@@ -7761,6 +7953,14 @@
             "text"
           ],
           "type": "object"
+        },
+        "ChannelMessageKind": {
+          "description": "What a channel line is: a plain message, or a `channel.ask` question\nwaiting for an `in_reply_to` answer. Lines written before this field\nexisted parse as `Message`; only `channel.ask` writes `Ask`, which is\nwhat makes an unanswered question listable after its asker stopped\nwaiting (`channel.asks`).",
+          "enum": [
+            "message",
+            "ask"
+          ],
+          "type": "string"
         },
         "ChannelSenderKind": {
           "description": "Who authored a channel message: a member agent pane, or the human at the\nTUI. Lines written before this field existed parse as `Agent`.",
@@ -8637,7 +8837,7 @@
               "type": "object"
             },
             {
-              "description": "A message was appended to a `#`-channel transcript (emitted right\nafter the durable append, before fan-out). `channel` is the\nnormalized name without the leading `#`; `seq` is the message's\nmonotonic per-channel id; `from_pane` is `None` for unattributed\nsenders; `to_pane` is the resolved targeted pane id or `None` for\nbroadcast.",
+              "description": "A message was appended to a `#`-channel transcript (emitted right\nafter the durable append, before fan-out). `channel` is the\nnormalized name without the leading `#`; `seq` is the message's\nmonotonic per-channel id; `from_pane` is `None` for unattributed\nsenders; `to_pane` is the resolved targeted pane id or `None` for\nbroadcast. `kind`, `in_reply_to` and `to_human` mirror the stored\nline, so a consumer spots a question to the human\n(`kind == ask && to_human`) and its answer (`in_reply_to`) without\nre-reading the transcript.",
               "properties": {
                 "channel": {
                   "type": "string"
@@ -8651,6 +8851,18 @@
                     "null"
                   ]
                 },
+                "in_reply_to": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "kind": {
+                  "$ref": "#/schemas/success_response/$defs/ChannelMessageKind",
+                  "default": "message"
+                },
                 "seq": {
                   "format": "uint64",
                   "minimum": 0,
@@ -8658,6 +8870,10 @@
                 },
                 "text": {
                   "type": "string"
+                },
+                "to_human": {
+                  "default": false,
+                  "type": "boolean"
                 },
                 "to_pane": {
                   "type": [
@@ -11964,6 +12180,62 @@
                 "type",
                 "answered",
                 "question_seq"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "`channel.asks` result: the matching questions, `[]` when none. See\n[`super::channels::ChannelAsksParams`] for filters and order.",
+              "properties": {
+                "asks": {
+                  "items": {
+                    "$ref": "#/schemas/success_response/$defs/ChannelAsk"
+                  },
+                  "type": "array"
+                },
+                "type": {
+                  "const": "channel_asks",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "asks"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "`channel.reply` result: `seq` is the appended answer, `in_reply_to`\nthe question it answers. `deliveries` holds at most one receipt, for\nthe asking pane: empty when the question came from outside a pane,\n`failed` when that pane is gone. The answer is recorded either way.",
+              "properties": {
+                "channel": {
+                  "type": "string"
+                },
+                "deliveries": {
+                  "items": {
+                    "$ref": "#/schemas/success_response/$defs/ChannelDelivery"
+                  },
+                  "type": "array"
+                },
+                "in_reply_to": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "seq": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "type": {
+                  "const": "channel_replied",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "channel",
+                "seq",
+                "in_reply_to",
+                "deliveries"
               ],
               "type": "object"
             }

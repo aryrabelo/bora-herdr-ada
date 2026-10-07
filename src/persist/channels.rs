@@ -50,23 +50,24 @@ pub fn channel_cursors_file_path(name: &str) -> PathBuf {
 /// push a channel's log past this, the file is atomically rewritten to keep
 /// only the newest half — a fixed low-water mark avoids rotating on nearly
 /// every append while still bounding disk use for long-lived channels.
-const MAX_CHANNEL_LOG_LINES: usize = 10_000;
+pub(crate) const MAX_CHANNEL_LOG_LINES: usize = 10_000;
 
 /// Rewrite `path` to keep only its newest `max_lines / 2` lines once it
-/// exceeds `max_lines`. No-op below the cap or when the file doesn't exist
-/// yet. Writes to a sibling `.tmp` file and renames over the original so
-/// concurrent readers never observe a partially-written log.
-fn rotate_to_cap(path: &std::path::Path, max_lines: usize) -> io::Result<()> {
+/// exceeds `max_lines`, returning whether it did. No-op (`false`) below the
+/// cap or when the file doesn't exist yet. Writes to a sibling `.tmp` file
+/// and renames over the original so concurrent readers never observe a
+/// partially-written log.
+fn rotate_to_cap(path: &std::path::Path, max_lines: usize) -> io::Result<bool> {
     let file = match fs::File::open(path) {
         Ok(file) => file,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(false),
         Err(err) => return Err(err),
     };
     let lines: Vec<String> = io::BufReader::new(file)
         .lines()
         .collect::<io::Result<_>>()?;
     if lines.len() <= max_lines {
-        return Ok(());
+        return Ok(false);
     }
     let keep_from = lines.len() - max_lines / 2;
     let tmp_path = path.with_extension("jsonl.tmp");
@@ -77,14 +78,16 @@ fn rotate_to_cap(path: &std::path::Path, max_lines: usize) -> io::Result<()> {
         }
         tmp.flush()?;
     }
-    fs::rename(&tmp_path, path)
+    fs::rename(&tmp_path, path)?;
+    Ok(true)
 }
 
 /// Append one message, creating the `channels/` directory and the file on
 /// first use. Flushes so the write is durable before this call returns.
 /// Applies the bounded-storage rotation policy (see `MAX_CHANNEL_LOG_LINES`)
-/// after the append.
-pub fn append_message(name: &str, message: &ChannelMessage) -> io::Result<()> {
+/// after the append and returns whether it dropped older lines, so a cache
+/// derived from the transcript knows to re-derive.
+pub fn append_message(name: &str, message: &ChannelMessage) -> io::Result<bool> {
     fs::create_dir_all(channels_dir())?;
     let path = channel_file_path(name);
     let mut file = OpenOptions::new().create(true).append(true).open(&path)?;
@@ -389,6 +392,7 @@ mod tests {
             from_name: "brandos".into(),
             from_kind: ChannelSenderKind::Agent,
             text: text.into(),
+            kind: crate::api::schema::ChannelMessageKind::Message,
             in_reply_to: None,
             to_pane: None,
             to_human: false,

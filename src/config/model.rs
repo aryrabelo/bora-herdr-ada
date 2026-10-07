@@ -1386,16 +1386,21 @@ impl UiConfig {
         self.right_click_passthrough_modifier.modifiers()
     }
 
-    /// Human chat identity: `ui.chat_name` when set (trimmed, non-empty),
-    /// else the OS username (`USER`, then `LOGNAME`), else "you". Resolved
-    /// at config load and reload; `AppState.chat_name` carries the result.
-    pub fn effective_chat_name(&self) -> String {
-        if let Some(name) = self
-            .chat_name
+    /// `ui.chat_name` when set (trimmed, non-empty) — the deliberately
+    /// configured human seat. `channel.reply` refuses without it
+    /// (`channel_no_human_seat`) rather than answer under a guessed name.
+    pub fn configured_chat_name(&self) -> Option<&str> {
+        self.chat_name
             .as_deref()
             .map(str::trim)
             .filter(|name| !name.is_empty())
-        {
+    }
+
+    /// Human chat identity: [`Self::configured_chat_name`], else the OS
+    /// username (`USER`, then `LOGNAME`), else "you". Resolved at config
+    /// load and reload; `AppState.chat_name` carries the result.
+    pub fn effective_chat_name(&self) -> String {
+        if let Some(name) = self.configured_chat_name() {
             return name.to_string();
         }
         ["USER", "LOGNAME"]

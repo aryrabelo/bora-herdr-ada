@@ -145,3 +145,44 @@ fn waiting_badge_ignores_channel_workspace_panes() {
     let (_, header) = header_row(&frame);
     assert!(!header.contains("waiting"), "header was {header:?}");
 }
+
+/// ceo-bora#347 (contract C5): an open question to the human in a `#`
+/// channel counts in "N waiting", red like `Blocked`, and the view stays
+/// where the operator left it. The same question in the focused workspace
+/// does not count: the operator is already looking at it.
+#[test]
+fn waiting_badge_counts_open_human_asks_in_red_without_switching_view() {
+    let mut projected = snapshot();
+    let mut channel = projected.workspaces[0].clone();
+    channel.workspace_id = "ws_2".into();
+    channel.active_tab_id = "tab_2".into();
+    channel.number = 2;
+    channel.label = "#teste".into();
+    channel.focused = false;
+    channel.open_human_asks = 1;
+    projected.workspaces.push(channel);
+    let focused_before = projected.focused_workspace_id.clone();
+    assert_eq!(focused_before.as_deref(), Some("ws_1"));
+
+    let (state, frame) = compose_with(projected.clone());
+    let (y, header) = header_row(&frame);
+    let column = header.find("1 waiting").expect("badge text") as u16;
+    let cell = &frame.cells[y as usize * frame.width as usize + column as usize];
+    assert_eq!(
+        cell.fg,
+        crate::protocol::color_to_u32(state.config.palette.red)
+    );
+    let composed = state.snapshot.as_deref().expect("snapshot");
+    assert_eq!(composed.focused_workspace_id, focused_before);
+    assert!(composed
+        .workspaces
+        .iter()
+        .all(|workspace| workspace.focused == (workspace.workspace_id == "ws_1")));
+
+    projected.workspaces[1].focused = true;
+    projected.workspaces[0].focused = false;
+    projected.focused_workspace_id = Some("ws_2".into());
+    let (_state, frame) = compose_with(projected);
+    let (_, header) = header_row(&frame);
+    assert!(!header.contains("waiting"), "header was {header:?}");
+}

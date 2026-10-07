@@ -255,6 +255,15 @@ pub struct App {
     pub(crate) config_reloaded_from_disk: bool,
     client_shell_keybindings_profile: Option<String>,
     pub(crate) channels_in_burst: HashSet<String>,
+    /// Per-channel seqs of OPEN asks to the human (`kind: ask`, `to_human`,
+    /// no answering line yet), so the client-shell snapshot can report
+    /// `open_human_asks` without reading a channel JSONL per frame. Filled
+    /// lazily from the transcript by `App::channel_open_human_asks` and
+    /// kept current (or dropped on log rotation) by `App::append_channel_line`,
+    /// the server's only channel-line writer (ceo-bora#347). A `Mutex`
+    /// because the snapshot builder only holds `&App`.
+    pub(crate) channel_open_human_asks:
+        std::sync::Mutex<HashMap<String, std::collections::BTreeSet<u64>>>,
     pub(crate) agent_prompt_rate_limits: HashMap<(String, String), Instant>,
     /// Per-channel send timestamps used to detect a burst (`ui.channel_burst_messages` within
     /// `ui.channel_burst_window_secs`) — see `App::record_channel_burst_send` in
@@ -639,6 +648,7 @@ impl App {
             terminal_runtime_shutdowns: Vec::new(),
             agent_commands: config.agents.clone(),
             chat_name: config.ui.effective_chat_name(),
+            chat_name_configured: config.ui.configured_chat_name().is_some(),
             channel_burst_messages: config.ui.channel_burst_messages,
             channel_burst_window: Duration::from_secs(config.ui.channel_burst_window_secs),
             sidebar_width: config.ui.sidebar_width,
@@ -748,6 +758,7 @@ impl App {
             next_pending_agent_prompt_queue_id: 1,
             pending_agent_prompt_drain_deadlines: HashMap::new(),
             channels_in_burst: HashSet::new(),
+            channel_open_human_asks: std::sync::Mutex::new(HashMap::new()),
             client_shell_keybindings_profile,
             endpoint_commands,
             channel_burst_history: HashMap::new(),
@@ -984,6 +995,7 @@ impl App {
                 self.state.new_workspace_position = config.ui.new_workspace_position;
                 self.state.view_mode = config.ui.view_mode;
                 self.state.chat_name = config.ui.effective_chat_name();
+                self.state.chat_name_configured = config.ui.configured_chat_name().is_some();
                 self.state.channel_burst_messages = config.ui.channel_burst_messages;
                 self.state.channel_burst_window =
                     Duration::from_secs(config.ui.channel_burst_window_secs);
@@ -1564,11 +1576,12 @@ impl App {
                 from_name: "bora".to_string(),
                 from_kind: crate::api::schema::ChannelSenderKind::Agent,
                 text: format!("delivery to {target_pane} dropped: {reason_text}"),
+                kind: crate::api::schema::ChannelMessageKind::Message,
                 in_reply_to: None,
                 to_pane: None,
                 to_human: false,
             };
-            if let Err(err) = crate::persist::channels::append_message(&channel, &line) {
+            if let Err(err) = self.append_channel_line(&channel, &line) {
                 tracing::warn!(
                     channel = %channel,
                     target_pane = %target_pane,

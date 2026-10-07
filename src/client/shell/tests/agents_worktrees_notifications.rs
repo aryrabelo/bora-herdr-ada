@@ -115,6 +115,7 @@ fn grouped_worktrees_render_parent_branch_and_indented_child() {
             is_linked_worktree: true,
         }),
         visual_group: None,
+        open_human_asks: 0,
         focused: false,
         agent_status: AgentStatus::Idle,
     });
@@ -1565,6 +1566,7 @@ fn worktree_group_state(view_mode: crate::config::ViewMode) -> ClientShellState 
             is_linked_worktree: true,
         }),
         visual_group: Some("foxtrot".into()),
+        open_human_asks: 0,
         focused: false,
         agent_status: AgentStatus::Idle,
     });

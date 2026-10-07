@@ -1,9 +1,10 @@
 use crate::api::schema::{
-    AgentInfo, AgentPromptParams, AgentStatus, ChannelCreateParams, ChannelDelivery,
-    ChannelDeliveryStatus, ChannelHistoryParams, ChannelJoinParams, ChannelLeaveParams,
-    ChannelListParams, ChannelMember, ChannelMemberSource, ChannelMembersParams, ChannelMessage,
-    ChannelNoteParams, ChannelOpenParams, ChannelSendParams, ChannelSenderKind, ChannelSummary,
-    PaneRightClickTarget, PaneSplitParams, ResponseResult, SplitDirection,
+    AgentInfo, AgentPromptParams, AgentStatus, ChannelAsk, ChannelAskReply, ChannelAsksParams,
+    ChannelCreateParams, ChannelDelivery, ChannelDeliveryStatus, ChannelHistoryParams,
+    ChannelJoinParams, ChannelLeaveParams, ChannelListParams, ChannelMember, ChannelMemberSource,
+    ChannelMembersParams, ChannelMessage, ChannelMessageKind, ChannelNoteParams, ChannelOpenParams,
+    ChannelReplyParams, ChannelSendParams, ChannelSenderKind, ChannelSummary, PaneRightClickTarget,
+    PaneSplitParams, ResponseResult, SplitDirection,
 };
 use crate::app::App;
 use crate::persist::channels;
@@ -411,13 +412,14 @@ impl App {
     }
 
     /// Thin wrapper over [`Self::handle_channel_send_inner`] with
-    /// `force_bell: false` — `channel.send`'s own path. `channel.ask`
-    /// (`handle_channel_ask_question`) is the other caller of
+    /// `force_bell: false` and `kind: Message` — `channel.send`'s own path.
+    /// `channel.ask` (`handle_channel_ask_question`) is the other caller of
     /// `handle_channel_send_inner`, with `force_bell: true` so its question
-    /// always pierces an active burst; `force_bell` is never part of
-    /// `ChannelSendParams` itself.
+    /// always pierces an active burst, and `kind: Ask` so the stored line
+    /// stays a listable question after its asker stops waiting; neither is
+    /// ever part of `ChannelSendParams` itself.
     pub(super) fn handle_channel_send(&mut self, id: String, params: ChannelSendParams) -> String {
-        self.handle_channel_send_inner(id, params, false)
+        self.handle_channel_send_inner(id, params, false, ChannelMessageKind::Message)
     }
 
     fn handle_channel_send_inner(
@@ -425,6 +427,7 @@ impl App {
         id: String,
         params: ChannelSendParams,
         force_bell: bool,
+        kind: ChannelMessageKind,
     ) -> String {
         if params.text.is_empty() {
             return encode_error(
@@ -560,36 +563,90 @@ impl App {
             ts: now_rfc3339(),
             seq: channels::next_seq(&name),
             from_pane: sender_pane.clone(),
-            from_name: sender_name.clone(),
+            from_name: sender_name,
             from_kind: if params.from_human {
                 ChannelSenderKind::Human
             } else {
                 ChannelSenderKind::Agent
             },
-            text: text.clone(),
+            text,
+            kind,
             in_reply_to: params.in_reply_to,
             to_pane: to_pane.clone(),
             to_human,
         };
-        if let Err(err) = channels::append_message(&name, &message) {
-            return encode_error(id, "channel_send_failed", err.to_string());
+        // Targeted delivery reaches only the resolved pane — and never the
+        // sender's own. A message addressed to the human seat reaches no
+        // pane at all: the human reads it in the chat view transcript, and
+        // injecting it into agents would put words in the human's mouth.
+        // Broadcast reaches every agent member pane as before.
+        let targets: Vec<String> = if to_human {
+            Vec::new()
+        } else {
+            match &to_pane {
+                Some(target) if target != &sender_pane => vec![target.clone()],
+                Some(_) => Vec::new(),
+                None => self.channel_agent_member_pane_ids(ws_idx, &sender_pane),
+            }
+        };
+        match self.record_and_deliver_channel_line(
+            &id,
+            &name,
+            ws_idx,
+            message,
+            targets,
+            params.when_idle,
+            force_bell,
+        ) {
+            Ok(recorded) => encode_success(
+                id,
+                ResponseResult::ChannelSent {
+                    deliveries: recorded.deliveries,
+                    suppressed: recorded.suppressed,
+                    seq: recorded.seq,
+                },
+            ),
+            Err(err) => encode_error(id, "channel_send_failed", err.to_string()),
         }
-        self.push_chat_message(&name, message.clone());
-        self.notify_chat_to_human(&name, &message);
+    }
+
+    /// The shared second half of every bell-carrying channel line
+    /// (`channel.send`, `channel.ask`, `channel.reply`), after addressing
+    /// and attribution are settled: durable append, chat-view projection,
+    /// the `channel.message` event, burst bookkeeping, then delivery to
+    /// `targets`. Nothing is delivered or evented when the append fails.
+    #[allow(clippy::too_many_arguments)] // one call per verb; a params struct would only rename these
+    fn record_and_deliver_channel_line(
+        &mut self,
+        id: &str,
+        name: &str,
+        ws_idx: usize,
+        message: ChannelMessage,
+        targets: Vec<String>,
+        when_idle: Option<bool>,
+        force_bell: bool,
+    ) -> std::io::Result<RecordedChannelLine> {
+        self.append_channel_line(name, &message)?;
+        self.push_chat_message(name, message.clone());
+        self.notify_chat_to_human(name, &message);
 
         // Durable-record event, mirroring the QueuedPromptDelivered emission:
         // the message is on disk, so `channel.wait` followers (and events.wait
         // ChannelMessage filters) can wake on it. Emitted before fan-out —
         // delivery receipts are the deliveries list's job, not this event's.
+        let sender_pane = message.from_pane.clone();
         self.emit_event(crate::api::schema::EventEnvelope {
             event: crate::api::schema::EventKind::ChannelMessage,
             data: crate::api::schema::EventData::ChannelMessage {
-                channel: name.clone(),
+                channel: name.to_string(),
                 seq: message.seq,
                 from_pane: (!sender_pane.is_empty()).then(|| sender_pane.clone()),
-                from_name: sender_name.clone(),
+                from_name: message.from_name.clone(),
                 text: message.text.clone(),
-                to_pane: message.to_pane,
+                to_pane: message.to_pane.clone(),
+                kind: message.kind,
+                in_reply_to: message.in_reply_to,
+                to_human: message.to_human,
             },
         });
 
@@ -598,20 +655,19 @@ impl App {
         // `ui.channel_burst_window_secs`), mirroring orc's
         // `ORC_BURST_N`/`ORC_BURST_MIN`. The message is always recorded and
         // eventable above, regardless — this only decides whether the
-        // fan-out below bells member panes. `force_bell` pierces it; today
-        // only ever `false` from `channel.send` itself (see
-        // `handle_channel_send`'s doc comment).
-        let burst = self.record_channel_burst_send(&name, Instant::now());
+        // fan-out below bells member panes. `force_bell` pierces it
+        // (`channel.ask` and `channel.reply`; never `channel.send`).
+        let burst = self.record_channel_burst_send(name, Instant::now());
         let suppressed = burst && !force_bell;
         if burst {
-            if self.channels_in_burst.insert(name.clone()) {
+            if self.channels_in_burst.insert(name.to_string()) {
                 // Edge-triggered: only the transition into burst gets a
                 // system line, so a storm doesn't double the transcript
                 // with one line per suppressed message.
-                self.append_channel_burst_notice(&name);
+                self.append_channel_burst_notice(name);
             }
         } else {
-            self.channels_in_burst.remove(&name);
+            self.channels_in_burst.remove(name);
         }
 
         // The prefix is built here (not delegated to `handle_agent_prompt`'s
@@ -628,32 +684,21 @@ impl App {
         // recipient was handed. Field order is otherwise unchanged, so a
         // reader parsing `from <pane> <nick>` positionally still works.
         let seq = message.seq;
-        let prefixed = format!("[#{name} seq={seq} from {sender_pane} {sender_name}] {text}");
+        let prefixed = format!(
+            "[#{name} seq={seq} from {sender_pane} {}] {}",
+            message.from_name, message.text
+        );
 
-        // Targeted delivery reaches only the resolved pane — and never the
-        // sender's own. A message addressed to the human seat reaches no
-        // pane at all: the human reads it in the chat view transcript, and
-        // injecting it into agents would put words in the human's mouth.
-        // Broadcast reaches every agent member pane as before. A suppressed
-        // (burst-active, not pierced) send skips this loop entirely —
-        // including the protocol briefing — so nothing about a storm ever
-        // touches a pane, only its transcript.
+        // A suppressed (burst-active, not pierced) line skips delivery
+        // entirely — including the protocol briefing — so nothing about a
+        // storm ever touches a pane, only its transcript.
         let deliveries = if suppressed {
             Vec::new()
         } else {
-            let targets: Vec<String> = if to_human {
-                Vec::new()
-            } else {
-                match &to_pane {
-                    Some(target) if target != &sender_pane => vec![target.clone()],
-                    Some(_) => Vec::new(),
-                    None => self.channel_agent_member_pane_ids(ws_idx, &sender_pane),
-                }
-            };
             targets
                 .into_iter()
                 .map(|target| {
-                    self.send_channel_protocol(&name, ws_idx, &target, params.when_idle);
+                    self.send_channel_protocol(name, ws_idx, &target, when_idle);
                     let response = self.handle_agent_prompt(
                         format!("{id}:channel:{target}"),
                         AgentPromptParams {
@@ -661,24 +706,74 @@ impl App {
                             text: prefixed.clone(),
                             wait: None,
                             from_pane: None,
-                            when_idle: params.when_idle,
+                            when_idle,
                             when_idle_timeout_ms: None,
                             peer_pid: None,
-                            origin_channel: Some(name.clone()),
+                            origin_channel: Some(name.to_string()),
                         },
                     );
                     classify_delivery(target, &response)
                 })
                 .collect()
         };
-        encode_success(
-            id,
-            ResponseResult::ChannelSent {
-                deliveries,
-                suppressed,
-                seq: message.seq,
-            },
-        )
+        Ok(RecordedChannelLine {
+            seq,
+            deliveries,
+            suppressed,
+        })
+    }
+
+    /// How many asks to the human are open in `channel` (normalized name):
+    /// the server-side fact behind `ClientShellWorkspace.open_human_asks`
+    /// (ceo-bora#347). Served from `channel_open_human_asks`; a channel not
+    /// cached yet is read from its transcript once, with the same
+    /// definition of "answered" `channel.asks` uses.
+    pub(crate) fn channel_open_human_asks(&self, channel: &str) -> usize {
+        let mut cache = self
+            .channel_open_human_asks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(open) = cache.get(channel) {
+            return open.len();
+        }
+        let open = open_human_ask_seqs(channel);
+        let count = open.len();
+        cache.insert(channel.to_string(), open);
+        count
+    }
+
+    /// The one way the server appends a channel line: the durable append,
+    /// then keeps a cached channel's open-ask set current. An answering line
+    /// closes its ask and a new ask to the human opens one. A channel not
+    /// cached yet is left alone, because its lazy load reads this line from
+    /// disk. A rotation that dropped older lines drops the entry too, so an
+    /// ask that aged out of the transcript stops counting exactly when
+    /// `channel.asks` stops listing it.
+    pub(crate) fn append_channel_line(
+        &mut self,
+        name: &str,
+        message: &ChannelMessage,
+    ) -> std::io::Result<()> {
+        let rotated = channels::append_message(name, message)?;
+        let cache = self
+            .channel_open_human_asks
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let key = name.trim().trim_start_matches('#');
+        if rotated {
+            cache.remove(key);
+            return Ok(());
+        }
+        let Some(open) = cache.get_mut(key) else {
+            return Ok(());
+        };
+        if let Some(seq) = message.in_reply_to {
+            open.remove(&seq);
+        }
+        if message.kind == ChannelMessageKind::Ask && message.to_human && message.seq > 0 {
+            open.insert(message.seq);
+        }
+        Ok(())
     }
 
     /// `channel.note`: append-only record, ZERO injection — the cheapest
@@ -731,11 +826,12 @@ impl App {
             from_name: sender_name.clone(),
             from_kind: ChannelSenderKind::Agent,
             text,
+            kind: ChannelMessageKind::Message,
             in_reply_to: None,
             to_pane: None,
             to_human: false,
         };
-        if let Err(err) = channels::append_message(&name, &message) {
+        if let Err(err) = self.append_channel_line(&name, &message) {
             return encode_error(id, "channel_send_failed", err.to_string());
         }
         self.push_chat_message(&name, message.clone());
@@ -749,6 +845,9 @@ impl App {
                 from_name: sender_name,
                 text: message.text.clone(),
                 to_pane: None,
+                kind: ChannelMessageKind::Message,
+                in_reply_to: None,
+                to_human: false,
             },
         });
         encode_success(
@@ -787,7 +886,164 @@ impl App {
                 from_human: false,
             },
             true,
+            ChannelMessageKind::Ask,
         )
+    }
+
+    /// `channel.asks`: questions derived from each channel's retained JSONL
+    /// on every call (see [`channel_asks_from_transcript`]). No store of its
+    /// own — the tombstoned todo store stays tombstoned — so the list is
+    /// exactly what the transcript says, before and after a restart.
+    pub(super) fn handle_channel_asks(&mut self, id: String, params: ChannelAsksParams) -> String {
+        let names: Vec<String> = match params.name.as_deref() {
+            Some(name) => {
+                let name = channels::normalize_channel_name(name);
+                if self.find_channel_workspace(&name).is_none() {
+                    return encode_error(
+                        id,
+                        "channel_not_found",
+                        format!("channel #{name} not found"),
+                    );
+                }
+                vec![name]
+            }
+            None => self
+                .state
+                .workspaces
+                .iter()
+                .filter_map(|ws| ws.channel_home_name().map(channels::normalize_channel_name))
+                .collect(),
+        };
+        let mut asks = Vec::new();
+        for name in names {
+            let transcript = match channels::read_tail(&name, usize::MAX) {
+                Ok(transcript) => transcript,
+                Err(err) => return encode_error(id, "channel_asks_failed", err.to_string()),
+            };
+            asks.extend(
+                channel_asks_from_transcript(&name, &transcript)
+                    .into_iter()
+                    .filter(|ask| !params.open || !ask.answered)
+                    .filter(|ask| !params.to_human || ask.to_human),
+            );
+        }
+        asks.sort_by_cached_key(|ask| (rfc3339_sort_key(&ask.ts), ask.channel.clone(), ask.seq));
+        encode_success(id, ResponseResult::ChannelAsks { asks })
+    }
+
+    /// `channel.reply`: the human seat answers question `seq`. Every refusal
+    /// happens before anything is appended. The answer threads through
+    /// `in_reply_to`, which is all a still-waiting `channel.ask`
+    /// (`wait::ask_channel` polls the transcript for it) needs to return
+    /// `answered: true`, and which flips the question to answered in
+    /// `channel.asks` — the same [`channel_asks_from_transcript`]
+    /// definition decides "already answered" here.
+    ///
+    /// Delivery goes to the asking pane only, held until it is idle: an
+    /// asker still blocked in `channel ask` already gets the answer as that
+    /// call's result, so the injected copy must not steer it mid-turn. An
+    /// asker outside any pane (or gone) gets no delivery; the answer is
+    /// recorded regardless. The method itself is the human seat — the
+    /// trust boundary is the owner-only session socket every CLI verb
+    /// crosses — so it is narrowed to answering one open question and
+    /// never posts free text.
+    pub(super) fn handle_channel_reply(
+        &mut self,
+        id: String,
+        params: ChannelReplyParams,
+    ) -> String {
+        if params.text.is_empty() {
+            return encode_error(
+                id,
+                "empty_channel_message",
+                "channel message must not be empty",
+            );
+        }
+        let name = channels::normalize_channel_name(&params.name);
+        let Some(ws_idx) = self.find_channel_workspace(&name) else {
+            return encode_error(
+                id,
+                "channel_not_found",
+                format!("channel #{name} not found"),
+            );
+        };
+        if !self.state.chat_name_configured {
+            return encode_error(
+                id,
+                "channel_no_human_seat",
+                "no human seat: set [ui] chat_name in config.toml to answer as yourself",
+            );
+        }
+        let transcript = match channels::read_tail(&name, usize::MAX) {
+            Ok(transcript) => transcript,
+            Err(err) => return encode_error(id, "channel_reply_failed", err.to_string()),
+        };
+        let seq = params.seq;
+        let Some(question) = transcript
+            .iter()
+            .find(|line| line.seq != 0 && line.seq == seq)
+        else {
+            return encode_error(
+                id,
+                "channel_message_not_found",
+                format!("#{name} has no message with seq {seq}"),
+            );
+        };
+        if question.kind != ChannelMessageKind::Ask {
+            return encode_error(
+                id,
+                "channel_not_an_ask",
+                format!("#{name} seq {seq} is a message, not a channel.ask question"),
+            );
+        }
+        if let Some(reply) = channel_asks_from_transcript(&name, &transcript)
+            .into_iter()
+            .find(|ask| ask.seq == seq)
+            .and_then(|ask| ask.reply)
+        {
+            return encode_error(
+                id,
+                "channel_ask_already_answered",
+                format!(
+                    "#{name} seq {seq} was already answered by {} at seq {}",
+                    reply.from_name, reply.seq
+                ),
+            );
+        }
+        let asker = (!question.from_pane.is_empty()).then(|| question.from_pane.clone());
+        let message = ChannelMessage {
+            ts: now_rfc3339(),
+            seq: channels::next_seq(&name),
+            from_pane: String::new(),
+            from_name: self.state.chat_name.clone(),
+            from_kind: ChannelSenderKind::Human,
+            text: params.text,
+            kind: ChannelMessageKind::Message,
+            in_reply_to: Some(seq),
+            to_pane: asker.clone(),
+            to_human: false,
+        };
+        let targets: Vec<String> = asker.into_iter().collect();
+        match self.record_and_deliver_channel_line(
+            &id,
+            &name,
+            ws_idx,
+            message,
+            targets,
+            Some(true),
+            true,
+        ) {
+            Ok(recorded) => encode_success(
+                id,
+                ResponseResult::ChannelReplied {
+                    channel: name,
+                    seq: recorded.seq,
+                    in_reply_to: seq,
+                    deliveries: recorded.deliveries,
+                },
+            ),
+            Err(err) => encode_error(id, "channel_reply_failed", err.to_string()),
+        }
     }
 
     /// Records `now` in `channel`'s burst-detection sliding window and
@@ -833,11 +1089,12 @@ impl App {
                 self.state.channel_burst_messages,
                 self.state.channel_burst_window.as_secs()
             ),
+            kind: ChannelMessageKind::Message,
             in_reply_to: None,
             to_pane: None,
             to_human: false,
         };
-        if let Err(err) = channels::append_message(channel, &line) {
+        if let Err(err) = self.append_channel_line(channel, &line) {
             tracing::warn!(
                 channel = %channel,
                 error = %err,
@@ -879,11 +1136,12 @@ impl App {
                 "{public_id} joined as @{} — the name @{} is shared, so address this pane by @{}",
                 member.addressable, member.base, member.addressable
             ),
+            kind: ChannelMessageKind::Message,
             in_reply_to: None,
             to_pane: None,
             to_human: false,
         };
-        if let Err(err) = channels::append_message(channel, &line) {
+        if let Err(err) = self.append_channel_line(channel, &line) {
             tracing::warn!(
                 channel = %channel,
                 pane = %public_id,
@@ -1185,11 +1443,12 @@ impl App {
             from_name: "bora".to_string(),
             from_kind: ChannelSenderKind::Agent,
             text: format!("channel protocol v{CHANNEL_PROTOCOL_VERSION} sent to {public_pane_id}"),
+            kind: ChannelMessageKind::Message,
             in_reply_to: None,
             to_pane: None,
             to_human: false,
         };
-        if let Err(err) = channels::append_message(channel, &line) {
+        if let Err(err) = self.append_channel_line(channel, &line) {
             tracing::warn!(
                 channel = %channel,
                 pane = %public_pane_id,
@@ -1710,6 +1969,98 @@ impl App {
             candidates.push(format!("human ({})", self.state.chat_name));
         }
         NickResolution::Ambiguous(candidates)
+    }
+}
+
+/// What [`App::record_and_deliver_channel_line`] did with one line: its
+/// assigned seq, per-target delivery receipts, and whether an active burst
+/// suppressed the fan-out.
+struct RecordedChannelLine {
+    seq: u64,
+    deliveries: Vec<ChannelDelivery>,
+    suppressed: bool,
+}
+
+/// Orderable key for the UTC RFC 3339 stamps `now_rfc3339` writes. Those
+/// trim trailing zero subseconds (`…:05Z`, `…:05.1Z`, `…:05.123456789Z`),
+/// so plain string order puts `…:05Z` after `…:05.1Z`; padding the fraction
+/// to nine digits makes lexical order chronological again.
+fn rfc3339_sort_key(ts: &str) -> (String, String) {
+    let cut = if ts.is_char_boundary(19) {
+        19
+    } else {
+        ts.len()
+    };
+    let (seconds, rest) = ts.split_at(cut);
+    let fraction: String = rest
+        .strip_prefix('.')
+        .unwrap_or("")
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect();
+    (seconds.to_string(), format!("{fraction:0<9}"))
+}
+
+/// Every `kind: ask` line of one channel's transcript (in file order), each
+/// paired with its FIRST later line carrying `in_reply_to == seq`. Pure, so
+/// `channel.asks`, `channel.reply`'s double-answer guard and the attention
+/// count all read one definition of "answered". Pre-seq lines (`seq: 0`)
+/// can never be asked about and are skipped.
+pub(crate) fn channel_asks_from_transcript(
+    channel: &str,
+    transcript: &[ChannelMessage],
+) -> Vec<ChannelAsk> {
+    let mut asks: Vec<ChannelAsk> = Vec::new();
+    let mut open_by_seq: HashMap<u64, usize> = HashMap::new();
+    for message in transcript {
+        if let Some(index) = message.in_reply_to.and_then(|seq| open_by_seq.remove(&seq)) {
+            let ask = &mut asks[index];
+            ask.answered = true;
+            ask.reply = Some(ChannelAskReply {
+                seq: message.seq,
+                ts: message.ts.clone(),
+                from_name: message.from_name.clone(),
+                from_kind: message.from_kind,
+                text: message.text.clone(),
+            });
+        }
+        if message.kind == ChannelMessageKind::Ask && message.seq > 0 {
+            open_by_seq.insert(message.seq, asks.len());
+            asks.push(ChannelAsk {
+                channel: channel.to_string(),
+                seq: message.seq,
+                ts: message.ts.clone(),
+                from_pane: (!message.from_pane.is_empty()).then(|| message.from_pane.clone()),
+                from_name: message.from_name.clone(),
+                to_pane: message.to_pane.clone(),
+                to_human: message.to_human,
+                text: message.text.clone(),
+                answered: false,
+                reply: None,
+            });
+        }
+    }
+    asks
+}
+
+/// Seqs of `channel`'s asks to the human that no later line answers, read
+/// from the whole transcript. An unreadable transcript counts as none, so a
+/// broken file can only hide a question, never break the snapshot.
+fn open_human_ask_seqs(channel: &str) -> std::collections::BTreeSet<u64> {
+    match channels::read_tail(channel, usize::MAX) {
+        Ok(transcript) => channel_asks_from_transcript(channel, &transcript)
+            .into_iter()
+            .filter(|ask| ask.to_human && !ask.answered)
+            .map(|ask| ask.seq)
+            .collect(),
+        Err(err) => {
+            tracing::warn!(
+                channel = %channel,
+                error = %err,
+                "channel transcript unreadable; counting no open human asks"
+            );
+            std::collections::BTreeSet::new()
+        }
     }
 }
 
@@ -2421,6 +2772,9 @@ mod tests {
                 from_name,
                 text,
                 to_pane,
+                kind,
+                in_reply_to,
+                to_human,
             } => {
                 assert_eq!(channel, "eng");
                 assert_eq!(*seq, 1);
@@ -2428,6 +2782,9 @@ mod tests {
                 assert_eq!(from_name, "unknown");
                 assert_eq!(text, "hello");
                 assert_eq!(to_pane, &None);
+                assert_eq!(*kind, ChannelMessageKind::Message);
+                assert_eq!(*in_reply_to, None);
+                assert!(!to_human);
             }
             other => panic!("expected ChannelMessage event data, got {other:?}"),
         }
@@ -5316,6 +5673,7 @@ mod tests {
                 from_human: true,
             },
             true,
+            ChannelMessageKind::Message,
         );
         let pierced: serde_json::Value = serde_json::from_str(&pierced).unwrap();
         // Omitted (skip_serializing_if) when false, same as the unsuppressed
@@ -5476,6 +5834,401 @@ mod tests {
         assert_eq!(history[0].to_pane.as_deref(), Some(reviewer.as_str()));
 
         super::super::test_support::shutdown_test_runtimes(&mut app);
+    }
+
+    /// ceo-bora#344 (contract C1+C2): `channel.ask` stores `kind: ask`, and
+    /// the `channel.message` event carries `kind`, `in_reply_to` and
+    /// `to_human`, so a hook can tell a question to the human and its
+    /// answer apart without re-reading the transcript. Old lines with no
+    /// `kind` still decode, as `message`.
+    #[tokio::test]
+    async fn channel_message_event_carries_kind_in_reply_to_and_to_human() {
+        let _isolated = IsolatedDirs::new("ask-event-fields");
+        let mut app = test_app();
+        app.state.chat_name = "ary".into();
+        create_channel(&mut app, "teste");
+
+        let asked = app.handle_channel_ask_question(
+            "req".into(),
+            crate::api::schema::ChannelAskParams {
+                name: "#teste".into(),
+                to: "ary".into(),
+                text: "qual banco?".into(),
+                from_pane: None,
+                timeout_ms: None,
+            },
+        );
+        let asked: serde_json::Value = serde_json::from_str(&asked).unwrap();
+        let question_seq = asked["result"]["seq"].as_u64().expect("ask reports seq");
+        let replied = app.handle_channel_send(
+            "req".into(),
+            ChannelSendParams {
+                name: "#teste".into(),
+                text: "postgres".into(),
+                from_pane: None,
+                to: None,
+                in_reply_to: Some(question_seq),
+                when_idle: None,
+                from_human: true,
+            },
+        );
+        assert!(replied.contains("\"result\""), "{replied}");
+
+        let history = channels::read_tail("teste", 10).unwrap();
+        assert_eq!(history[0].kind, ChannelMessageKind::Ask);
+        assert!(history[0].to_human);
+        assert_eq!(history[1].kind, ChannelMessageKind::Message);
+
+        let fields: Vec<_> = app
+            .event_hub
+            .events_after(0)
+            .into_iter()
+            .filter_map(|(_, envelope)| match envelope.data {
+                crate::api::schema::EventData::ChannelMessage {
+                    kind,
+                    in_reply_to,
+                    to_human,
+                    ..
+                } => Some((kind, in_reply_to, to_human)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            fields,
+            vec![
+                (ChannelMessageKind::Ask, None, true),
+                (ChannelMessageKind::Message, Some(question_seq), false),
+            ]
+        );
+
+        let old_line: ChannelMessage = serde_json::from_str(
+            r#"{"ts":"2026-08-15T00:00:00Z","seq":3,"from_pane":"w1:p1","from_name":"x","text":"t"}"#,
+        )
+        .unwrap();
+        assert_eq!(old_line.kind, ChannelMessageKind::Message);
+
+        super::super::test_support::shutdown_test_runtimes(&mut app);
+    }
+
+    fn ask_human(app: &mut App, channel: &str, text: &str) -> u64 {
+        let asked = app.handle_channel_ask_question(
+            "req".into(),
+            crate::api::schema::ChannelAskParams {
+                name: channel.into(),
+                to: app.state.chat_name.clone(),
+                text: text.into(),
+                from_pane: None,
+                timeout_ms: None,
+            },
+        );
+        let asked: serde_json::Value = serde_json::from_str(&asked).unwrap();
+        asked["result"]["seq"]
+            .as_u64()
+            .unwrap_or_else(|| panic!("ask must append: {asked}"))
+    }
+
+    fn list_asks(app: &mut App, params: ChannelAsksParams) -> serde_json::Value {
+        let listed = app.handle_channel_asks("req".into(), params);
+        let listed: serde_json::Value = serde_json::from_str(&listed).unwrap();
+        listed["result"]["asks"].clone()
+    }
+
+    fn reply(app: &mut App, channel: &str, seq: u64, text: &str) -> serde_json::Value {
+        let replied = app.handle_channel_reply(
+            "req".into(),
+            ChannelReplyParams {
+                name: channel.into(),
+                seq,
+                text: text.into(),
+            },
+        );
+        serde_json::from_str(&replied).unwrap()
+    }
+
+    /// ceo-bora#346 (contract C4): `channel.reply` answers as the human
+    /// seat, flips the question to answered, and refuses (appending
+    /// nothing) a second answer, a non-question, an unknown seq, and a
+    /// missing `ui.chat_name`.
+    #[tokio::test]
+    async fn channel_reply_answers_as_human_seat_and_refuses_the_four_cases() {
+        let _isolated = IsolatedDirs::new("reply-human-seat");
+        let mut app = test_app();
+        app.state.chat_name = "ary".into();
+        create_channel(&mut app, "teste");
+        let question = ask_human(&mut app, "teste", "ok?");
+
+        app.state.chat_name_configured = false;
+        let refused = reply(&mut app, "teste", question, "sim");
+        assert_eq!(refused["error"]["code"], "channel_no_human_seat");
+        app.state.chat_name_configured = true;
+
+        let answered = reply(&mut app, "#teste", question, "sim");
+        let result = &answered["result"];
+        assert_eq!(result["channel"], "teste", "{answered}");
+        assert_eq!(result["in_reply_to"], question);
+        let answer_seq = result["seq"].as_u64().unwrap();
+        assert_eq!(answer_seq, question + 1, "no-seat refusal must not append");
+
+        let history = app.handle_channel_history(
+            "req".into(),
+            ChannelHistoryParams {
+                name: "teste".into(),
+                lines: None,
+                from_pane: None,
+            },
+        );
+        let history: serde_json::Value = serde_json::from_str(&history).unwrap();
+        let line = history["result"]["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|line| line["seq"] == answer_seq)
+            .cloned()
+            .unwrap();
+        assert_eq!(line["from_name"], "ary");
+        assert_eq!(line["from_kind"], "human");
+        assert_eq!(line["kind"], "message");
+        assert_eq!(line["in_reply_to"], question);
+
+        let asks = list_asks(&mut app, ChannelAsksParams::default());
+        assert_eq!(asks[0]["answered"], true);
+        assert_eq!(asks[0]["reply"]["text"], "sim");
+
+        for (seq, code) in [
+            (question, "channel_ask_already_answered"),
+            (answer_seq, "channel_not_an_ask"),
+            (answer_seq + 50, "channel_message_not_found"),
+        ] {
+            let refused = reply(&mut app, "teste", seq, "de novo");
+            assert_eq!(refused["error"]["code"], code, "seq {seq}: {refused}");
+        }
+        assert_eq!(
+            channels::next_seq("teste"),
+            answer_seq + 1,
+            "refusals append nothing"
+        );
+
+        super::super::test_support::shutdown_test_runtimes(&mut app);
+    }
+
+    /// ceo-bora#347 (contract C5): the attention count behind
+    /// `ClientShellWorkspace.open_human_asks` counts an open ask to the
+    /// human, drops it once `channel.reply` answers it, and ignores an ask
+    /// to a pane. The live cache and a fresh load from the transcript agree.
+    #[tokio::test]
+    async fn open_human_asks_attention_cache_drops_answered_and_ignores_pane_asks() {
+        let _isolated = IsolatedDirs::new("open-human-asks-cache");
+        let mut app = test_app();
+        app.state.chat_name = "ary".into();
+        app.state.chat_name_configured = true;
+        let (reviewer, worker, _rx) = channel_with_two_agents(&mut app, "reviewer", "worker");
+        skip_protocol("eng", &reviewer);
+        skip_protocol("eng", &worker);
+        let reload = |app: &mut App| {
+            app.channel_open_human_asks
+                .get_mut()
+                .expect("cache lock")
+                .clear();
+            app.channel_open_human_asks("eng")
+        };
+
+        let to_pane = app.handle_channel_ask_question(
+            "req".into(),
+            crate::api::schema::ChannelAskParams {
+                name: "#eng".into(),
+                to: "reviewer".into(),
+                text: "ready to merge?".into(),
+                from_pane: Some("w1A:p9".into()),
+                timeout_ms: None,
+            },
+        );
+        assert!(to_pane.contains("\"result\""), "{to_pane}");
+        assert_eq!(app.channel_open_human_asks("eng"), 0, "ask to a pane");
+
+        let question = ask_human(&mut app, "eng", "qual banco?");
+        assert_eq!(app.channel_open_human_asks("eng"), 1, "live cache");
+        assert_eq!(reload(&mut app), 1, "fresh load");
+
+        let answered = reply(&mut app, "eng", question, "postgres");
+        assert_eq!(answered["result"]["in_reply_to"], question, "{answered}");
+        assert_eq!(app.channel_open_human_asks("eng"), 0, "live cache");
+        assert_eq!(reload(&mut app), 0, "fresh load");
+
+        super::super::test_support::shutdown_test_runtimes(&mut app);
+    }
+
+    /// cubic review on aryrabelo/bora-herdr-ada#49: an open ask that log
+    /// rotation drops from the transcript stops counting in the attention
+    /// cache, the same moment `channel.asks` stops listing it.
+    #[tokio::test]
+    async fn open_human_asks_attention_cache_forgets_asks_rotated_out_of_the_log() {
+        use std::io::Write as _;
+
+        let _isolated = IsolatedDirs::new("open-human-asks-rotation");
+        let mut app = test_app();
+        app.state.chat_name = "ary".into();
+        create_channel(&mut app, "teste");
+        let old = ask_human(&mut app, "teste", "velha?");
+        assert_eq!(app.channel_open_human_asks("teste"), 1);
+
+        // Fill the log to exactly the cap with plain lines in one write, so
+        // the next append is the one that rotates.
+        let retained = channels::read_tail("teste", usize::MAX).unwrap();
+        let mut filler_line = retained.last().cloned().unwrap();
+        filler_line.kind = ChannelMessageKind::Message;
+        filler_line.to_human = false;
+        filler_line.to_pane = None;
+        let mut filler = String::new();
+        let missing = channels::MAX_CHANNEL_LOG_LINES - retained.len();
+        for seq in (old + 1)..=(old + missing as u64) {
+            filler_line.seq = seq;
+            filler.push_str(&serde_json::to_string(&filler_line).unwrap());
+            filler.push('\n');
+        }
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(channels::channel_file_path("teste"))
+            .unwrap()
+            .write_all(filler.as_bytes())
+            .unwrap();
+        assert_eq!(app.channel_open_human_asks("teste"), 1, "cache untouched");
+
+        // Notes bypass delivery but must invalidate the same cache.
+        let noted = app.handle_channel_note(
+            "req".into(),
+            ChannelNoteParams {
+                name: "teste".into(),
+                text: "rotate".into(),
+                from_pane: None,
+            },
+        );
+        assert!(noted.contains("\"result\""), "{noted}");
+        assert_eq!(app.channel_open_human_asks("teste"), 0, "old ask expired");
+
+        let fresh = ask_human(&mut app, "teste", "nova?");
+        let open: Vec<u64> = channel_asks_from_transcript(
+            "teste",
+            &channels::read_tail("teste", usize::MAX).unwrap(),
+        )
+        .into_iter()
+        .filter(|ask| ask.to_human && !ask.answered)
+        .map(|ask| ask.seq)
+        .collect();
+        assert_eq!(open, vec![fresh], "rotation dropped the old ask");
+        assert_eq!(app.channel_open_human_asks("teste"), 1, "only the new ask");
+
+        super::super::test_support::shutdown_test_runtimes(&mut app);
+    }
+
+    /// ceo-bora#345 (contract C3): asks are derived from the transcript;
+    /// `--open` hides a question answered with `--reply-to`, the reply is the
+    /// first answering line, `--to-human` hides agent-to-agent questions,
+    /// and the list spans every `#channel` in `(ts, channel, seq)` order.
+    #[tokio::test]
+    async fn channel_asks_derive_open_and_answered_questions_from_the_transcript() {
+        let _isolated = IsolatedDirs::new("asks-derived");
+        let mut app = test_app();
+        app.state.chat_name = "ary".into();
+        create_channel(&mut app, "teste");
+        create_channel(&mut app, "outro");
+
+        let first = ask_human(&mut app, "teste", "qual banco?");
+        let second = ask_human(&mut app, "outro", "pode subir?");
+        for (text, reply_to) in [("postgres", first), ("de novo", first)] {
+            app.handle_channel_send(
+                "req".into(),
+                ChannelSendParams {
+                    name: "teste".into(),
+                    text: text.into(),
+                    from_pane: None,
+                    to: None,
+                    in_reply_to: Some(reply_to),
+                    when_idle: None,
+                    from_human: true,
+                },
+            );
+        }
+
+        let all = list_asks(&mut app, ChannelAsksParams::default());
+        let all = all.as_array().unwrap();
+        assert_eq!(all.len(), 2, "{all:?}");
+        assert_eq!(all[0]["channel"], "teste");
+        assert_eq!(all[0]["seq"], first);
+        assert_eq!(all[0]["answered"], true);
+        assert_eq!(all[0]["reply"]["text"], "postgres");
+        assert_eq!(all[0]["reply"]["from_name"], "ary");
+        assert_eq!(all[0]["reply"]["from_kind"], "human");
+        assert!(all[0].get("from_pane").is_none(), "{:?}", all[0]);
+        assert_eq!(all[1]["channel"], "outro");
+        assert_eq!(all[1]["seq"], second);
+        assert_eq!(all[1]["answered"], false);
+        assert!(
+            all[1]["reply"].is_null(),
+            "reply must be null: {:?}",
+            all[1]
+        );
+
+        let open = list_asks(
+            &mut app,
+            ChannelAsksParams {
+                name: None,
+                open: true,
+                to_human: true,
+            },
+        );
+        assert_eq!(open.as_array().unwrap().len(), 1, "{open}");
+        assert_eq!(open[0]["text"], "pode subir?");
+
+        let one = list_asks(
+            &mut app,
+            ChannelAsksParams {
+                name: Some("#teste".into()),
+                open: true,
+                to_human: false,
+            },
+        );
+        assert_eq!(one, serde_json::json!([]));
+
+        let missing = app.handle_channel_asks(
+            "req".into(),
+            ChannelAsksParams {
+                name: Some("ghost".into()),
+                ..ChannelAsksParams::default()
+            },
+        );
+        assert!(missing.contains("channel_not_found"), "{missing}");
+
+        super::super::test_support::shutdown_test_runtimes(&mut app);
+    }
+
+    #[test]
+    fn channel_asks_from_transcript_keeps_agent_asks_and_skips_pre_seq_lines() {
+        let line = |seq: u64, kind: ChannelMessageKind, in_reply_to: Option<u64>| ChannelMessage {
+            ts: "2026-10-06T22:00:00Z".into(),
+            seq,
+            from_pane: "w1:p1".into(),
+            from_name: "builder".into(),
+            from_kind: ChannelSenderKind::Agent,
+            text: format!("line {seq}"),
+            kind,
+            in_reply_to,
+            to_pane: Some("w1:p2".into()),
+            to_human: false,
+        };
+        let asks = channel_asks_from_transcript(
+            "teste",
+            &[
+                line(0, ChannelMessageKind::Ask, None),
+                line(1, ChannelMessageKind::Ask, None),
+                line(2, ChannelMessageKind::Message, Some(1)),
+            ],
+        );
+        assert_eq!(asks.len(), 1);
+        assert_eq!(asks[0].seq, 1);
+        assert_eq!(asks[0].from_pane.as_deref(), Some("w1:p1"));
+        assert_eq!(asks[0].to_pane.as_deref(), Some("w1:p2"));
+        assert!(!asks[0].to_human);
+        assert_eq!(asks[0].reply.as_ref().map(|reply| reply.seq), Some(2));
     }
 
     #[tokio::test]

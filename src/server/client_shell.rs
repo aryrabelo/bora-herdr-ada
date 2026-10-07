@@ -95,6 +95,14 @@ pub(super) fn snapshot_with_completions(
                         is_linked_worktree: worktree.is_linked_worktree,
                     }),
                 visual_group: state.visual_group.clone(),
+                open_human_asks: state
+                    .channel_home_name()
+                    .map(|name| {
+                        app.channel_open_human_asks(
+                            &crate::persist::channels::normalize_channel_name(name),
+                        )
+                    })
+                    .unwrap_or(0),
                 agent_status: workspace.agent_status,
             }
         })

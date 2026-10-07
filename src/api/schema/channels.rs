@@ -113,6 +113,84 @@ pub enum ChannelSenderKind {
     Human,
 }
 
+/// What a channel line is: a plain message, or a `channel.ask` question
+/// waiting for an `in_reply_to` answer. Lines written before this field
+/// existed parse as `Message`; only `channel.ask` writes `Ask`, which is
+/// what makes an unanswered question listable after its asker stopped
+/// waiting (`channel.asks`).
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum ChannelMessageKind {
+    #[default]
+    Message,
+    Ask,
+}
+
+/// `channel.asks`: every `channel.ask` question still in a channel's
+/// retained JSONL transcript, derived on each call — no store of its own,
+/// so the list survives the asker's timeout and a server restart. `name`
+/// narrows to one channel; absent means every `#channel` of the session.
+/// `open` keeps unanswered questions only, `to_human` keeps questions
+/// addressed to the human seat only. Ordered by `ts`, ties by
+/// `(channel, seq)`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct ChannelAsksParams {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub open: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub to_human: bool,
+}
+
+/// One question listed by `channel.asks`. `answered` is true once any
+/// later line in the same channel carries `in_reply_to == seq`; `reply` is
+/// the FIRST such line, `null` while the question is open.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct ChannelAsk {
+    /// Channel name without the leading `#`.
+    pub channel: String,
+    pub seq: u64,
+    pub ts: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_pane: Option<String>,
+    pub from_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to_pane: Option<String>,
+    pub to_human: bool,
+    pub text: String,
+    pub answered: bool,
+    pub reply: Option<ChannelAskReply>,
+}
+
+/// The answer to a [`ChannelAsk`], as stored in the transcript.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct ChannelAskReply {
+    pub seq: u64,
+    pub ts: String,
+    pub from_name: String,
+    pub from_kind: ChannelSenderKind,
+    pub text: String,
+}
+
+/// `channel.reply`: answer the `channel.ask` question `seq` of channel
+/// `name` AS THE HUMAN SEAT — the line is attributed to `ui.chat_name`
+/// with `from_kind: human`, threads back through `in_reply_to = seq`, and
+/// is delivered only to the pane that asked. There is no sender field:
+/// the method itself is the human seat, which is what a phone answering
+/// over SSH needs. Refused (nothing appended) with
+/// `channel_message_not_found`, `channel_not_an_ask`,
+/// `channel_ask_already_answered`, or `channel_no_human_seat` when
+/// `ui.chat_name` is unset.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct ChannelReplyParams {
+    pub name: String,
+    pub seq: u64,
+    pub text: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ChannelHistoryParams {
     pub name: String,
@@ -253,6 +331,9 @@ pub struct ChannelMessage {
     #[serde(default)]
     pub from_kind: ChannelSenderKind,
     pub text: String,
+    /// `ask` for a `channel.ask` question, `message` for everything else.
+    #[serde(default)]
+    pub kind: ChannelMessageKind,
     /// Seq of the message being replied to, when this was sent as a reply.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub in_reply_to: Option<u64>,
