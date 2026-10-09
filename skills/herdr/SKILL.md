@@ -60,7 +60,7 @@ A pane exists whether or not it contains an agent. `agent start` requires an exi
 
 Agent commands accept either a unique live agent name or the pane ID currently hosting that agent. They do not accept terminal IDs or bare agent-kind labels. Names must match `[a-z][a-z0-9_-]{0,31}` and be unique among live agents. A name follows the current pane occupant and is cleared when that agent exits, is released, or is replaced.
 
-`idle` and `done` both mean the agent is ready for input. The CLI/API uses the server's seen state to distinguish them; explicit focus commands mark the target seen, while reads do not. Each TUI client tracks viewed completions independently, so its Done badge can differ from the CLI or another client's badge. `blocked` means Bora recognized an approval or question UI. `unknown` means an agent is present but Bora cannot classify it confidently; it does not prove completion.
+`idle` and `done` both mean the agent is ready for input. The CLI/API uses the server's seen state to distinguish them; explicit focus commands mark the target seen, while reads do not, and `bora pane mark-unseen <pane_id>...` (or `--all`) marks it unseen again, so an idle pane reads `done` until it is next focused. Each TUI client tracks viewed completions independently, so its Done badge can differ from the CLI or another client's badge. `blocked` means Bora recognized an approval or question UI. `unknown` means an agent is present but Bora cannot classify it confidently; it does not prove completion.
 
 ## Use IDs and caller context
 

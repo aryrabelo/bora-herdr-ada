@@ -662,6 +662,18 @@ fn pane_command() -> Command {
                 .arg(flag("clear")),
         )
         .subcommand(
+            Command::new("mark-unseen")
+                .about("Mark panes unseen, as if their agent had just finished in the background")
+                .arg(
+                    Arg::new("pane_id")
+                        .value_name("PANE_ID")
+                        .num_args(1..)
+                        .required_unless_present("all")
+                        .conflicts_with("all"),
+                )
+                .arg(flag("all").help("Mark every pane reported by `pane list`")),
+        )
+        .subcommand(
             Command::new("input")
                 .about("Set pane input routing")
                 .arg(Arg::new("pane_id").value_name("PANE_ID"))

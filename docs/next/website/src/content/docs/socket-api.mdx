@@ -103,7 +103,7 @@ Raw socket method names use dot notation:
 | Workspace | `workspace.create`, `workspace.list`, `workspace.get`, `workspace.focus`, `workspace.rename`, `workspace.move`, `workspace.move_block`, `workspace.report_metadata`, `workspace.close` |
 | Worktree | `worktree.list`, `worktree.create`, `worktree.open`, `worktree.remove` |
 | Tab | `tab.create`, `tab.list`, `tab.get`, `tab.focus`, `tab.rename`, `tab.move`, `tab.close` |
-| Pane | `pane.split`, `pane.swap`, `pane.move`, `pane.zoom`, `pane.layout`, `pane.process_info`, `pane.neighbor`, `pane.edges`, `pane.focus_direction`, `pane.resize`, `pane.list`, `pane.current`, `pane.get`, `pane.rename`, `pane.send_text`, `pane.send_keys`, `pane.send_input`, `pane.read`, `pane.report_agent`, `pane.set_status`, `pane.report_agent_session`, `pane.report_metadata`, `pane.clear_agent_authority`, `pane.release_agent`, `pane.close`, `pane.wait_for_output` |
+| Pane | `pane.split`, `pane.swap`, `pane.move`, `pane.zoom`, `pane.layout`, `pane.process_info`, `pane.neighbor`, `pane.edges`, `pane.focus_direction`, `pane.resize`, `pane.list`, `pane.current`, `pane.get`, `pane.rename`, `pane.send_text`, `pane.send_keys`, `pane.send_input`, `pane.read`, `pane.report_agent`, `pane.set_status`, `pane.mark_unseen`, `pane.report_agent_session`, `pane.report_metadata`, `pane.clear_agent_authority`, `pane.release_agent`, `pane.close`, `pane.wait_for_output` |
 | Popup | `popup.close` |
 | Layout | `layout.export`, `layout.apply`, `layout.set_split_ratio` |
 | Agent | `agent.list`, `agent.get`, `agent.read`, `agent.explain`, `agent.send_keys`, `agent.prompt`, `agent.wait`, `agent.rename`, `agent.focus`, `agent.start`, `agent.view.set`, `agent.view.clear` |
@@ -688,6 +688,25 @@ do not survive a server restart.
   "params": {
     "pane_id": "w1:p1",
     "status": "blocked"
+  }
+}
+```
+
+`pane.mark_unseen` clears a pane's seen state, the state a pane is left in when
+its agent finishes in a background tab: an idle pane reads `done` (and emits
+`pane.agent_status_changed`) until a focus or tab switch marks it seen again.
+It also gives the pane a fresh `completion_seq`, so TUI clients show the Done
+badge even if they had already viewed the previous completion. It does not
+touch a `pane.set_status` pin, hook authority, or notifications; a working,
+blocked, or pinned pane keeps reading its current status. An unknown pane is
+rejected with `pane_not_found`.
+
+```json
+{
+  "id": "req_4",
+  "method": "pane.mark_unseen",
+  "params": {
+    "pane_id": "w1:p1"
   }
 }
 ```
