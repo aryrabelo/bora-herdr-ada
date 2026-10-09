@@ -1,0 +1,14 @@
+tests/upstream_wiring.rs
+  h_b156936c57c455 64-67,110-113
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "7bcdca92b02507a9c81c1f43c2cf960e13577611",
+  "prompts": {},
+  "humans": {
+    "h_b156936c57c455": {
+      "author": "Ary Rabelo <aryrabelo@gmail.com>"
+    }
+  }
+}
