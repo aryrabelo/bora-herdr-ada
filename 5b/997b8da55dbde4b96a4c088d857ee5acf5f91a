@@ -1,0 +1,876 @@
+.github/dependabot.yml
+  h_b156936c57c455 8-12,17-19,30-32
+.github/workflows/ci.yml
+  h_b156936c57c455 19,22-25,80,89-97,99,107-108,111-113,120-121,124-127,131-137,139,147,151,153-155,158,160,164,172,183,200-214,231-237,239,246-247,250-253,258,266,270,275-281
+.github/workflows/nix.yml
+  h_b156936c57c455 10,24,52
+.github/workflows/preview.yml
+  h_b156936c57c455 112,130,214,396
+.github/workflows/release.yml
+  h_b156936c57c455 68,169,261
+.zed/settings.json
+  h_b156936c57c455 49
+AGENTS.md
+  h_b156936c57c455 266-269,537-542,708,818
+BORA.md
+  h_b156936c57c455 99
+Cargo.lock
+  h_b156936c57c455 169,179,202,228,230,261,263,270,272,280,282,686,688,696,698,713,715,732,734,738,743,745,749,751,755,757,805-814,906,908,982,984,1163,1165,1645,1647,1657,1659,1668,1670,1708,1710,1721,1723,1728,1745,1747,1755,1757,1764,1766,1770,1775,1777,1781,1796,1798,2148,2150,2164,2166,2170,2172,2369,2371
+Cargo.toml
+  h_b156936c57c455 3,24-28,50,53-55,57,82,102-103,108,118,121
+README.md
+  h_b156936c57c455 31-32,35,100
+README.zh-CN.md
+  h_b156936c57c455 31-33,75
+crates/ghostty-vt/Cargo.toml
+  h_b156936c57c455 1-17
+crates/ghostty-vt/build.rs
+  h_b156936c57c455 1-402
+crates/ghostty-vt/src/lib.rs
+  h_b156936c57c455 15,29-30,32-35,87,209,240,473,479,839,843,848,853-860,899-900,902-903,912-917,979-982,1008,1017,1297,1319,1323-1346,1397,1470,1475,1541,1565,1796,1800,1885,1890-1920,1969,1975,2020-2022,2024-2026,2370-2371,2384-2405,2592,3064-3066,3073-3076,3092,3094-3098,3105-3112,3136-3152,3327-3328,3497,3507-3517,3799-3801,3971,4019-4046,4050,4054,4060,4138-4183,4250-4251,4263-4266,4892-4961
+crates/ghostty-vt/src/pane_graphics_files.rs
+  h_b156936c57c455 12-30,37,52,133,141,160,170-172,196,258,266,270-271,275,284,335,342,372,492
+crates/ghostty-vt/src/test_allocations.rs
+  h_b156936c57c455 1-59
+distribution/agent-detection/antigravity.toml
+  h_b156936c57c455 2,4,7-28,33-57,67,69-70,72,75,77-78,80
+distribution/agent-detection/codex.toml
+  h_b156936c57c455 2,4,41-54,107-118
+distribution/agent-detection/grok.toml
+  h_b156936c57c455 2-4,77-78
+distribution/agent-detection/pi.toml
+  h_b156936c57c455 2,4,13-16,24-27
+docs/next/CHANGELOG.md
+  h_b156936c57c455 7-67
+docs/next/README.md
+  h_b156936c57c455 31-32,35,100
+docs/next/README.zh-CN.md
+  h_b156936c57c455 31-33,75
+docs/next/api/herdr-api.schema.json
+  h_b156936c57c455 3510-3519,3563-3572
+docs/next/website/src/content/docs/add-herdr-support.mdx
+  h_b156936c57c455 1-114
+docs/next/website/src/content/docs/agents.mdx
+  h_b156936c57c455 12,14-20,22-60
+docs/next/website/src/content/docs/cli-reference.mdx
+  h_b156936c57c455 54,62,289-290,298-299,309-310,423-433,508,515,526,574,576-577
+docs/next/website/src/content/docs/configuration.mdx
+  h_b156936c57c455 156-164,271-272,510-511,541
+docs/next/website/src/content/docs/connecting-machines.mdx
+  h_b156936c57c455 38,40-42,45,48-51
+docs/next/website/src/content/docs/install.mdx
+  h_b156936c57c455 124-125
+docs/next/website/src/content/docs/integrations.mdx
+  h_b156936c57c455 67-68,94,158
+docs/next/website/src/content/docs/ja/add-herdr-support.mdx
+  h_b156936c57c455 1-114
+docs/next/website/src/content/docs/ja/agent-automation.mdx
+  h_b156936c57c455 80-81
+docs/next/website/src/content/docs/ja/agents.mdx
+  h_b156936c57c455 12,14-20,22-60
+docs/next/website/src/content/docs/ja/cli-reference.mdx
+  h_b156936c57c455 52,60,262-263,271-272,282-283,378,496-497
+docs/next/website/src/content/docs/ja/configuration.mdx
+  h_b156936c57c455 76,154-162,265-266,531-541,543,552
+docs/next/website/src/content/docs/ja/connecting-machines.mdx
+  h_b156936c57c455 10-11,38-40,42,45,48-51,106-109,122-123
+docs/next/website/src/content/docs/ja/install.mdx
+  h_b156936c57c455 124-125,132-133
+docs/next/website/src/content/docs/ja/integrations.mdx
+  h_b156936c57c455 94,228
+docs/next/website/src/content/docs/ja/persistence-remote.mdx
+  h_b156936c57c455 53-54,74,153
+docs/next/website/src/content/docs/ja/plugins.mdx
+  h_b156936c57c455 357-358
+docs/next/website/src/content/docs/ja/quick-start.mdx
+  h_b156936c57c455 22-28
+docs/next/website/src/content/docs/ja/session-state.mdx
+  h_b156936c57c455 86
+docs/next/website/src/content/docs/ja/socket-api.mdx
+  h_b156936c57c455 489-490,563-578,660-662
+docs/next/website/src/content/docs/persistence-remote.mdx
+  h_b156936c57c455 53-54,74,160-162
+docs/next/website/src/content/docs/plugins.mdx
+  h_b156936c57c455 175,194-203,214-223,225,374-375
+docs/next/website/src/content/docs/quick-start.mdx
+  h_b156936c57c455 22-28
+docs/next/website/src/content/docs/session-state.mdx
+  h_b156936c57c455 84
+docs/next/website/src/content/docs/socket-api.mdx
+  h_b156936c57c455 710-725
+docs/next/website/src/content/docs/windows-beta.mdx
+  h_b156936c57c455 52-64,129-130
+docs/next/website/src/content/docs/zh-cn/add-herdr-support.mdx
+  h_b156936c57c455 1-114
+docs/next/website/src/content/docs/zh-cn/agent-automation.mdx
+  h_b156936c57c455 80-81
+docs/next/website/src/content/docs/zh-cn/agents.mdx
+  h_b156936c57c455 12,14-20,22-60
+docs/next/website/src/content/docs/zh-cn/cli-reference.mdx
+  h_b156936c57c455 52,60,262-263,271-272,282-283,378,496-497
+docs/next/website/src/content/docs/zh-cn/configuration.mdx
+  h_b156936c57c455 76,154-162,265-266,531-541,543,552
+docs/next/website/src/content/docs/zh-cn/connecting-machines.mdx
+  h_b156936c57c455 10-11,38-40,42,45,48-51,106-109,122-123
+docs/next/website/src/content/docs/zh-cn/install.mdx
+  h_b156936c57c455 124-125,132-133
+docs/next/website/src/content/docs/zh-cn/integrations.mdx
+  h_b156936c57c455 94,228
+docs/next/website/src/content/docs/zh-cn/persistence-remote.mdx
+  h_b156936c57c455 53-54,74,153
+docs/next/website/src/content/docs/zh-cn/plugins.mdx
+  h_b156936c57c455 318-319
+docs/next/website/src/content/docs/zh-cn/quick-start.mdx
+  h_b156936c57c455 22-28
+docs/next/website/src/content/docs/zh-cn/session-state.mdx
+  h_b156936c57c455 86
+docs/next/website/src/content/docs/zh-cn/socket-api.mdx
+  h_b156936c57c455 485-486,559-574,656
+docs/next/website/src/data/config-reference.json
+  h_b156936c57c455 19-24,492,494
+docs/preview/website/src/content/docs/add-herdr-support.mdx
+  h_b156936c57c455 1-118
+docs/preview/website/src/content/docs/agent-automation.mdx
+  h_b156936c57c455 107-108
+docs/preview/website/src/content/docs/cli-reference.mdx
+  h_b156936c57c455 54,62,68,263-264,272-273,283-284,387-397,532-542
+docs/preview/website/src/content/docs/install.mdx
+  h_b156936c57c455 144-145,152-153
+docs/preview/website/src/content/docs/ja/add-herdr-support.mdx
+  h_b156936c57c455 1-118
+docs/preview/website/src/content/docs/ja/agent-automation.mdx
+  h_b156936c57c455 80-81
+docs/preview/website/src/content/docs/ja/install.mdx
+  h_b156936c57c455 144-145,152-153
+docs/preview/website/src/content/docs/ja/persistence-remote.mdx
+  h_b156936c57c455 149
+docs/preview/website/src/content/docs/ja/session-state.mdx
+  h_b156936c57c455 61
+docs/preview/website/src/content/docs/ja/socket-api.mdx
+  h_b156936c57c455 102,150,152,489-490,550-565,647-649
+docs/preview/website/src/content/docs/persistence-remote.mdx
+  h_b156936c57c455 156-158
+docs/preview/website/src/content/docs/session-state.mdx
+  h_b156936c57c455 59
+docs/preview/website/src/content/docs/socket-api.mdx
+  h_b156936c57c455 106,180-182,184-187,682-697
+docs/preview/website/src/content/docs/zh-cn/add-herdr-support.mdx
+  h_b156936c57c455 1-118
+docs/preview/website/src/content/docs/zh-cn/agent-automation.mdx
+  h_b156936c57c455 80-81
+docs/preview/website/src/content/docs/zh-cn/install.mdx
+  h_b156936c57c455 144-145,152-153
+docs/preview/website/src/content/docs/zh-cn/persistence-remote.mdx
+  h_b156936c57c455 149
+docs/preview/website/src/content/docs/zh-cn/session-state.mdx
+  h_b156936c57c455 61
+docs/preview/website/src/content/docs/zh-cn/socket-api.mdx
+  h_b156936c57c455 102,150,152,485-486,546-561,643
+docs/preview/website/src/data/config-reference.json
+  h_b156936c57c455 442,480,482,1486-1491
+docs/versions/0.9.2/website/src/content/docs/add-herdr-support.mdx
+  h_b156936c57c455 1-114
+docs/versions/0.9.2/website/src/content/docs/agent-automation.mdx
+  h_b156936c57c455 1-127
+docs/versions/0.9.2/website/src/content/docs/agent-skill.mdx
+  h_b156936c57c455 1-67
+docs/versions/0.9.2/website/src/content/docs/agents.mdx
+  h_b156936c57c455 1-173
+docs/versions/0.9.2/website/src/content/docs/cli-reference.mdx
+  h_b156936c57c455 1-571
+docs/versions/0.9.2/website/src/content/docs/concepts.mdx
+  h_b156936c57c455 1-89
+docs/versions/0.9.2/website/src/content/docs/config-reference.mdx
+  h_b156936c57c455 1-21
+docs/versions/0.9.2/website/src/content/docs/configuration.mdx
+  h_b156936c57c455 1-613
+docs/versions/0.9.2/website/src/content/docs/connecting-machines.mdx
+  h_b156936c57c455 1-128
+docs/versions/0.9.2/website/src/content/docs/how-to-work.mdx
+  h_b156936c57c455 1-103
+docs/versions/0.9.2/website/src/content/docs/index.mdx
+  h_b156936c57c455 1-82
+docs/versions/0.9.2/website/src/content/docs/install.mdx
+  h_b156936c57c455 1-158
+docs/versions/0.9.2/website/src/content/docs/integrations.mdx
+  h_b156936c57c455 1-372
+docs/versions/0.9.2/website/src/content/docs/ja/add-herdr-support.mdx
+  h_b156936c57c455 1-114
+docs/versions/0.9.2/website/src/content/docs/ja/agent-automation.mdx
+  h_b156936c57c455 1-127
+docs/versions/0.9.2/website/src/content/docs/ja/agent-skill.mdx
+  h_b156936c57c455 1-67
+docs/versions/0.9.2/website/src/content/docs/ja/agents.mdx
+  h_b156936c57c455 1-173
+docs/versions/0.9.2/website/src/content/docs/ja/cli-reference.mdx
+  h_b156936c57c455 1-504
+docs/versions/0.9.2/website/src/content/docs/ja/concepts.mdx
+  h_b156936c57c455 1-89
+docs/versions/0.9.2/website/src/content/docs/ja/config-reference.mdx
+  h_b156936c57c455 1-27
+docs/versions/0.9.2/website/src/content/docs/ja/configuration.mdx
+  h_b156936c57c455 1-608
+docs/versions/0.9.2/website/src/content/docs/ja/connecting-machines.mdx
+  h_b156936c57c455 1-128
+docs/versions/0.9.2/website/src/content/docs/ja/how-to-work.mdx
+  h_b156936c57c455 1-103
+docs/versions/0.9.2/website/src/content/docs/ja/index.mdx
+  h_b156936c57c455 1-82
+docs/versions/0.9.2/website/src/content/docs/ja/install.mdx
+  h_b156936c57c455 1-158
+docs/versions/0.9.2/website/src/content/docs/ja/integrations.mdx
+  h_b156936c57c455 1-374
+docs/versions/0.9.2/website/src/content/docs/ja/keyboard.mdx
+  h_b156936c57c455 1-134
+docs/versions/0.9.2/website/src/content/docs/ja/marketplace.mdx
+  h_b156936c57c455 1-52
+docs/versions/0.9.2/website/src/content/docs/ja/persistence-remote.mdx
+  h_b156936c57c455 1-151
+docs/versions/0.9.2/website/src/content/docs/ja/plugins.mdx
+  h_b156936c57c455 1-370
+docs/versions/0.9.2/website/src/content/docs/ja/quick-start.mdx
+  h_b156936c57c455 1-69
+docs/versions/0.9.2/website/src/content/docs/ja/session-state.mdx
+  h_b156936c57c455 1-137
+docs/versions/0.9.2/website/src/content/docs/ja/socket-api.mdx
+  h_b156936c57c455 1-769
+docs/versions/0.9.2/website/src/content/docs/ja/troubleshooting.mdx
+  h_b156936c57c455 1-120
+docs/versions/0.9.2/website/src/content/docs/ja/windows-beta.mdx
+  h_b156936c57c455 1-147
+docs/versions/0.9.2/website/src/content/docs/keyboard.mdx
+  h_b156936c57c455 1-134
+docs/versions/0.9.2/website/src/content/docs/marketplace.mdx
+  h_b156936c57c455 1-54
+docs/versions/0.9.2/website/src/content/docs/persistence-remote.mdx
+  h_b156936c57c455 1-160
+docs/versions/0.9.2/website/src/content/docs/plugins.mdx
+  h_b156936c57c455 1-374
+docs/versions/0.9.2/website/src/content/docs/quick-start.mdx
+  h_b156936c57c455 1-69
+docs/versions/0.9.2/website/src/content/docs/session-state.mdx
+  h_b156936c57c455 1-136
+docs/versions/0.9.2/website/src/content/docs/socket-api.mdx
+  h_b156936c57c455 1-956
+docs/versions/0.9.2/website/src/content/docs/troubleshooting.mdx
+  h_b156936c57c455 1-120
+docs/versions/0.9.2/website/src/content/docs/windows-beta.mdx
+  h_b156936c57c455 1-147
+docs/versions/0.9.2/website/src/content/docs/zh-cn/add-herdr-support.mdx
+  h_b156936c57c455 1-114
+docs/versions/0.9.2/website/src/content/docs/zh-cn/agent-automation.mdx
+  h_b156936c57c455 1-127
+docs/versions/0.9.2/website/src/content/docs/zh-cn/agent-skill.mdx
+  h_b156936c57c455 1-67
+docs/versions/0.9.2/website/src/content/docs/zh-cn/agents.mdx
+  h_b156936c57c455 1-173
+docs/versions/0.9.2/website/src/content/docs/zh-cn/cli-reference.mdx
+  h_b156936c57c455 1-504
+docs/versions/0.9.2/website/src/content/docs/zh-cn/concepts.mdx
+  h_b156936c57c455 1-89
+docs/versions/0.9.2/website/src/content/docs/zh-cn/config-reference.mdx
+  h_b156936c57c455 1-26
+docs/versions/0.9.2/website/src/content/docs/zh-cn/configuration.mdx
+  h_b156936c57c455 1-608
+docs/versions/0.9.2/website/src/content/docs/zh-cn/connecting-machines.mdx
+  h_b156936c57c455 1-128
+docs/versions/0.9.2/website/src/content/docs/zh-cn/how-to-work.mdx
+  h_b156936c57c455 1-103
+docs/versions/0.9.2/website/src/content/docs/zh-cn/index.mdx
+  h_b156936c57c455 1-82
+docs/versions/0.9.2/website/src/content/docs/zh-cn/install.mdx
+  h_b156936c57c455 1-158
+docs/versions/0.9.2/website/src/content/docs/zh-cn/integrations.mdx
+  h_b156936c57c455 1-374
+docs/versions/0.9.2/website/src/content/docs/zh-cn/keyboard.mdx
+  h_b156936c57c455 1-134
+docs/versions/0.9.2/website/src/content/docs/zh-cn/marketplace.mdx
+  h_b156936c57c455 1-44
+docs/versions/0.9.2/website/src/content/docs/zh-cn/persistence-remote.mdx
+  h_b156936c57c455 1-151
+docs/versions/0.9.2/website/src/content/docs/zh-cn/plugins.mdx
+  h_b156936c57c455 1-330
+docs/versions/0.9.2/website/src/content/docs/zh-cn/quick-start.mdx
+  h_b156936c57c455 1-69
+docs/versions/0.9.2/website/src/content/docs/zh-cn/session-state.mdx
+  h_b156936c57c455 1-137
+docs/versions/0.9.2/website/src/content/docs/zh-cn/socket-api.mdx
+  h_b156936c57c455 1-763
+docs/versions/0.9.2/website/src/content/docs/zh-cn/troubleshooting.mdx
+  h_b156936c57c455 1-120
+docs/versions/0.9.2/website/src/content/docs/zh-cn/windows-beta.mdx
+  h_b156936c57c455 1-147
+docs/versions/0.9.2/website/src/data/config-reference.json
+  h_b156936c57c455 1-1534
+docs/versions/0.9.3/website/src/content/docs/add-herdr-support.mdx
+  h_b156936c57c455 1-114
+docs/versions/0.9.3/website/src/content/docs/agent-automation.mdx
+  h_b156936c57c455 1-127
+docs/versions/0.9.3/website/src/content/docs/agent-skill.mdx
+  h_b156936c57c455 1-67
+docs/versions/0.9.3/website/src/content/docs/agents.mdx
+  h_b156936c57c455 1-173
+docs/versions/0.9.3/website/src/content/docs/cli-reference.mdx
+  h_b156936c57c455 1-571
+docs/versions/0.9.3/website/src/content/docs/concepts.mdx
+  h_b156936c57c455 1-89
+docs/versions/0.9.3/website/src/content/docs/config-reference.mdx
+  h_b156936c57c455 1-21
+docs/versions/0.9.3/website/src/content/docs/configuration.mdx
+  h_b156936c57c455 1-613
+docs/versions/0.9.3/website/src/content/docs/connecting-machines.mdx
+  h_b156936c57c455 1-128
+docs/versions/0.9.3/website/src/content/docs/how-to-work.mdx
+  h_b156936c57c455 1-103
+docs/versions/0.9.3/website/src/content/docs/index.mdx
+  h_b156936c57c455 1-82
+docs/versions/0.9.3/website/src/content/docs/install.mdx
+  h_b156936c57c455 1-158
+docs/versions/0.9.3/website/src/content/docs/integrations.mdx
+  h_b156936c57c455 1-372
+docs/versions/0.9.3/website/src/content/docs/ja/add-herdr-support.mdx
+  h_b156936c57c455 1-114
+docs/versions/0.9.3/website/src/content/docs/ja/agent-automation.mdx
+  h_b156936c57c455 1-127
+docs/versions/0.9.3/website/src/content/docs/ja/agent-skill.mdx
+  h_b156936c57c455 1-67
+docs/versions/0.9.3/website/src/content/docs/ja/agents.mdx
+  h_b156936c57c455 1-173
+docs/versions/0.9.3/website/src/content/docs/ja/cli-reference.mdx
+  h_b156936c57c455 1-504
+docs/versions/0.9.3/website/src/content/docs/ja/concepts.mdx
+  h_b156936c57c455 1-89
+docs/versions/0.9.3/website/src/content/docs/ja/config-reference.mdx
+  h_b156936c57c455 1-27
+docs/versions/0.9.3/website/src/content/docs/ja/configuration.mdx
+  h_b156936c57c455 1-608
+docs/versions/0.9.3/website/src/content/docs/ja/connecting-machines.mdx
+  h_b156936c57c455 1-128
+docs/versions/0.9.3/website/src/content/docs/ja/how-to-work.mdx
+  h_b156936c57c455 1-103
+docs/versions/0.9.3/website/src/content/docs/ja/index.mdx
+  h_b156936c57c455 1-82
+docs/versions/0.9.3/website/src/content/docs/ja/install.mdx
+  h_b156936c57c455 1-158
+docs/versions/0.9.3/website/src/content/docs/ja/integrations.mdx
+  h_b156936c57c455 1-374
+docs/versions/0.9.3/website/src/content/docs/ja/keyboard.mdx
+  h_b156936c57c455 1-134
+docs/versions/0.9.3/website/src/content/docs/ja/marketplace.mdx
+  h_b156936c57c455 1-52
+docs/versions/0.9.3/website/src/content/docs/ja/persistence-remote.mdx
+  h_b156936c57c455 1-151
+docs/versions/0.9.3/website/src/content/docs/ja/plugins.mdx
+  h_b156936c57c455 1-370
+docs/versions/0.9.3/website/src/content/docs/ja/quick-start.mdx
+  h_b156936c57c455 1-69
+docs/versions/0.9.3/website/src/content/docs/ja/session-state.mdx
+  h_b156936c57c455 1-137
+docs/versions/0.9.3/website/src/content/docs/ja/socket-api.mdx
+  h_b156936c57c455 1-769
+docs/versions/0.9.3/website/src/content/docs/ja/troubleshooting.mdx
+  h_b156936c57c455 1-120
+docs/versions/0.9.3/website/src/content/docs/ja/windows-beta.mdx
+  h_b156936c57c455 1-147
+docs/versions/0.9.3/website/src/content/docs/keyboard.mdx
+  h_b156936c57c455 1-134
+docs/versions/0.9.3/website/src/content/docs/marketplace.mdx
+  h_b156936c57c455 1-54
+docs/versions/0.9.3/website/src/content/docs/persistence-remote.mdx
+  h_b156936c57c455 1-160
+docs/versions/0.9.3/website/src/content/docs/plugins.mdx
+  h_b156936c57c455 1-374
+docs/versions/0.9.3/website/src/content/docs/quick-start.mdx
+  h_b156936c57c455 1-69
+docs/versions/0.9.3/website/src/content/docs/session-state.mdx
+  h_b156936c57c455 1-136
+docs/versions/0.9.3/website/src/content/docs/socket-api.mdx
+  h_b156936c57c455 1-956
+docs/versions/0.9.3/website/src/content/docs/troubleshooting.mdx
+  h_b156936c57c455 1-120
+docs/versions/0.9.3/website/src/content/docs/windows-beta.mdx
+  h_b156936c57c455 1-147
+docs/versions/0.9.3/website/src/content/docs/zh-cn/add-herdr-support.mdx
+  h_b156936c57c455 1-114
+docs/versions/0.9.3/website/src/content/docs/zh-cn/agent-automation.mdx
+  h_b156936c57c455 1-127
+docs/versions/0.9.3/website/src/content/docs/zh-cn/agent-skill.mdx
+  h_b156936c57c455 1-67
+docs/versions/0.9.3/website/src/content/docs/zh-cn/agents.mdx
+  h_b156936c57c455 1-173
+docs/versions/0.9.3/website/src/content/docs/zh-cn/cli-reference.mdx
+  h_b156936c57c455 1-504
+docs/versions/0.9.3/website/src/content/docs/zh-cn/concepts.mdx
+  h_b156936c57c455 1-89
+docs/versions/0.9.3/website/src/content/docs/zh-cn/config-reference.mdx
+  h_b156936c57c455 1-26
+docs/versions/0.9.3/website/src/content/docs/zh-cn/configuration.mdx
+  h_b156936c57c455 1-608
+docs/versions/0.9.3/website/src/content/docs/zh-cn/connecting-machines.mdx
+  h_b156936c57c455 1-128
+docs/versions/0.9.3/website/src/content/docs/zh-cn/how-to-work.mdx
+  h_b156936c57c455 1-103
+docs/versions/0.9.3/website/src/content/docs/zh-cn/index.mdx
+  h_b156936c57c455 1-82
+docs/versions/0.9.3/website/src/content/docs/zh-cn/install.mdx
+  h_b156936c57c455 1-158
+docs/versions/0.9.3/website/src/content/docs/zh-cn/integrations.mdx
+  h_b156936c57c455 1-374
+docs/versions/0.9.3/website/src/content/docs/zh-cn/keyboard.mdx
+  h_b156936c57c455 1-134
+docs/versions/0.9.3/website/src/content/docs/zh-cn/marketplace.mdx
+  h_b156936c57c455 1-44
+docs/versions/0.9.3/website/src/content/docs/zh-cn/persistence-remote.mdx
+  h_b156936c57c455 1-151
+docs/versions/0.9.3/website/src/content/docs/zh-cn/plugins.mdx
+  h_b156936c57c455 1-330
+docs/versions/0.9.3/website/src/content/docs/zh-cn/quick-start.mdx
+  h_b156936c57c455 1-69
+docs/versions/0.9.3/website/src/content/docs/zh-cn/session-state.mdx
+  h_b156936c57c455 1-137
+docs/versions/0.9.3/website/src/content/docs/zh-cn/socket-api.mdx
+  h_b156936c57c455 1-763
+docs/versions/0.9.3/website/src/content/docs/zh-cn/troubleshooting.mdx
+  h_b156936c57c455 1-120
+docs/versions/0.9.3/website/src/content/docs/zh-cn/windows-beta.mdx
+  h_b156936c57c455 1-147
+docs/versions/0.9.3/website/src/data/config-reference.json
+  h_b156936c57c455 1-1534
+docs/versions/README.md
+  h_b156936c57c455 5
+justfile
+  h_b156936c57c455 134,138-141,168-188,230-231
+nix/package.nix
+  h_b156936c57c455 43
+scripts/agent_detection_manifest_check.py
+  h_b156936c57c455 56-59
+scripts/build_libghostty_vt_prebuilt.sh
+  h_b156936c57c455 6,11,16
+scripts/docs/snapshot.mjs
+  h_b156936c57c455 2,95-102
+scripts/docs/versions.integration.test.ts
+  h_b156936c57c455 104-117
+scripts/fetch_libghostty_vt_prebuilt.sh
+  h_b156936c57c455 5
+scripts/generate_libghostty_bindings.sh
+  h_b156936c57c455 11
+scripts/package_windows_conpty.py
+  h_b156936c57c455 7,10-11,319-406,470,484,486-487
+scripts/review_rules.py
+  h_b156936c57c455 166,181
+scripts/test_agent_detection_manifest_check.py
+  h_b156936c57c455 32-45,50-52,106,109,111-112,114,117-118,121,123
+scripts/test_package_windows_conpty.py
+  h_b156936c57c455 6,19-41,137-141,154-161,191-239
+scripts/test_release.py
+  h_b156936c57c455 196-199
+scripts/windows_conpty_enhanced_input_probe.ps1
+  h_b156936c57c455 402-405,418-422,474-477
+scripts/windows_cross.py
+  h_b156936c57c455 75,77
+scripts/windows_input/report.py
+  h_b156936c57c455 41-44
+scripts/write_libghostty_vt_stamp.sh
+  h_b156936c57c455 4-5,10-11,22-24
+src/agent_resume.rs
+  h_b156936c57c455 7-8,30-90,374-405,409
+src/api/schema/panes.rs
+  h_b156936c57c455 375-378,415-418
+src/api/server.rs
+  h_b156936c57c455 27,38,68,88,125-155,158-165,175-275,340,520-522,531,585-586,614-616,623,1351-1368,1558,1569,1578,1585-1591,1602,1618-1620
+src/app/actions.rs
+  h_b156936c57c455 678,681,895,1329-1340,1487-1508,1617-1642,1688-1695,2449,2477,2618-2657,2926-2927,3707-3970
+src/app/agent_suspend_tests.rs
+  h_b156936c57c455 1-285
+src/app/agents.rs
+  h_b156936c57c455 377
+src/app/api.rs
+  h_b156936c57c455 130-157,497,601-607,1692-1700,1702,1717-1723
+src/app/api/agents.rs
+  h_b156936c57c455 403-453,462,465-466,469-470,480,487,990-1067
+src/app/api/layouts.rs
+  h_b156936c57c455 92-98,154-156,373,386-390,396-397,399-400,412,414,529-569,777-851
+src/app/api/panes.rs
+  h_b156936c57c455 56-67,1594,1600-1611,1614-1616,1621-1631,1705,1711-1722,1725-1727,1733-1767,1769-1798,2138,2407-2410,2969,2990-3017,5180
+src/app/api/plugins/manifest.rs
+  h_b156936c57c455 293-305
+src/app/api/plugins/mod.rs
+  h_b156936c57c455 43,55,64,362,929-993,1810-1811,2842-2921,3596
+src/app/api/plugins/panes.rs
+  h_b156936c57c455 118-128,136-137,208,213-214
+src/app/api/plugins/runtime.rs
+  h_b156936c57c455 119-123,131,143-157,162-168,262-329,365-463
+src/app/api/session.rs
+  h_b156936c57c455 1,17-27,44,54-60,72
+src/app/api/tabs.rs
+  h_b156936c57c455 68
+src/app/api/workspaces.rs
+  h_b156936c57c455 404,408-410,421,1038-1203
+src/app/api/worktrees.rs
+  h_b156936c57c455 270,319-350,563,1278-1352
+src/app/api/worktrees/deferred.rs
+  h_b156936c57c455 248-306,308-309,329-332,443-470
+src/app/api/worktrees/reads.rs
+  h_b156936c57c455 124
+src/app/creation.rs
+  h_b156936c57c455 129,303-304,313-324,360
+src/app/custom_commands.rs
+  h_b156936c57c455 372-374,396-397,451-453,483-484
+src/app/git_refresh.rs
+  h_b156936c57c455 3-4,7-8,40-108,126,136,144-156,445-514,531-606,622-673
+src/app/mod.rs
+  h_b156936c57c455 8-9,220-224,287-294,310,315-318,495,503-514,525-541,650,686-689,723-727,731,733-735,749-750,764-766,823-824,839,845-852,886,1003,2495-2498,2595-2598,2753,2760,2818-2821,2938,2944,3596-3672
+src/app/popup.rs
+  h_b156936c57c455 145-146
+src/app/runtime.rs
+  h_b156936c57c455 130-134,149-153,179
+src/app/state.rs
+  h_b156936c57c455 823,962-980,982,1103,1377,1380,1382-1385
+src/app/terminal_targets.rs
+  h_b156936c57c455 58,105,121,205-341
+src/build_info.rs
+  h_b156936c57c455 8-9
+src/cli.rs
+  h_b156936c57c455 1849-1851,1859-1861
+src/cli/machine.rs
+  h_b156936c57c455 1-5,8,14,213-214,254-255,264-298,311-333,335-340,348-352,366-371,393-469,589-590,599,607,615-616,623-657
+src/cli/pane.rs
+  h_b156936c57c455 1162,1164,1289,1342-1348,1350,1352,1463
+src/cli/plugin.rs
+  h_b156936c57c455 18-19,29,157-165,168,172-174,180-182,184-230,234,238-286,288,292-328,334-343,345-347,349-357,361-372,374-378,380,382-402,406-424,429-434,439,442-449,480-484,931,957-973,1024-1040,1139-1142,1145-1149,1151,1154-1157,1160-1162,1164-1185,1276-1285,1291,1396,1398-1401,1634,1761-1764,1766-1773,1812,1895-1956,2032-2047,2062-2079
+src/cli/server.rs
+  h_b156936c57c455 4-8,267-268
+src/cli/spec.rs
+  h_b156936c57c455 267,284-290,787,800-808,977-987
+src/cli/spec/machine.rs
+  h_b156936c57c455 33-35,39
+src/client/attach.rs
+  h_b156936c57c455 156,175-177,180-185,196
+src/client/clipboard_forwarding.rs
+  h_b156936c57c455 14
+src/client/clipboard_images.rs
+  h_b156936c57c455 82
+src/client/config_reload.rs
+  h_b156936c57c455 44
+src/client/endpoint/activation.rs
+  h_b156936c57c455 606-610,1203-1212
+src/client/endpoint/activation/protocol.rs
+  h_b156936c57c455 13-20,177-191
+src/client/endpoint/activation_tests.rs
+  h_b156936c57c455 1169-1181,1205-1212,1396-1488,1542-1637
+src/client/endpoint/catalog.rs
+  h_b156936c57c455 14
+src/client/events.rs
+  h_b156936c57c455 13-14
+src/client/handshake.rs
+  h_b156936c57c455 203
+src/client/input.rs
+  h_b156936c57c455 13-15,27,42,54,60,68,84,129,146,183-187,231-232,253-254,352,376,378-386,388-389,441-454,581,585-617,619-628,631-633,638-647,650-655,657-663,665-675,677-687,691-697,699-706,712-731,735-738,740-742,744-750,755-767,769-775,780-783,787-790,792-798,803-806,808-814,816,818-832,834-840,842-843,847-857,859-865,867-868,870-886,888-892
+src/client/input/windows_vti.rs
+  h_b156936c57c455 23,27-32,109-110,112-117,120-149,364,369,387,399,415-420,435-445,472,481,485-489,491,510-514,558,579-584,595-604,691,721-768,786-820,853,857-864,887-894,899-902,931,948,954,966-972,979,981,1011,1185,1241,1560-1561,1563,1573-1594,1604-1814,2191-2292,2611-2615,3160-3181,3213-3218,3349,3351,3355-3356,3465
+src/client/loop_config.rs
+  h_b156936c57c455 13
+src/client/mod.rs
+  h_b156936c57c455 73,89,131,148-157,185,208,312,454,478-479,525-527,549,562,605,817,858,933,1186-1210,1223-1229,1324,1777-1782,1987,1992,2002,2297-2302
+src/client/notifications.rs
+  h_b156936c57c455 9-51,55,71-81,89-129,142,195-227
+src/client/shell/actions.rs
+  h_b156936c57c455 127,459-462,475-478,680-681,709,720-723
+src/client/shell/config.rs
+  h_b156936c57c455 149,204-228,497,529,561,566,573
+src/client/shell/context_menu.rs
+  h_b156936c57c455 17,33-36,158-160,162,164,186,278-282,311,338
+src/client/shell/endpoint_navigation.rs
+  h_b156936c57c455 263-266,295-300
+src/client/shell/endpoints.rs
+  h_b156936c57c455 39-43
+src/client/shell/input.rs
+  h_b156936c57c455 13-25,101-146,149,158,161,164-170,223-229,237-240,381-385,413-429,432,434-436,443-455,672,687,722,752-753,788-793,923-924,928-933,1119-1160
+src/client/shell/link_hover.rs
+  h_b156936c57c455 41-42
+src/client/shell/mouse.rs
+  h_b156936c57c455 546-562,630-639,740-743,763-768,793-796,1062-1063,2088-2098
+src/client/shell/notification_policy.rs
+  h_b156936c57c455 232-241,245-246,255-294
+src/client/shell/overlay_input.rs
+  h_b156936c57c455 749-756,1070-1108,1120,1171,1178,1181-1186,1200-1203,1256
+src/client/shell/overlays.rs
+  h_b156936c57c455 59,265-269,540-551,601,1061
+src/client/shell/preferences.rs
+  h_b156936c57c455 46-59,101-116
+src/client/shell/render.rs
+  h_b156936c57c455 71
+src/client/shell/sidebar.rs
+  h_b156936c57c455 539-549,574-585,587-594,606-611,630,633-636,641-670,720-724
+src/client/shell/state.rs
+  h_b156936c57c455 603,657,806-807,811-818,1000-1008,1178-1180
+src/client/shell/tests/agents_worktrees_notifications.rs
+  h_b156936c57c455 175-293,382-434,515-562,1084
+src/client/shell/tests/chrome_context.rs
+  h_b156936c57c455 436,484
+src/client/shell/tests/copy.rs
+  h_b156936c57c455 1860,2042
+src/client/shell/tests/endpoints.rs
+  h_b156936c57c455 76-275,351-398
+src/client/shell/tests/graphics.rs
+  h_b156936c57c455 261
+src/client/shell/tests/input.rs
+  h_b156936c57c455 241-289,303-512,860-940,942-957
+src/client/shell/tests/input_conformance.rs
+  h_b156936c57c455 1-28,31-35,37,39-43,45,47-145,147-151,155-160,165-181,184-185,187-189,192-204,207-229,231,235-238,241-245,248-259,261-266,268,270-274,277-283,286-303,307-376,379-381,384-417,419-422,426-441,443,446-452,455-460,463-465,467-470,473-508,510-519,521-589,591-592,594-646,650-688,691-701,705-841,843-853,856-861,863-865,869-870,872-880,883-955,960,963-989,992-999,1001-1005,1007-1025,1027-1058,1060-1064,1066-1071,1073-1103,1105-1121,1123-1168,1170-1220,1222,1224-1267,1269,1271-1286,1288,1290-1307,1309-1312,1315,1317-1321,1323-1344,1346-1482,1485-1491,1494-1516,1518-1587,1589-1593,1595-1600,1603,1605-1689,1692,1694-1715,1718,1720-1743,1745,1747,1749-1782,1785,1787-1797,1799-1809,1811-1827,1829-1867,1871-1886,1888-1889,1891,1893-1900,1902-1912,1914,1916-1917,1919,1922-1928,1930-1954,1956-1959,1961-2094,2097-2105,2108-2110
+src/client/shell/tests/keybindings_settings.rs
+  h_b156936c57c455 2-63,109-185,424,519
+src/client/shell/tests/link_hover.rs
+  h_b156936c57c455 279-289
+src/client/shell/tests/mod.rs
+  h_b156936c57c455 262
+src/client/shell/tests/mouse_selection.rs
+  h_b156936c57c455 115-185
+src/client/shell/tests/startup_overlays.rs
+  h_b156936c57c455 352-371
+src/client/shell/tests/workspace_navigation.rs
+  h_b156936c57c455 972-1029
+src/client/shell_runtime.rs
+  h_b156936c57c455 20-29,111-113,129-134,174-178,236-244,780-783,824-929
+src/client/state.rs
+  h_b156936c57c455 54-55,119,548-555,561,564-568,580
+src/client/terminal_sessions.rs
+  h_b156936c57c455 10-11,190-199,204-221,304-331
+src/client/terminal_setup.rs
+  h_b156936c57c455 51,67-74,76,79,86,88,93,97,123-124,130,136,156-158,162-169,171-172,180,220-229,284-303,363-364,562-564,569,571,593,703,757-761,909-947
+src/client/tests/mod.rs
+  h_b156936c57c455 502-506,887-947
+src/config.rs
+  h_b156936c57c455 22,24,116,196,214-228,268-303
+src/config/keybinds.rs
+  h_b156936c57c455 13-15,18-20,24-44,74-80,435,442-445,447,463-471,473-474,501-504,508-510,517-520,522,1288-1296,1371-1385,1388-1409,1623-1624,1867-1933,1979-2093
+src/config/model.rs
+  h_b156936c57c455 420-422,559-564,693-699,711-729,1203-1205,1284,1513-1514
+src/detect/manifest.rs
+  h_b156936c57c455 595,602,615
+src/detect/manifest/tests.rs
+  h_b156936c57c455 92,97,187,190,270,273
+src/detect/manifests/antigravity.toml
+  h_b156936c57c455 2,4,7-28,33-57,67,69-70,72,75,77-78,80
+src/detect/manifests/codex.toml
+  h_b156936c57c455 2,4,41-54,107-118
+src/detect/manifests/grok.toml
+  h_b156936c57c455 2,4,77-78
+src/detect/manifests/pi.toml
+  h_b156936c57c455 2,4,13-16,24-27
+src/detect/mod.rs
+  h_b156936c57c455 295-301,310,315,328-329,333,428-432,482-483,492-546,1574-1674,1804-1806,2241-2289
+src/events.rs
+  h_b156936c57c455 134-146,204-209
+src/input/keybind_help.rs
+  h_b156936c57c455 13,18-27,77,83,270-291,303-316
+src/input/lease.rs
+  h_b156936c57c455 21-26,78-80,82,184-189,191-205,401-404,437
+src/input/mod.rs
+  h_b156936c57c455 16,21,23-24
+src/input/model.rs
+  h_b156936c57c455 82-86,101,106-114,194,223-225,377
+src/input/parse.rs
+  h_b156936c57c455 36-39,41-43,52-77,89-91,98-138,275-282,284-286,671,685,831-968,1174
+src/integration/assets/codex/herdr-agent-state.ps1
+  h_b156936c57c455 5,9,20-21,25,28,33,44
+src/integration/assets/codex/herdr-agent-state.sh
+  h_b156936c57c455 6,16,52-53,60-63,67,78-84,87
+src/integration/mod.rs
+  h_b156936c57c455 63
+src/integration/targets.rs
+  h_b156936c57c455 202-214,645
+src/integration/tests.rs
+  h_b156936c57c455 1307,1338-1341,1344-1351,1402-1405,1408-1409,1461-1462,1489
+src/ipc.rs
+  h_b156936c57c455 50,69,76
+src/kitty_graphics.rs
+  h_b156936c57c455 155-163,175-177,218-219,222,245,254-256,260-262,267,271,291,338,343-351,740-741,747,816,894-914,966-967
+src/kitty_graphics/surface.rs
+  h_b156936c57c455 10-11,23-27,32-33,43,77-112,116-117,129-188,190-204,206,506,511-531,538-539,741,743-749,792,799-885,932,937,958-994,1013-1015,1020-1027,1034-1035,1038-1047,1060-1063,1066-1069,1073-1100,1541,1553-1554,1557,1559-1561,1564,1628-1698,1700-1830,1835-1853,1873-1875,1877,1901,1905-1931,1933,1951,2003-2050
+src/layout.rs
+  h_b156936c57c455 132-154,158,188,190,209,212-215,530,550-555,611,613-617,621-630,727-898
+src/main.rs
+  h_b156936c57c455 26,38,42,62,233-235,539-542
+src/pane.rs
+  h_b156936c57c455 28,41,44-46,72-75,77,109-118,419-447,512,523,537-540,544-548,584-588,606-708,851-852,859,861,868,872,892,898,906-908,911-916,927-928,930-931,938,941,943-947,952-954,962,978-979,984,987,1014,1020-1021,1055,1072-1080,1099,1101,1103,1124,1126,1129-1137,1188-1190,1242-1244,1250,1259,1584,2887,2892,2895,2916,2980,3105,3108,3133,3139-3140,3184,3200-3208,3254,3256,3258,3288,3290,3293-3301,3387-3390,3442-3446,3452,3461,3552,3580-3584,3613-3614,3937-3940,3953,4114,4121,4211-4256,4346-4347,4376,4399-4532,4704-4752,5817,5859,5980-5986,5990-5996,6004-6010,6018-6024,6029-6327,6345-6351,6359-6365,6427,6445,6506,6510-6526,7103-7153
+src/pane/agent_detection.rs
+  h_b156936c57c455 142-183,429-485
+src/pane/background_agent.rs
+  h_b156936c57c455 1-281
+src/pane/input.rs
+  h_b156936c57c455 1-8,11,13-20,34-86,89,91-159,161,163-170,172-179,181-186,189-194,354-357,361,391-403,406-451,456,459
+src/pane/kitty_keyboard.rs
+  h_b156936c57c455 1-4,74,176-179
+src/pane/terminal.rs
+  h_b156936c57c455 12,28-31,190-193,506-510,591-594,646-647,1168,1170-1173,1178,1180-1183,1440,1590,1654,1677,1817-1819,1862-1863,1865-1871,2034-2051,2053,2058-2060,2064,2067,2072-2073,2077-2080,2082,2084,2086,2179-2185,2189,2290-2296,2350-2357,2517-2542,2544-2552,2709,2725-2733,2762,2861-2866,2873-2883,3123-3124,3126,3133,3139,3665-3679,4773-4776,4798-4801,4809-4812,4826,4831,4854-4858,4865,4871,4876,4892-4894,4905,4915,4933,4952,4965-4968,4993-4996,5014-5124,5130-5142,5144-5180,5192-5195,5235-5238,5242,5264,5283,5289-5290,5305,5310,5320-5323,5328-5331,5346,5348,5363,5381,5426,5444-5445,5449,5454,5461-5462,5464-5468,5480,5497,5515,5521,5531,5550-5557,6271-6328
+src/pane/terminal/migration_tests.rs
+  h_b156936c57c455 314-320
+src/pane/terminal/windows_recent_fallback.rs
+  h_b156936c57c455 325-326,334-337,342-347,352-355
+src/persist.rs
+  h_b156936c57c455 19
+src/persist/plugin_registry.rs
+  h_b156936c57c455 19-21,69,93-99,440-450
+src/persist/restore.rs
+  h_b156936c57c455 18-19,420-424,426,428,459-461,476,480-489,544,552-558,560-562,604-606,704-706,817-818,826-832,867-882,1097-1109,1111,1113-1114,1118-1170,1239-1245,1270-1283,1292-1364,1383-1389,1446-1453,1499-1503,1567,1651,1663,1719,1735,1890,2208
+src/persist/snapshot.rs
+  h_b156936c57c455 117-118,122-128,407-413,422,810,822,1418-1451,1516,1530
+src/platform/fallback.rs
+  h_b156936c57c455 16-25,244-253,269-273
+src/platform/linux.rs
+  h_b156936c57c455 701-772,948-951,1343-1353,1757-1772
+src/platform/macos.rs
+  h_b156936c57c455 676-679,916-959
+src/platform/mod.rs
+  h_b156936c57c455 39-43,59-99,215-223,389-390,417-419,627-722
+src/platform/ssh_agent.rs
+  h_b156936c57c455 15-19,30-32,52-72,111-113,117,137,149,158-170,173-174,185-199,201-203,230-231,233-246,256,313-319,350-477,539
+src/platform/unix_common.rs
+  h_b156936c57c455 20-30,267-337,565-589
+src/platform/windows.rs
+  h_b156936c57c455 10,18-146,171-178,317,325,449,451-455,460-461,469-470,491,508,510-511,526-539,660-661,663-666,668-674,686-688,901-902,1601-1620,1625-1674,1749,1755-1757,1775-1837,1935-1936,1982,2004-2014,2024,2167-2179,2491-2575,2693-2694,2737-2746,2755-2824,2939-2940,2965-2982,3371-3541,4141-4142,4146,4148-4243,4245-4246,4251,4261-4262,4271-4290,4295,4298-4299,4301-4306,4313-4315,4320-4324,4533-4576,4598-4722,4918-4963,4965-4980
+src/platform/windows/notifications.rs
+  h_b156936c57c455 1-535
+src/plugin_installations.rs
+  h_b156936c57c455 1-470
+src/plugin_paths.rs
+  h_b156936c57c455 15-43,79-83,145-184
+src/protocol/endpoint.rs
+  h_b156936c57c455 64-66,171,217,366,371,382
+src/protocol/mod.rs
+  h_b156936c57c455 7
+src/protocol/surface_delta.rs
+  h_b156936c57c455 227,387,412,515
+src/protocol/surface_reuse.rs
+  h_b156936c57c455 56-65,88,92,96,110-119,161,185-197
+src/protocol/surface_scroll.rs
+  h_b156936c57c455 1-720
+src/protocol/wire.rs
+  h_b156936c57c455 169-172,461-473,2245,2323
+src/pty/actor.rs
+  h_b156936c57c455 15,62-63,67-71,83,91,95,112,116,148-149,208-215,217-218,245-248,250,253,258-260,267,293,298,322,343,353-355,369,372,374,395-396,399-400,402-404,418,422,424-451,473-504,535-538,550,571-573,579,614,641,666-668,675,687-859
+src/raw_input.rs
+  h_b156936c57c455 2,8,16-33,41,43,45-54,103-104,110,118-122,124,127-139,151-160,165-166,170,172,174-193,195-196,208-215,218-222,227,229-230,234-242,254,262-266,268-283,289,291-302,304-341,347,356,360,362-397,412,417,422-457,460,462-467,478-488,509-517,541-544,564-579,581,617-642,644-653,664,710-718,733-741,748-751,821-871,892-897,899,925-928,936-943,948-988,1172-1193,1223-1250,1360-1370,1373-1377,1381,1579-1583,1585-1593,1595-1602,1604-1605,1607-1625,1628-1629,1633-1638,1780-1797,2462-2593,3103-3144,3192-3306,3332-3474,3529-3565,3579,3898-3927
+src/remote/args.rs
+  h_b156936c57c455 1
+src/remote/attach.rs
+  h_b156936c57c455 78,81,86-92,128-155,157-191,193-212,214-224,226-279,1297,1299-1315,1320,1328,1351,1390,1414,1421,1484,1526,1535-1538,1589,1596-1604,1607-1609,1649,3380-3381,3384-3394,3410-3431,3479-3516,4513-4526,4529-4530,4534-4547,4843-4891
+src/remote/host.rs
+  h_b156936c57c455 42
+src/selection.rs
+  h_b156936c57c455 361-367,370-376
+src/server/autodetect.rs
+  h_b156936c57c455 44,49,52-63,69,72,97,287,331-338,340-342,344,360-424,448,516,533,547
+src/server/client_accept.rs
+  h_b156936c57c455 34,44-46
+src/server/client_shell.rs
+  h_b156936c57c455 27,643-730
+src/server/client_shell_graphics.rs
+  h_b156936c57c455 6,15
+src/server/client_transport.rs
+  h_b156936c57c455 421,789,867,869,886,902,1479,1997,2002
+src/server/headless.rs
+  h_b156936c57c455 70,86-90,244,246,248-249,261-262,287,297-299,301,316,318,334,379-380,385,403,405-408,432-434,600,630,690-705,925-930,1052-1055,1902,1950-1952,2852-2855,2873-2887,2894,2896,2966-2969,3255-3257,3302-3310
+src/server/headless/bootstrap.rs
+  h_b156936c57c455 5,31-34,37,43,68,74,83,148,187,194,224-231,236-237
+src/server/headless/lifecycle.rs
+  h_b156936c57c455 254,311-318
+src/server/headless/notifications.rs
+  h_b156936c57c455 302,737
+src/server/headless/render.rs
+  h_b156936c57c455 36-72,86-87
+src/server/headless/retained_surface.rs
+  h_b156936c57c455 451,461,468-473
+src/server/headless/tests/event_fairness.rs
+  h_b156936c57c455 1-183
+src/server/headless/tests/mod.rs
+  h_b156936c57c455 3,13-14,98-99,101-102,136,141,733,776,825,944,1047,1215,1820,1845,2765,3012,4671-4702,4759-4968,6514-6582,6768,6770,6773,6902-6945,7878-8013,8072,8136,8149,8340
+src/server/headless/tests/pane_graphics.rs
+  h_b156936c57c455 7-62,155-221,300,331,340-344,348-355,375-378,455-587
+src/server/headless/tests/surface_delta.rs
+  h_b156936c57c455 54,122,163
+src/server/headless/tests/surface_interest.rs
+  h_b156936c57c455 69,285,399,516,540
+src/server/headless/tests/surface_scroll.rs
+  h_b156936c57c455 1-89
+src/server/keybindings.rs
+  h_b156936c57c455 5,14
+src/server/mod.rs
+  h_b156936c57c455 21
+src/server/pane_input.rs
+  h_b156936c57c455 207-214
+src/server/render_scale_benchmark.rs
+  h_b156936c57c455 235-236,248-264,273,292,297-298,303-316,404-405,617-652
+src/server/render_stream.rs
+  h_b156936c57c455 22,41,64-69,182,251,269-280,307,309-313,384-385,398
+src/server/shutdown.rs
+  h_b156936c57c455 1-86
+src/session.rs
+  h_b156936c57c455 25-26,221-226,230-231,513-579
+src/terminal/id.rs
+  h_b156936c57c455 1,35-60
+src/terminal/runtime.rs
+  h_b156936c57c455 252-255,461-464,624-637
+src/terminal/state.rs
+  h_b156936c57c455 176-177,222-223,606-614,781-789,1719-1728,1818,1821-1823,1869-1871,1934,1952-2106
+src/thread_spawn.rs
+  h_b156936c57c455 1-109
+src/ui.rs
+  h_b156936c57c455 15-16,22-23
+src/ui/panes.rs
+  h_b156936c57c455 3,16,50-54,66-167,342,402
+src/update.rs
+  h_b156936c57c455 1854-1867,1870,2260,2295,2301-2404,2582-2678
+tests/api_ping.rs
+  h_b156936c57c455 36,159,342-382
+tests/auto_detect.rs
+  h_b156936c57c455 42,105,147,599
+tests/cli/harness.rs
+  h_b156936c57c455 10-11,27,84,186,306
+tests/cli/hooks.rs
+  h_b156936c57c455 225-239
+tests/cli/plugins.rs
+  h_b156936c57c455 84,230-821,824-825,827-836,980-1012,1059,1069-1071,1075,1097,1135-1136,1236-1238,1431-1433
+tests/client_mode.rs
+  h_b156936c57c455 53,128,190,442,730-796,1152,1250,2096
+tests/cross_area.rs
+  h_b156936c57c455 49,117,157
+tests/detach_reattach.rs
+  h_b156936c57c455 56,124
+tests/fixtures/hermes-installer-process-info-4910.json
+  h_b156936c57c455 1
+tests/host_shutdown.rs
+  h_b156936c57c455 137
+tests/live_handoff.rs
+  h_b156936c57c455 36,77,130,165,207
+tests/machine_setup.rs
+  h_b156936c57c455 24,36-39,56-62,65-66,76-85,97-112,115,120-124,152-154,166-171,190-201,218,223-227,254-255,273-274,331-479
+tests/multi_client.rs
+  h_b156936c57c455 44,92,121
+tests/remote_attach.rs
+  h_b156936c57c455 4,80,97,131,134-136,143-149,161-162,164-169,171,175
+tests/server_headless.rs
+  h_b156936c57c455 47,122,249-250,357,538-648
+tests/session_restore.rs
+  h_b156936c57c455 1-226
+tests/support/mod.rs
+  h_b156936c57c455 10-11,29-33,44-56
+tests/support/terminal_screen.rs
+  h_b156936c57c455 4
+tests/windows_server_security.rs
+  h_b156936c57c455 1-262
+vendor/libghostty-vt.patches.md
+  h_b156936c57c455 176
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "5b997b8da55dbde4b96a4c088d857ee5acf5f91a",
+  "prompts": {},
+  "humans": {
+    "h_b156936c57c455": {
+      "author": "Ary Rabelo <aryrabelo@gmail.com>"
+    }
+  }
+}
