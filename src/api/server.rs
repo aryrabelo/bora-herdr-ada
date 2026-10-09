@@ -599,6 +599,7 @@ pub(crate) fn api_method_name(method: &Method) -> &'static str {
         Method::PaneRead(_) => "pane.read",
         Method::PaneReportAgent(_) => "pane.report_agent",
         Method::PaneSetStatus(_) => "pane.set_status",
+        Method::PaneMarkUnseen(_) => "pane.mark_unseen",
         Method::PaneReportResult(_) => "pane.report_result",
         Method::PaneReportAgentSession(_) => "pane.report_agent_session",
         Method::PaneReportMetadata(_) => "pane.report_metadata",

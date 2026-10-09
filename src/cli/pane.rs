@@ -6,7 +6,7 @@ use crate::api::schema::{
     PaneReportMetadataParams, PaneReportResultParams, PaneResizeParams, PaneRightClickTarget,
     PaneSendInputParams, PaneSendKeysParams, PaneSendTextParams, PaneSplitParams, PaneSwapParams,
     PaneTarget, PaneWaitForOutputParams, PaneZoomMode, PaneZoomParams, ReadFormat, ReadSource,
-    Request, SplitDirection,
+    Request, ResponseResult, SplitDirection, SuccessResponse,
 };
 
 pub(super) fn run_pane_command(args: &[String]) -> std::io::Result<i32> {
@@ -28,6 +28,7 @@ pub(super) fn run_pane_command(args: &[String]) -> std::io::Result<i32> {
         "zoom" => pane_zoom(&args[1..]),
         "read" => pane_read(&args[1..]),
         "rename" => pane_rename(&args[1..]),
+        "mark-unseen" => pane_mark_unseen(&args[1..]),
         "input" => pane_input(&args[1..]),
         "split" => pane_split(&args[1..]),
         "swap" => pane_swap(&args[1..]),
@@ -449,6 +450,72 @@ fn pane_rename(args: &[String]) -> std::io::Result<i32> {
         pane_id: super::normalize_pane_id(raw_pane_id),
         label,
     })
+}
+
+const PANE_MARK_UNSEEN_USAGE: &str = "usage: bora pane mark-unseen <pane_id>... | --all";
+
+/// `None` means `--all`: every pane `pane.list` reports.
+fn parse_pane_mark_unseen_args(args: &[String]) -> Result<Option<Vec<String>>, String> {
+    let mut all = false;
+    let mut pane_ids = Vec::new();
+    for arg in args {
+        match arg.as_str() {
+            "--all" => all = true,
+            option if option.starts_with('-') => return Err(format!("unknown option: {option}")),
+            pane_id => pane_ids.push(super::normalize_pane_id(pane_id)),
+        }
+    }
+    match (all, pane_ids.is_empty()) {
+        (true, true) => Ok(None),
+        (false, false) => Ok(Some(pane_ids)),
+        _ => Err(PANE_MARK_UNSEEN_USAGE.into()),
+    }
+}
+
+fn pane_mark_unseen(args: &[String]) -> std::io::Result<i32> {
+    let pane_ids = match parse_pane_mark_unseen_args(args) {
+        Ok(Some(pane_ids)) => pane_ids,
+        Ok(None) => {
+            let response = super::send_request(&Request {
+                id: "cli:pane:list".into(),
+                method: Method::PaneList(PaneListParams { workspace_id: None }),
+            })?;
+            if response.get("error").is_some() {
+                return super::print_response(&response);
+            }
+            let parsed: SuccessResponse =
+                serde_json::from_value(response).map_err(std::io::Error::other)?;
+            let ResponseResult::PaneList { panes } = parsed.result else {
+                return Err(std::io::Error::other("expected pane_list response"));
+            };
+            panes.into_iter().map(|pane| pane.pane_id).collect()
+        }
+        Err(message) => {
+            eprintln!("{message}");
+            return Ok(2);
+        }
+    };
+
+    let mut failed = false;
+    for pane_id in pane_ids {
+        let response = super::send_request(&Request {
+            id: "cli:pane:mark-unseen".into(),
+            method: Method::PaneMarkUnseen(PaneTarget {
+                pane_id: pane_id.clone(),
+            }),
+        })?;
+        if let Some(error) = response.get("error") {
+            let message = error
+                .get("message")
+                .and_then(serde_json::Value::as_str)
+                .map_or_else(|| error.to_string(), str::to_owned);
+            eprintln!("{pane_id}: {message}");
+            failed = true;
+        } else {
+            println!("{pane_id}: unseen");
+        }
+    }
+    Ok(i32::from(failed))
 }
 
 fn pane_read(args: &[String]) -> std::io::Result<i32> {
@@ -1733,6 +1800,7 @@ fn print_pane_help() {
     );
     eprintln!("  bora pane zoom [<pane_id>|--pane ID|--current] [--toggle|--on|--off]");
     eprintln!("  bora pane rename <pane_id> <label>|--clear");
+    eprintln!("  bora pane mark-unseen <pane_id>... | --all");
     eprintln!("  bora pane read <pane_id> [--source visible|recent|recent-unwrapped] [--lines N] [--format text|ansi] [--ansi]");
     eprintln!("  bora pane input [<pane_id>|--pane ID|--current] --right-click herdr|pane");
     eprintln!(
@@ -1763,6 +1831,21 @@ mod tests {
 
     fn args(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| (*value).to_string()).collect()
+    }
+
+    #[test]
+    fn parse_pane_mark_unseen_args_takes_ids_or_all_but_not_both() {
+        assert_eq!(
+            parse_pane_mark_unseen_args(&args(&["w1:p1", "w2:p3"])),
+            Ok(Some(vec!["w1:p1".to_string(), "w2:p3".to_string()]))
+        );
+        assert_eq!(parse_pane_mark_unseen_args(&args(&["--all"])), Ok(None));
+        for invalid in [&[][..], &["--all", "w1:p1"][..], &["w1:p1", "--bogus"][..]] {
+            assert!(
+                parse_pane_mark_unseen_args(&args(invalid)).is_err(),
+                "{invalid:?}"
+            );
+        }
     }
 
     #[test]
