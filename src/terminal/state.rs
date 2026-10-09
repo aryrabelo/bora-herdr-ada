@@ -777,7 +777,7 @@ impl TerminalState {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)] // mirrors set_hook_authority_at plus the background flag
     pub fn set_hook_authority_with_background_at(
         &mut self,
         source: String,

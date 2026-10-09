@@ -3494,7 +3494,7 @@ impl Default for CellBasicData {
 }
 
 impl<'a> RowCellIter<'a> {
-    #[allow(clippy::should_implement_trait)]
+    #[allow(clippy::should_implement_trait)] // cursor-style advance over a C handle, not a std Iterator
     pub fn next(&mut self) -> bool {
         // SAFETY: cells handle is valid while self is alive.
         unsafe { ffi::ghostty_render_state_row_cells_next(self.cells.raw) }

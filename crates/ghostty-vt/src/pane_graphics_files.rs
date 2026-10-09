@@ -267,7 +267,7 @@ impl OwnedExport {
         self.lease.path()
     }
 
-    #[allow(clippy::len_without_is_empty)]
+    #[allow(clippy::len_without_is_empty)] // a lease always holds a file; is_empty would be dead API
     pub fn len(&self) -> usize {
         self.lease.len()
     }
