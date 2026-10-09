@@ -1,0 +1,42 @@
+AGENTS.md
+  h_b156936c57c455 818
+Cargo.lock
+  h_b156936c57c455 169
+Cargo.toml
+  h_b156936c57c455 3
+docs/next/api/herdr-api.schema.json
+  h_b156936c57c455 3501-3504
+src/api/schema/panes.rs
+  h_b156936c57c455 379-383
+src/app/actions.rs
+  h_b156936c57c455 1465,1475,1482-1483,3347,3720,3770,3780,3798,3808,3863,3967,3997,4039,4097,4165,4275,4300,4313
+src/app/agent_suspend_tests.rs
+  h_b156936c57c455 78
+src/app/api/panes.rs
+  h_b156936c57c455 1620,5182,5214-5266
+src/app/api/plugins/mod.rs
+  h_b156936c57c455 3597
+src/cli/pane.rs
+  h_b156936c57c455 1290
+src/events.rs
+  h_b156936c57c455 124-126
+src/integration/assets/herdr-agent-state.test.ts
+  h_b156936c57c455 32,34,37-38,56,126,130-136,587-734
+src/integration/assets/omp/herdr-agent-state.ts
+  h_b156936c57c455 78,91-125,206-224,228,242-243,277,340,346-383,406,409,411-413,415,420-425,430-431,461,465,550-554,556-559,607-615,659-666,681-682,684
+src/server/headless/tests/mod.rs
+  h_b156936c57c455 5922,7898,8075,8153,8345
+src/terminal/state.rs
+  h_b156936c57c455 22-26,36,42-46,736,757,767-790,885-888,896,907,1163,2274-2277,2287-2291,3123-3267
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "1c0f374cbbe92f92197ba7e585c1d72bd383727d",
+  "prompts": {},
+  "humans": {
+    "h_b156936c57c455": {
+      "author": "Ary Rabelo <aryrabelo@gmail.com>"
+    }
+  }
+}
