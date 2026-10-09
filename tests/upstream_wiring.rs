@@ -54,16 +54,16 @@ const PLATFORM_GATED_ALLOWLIST: &[(&str, &str)] = &[
         "child of linux.rs, logind delay-inhibitor shutdown save, linux-only, not compiled on macOS",
     ),
     (
-        "src/platform/linux/native_image_sources.rs",
-        "child of linux.rs, linux-only CoW kitty image source snapshots, not compiled on macOS",
-    ),
-    (
         "src/platform/windows/config_backup.rs",
         "child of windows.rs, windows-only config backup, not compiled on macOS",
     ),
     (
         "src/platform/windows/config_backup/tests.rs",
         "child of windows/config_backup.rs, windows-only, not compiled on macOS",
+    ),
+    (
+        "src/platform/windows/notifications.rs",
+        "child of windows.rs, windows-only desktop notifications, not compiled on macOS",
     ),
 ];
 
@@ -106,6 +106,10 @@ const PLATFORM_GATED_ALLOWLIST: &[(&str, &str)] = &[
     (
         "src/platform/windows/config_backup/tests.rs",
         "child of windows/config_backup.rs, windows-only, not compiled on Linux",
+    ),
+    (
+        "src/platform/windows/notifications.rs",
+        "child of windows.rs, windows-only desktop notifications, not compiled on Linux",
     ),
 ];
 
