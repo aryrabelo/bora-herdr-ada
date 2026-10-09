@@ -1,0 +1,36 @@
+docs/preview/website/src/content/docs/cli-reference.mdx
+  h_b156936c57c455 61,67,262,270,382-383
+docs/preview/website/src/content/docs/ja/persistence-remote.mdx
+  h_b156936c57c455 149
+docs/preview/website/src/content/docs/ja/session-state.mdx
+  h_b156936c57c455 61
+docs/preview/website/src/content/docs/ja/socket-api.mdx
+  h_b156936c57c455 102,150,152-163,640
+docs/preview/website/src/content/docs/persistence-remote.mdx
+  h_b156936c57c455 156-157
+docs/preview/website/src/content/docs/session-state.mdx
+  h_b156936c57c455 59
+docs/preview/website/src/content/docs/socket-api.mdx
+  h_b156936c57c455 106,180-196,198-236
+docs/preview/website/src/content/docs/zh-cn/persistence-remote.mdx
+  h_b156936c57c455 149
+docs/preview/website/src/content/docs/zh-cn/session-state.mdx
+  h_b156936c57c455 61
+docs/preview/website/src/content/docs/zh-cn/socket-api.mdx
+  h_b156936c57c455 102,150,152-163,636
+docs/preview/website/src/data/config-reference.json
+  h_b156936c57c455 442,480,482
+docs/versions/README.md
+  h_b156936c57c455 5
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "72a87ee2afb07f768b2f268ccc1b548136328278",
+  "prompts": {},
+  "humans": {
+    "h_b156936c57c455": {
+      "author": "Ary Rabelo <aryrabelo@gmail.com>"
+    }
+  }
+}
