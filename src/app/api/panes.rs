@@ -1675,6 +1675,54 @@ impl App {
         encode_success(id, ResponseResult::Ok {})
     }
 
+    /// Put a pane back in the "finished while you were away" state: an idle
+    /// pane reads `done` until a focus or tab switch marks it seen again. The
+    /// manual pin, hook authority and notifications are left alone.
+    ///
+    /// Clearing `pane.seen` is enough for the API, but each TUI client keeps
+    /// its own acknowledgement and only projects `done` for a completion newer
+    /// than the one it last displayed. So an idle, unpinned pane also gets a
+    /// fresh state-change/completion sequence, exactly what a background
+    /// completion would have minted, without changing the detected state.
+    pub(super) fn handle_pane_mark_unseen(&mut self, id: String, target: PaneTarget) -> String {
+        let Some((ws_idx, pane_id)) = self.parse_pane_id(&target.pane_id) else {
+            return pane_not_found(id, &target.pane_id);
+        };
+        let Some((terminal_id, previous_seen)) = self
+            .state
+            .workspaces
+            .get(ws_idx)
+            .and_then(|ws| ws.pane_state(pane_id))
+            .map(|pane| (pane.attached_terminal_id.clone(), pane.seen))
+        else {
+            return pane_not_found(id, &target.pane_id);
+        };
+        let Some(terminal) = self.state.terminals.get_mut(&terminal_id) else {
+            return pane_not_found(id, &target.pane_id);
+        };
+        let previous_status =
+            effective_agent_status(terminal.manual_status, terminal.state, previous_seen);
+        if terminal.manual_status.is_none() && terminal.state == crate::detect::AgentState::Idle {
+            self.state.next_agent_state_change_seq += 1;
+            terminal.last_agent_state_change_seq = Some(self.state.next_agent_state_change_seq);
+            terminal.last_agent_completion_seq = Some(self.state.next_agent_state_change_seq);
+        }
+        let status = effective_agent_status(terminal.manual_status, terminal.state, false);
+        if let Some(pane) = self
+            .state
+            .workspaces
+            .get_mut(ws_idx)
+            .and_then(|ws| ws.pane_state_mut(pane_id))
+        {
+            pane.seen = false;
+        }
+        if status != previous_status {
+            self.emit_pane_agent_status_changed(ws_idx, pane_id);
+        }
+
+        encode_success(id, ResponseResult::Ok {})
+    }
+
     pub(super) fn handle_pane_report_result(
         &mut self,
         id: String,
@@ -5416,6 +5464,68 @@ mod tests {
             "req_missing".into(),
             set_status_params("w9:p9".into(), Some(AgentStatus::Working)),
         );
+        let response: ErrorResponse =
+            serde_json::from_str(&response).expect("missing pane is rejected");
+        assert_eq!(response.error.code, "pane_not_found");
+    }
+
+    fn mark_unseen_request(pane_id: &str) -> crate::api::schema::Request {
+        crate::api::schema::Request {
+            id: "req_unseen".into(),
+            method: crate::api::schema::Method::PaneMarkUnseen(PaneTarget {
+                pane_id: pane_id.into(),
+            }),
+        }
+    }
+
+    #[test]
+    fn pane_mark_unseen_reports_done_until_the_pane_is_focused() {
+        let (mut app, public_pane_id) = app_with_test_workspace();
+        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        let terminal_id = terminal_id_for(&app, pane_id);
+        set_detected_state(&mut app, pane_id, AgentState::Idle);
+        let status = |app: &App| app.pane_info(0, pane_id).expect("pane exists").agent_status;
+        assert_eq!(
+            status(&app),
+            AgentStatus::Idle,
+            "fixture starts idle and seen"
+        );
+        let sequence_before = app.state.terminals[&terminal_id].last_agent_state_change_seq;
+        let hub = app.event_hub.clone();
+
+        let before = hub.current_sequence();
+        let response = app.handle_api_request(mark_unseen_request(&public_pane_id));
+        let response: SuccessResponse =
+            serde_json::from_str(&response).expect("mark_unseen succeeds");
+        assert!(matches!(response.result, ResponseResult::Ok {}));
+
+        assert_eq!(status(&app), AgentStatus::Done);
+        assert_eq!(status_changed_events(&hub, before), vec![AgentStatus::Done]);
+        // TUI clients project `done` only from a completion newer than the one
+        // they last displayed, so the pane must carry a fresh completion.
+        let terminal = &app.state.terminals[&terminal_id];
+        assert!(terminal.last_agent_state_change_seq > sequence_before);
+        assert_eq!(
+            terminal.last_agent_completion_seq,
+            terminal.last_agent_state_change_seq
+        );
+        assert_eq!(terminal.state, AgentState::Idle, "detection is untouched");
+        assert!(terminal.manual_status.is_none(), "no pin is set");
+
+        app.handle_pane_focus(
+            "req_focus".into(),
+            PaneTarget {
+                pane_id: public_pane_id,
+            },
+        );
+        assert_eq!(status(&app), AgentStatus::Idle, "focusing marks it seen");
+    }
+
+    #[test]
+    fn pane_mark_unseen_rejects_unresolvable_panes() {
+        let (mut app, _) = app_with_test_workspace();
+
+        let response = app.handle_api_request(mark_unseen_request("w9:p9"));
         let response: ErrorResponse =
             serde_json::from_str(&response).expect("missing pane is rejected");
         assert_eq!(response.error.code, "pane_not_found");

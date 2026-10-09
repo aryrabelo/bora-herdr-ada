@@ -224,6 +224,7 @@ bora pane focus --direction left|right|up|down [--pane ID|--current]
 bora pane resize --direction left|right|up|down [--amount FLOAT] [--pane ID|--current]
 bora pane zoom [<pane_id>|--pane ID|--current] [--toggle|--on|--off]
 bora pane rename <pane_id> <label>|--clear
+bora pane mark-unseen <pane_id>... | --all
 bora pane input [<pane_id>|--pane ID|--current] --right-click bora|pane
 bora pane split [<pane_id>|--pane ID|--current] --direction right|down [--ratio FLOAT] [--cwd PATH] [--env KEY=VALUE] [--right-click bora|pane] [--focus] [--no-focus]
 bora pane swap --direction left|right|up|down [--pane ID|--current]
@@ -247,6 +248,8 @@ Right-clicking the pane frame still opens Bora's menu. `pane split
 --right-click pane` applies the same policy to the new pane at creation.
 
 After `pane move`, use `.result.move_result.pane.pane_id` for later commands. A cross-workspace move changes the workspace-qualified pane ID; the prior value remains at `.result.move_result.previous_pane_id`. The running process keeps its launch-time `HERDR_PANE_ID`, `HERDR_TAB_ID`, and `HERDR_WORKSPACE_ID`; Bora retains the old pane ID as an alias for that terminal, so pane commands using `--current` still resolve it. A live agent name follows the terminal and continues to resolve after the move.
+
+`pane mark-unseen` puts panes back in the "finished while you were away" state: an idle pane reads `done` in the CLI, API and TUI badges until it is next focused. `--all` applies it to every pane `pane list` reports. It prints `<pane_id>: unseen` per pane, reports failures on stderr, and exits non-zero if any pane failed.
 
 Read output:
 

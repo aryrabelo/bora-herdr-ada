@@ -1253,6 +1253,9 @@ impl App {
             Method::PaneSetStatus(params) => {
                 return self.handle_pane_set_status(request.id, params);
             }
+            Method::PaneMarkUnseen(target) => {
+                return self.handle_pane_mark_unseen(request.id, target);
+            }
             Method::PaneReportResult(params) => {
                 return self.handle_pane_report_result(request.id, params);
             }
