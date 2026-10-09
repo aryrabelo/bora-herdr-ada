@@ -3,17 +3,17 @@ set -euo pipefail
 
 # ponytail: local no-CI prebuilt producer; remove with the rest of the prebuilt
 # fallback once a local zig 0.16.0 build is proven to link on macOS 26 (see
-# BORA.md) — at that point build.rs compiles from source again on all hosts.
+# BORA.md) — at that point crates/ghostty-vt/build.rs compiles from source again on all hosts.
 #
 # Cross-builds libghostty-vt.a for the macOS host target from inside a Linux
 # container with zig 0.16.0 (the version the vendored build.zig.zon requires;
 # zig 0.15.2 is rejected). Output lands in prebuilt/libghostty-vt-<target>.a,
-# which build.rs auto-detects. Fully local, no GitHub Actions required.
+# which crates/ghostty-vt/build.rs auto-detects. Fully local, no GitHub Actions required.
 
 ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 
 # Host arch -> macOS zig target + container platform. We only cross-build macOS
-# targets here; Linux hosts build their native .a from source via build.rs.
+# targets here; Linux hosts build their native .a from source via crates/ghostty-vt/build.rs.
 ARCH=$(uname -m)
 case "$ARCH" in
   arm64 | aarch64) ZIGTARGET=aarch64-macos; PLATFORM=linux/arm64 ;;

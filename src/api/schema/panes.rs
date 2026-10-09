@@ -372,6 +372,15 @@ pub struct PaneReportAgentParams {
     pub agent_session_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_session_path: Option<String>,
+    /// Command that resumes this agent's session after a Herdr restart. The
+    /// first element must be a plain command name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resume_argv: Option<Vec<String>>,
+    /// Working only because the agent's own background subagents are
+    /// running. An idle prompt title is expected meanwhile and must not
+    /// reconcile the pane to idle while these reports stay fresh.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub background: bool,
 }
 
 /// Hand-set status for one pane, overriding automatic agent detection at
@@ -408,6 +417,10 @@ pub struct PaneReportAgentSessionParams {
     pub agent_session_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_start_source: Option<String>,
+    /// Command that resumes this agent's session after a Herdr restart. The
+    /// first element must be a plain command name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resume_argv: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

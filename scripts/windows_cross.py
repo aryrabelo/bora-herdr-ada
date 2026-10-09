@@ -72,8 +72,9 @@ def lint() -> None:
     env = {**os.environ, LIBC_ENV: str(libc_path()), "LIBGHOSTTY_VT_SIMD": "false"}
     subprocess.run(["rustup", "target", "add", TARGET], check=True)
     subprocess.run(
+        # --tests also checks Windows-only test code, which Unix builds never compile.
         [
-            "cargo", "clippy", "--bin", "bora", "--locked", "--target", TARGET, "--",
+            "cargo", "clippy", "--bin", "bora", "--tests", "--locked", "--target", TARGET, "--",
             "-D", "warnings",
             # Mesmas excecoes advisory de `just windows-lint` (AGENTS.md: TODOs e
             # macros dbg conhecidos; complexidade e tamanho cobertos por -A no host).

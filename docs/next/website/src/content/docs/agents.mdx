@@ -9,36 +9,55 @@ To coordinate agents from scripts or from another agent, see [Agent automation](
 
 ## Supported agents
 
-Automatic detection works out of the box for common coding agents. The table shows which signal determines `idle`, `working`, and `blocked` for each one.
+Agents get Herdr support in one of two ways: Herdr supports them, or they support Herdr themselves. Either way you see each agent's `idle`, `working`, and `blocked` state, get notified when it finishes or needs you, and can wait on it from scripts.
 
-| Agent | State authority | Integration role |
+Other agents still run normally in Herdr panes. They just show up as plain terminals.
+
+### Supported by Herdr
+
+Herdr recognizes these agents and reads their state from what they draw on screen. To get the same session back after a Herdr server restart, install the agent's integration with `herdr integration install <name>`. See [Integrations](/docs/integrations/) for what each one installs.
+
+| Agent | Integration | Notes |
 | --- | --- | --- |
-| Pi | lifecycle hooks when installed; otherwise screen manifest | state and session |
-| OMP | lifecycle hooks when installed | state and session |
-| GitHub Copilot CLI | screen manifest | session |
-| Devin CLI | screen manifest | session |
-| Kimi Code CLI | lifecycle hooks when installed; otherwise screen manifest | state and session |
-| Hermes Agent | screen manifest | session |
-| Qoder CLI | screen manifest | session |
-| Qwen Code | screen manifest | session |
-| Letta Code | screen manifest | session |
-| Droid | screen manifest | session |
-| OpenCode | lifecycle plugin when installed; otherwise screen manifest | state and session |
-| Kilo Code CLI | lifecycle plugin when installed; otherwise screen manifest | state and session |
-| MastraCode | lifecycle hooks when installed | state and session |
-| Claude Code | screen manifest | session |
-| Codex | screen manifest | session |
-| Cursor Agent CLI | screen manifest | session |
-| Amp | screen manifest | none |
-| Grok CLI | screen manifest | session |
-| Antigravity CLI | screen manifest | session |
-| Kiro CLI | screen manifest | none |
-| Maki | screen manifest | none |
-| Muse | screen manifest | none |
+| Claude Code | `claude` | |
+| Codex | `codex` | |
+| GitHub Copilot CLI | `copilot` | |
+| Cursor Agent CLI | `cursor` | |
+| OpenCode | `opencode` | also reports state |
+| Pi | `pi` | also reports state |
+| OMP | `omp` | state requires the integration |
+| Droid | `droid` | |
+| Devin CLI | `devin` | |
+| Kimi Code CLI | `kimi` | also reports state |
+| Kilo Code CLI | `kilo` | also reports state |
+| Hermes Agent | `hermes` | |
+| Qoder CLI | `qodercli` | |
+| Qwen Code | `qwen` | |
+| Letta Code | `letta` | CLI install only |
+| MastraCode | `mastracode` | state requires the integration |
+| Grok CLI | `grok` | |
+| Antigravity CLI | `antigravity-cli` | |
+| Amp | none | state only |
+| Kiro CLI | none | state only |
+| Maki | none | state only |
+| Gemini CLI | none | state only, less tested |
+| Cline | none | state only, less tested |
 
-Detected but less thoroughly tested: Gemini CLI and Cline. Unsupported agents still run normally as terminal processes. They just may not get rich state unless you add an integration or report state over the socket API.
+### Supported by the agent
 
-## Status authority
+These agents report their own state to Herdr. There is nothing to install; run them in a Herdr pane.
+
+<ul class="agent-logos">
+  <li><a href="https://commandcode.ai"><span class="agent-logo" style={{ '--logo': "url('/assets/agent-icons/command-code.svg')" }} aria-hidden="true"></span>Command Code</a></li>
+  <li><a href="https://github.com/charmbracelet/crush"><span class="agent-logo" style={{ '--logo': "url('/assets/agent-icons/crush.svg')" }} aria-hidden="true"></span>Crush</a></li>
+  <li><a href="https://kiro.dev/cli/"><span class="agent-logo" style={{ '--logo': "url('/assets/agent-icons/kiro-mask.svg')" }} aria-hidden="true"></span>Kiro CLI</a></li>
+  <li><a href="https://dev.meta.ai/products/muse-code"><span class="agent-logo" style={{ '--logo': "url('/assets/agent-icons/muse-code.svg')" }} aria-hidden="true"></span>Muse Code</a></li>
+  <li><a href="https://github.com/PrimeIntellect-ai/prime-agent"><span class="agent-logo" style={{ '--logo': "url('/assets/agent-icons/prime-agent.svg')" }} aria-hidden="true"></span>Prime Agent</a></li>
+</ul>
+
+An agent that also reports its resume command comes back in the same session after a bora server restart.
+
+If you build a coding agent, [Add Herdr support to your agent](/docs/add-herdr-support/) shows how to join this list. It takes a few calls to bora's CLI or socket, and no change to bora.
 
 Bora first detects the foreground process in each pane. After that, each pane has one status authority.
 

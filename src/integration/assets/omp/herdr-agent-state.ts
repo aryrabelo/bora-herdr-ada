@@ -75,6 +75,7 @@ type AgentState = "working" | "blocked" | "idle";
 type QueuedState = {
   state: AgentState;
   message?: string;
+  background: boolean;
   seq: number;
 };
 
@@ -86,6 +87,41 @@ const retryableErrorPattern =
 let reportSeq = Date.now() * 1000;
 let currentAgentSessionId: string | undefined;
 let currentAgentSessionPath: string | undefined;
+
+// Subagent sessions (task-tool async jobs, eval `agent()`, workpools) run in
+// this same process with their own extension binding, and keep running after
+// the root turn ended. Module globals are shared by every binding, so the
+// registry of live subagents lives here; it is pinned on globalThis so a
+// duplicate module instance still shares it.
+type SubagentRegistry = { active: Set<string>; listeners: Set<() => void> };
+type AgentInfo = { kind?: string; id?: string };
+type HookCtx = { hasUI?: boolean; agent?: AgentInfo | null } | null | undefined;
+const subagentRegistryKey = Symbol.for("herdr.omp.subagents.v1");
+// globalThis is an open bag of process-wide slots; the symbol key is ours.
+const processSlots = globalThis as unknown as Record<symbol, SubagentRegistry | undefined>;
+const subagents: SubagentRegistry = (processSlots[subagentRegistryKey] ??= {
+  active: new Set<string>(),
+  listeners: new Set<() => void>(),
+});
+const moduleInstanceTag = Math.random().toString(36).slice(2);
+let bindingCounter = 0;
+
+function notifySubagentListeners(): void {
+  for (const listener of [...subagents.listeners]) {
+    try {
+      listener();
+    } catch {
+      // A failing root binding must not break subagent bookkeeping.
+    }
+  }
+}
+
+// Only real subagents count: the advisor is a "sub" session too, but it
+// shadows the root turn and must never hold the pane Working on its own.
+// Builds without `ctx.agent` never match, preserving the old behavior.
+function isSubagentSession(ctx: HookCtx): boolean {
+  return ctx?.agent?.kind === "sub" && ctx.agent.id !== "advisor";
+}
 
 function nextReportSeq(): number {
   reportSeq += 1;
@@ -167,18 +203,29 @@ function reportSession(sessionStartSource = "startup"): Promise<void> {
   }).then(() => undefined);
 }
 
-function sendState(state: AgentState, message?: string, seq = nextReportSeq()): Promise<boolean> {
+function sendState(
+  state: AgentState,
+  message?: string,
+  seq = nextReportSeq(),
+  background = false,
+): Promise<boolean> {
+  const params: Record<string, unknown> = {
+    pane_id: paneId,
+    source,
+    agent: "omp",
+    state,
+    message,
+    seq,
+  };
+  if (background) {
+    // Working only because subagents still run: tells herdr not to reconcile
+    // the pane to Idle from omp's idle prompt title.
+    params.background = true;
+  }
   return sendRequest({
     id: `${source}:${Date.now()}:${Math.random().toString(36).slice(2)}`,
     method: "pane.report_agent",
-    params: withSessionRef({
-      pane_id: paneId,
-      source,
-      agent: "omp",
-      state,
-      message,
-      seq,
-    }),
+    params: withSessionRef(params),
   });
 }
 
@@ -192,8 +239,8 @@ let sendInFlight = false;
 let queuedState: QueuedState | undefined;
 let wakeRetry: (() => void) | undefined;
 
-function queueState(state: AgentState, message?: string): void {
-  queuedState = { state, message, seq: nextReportSeq() };
+function queueState(state: AgentState, message?: string, background = false): void {
+  queuedState = { state, message, background, seq: nextReportSeq() };
   // A newer state cancels the backoff of the one it supersedes.
   wakeRetry?.();
   if (!sendInFlight) {
@@ -227,7 +274,7 @@ async function drainStateQueue(): Promise<void> {
       const next = queuedState;
       queuedState = undefined;
       for (let attempt = 0; !queuedState; attempt += 1) {
-        if (await sendState(next.state, next.message, next.seq)) {
+        if (await sendState(next.state, next.message, next.seq, next.background)) {
           break;
         }
         if (queuedState) {
@@ -290,11 +337,55 @@ export default function (pi) {
   let blockedMessage: string | undefined;
   let lastState: AgentState | undefined;
   let lastMessage: string | undefined;
+  let lastBackground = false;
   let idleTimer: ReturnType<typeof setTimeout> | undefined;
   let retryTimer: ReturnType<typeof setTimeout> | undefined;
   let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
   let rootSession = false;
   let turnRepairHold = false;
+  // The root loop ended with `willContinue: true`: omp has a continuation
+  // scheduled (e.g. it will be woken by an async subagent's result) and sits
+  // at the idle prompt until then. Still Working, and when subagents are what
+  // it waits on, Working in the background.
+  let awaitingContinuation = false;
+  const bindingSerial = `${moduleInstanceTag}:${++bindingCounter}`;
+  // Registry keys this binding added, one per subagent id it hosts.
+  const ownedSubagentKeys = new Set<string>();
+
+  function addSubagent(key: string) {
+    if (subagents.active.has(key)) {
+      return;
+    }
+    subagents.active.add(key);
+    ownedSubagentKeys.add(key);
+    notifySubagentListeners();
+  }
+
+  function removeSubagents(keys: Iterable<string>) {
+    let removed = false;
+    for (const key of [...keys]) {
+      ownedSubagentKeys.delete(key);
+      removed = subagents.active.delete(key) || removed;
+    }
+    if (removed) {
+      notifySubagentListeners();
+    }
+  }
+
+  // Keys an end/shutdown event refers to: the ctx's subagent when it carries
+  // agent info, else whatever this binding registered (ctx-less events).
+  function endingSubagentKeys(ctx: HookCtx): string[] {
+    if (isSubagentSession(ctx)) {
+      return [`sub:${ctx?.agent?.id}:${bindingSerial}`];
+    }
+    return ctx?.agent == null ? [...ownedSubagentKeys] : [];
+  }
+
+  const onSubagentsChanged = () => {
+    if (rootSession) {
+      publishState();
+    }
+  };
 
   function clearTimer(timer: ReturnType<typeof setTimeout> | undefined) {
     if (timer) {
@@ -317,25 +408,37 @@ export default function (pi) {
 
   function desiredState() {
     if (blockedCount > 0) {
-      return { state: "blocked" as const, message: blockedMessage };
+      return { state: "blocked" as const, message: blockedMessage, background: false };
     }
     if (failureBlocked) {
-      return { state: "blocked" as const, message: failureMessage };
+      return { state: "blocked" as const, message: failureMessage, background: false };
     }
-    if (agentActiveCount > 0 || retryHoldActive || turnRepairHold) {
-      return { state: "working" as const, message: undefined };
+    const rootWorking = agentActiveCount > 0 || retryHoldActive || turnRepairHold;
+    const subagentsRunning = subagents.active.size > 0;
+    if (rootWorking || subagentsRunning || awaitingContinuation) {
+      return {
+        state: "working" as const,
+        message: undefined,
+        background: !rootWorking && subagentsRunning,
+      };
     }
-    return { state: "idle" as const, message: undefined };
+    return { state: "idle" as const, message: undefined, background: false };
   }
 
   function publishState(force = false) {
     const next = desiredState();
-    if (!force && next.state === lastState && next.message === lastMessage) {
+    if (
+      !force &&
+      next.state === lastState &&
+      next.message === lastMessage &&
+      next.background === lastBackground
+    ) {
       return;
     }
     lastState = next.state;
     lastMessage = next.message;
-    queueState(next.state, next.message);
+    lastBackground = next.background;
+    queueState(next.state, next.message, next.background);
   }
 
   function scheduleIdle() {
@@ -365,10 +468,11 @@ export default function (pi) {
   }
 
   function activateRootSession(ctx: any, sessionStartSource = "startup"): boolean {
-    if (ctx?.hasUI !== true) {
+    if (ctx?.hasUI !== true || isSubagentSession(ctx)) {
       return false;
     }
     rootSession = true;
+    subagents.listeners.add(onSubagentsChanged);
     updateSessionRef(ctx);
     void reportSession(sessionStartSource);
     armHeartbeat();
@@ -398,6 +502,7 @@ export default function (pi) {
     clearFailureState();
     agentActiveCount = 0;
     turnRepairHold = false;
+    awaitingContinuation = false;
     blockedCount = 0;
     blockedMessage = undefined;
   }
@@ -453,7 +558,16 @@ export default function (pi) {
     publishState(true);
   });
 
+  // Subagent lifecycle (handled before the root-session guards): omp's task
+  // async jobs, eval `agent()` and workpools keep running after the root turn
+  // ended and the idle prompt is back. Each live subagent counts toward the
+  // root pane's Working (reported as `background`), so the pane only goes Idle
+  // once the last one finishes.
   pi.on("agent_start", (_event, ctx) => {
+    if (isSubagentSession(ctx)) {
+      addSubagent(`sub:${ctx.agent.id}:${bindingSerial}`);
+      return;
+    }
     if (!rootSession && !activateRootSession(ctx)) {
       return;
     }
@@ -462,6 +576,7 @@ export default function (pi) {
     clearPendingTimers();
     clearFailureState();
     turnRepairHold = false;
+    awaitingContinuation = false;
     agentActiveCount += 1;
     publishState();
   });
@@ -501,16 +616,38 @@ export default function (pi) {
     deactivateBlocked();
   });
 
-  pi.on("agent_end", (event) => {
+  pi.on("agent_end", (event, ctx) => {
+    const subagentKeys = endingSubagentKeys(ctx);
+    if (subagentKeys.length > 0) {
+      // A scheduled continuation keeps the subagent alive.
+      if (event?.willContinue !== true) {
+        removeSubagents(subagentKeys);
+      }
+      return;
+    }
     if (!rootSession) {
       return;
     }
+    if (event?.willContinue === true) {
+      // A continuation is already scheduled: this loop ended, and omp fires
+      // agent_start again when the continuation runs (measured on omp 18.8.7
+      // with an async task). Release this loop's count so that agent_start
+      // does not double-count it, and hold Working until the continuation
+      // runs or the final end settles. Older builds omit the field.
+      agentActiveCount = Math.max(0, agentActiveCount - 1);
+      turnRepairHold = false;
+      awaitingContinuation = true;
+      clearPendingTimers();
+      publishState();
+      return;
+    }
     if (agentActiveCount === 0) {
-      if (turnRepairHold) {
+      if (turnRepairHold || awaitingContinuation) {
         // The loop we were holding Working for has ended (or a late duplicate
         // end arrived mid-turn; the next turn_start re-holds). Release the
-        // repair hold and go idle normally.
+        // hold and go idle normally.
         turnRepairHold = false;
+        awaitingContinuation = false;
         forceResetBlocked();
         scheduleIdle();
         return;
@@ -519,11 +656,6 @@ export default function (pi) {
       // holding the pane in Working, and a concurrent subagent's end can
       // arrive after the count already drained. Ignore unmatched ends so they
       // cannot cancel a retry hold or publish a false Idle.
-      return;
-    }
-    if (event?.willContinue === true) {
-      // A continuation is already scheduled, so this end is not a settle.
-      // Older builds omit the field and fall through as before.
       return;
     }
 
@@ -540,22 +672,20 @@ export default function (pi) {
       return;
     }
 
+    awaitingContinuation = false;
     forceResetBlocked();
     scheduleIdle();
   });
 
   pi.on("turn_start", (_event, ctx) => {
-    if (!rootSession) {
-      // A runtime rebound by /reload, /new, /resume, or /fork can miss the
-      // original session_start; a turn with UI proves this is the
-      // interactive root runtime.
-      if (ctx?.hasUI !== true) {
-        return;
-      }
-      rootSession = true;
-      updateSessionRef(ctx);
-      void reportSession();
-      armHeartbeat();
+    if (isSubagentSession(ctx)) {
+      return;
+    }
+    // A runtime rebound by /reload, /new, /resume, or /fork can miss the
+    // original session_start; a turn with UI proves this is the interactive
+    // root runtime.
+    if (!rootSession && !activateRootSession(ctx)) {
+      return;
     }
     // A turn proves the agent loop is alive: duplicate/late agent_end events
     // can drain agentActiveCount mid-run (e.g. concurrent subagent fan-out),
@@ -570,8 +700,10 @@ export default function (pi) {
     publishState(true);
   });
 
-  pi.on("session_shutdown", () => {
+  pi.on("session_shutdown", (_event, ctx) => {
+    removeSubagents(endingSubagentKeys(ctx));
     if (rootSession) {
+      subagents.listeners.delete(onSubagentsChanged);
       clearPendingTimers();
       clearHeartbeat();
     }

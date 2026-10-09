@@ -64,6 +64,8 @@ Bora uses integrations in two ways:
 | Lifecycle authority | Pi, OMP, Kimi Code CLI, OpenCode, Kilo Code CLI, MastraCode | When installed and actively reporting for the pane, hook or plugin events author `idle`, `working`, and `blocked`. Bora does not also use screen manifest fallback for that same lifecycle authority. |
 | Session identity | Claude Code, Codex, GitHub Copilot CLI, Devin CLI, Droid, Qoder CLI, Qwen Code, Letta Code, Cursor Agent CLI, Hermes Agent, Antigravity CLI, Grok CLI | The integration reports native session references for restore. State still comes from Bora's screen manifest detection. |
 
+Codex reports turn state when run with `--no-daemon`; screen detection still handles its visible blockers.
+
 Custom integrations can also report state that is not visible in the native terminal UI. They do not need to be built into Bora or use a recognized agent executable.
 
 ## Integrate your own agent
@@ -89,7 +91,7 @@ Report only when `HERDR_ENV=1` and the required variables are present. This keep
 
 You can include `--agent-session-id` or `--agent-session-path` with `report-agent`, or use `pane report-agent-session` when session identity changes independently of state. Bora exposes that reference through its pane and agent APIs. Automatic session restore also requires Bora to know how to launch that agent and resume the referenced session.
 
-Use `HERDR_BIN_PATH` and the CLI wrappers for portable integrations. Code that needs direct IPC can send the equivalent `pane.report_agent`, `pane.report_agent_session`, and `pane.release_agent` requests described in the [Socket API](/docs/socket-api/#agent-state-reporting).
+Use `HERDR_BIN_PATH` and the CLI wrappers for portable integrations. Code that needs direct IPC can send the equivalent `pane.report_agent`, `pane.report_agent_session`, and `pane.release_agent` requests described in the [Socket API](/docs/socket-api/#agent-state-reporting). See [Add Herdr support to your agent](/docs/add-herdr-support/) for a complete walkthrough.
 
 [Prime Agent's built-in Bora reporter](https://github.com/PrimeIntellect-ai/prime-agent/blob/main/packages/coding-agent/src/core/extensions/builtin/herdr-agent-state.ts) is a real-world example. It activates only inside Bora, maps agent events to `working`, `idle`, and `blocked`, preserves report ordering across sessions, and releases authority on exit.
 
@@ -153,7 +155,7 @@ Install the Codex hook:
 bora integration install codex
 ```
 
-The Codex hook reports session identity through the same local socket API used by other integrations. Codex state comes from Bora's screen manifest detection.
+When Codex runs with `--no-daemon`, the hook reports session identity and turn start/stop state through Bora's local socket API. Screen detection still handles visible blockers and fills gaps when hooks are unavailable. A shared Codex daemon can route hooks to the wrong pane, so use `--no-daemon` for reliable reports; disabling daemon auto-start alone does not stop an existing daemon.
 
 Bora uses `~/.codex` by default, or `CODEX_HOME` when set. The Codex config directory must already exist. Install writes `herdr-agent-state.sh`, updates `hooks.json`, and ensures `[features] hooks = true` in `config.toml`. It also removes the deprecated top-level `codex_hooks` flag when present. Uninstall removes Bora entries from `hooks.json` and deletes the hook script, but leaves `config.toml` unchanged.
 

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # ponytail: prebuilt fetch helper; remove when upstream zig-0.16 port lands (ghostty PR #12726)
-# and we vendor-update — at that point, build.rs will compile from source again on all hosts.
+# and we vendor-update — at that point, crates/ghostty-vt/build.rs will compile from source again on all hosts.
 
 ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 

@@ -9,36 +9,55 @@ Bora は複数のコーディングエージェントを同時に動かすため
 
 ## 対応エージェント
 
-一般的なコーディングエージェントは、追加設定なしで自動検出されます。重要な違いは Bora がエージェントを見えるかどうかではありません。どのシグナルが `idle`、`working`、`blocked` を決定する権限を持つかです。
+エージェントが Herdr 対応になる方法は 2 つあります。Herdr がそのエージェントに対応するか、エージェント自身が Herdr に対応するかです。どちらでも、各エージェントの `idle`、`working`、`blocked` 状態が表示され、完了時や対応が必要なときに通知され、スクリプトから待機できます。
 
-| エージェント | 状態の権威 | インテグレーションの役割 |
+それ以外のエージェントも Herdr のペインで普通に動きます。単に通常のターミナルとして表示されるだけです。
+
+### Herdr が対応するエージェント
+
+Herdr はこれらのエージェントを認識し、画面の表示から状態を読み取ります。Herdr サーバーの再起動後に同じセッションへ戻るには、`herdr integration install <name>` でエージェントのインテグレーションをインストールしてください。各インテグレーションがインストールする内容は[インテグレーション](/ja/docs/integrations/)を参照してください。
+
+| エージェント | インテグレーション | 備考 |
 | --- | --- | --- |
-| Pi | インストール時はライフサイクルフック。それ以外はスクリーンマニフェスト | 状態とセッション |
-| OMP | インストール時はライフサイクルフック | 状態とセッション |
-| GitHub Copilot CLI | スクリーンマニフェスト | セッション |
-| Devin CLI | スクリーンマニフェスト | セッション |
-| Kimi Code CLI | インストール時はライフサイクルフック。それ以外はスクリーンマニフェスト | 状態とセッション |
-| Hermes Agent | スクリーンマニフェスト | セッション |
-| Qoder CLI | スクリーンマニフェスト | セッション |
-| Qwen Code | スクリーンマニフェスト | セッション |
-| Letta Code | スクリーンマニフェスト | セッション |
-| Droid | スクリーンマニフェスト | セッション |
-| OpenCode | インストール時はライフサイクルプラグイン。それ以外はスクリーンマニフェスト | 状態とセッション |
-| Kilo Code CLI | インストール時はライフサイクルプラグイン。それ以外はスクリーンマニフェスト | 状態とセッション |
-| MastraCode | インストール時はライフサイクルフック | 状態とセッション |
-| Claude Code | スクリーンマニフェスト | セッション |
-| Codex | スクリーンマニフェスト | セッション |
-| Cursor Agent CLI | スクリーンマニフェスト | セッション |
-| Amp | スクリーンマニフェスト | なし |
-| Grok CLI | スクリーンマニフェスト | セッション |
-| Antigravity CLI | スクリーンマニフェスト | セッション |
-| Kiro CLI | スクリーンマニフェスト | なし |
-| Maki | スクリーンマニフェスト | なし |
-| Muse | スクリーンマニフェスト | なし |
+| Claude Code | `claude` | |
+| Codex | `codex` | |
+| GitHub Copilot CLI | `copilot` | |
+| Cursor Agent CLI | `cursor` | |
+| OpenCode | `opencode` | 状態も報告 |
+| Pi | `pi` | 状態も報告 |
+| OMP | `omp` | 状態にはインテグレーションが必要 |
+| Droid | `droid` | |
+| Devin CLI | `devin` | |
+| Kimi Code CLI | `kimi` | 状態も報告 |
+| Kilo Code CLI | `kilo` | 状態も報告 |
+| Hermes Agent | `hermes` | |
+| Qoder CLI | `qodercli` | |
+| Qwen Code | `qwen` | |
+| Letta Code | `letta` | CLI からのみインストール |
+| MastraCode | `mastracode` | 状態にはインテグレーションが必要 |
+| Grok CLI | `grok` | |
+| Antigravity CLI | `antigravity-cli` | |
+| Amp | なし | 状態のみ |
+| Kiro CLI | なし | 状態のみ |
+| Maki | なし | 状態のみ |
+| Gemini CLI | なし | 状態のみ、テストは限定的 |
+| Cline | なし | 状態のみ、テストは限定的 |
 
-検出されるもののテストが薄いもの: Gemini CLI と Cline。未対応のエージェントも通常のターミナルプロセスとして問題なく動きます。ただし、インテグレーションを追加するかソケット API で状態を報告しない限り、詳細な状態は得られない可能性があります。
+### Herdr に対応するエージェント
 
-## 状態の権威
+これらのエージェントは自分の状態を Herdr に報告します。インストールするものはありません。Herdr のペインで実行するだけです。
+
+<ul class="agent-logos">
+  <li><a href="https://commandcode.ai"><span class="agent-logo" style={{ '--logo': "url('/assets/agent-icons/command-code.svg')" }} aria-hidden="true"></span>Command Code</a></li>
+  <li><a href="https://github.com/charmbracelet/crush"><span class="agent-logo" style={{ '--logo': "url('/assets/agent-icons/crush.svg')" }} aria-hidden="true"></span>Crush</a></li>
+  <li><a href="https://kiro.dev/cli/"><span class="agent-logo" style={{ '--logo': "url('/assets/agent-icons/kiro-mask.svg')" }} aria-hidden="true"></span>Kiro CLI</a></li>
+  <li><a href="https://dev.meta.ai/products/muse-code"><span class="agent-logo" style={{ '--logo': "url('/assets/agent-icons/muse-code.svg')" }} aria-hidden="true"></span>Muse Code</a></li>
+  <li><a href="https://github.com/PrimeIntellect-ai/prime-agent"><span class="agent-logo" style={{ '--logo': "url('/assets/agent-icons/prime-agent.svg')" }} aria-hidden="true"></span>Prime Agent</a></li>
+</ul>
+
+resume コマンドも報告するエージェントは、Bora サーバーの再起動後に同じセッションで戻ります。
+
+コーディングエージェントを開発している場合は、[エージェントに Herdr 対応を追加する](/ja/docs/add-herdr-support/)でこの一覧に加わる方法を確認できます。Bora の CLI かソケットを数回呼ぶだけで、Bora 側の変更は不要です。
 
 Bora はまず各ペインのフォアグラウンドプロセスを検出します。その後、各ペインはひとつの状態権威を持ちます。
 

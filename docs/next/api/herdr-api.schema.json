@@ -3498,6 +3498,10 @@
                 "null"
               ]
             },
+            "background": {
+              "description": "Working only because the agent's own background subagents are\nrunning. An idle prompt title is expected meanwhile and must not\nreconcile the pane to idle while these reports stay fresh.",
+              "type": "boolean"
+            },
             "message": {
               "type": [
                 "string",
@@ -3506,6 +3510,16 @@
             },
             "pane_id": {
               "type": "string"
+            },
+            "resume_argv": {
+              "description": "Command that resumes this agent's session after a Herdr restart. The\nfirst element must be a plain command name.",
+              "items": {
+                "type": "string"
+              },
+              "type": [
+                "array",
+                "null"
+              ]
             },
             "seq": {
               "format": "uint64",
@@ -3549,6 +3563,16 @@
             },
             "pane_id": {
               "type": "string"
+            },
+            "resume_argv": {
+              "description": "Command that resumes this agent's session after a Herdr restart. The\nfirst element must be a plain command name.",
+              "items": {
+                "type": "string"
+              },
+              "type": [
+                "array",
+                "null"
+              ]
             },
             "seq": {
               "format": "uint64",

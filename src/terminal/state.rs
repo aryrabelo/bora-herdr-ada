@@ -19,6 +19,11 @@ pub use metadata::{AgentMetadata, AgentMetadataReport, EffectivePresentation};
 /// full-lifecycle hook state. A dropped idle report from the integration
 /// would otherwise be final.
 pub(crate) const HOOK_TITLE_IDLE_RECONCILE_GRACE: Duration = Duration::from_secs(5);
+/// How long a `background` Working report keeps an idle OSC title from
+/// reconciling the pane to Idle. The omp integration heartbeats every 15s
+/// while its subagents run, so three missed heartbeats end the exemption and
+/// the pane converges to Idle `HOOK_TITLE_IDLE_RECONCILE_GRACE` later.
+pub(crate) const HOOK_BACKGROUND_WORK_TTL: Duration = Duration::from_secs(45);
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct HookAuthority {
@@ -28,12 +33,17 @@ pub struct HookAuthority {
     pub message: Option<String>,
     #[serde(skip, default = "Instant::now")]
     pub reported_at: Instant,
-    /// When an accepted report last changed `state`. A same-state heartbeat
+    /// When an accepted report last changed `state` (or `background`). A same-state heartbeat
     /// refreshes `reported_at` but not this, so a stuck integration cannot
     /// keep restarting the title-idle grace window.
     #[serde(skip, default = "Instant::now")]
     pub state_changed_at: Instant,
     pub session_ref: Option<crate::agent_resume::AgentSessionRef>,
+    /// Working only because the agent's own background subagents run, so an
+    /// idle prompt title is expected while reports stay fresh. Always false
+    /// for any state other than Working.
+    #[serde(default)]
+    pub background: bool,
 }
 
 #[cfg(unix)]
@@ -173,6 +183,8 @@ pub struct TerminalState {
     pub agent_metadata: HashMap<String, AgentMetadata>,
     pub metadata_tokens: crate::metadata_tokens::MetadataTokens,
     pub persisted_agent_session: Option<crate::agent_resume::PersistedAgentSession>,
+    reported_resume: Option<crate::agent_resume::ReportedAgentResume>,
+    reported_resume_revision: u64,
     pub terminal_title: Option<String>,
     pub manual_label: Option<String>,
     /// Hand-set status pin; `None` means automatic detection is authoritative.
@@ -217,6 +229,8 @@ impl TerminalState {
             agent_metadata: HashMap::new(),
             metadata_tokens: crate::metadata_tokens::MetadataTokens::default(),
             persisted_agent_session: None,
+            reported_resume: None,
+            reported_resume_revision: 0,
             terminal_title: None,
             manual_label: None,
             manual_status: None,
@@ -599,6 +613,15 @@ impl TerminalState {
             {
                 self.persisted_agent_session = None;
             }
+            if !newer_custom_authority
+                && agent.is_some()
+                && self
+                    .reported_resume
+                    .as_ref()
+                    .is_some_and(|resume| crate::detect::parse_agent_label(&resume.agent) == agent)
+            {
+                self.set_reported_resume(None);
+            }
             if let Some(agent) = agent {
                 let agent_label = crate::detect::agent_label(agent);
                 let mut cleared_metadata_sources = Vec::new();
@@ -710,6 +733,7 @@ impl TerminalState {
         .and_then(|mutation| mutation.effective_state_change)
     }
 
+    #[cfg(test)]
     pub fn set_hook_authority_with_session_ref(
         &mut self,
         source: String,
@@ -730,6 +754,7 @@ impl TerminalState {
         )
     }
 
+    #[cfg(test)]
     pub fn set_hook_authority_at(
         &mut self,
         source: String,
@@ -738,6 +763,30 @@ impl TerminalState {
         message: Option<String>,
         session_ref: Option<crate::agent_resume::AgentSessionRef>,
         seq: Option<u64>,
+        now: Instant,
+    ) -> Option<TerminalStateMutation> {
+        self.set_hook_authority_with_background_at(
+            source,
+            agent_label,
+            state,
+            message,
+            session_ref,
+            seq,
+            false,
+            now,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)] // mirrors set_hook_authority_at plus the background flag
+    pub fn set_hook_authority_with_background_at(
+        &mut self,
+        source: String,
+        agent_label: String,
+        state: AgentState,
+        message: Option<String>,
+        session_ref: Option<crate::agent_resume::AgentSessionRef>,
+        seq: Option<u64>,
+        background: bool,
         now: Instant,
     ) -> Option<TerminalStateMutation> {
         if crate::detect::session_identity_only_integration(&source, &agent_label) {
@@ -763,6 +812,15 @@ impl TerminalState {
             FullLifecycleHookReportRoute::Ignore => return None,
         };
         if self.known_agent_label_conflicts_with_detected_agent(&agent_label) {
+            return None;
+        }
+        if (source.as_str(), agent_label.as_str()) == ("herdr:codex", "codex")
+            && session_ref.as_ref().is_some_and(|incoming| {
+                self.current_session_identity_for_persistence().is_some_and(
+                    |(_, _, kind, value)| kind != incoming.kind || value != incoming.value,
+                )
+            })
+        {
             return None;
         }
         let owner_conflicts = self.current_session_owner_conflicts(&source, &agent_label);
@@ -824,6 +882,10 @@ impl TerminalState {
             }
         }
         self.persisted_agent_session = None;
+        let background = background && state == AgentState::Working;
+        // Leaving or entering background work is a real transition: a root
+        // turn resuming over running subagents must get a fresh title-idle
+        // window instead of inheriting the stale idle prompt's elapsed time.
         let state_changed_at = self
             .hook_authority
             .as_ref()
@@ -831,6 +893,7 @@ impl TerminalState {
                 previous.source == source
                     && previous.agent_label == agent_label
                     && previous.state == state
+                    && previous.background == background
             })
             .map_or(now, |previous| previous.state_changed_at);
         self.hook_authority = Some(HookAuthority {
@@ -841,6 +904,7 @@ impl TerminalState {
             reported_at: now,
             state_changed_at,
             session_ref,
+            background,
         });
         let current_session = self.current_session_identity_for_persistence();
         let effective_state_change = self.recompute_effective_state(
@@ -1096,6 +1160,7 @@ impl TerminalState {
                     reported_at,
                     state_changed_at: reported_at,
                     session_ref: Some(session_ref),
+                    background: false,
                 },
                 seq,
             });
@@ -1694,6 +1759,16 @@ impl TerminalState {
         let previous_state = self.state;
         let previous_presentation = self.effective_presentation_for_state_at(previous_state, now);
         let previous_session = self.current_session_identity_for_persistence();
+        if (source.as_str(), agent_label.as_str()) == ("herdr:codex", "codex")
+            && session_replacement_allowed
+            && self.hook_authority.as_ref().is_some_and(|authority| {
+                authority.source == source
+                    && authority.agent_label == agent_label
+                    && authority.session_ref.as_ref() != Some(&session_ref)
+            })
+        {
+            self.hook_authority = None;
+        }
         if session_replacement_allowed || foreground_takeover_allowed {
             self.forget_stale_full_lifecycle_hook_session(&source, &agent_label, &session_ref);
         }
@@ -1783,19 +1858,12 @@ impl TerminalState {
     }
 
     fn accept_hook_report(&mut self, source: &str, seq: Option<u64>) -> bool {
-        let Some(seq) = seq else {
-            return !self.hook_report_sequences.contains_key(source);
-        };
-
-        if self
-            .hook_report_sequences
-            .get(source)
-            .is_some_and(|last_seq| seq <= *last_seq)
-        {
+        if !self.hook_report_is_newer(source, seq) {
             return false;
         }
-
-        self.hook_report_sequences.insert(source.to_string(), seq);
+        if let Some(seq) = seq {
+            self.hook_report_sequences.insert(source.to_string(), seq);
+        }
         true
     }
 
@@ -1841,7 +1909,9 @@ impl TerminalState {
         self.suppress_current_full_lifecycle_hook_authority(
             FullLifecycleHookSuppressionReason::HookClear,
         );
-        self.hook_authority = None;
+        if let Some(authority) = self.hook_authority.take() {
+            self.forget_reported_resume_of(&authority.source, &authority.agent_label);
+        }
         self.persisted_agent_session = None;
         Some(TerminalStateMutation {
             effective_state_change: self.recompute_effective_state(
@@ -1904,6 +1974,7 @@ impl TerminalState {
             self.clear_agent_name();
         }
         self.hook_authority = None;
+        self.forget_reported_resume_of(source, agent_label);
         if !preserve_foreign_persisted_session {
             self.persisted_agent_session = None;
         }
@@ -1919,6 +1990,161 @@ impl TerminalState {
             session_ref_changed: previous_session != current_session,
             agent_released: !process_owns_agent,
         })
+    }
+
+    /// A reporter that Herdr cannot also identify by process holds this pane,
+    /// so only the pane returning to its shell can tell Herdr it exited.
+    pub fn self_reported_agent_active(&self) -> bool {
+        self.hook_authority.as_ref().is_some_and(|authority| {
+            crate::detect::parse_agent_label(&authority.agent_label).is_none()
+        })
+    }
+
+    /// `observed_at` is when the idle shell was seen; a claim made after that
+    /// belongs to a newer agent and must survive the delayed signal.
+    pub fn clear_self_reported_agent(
+        &mut self,
+        observed_at: Instant,
+    ) -> Option<TerminalStateMutation> {
+        if !self.self_reported_agent_active() || !self.hook_authority_not_newer_than(observed_at) {
+            return None;
+        }
+        let now = Instant::now();
+        let previous_agent_label = self.effective_agent_label().map(str::to_string);
+        let previous_known_agent = self.effective_known_agent();
+        let previous_state = self.state;
+        let previous_presentation = self.effective_presentation_for_state_at(previous_state, now);
+        let previous_session = self.current_session_identity_for_persistence();
+        self.hook_authority = None;
+        self.set_reported_resume(None);
+        self.detected_agent = None;
+        self.fallback_state = AgentState::Unknown;
+        self.fallback_visible_blocker = false;
+        self.fallback_observed_at = None;
+        self.clear_agent_name();
+        let current_session = self.current_session_identity_for_persistence();
+        Some(TerminalStateMutation {
+            effective_state_change: self.recompute_effective_state(
+                previous_agent_label,
+                previous_known_agent,
+                previous_state,
+                previous_presentation,
+                now,
+            ),
+            session_ref_changed: previous_session != current_session,
+            agent_released: true,
+        })
+    }
+
+    pub fn session_ref_is_current(
+        &self,
+        session_ref: &crate::agent_resume::AgentSessionRef,
+    ) -> bool {
+        self.current_session_identity_for_persistence()
+            .is_some_and(|(_, _, kind, value)| {
+                kind == session_ref.kind && value == session_ref.value
+            })
+    }
+
+    /// A reporter may own the resume command when it holds the pane, or when it
+    /// is an agent Herdr currently sees running there and can therefore see exit.
+    pub fn can_record_reported_resume(&self, source: &str, agent_label: &str) -> bool {
+        match self.hook_authority.as_ref() {
+            Some(authority) => authority.source == source && authority.agent_label == agent_label,
+            None => {
+                self.recent_agent_process_exit.is_none()
+                    && self.detected_agent.is_some()
+                    && crate::detect::parse_agent_label(agent_label) == self.detected_agent
+            }
+        }
+    }
+
+    /// Same ordering rule as lifecycle reports, evaluated before the report is
+    /// applied so a duplicate cannot pass as the report that was just accepted.
+    pub fn hook_report_is_newer(&self, source: &str, seq: Option<u64>) -> bool {
+        let last_seq = self.hook_report_sequences.get(source).copied();
+        match seq {
+            Some(seq) => last_seq.is_none_or(|last| seq > last),
+            None => last_seq.is_none(),
+        }
+    }
+
+    /// Callers must first check `hook_report_is_newer` against the state
+    /// before the carrying report was applied.
+    pub fn record_reported_resume(
+        &mut self,
+        source: &str,
+        agent_label: &str,
+        seq: Option<u64>,
+        argv: Vec<String>,
+    ) -> bool {
+        if !self.can_record_reported_resume(source, agent_label) {
+            return false;
+        }
+        if let Some(seq) = seq {
+            let last = self
+                .hook_report_sequences
+                .entry(source.to_string())
+                .or_insert(seq);
+            *last = (*last).max(seq);
+        }
+        let resume = crate::agent_resume::ReportedAgentResume {
+            source: source.to_string(),
+            agent: agent_label.to_string(),
+            argv,
+        };
+        if self.reported_resume.as_ref() == Some(&resume) {
+            return false;
+        }
+        self.set_reported_resume(Some(resume));
+        true
+    }
+
+    pub fn reported_resume(&self) -> Option<&crate::agent_resume::ReportedAgentResume> {
+        self.reported_resume.as_ref()
+    }
+
+    /// Changes whenever the stored resume command changes, so callers can
+    /// persist removals as well as new commands.
+    pub fn reported_resume_revision(&self) -> u64 {
+        self.reported_resume_revision
+    }
+
+    /// Drops the command once a different agent holds the pane.
+    pub fn reconcile_reported_resume(&mut self) {
+        let Some(resume) = self.reported_resume.as_ref() else {
+            return;
+        };
+        let other_authority = self.hook_authority.as_ref().is_some_and(|authority| {
+            authority.source != resume.source || authority.agent_label != resume.agent
+        });
+        let other_process = self
+            .detected_agent
+            .is_some_and(|agent| crate::detect::agent_label(agent) != resume.agent);
+        if other_authority || other_process {
+            self.set_reported_resume(None);
+        }
+    }
+
+    pub fn restore_reported_resume(&mut self, resume: crate::agent_resume::ReportedAgentResume) {
+        self.set_reported_resume(Some(resume));
+    }
+
+    fn set_reported_resume(&mut self, resume: Option<crate::agent_resume::ReportedAgentResume>) {
+        if self.reported_resume != resume {
+            self.reported_resume = resume;
+            self.reported_resume_revision += 1;
+        }
+    }
+
+    fn forget_reported_resume_of(&mut self, source: &str, agent_label: &str) {
+        if self
+            .reported_resume
+            .as_ref()
+            .is_some_and(|resume| resume.source == source && resume.agent == agent_label)
+        {
+            self.set_reported_resume(None);
+        }
     }
 
     fn hook_authority_is_effective(&self, authority: &HookAuthority) -> bool {
@@ -2045,6 +2271,10 @@ impl TerminalState {
     /// transition retakes authority the moment it lands; a same-state
     /// heartbeat does not, so a stuck integration converges to Idle once and
     /// stays there instead of flapping every heartbeat.
+    /// A `background` Working report also defers the window until
+    /// `HOOK_BACKGROUND_WORK_TTL` past the last accepted report: the idle
+    /// title is expected while subagents run, and every heartbeat pushes the
+    /// deadline forward until reports stop.
     fn hook_title_idle_window_start(&self) -> Option<Instant> {
         let title_idle_since = self.title_idle_since?;
         if !self.live_full_lifecycle_hook_authority() {
@@ -2054,7 +2284,11 @@ impl TerminalState {
         if authority.state == AgentState::Idle {
             return None;
         }
-        Some(title_idle_since.max(authority.state_changed_at))
+        let start = title_idle_since.max(authority.state_changed_at);
+        if authority.background && authority.state == AgentState::Working {
+            return Some(start.max(authority.reported_at + HOOK_BACKGROUND_WORK_TTL));
+        }
+        Some(start)
     }
 
     fn stale_hook_title_idle_at(&self, now: Instant) -> bool {
@@ -2884,6 +3118,151 @@ mod tests {
         terminal.reconcile_hook_title_idle_at(t0 + HOOK_TITLE_IDLE_RECONCILE_GRACE);
         assert_eq!(terminal.state, AgentState::Idle);
         assert!(terminal.hook_title_idle_reconciled());
+    }
+
+    /// An omp Working report sent only because its background subagents run.
+    fn report_omp_background_working(
+        terminal: &mut TerminalState,
+        seq: u64,
+        at: Instant,
+    ) -> Option<TerminalStateMutation> {
+        terminal.set_hook_authority_with_background_at(
+            "herdr:omp".into(),
+            "omp".into(),
+            AgentState::Working,
+            None,
+            omp_root_session_ref(),
+            Some(seq),
+            true,
+            at,
+        )
+    }
+
+    #[test]
+    fn background_working_report_keeps_idle_title_from_reconciling_while_heartbeats_continue() {
+        let t0 = Instant::now();
+        let mut terminal = omp_terminal_with_stale_hook(AgentState::Working, t0);
+        report_omp_background_working(&mut terminal, 2, t0 + Duration::from_secs(1))
+            .expect("background report accepted");
+        assert!(terminal.hook_authority.as_ref().unwrap().background);
+        assert_eq!(
+            terminal.next_hook_title_idle_reconcile_deadline(),
+            Some(
+                t0 + Duration::from_secs(1)
+                    + HOOK_BACKGROUND_WORK_TTL
+                    + HOOK_TITLE_IDLE_RECONCILE_GRACE
+            )
+        );
+
+        terminal.reconcile_hook_title_idle_at(t0 + HOOK_TITLE_IDLE_RECONCILE_GRACE);
+        assert_eq!(terminal.state, AgentState::Working);
+        assert!(!terminal.hook_title_idle_reconciled());
+
+        report_omp_background_working(&mut terminal, 3, t0 + Duration::from_secs(15))
+            .expect("heartbeat accepted");
+        report_omp_background_working(&mut terminal, 4, t0 + Duration::from_secs(30))
+            .expect("heartbeat accepted");
+        assert_eq!(
+            terminal.next_hook_title_idle_reconcile_deadline(),
+            Some(
+                t0 + Duration::from_secs(30)
+                    + HOOK_BACKGROUND_WORK_TTL
+                    + HOOK_TITLE_IDLE_RECONCILE_GRACE
+            )
+        );
+
+        terminal.reconcile_hook_title_idle_at(t0 + Duration::from_secs(40));
+        assert_eq!(terminal.state, AgentState::Working);
+        terminal.reconcile_hook_title_idle_at(t0 + Duration::from_secs(60));
+        assert_eq!(terminal.state, AgentState::Working);
+        assert!(!terminal.hook_title_idle_reconciled());
+    }
+
+    #[test]
+    fn background_working_report_converges_to_idle_once_heartbeats_stop() {
+        let t0 = Instant::now();
+        let mut terminal = omp_terminal_with_stale_hook(AgentState::Working, t0);
+        let reported_at = t0 + Duration::from_secs(1);
+        report_omp_background_working(&mut terminal, 2, reported_at)
+            .expect("background report accepted");
+        let deadline = reported_at + HOOK_BACKGROUND_WORK_TTL + HOOK_TITLE_IDLE_RECONCILE_GRACE;
+
+        let change = terminal.reconcile_hook_title_idle_at(deadline - Duration::from_millis(1));
+        assert!(change.effective_state_change.is_none());
+        assert_eq!(terminal.state, AgentState::Working);
+
+        let change = terminal
+            .reconcile_hook_title_idle_at(deadline)
+            .effective_state_change
+            .expect("stale background report converges to idle");
+        assert_eq!(change.previous_state, AgentState::Working);
+        assert_eq!(change.state, AgentState::Idle);
+        assert_eq!(terminal.state, AgentState::Idle);
+        assert!(terminal.full_lifecycle_hook_authority_active());
+        assert!(terminal.hook_title_idle_reconciled());
+        assert_eq!(terminal.next_hook_title_idle_reconcile_deadline(), None);
+    }
+
+    #[test]
+    fn non_background_working_report_still_reconciles_at_grace() {
+        let t0 = Instant::now();
+        let mut terminal = omp_terminal_with_stale_hook(AgentState::Working, t0);
+        assert!(!terminal.hook_authority.as_ref().unwrap().background);
+        assert_eq!(
+            terminal.next_hook_title_idle_reconcile_deadline(),
+            Some(t0 + HOOK_TITLE_IDLE_RECONCILE_GRACE)
+        );
+
+        terminal.reconcile_hook_title_idle_at(t0 + HOOK_TITLE_IDLE_RECONCILE_GRACE);
+        assert_eq!(terminal.state, AgentState::Idle);
+        assert!(terminal.hook_title_idle_reconciled());
+    }
+
+    #[test]
+    fn background_flag_is_dropped_for_non_working_reports() {
+        let t0 = Instant::now();
+        let mut terminal = omp_terminal_with_stale_hook(AgentState::Working, t0);
+        terminal
+            .set_hook_authority_with_background_at(
+                "herdr:omp".into(),
+                "omp".into(),
+                AgentState::Blocked,
+                None,
+                omp_root_session_ref(),
+                Some(2),
+                true,
+                t0 + Duration::from_secs(1),
+            )
+            .expect("blocked report accepted");
+        assert!(!terminal.hook_authority.as_ref().unwrap().background);
+
+        terminal.reconcile_hook_title_idle_at(
+            t0 + Duration::from_secs(1) + HOOK_TITLE_IDLE_RECONCILE_GRACE,
+        );
+        assert_eq!(terminal.state, AgentState::Idle);
+        assert!(terminal.hook_title_idle_reconciled());
+    }
+
+    #[test]
+    fn leaving_background_work_restarts_the_hook_title_idle_window() {
+        let t0 = Instant::now();
+        let mut terminal = omp_terminal_with_stale_hook(AgentState::Working, t0);
+        report_omp_background_working(&mut terminal, 2, t0 + Duration::from_secs(1))
+            .expect("background report accepted");
+        report_omp_background_working(&mut terminal, 3, t0 + Duration::from_secs(15))
+            .expect("heartbeat accepted");
+
+        // A root turn resumes over the still-idle title: the plain Working
+        // report must not inherit the 20s the idle prompt has already held.
+        let resumed_at = t0 + Duration::from_secs(20);
+        report_omp_state(&mut terminal, AgentState::Working, 4, resumed_at)
+            .expect("root working report accepted");
+        assert!(!terminal.hook_authority.as_ref().unwrap().background);
+        assert_eq!(terminal.state, AgentState::Working);
+        assert_eq!(
+            terminal.next_hook_title_idle_reconcile_deadline(),
+            Some(resumed_at + HOOK_TITLE_IDLE_RECONCILE_GRACE)
+        );
     }
 
     #[test]

@@ -259,6 +259,7 @@ mod endpoint_requests;
 mod endpoints;
 mod folders;
 mod graphics;
+mod input_conformance;
 #[path = "input.rs"]
 mod input_domain;
 mod keybindings_settings;
