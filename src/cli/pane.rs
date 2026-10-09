@@ -1159,12 +1159,9 @@ fn parse_pane_wait_output_args(args: &[String]) -> Result<PaneWaitForOutputParam
 }
 
 fn pane_report_agent(args: &[String]) -> std::io::Result<i32> {
-    const USAGE: &str = "usage: bora pane report-agent <pane_id> --source ID --agent LABEL --state idle|working|blocked|unknown [--message TEXT] [--seq N] [--agent-session-id ID] [--agent-session-path PATH]";
-    let Some(_raw_pane_id) = args.first() else {
-        eprintln!("{USAGE}");
-        return Ok(2);
-    };
+    const USAGE: &str = "usage: bora pane report-agent <pane_id> --source ID --agent LABEL --state idle|working|blocked|unknown [--message TEXT] [--seq N] [--agent-session-id ID] [--agent-session-path PATH] [-- <resume-command...>]";
 
+    let (args, resume_argv) = split_resume_argv(args);
     let args = super::expand_equals_args(
         args,
         &[
@@ -1289,6 +1286,7 @@ fn pane_report_agent(args: &[String]) -> std::io::Result<i32> {
         seq,
         agent_session_id,
         agent_session_path,
+        resume_argv,
     }))
 }
 
@@ -1341,13 +1339,17 @@ fn pane_report_result(args: &[String]) -> std::io::Result<i32> {
     }))
 }
 
-fn pane_report_agent_session(args: &[String]) -> std::io::Result<i32> {
-    const USAGE: &str = "usage: bora pane report-agent-session <pane_id> --source ID --agent LABEL [--seq N] [--agent-session-id ID] [--agent-session-path PATH] [--session-start-source SOURCE]";
-    let Some(_raw_pane_id) = args.first() else {
-        eprintln!("{USAGE}");
-        return Ok(2);
-    };
+fn split_resume_argv(args: &[String]) -> (&[String], Option<Vec<String>>) {
+    match args.iter().position(|arg| arg == "--") {
+        Some(separator) => (&args[..separator], Some(args[separator + 1..].to_vec())),
+        None => (args, None),
+    }
+}
 
+fn pane_report_agent_session(args: &[String]) -> std::io::Result<i32> {
+    const USAGE: &str = "usage: bora pane report-agent-session <pane_id> --source ID --agent LABEL [--seq N] [--agent-session-id ID] [--agent-session-path PATH] [--session-start-source SOURCE] [-- <resume-command...>]";
+
+    let (args, resume_argv) = split_resume_argv(args);
     let args = super::expand_equals_args(
         args,
         &[
@@ -1458,6 +1460,7 @@ fn pane_report_agent_session(args: &[String]) -> std::io::Result<i32> {
             agent_session_id,
             agent_session_path,
             session_start_source,
+            resume_argv,
         },
     ))
 }

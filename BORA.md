@@ -96,7 +96,7 @@ release, keyed by the vendored commit (8-char prefix). After a vendor update,
 re-run that workflow, then run `just fetch-libghostty-vt`.
 
 **Removal condition:** the zig-0.16 port has landed and the vendored tree now
-requires 0.16.0; delete the prebuilt fallback in `build.rs`, the
+requires 0.16.0; delete the prebuilt fallback in `crates/ghostty-vt/build.rs`, the
 `fetch-libghostty-vt` and `build-libghostty-vt-prebuilt` just recipes,
 `scripts/build_libghostty_vt_prebuilt.sh`, and the `libghostty-vt-prebuilts`
 workflow, and return to a pure from-source build — once a local zig 0.16.0

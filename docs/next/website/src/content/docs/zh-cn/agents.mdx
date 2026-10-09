@@ -9,36 +9,55 @@ Bora 为同时运行多个编程智能体而生。每个智能体都待在一个
 
 ## 受支持的智能体
 
-常见编程智能体开箱即用地支持自动检测。重要的区别不在于 Bora 能不能看到某个智能体,而在于允许哪个信号来决定 `idle`、`working` 和 `blocked`。
+智能体获得 Herdr 支持有两种方式:由 Herdr 支持它,或由它自己支持 Herdr。无论哪种方式,你都能看到每个智能体的 `idle`、`working` 和 `blocked` 状态,在它完成或需要你处理时收到通知,并能在脚本中等待它。
 
-| 智能体 | 状态权威 | 集成角色 |
+其他智能体在 Herdr 窗格中照常运行,只是显示为普通终端。
+
+### 由 Herdr 支持
+
+Herdr 能识别这些智能体,并从它们在屏幕上绘制的内容读取状态。要在 Herdr 服务器重启后回到同一个会话,请用 `herdr integration install <name>` 安装该智能体的集成。每个集成会安装什么,见[集成](/zh-cn/docs/integrations/)。
+
+| 智能体 | 集成 | 说明 |
 | --- | --- | --- |
-| Pi | 安装后为生命周期钩子;否则为屏幕清单 | 状态与会话 |
-| OMP | 安装后为生命周期钩子 | 状态与会话 |
-| GitHub Copilot CLI | 屏幕清单 | 会话 |
-| Devin CLI | 屏幕清单 | 会话 |
-| Kimi Code CLI | 安装后为生命周期钩子;否则为屏幕清单 | 状态与会话 |
-| Hermes Agent | 屏幕清单 | 会话 |
-| Qoder CLI | 屏幕清单 | 会话 |
-| Qwen Code | 屏幕清单 | 会话 |
-| Letta Code | 屏幕清单 | 会话 |
-| Droid | 屏幕清单 | 会话 |
-| OpenCode | 安装后为生命周期插件;否则为屏幕清单 | 状态与会话 |
-| Kilo Code CLI | 安装后为生命周期插件;否则为屏幕清单 | 状态与会话 |
-| MastraCode | 安装后为生命周期钩子 | 状态与会话 |
-| Claude Code | 屏幕清单 | 会话 |
-| Codex | 屏幕清单 | 会话 |
-| Cursor Agent CLI | 屏幕清单 | 会话 |
-| Amp | 屏幕清单 | 无 |
-| Grok CLI | 屏幕清单 | 会话 |
-| Antigravity CLI | 屏幕清单 | 会话 |
-| Kiro CLI | 屏幕清单 | 无 |
-| Maki | 屏幕清单 | 无 |
-| Muse | 屏幕清单 | 无 |
+| Claude Code | `claude` | |
+| Codex | `codex` | |
+| GitHub Copilot CLI | `copilot` | |
+| Cursor Agent CLI | `cursor` | |
+| OpenCode | `opencode` | 也上报状态 |
+| Pi | `pi` | 也上报状态 |
+| OMP | `omp` | 状态需要集成 |
+| Droid | `droid` | |
+| Devin CLI | `devin` | |
+| Kimi Code CLI | `kimi` | 也上报状态 |
+| Kilo Code CLI | `kilo` | 也上报状态 |
+| Hermes Agent | `hermes` | |
+| Qoder CLI | `qodercli` | |
+| Qwen Code | `qwen` | |
+| Letta Code | `letta` | 仅支持 CLI 安装 |
+| MastraCode | `mastracode` | 状态需要集成 |
+| Grok CLI | `grok` | |
+| Antigravity CLI | `antigravity-cli` | |
+| Amp | 无 | 仅状态 |
+| Kiro CLI | 无 | 仅状态 |
+| Maki | 无 | 仅状态 |
+| Gemini CLI | 无 | 仅状态,测试较少 |
+| Cline | 无 | 仅状态,测试较少 |
 
-可检测但测试较少: Gemini CLI 和 Cline。不受支持的智能体仍然可以作为普通终端进程正常运行,只是在你添加集成或通过 socket API 上报状态之前,可能得不到丰富的状态。
+### 由智能体自身支持
 
-## 状态权威
+这些智能体会自己向 Herdr 上报状态。无需安装任何东西,在 Herdr 窗格中运行即可。
+
+<ul class="agent-logos">
+  <li><a href="https://commandcode.ai"><span class="agent-logo" style={{ '--logo': "url('/assets/agent-icons/command-code.svg')" }} aria-hidden="true"></span>Command Code</a></li>
+  <li><a href="https://github.com/charmbracelet/crush"><span class="agent-logo" style={{ '--logo': "url('/assets/agent-icons/crush.svg')" }} aria-hidden="true"></span>Crush</a></li>
+  <li><a href="https://kiro.dev/cli/"><span class="agent-logo" style={{ '--logo': "url('/assets/agent-icons/kiro-mask.svg')" }} aria-hidden="true"></span>Kiro CLI</a></li>
+  <li><a href="https://dev.meta.ai/products/muse-code"><span class="agent-logo" style={{ '--logo': "url('/assets/agent-icons/muse-code.svg')" }} aria-hidden="true"></span>Muse Code</a></li>
+  <li><a href="https://github.com/PrimeIntellect-ai/prime-agent"><span class="agent-logo" style={{ '--logo': "url('/assets/agent-icons/prime-agent.svg')" }} aria-hidden="true"></span>Prime Agent</a></li>
+</ul>
+
+同时上报恢复命令的智能体,会在 Bora 服务器重启后回到同一个会话。
+
+如果你在开发编程智能体,[为你的智能体添加 Herdr 支持](/zh-cn/docs/add-herdr-support/)介绍了如何加入这个列表。只需调用几次 Bora 的 CLI 或 socket,不需要修改 Bora。
 
 Bora 首先检测每个窗格的前台进程。之后,每个窗格有且只有一个状态权威。
 

@@ -173,7 +173,7 @@ enum entries sit out of numeric order — before `CLIPBOARD_WRITE_MAX_BYTES` in
 at the enum tail, and `scripts.test_vendor_libghostty_vt` reverse-applies each
 patch on its own, so a fork entry adjacent to the tail would put this patch
 inside 0007's hunk context and one of the two would stop applying. Keep
-`src/ghostty/bindings.rs` matching the value.
+`crates/ghostty-vt/src/bindings.rs` matching the value.
 
 remove when: the vendored source exposes an equivalent host-level
 reflow-on-resize control through the C ABI and Herdr can set it without this

@@ -14,6 +14,7 @@ impl ClientContextMenuOverlay {
                 is_git,
                 is_linked_worktree,
                 has_worktree_children,
+                close_group,
                 collapsed,
                 visual_group,
                 group_paths,
@@ -29,7 +30,10 @@ impl ClientContextMenuOverlay {
                     ]);
                 } else if *has_worktree_children {
                     items.extend([
-                        item("Close group", Action::Close),
+                        item(
+                            if *close_group { "Close group" } else { "Close" },
+                            Action::Close,
+                        ),
                         item("New worktree", Action::NewWorktree),
                         item("Open worktree...", Action::OpenWorktree),
                         item(
@@ -151,18 +155,13 @@ impl ClientShellState {
         let has_worktree_children = self.close_drags_worktree_group()
             && worktree.is_some_and(|worktree| {
                 !worktree.is_linked_worktree
-                    && snapshot
-                        .workspaces
-                        .iter()
-                        .filter(|candidate| {
-                            candidate
-                                .worktree
-                                .as_ref()
-                                .is_some_and(|candidate| candidate.key == worktree.key)
+                    && snapshot.workspaces.iter().any(|candidate| {
+                        candidate.worktree.as_ref().is_some_and(|candidate| {
+                            candidate.key == worktree.key && candidate.is_linked_worktree
                         })
-                        .count()
-                        >= 2
+                    })
             });
+        let close_group = self.workspace_close_closes_group(snapshot, workspace);
         let collapsed = worktree.is_some_and(|worktree| {
             self.group_is_collapsed(&self.active_endpoint_id, &worktree.key)
         });
@@ -184,6 +183,7 @@ impl ClientShellState {
                 is_git: worktree.is_some() || workspace.branch.is_some(),
                 is_linked_worktree: worktree.is_some_and(|worktree| worktree.is_linked_worktree),
                 has_worktree_children,
+                close_group,
                 collapsed,
                 visual_group,
                 group_paths,
@@ -275,9 +275,11 @@ impl ClientShellState {
             return;
         };
         match menu.target {
-            ClientContextMenuTarget::Workspace { workspace_id, .. } => {
-                self.activate_workspace_context_action(workspace_id, action, outcome)
-            }
+            ClientContextMenuTarget::Workspace {
+                workspace_id,
+                close_group,
+                ..
+            } => self.activate_workspace_context_action(workspace_id, close_group, action, outcome),
             ClientContextMenuTarget::GroupHeader { path, .. } => {
                 self.activate_group_header_context_action(path, action, outcome)
             }
@@ -306,6 +308,7 @@ impl ClientShellState {
     fn activate_workspace_context_action(
         &mut self,
         workspace_id: String,
+        close_group: bool,
         action: ClientContextMenuAction,
         outcome: &mut ClientShellInput,
     ) {
@@ -332,19 +335,7 @@ impl ClientShellState {
                 }
             }
             ClientContextMenuAction::Close => {
-                if self.config.confirm_close {
-                    self.open_confirm_close_overlay(workspace_id);
-                } else {
-                    self.push_endpoint_method(
-                        crate::api::schema::Method::WorkspaceClose(
-                            crate::api::schema::WorkspaceCloseParams {
-                                workspace_id,
-                                close_group: self.close_drags_worktree_group(),
-                            },
-                        ),
-                        outcome,
-                    );
-                }
+                self.request_workspace_close(workspace_id, Some(close_group), outcome);
             }
             ClientContextMenuAction::NewWorktree => {
                 self.begin_worktree_action_for(KeybindAction::NewWorktree, workspace_id, outcome)

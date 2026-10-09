@@ -91,7 +91,7 @@ Bora の外では何もしないように、`HERDR_ENV=1` で必要な変数が�
 
 `report-agent` に `--agent-session-id` または `--agent-session-path` を含めることも、セッション識別が状態とは独立して変わる場合に `pane report-agent-session` を使うこともできます。Bora はその参照をペイン API とエージェント API で公開します。セッションの自動復元には、それに加えて、そのエージェントの起動方法と参照先セッションの再開方法を Bora が把握している必要があります。
 
-移植可能なインテグレーションには `HERDR_BIN_PATH` と CLI ラッパーを使ってください。直接 IPC が必要なコードでは、[Socket API](/ja/docs/socket-api/) に記載された同等の `pane.report_agent`、`pane.report_agent_session`、`pane.release_agent` リクエストを送信できます。
+移植可能なインテグレーションには `HERDR_BIN_PATH` と CLI ラッパーを使ってください。直接 IPC が必要なコードでは、[Socket API](/ja/docs/socket-api/) に記載された同等の `pane.report_agent`、`pane.report_agent_session`、`pane.release_agent` リクエストを送信できます。詳しい手順は[エージェントに Herdr 対応を追加する](/ja/docs/add-herdr-support/)を参照してください。
 
 [Prime Agent の組み込み Bora レポーター](https://github.com/PrimeIntellect-ai/prime-agent/blob/main/packages/coding-agent/src/core/extensions/builtin/herdr-agent-state.ts)は実際の実装例です。Bora 内でのみ有効になり、エージェントイベントを `working`、`idle`、`blocked` に対応付け、セッションをまたいで報告順序を維持し、終了時に権威を解放します。
 
@@ -225,7 +225,7 @@ bora integration install opencode
 
 この連携は OpenCode V1 `1.18.29` 以降と OpenCode V2（beta `19242` で検証済み）に対応します。OpenCode の設定ディレクトリはあらかじめ存在している必要があります。Bora はサーバー側のエントリポイントを `~/.config/opencode/plugins/herdr-agent-state.js` に、共通 TUI プラグインを同じ設定ディレクトリの `herdr-tui-session.js` に、V2 TUI エントリポイントを `herdr-opencode/tui.js` にインストールします。
 
-インストール時、V1 TUI プラグインを `tui.jsonc` に、V2 TUI プラグインを `cli.json` に登録し、他の設定やプラグインは保持します。OpenCode に移行すべき V1 TUI 設定(`tui.json` または `kv.json`)が残っている場合、Bora は初回起動時の移行を妨げないよう登録を見送ります。その場合は一度 `opencode2` を起動してから連携を再インストールしてください。それ以外の場合は Bora が `cli.json` を作成してプラグインを登録します。インストール後は OpenCode TUI を再起動してください。アンインストールは管理対象のプラグインファイルと設定項目を削除します。
+インストール時、V1 TUI プラグインを `tui.jsonc` に、V2 TUI プラグインを `cli.json` に登録し、他の設定やプラグインは保持します。`tui.json` に既存の V1 登録がある場合もインストール済みとみなし、`tui.jsonc` を作成せずに再利用します。アンインストールでは、両方の TUI 設定ファイルから Bora の登録を削除し、ファイルと他の設定は保持します。OpenCode に移行すべき V1 TUI 設定（`tui.json` または `kv.json`）が残っている場合、Bora は初回起動時の移行を妨げないよう登録を見送ります。その場合は一度 `opencode2` を起動してから連携を再インストールしてください。それ以外の場合は Bora が `cli.json` を作成してプラグインを登録します。インストール後は OpenCode TUI を再起動してください。アンインストールは管理対象のプラグインファイルと設定項目を削除します。
 
 V2 のライフサイクル報告はペイン内の TUI で実行され、複数のペインが同じ OpenCode サーバーを共有する場合も、選択されたルートセッションにイベントを対応付けます。完了時または中断時に working 状態を解除し、未処理の権限要求やフォーム、実行失敗は blocked 状態を維持します。V2 Mini とヘッドレスクライアントは TUI プラグインを実行しないため、このライフサイクル報告は利用できません。
 

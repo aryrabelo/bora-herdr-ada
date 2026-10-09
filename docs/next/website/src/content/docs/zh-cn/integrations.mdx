@@ -91,7 +91,7 @@ Bora 以两种不同方式使用集成:
 
 你可以在 `report-agent` 中加入 `--agent-session-id` 或 `--agent-session-path`,也可以在会话身份独立于状态变化时使用 `pane report-agent-session`。Bora 会通过窗格和智能体 API 暴露该引用。自动恢复会话还要求 Bora 知道如何启动该智能体并恢复所引用的会话。
 
-要实现可移植的集成,请使用 `HERDR_BIN_PATH` 和 CLI 包装命令。需要直接 IPC 的代码可以发送 [Socket API](/zh-cn/docs/socket-api/) 中说明的等效 `pane.report_agent`、`pane.report_agent_session` 和 `pane.release_agent` 请求。
+要实现可移植的集成,请使用 `HERDR_BIN_PATH` 和 CLI 包装命令。需要直接 IPC 的代码可以发送 [Socket API](/zh-cn/docs/socket-api/) 中说明的等效 `pane.report_agent`、`pane.report_agent_session` 和 `pane.release_agent` 请求。完整步骤参阅[为你的智能体添加 Herdr 支持](/zh-cn/docs/add-herdr-support/)。
 
 [Prime Agent 内置的 Bora 上报器](https://github.com/PrimeIntellect-ai/prime-agent/blob/main/packages/coding-agent/src/core/extensions/builtin/herdr-agent-state.ts)是一个真实实现示例。它只在 Bora 中启用,将智能体事件映射为 `working`、`idle` 和 `blocked`,跨会话保持上报顺序,并在退出时释放权威。
 
@@ -225,7 +225,7 @@ bora integration install opencode
 
 该集成支持 OpenCode V1 `1.18.29` 及更高版本，以及 OpenCode V2（已验证 beta `19242`）。OpenCode 配置目录必须已经存在。Bora 将服务端入口安装到 `~/.config/opencode/plugins/herdr-agent-state.js`，并在该配置目录安装共享 TUI 插件 `herdr-tui-session.js` 和 V2 TUI 入口 `herdr-opencode/tui.js`。
 
-安装会在 `tui.jsonc` 中注册 V1 TUI 插件，并在 `cli.json` 中注册 V2 TUI 插件，同时保留其他设置和插件。如果 OpenCode 仍有 V1 TUI 偏好需要迁移(`tui.json` 或 `kv.json`),Bora 会推迟注册，以便首次启动时执行迁移；此时请先启动一次 `opencode2`，然后重新安装集成。否则 Bora 会创建 `cli.json` 并注册插件。安装后请重启 OpenCode TUI。卸载会删除受管理的插件文件及其配置条目。
+安装会在 `tui.jsonc` 中注册 V1 TUI 插件，并在 `cli.json` 中注册 V2 TUI 插件，同时保留其他设置和插件。`tui.json` 中已有的 V1 注册也视为已安装,会直接复用而不创建 `tui.jsonc`。卸载会从两个 TUI 配置文件中移除 Bora 注册,同时保留文件和其他设置。如果 OpenCode 仍有 V1 TUI 偏好需要迁移(`tui.json` 或 `kv.json`),Bora 会推迟注册，以便首次启动时执行迁移；此时请先启动一次 `opencode2`，然后重新安装集成。否则 Bora 会创建 `cli.json` 并注册插件。安装后请重启 OpenCode TUI。卸载会删除受管理的插件文件及其配置条目。
 
 V2 生命周期上报在窗格本地的 TUI 中运行。即使多个窗格共享同一个 OpenCode 服务端，事件也只归属于该 TUI 选中的根会话。完成和中断会清除工作状态；待处理的权限请求、表单以及执行失败会使窗格保持阻塞。V2 Mini 和无界面客户端不运行 TUI 插件，因此不提供此生命周期上报。
 

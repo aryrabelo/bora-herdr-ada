@@ -543,6 +543,23 @@ impl ClientShellState {
                                     .is_some_and(|worktree| worktree.is_linked_worktree)
                         }))
             })
+            .filter(|hit| {
+                // Repo: only the repository parent that owns a worktree
+                // group is a slot for that group, not another root
+                // checkout sharing its key.
+                !repo_mode
+                    || hit.group_toggle.as_ref().is_none_or(|(_, key)| {
+                        snapshot
+                            .workspaces
+                            .iter()
+                            .find(|workspace| {
+                                workspace.worktree.as_ref().is_some_and(|worktree| {
+                                    worktree.key == *key && !worktree.is_linked_worktree
+                                })
+                            })
+                            .is_some_and(|workspace| workspace.workspace_id == hit.workspace_id)
+                    })
+            })
             .map(|hit| (Some(hit.workspace_id.clone()), hit.rect.y.saturating_sub(1)))
             .collect::<Vec<_>>();
         let empty_collapsed_groups = HashSet::new();
@@ -610,7 +627,16 @@ impl ClientShellState {
                     .is_some_and(|workspace| workspace.workspace_id == last_hit.workspace_id)
             })?;
             let next = entries.get(last_position + 1);
-            if !next.is_some_and(|entry| entry.indented) {
+            if !next.is_some_and(|entry| {
+                entry.indented
+                    || (repo_mode
+                        && last_hit.group_toggle.as_ref().is_some_and(|(_, key)| {
+                            snapshot.workspaces[entry.index]
+                                .worktree
+                                .as_ref()
+                                .is_some_and(|worktree| worktree.key == *key)
+                        }))
+            }) {
                 let before = next.and_then(|entry| {
                     snapshot
                         .workspaces
@@ -711,7 +737,10 @@ impl ClientShellState {
                 .position(|workspace| workspace.workspace_id == target)?,
             None => remaining.len(),
         };
-        if insert_position == source_position {
+        // A Repo-mode worktree move drags its whole block, whose members
+        // need not be adjacent, so the same-slot no-op only holds for a
+        // single-row move.
+        if (!repo_mode || source.worktree.is_none()) && insert_position == source_position {
             return None;
         }
 
@@ -731,7 +760,12 @@ impl ClientShellState {
                             })
                             .map(|workspace| workspace.workspace_id.clone()),
                     )
-                    .collect();
+                    .collect::<Vec<_>>();
+                if before_workspace_id
+                    .is_some_and(|target| workspace_ids.iter().any(|id| id == target))
+                {
+                    return None;
+                }
                 return Some(crate::api::schema::Method::WorkspaceMoveBlock(
                     crate::api::schema::WorkspaceMoveBlockParams {
                         workspace_ids,
@@ -756,6 +790,10 @@ impl ClientShellState {
         ))
     }
 
+    /// Routes mouse input through overlays, shell controls, and pane interactions.
+    ///
+    /// Hit-test order determines which overlapping control receives the event;
+    /// the sidebar toggle takes precedence over the agent scrollbar beneath it.
     pub(super) fn handle_mouse(&mut self, mouse: MouseEvent, outcome: &mut ClientShellInput) {
         self.update_link_hover(mouse, outcome);
         let point = (mouse.column, mouse.row);
@@ -1021,7 +1059,8 @@ impl ClientShellState {
         if self.popup_terminal_id.is_some() {
             return;
         }
-        if !self.replaying_url_click
+        if self.config.mouse_capture
+            && !self.replaying_url_click
             && self.overlay.is_none()
             && self.mode == ClientShellMode::Terminal
             && mouse.kind == MouseEventKind::Down(MouseButton::Left)
@@ -2046,9 +2085,17 @@ impl ClientShellState {
                 self.workspace_press = None;
                 self.tab_press = None;
                 self.chrome_drag = None;
-                if super::contains(self.hits.sidebar_divider, point)
-                    && !super::contains(self.hits.sidebar_toggle, point)
-                {
+                // The toggle is painted over the agent scrollbar's last cell.
+                if super::contains(self.hits.sidebar_toggle, point) {
+                    self.sidebar_collapsed = !self.sidebar_collapsed;
+                    self.sidebar_collapsed_manual = true;
+                    self.invalidate_pane_surface();
+                    outcome.repaint = true;
+                    outcome.resize = true;
+                    self.persist_chrome_preferences(outcome);
+                    return;
+                }
+                if super::contains(self.hits.sidebar_divider, point) {
                     let now = std::time::Instant::now();
                     let double_click = self.last_sidebar_divider_click.is_some_and(|last| {
                         now.duration_since(last) <= std::time::Duration::from_millis(350)
@@ -2192,15 +2239,6 @@ impl ClientShellState {
                         .saturating_add(1)
                         .min(tab_count.saturating_sub(1));
                     outcome.repaint = true;
-                    return;
-                }
-                if super::contains(self.hits.sidebar_toggle, point) {
-                    self.sidebar_collapsed = !self.sidebar_collapsed;
-                    self.sidebar_collapsed_manual = true;
-                    self.invalidate_pane_surface();
-                    outcome.repaint = true;
-                    outcome.resize = true;
-                    self.persist_chrome_preferences(outcome);
                     return;
                 }
                 if let Some((_, collapse_key)) = self

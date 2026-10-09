@@ -163,6 +163,7 @@ def check_version_bump(changed_paths: list[str], base_cargo_toml: str | None, he
             or path == "build.rs"
             or path == "Cargo.toml"
             or path.startswith("vendor/")
+            or path.startswith("crates/")
         )
 
     if not any(touches_versioned_code(path) for path in changed_paths):
@@ -177,7 +178,7 @@ def check_version_bump(changed_paths: list[str], base_cargo_toml: str | None, he
                 location="Cargo.toml",
                 message=(
                     f"[package].version is unchanged ({head_version!r}) but this diff touches "
-                    "src/**/*.rs, build.rs, Cargo.toml, or vendor/**; bump version in the same commit"
+                    "src/**/*.rs, build.rs, Cargo.toml, vendor/**, or crates/**; bump version in the same commit"
                 ),
             )
         ]

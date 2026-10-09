@@ -124,19 +124,7 @@ impl ClientShellState {
                 }
                 if action == crate::input::KeybindAction::CloseWorkspace {
                     if let Some(workspace_id) = self.workspace_action_id() {
-                        if self.config.confirm_close {
-                            self.open_confirm_close_overlay(workspace_id);
-                        } else {
-                            self.push_endpoint_method(
-                                crate::api::schema::Method::WorkspaceClose(
-                                    crate::api::schema::WorkspaceCloseParams {
-                                        workspace_id,
-                                        close_group: self.close_drags_worktree_group(),
-                                    },
-                                ),
-                                outcome,
-                            );
-                        }
+                        self.request_workspace_close(workspace_id, None, outcome);
                     }
                     outcome.repaint = true;
                     return;
@@ -468,6 +456,10 @@ impl ClientShellState {
         &mut self,
         target: ClientEndpointFocusTarget,
     ) -> Vec<ClientShellAction> {
+        #[cfg(windows)]
+        if !self.notification_target_is_current(&self.active_endpoint_id, &target) {
+            return Vec::new();
+        }
         let method = match target {
             ClientEndpointFocusTarget::Workspace(workspace_id) => {
                 crate::api::schema::Method::WorkspaceFocus(crate::api::schema::WorkspaceTarget {
@@ -478,6 +470,10 @@ impl ClientShellState {
                 crate::api::schema::Method::TabFocus(crate::api::schema::TabTarget { tab_id })
             }
             ClientEndpointFocusTarget::Pane(pane_id) => {
+                crate::api::schema::Method::PaneFocus(crate::api::schema::PaneTarget { pane_id })
+            }
+            #[cfg(windows)]
+            ClientEndpointFocusTarget::Notification { pane_id, .. } => {
                 crate::api::schema::Method::PaneFocus(crate::api::schema::PaneTarget { pane_id })
             }
         };
@@ -681,7 +677,8 @@ impl ClientShellState {
                     event.kind
                         == crossterm::event::MouseEventKind::Up(crossterm::event::MouseButton::Left)
                 });
-                let replay = (self.mode == ClientShellMode::Terminal
+                let replay = (self.config.mouse_capture
+                    && self.mode == ClientShellMode::Terminal
                     && self.overlay.is_none()
                     && self
                         .hits
@@ -709,7 +706,7 @@ impl ClientShellState {
                     Ok(crate::api::schema::ResponseResult::PaneLinkActivated {
                         url: Some(url),
                         handled: false,
-                    }) if crate::app::actions::safe_web_url(&url).is_some() => {
+                    }) if crate::app::actions::safe_web_url(&url).is_some() && replay.is_some() => {
                         self.url_click_consumes_until_up = completed_before_release;
                         (false, vec![ClientShellAction::OpenSafeWebUrl(url)])
                     }
@@ -719,6 +716,10 @@ impl ClientShellState {
                     Ok(_) => {
                         self.set_endpoint_error("endpoint returned an unexpected link result");
                         (true, replay_action(replay))
+                    }
+                    Err(error) if error.code.as_deref() == Some("plugin_link_failed") => {
+                        self.url_click_consumes_until_up = completed_before_release;
+                        (true, Vec::new())
                     }
                     Err(error)
                         if matches!(

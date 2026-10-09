@@ -131,8 +131,13 @@ upstream-drift:
     python3 scripts/upstream_drift.py --report
 
 # Build release binary
+[unix]
 build:
     cargo build --release --locked
+
+[windows]
+build:
+    python scripts/package_windows_conpty.py build-local
 
 # Build release and COPY it to ~/.local/bin/bora. Prints the version it just
 # installed, because the failure mode this recipe exists to prevent is a stale
@@ -159,6 +164,27 @@ bench-render-scale:
 # The contract test itself is P4-A (#[ignore]d until the F8 leaf).
 sidebar-preview:
     cargo test --locked --bin bora ui::sidebar::capture::tests::write_sidebar_preview -- --exact --ignored --nocapture
+
+# Profile terminal target name resolution at increasing pane counts.
+bench-terminal-targets:
+    cargo test --release --locked --bin bora terminal_target_lookup_profile -- --ignored --nocapture --test-threads=1
+
+# Profile Windows foreground inspection of isolated idle shells, without a server.
+[windows]
+bench-process-inspection:
+    cargo test --release --locked --bin bora windows_process_inspection_profile -- --ignored --nocapture --test-threads=1
+
+# Profile BSP split collection and construction with balanced and skewed trees.
+bench-bsp-layout:
+    cargo test --release --locked --bin bora bsp_layout_profile -- --ignored --nocapture --test-threads=1
+
+# Profile full and retained text, static-image, and unchanged-image updates.
+bench-retained-graphics:
+    cargo test --release --locked --bin bora render_scale_profile_retained_graphics -- --ignored --nocapture --test-threads=1
+
+# Profile first-batch latency and aggregate drain cost for external API bursts.
+bench-api-fairness:
+    cargo test --release --locked --bin bora external_api_burst_profile -- --ignored --nocapture --test-threads=1
 
 # ~3-5 minute CPU comparison; downloads stable unless HERDR_PERF_BASELINE_BIN is set
 bench-release-smoke:
@@ -201,7 +227,8 @@ build-libghostty-vt-prebuilt:
     scripts/build_libghostty_vt_prebuilt.sh
 
 # Alias: regenerate the local prebuilt/libghostty-vt-<target>.a shortcut
-# (from-source cross-build + matching .vendor-hash stamp) so build.rs's
+# (from-source cross-build + matching .vendor-hash stamp) so
+# crates/ghostty-vt/build.rs's
 # staleness guard accepts it again.
 prebuilt-ghostty: build-libghostty-vt-prebuilt
 
