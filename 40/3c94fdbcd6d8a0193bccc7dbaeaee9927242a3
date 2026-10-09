@@ -1,0 +1,18 @@
+crates/ghostty-vt/src/lib.rs
+  h_b156936c57c455 3497
+crates/ghostty-vt/src/pane_graphics_files.rs
+  h_b156936c57c455 270
+src/terminal/state.rs
+  h_b156936c57c455 780
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "403c94fdbcd6d8a0193bccc7dbaeaee9927242a3",
+  "prompts": {},
+  "humans": {
+    "h_b156936c57c455": {
+      "author": "Ary Rabelo <aryrabelo@gmail.com>"
+    }
+  }
+}
