@@ -1,0 +1,48 @@
+Cargo.lock
+  h_b156936c57c455 169
+Cargo.toml
+  h_b156936c57c455 3
+docs/next/CHANGELOG.md
+  h_b156936c57c455 72
+docs/next/api/herdr-api.schema.json
+  h_b156936c57c455 6672-6687
+docs/next/website/src/content/docs/cli-reference.mdx
+  h_b156936c57c455 227,252-253
+docs/next/website/src/content/docs/ja/cli-reference.mdx
+  h_b156936c57c455 215
+docs/next/website/src/content/docs/ja/socket-api.mdx
+  h_b156936c57c455 102
+docs/next/website/src/content/docs/socket-api.mdx
+  h_b156936c57c455 106,695-713
+docs/next/website/src/content/docs/zh-cn/cli-reference.mdx
+  h_b156936c57c455 215
+docs/next/website/src/content/docs/zh-cn/socket-api.mdx
+  h_b156936c57c455 102
+skills/herdr/SKILL.md
+  h_b156936c57c455 63
+src/api/mod.rs
+  h_b156936c57c455 70
+src/api/schema.rs
+  h_b156936c57c455 212-213
+src/api/server.rs
+  h_b156936c57c455 717
+src/app/api.rs
+  h_b156936c57c455 1256-1258
+src/app/api/panes.rs
+  h_b156936c57c455 1678-1725,5471-5532
+src/cli/pane.rs
+  h_b156936c57c455 9,31,455-520,1807,1840-1854
+src/cli/spec.rs
+  h_b156936c57c455 670-681
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "dd45721397c05834b68e82a3f1ab45b8044417f6",
+  "prompts": {},
+  "humans": {
+    "h_b156936c57c455": {
+      "author": "Ary Rabelo <aryrabelo@gmail.com>"
+    }
+  }
+}
