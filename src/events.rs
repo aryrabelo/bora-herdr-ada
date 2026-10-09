@@ -121,6 +121,9 @@ pub enum AppEvent {
         message: Option<String>,
         seq: Option<u64>,
         session_ref: Option<crate::agent_resume::AgentSessionRef>,
+        /// Working only because the agent's background subagents run; see
+        /// `PaneReportAgentParams::background`.
+        background: bool,
     },
     /// Agent session identity was reported without state authority.
     AgentSessionReported {

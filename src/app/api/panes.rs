@@ -1617,6 +1617,7 @@ impl App {
             state: detect_state_from_api(params.state),
             message: params.message,
             seq: params.seq,
+            background: params.background,
         });
         let applied =
             report_is_newer && self.session_report_applied(ws_idx, pane_id, session_ref.as_ref());
@@ -5178,6 +5179,7 @@ mod tests {
                 agent_session_id: None,
                 agent_session_path: None,
                 resume_argv: None,
+                background: false,
             },
         );
         let response: SuccessResponse =
@@ -5207,6 +5209,59 @@ mod tests {
             "clearing the pin reveals the live automatic state"
         );
         assert_eq!(app.workspace_info(0).agent_status, AgentStatus::Working);
+    }
+
+    #[test]
+    fn pane_report_agent_background_flag_lands_on_hook_authority() {
+        let (mut app, public_pane_id) = app_with_test_workspace();
+        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        let terminal_id = terminal_id_for(&app, pane_id);
+        let report = |background: Option<bool>| {
+            let mut json = serde_json::json!({
+                "pane_id": public_pane_id,
+                "source": "hook:claude",
+                "agent": "claude",
+                "state": "working",
+            });
+            if let Some(background) = background {
+                json["background"] = serde_json::Value::Bool(background);
+            }
+            serde_json::from_value::<PaneReportAgentParams>(json).expect("params parse")
+        };
+
+        let background = report(Some(true));
+        assert!(background.background);
+        assert_eq!(
+            serde_json::to_value(&background).unwrap()["background"],
+            serde_json::Value::Bool(true)
+        );
+        let response = app.handle_pane_report_agent("req_bg".into(), background);
+        let response: SuccessResponse =
+            serde_json::from_str(&response).expect("report_agent succeeds");
+        assert!(matches!(response.result, ResponseResult::Ok {}));
+        let authority = app.state.terminals[&terminal_id]
+            .hook_authority
+            .as_ref()
+            .expect("hook authority set");
+        assert_eq!(authority.state, AgentState::Working);
+        assert!(authority.background);
+
+        let foreground = report(None);
+        assert!(!foreground.background);
+        assert!(serde_json::to_value(&foreground)
+            .unwrap()
+            .get("background")
+            .is_none());
+        let response = app.handle_pane_report_agent("req_fg".into(), foreground);
+        let response: SuccessResponse =
+            serde_json::from_str(&response).expect("report_agent succeeds");
+        assert!(matches!(response.result, ResponseResult::Ok {}));
+        let authority = app.state.terminals[&terminal_id]
+            .hook_authority
+            .as_ref()
+            .expect("hook authority set");
+        assert_eq!(authority.state, AgentState::Working);
+        assert!(!authority.background);
     }
 
     #[test]

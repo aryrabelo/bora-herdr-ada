@@ -29,10 +29,13 @@ process.env.HERDR_OMP_HEARTBEAT_MS = "5000";
 
 type Report = {
   method?: string;
-  params?: { state?: string; session_start_source?: string };
+  params?: { state?: string; session_start_source?: string; background?: boolean };
 };
+type SubagentRegistry = { active: Set<string>; listeners: Set<() => void> };
 
 let reportedStates: string[] = [];
+// Full `pane.report_agent` state params, in send order (state + background).
+let stateReports: Array<{ state: string; background?: boolean }> = [];
 let sessionReports: Report[] = [];
 let requestMethods: string[] = [];
 
@@ -50,6 +53,7 @@ function capture(raw: unknown): void {
     }
     if (parsed?.method === "pane.report_agent" && typeof parsed.params?.state === "string") {
       reportedStates.push(parsed.params.state);
+      stateReports.push({ state: parsed.params.state, background: parsed.params.background });
     }
     if (parsed?.method === "pane.report_agent_session") {
       sessionReports.push(parsed);
@@ -119,9 +123,17 @@ beforeAll(async () => {
 
 afterEach(() => {
   reportedStates = [];
+  stateReports = [];
   sessionReports = [];
   requestMethods = [];
   failNextConnections = 0;
+  // The omp subagent registry is process-wide by design; root bindings leaked
+  // by earlier tests must not react to (or count) this test's subagents.
+  const registry = (globalThis as unknown as Record<symbol, SubagentRegistry | undefined>)[
+    Symbol.for("herdr.omp.subagents.v1")
+  ];
+  registry?.active.clear();
+  registry?.listeners.clear();
   jest.useRealTimers();
 });
 
@@ -571,4 +583,187 @@ test("omp: isAbsoluteSessionPath accepts POSIX and Windows session paths", async
   );
   expect(isAbsoluteSessionPath("C:/Users/User/.omp/agent/sessions/omp-session.jsonl")).toBe(true);
   expect(isAbsoluteSessionPath("relative/omp-session.jsonl")).toBe(false);
+});
+
+// omp's subagents (task async jobs, eval `agent()`, workpools) outlive the
+// root turn: omp is back at its idle prompt while they still run. Each
+// subagent session is its own extension binding (a second `mod.default`) in the
+// same process, identified by `ctx.agent`. The pane must stay Working —
+// flagged `background` so herdr ignores the idle prompt title — until the last
+// subagent ends.
+const rootCtx = {
+  hasUI: true,
+  mode: "tui",
+  agent: { kind: "main", id: "main", name: "main", depth: 0 },
+};
+const subCtx = (id = "task-1") => ({
+  hasUI: false,
+  agent: { kind: "sub", id, name: "explore", depth: 1, parentId: "main" },
+});
+
+// Root starts a turn, a subagent starts, then the root turn ends.
+async function rootTurnEndsWithSubagent(subId = "task-1") {
+  const root = await spawnOmp();
+  const sub = await spawnOmp();
+  root("session_start", {}, rootCtx);
+  root("agent_start", {}, rootCtx);
+  sub("session_start", {}, subCtx(subId));
+  sub("agent_start", {}, subCtx(subId));
+  await settle();
+  expect(stateReports.at(-1)).toEqual({ state: "working", background: undefined });
+
+  root("agent_end", { messages: [] }, rootCtx);
+  jest.advanceTimersByTime(200); // well past the idle debounce
+  await settle();
+  return { root, sub };
+}
+
+test("omp: a running subagent keeps the pane working after the root turn ends", async () => {
+  jest.useFakeTimers();
+  const { root, sub } = await rootTurnEndsWithSubagent();
+
+  expect(stateReports.at(-1)).toEqual({ state: "working", background: true });
+  // Only the session_start idle precedes the turn; nothing idles after it.
+  expect(reportedStates.slice(reportedStates.indexOf("working"))).not.toContain("idle");
+
+  sub("agent_end", { messages: [] }, subCtx());
+  await settle();
+  expect(stateReports.at(-1)).toEqual({ state: "idle", background: undefined });
+
+  sub("session_shutdown", {}, subCtx());
+  root("session_shutdown", {}, rootCtx);
+});
+
+// The sequence measured live on omp 18.8.7 (async `task`, 2026-10-09): the
+// root turn ends with `willContinue: true` because the subagent's result will
+// wake it, the subagent ends ~50 s later, then omp fires a NEW root
+// agent_start for the continuation. The wait must be background Working, and
+// the continuation's agent_start must not double-count the earlier loop.
+test("omp: an async subagent the root awaits with willContinue is background work", async () => {
+  jest.useFakeTimers();
+  const root = await spawnOmp();
+  const sub = await spawnOmp();
+  root("session_start", {}, rootCtx);
+  root("agent_start", {}, rootCtx);
+  root("turn_start", {}, rootCtx);
+  sub("session_start", {}, subCtx("SleepSmoke"));
+  sub("agent_start", {}, subCtx("SleepSmoke"));
+  root("agent_end", { messages: [], willContinue: true }, rootCtx);
+  jest.advanceTimersByTime(200);
+  await settle();
+  expect(stateReports.at(-1)).toEqual({ state: "working", background: true });
+
+  sub("agent_end", { messages: [] }, subCtx("SleepSmoke"));
+  await settle();
+  // Still awaiting the continuation, but no longer on a subagent's behalf.
+  expect(stateReports.at(-1)).toEqual({ state: "working", background: undefined });
+
+  root("agent_start", {}, rootCtx);
+  root("turn_start", {}, rootCtx);
+  root("agent_end", { messages: [] }, rootCtx);
+  jest.advanceTimersByTime(200);
+  await settle();
+  expect(stateReports.at(-1)).toEqual({ state: "idle", background: undefined });
+
+  sub("session_shutdown", {}, subCtx("SleepSmoke"));
+  root("session_shutdown", {}, rootCtx);
+});
+
+test("omp: a subagent agent_end with willContinue keeps the pane working", async () => {
+  jest.useFakeTimers();
+  const { root, sub } = await rootTurnEndsWithSubagent();
+
+  sub("agent_end", { messages: [], willContinue: true }, subCtx());
+  jest.advanceTimersByTime(200);
+  await settle();
+  expect(stateReports.at(-1)).toEqual({ state: "working", background: true });
+
+  sub("agent_end", { messages: [] }, subCtx());
+  await settle();
+  expect(reportedStates.at(-1)).toBe("idle");
+
+  sub("session_shutdown", {}, subCtx());
+  root("session_shutdown", {}, rootCtx);
+});
+
+test("omp: a subagent session_shutdown without agent_end releases the pane", async () => {
+  jest.useFakeTimers();
+  const { root, sub } = await rootTurnEndsWithSubagent();
+  // A second subagent whose shutdown arrives without agent info: the binding
+  // falls back to the keys it registered itself.
+  const sub2 = await spawnOmp();
+  sub2("agent_start", {}, subCtx("task-2"));
+  await settle();
+
+  sub("session_shutdown", {}, subCtx());
+  await settle();
+  expect(stateReports.at(-1)).toEqual({ state: "working", background: true });
+
+  sub2("session_shutdown");
+  await settle();
+  expect(stateReports.at(-1)).toEqual({ state: "idle", background: undefined });
+
+  root("session_shutdown", {}, rootCtx);
+});
+
+test("omp: the advisor session never holds the pane working", async () => {
+  jest.useFakeTimers();
+  const root = await spawnOmp();
+  const advisor = await spawnOmp();
+  const advisorCtx = { hasUI: false, agent: { kind: "sub", id: "advisor", name: "advisor", depth: 1 } };
+
+  root("session_start", {}, rootCtx);
+  root("agent_start", {}, rootCtx);
+  advisor("agent_start", {}, advisorCtx);
+  root("agent_end", { messages: [] }, rootCtx);
+  jest.advanceTimersByTime(200);
+  await settle();
+
+  expect(stateReports.at(-1)).toEqual({ state: "idle", background: undefined });
+  expect(stateReports.some((report) => report.background === true)).toBe(false);
+
+  advisor("session_shutdown", {}, advisorCtx);
+  root("session_shutdown", {}, rootCtx);
+});
+
+test("omp: a session without ctx.agent (older omp) is not counted as a subagent", async () => {
+  jest.useFakeTimers();
+  const root = await spawnOmp();
+  const legacy = await spawnOmp();
+
+  root("session_start", {}, { hasUI: true, mode: "tui" });
+  root("agent_start", {}, {});
+  legacy("agent_start", {}, { hasUI: false });
+  root("agent_end", { messages: [] });
+  jest.advanceTimersByTime(200);
+  await settle();
+
+  expect(stateReports.at(-1)).toEqual({ state: "idle", background: undefined });
+  expect(stateReports.some((report) => report.background === true)).toBe(false);
+
+  legacy("session_shutdown", {}, { hasUI: false });
+  root("session_shutdown");
+});
+
+test("omp: the heartbeat re-sends working+background while only subagents run", async () => {
+  jest.useFakeTimers();
+  const { root, sub } = await rootTurnEndsWithSubagent();
+  const before = stateReports.length;
+
+  jest.advanceTimersByTime(5000); // HERDR_OMP_HEARTBEAT_MS
+  await settle();
+  expect(stateReports.length).toBe(before + 1);
+  expect(stateReports.at(-1)).toEqual({ state: "working", background: true });
+
+  sub("agent_end", { messages: [] }, subCtx());
+  await settle();
+  jest.advanceTimersByTime(5000);
+  await settle();
+  expect(stateReports.slice(-2)).toEqual([
+    { state: "idle", background: undefined },
+    { state: "idle", background: undefined },
+  ]);
+
+  sub("session_shutdown", {}, subCtx());
+  root("session_shutdown", {}, rootCtx);
 });

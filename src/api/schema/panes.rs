@@ -376,6 +376,11 @@ pub struct PaneReportAgentParams {
     /// first element must be a plain command name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resume_argv: Option<Vec<String>>,
+    /// Working only because the agent's own background subagents are
+    /// running. An idle prompt title is expected meanwhile and must not
+    /// reconcile the pane to idle while these reports stay fresh.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub background: bool,
 }
 
 /// Hand-set status for one pane, overriding automatic agent detection at

@@ -5919,6 +5919,7 @@ fn headless_scheduled_tasks_expire_agent_metadata() {
             message: None,
             seq: None,
             session_ref: None,
+            background: false,
         })
     );
     assert!(
@@ -7894,6 +7895,7 @@ fn api_report_agent_stores_valid_resume_argv_and_rejects_invalid() {
             agent_session_id: Some("01a0".into()),
             agent_session_path: None,
             resume_argv: Some(resume_argv.into_iter().map(String::from).collect()),
+            background: false,
         })
     };
 
@@ -8070,6 +8072,7 @@ fn completion_guard_api_startup_blocker_respects_suppression() {
                 agent_session_id: None,
                 agent_session_path: None,
                 resume_argv: None,
+                background: false,
             }),
         );
     }
@@ -8147,6 +8150,7 @@ fn completion_guard_api_session_replacement_does_not_notify_finished() {
                 agent_session_id: None,
                 agent_session_path: Some(new_session.clone()),
                 resume_argv: None,
+                background: false,
             };
             completion_guard_api_report(&mut server, Method::PaneReportAgent(report.clone()));
             let terminal = &server.app.state.terminals[&terminal_id];
@@ -8338,6 +8342,7 @@ fn stale_api_agent_report_does_not_forward_done_sound() {
                 agent_session_id: None,
                 agent_session_path: None,
                 resume_argv: None,
+                background: false,
             }),
         },
         respond_to,

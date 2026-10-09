@@ -3498,6 +3498,10 @@
                 "null"
               ]
             },
+            "background": {
+              "description": "Working only because the agent's own background subagents are\nrunning. An idle prompt title is expected meanwhile and must not\nreconcile the pane to idle while these reports stay fresh.",
+              "type": "boolean"
+            },
             "message": {
               "type": [
                 "string",

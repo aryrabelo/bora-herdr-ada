@@ -19,6 +19,11 @@ pub use metadata::{AgentMetadata, AgentMetadataReport, EffectivePresentation};
 /// full-lifecycle hook state. A dropped idle report from the integration
 /// would otherwise be final.
 pub(crate) const HOOK_TITLE_IDLE_RECONCILE_GRACE: Duration = Duration::from_secs(5);
+/// How long a `background` Working report keeps an idle OSC title from
+/// reconciling the pane to Idle. The omp integration heartbeats every 15s
+/// while its subagents run, so three missed heartbeats end the exemption and
+/// the pane converges to Idle `HOOK_TITLE_IDLE_RECONCILE_GRACE` later.
+pub(crate) const HOOK_BACKGROUND_WORK_TTL: Duration = Duration::from_secs(45);
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct HookAuthority {
@@ -28,12 +33,17 @@ pub struct HookAuthority {
     pub message: Option<String>,
     #[serde(skip, default = "Instant::now")]
     pub reported_at: Instant,
-    /// When an accepted report last changed `state`. A same-state heartbeat
+    /// When an accepted report last changed `state` (or `background`). A same-state heartbeat
     /// refreshes `reported_at` but not this, so a stuck integration cannot
     /// keep restarting the title-idle grace window.
     #[serde(skip, default = "Instant::now")]
     pub state_changed_at: Instant,
     pub session_ref: Option<crate::agent_resume::AgentSessionRef>,
+    /// Working only because the agent's own background subagents run, so an
+    /// idle prompt title is expected while reports stay fresh. Always false
+    /// for any state other than Working.
+    #[serde(default)]
+    pub background: bool,
 }
 
 #[cfg(unix)]
@@ -723,6 +733,7 @@ impl TerminalState {
         .and_then(|mutation| mutation.effective_state_change)
     }
 
+    #[cfg(test)]
     pub fn set_hook_authority_with_session_ref(
         &mut self,
         source: String,
@@ -743,6 +754,7 @@ impl TerminalState {
         )
     }
 
+    #[cfg(test)]
     pub fn set_hook_authority_at(
         &mut self,
         source: String,
@@ -751,6 +763,30 @@ impl TerminalState {
         message: Option<String>,
         session_ref: Option<crate::agent_resume::AgentSessionRef>,
         seq: Option<u64>,
+        now: Instant,
+    ) -> Option<TerminalStateMutation> {
+        self.set_hook_authority_with_background_at(
+            source,
+            agent_label,
+            state,
+            message,
+            session_ref,
+            seq,
+            false,
+            now,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn set_hook_authority_with_background_at(
+        &mut self,
+        source: String,
+        agent_label: String,
+        state: AgentState,
+        message: Option<String>,
+        session_ref: Option<crate::agent_resume::AgentSessionRef>,
+        seq: Option<u64>,
+        background: bool,
         now: Instant,
     ) -> Option<TerminalStateMutation> {
         if crate::detect::session_identity_only_integration(&source, &agent_label) {
@@ -846,6 +882,10 @@ impl TerminalState {
             }
         }
         self.persisted_agent_session = None;
+        let background = background && state == AgentState::Working;
+        // Leaving or entering background work is a real transition: a root
+        // turn resuming over running subagents must get a fresh title-idle
+        // window instead of inheriting the stale idle prompt's elapsed time.
         let state_changed_at = self
             .hook_authority
             .as_ref()
@@ -853,6 +893,7 @@ impl TerminalState {
                 previous.source == source
                     && previous.agent_label == agent_label
                     && previous.state == state
+                    && previous.background == background
             })
             .map_or(now, |previous| previous.state_changed_at);
         self.hook_authority = Some(HookAuthority {
@@ -863,6 +904,7 @@ impl TerminalState {
             reported_at: now,
             state_changed_at,
             session_ref,
+            background,
         });
         let current_session = self.current_session_identity_for_persistence();
         let effective_state_change = self.recompute_effective_state(
@@ -1118,6 +1160,7 @@ impl TerminalState {
                     reported_at,
                     state_changed_at: reported_at,
                     session_ref: Some(session_ref),
+                    background: false,
                 },
                 seq,
             });
@@ -2228,6 +2271,10 @@ impl TerminalState {
     /// transition retakes authority the moment it lands; a same-state
     /// heartbeat does not, so a stuck integration converges to Idle once and
     /// stays there instead of flapping every heartbeat.
+    /// A `background` Working report also defers the window until
+    /// `HOOK_BACKGROUND_WORK_TTL` past the last accepted report: the idle
+    /// title is expected while subagents run, and every heartbeat pushes the
+    /// deadline forward until reports stop.
     fn hook_title_idle_window_start(&self) -> Option<Instant> {
         let title_idle_since = self.title_idle_since?;
         if !self.live_full_lifecycle_hook_authority() {
@@ -2237,7 +2284,11 @@ impl TerminalState {
         if authority.state == AgentState::Idle {
             return None;
         }
-        Some(title_idle_since.max(authority.state_changed_at))
+        let start = title_idle_since.max(authority.state_changed_at);
+        if authority.background && authority.state == AgentState::Working {
+            return Some(start.max(authority.reported_at + HOOK_BACKGROUND_WORK_TTL));
+        }
+        Some(start)
     }
 
     fn stale_hook_title_idle_at(&self, now: Instant) -> bool {
@@ -3067,6 +3118,151 @@ mod tests {
         terminal.reconcile_hook_title_idle_at(t0 + HOOK_TITLE_IDLE_RECONCILE_GRACE);
         assert_eq!(terminal.state, AgentState::Idle);
         assert!(terminal.hook_title_idle_reconciled());
+    }
+
+    /// An omp Working report sent only because its background subagents run.
+    fn report_omp_background_working(
+        terminal: &mut TerminalState,
+        seq: u64,
+        at: Instant,
+    ) -> Option<TerminalStateMutation> {
+        terminal.set_hook_authority_with_background_at(
+            "herdr:omp".into(),
+            "omp".into(),
+            AgentState::Working,
+            None,
+            omp_root_session_ref(),
+            Some(seq),
+            true,
+            at,
+        )
+    }
+
+    #[test]
+    fn background_working_report_keeps_idle_title_from_reconciling_while_heartbeats_continue() {
+        let t0 = Instant::now();
+        let mut terminal = omp_terminal_with_stale_hook(AgentState::Working, t0);
+        report_omp_background_working(&mut terminal, 2, t0 + Duration::from_secs(1))
+            .expect("background report accepted");
+        assert!(terminal.hook_authority.as_ref().unwrap().background);
+        assert_eq!(
+            terminal.next_hook_title_idle_reconcile_deadline(),
+            Some(
+                t0 + Duration::from_secs(1)
+                    + HOOK_BACKGROUND_WORK_TTL
+                    + HOOK_TITLE_IDLE_RECONCILE_GRACE
+            )
+        );
+
+        terminal.reconcile_hook_title_idle_at(t0 + HOOK_TITLE_IDLE_RECONCILE_GRACE);
+        assert_eq!(terminal.state, AgentState::Working);
+        assert!(!terminal.hook_title_idle_reconciled());
+
+        report_omp_background_working(&mut terminal, 3, t0 + Duration::from_secs(15))
+            .expect("heartbeat accepted");
+        report_omp_background_working(&mut terminal, 4, t0 + Duration::from_secs(30))
+            .expect("heartbeat accepted");
+        assert_eq!(
+            terminal.next_hook_title_idle_reconcile_deadline(),
+            Some(
+                t0 + Duration::from_secs(30)
+                    + HOOK_BACKGROUND_WORK_TTL
+                    + HOOK_TITLE_IDLE_RECONCILE_GRACE
+            )
+        );
+
+        terminal.reconcile_hook_title_idle_at(t0 + Duration::from_secs(40));
+        assert_eq!(terminal.state, AgentState::Working);
+        terminal.reconcile_hook_title_idle_at(t0 + Duration::from_secs(60));
+        assert_eq!(terminal.state, AgentState::Working);
+        assert!(!terminal.hook_title_idle_reconciled());
+    }
+
+    #[test]
+    fn background_working_report_converges_to_idle_once_heartbeats_stop() {
+        let t0 = Instant::now();
+        let mut terminal = omp_terminal_with_stale_hook(AgentState::Working, t0);
+        let reported_at = t0 + Duration::from_secs(1);
+        report_omp_background_working(&mut terminal, 2, reported_at)
+            .expect("background report accepted");
+        let deadline = reported_at + HOOK_BACKGROUND_WORK_TTL + HOOK_TITLE_IDLE_RECONCILE_GRACE;
+
+        let change = terminal.reconcile_hook_title_idle_at(deadline - Duration::from_millis(1));
+        assert!(change.effective_state_change.is_none());
+        assert_eq!(terminal.state, AgentState::Working);
+
+        let change = terminal
+            .reconcile_hook_title_idle_at(deadline)
+            .effective_state_change
+            .expect("stale background report converges to idle");
+        assert_eq!(change.previous_state, AgentState::Working);
+        assert_eq!(change.state, AgentState::Idle);
+        assert_eq!(terminal.state, AgentState::Idle);
+        assert!(terminal.full_lifecycle_hook_authority_active());
+        assert!(terminal.hook_title_idle_reconciled());
+        assert_eq!(terminal.next_hook_title_idle_reconcile_deadline(), None);
+    }
+
+    #[test]
+    fn non_background_working_report_still_reconciles_at_grace() {
+        let t0 = Instant::now();
+        let mut terminal = omp_terminal_with_stale_hook(AgentState::Working, t0);
+        assert!(!terminal.hook_authority.as_ref().unwrap().background);
+        assert_eq!(
+            terminal.next_hook_title_idle_reconcile_deadline(),
+            Some(t0 + HOOK_TITLE_IDLE_RECONCILE_GRACE)
+        );
+
+        terminal.reconcile_hook_title_idle_at(t0 + HOOK_TITLE_IDLE_RECONCILE_GRACE);
+        assert_eq!(terminal.state, AgentState::Idle);
+        assert!(terminal.hook_title_idle_reconciled());
+    }
+
+    #[test]
+    fn background_flag_is_dropped_for_non_working_reports() {
+        let t0 = Instant::now();
+        let mut terminal = omp_terminal_with_stale_hook(AgentState::Working, t0);
+        terminal
+            .set_hook_authority_with_background_at(
+                "herdr:omp".into(),
+                "omp".into(),
+                AgentState::Blocked,
+                None,
+                omp_root_session_ref(),
+                Some(2),
+                true,
+                t0 + Duration::from_secs(1),
+            )
+            .expect("blocked report accepted");
+        assert!(!terminal.hook_authority.as_ref().unwrap().background);
+
+        terminal.reconcile_hook_title_idle_at(
+            t0 + Duration::from_secs(1) + HOOK_TITLE_IDLE_RECONCILE_GRACE,
+        );
+        assert_eq!(terminal.state, AgentState::Idle);
+        assert!(terminal.hook_title_idle_reconciled());
+    }
+
+    #[test]
+    fn leaving_background_work_restarts_the_hook_title_idle_window() {
+        let t0 = Instant::now();
+        let mut terminal = omp_terminal_with_stale_hook(AgentState::Working, t0);
+        report_omp_background_working(&mut terminal, 2, t0 + Duration::from_secs(1))
+            .expect("background report accepted");
+        report_omp_background_working(&mut terminal, 3, t0 + Duration::from_secs(15))
+            .expect("heartbeat accepted");
+
+        // A root turn resumes over the still-idle title: the plain Working
+        // report must not inherit the 20s the idle prompt has already held.
+        let resumed_at = t0 + Duration::from_secs(20);
+        report_omp_state(&mut terminal, AgentState::Working, 4, resumed_at)
+            .expect("root working report accepted");
+        assert!(!terminal.hook_authority.as_ref().unwrap().background);
+        assert_eq!(terminal.state, AgentState::Working);
+        assert_eq!(
+            terminal.next_hook_title_idle_reconcile_deadline(),
+            Some(resumed_at + HOOK_TITLE_IDLE_RECONCILE_GRACE)
+        );
     }
 
     #[test]

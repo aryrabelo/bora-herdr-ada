@@ -1462,6 +1462,7 @@ impl AppState {
                 message,
                 seq,
                 session_ref,
+                background,
             } => {
                 if crate::agent_resume::is_reserved_native_state_source(&source, &agent_label) {
                     self.update_terminal_state(pane_id, |terminal| {
@@ -1471,13 +1472,15 @@ impl AppState {
                     .collect()
                 } else {
                     self.update_terminal_state(pane_id, |terminal| {
-                        terminal.set_hook_authority_with_session_ref(
+                        terminal.set_hook_authority_with_background_at(
                             source,
                             agent_label,
                             state,
                             message,
                             session_ref,
                             seq,
+                            background,
+                            Instant::now(),
                         )
                     })
                     .into_iter()
@@ -3341,6 +3344,7 @@ mod tests {
                 message: None,
                 seq: Some(seq),
                 session_ref: None,
+                background: false,
             });
             if seq == 2 {
                 assert!(!app.workspaces[1].panes[&pane_id].seen);
@@ -3713,6 +3717,7 @@ mod tests {
             message: None,
             seq: Some(1),
             session_ref: None,
+            background: false,
         });
         state.handle_app_event(AppEvent::AgentResumeReported {
             pane_id,
@@ -3762,6 +3767,7 @@ mod tests {
                 message: None,
                 seq: Some(seq + 1),
                 session_ref: crate::agent_resume::AgentSessionRef::id(session),
+                background: false,
             });
             state.handle_app_event(AppEvent::HookStateReported {
                 pane_id,
@@ -3771,6 +3777,7 @@ mod tests {
                 message: None,
                 seq: Some(seq + 2),
                 session_ref: crate::agent_resume::AgentSessionRef::id(session),
+                background: false,
             });
             assert_eq!(state.terminals[&terminal_id].state, AgentState::Idle);
             assert!(state.terminals[&terminal_id]
@@ -3788,6 +3795,7 @@ mod tests {
             message: None,
             seq: Some(7),
             session_ref: crate::agent_resume::AgentSessionRef::id("second"),
+            background: false,
         });
         state.handle_app_event(AppEvent::HookStateReported {
             pane_id,
@@ -3797,6 +3805,7 @@ mod tests {
             message: None,
             seq: Some(8),
             session_ref: crate::agent_resume::AgentSessionRef::id("first"),
+            background: false,
         });
         assert_eq!(state.terminals[&terminal_id].state, AgentState::Working);
     }
@@ -3851,6 +3860,7 @@ mod tests {
             message: None,
             seq: None,
             session_ref: None,
+            background: false,
         });
 
         assert!(state.terminals[&terminal_id].reported_resume().is_none());
@@ -3954,6 +3964,7 @@ mod tests {
             message: None,
             seq: Some(1),
             session_ref: None,
+            background: false,
         });
         assert!(!state.terminals[&terminal_id].self_reported_agent_active());
 
@@ -3983,6 +3994,7 @@ mod tests {
             message: None,
             seq: None,
             session_ref: None,
+            background: false,
         });
 
         let toast = state.toast.as_ref().unwrap();
@@ -4024,6 +4036,7 @@ mod tests {
             message: None,
             seq: Some(1),
             session_ref: None,
+            background: false,
         });
         state.handle_app_event(AppEvent::StateChanged {
             pane_id: bg_pane_id,
@@ -4081,6 +4094,7 @@ mod tests {
             message: None,
             seq: Some(2),
             session_ref: Some(session_ref),
+            background: false,
         });
         let terminal = state.terminals.get(&terminal_id).unwrap();
         assert_eq!(terminal.state, AgentState::Working);
@@ -4148,6 +4162,7 @@ mod tests {
             message: None,
             seq: Some(1),
             session_ref: crate::agent_resume::AgentSessionRef::id("claude-session"),
+            background: false,
         });
         let terminal = state.terminals.get(&terminal_id).unwrap();
         assert_eq!(terminal.state, AgentState::Working);
@@ -4257,6 +4272,7 @@ mod tests {
             message: None,
             seq: Some(1),
             session_ref: crate::agent_resume::AgentSessionRef::id("devin-session"),
+            background: false,
         });
 
         let terminal = state.terminals.get(&terminal_id).unwrap();
@@ -4281,6 +4297,7 @@ mod tests {
             message: None,
             seq: Some(20),
             session_ref: crate::agent_resume::AgentSessionRef::path(first_session),
+            background: false,
         });
         assert_eq!(first_updates.len(), 1);
         state.session_dirty = false;
@@ -4293,6 +4310,7 @@ mod tests {
             message: None,
             seq: Some(21),
             session_ref: crate::agent_resume::AgentSessionRef::path(second_session),
+            background: false,
         });
 
         assert!(second_updates.is_empty());

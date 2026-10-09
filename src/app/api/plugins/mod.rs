@@ -3594,6 +3594,7 @@ action = "missing"
                 agent_session_id: None,
                 agent_session_path: None,
                 resume_argv: None,
+                background: false,
             },
         );
 
