@@ -37,6 +37,10 @@ pub(super) fn render_collapsed(
                     Modifier::empty()
                 }),
         );
+        if row.agent.idle_stale {
+            // Same whole-row dim as the expanded panel (ceo-bora#353).
+            buffer.set_style(rect, Style::default().add_modifier(Modifier::DIM));
+        }
         hits.endpoint_agents
             .push((rect, row.endpoint_id, row.agent.pane_id));
     }

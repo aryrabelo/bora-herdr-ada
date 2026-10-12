@@ -692,7 +692,11 @@ fn mobile_items(
             } else {
                 palette.text
             };
-            let dim = if endpoint.stale() {
+            // An offline machine's cached row and an idle-stale row
+            // (ceo-bora#353) are both drawn dim, padding included.
+            let dim = if endpoint.stale()
+                || super::agent_sidebar::agent_is_idle_stale(endpoint.snapshot, agent, config)
+            {
                 Modifier::DIM
             } else {
                 Modifier::empty()
@@ -700,7 +704,7 @@ fn mobile_items(
             items.push(MobileItem {
                 lines: vec![
                     Line::from(vec![
-                        Span::styled("  ", Style::default().bg(background)),
+                        Span::styled("  ", Style::default().bg(background).add_modifier(dim)),
                         Span::styled(
                             status_icon(agent.agent_status, config.status_indicators),
                             Style::default()
@@ -712,7 +716,7 @@ fn mobile_items(
                                 .bg(background)
                                 .add_modifier(dim),
                         ),
-                        Span::styled(" ", Style::default().bg(background)),
+                        Span::styled(" ", Style::default().bg(background).add_modifier(dim)),
                         Span::styled(
                             crate::ui::truncate_end(
                                 &format!("{} · {primary}", endpoint.label),

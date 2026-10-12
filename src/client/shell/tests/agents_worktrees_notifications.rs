@@ -1402,6 +1402,37 @@ fn stale_row_turns_dim_and_sinks_without_a_new_snapshot() {
     assert_eq!(dim, cells);
 }
 
+/// The collapsed sidebar's agent rail draws the same sunk order and must
+/// dim the stale rows too (cubic review on ceo-bora#353's PR).
+#[test]
+fn stale_row_is_dim_on_every_cell_of_the_collapsed_sidebar_rail() {
+    let mut state = stale_row_state(&Config::default(), stale_row_snapshot());
+    state.sidebar_collapsed = true;
+    for stale in ["pane_1", "pane_4"] {
+        let (dim, cells) = stale_row_dim_cells(&mut state, stale);
+        // Fixture guard: the collapsed rail's one-line row, not the
+        // expanded panel's two-line one.
+        let rect = state
+            .hits
+            .agents
+            .iter()
+            .find(|(_, pane_id)| pane_id == stale)
+            .expect("rail row hit")
+            .0;
+        assert_eq!(rect.height, 1, "{stale} rail row: {rect:?}");
+        assert!(cells > 0, "{stale} rail row has cells");
+        assert_eq!(dim, cells, "every cell of collapsed {stale} is dim");
+    }
+    for live in ["pane_2", "pane_3", "pane_5"] {
+        assert_eq!(stale_row_dim_cells(&mut state, live).0, 0, "{live} is live");
+    }
+
+    let mut off = Config::default();
+    off.ui.dim_stale_agents = false;
+    state.config.apply_live_config(&off, &[], &[]);
+    assert_eq!(stale_row_dim_cells(&mut state, "pane_1").0, 0);
+}
+
 #[test]
 fn workspace_state_text_does_not_stack_terminal_faint() {
     use crate::config::SpaceSidebarToken;

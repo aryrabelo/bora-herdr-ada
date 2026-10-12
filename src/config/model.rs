@@ -1146,13 +1146,15 @@ pub struct UiConfig {
     /// `client::shell::attention::idle_tier`, so it still composes.
     /// Default: 120.
     pub idle_stale_minutes: u64,
-    /// Dim a stale agent-panel row as a whole and sink it to the bottom of
-    /// its block (ceo-bora#353). "Stale" is the `idle_stale_minutes` tier
-    /// above. In `spaces` order the row moves to the end of its own
-    /// workspace's run of rows; in `priority` order below every non-stale
-    /// row. An active plugin `agent.view` keeps its own order, so there
-    /// the row is only dimmed. `false` turns off both the dim and the
-    /// sinking. Default: true.
+    /// Dim a stale agent row as a whole (agent panel, collapsed sidebar,
+    /// mobile list) and sink it to the bottom of its block (ceo-bora#353).
+    /// "Stale" is the `idle_stale_minutes` tier above. In `spaces` order
+    /// the row moves to the end of its own workspace's run of rows; in
+    /// `priority` order below every non-stale row, except that with several
+    /// machines an offline machine's cached rows stay below everything. An
+    /// active plugin `agent.view` keeps its own order, so there the row is
+    /// only dimmed. `false` turns off both the dim and the sinking.
+    /// Default: true.
     pub dim_stale_agents: bool,
     /// Lead each split pane border with its public pane id (`w26:p1`) so two panes
     /// running the same agent stay distinguishable. Default: false.

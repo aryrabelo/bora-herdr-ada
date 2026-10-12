@@ -21,9 +21,10 @@
 //! than the Folders dots/badge: Fresh, Plain, or Stale by how long an
 //! `Idle`/`Done` pane has sat, gated by `ui.idle_fresh_minutes` and
 //! `ui.idle_stale_minutes`. It does not move the waiting counter. The
-//! Stale tier also dims the whole agent row and sinks it in the panel
-//! order (ceo-bora#353, `agent_sidebar::agent_is_idle_stale`), gated by
-//! `ui.dim_stale_agents`.
+//! Stale tier also dims the whole agent row and, unless an active
+//! `agent.view` holds the order (then the row is only dimmed), sinks it in
+//! the panel order (ceo-bora#353, `agent_sidebar::agent_is_idle_stale`),
+//! gated by `ui.dim_stale_agents`.
 
 use super::*;
 

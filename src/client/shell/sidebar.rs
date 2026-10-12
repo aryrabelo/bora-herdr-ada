@@ -168,6 +168,10 @@ pub(crate) fn render_collapsed_sidebar(
             status_icon(agent.agent_status, config.status_indicators),
             Style::default().fg(status_color(agent.agent_status, palette)),
         );
+        if super::agent_sidebar::agent_is_idle_stale(snapshot, agent, config) {
+            // Same whole-row dim as the expanded panel (ceo-bora#353).
+            buffer.set_style(rect, Style::default().add_modifier(Modifier::DIM));
+        }
         hits.agents.push((rect, pane_id));
     }
     hits.sidebar_toggle = if area.is_empty() || workspace_area.width == 0 {

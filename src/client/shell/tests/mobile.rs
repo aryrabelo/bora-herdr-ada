@@ -345,6 +345,102 @@ fn mobile_header_and_switcher_render_released_sections_and_stable_targets() {
     )));
 }
 
+/// The mobile agent list dims an idle-stale online row like an offline
+/// machine's cached row (cubic review on ceo-bora#353's PR): every drawn
+/// cell of the row, padding included, carries DIM; a live row carries none.
+#[test]
+fn stale_row_is_dim_on_every_drawn_cell_of_the_mobile_list() {
+    let mut projected = snapshot();
+    let mut live_pane = projected.panes[0].clone();
+    live_pane.pane_id = "pane_2".into();
+    live_pane.focused = false;
+    projected.panes[0].idle_seconds = Some(7_200);
+    projected.panes.push(live_pane);
+    let agent = |pane_id: &str, name: &str, agent_status| ClientShellAgent {
+        pane_id: pane_id.into(),
+        workspace_id: "ws_1".into(),
+        tab_id: "tab_1".into(),
+        name: Some(name.into()),
+        display_agent: None,
+        agent: Some("pi".into()),
+        title: None,
+        terminal_title: None,
+        terminal_title_stripped: None,
+        agent_status,
+        state_change_seq: 1,
+        state_labels: Vec::new(),
+        tokens: Vec::new(),
+        focused: false,
+    };
+    projected.agents = vec![
+        agent("pane_1", "stale-agent", AgentStatus::Idle),
+        agent("pane_2", "live-agent", AgentStatus::Working),
+    ];
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(projected));
+    state.set_pane_surface(surface());
+    state.compose(44, 40).expect("mobile header");
+    let switch = state.hits.mobile_switch;
+    state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: switch.x,
+        row: switch.y,
+        modifiers: KeyModifiers::empty(),
+    })]);
+    assert_eq!(state.mode, ClientShellMode::Navigate);
+
+    // (dim cells, drawn cells) over the agent item's rows, where a drawn
+    // cell runs from the row's left edge to its last non-blank symbol.
+    let dim_cells = |state: &mut ClientShellState, pane: &str| {
+        let frame = state.compose(44, 40).expect("mobile switcher");
+        let buffer = frame.to_ratatui_buffer().expect("mobile switcher buffer");
+        let rect = state
+            .hits
+            .mobile_targets
+            .iter()
+            .find_map(|(rect, target)| {
+                matches!(
+                    target,
+                    ClientMobileTarget::Agent { pane_id, .. } if pane_id == pane
+                )
+                .then_some(*rect)
+            })
+            .unwrap_or_else(|| panic!("{pane} mobile agent hit"));
+        let mut dim = 0;
+        let mut drawn = 0;
+        for y in rect.y..rect.bottom() {
+            let last = (rect.x..rect.right())
+                .rev()
+                .find(|&x| buffer.cell((x, y)).expect("mobile cell").symbol() != " ")
+                .expect("mobile agent row has text");
+            for x in rect.x..=last {
+                drawn += 1;
+                if buffer
+                    .cell((x, y))
+                    .expect("mobile cell")
+                    .modifier
+                    .contains(ratatui::style::Modifier::DIM)
+                {
+                    dim += 1;
+                }
+            }
+        }
+        (dim, drawn)
+    };
+    let (dim, drawn) = dim_cells(&mut state, "pane_1");
+    assert!(drawn > 0);
+    assert_eq!(
+        dim, drawn,
+        "every drawn cell of the stale mobile row is dim"
+    );
+    assert_eq!(dim_cells(&mut state, "pane_2").0, 0, "live row is not dim");
+
+    let mut off = Config::default();
+    off.ui.dim_stale_agents = false;
+    state.config.apply_live_config(&off, &[], &[]);
+    assert_eq!(dim_cells(&mut state, "pane_1").0, 0);
+}
+
 #[test]
 fn mobile_background_workspace_uses_its_own_active_tab_status() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
