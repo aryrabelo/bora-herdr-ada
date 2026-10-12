@@ -39,16 +39,23 @@ fn validate_sidebar_rows<T>(rows: &[Vec<T>]) -> Result<(), String> {
     Ok(())
 }
 
+/// A sidebar token's foreground. Config only ever spells it `#RGB`/`#RRGGBB`
+/// (always `Color::Rgb`); the client's idle-tier recolor (ceo-bora#352)
+/// builds one from a theme `Palette` color with `from_palette`, which under
+/// the 16-color `terminal` theme is a named color (`Cyan`, `Gray`, `Reset`).
+/// Storing the ratatui color keeps both on the one per-token style-patch
+/// channel (`apply_token_style` in `src/ui/sidebar.rs`) without changing the
+/// TOML shape.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SidebarTokenColor {
-    r: u8,
-    g: u8,
-    b: u8,
-}
+pub struct SidebarTokenColor(ratatui::style::Color);
 
 impl SidebarTokenColor {
+    pub(crate) fn from_palette(color: ratatui::style::Color) -> Self {
+        Self(color)
+    }
+
     pub(crate) fn ratatui(self) -> ratatui::style::Color {
-        ratatui::style::Color::Rgb(self.r, self.g, self.b)
+        self.0
     }
 }
 
@@ -57,7 +64,14 @@ impl Serialize for SidebarTokenColor {
     where
         S: serde::Serializer,
     {
-        serializer.serialize_str(&format!("#{:02x}{:02x}{:02x}", self.r, self.g, self.b))
+        let ratatui::style::Color::Rgb(r, g, b) = self.0 else {
+            // Only `from_palette` (render-time, never written to config) can
+            // hold a named color, so no TOML form exists for it.
+            return Err(serde::ser::Error::custom(
+                "sidebar token fg has no #RRGGBB form for a named theme color",
+            ));
+        };
+        serializer.serialize_str(&format!("#{r:02x}{g:02x}{b:02x}"))
     }
 }
 
@@ -93,7 +107,7 @@ impl<'de> Deserialize<'de> for SidebarTokenColor {
                 u8::from_str_radix(&hex[4..6], 16).expect("validated hex digits"),
             )
         };
-        Ok(Self { r, g, b })
+        Ok(Self(ratatui::style::Color::Rgb(r, g, b)))
     }
 }
 

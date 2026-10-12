@@ -36,6 +36,14 @@ pub(crate) struct ClientShellConfig {
     /// ceo-bora#302): `0` disables. Presentation-side comparison against the
     /// server-side `ClientShellPane.idle_seconds` fact.
     pub(super) idle_attention_seconds: u64,
+    /// Idle-tier fresh edge in seconds (`ui.idle_fresh_minutes * 60`,
+    /// ceo-bora#352): `0` disables. A second, independent reading of
+    /// `ClientShellPane.idle_seconds` from `idle_attention_seconds` above,
+    /// for the agent panel's name color (`client::shell::attention::idle_tier`).
+    pub(super) idle_fresh_seconds: u64,
+    /// Idle-tier stale edge in seconds (`ui.idle_stale_minutes * 60`,
+    /// ceo-bora#352): `0` disables. See `idle_fresh_seconds`.
+    pub(super) idle_stale_seconds: u64,
     pub(super) status_indicators: crate::config::StatusIndicatorStyle,
     pub(super) sound_enabled: bool,
     pub(super) toast_delivery: crate::config::ToastDelivery,
@@ -2070,6 +2078,40 @@ impl ClientShellState {
             return true;
         }
         false
+    }
+
+    /// Age every cached snapshot's pane `idle_seconds` by the wall time since
+    /// it arrived (`attention::IdleAge`, ceo-bora#352) and return whether a
+    /// pane crossed an idle-tier or `idle_attention_seconds` edge, i.e.
+    /// whether the next frame draws differently. Called from the client's
+    /// existing ~100ms poll (`timer_delay`) with that poll's `now`; ages in
+    /// whole seconds, so between edge crossings it costs one `Instant`
+    /// subtraction per endpoint and never forces a repaint. The active
+    /// `self.snapshot` is a clone of its endpoint's cached snapshot, so it
+    /// takes the same increment and stays in step.
+    pub(crate) fn tick_idle_ageing(&mut self, now: std::time::Instant) -> bool {
+        let edges = [
+            self.config.idle_attention_seconds,
+            self.config.idle_fresh_seconds,
+            self.config.idle_stale_seconds,
+        ];
+        let mut crossed = false;
+        for endpoint in &mut self.endpoints {
+            let Some(snapshot) = endpoint.snapshot.as_deref_mut() else {
+                continue;
+            };
+            let seconds = endpoint.idle_age.advance(now);
+            if seconds == 0 {
+                continue;
+            }
+            crossed |= attention::age_idle_seconds(snapshot, seconds, edges);
+            if endpoint.endpoint_id == self.active_endpoint_id {
+                if let Some(active) = self.snapshot.as_deref_mut() {
+                    crossed |= attention::age_idle_seconds(active, seconds, edges);
+                }
+            }
+        }
+        crossed
     }
 
     pub(crate) fn timer_delay(&self, now: std::time::Instant) -> std::time::Duration {

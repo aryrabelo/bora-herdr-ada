@@ -1,5 +1,6 @@
 //! Pane-attention presentation (ceo-bora#302). A pane is "waiting" for
-//! attention when it has produced no PTY output for
+//! attention when it has been idle (time since the agent's last move to
+//! Idle, `ClientShellPane.idle_seconds`) for at least
 //! `ui.idle_attention_seconds` (client config; `0` disables the ramp) or is
 //! `Blocked` (always attention-worthy, regardless of idle time) -- unless
 //! its workspace is the one currently focused, in which case the operator
@@ -14,6 +15,12 @@
 //! Mirrors the pre-merge fork's `attention_pane_counts` (`ceo-bora` history,
 //! pre-0.9.0-sync `src/ui/sidebar.rs`): a plain waiting pane is yellow, one
 //! that is also `Blocked` pulls the aggregate to red.
+//!
+//! `IdleTier`/`idle_tier` (ceo-bora#352) is a second, independent reading of
+//! the same `idle_seconds` fact, for the agent panel's name color rather
+//! than the Folders dots/badge: Fresh, Plain, or Stale by how long an
+//! `Idle`/`Done` pane has sat, gated by `ui.idle_fresh_minutes` and
+//! `ui.idle_stale_minutes`. It does not move the waiting counter.
 
 use super::*;
 
@@ -59,6 +66,102 @@ pub(in crate::client::shell) fn pane_attention_color(
     } else {
         palette.yellow
     }
+}
+
+/// Idle-duration tier for an `Idle`/`Done` pane's name color in the agent
+/// panel (ceo-bora#352), a second, independent reading of
+/// `ClientShellPane.idle_seconds` from the Folders-dot/badge ramp above:
+/// `Fresh` just went idle, `Stale` has sat unseen a long time, `Plain` is
+/// in between.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::client::shell) enum IdleTier {
+    Fresh,
+    Plain,
+    Stale,
+}
+
+/// Map a pane's status and idle duration to its agent-panel name tier, if
+/// any. Only `Idle` and `Done` panes get a tier -- `idle_seconds` tracks
+/// time since the last move to `Idle`, which says nothing about a
+/// `Working`/`Blocked`/`Unknown` pane. `None` idle_seconds (just
+/// transitioned, no duration yet) also gets no tier.
+///
+/// `fresh_seconds == 0` disables the Fresh edge; `stale_seconds == 0`
+/// disables the Stale edge. The Stale edge is checked first: `seconds >=
+/// stale_seconds` (when nonzero) wins over the Fresh check, so a config
+/// with `fresh_seconds > stale_seconds` (flagged as a diagnostic by
+/// `Config::invalid_idle_tier_bounds_diagnostic`, never a panic) still
+/// composes -- the stale edge simply catches everything past it, and
+/// nothing past the stale edge is ever read as fresh instead.
+pub(in crate::client::shell) fn idle_tier(
+    status: crate::api::schema::AgentStatus,
+    idle_seconds: Option<u64>,
+    fresh_seconds: u64,
+    stale_seconds: u64,
+) -> Option<IdleTier> {
+    use crate::api::schema::AgentStatus;
+    if !matches!(status, AgentStatus::Idle | AgentStatus::Done) {
+        return None;
+    }
+    let seconds = idle_seconds?;
+    if stale_seconds > 0 && seconds >= stale_seconds {
+        return Some(IdleTier::Stale);
+    }
+    if fresh_seconds > 0 && seconds < fresh_seconds {
+        return Some(IdleTier::Fresh);
+    }
+    Some(IdleTier::Plain)
+}
+
+/// Client-side ageing of one cached snapshot's `ClientShellPane.idle_seconds`
+/// (ceo-bora#352 follow-up). The server stamps `idle_seconds` when it builds
+/// a snapshot and sends a new one only when something else changes, so on a
+/// quiet screen the fact froze and neither an idle tier nor the
+/// `idle_attention_seconds` ramp could cross its edge. The client ages it
+/// instead: `advance(now)` returns the whole seconds elapsed since the last
+/// call, measured from a baseline taken on the first call after the snapshot
+/// was cached. The clock is passed in, never read here, so tests drive it
+/// deterministically (same rule as the frame-counter spinner).
+#[derive(Debug, Clone, Copy, Default)]
+pub(in crate::client::shell) struct IdleAge {
+    baseline: Option<std::time::Instant>,
+    applied_seconds: u64,
+}
+
+impl IdleAge {
+    pub(in crate::client::shell) fn advance(&mut self, now: std::time::Instant) -> u64 {
+        let Some(baseline) = self.baseline else {
+            self.baseline = Some(now);
+            return 0;
+        };
+        let elapsed = now.saturating_duration_since(baseline).as_secs();
+        let seconds = elapsed.saturating_sub(self.applied_seconds);
+        self.applied_seconds = elapsed;
+        seconds
+    }
+}
+
+/// Add `seconds` to every pane's known `idle_seconds` and report whether any
+/// pane crossed one of `edges` (the attention ramp and both tier edges; `0`
+/// edges are disabled) -- the only case where the aged value changes what a
+/// frame draws, so the caller repaints on `true` and stays idle otherwise.
+pub(in crate::client::shell) fn age_idle_seconds(
+    snapshot: &mut ClientShellSnapshot,
+    seconds: u64,
+    edges: [u64; 3],
+) -> bool {
+    let mut crossed = false;
+    for pane in &mut snapshot.panes {
+        let Some(before) = pane.idle_seconds else {
+            continue;
+        };
+        let after = before.saturating_add(seconds);
+        pane.idle_seconds = Some(after);
+        crossed |= edges
+            .iter()
+            .any(|&edge| edge > 0 && before < edge && after >= edge);
+    }
+    crossed
 }
 
 /// Aggregate `(waiting, blocked)` counts across the whole snapshot, for the
@@ -162,5 +265,113 @@ mod tests {
         // the focused workspace, so it never competes for attention.
         assert!(!pane_is_waiting(AgentStatus::Blocked, None, 300, true));
         assert!(!pane_is_waiting(AgentStatus::Idle, Some(9_999), 300, true));
+    }
+
+    #[test]
+    fn idle_tier_fresh_before_the_fresh_edge() {
+        assert_eq!(
+            idle_tier(AgentStatus::Idle, Some(0), 900, 7_200),
+            Some(IdleTier::Fresh)
+        );
+        assert_eq!(
+            idle_tier(AgentStatus::Idle, Some(899), 900, 7_200),
+            Some(IdleTier::Fresh)
+        );
+    }
+
+    #[test]
+    fn idle_tier_plain_between_the_two_edges() {
+        assert_eq!(
+            idle_tier(AgentStatus::Idle, Some(900), 900, 7_200),
+            Some(IdleTier::Plain)
+        );
+        assert_eq!(
+            idle_tier(AgentStatus::Idle, Some(7_199), 900, 7_200),
+            Some(IdleTier::Plain)
+        );
+    }
+
+    #[test]
+    fn idle_tier_stale_at_and_past_the_stale_edge() {
+        assert_eq!(
+            idle_tier(AgentStatus::Idle, Some(7_200), 900, 7_200),
+            Some(IdleTier::Stale)
+        );
+        assert_eq!(
+            idle_tier(AgentStatus::Idle, Some(99_999), 900, 7_200),
+            Some(IdleTier::Stale)
+        );
+    }
+
+    #[test]
+    fn idle_tier_zero_fresh_edge_disables_the_fresh_tier() {
+        assert_eq!(
+            idle_tier(AgentStatus::Idle, Some(0), 0, 7_200),
+            Some(IdleTier::Plain)
+        );
+    }
+
+    #[test]
+    fn idle_tier_zero_stale_edge_disables_the_stale_tier() {
+        assert_eq!(
+            idle_tier(AgentStatus::Idle, Some(99_999), 900, 0),
+            Some(IdleTier::Plain)
+        );
+    }
+
+    #[test]
+    fn idle_tier_working_and_blocked_panes_get_no_tier() {
+        assert_eq!(
+            idle_tier(AgentStatus::Working, Some(99_999), 900, 7_200),
+            None
+        );
+        assert_eq!(
+            idle_tier(AgentStatus::Blocked, Some(99_999), 900, 7_200),
+            None
+        );
+        assert_eq!(idle_tier(AgentStatus::Idle, None, 900, 7_200), None);
+    }
+
+    #[test]
+    fn idle_tier_age_baselines_first_then_counts_whole_seconds() {
+        let start = std::time::Instant::now();
+        let mut age = IdleAge::default();
+        assert_eq!(age.advance(start), 0);
+        assert_eq!(
+            age.advance(start + std::time::Duration::from_millis(900)),
+            0
+        );
+        assert_eq!(
+            age.advance(start + std::time::Duration::from_millis(2_500)),
+            2
+        );
+        assert_eq!(age.advance(start + std::time::Duration::from_secs(3)), 1);
+    }
+
+    #[test]
+    fn idle_tier_ageing_reports_only_an_edge_crossing() {
+        let mut snapshot = crate::client::shell::tests::snapshot();
+        snapshot.panes[0].idle_seconds = Some(898);
+        assert!(!age_idle_seconds(&mut snapshot, 1, [300, 900, 7_200]));
+        assert_eq!(snapshot.panes[0].idle_seconds, Some(899));
+        assert!(age_idle_seconds(&mut snapshot, 1, [300, 900, 7_200]));
+        assert_eq!(snapshot.panes[0].idle_seconds, Some(900));
+        assert!(!age_idle_seconds(&mut snapshot, 10_000, [0, 0, 0]));
+
+        snapshot.panes[0].idle_seconds = None;
+        assert!(!age_idle_seconds(&mut snapshot, 10_000, [300, 900, 7_200]));
+        assert_eq!(snapshot.panes[0].idle_seconds, None);
+    }
+
+    #[test]
+    fn idle_tier_done_pane_gets_a_tier() {
+        assert_eq!(
+            idle_tier(AgentStatus::Done, Some(0), 900, 7_200),
+            Some(IdleTier::Fresh)
+        );
+        assert_eq!(
+            idle_tier(AgentStatus::Done, Some(7_200), 900, 7_200),
+            Some(IdleTier::Stale)
+        );
     }
 }

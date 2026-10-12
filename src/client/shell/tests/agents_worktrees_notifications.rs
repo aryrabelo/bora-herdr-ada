@@ -833,6 +833,214 @@ fn muted_agent_sidebar_rows_do_not_stack_terminal_faint() {
 }
 
 #[test]
+fn idle_tier_colors_a_fresh_and_a_stale_agent_name_from_the_rendered_buffer() {
+    let mut projected = snapshot();
+    projected.panes[0].idle_seconds = Some(0);
+    let mut stale_pane = projected.panes[0].clone();
+    stale_pane.pane_id = "pane_2".into();
+    stale_pane.focused = false;
+    stale_pane.idle_seconds = Some(7_200);
+    projected.panes.push(stale_pane);
+    projected.agents = vec![
+        ClientShellAgent {
+            pane_id: "pane_1".into(),
+            workspace_id: "ws_1".into(),
+            tab_id: "tab_1".into(),
+            name: Some("fresh-agent".into()),
+            display_agent: None,
+            agent: Some("pi".into()),
+            title: None,
+            terminal_title: None,
+            terminal_title_stripped: None,
+            agent_status: AgentStatus::Idle,
+            state_change_seq: 1,
+            state_labels: Vec::new(),
+            tokens: Vec::new(),
+            focused: false,
+        },
+        ClientShellAgent {
+            pane_id: "pane_2".into(),
+            workspace_id: "ws_1".into(),
+            tab_id: "tab_1".into(),
+            name: Some("stale-agent".into()),
+            display_agent: None,
+            agent: Some("pi".into()),
+            title: None,
+            terminal_title: None,
+            terminal_title_stripped: None,
+            agent_status: AgentStatus::Idle,
+            state_change_seq: 2,
+            state_labels: Vec::new(),
+            tokens: Vec::new(),
+            focused: false,
+        },
+    ];
+    let config = Config::default();
+    let shell_config = ClientShellConfig::from_config(&config);
+    let expected_fresh = shell_config.palette.teal;
+    let expected_stale = shell_config.palette.overlay0;
+    let mut state = ClientShellState::new(shell_config);
+    state.set_snapshot(Box::new(projected));
+    state.set_pane_surface(surface());
+
+    let frame = state.compose(106, 30).expect("agent sidebar frame");
+    let buffer = frame.to_ratatui_buffer().expect("agent sidebar buffer");
+    let fresh_row = state
+        .hits
+        .agents
+        .iter()
+        .find(|(_, pane_id)| pane_id == "pane_1")
+        .expect("fresh agent hit")
+        .0;
+    let stale_row = state
+        .hits
+        .agents
+        .iter()
+        .find(|(_, pane_id)| pane_id == "pane_2")
+        .expect("stale agent hit")
+        .0;
+    let (fresh_x, fresh_y) = cell_symbol_position(&frame, fresh_row, "fresh-agent");
+    let (stale_x, stale_y) = cell_symbol_position(&frame, stale_row, "stale-agent");
+    let fresh_cell = buffer.cell((fresh_x, fresh_y)).expect("fresh name cell");
+    let stale_cell = buffer.cell((stale_x, stale_y)).expect("stale name cell");
+
+    assert_eq!(
+        fresh_cell.fg, expected_fresh,
+        "fresh agent name should use the Done/teal color: {fresh_cell:?}"
+    );
+    assert_eq!(
+        stale_cell.fg, expected_stale,
+        "stale agent name should use overlay0: {stale_cell:?}"
+    );
+}
+
+/// cubic P2 on aryrabelo/bora-herdr-ada#52: the 16-color `terminal` theme
+/// resolves the palette to named colors, and the tier recolor used to drop
+/// any non-RGB color, so every tier fell back to the untiered `overlay0`
+/// (`Gray`). The named colors must reach the buffer. Under this palette
+/// `subtext0` and `overlay0` are both `Gray`, so an unfocused Plain row reads
+/// the same as a Stale one; only Fresh (`Cyan`) stands apart.
+#[test]
+fn idle_tier_colors_names_under_the_terminal_palette() {
+    use ratatui::style::Color;
+
+    let mut projected = snapshot();
+    let mut agents = Vec::new();
+    projected.panes.clear();
+    for (index, (name, idle)) in [
+        ("fresh-agent", 0),
+        ("plain-agent", 1_800),
+        ("stale-agent", 7_200),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut pane = snapshot().panes[0].clone();
+        pane.pane_id = format!("pane_{}", index + 1);
+        pane.focused = false;
+        pane.idle_seconds = Some(idle);
+        projected.panes.push(pane);
+        agents.push(ClientShellAgent {
+            pane_id: format!("pane_{}", index + 1),
+            workspace_id: "ws_1".into(),
+            tab_id: "tab_1".into(),
+            name: Some(name.into()),
+            display_agent: None,
+            agent: Some("pi".into()),
+            title: None,
+            terminal_title: None,
+            terminal_title_stripped: None,
+            agent_status: AgentStatus::Idle,
+            state_change_seq: index as u64 + 1,
+            state_labels: Vec::new(),
+            tokens: Vec::new(),
+            focused: false,
+        });
+    }
+    projected.agents = agents;
+    let mut config = ClientShellConfig::from_config(&Config::default());
+    config.palette = Palette::terminal();
+    let mut state = ClientShellState::new(config);
+    state.set_snapshot(Box::new(projected));
+    state.set_pane_surface(surface());
+
+    let frame = state.compose(106, 30).expect("agent sidebar frame");
+    let buffer = frame.to_ratatui_buffer().expect("agent sidebar buffer");
+    let name_fg = |pane_id: &str, name: &str| {
+        let row = state
+            .hits
+            .agents
+            .iter()
+            .find(|(_, hit)| hit == pane_id)
+            .unwrap_or_else(|| panic!("{name} hit"))
+            .0;
+        let (x, y) = cell_symbol_position(&frame, row, name);
+        buffer.cell((x, y)).expect("agent name cell").fg
+    };
+
+    assert_eq!(name_fg("pane_1", "fresh-agent"), Color::Cyan);
+    assert_eq!(name_fg("pane_2", "plain-agent"), Color::Gray);
+    assert_eq!(name_fg("pane_3", "stale-agent"), Color::Gray);
+}
+
+/// ceo-bora#352 live-smoke defect: the server stamps `idle_seconds` only when
+/// it builds a snapshot, so on a quiet screen a Fresh row stayed teal until
+/// some unrelated snapshot arrived. Here no second snapshot is ever sent;
+/// only the client's poll tick advances time, and the row must still cross
+/// Fresh -> Plain and ask for the repaint that draws it.
+#[test]
+fn idle_tier_row_crosses_fresh_to_plain_without_a_new_snapshot() {
+    let mut projected = snapshot();
+    projected.panes[0].idle_seconds = Some(899);
+    projected.agents = vec![ClientShellAgent {
+        pane_id: "pane_1".into(),
+        workspace_id: "ws_1".into(),
+        tab_id: "tab_1".into(),
+        name: Some("ageing-agent".into()),
+        display_agent: None,
+        agent: Some("pi".into()),
+        title: None,
+        terminal_title: None,
+        terminal_title_stripped: None,
+        agent_status: AgentStatus::Idle,
+        state_change_seq: 1,
+        state_labels: Vec::new(),
+        tokens: Vec::new(),
+        focused: false,
+    }];
+    let shell_config = ClientShellConfig::from_config(&Config::default());
+    let fresh = shell_config.palette.teal;
+    let plain = shell_config.palette.subtext0;
+    let mut state = ClientShellState::new(shell_config);
+    state.set_snapshot(Box::new(projected));
+    state.set_pane_surface(surface());
+    let name_fg = |state: &mut ClientShellState| {
+        let frame = state.compose(106, 30).expect("agent sidebar frame");
+        let row = state.hits.agents.first().expect("agent row hit").0;
+        let (x, y) = cell_symbol_position(&frame, row, "ageing-agent");
+        frame
+            .to_ratatui_buffer()
+            .expect("agent sidebar buffer")
+            .cell((x, y))
+            .expect("agent name cell")
+            .fg
+    };
+    assert_eq!(name_fg(&mut state), fresh);
+
+    let start = std::time::Instant::now();
+    assert!(
+        !state.tick_idle_ageing(start),
+        "the first tick only takes the baseline"
+    );
+    assert_eq!(name_fg(&mut state), fresh);
+    assert!(
+        state.tick_idle_ageing(start + std::time::Duration::from_secs(1)),
+        "crossing the 15-minute fresh edge must request a repaint"
+    );
+    assert_eq!(name_fg(&mut state), plain);
+}
+
+#[test]
 fn workspace_state_text_does_not_stack_terminal_faint() {
     use crate::config::SpaceSidebarToken;
 
