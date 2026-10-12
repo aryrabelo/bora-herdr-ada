@@ -46,6 +46,9 @@ pub(super) struct AggregateAgentRow<'a> {
     pub(super) endpoint: CachedEndpointSnapshot<'a>,
     pub(super) agent: &'a ClientShellAgent,
     pub(super) recency: u64,
+    /// Idle-stale (`agent_sidebar::agent_is_idle_stale`) AND not held in
+    /// place by an active `agent.view`: the row sinks (ceo-bora#353).
+    sink_idle_stale: bool,
 }
 
 pub(super) struct AggregateAgentTarget {
@@ -53,10 +56,15 @@ pub(super) struct AggregateAgentTarget {
     pub(super) pane_id: String,
 }
 
+/// The multi-endpoint agent order. The expanded and collapsed machine
+/// panels (`endpoint_agents::agent_rows`), the mobile list and agent
+/// keyboard navigation (`online_agent_targets`) all read it. Without an
+/// active view it sinks idle-stale rows with the same
+/// `agent_sidebar::sink_idle_stale_rows` rule as the single-snapshot order.
 pub(super) fn aggregate_agent_rows<'a>(
     endpoints: &'a [ClientShellEndpoint],
     active_endpoint_id: &ClientEndpointId,
-    sort: crate::config::AgentPanelSortConfig,
+    config: &ClientShellConfig,
 ) -> Vec<AggregateAgentRow<'a>> {
     let active_index = endpoints
         .iter()
@@ -93,6 +101,12 @@ pub(super) fn aggregate_agent_rows<'a>(
                             .get(&agent.pane_id)
                             .copied()
                             .unwrap_or_default(),
+                        sink_idle_stale: view.is_none()
+                            && super::agent_sidebar::agent_is_idle_stale(
+                                endpoint.snapshot,
+                                agent,
+                                config,
+                            ),
                         endpoint,
                         agent,
                     })
@@ -126,13 +140,13 @@ pub(super) fn aggregate_agent_rows<'a>(
                 return rows;
             }
         }
-        sort_aggregate_rows(&mut rows, sort);
+        order_aggregate_rows(&mut rows, config.agent_panel_sort);
         return rows;
     }
 
     let mut rows = cached_endpoint_snapshots(endpoints)
         .flat_map(|endpoint| {
-            super::agent_sidebar::ordered_agent_pane_ids(endpoint.snapshot, sort)
+            super::agent_sidebar::ordered_agent_pane_ids(endpoint.snapshot, config)
                 .into_iter()
                 .filter_map(move |pane_id| {
                     let agent = endpoint
@@ -146,28 +160,52 @@ pub(super) fn aggregate_agent_rows<'a>(
                             .get(&pane_id)
                             .copied()
                             .unwrap_or_default(),
+                        sink_idle_stale: endpoint.snapshot.agent_view_label.is_none()
+                            && super::agent_sidebar::agent_is_idle_stale(
+                                endpoint.snapshot,
+                                agent,
+                                config,
+                            ),
                         endpoint,
                         agent,
                     })
                 })
         })
         .collect::<Vec<_>>();
-    sort_aggregate_rows(&mut rows, sort);
+    order_aggregate_rows(&mut rows, config.agent_panel_sort);
     rows
 }
 
-fn sort_aggregate_rows(
+/// `priority` re-sorts across machines, so the idle-stale sink runs after
+/// it, inside each online/offline block (offline machines' cached rows
+/// stay last, below every online row). `spaces` keeps machine order and
+/// sinks inside each machine's workspace runs.
+fn order_aggregate_rows(
     rows: &mut [AggregateAgentRow<'_>],
     sort: crate::config::AgentPanelSortConfig,
 ) {
-    if sort == crate::config::AgentPanelSortConfig::Priority {
-        rows.sort_by_key(|row| {
-            (
-                row.endpoint.stale(),
-                std::cmp::Reverse(status_priority(row.agent.agent_status)),
-                std::cmp::Reverse(row.recency),
-            )
-        });
+    match sort {
+        crate::config::AgentPanelSortConfig::Priority => {
+            rows.sort_by_key(|row| {
+                (
+                    row.endpoint.stale(),
+                    std::cmp::Reverse(status_priority(row.agent.agent_status)),
+                    std::cmp::Reverse(row.recency),
+                )
+            });
+            super::agent_sidebar::sink_idle_stale_rows(
+                rows,
+                |row| row.endpoint.stale(),
+                |row| row.sink_idle_stale,
+            );
+        }
+        crate::config::AgentPanelSortConfig::Spaces => {
+            super::agent_sidebar::sink_idle_stale_rows(
+                rows,
+                |row| (row.endpoint.endpoint_index, row.agent.workspace_id.as_str()),
+                |row| row.sink_idle_stale,
+            );
+        }
     }
 }
 
@@ -263,9 +301,9 @@ impl crate::agent_view_eval::AgentViewEntry for ClientAgentViewEntry<'_> {
 pub(super) fn online_agent_targets(
     endpoints: &[ClientShellEndpoint],
     active_endpoint_id: &ClientEndpointId,
-    sort: crate::config::AgentPanelSortConfig,
+    config: &ClientShellConfig,
 ) -> Vec<AggregateAgentTarget> {
-    aggregate_agent_rows(endpoints, active_endpoint_id, sort)
+    aggregate_agent_rows(endpoints, active_endpoint_id, config)
         .into_iter()
         .filter(|row| !row.endpoint.stale())
         .map(|row| AggregateAgentTarget {

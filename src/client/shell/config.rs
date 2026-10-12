@@ -133,6 +133,7 @@ impl ClientShellConfig {
             idle_attention_seconds: config.ui.idle_attention_seconds,
             idle_fresh_seconds: config.ui.idle_fresh_minutes.saturating_mul(60),
             idle_stale_seconds: config.ui.idle_stale_minutes.saturating_mul(60),
+            dim_stale_agents: config.ui.dim_stale_agents,
             status_indicators: config.ui.status_indicators,
             sound_enabled: config.ui.sound.enabled,
             toast_delivery: config.ui.toast.delivery,
@@ -365,6 +366,7 @@ impl ClientShellConfig {
                 self.idle_attention_seconds = ui.idle_attention_seconds;
                 self.idle_fresh_seconds = ui.idle_fresh_minutes.saturating_mul(60);
                 self.idle_stale_seconds = ui.idle_stale_minutes.saturating_mul(60);
+                self.dim_stale_agents = ui.dim_stale_agents;
                 self.status_indicators = ui.status_indicators;
                 self.sound_enabled = ui.sound.enabled;
                 self.toast_delivery = ui.toast.delivery;

@@ -1172,6 +1172,12 @@
           "description": "Idle-tier stale edge, in minutes: an Idle/Done pane's name in the agent panel is colored overlay0 once it has been idle at least this many minutes. 0 disables the Stale tier. `ui.idle_fresh_minutes` greater than a nonzero `ui.idle_stale_minutes` is a config diagnostic, not a panic."
         },
         {
+          "key": "ui.dim_stale_agents",
+          "type": "boolean",
+          "default": "true",
+          "description": "Dim a stale agent row as a whole (icon, name and every token) in the agent panel, the collapsed sidebar and the mobile list, and sink it to the bottom of its block. Stale is the `ui.idle_stale_minutes` tier. In `spaces` order the row moves to the end of its own workspace's rows; in `priority` order below every non-stale row, except that with several machines the cached rows of an offline machine stay below everything, stale online rows included. Agent keyboard navigation walks the same order. An active plugin `agent.view` keeps its own order, so there stale rows are only dimmed. false turns off both the dim and the sinking."
+        },
+        {
           "key": "ui.chat_view",
           "type": "boolean",
           "default": "false",

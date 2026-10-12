@@ -1040,6 +1040,399 @@ fn idle_tier_row_crosses_fresh_to_plain_without_a_new_snapshot() {
     assert_eq!(name_fg(&mut state), plain);
 }
 
+/// ceo-bora#353 fixture, in `snapshot.agents` order: `ws_1` runs a stale
+/// idle agent ahead of a working one and a fresh idle one; `ws_2` runs a
+/// stale done agent ahead of a fresh idle one (the client projects that
+/// first-seen Done to Idle, so it ranks by `state_change_seq` like the
+/// other idle rows). Default edges: stale at 120 minutes (7200 s), fresh
+/// under 15.
+fn stale_row_snapshot() -> ClientShellSnapshot {
+    let mut projected = snapshot();
+    let mut second_workspace = projected.workspaces[0].clone();
+    second_workspace.workspace_id = "ws_2".into();
+    second_workspace.active_tab_id = "tab_2".into();
+    second_workspace.number = 2;
+    second_workspace.label = "second-space".into();
+    second_workspace.focused = false;
+    projected.workspaces.push(second_workspace);
+    let mut second_tab = projected.tabs[0].clone();
+    second_tab.tab_id = "tab_2".into();
+    second_tab.workspace_id = "ws_2".into();
+    second_tab.focused = false;
+    projected.tabs.push(second_tab);
+    let rows = [
+        (
+            "pane_1",
+            "ws_1",
+            "stale-alpha",
+            AgentStatus::Idle,
+            5,
+            Some(7_200),
+        ),
+        (
+            "pane_2",
+            "ws_1",
+            "busy-bravo",
+            AgentStatus::Working,
+            4,
+            None,
+        ),
+        (
+            "pane_3",
+            "ws_1",
+            "calm-charlie",
+            AgentStatus::Idle,
+            3,
+            Some(60),
+        ),
+        (
+            "pane_4",
+            "ws_2",
+            "stale-delta",
+            AgentStatus::Done,
+            2,
+            Some(9_000),
+        ),
+        (
+            "pane_5",
+            "ws_2",
+            "fresh-echo",
+            AgentStatus::Idle,
+            1,
+            Some(0),
+        ),
+    ];
+    let tab_of = |workspace_id: &str| {
+        if workspace_id == "ws_1" {
+            "tab_1"
+        } else {
+            "tab_2"
+        }
+    };
+    let template = projected.panes[0].clone();
+    projected.panes = rows
+        .iter()
+        .map(
+            |&(pane_id, workspace_id, _, _, _, idle_seconds)| ClientShellPane {
+                pane_id: pane_id.into(),
+                workspace_id: workspace_id.into(),
+                tab_id: tab_of(workspace_id).into(),
+                focused: false,
+                idle_seconds,
+                ..template.clone()
+            },
+        )
+        .collect();
+    projected.agents = rows
+        .iter()
+        .map(
+            |&(pane_id, workspace_id, name, agent_status, state_change_seq, _)| ClientShellAgent {
+                pane_id: pane_id.into(),
+                workspace_id: workspace_id.into(),
+                tab_id: tab_of(workspace_id).into(),
+                name: Some(name.into()),
+                display_agent: None,
+                agent: Some("pi".into()),
+                title: None,
+                terminal_title: None,
+                terminal_title_stripped: None,
+                agent_status,
+                state_change_seq,
+                state_labels: Vec::new(),
+                tokens: Vec::new(),
+                focused: false,
+            },
+        )
+        .collect();
+    projected
+}
+
+const STALE_ROW_NAMES: [&str; 5] = [
+    "stale-alpha",
+    "busy-bravo",
+    "calm-charlie",
+    "stale-delta",
+    "fresh-echo",
+];
+
+fn stale_row_state(config: &Config, projected: ClientShellSnapshot) -> ClientShellState {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(config));
+    state.set_snapshot(Box::new(projected));
+    state.set_pane_surface(surface());
+    state
+}
+
+/// Agent names top to bottom as the panel drew them, read off the frame.
+fn stale_row_drawn_order<'a>(state: &mut ClientShellState, names: &[&'a str]) -> Vec<&'a str> {
+    let frame = state.compose(106, 60).expect("agent panel frame");
+    let body = state.hits.agent_body;
+    let mut drawn = names
+        .iter()
+        .map(|name| {
+            let (x, y) = cell_symbol_position(&frame, body, name);
+            ((y, x), *name)
+        })
+        .collect::<Vec<_>>();
+    drawn.sort_by_key(|(position, _)| *position);
+    drawn.into_iter().map(|(_, name)| name).collect()
+}
+
+/// How many cells of `pane_id`'s drawn row carry `Modifier::DIM`, and how
+/// many cells the row has.
+fn stale_row_dim_cells(state: &mut ClientShellState, pane_id: &str) -> (usize, usize) {
+    let frame = state.compose(106, 60).expect("agent panel frame");
+    let buffer = frame.to_ratatui_buffer().expect("agent panel buffer");
+    let rect = state
+        .hits
+        .agents
+        .iter()
+        .find(|(_, hit)| hit == pane_id)
+        .unwrap_or_else(|| panic!("{pane_id} row hit"))
+        .0;
+    let cells = (rect.y..rect.bottom())
+        .flat_map(|y| (rect.x..rect.right()).map(move |x| (x, y)))
+        .collect::<Vec<_>>();
+    let dim = cells
+        .iter()
+        .filter(|&&position| {
+            buffer
+                .cell(position)
+                .expect("agent row cell")
+                .modifier
+                .contains(Modifier::DIM)
+        })
+        .count();
+    (dim, cells.len())
+}
+
+/// The keyboard's `FocusAgent(n)` targets, for every drawn row, as names.
+fn stale_row_keyboard_order(state: &mut ClientShellState, names: &[&str]) -> Vec<String> {
+    let agents = state.snapshot.as_deref().expect("snapshot").agents.clone();
+    (0..names.len())
+        .map(|index| {
+            let Some(crate::api::schema::Method::PaneFocus(target)) =
+                state.endpoint_method_for_action(crate::input::KeybindAction::FocusAgent(index))
+            else {
+                panic!("FocusAgent({index}) must focus a pane");
+            };
+            agents
+                .iter()
+                .find(|agent| agent.pane_id == target.pane_id)
+                .and_then(|agent| agent.name.clone())
+                .expect("focused agent name")
+        })
+        .collect()
+}
+
+#[test]
+fn stale_row_is_dim_on_every_cell_and_a_live_row_is_not() {
+    let mut state = stale_row_state(&Config::default(), stale_row_snapshot());
+    let frame = state.compose(106, 60).expect("agent panel frame");
+    let stale = state
+        .hits
+        .agents
+        .iter()
+        .find(|(_, pane_id)| pane_id == "pane_1")
+        .expect("stale row hit")
+        .0;
+    // Fixture guard: the row whose cells are checked holds the stale
+    // agent's name on its second line and its state icon on the first.
+    assert_eq!(
+        cell_symbol_position(&frame, stale, "stale-alpha").1,
+        stale.y + 1
+    );
+    assert!(stale.height >= 2, "stale row rect: {stale:?}");
+
+    let (dim, cells) = stale_row_dim_cells(&mut state, "pane_1");
+    assert_eq!(dim, cells, "every cell of the stale idle row is dim");
+    let (dim, cells) = stale_row_dim_cells(&mut state, "pane_4");
+    assert_eq!(dim, cells, "every cell of the stale done row is dim");
+    for live in ["pane_2", "pane_3", "pane_5"] {
+        assert_eq!(
+            stale_row_dim_cells(&mut state, live).0,
+            0,
+            "{live} is not stale and carries no dim cell"
+        );
+    }
+}
+
+#[test]
+fn stale_row_sinks_to_the_end_of_its_workspace_run_in_spaces_order() {
+    let mut state = stale_row_state(&Config::default(), stale_row_snapshot());
+    let drawn = stale_row_drawn_order(&mut state, &STALE_ROW_NAMES);
+    assert_eq!(
+        drawn,
+        [
+            "busy-bravo",
+            "calm-charlie",
+            "stale-alpha",
+            "fresh-echo",
+            "stale-delta"
+        ]
+    );
+    assert_eq!(
+        stale_row_keyboard_order(&mut state, &STALE_ROW_NAMES),
+        drawn
+    );
+}
+
+#[test]
+fn stale_row_sinks_below_every_live_row_in_priority_order() {
+    let mut config = Config::default();
+    config.ui.agent_panel_sort = crate::config::AgentPanelSortConfig::Priority;
+    let mut state = stale_row_state(&config, stale_row_snapshot());
+    let drawn = stale_row_drawn_order(&mut state, &STALE_ROW_NAMES);
+    // Without the sink the idle rows rank by `state_change_seq`, so
+    // `stale-alpha` (5) would lead `calm-charlie` (3) and `fresh-echo` (1)
+    // and `stale-delta` (2) would sit above `fresh-echo`. Both stale rows
+    // drop below every live row and keep their order between themselves.
+    assert_eq!(
+        drawn,
+        [
+            "busy-bravo",
+            "calm-charlie",
+            "fresh-echo",
+            "stale-alpha",
+            "stale-delta"
+        ]
+    );
+    assert_eq!(
+        stale_row_keyboard_order(&mut state, &STALE_ROW_NAMES),
+        drawn
+    );
+}
+
+#[test]
+fn stale_row_keeps_the_agent_view_order_while_dimmed() {
+    let mut projected = stale_row_snapshot();
+    projected.agent_view_label = Some("plugin view".into());
+    projected.agent_order = ["pane_1", "pane_4", "pane_2", "pane_5", "pane_3"]
+        .map(String::from)
+        .to_vec();
+    let mut state = stale_row_state(&Config::default(), projected);
+    let drawn = stale_row_drawn_order(&mut state, &STALE_ROW_NAMES);
+    assert_eq!(
+        drawn,
+        [
+            "stale-alpha",
+            "stale-delta",
+            "busy-bravo",
+            "fresh-echo",
+            "calm-charlie"
+        ]
+    );
+    assert_eq!(
+        stale_row_keyboard_order(&mut state, &STALE_ROW_NAMES),
+        drawn
+    );
+    for stale in ["pane_1", "pane_4"] {
+        let (dim, cells) = stale_row_dim_cells(&mut state, stale);
+        assert_eq!(dim, cells, "{stale} stays dim under the view");
+    }
+}
+
+#[test]
+fn stale_row_dim_and_sink_follow_dim_stale_agents_on_load_and_live_reload() {
+    let unsorted = [
+        "stale-alpha",
+        "busy-bravo",
+        "calm-charlie",
+        "stale-delta",
+        "fresh-echo",
+    ];
+    let mut off = Config::default();
+    off.ui.dim_stale_agents = false;
+
+    let mut state = stale_row_state(&off, stale_row_snapshot());
+    assert_eq!(
+        stale_row_drawn_order(&mut state, &STALE_ROW_NAMES),
+        unsorted
+    );
+    assert_eq!(stale_row_dim_cells(&mut state, "pane_1").0, 0);
+
+    state.config.apply_live_config(&Config::default(), &[], &[]);
+    assert_ne!(
+        stale_row_drawn_order(&mut state, &STALE_ROW_NAMES),
+        unsorted
+    );
+    let (dim, cells) = stale_row_dim_cells(&mut state, "pane_1");
+    assert_eq!(dim, cells);
+
+    state.config.apply_live_config(&off, &[], &[]);
+    assert_eq!(
+        stale_row_drawn_order(&mut state, &STALE_ROW_NAMES),
+        unsorted
+    );
+    assert_eq!(stale_row_dim_cells(&mut state, "pane_1").0, 0);
+}
+
+/// The #352 quiet-screen lesson applied to the order: no second snapshot
+/// is ever sent, only the poll tick moves time, and the row must cross
+/// into stale, turn dim AND move -- in the panel and for the keyboard.
+#[test]
+fn stale_row_turns_dim_and_sinks_without_a_new_snapshot() {
+    let mut projected = stale_row_snapshot();
+    projected.agents.truncate(2);
+    projected.panes.truncate(2);
+    projected.panes[0].idle_seconds = Some(7_199);
+    let names = ["stale-alpha", "busy-bravo"];
+    let mut state = stale_row_state(&Config::default(), projected);
+    assert_eq!(stale_row_drawn_order(&mut state, &names), names);
+    assert_eq!(stale_row_dim_cells(&mut state, "pane_1").0, 0);
+
+    let start = std::time::Instant::now();
+    assert!(
+        !state.tick_idle_ageing(start),
+        "the first tick only takes the baseline"
+    );
+    assert_eq!(stale_row_drawn_order(&mut state, &names), names);
+    assert!(
+        state.tick_idle_ageing(start + std::time::Duration::from_secs(1)),
+        "crossing the 120-minute stale edge must request a repaint"
+    );
+    assert_eq!(
+        stale_row_drawn_order(&mut state, &names),
+        ["busy-bravo", "stale-alpha"]
+    );
+    assert_eq!(
+        stale_row_keyboard_order(&mut state, &names),
+        ["busy-bravo", "stale-alpha"]
+    );
+    let (dim, cells) = stale_row_dim_cells(&mut state, "pane_1");
+    assert_eq!(dim, cells);
+}
+
+/// The collapsed sidebar's agent rail draws the same sunk order and must
+/// dim the stale rows too (cubic review on ceo-bora#353's PR).
+#[test]
+fn stale_row_is_dim_on_every_cell_of_the_collapsed_sidebar_rail() {
+    let mut state = stale_row_state(&Config::default(), stale_row_snapshot());
+    state.sidebar_collapsed = true;
+    for stale in ["pane_1", "pane_4"] {
+        let (dim, cells) = stale_row_dim_cells(&mut state, stale);
+        // Fixture guard: the collapsed rail's one-line row, not the
+        // expanded panel's two-line one.
+        let rect = state
+            .hits
+            .agents
+            .iter()
+            .find(|(_, pane_id)| pane_id == stale)
+            .expect("rail row hit")
+            .0;
+        assert_eq!(rect.height, 1, "{stale} rail row: {rect:?}");
+        assert!(cells > 0, "{stale} rail row has cells");
+        assert_eq!(dim, cells, "every cell of collapsed {stale} is dim");
+    }
+    for live in ["pane_2", "pane_3", "pane_5"] {
+        assert_eq!(stale_row_dim_cells(&mut state, live).0, 0, "{live} is live");
+    }
+
+    let mut off = Config::default();
+    off.ui.dim_stale_agents = false;
+    state.config.apply_live_config(&off, &[], &[]);
+    assert_eq!(stale_row_dim_cells(&mut state, "pane_1").0, 0);
+}
+
 #[test]
 fn workspace_state_text_does_not_stack_terminal_faint() {
     use crate::config::SpaceSidebarToken;

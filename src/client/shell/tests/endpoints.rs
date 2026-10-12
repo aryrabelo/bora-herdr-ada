@@ -498,6 +498,166 @@ fn agent_navigation_reveals_target_using_destination_sort() {
         .any(|(_, endpoint, pane)| { endpoint == &remote && pane == "pane_8" }));
 }
 
+/// ceo-bora#353 two-machine fixture in `priority` order: each machine has
+/// a live row (`pane_1`) and a stale one (`pane_2`); each stale row is its
+/// machine's most recent change, so without the sink recency would draw
+/// `far-stale` right below `loc-live`.
+fn stale_row_two_machine_state() -> (ClientShellState, ClientEndpointId) {
+    use crate::api::schema::AgentStatus;
+
+    let mut config = Config::default();
+    config.ui.agent_panel_sort = crate::config::AgentPanelSortConfig::Priority;
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+    let profile = remote_profile();
+    let remote = ClientEndpointId::Ssh(profile.id.clone());
+    state.set_endpoint_catalog(&[profile]);
+    state.set_endpoint_status(&remote, ClientEndpointStatus::Online);
+    let projection = |boot_id: &str, agents: [(&str, AgentStatus, u64, Option<u64>); 2]| {
+        let mut projected = snapshot();
+        projected.boot_id = boot_id.into();
+        let template = projected.panes[0].clone();
+        projected.panes = Vec::new();
+        projected.agents = Vec::new();
+        for (index, (name, status, seq, idle_seconds)) in agents.into_iter().enumerate() {
+            let pane_id = format!("pane_{}", index + 1);
+            projected.panes.push(ClientShellPane {
+                pane_id: pane_id.clone(),
+                focused: false,
+                idle_seconds,
+                ..template.clone()
+            });
+            projected.agents.push(ClientShellAgent {
+                pane_id,
+                focused: false,
+                ..agent(name, status, seq)
+            });
+        }
+        projected
+    };
+    state.set_snapshot(Box::new(projection(
+        "boot-1",
+        [
+            ("loc-live", AgentStatus::Working, 1, None),
+            ("loc-stale", AgentStatus::Idle, 2, Some(7_200)),
+        ],
+    )));
+    state.set_pane_surface(surface());
+    state.set_endpoint_snapshot(
+        &remote,
+        Box::new(projection(
+            "remote-boot",
+            [
+                ("far-live", AgentStatus::Idle, 3, Some(30)),
+                ("far-stale", AgentStatus::Done, 4, Some(9_000)),
+            ],
+        )),
+    );
+    (state, remote)
+}
+
+/// ceo-bora#353 across machines: in `priority` order the stale rows sink
+/// below every live row of every machine, and `FocusAgent(n)` walks
+/// exactly the order the panel draws -- both read off the same
+/// `aggregate_agent_rows`, compared here against the rendered frame.
+#[test]
+fn stale_row_navigation_walks_the_order_the_panel_draws() {
+    let names = ["loc-stale", "loc-live", "far-stale", "far-live"];
+    let build = stale_row_two_machine_state;
+
+    let (mut state, _) = build();
+    let frame = state.compose(100, 40).expect("combined endpoint frame");
+    let body = state.hits.agent_body;
+    let mut drawn = names
+        .iter()
+        .map(|name| {
+            let (x, y) = cell_symbol_position(&frame, body, name);
+            ((y, x), *name)
+        })
+        .collect::<Vec<_>>();
+    drawn.sort_by_key(|(position, _)| *position);
+    let drawn = drawn.into_iter().map(|(_, name)| name).collect::<Vec<_>>();
+    assert_eq!(drawn, ["loc-live", "far-live", "far-stale", "loc-stale"]);
+
+    let walked = (0..names.len())
+        .map(|index| {
+            let (mut state, remote) = build();
+            state.compose(100, 40).expect("combined endpoint frame");
+            let mut outcome = ClientShellInput::default();
+            assert!(state.handle_endpoint_navigation(
+                crate::input::KeybindAction::FocusAgent(index),
+                &mut outcome,
+            ));
+            let [ClientShellAction::ActivateEndpoint {
+                endpoint_id,
+                target: Some(ClientEndpointFocusTarget::Pane(pane_id)),
+            }] = outcome.actions.as_slice()
+            else {
+                panic!(
+                    "FocusAgent({index}) must target a pane: {:?}",
+                    outcome.actions
+                );
+            };
+            match (endpoint_id == &remote, pane_id.as_str()) {
+                (false, "pane_1") => "loc-live",
+                (false, "pane_2") => "loc-stale",
+                (true, "pane_1") => "far-live",
+                (true, "pane_2") => "far-stale",
+                other => panic!("unexpected target {other:?}"),
+            }
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(walked, drawn);
+}
+
+/// The multi-machine collapsed rail dims an idle-stale online row across
+/// the whole row, like the expanded panel (cubic review on ceo-bora#353's
+/// PR), and only while `dim_stale_agents` is on.
+#[test]
+fn stale_row_is_dim_on_every_cell_of_the_collapsed_machine_rail() {
+    let (mut state, remote) = stale_row_two_machine_state();
+    state.sidebar_collapsed = true;
+    let dim_cells = |state: &mut ClientShellState, endpoint_id: &ClientEndpointId, pane: &str| {
+        let frame = state.compose(100, 40).expect("collapsed machine rail");
+        let buffer = frame.to_ratatui_buffer().expect("collapsed rail buffer");
+        let rect = state
+            .hits
+            .endpoint_agents
+            .iter()
+            .find(|(_, endpoint, pane_id)| endpoint == endpoint_id && pane_id == pane)
+            .unwrap_or_else(|| panic!("{endpoint_id:?} {pane} rail hit"))
+            .0;
+        assert_eq!(rect.height, 1, "collapsed rail row: {rect:?}");
+        let cells = (rect.x..rect.right())
+            .map(|x| buffer.cell((x, rect.y)).expect("rail cell").modifier)
+            .collect::<Vec<_>>();
+        (
+            cells
+                .iter()
+                .filter(|modifier| modifier.contains(Modifier::DIM))
+                .count(),
+            cells.len(),
+        )
+    };
+    for endpoint_id in [ClientEndpointId::Local, remote] {
+        let (dim, cells) = dim_cells(&mut state, &endpoint_id, "pane_2");
+        assert!(cells > 0);
+        assert_eq!(dim, cells, "{endpoint_id:?} stale rail row is dim");
+        assert_eq!(
+            dim_cells(&mut state, &endpoint_id, "pane_1").0,
+            0,
+            "{endpoint_id:?} live rail row is not dim"
+        );
+    }
+
+    let mut off = Config::default();
+    off.ui.dim_stale_agents = false;
+    state.config.apply_live_config(&off, &[], &[]);
+    assert_eq!(
+        dim_cells(&mut state, &ClientEndpointId::Local, "pane_2").0,
+        0
+    );
+}
+
 #[test]
 fn agent_navigation_reveal_is_cancelled_by_another_selection() {
     for select_pane in [false, true] {
@@ -529,7 +689,7 @@ fn agent_navigation_keeps_scroll_when_target_is_visible() {
     let targets = super::super::aggregate_navigation::online_agent_targets(
         &state.endpoints,
         &state.active_endpoint_id,
-        state.config.agent_panel_sort,
+        &state.config,
     );
     let index = targets
         .iter()
@@ -1719,10 +1879,11 @@ fn selected_position_sort_uses_public_tab_and_pane_numbers() {
     ];
     state.set_test_endpoint_agent_view(&ClientEndpointId::Local, Some(view));
 
+    state.config.agent_panel_sort = crate::config::AgentPanelSortConfig::Priority;
     let names = aggregate_navigation::aggregate_agent_rows(
         &state.endpoints,
         &state.active_endpoint_id,
-        crate::config::AgentPanelSortConfig::Priority,
+        &state.config,
     )
     .into_iter()
     .map(|row| row.agent.name.as_deref().expect("agent name"))

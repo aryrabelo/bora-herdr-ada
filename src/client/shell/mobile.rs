@@ -610,11 +610,8 @@ fn mobile_items(
             });
         }
     }
-    let agents = super::aggregate_navigation::aggregate_agent_rows(
-        endpoints,
-        active_endpoint_id,
-        config.agent_panel_sort,
-    );
+    let agents =
+        super::aggregate_navigation::aggregate_agent_rows(endpoints, active_endpoint_id, config);
     let agent_view_label = snapshot.agent_view_label.as_deref();
     if !agents.is_empty() || agent_view_label.is_some() {
         let title = agent_view_label
@@ -695,7 +692,11 @@ fn mobile_items(
             } else {
                 palette.text
             };
-            let dim = if endpoint.stale() {
+            // An offline machine's cached row and an idle-stale row
+            // (ceo-bora#353) are both drawn dim, padding included.
+            let dim = if endpoint.stale()
+                || super::agent_sidebar::agent_is_idle_stale(endpoint.snapshot, agent, config)
+            {
                 Modifier::DIM
             } else {
                 Modifier::empty()
@@ -703,7 +704,7 @@ fn mobile_items(
             items.push(MobileItem {
                 lines: vec![
                     Line::from(vec![
-                        Span::styled("  ", Style::default().bg(background)),
+                        Span::styled("  ", Style::default().bg(background).add_modifier(dim)),
                         Span::styled(
                             status_icon(agent.agent_status, config.status_indicators),
                             Style::default()
@@ -715,7 +716,7 @@ fn mobile_items(
                                 .bg(background)
                                 .add_modifier(dim),
                         ),
-                        Span::styled(" ", Style::default().bg(background)),
+                        Span::styled(" ", Style::default().bg(background).add_modifier(dim)),
                         Span::styled(
                             crate::ui::truncate_end(
                                 &format!("{} · {primary}", endpoint.label),
