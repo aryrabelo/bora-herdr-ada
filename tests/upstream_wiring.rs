@@ -88,6 +88,18 @@ const PLATFORM_GATED_ALLOWLIST: &[(&str, &str)] = &[
         "child of macos.rs, macos-only, not compiled on Linux",
     ),
     (
+        "src/platform/macos/input.rs",
+        "child of macos.rs, macos-only canonical-input guard, not compiled on Linux",
+    ),
+    (
+        "src/platform/macos/input_tests.rs",
+        "child of macos/input.rs, macos-only, not compiled on Linux",
+    ),
+    (
+        "src/platform/macos/shutdown.rs",
+        "child of macos.rs, macos-only restart session save, not compiled on Linux",
+    ),
+    (
         "src/platform/fallback.rs",
         "non-windows/linux/macos fallback backend, not compiled on Linux",
     ),
