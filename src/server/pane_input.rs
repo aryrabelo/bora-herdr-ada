@@ -208,28 +208,33 @@ pub(super) fn apply_terminal_attach_input(
 pub(crate) fn test_apply_client_pane_input_events(
     runtime: &crate::terminal::TerminalRuntime,
     events: &[ClientPaneInputEvent],
-) -> Result<(), String> {
+) -> Result<bool, String> {
     apply_client_pane_input_events(runtime, events)
 }
 
 pub(super) fn apply_client_pane_input_events(
     runtime: &crate::terminal::TerminalRuntime,
     events: &[ClientPaneInputEvent],
-) -> Result<(), String> {
-    apply_client_terminal_input_events(runtime, events, true)
+) -> Result<bool, String> {
+    let mut keyboard_forwarded = false;
+    apply_client_terminal_input_events(runtime, events, true, &mut keyboard_forwarded)?;
+    Ok(keyboard_forwarded)
 }
 
 pub(super) fn apply_client_popup_input_events(
     runtime: &crate::terminal::TerminalRuntime,
     events: &[ClientPaneInputEvent],
-) -> Result<(), String> {
-    apply_client_terminal_input_events(runtime, events, false)
+) -> Result<bool, String> {
+    let mut keyboard_forwarded = false;
+    apply_client_terminal_input_events(runtime, events, false, &mut keyboard_forwarded)?;
+    Ok(keyboard_forwarded)
 }
 
-fn apply_client_terminal_input_events(
+pub(super) fn apply_client_terminal_input_events(
     runtime: &crate::terminal::TerminalRuntime,
     events: &[ClientPaneInputEvent],
     host_page_keys: bool,
+    keyboard_forwarded: &mut bool,
 ) -> Result<(), String> {
     for event in events {
         if let ClientPaneInputEvent::Mouse {
@@ -324,8 +329,11 @@ fn apply_client_terminal_input_events(
 
                 runtime.scroll_reset();
                 let bytes = runtime.encode_terminal_key(key);
-                if !bytes.is_empty() && !runtime.send_bytes_preserving_order(Bytes::from(bytes)) {
-                    return Err("targeted pane key input failed: pane input closed".to_owned());
+                if !bytes.is_empty() {
+                    if !runtime.send_bytes_preserving_order(Bytes::from(bytes)) {
+                        return Err("targeted pane key input failed: pane input closed".to_owned());
+                    }
+                    *keyboard_forwarded |= key_event.kind != KeyEventKind::Release;
                 }
             }
             crate::raw_input::RawInputEvent::Text(text) => {
@@ -335,6 +343,7 @@ fn apply_client_terminal_input_events(
                 {
                     return Err("targeted pane text input failed: pane input closed".to_owned());
                 }
+                *keyboard_forwarded |= !text.as_str().is_empty();
             }
             crate::raw_input::RawInputEvent::Paste(text) => {
                 runtime.scroll_reset();

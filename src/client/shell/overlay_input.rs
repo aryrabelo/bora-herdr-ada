@@ -1106,6 +1106,40 @@ impl ClientShellState {
         );
     }
 
+    pub(super) fn request_pane_close(&mut self, pane_id: String, outcome: &mut ClientShellInput) {
+        let target = self.snapshot.as_deref().and_then(|snapshot| {
+            let pane = snapshot.panes.iter().find(|pane| pane.pane_id == pane_id)?;
+            let tab = snapshot
+                .tabs
+                .iter()
+                .find(|tab| tab.tab_id == pane.tab_id && tab.workspace_id == pane.workspace_id)?;
+            (self.config.confirm_close
+                && !snapshot
+                    .panes
+                    .iter()
+                    .any(|other| other.tab_id == tab.tab_id && other.pane_id != pane_id)
+                && !snapshot.tabs.iter().any(|other| {
+                    other.workspace_id == tab.workspace_id && other.tab_id != tab.tab_id
+                }))
+            .then(|| (tab.workspace_id.clone(), tab.tab_id.clone()))
+        });
+        if let Some((workspace_id, tab_id)) = target {
+            if self.open_close_confirmation(workspace_id, Some(tab_id), None) {
+                if let Some(ClientShellOverlay::ConfirmClose(confirm)) = self.overlay.as_mut() {
+                    if let Some(target) = confirm.tab_target.as_mut() {
+                        target.pane_id = Some(pane_id);
+                    }
+                }
+                outcome.repaint = true;
+                return;
+            }
+        }
+        self.push_endpoint_method(
+            crate::api::schema::Method::PaneClose(crate::api::schema::PaneTarget { pane_id }),
+            outcome,
+        );
+    }
+
     pub(super) fn request_tab_close(&mut self, tab_id: String, outcome: &mut ClientShellInput) {
         let workspace_id = self.snapshot.as_deref().and_then(|snapshot| {
             let target = snapshot.tabs.iter().find(|tab| tab.tab_id == tab_id)?;
@@ -1142,9 +1176,18 @@ impl ClientShellState {
                             && tab.workspace_id == target.workspace.workspace_id
                     })
                 })
+                || target.pane_id.as_ref().is_some_and(|pane_id| {
+                    !self.snapshot.as_deref().is_some_and(|snapshot| {
+                        snapshot.panes.iter().any(|pane| {
+                            pane.pane_id == *pane_id
+                                && pane.tab_id == target.tab_id
+                                && pane.workspace_id == target.workspace.workspace_id
+                        })
+                    })
+                })
             {
                 self.receive_endpoint_unavailable(
-                    "Close target changed; try closing the tab again".into(),
+                    "Close target changed; try closing it again".into(),
                 );
                 return;
             }
@@ -1160,6 +1203,8 @@ impl ClientShellState {
                         close_group: true,
                     },
                 )
+            } else if let Some(pane_id) = target.pane_id {
+                crate::api::schema::Method::PaneClose(crate::api::schema::PaneTarget { pane_id })
             } else {
                 crate::api::schema::Method::TabClose(crate::api::schema::TabTarget {
                     tab_id: target.tab_id,
@@ -1226,6 +1271,7 @@ impl ClientShellState {
                 tab_id,
                 workspace,
                 closes_group,
+                pane_id: None,
             })
         } else {
             None

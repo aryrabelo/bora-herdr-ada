@@ -293,6 +293,13 @@ classes, and how to resolve them, so the next sync is cheap:
   the observable contract is CLI/API, keep under `#[allow(dead_code)] // re-wired by
   ceo-bora#<leaf>` only when a filed re-port leaf owns it, delete only what upstream's
   client shell superseded. (learned 2026-09-09, binding.)
+- **The fork's `[workspace.lints.clippy]` deny table (`redundant_clone`, `cast_lossless`,
+  `implicit_clone`, …) is stricter than upstream's, so clean upstream code can fail
+  `just check` right after a sync with no conflict anywhere.** The `6d697e1e` sync brought
+  `src/platform/macos/input_tests.rs` with three `redundant_clone` hits. Fix the upstream
+  code minimally (drop the clone); when the "redundant" call is the thing under test, use
+  a commented `#[allow]` instead of deleting it. Never relax the table to pass a sync.
+  (learned 2026-10-12, binding.)
 
 Every upstream sync also updates `UPSTREAM_HERDR_VERSION`/`UPSTREAM_HERDR_COMMIT` in
 `src/build_info.rs` to the merged upstream tip, in the same commit as the merge — see
@@ -527,6 +534,14 @@ preference stands. (learned 2026-09-04, binding: harvesting the `agente/112`
 worktree after its merge broke the operator's `bora` command.)
 
 **`just check`/`just lint` only lint the host target you run them on and cannot compile target-gated Rust from a macOS box; only CI's `ubuntu-latest` leg lints that code.** Two separate gating shapes hide code from a macOS run, and the second one is easy to miss: whole-file `#![cfg(not(target_os = "macos"))]` test files — derive the list, never copy it from here: `grep -rlE '^#!\[cfg\(.*not\(target_os = "macos"\)' src tests` (measured 2026-09-03 as four files; after the 0.9.0 sync it is two, `tests/auto_detect.rs` and `tests/cli.rs`, gated as `all(unix, not(target_os = "macos"))` — which is why the recipe's grep is a regex on the inner `not(target_os = "macos")` and not a fixed string, the earlier `-F` form went silent on that spelling). An incomplete list here is worse than none, because a test inside an unlisted file reads as "passing on macOS" when it was never compiled: an assertion in `api_ping.rs` was written, committed, reported green by a macOS `just check`, and first EXECUTED in `check (ubuntu-latest)`, where it failed — its author never had a way to run it, and platform modules excluded by an **outer** `#[cfg(target_os = ...)]` on their `mod` declaration in `src/platform/mod.rs` (`src/platform/linux.rs`, `src/platform/windows.rs`) — including their `#[cfg(test)] mod tests`. A green `just check` on macOS is not proof any of it is clean; `lint` prints a reminder naming all four files, and that reminder is a to-verify list, not noise. (learned 2026-08-13, binding: clippy failures in Linux-only-gated test files reached CI invisibly from a macOS `just check` this way. Reasserted 2026-08-22, binding: it happened again, and worse — `9a2db191` left `std::sync::{Mutex, OnceLock}` unused in `src/platform/linux.rs`'s test module and CI stayed red across three commits, because the reminder only grepped for the whole-file inner attribute and never mentioned the platform modules at all. The `lint` recipe now lists them explicitly. Cross-compiling to verify locally DOES work, and the earlier claim here that it does not was wrong: `LIBGHOSTTY_VT_PREBUILT=prebuilt/libghostty-vt-aarch64-macos.a cargo check --target <triple> --all-targets` runs in ~15s and exits 0 on both `x86_64-unknown-linux-gnu` and `x86_64-pc-windows-msvc` from an aarch64 macOS host. The env var bypasses the vendored libghostty-vt build script (which is what needs zig 0.15.2 while mise resolves 0.16.0), and `cargo check` never links, so the macOS-only static archive is never a problem. `--all-targets` is the load-bearing half: it compiles the `#[cfg(test)] mod tests` inside the platform modules, which is precisely what a macOS `just check` cannot see. Do this before pushing any change that touches `src/platform/`; CI is a 3-minute confirmation, not the only verifier. (learned 2026-09-03, binding: a one-line missing trait import — `.is_char_device()` needs `std::os::unix::fs::FileTypeExt` — survived the author, a `just check` exit 0 on macOS, AND an adversarial reviewer who cross-checked the WINDOWS target and found a genuine defect there, then died in `check (ubuntu-latest)` after a 3-minute wait. Checking one non-host target proves nothing about the others: check every triple the release builds.))
+
+**The cross-target check above needs an ABSOLUTE `LIBGHOSTTY_VT_PREBUILT` path.**
+Since the `2563803d` sync moved the prebuilt bypass into `crates/ghostty-vt/build.rs`,
+the build script canonicalizes the variable relative to `crates/ghostty-vt/`, so the
+relative `prebuilt/libghostty-vt-aarch64-macos.a` form panics with "failed to
+canonicalize prebuilt path" before any Rust is checked. Run it as
+`LIBGHOSTTY_VT_PREBUILT=$PWD/prebuilt/libghostty-vt-aarch64-macos.a cargo check --target <triple> --all-targets`
+from the repo root. (learned 2026-10-12, binding: hit on the `6d697e1e` sync.)
 
 **A stale `target/` cache can pin an absolute path to a checkout that no longer
 exists, and it fails at LINK time, so `cargo check` stays green and lies.**

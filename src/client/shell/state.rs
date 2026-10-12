@@ -640,6 +640,7 @@ pub(super) struct ClientContextMenuItem {
 
 #[derive(Debug)]
 pub(super) struct ClientTabCloseConfirmation {
+    pub(super) pane_id: Option<String>,
     pub(super) tab_id: String,
     pub(super) workspace: WorkspaceNavigationTarget,
     /// Whether accepting this confirmation must close the entire
