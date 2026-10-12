@@ -44,6 +44,10 @@ pub(crate) struct ClientShellConfig {
     /// Idle-tier stale edge in seconds (`ui.idle_stale_minutes * 60`,
     /// ceo-bora#352): `0` disables. See `idle_fresh_seconds`.
     pub(super) idle_stale_seconds: u64,
+    /// Dim a stale (`idle_stale_seconds`) agent row and sink it to the
+    /// bottom of its block (`ui.dim_stale_agents`, ceo-bora#353). `false`
+    /// turns off both. Live-reloadable.
+    pub(super) dim_stale_agents: bool,
     pub(super) status_indicators: crate::config::StatusIndicatorStyle,
     pub(super) sound_enabled: bool,
     pub(super) toast_delivery: crate::config::ToastDelivery,

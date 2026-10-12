@@ -1146,6 +1146,14 @@ pub struct UiConfig {
     /// `client::shell::attention::idle_tier`, so it still composes.
     /// Default: 120.
     pub idle_stale_minutes: u64,
+    /// Dim a stale agent-panel row as a whole and sink it to the bottom of
+    /// its block (ceo-bora#353). "Stale" is the `idle_stale_minutes` tier
+    /// above. In `spaces` order the row moves to the end of its own
+    /// workspace's run of rows; in `priority` order below every non-stale
+    /// row. An active plugin `agent.view` keeps its own order, so there
+    /// the row is only dimmed. `false` turns off both the dim and the
+    /// sinking. Default: true.
+    pub dim_stale_agents: bool,
     /// Lead each split pane border with its public pane id (`w26:p1`) so two panes
     /// running the same agent stay distinguishable. Default: false.
     pub show_pane_ids_on_pane_borders: bool,
@@ -1416,6 +1424,7 @@ impl Default for UiConfig {
             idle_attention_seconds: 300,
             idle_fresh_minutes: 15,
             idle_stale_minutes: 120,
+            dim_stale_agents: true,
             show_pane_ids_on_pane_borders: false,
             channel_group_name: "channels".to_string(),
             chat_view: false,
@@ -2333,6 +2342,21 @@ idle_stale_minutes = 15
                     && diagnostic.contains("idle_stale_minutes")),
             "diagnostics: {diagnostics:?}"
         );
+    }
+
+    #[test]
+    fn dim_stale_agents_stale_row_key_parses_and_defaults_to_true() {
+        assert!(Config::default().ui.dim_stale_agents);
+
+        let config: Config = toml::from_str(
+            r#"
+[ui]
+dim_stale_agents = false
+"#,
+        )
+        .unwrap();
+        assert!(!config.ui.dim_stale_agents);
+        assert!(config.collect_diagnostics().is_empty());
     }
 
     #[test]

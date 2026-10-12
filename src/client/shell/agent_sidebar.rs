@@ -14,12 +14,25 @@ pub(super) struct AgentRow {
     pub(super) pane_id: String,
     pub(super) status: crate::api::schema::AgentStatus,
     pub(super) focused: bool,
+    /// Draw the whole row dim (ceo-bora#353): see `agent_is_idle_stale`.
+    pub(super) idle_stale: bool,
     pub(super) rows: Vec<Vec<crate::ui::ResolvedToken>>,
 }
 
+/// The one agent-panel order for a single snapshot. The panel
+/// (`agent_rows`), the collapsed rail and agent keyboard navigation
+/// (`FocusAgent`/`PreviousAgent`/`NextAgent` in `actions.rs`) all read it,
+/// and the multi-endpoint `aggregate_agent_rows` builds on it, so what the
+/// keys walk is what the panel draws. An active plugin `agent.view` wins
+/// as-is: its stale rows are only dimmed, never moved. Otherwise a stale
+/// row (ceo-bora#353) sinks to the end of its own workspace's run in
+/// `spaces` order and below every non-stale row in `priority` order.
+/// Computed fresh on every call from the client-aged `idle_seconds`, so a
+/// row that crosses the stale edge on a quiet screen re-sorts on the
+/// repaint `tick_idle_ageing` requests for that crossing.
 pub(super) fn ordered_agent_pane_ids(
     snapshot: &ClientShellSnapshot,
-    sort: crate::config::AgentPanelSortConfig,
+    config: &ClientShellConfig,
 ) -> Vec<String> {
     if snapshot.agent_view_label.is_some() {
         return snapshot
@@ -34,19 +47,85 @@ pub(super) fn ordered_agent_pane_ids(
             .cloned()
             .collect();
     }
-    let mut agents = snapshot.agents.iter().collect::<Vec<_>>();
-    if sort == crate::config::AgentPanelSortConfig::Priority {
-        agents.sort_by_key(|agent| {
-            (
-                std::cmp::Reverse(status_priority(agent.agent_status)),
-                std::cmp::Reverse(agent.state_change_seq),
-            )
-        });
+    let mut agents = snapshot
+        .agents
+        .iter()
+        .map(|agent| (agent, agent_is_idle_stale(snapshot, agent, config)))
+        .collect::<Vec<_>>();
+    match config.agent_panel_sort {
+        crate::config::AgentPanelSortConfig::Priority => {
+            agents.sort_by_key(|(agent, _)| {
+                (
+                    std::cmp::Reverse(status_priority(agent.agent_status)),
+                    std::cmp::Reverse(agent.state_change_seq),
+                )
+            });
+            sink_idle_stale_rows(&mut agents, |_| (), |(_, idle_stale)| *idle_stale);
+        }
+        crate::config::AgentPanelSortConfig::Spaces => sink_idle_stale_rows(
+            &mut agents,
+            |(agent, _)| agent.workspace_id.as_str(),
+            |(_, idle_stale)| *idle_stale,
+        ),
     }
     agents
         .into_iter()
-        .map(|agent| agent.pane_id.clone())
+        .map(|(agent, _)| agent.pane_id.clone())
         .collect()
+}
+
+/// Move every `idle_stale` row to the end of its run, where a run is a
+/// maximal stretch of adjacent rows with the same `run_key` (one workspace
+/// in `spaces` order; the whole list, or one online/offline machine block,
+/// in `priority` order). Stable, so ties keep their relative order. The
+/// only place the ceo-bora#353 sinking rule lives.
+pub(super) fn sink_idle_stale_rows<T, K: PartialEq>(
+    rows: &mut [T],
+    run_key: impl Fn(&T) -> K,
+    idle_stale: impl Fn(&T) -> bool,
+) {
+    let mut start = 0;
+    while start < rows.len() {
+        let key = run_key(&rows[start]);
+        let end = rows[start..]
+            .iter()
+            .position(|row| run_key(row) != key)
+            .map_or(rows.len(), |offset| start + offset);
+        rows[start..end].sort_by_key(|row| idle_stale(row));
+        start = end;
+    }
+}
+
+/// Whether an agent's row is stale for the panel (ceo-bora#353): its pane
+/// sits in the #352 `IdleTier::Stale` tier of the client-aged
+/// `idle_seconds`, and `ui.dim_stale_agents` is on.
+pub(super) fn agent_is_idle_stale(
+    snapshot: &ClientShellSnapshot,
+    agent: &crate::protocol::ClientShellAgent,
+    config: &ClientShellConfig,
+) -> bool {
+    let pane = snapshot
+        .panes
+        .iter()
+        .find(|pane| pane.pane_id == agent.pane_id);
+    idle_tier_dims_row(agent_idle_tier(agent, pane, config), config)
+}
+
+fn agent_idle_tier(
+    agent: &crate::protocol::ClientShellAgent,
+    pane: Option<&crate::protocol::ClientShellPane>,
+    config: &ClientShellConfig,
+) -> Option<attention::IdleTier> {
+    attention::idle_tier(
+        agent.agent_status,
+        pane.and_then(|pane| pane.idle_seconds),
+        config.idle_fresh_seconds,
+        config.idle_stale_seconds,
+    )
+}
+
+fn idle_tier_dims_row(idle_tier: Option<attention::IdleTier>, config: &ClientShellConfig) -> bool {
+    config.dim_stale_agents && idle_tier == Some(attention::IdleTier::Stale)
 }
 
 pub(super) fn render_agent_panel(
@@ -239,7 +318,7 @@ pub(super) fn agent_rows(
     config: &ClientShellConfig,
     machine: Option<&str>,
 ) -> Vec<AgentRow> {
-    ordered_agent_pane_ids(snapshot, config.agent_panel_sort)
+    ordered_agent_pane_ids(snapshot, config)
         .into_iter()
         .filter_map(|pane_id| agent_row(snapshot, &pane_id, config, machine))
         .collect()
@@ -310,17 +389,13 @@ pub(super) fn agent_row(
         },
         state_text,
     );
-    let idle_tier = attention::idle_tier(
-        agent.agent_status,
-        pane.and_then(|pane| pane.idle_seconds),
-        config.idle_fresh_seconds,
-        config.idle_stale_seconds,
-    );
+    let idle_tier = agent_idle_tier(agent, pane, config);
     let rows = idle_tiered_agent_token_rows(rows, idle_tier, agent.focused, &config.palette);
     Some(AgentRow {
         pane_id: agent.pane_id.clone(),
         status: agent.agent_status,
         focused: agent.focused,
+        idle_stale: idle_tier_dims_row(idle_tier, config),
         rows,
     })
 }
@@ -425,6 +500,12 @@ pub(super) fn render_agent_row(
             Rect::new(rect.x, rect.y + index as u16, rect.width, 1),
             buffer,
         );
+    }
+    if row.idle_stale {
+        // Row-level, after the tokens are drawn: token rules style one
+        // token at most and never the state icon, so only this reaches the
+        // icon, every token and the padding between them (ceo-bora#353).
+        buffer.set_style(rect, Style::default().add_modifier(Modifier::DIM));
     }
 }
 
