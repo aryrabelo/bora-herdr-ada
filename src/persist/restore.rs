@@ -694,6 +694,13 @@ fn restore_tab(
                     if let Some(argv) = saved_launch_argv {
                         terminal = terminal.with_launch_argv(argv).with_respawn_shell_on_exit();
                     }
+                    // The runtime was seeded with the exporting server's OSC
+                    // title, but `TerminalState::terminal_title` (what the API
+                    // and plugins read) only syncs on a title change seen in
+                    // PTY bytes. An idle agent never re-emits, so without this
+                    // every idle pane reported `terminal_title: null` after a
+                    // live handoff.
+                    let _ = terminal.set_terminal_title(runtime.terminal_title());
                 }
                 if let Some(label) = saved_label {
                     terminal.set_manual_label(label);
