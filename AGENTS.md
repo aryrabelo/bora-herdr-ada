@@ -96,10 +96,13 @@ again:
    code: a plugin CAN hold a long-lived connection (`[[startup]]` is spawned
    detached and awaited without timeout, `src/app/api/plugins/runtime.rs`) and
    CAN draw in its own pane (`[[panes]]`), but CANNOT declare a sidebar
-   band/view (`REGISTRY` is `const` in-binary and each band carries a compiled
-   `push: fn(...)`) and CANNOT inject a workspace row the server does not
-   have — its only sidebar channel is decorating an existing row with a
-   metadata token.
+   band/view (`render_sidebar` in `src/client/shell/sidebar.rs` is compiled
+   in with no plugin hook; the old `const REGISTRY` of bands is gone), CANNOT
+   inject a workspace row or header the server does not have, and CANNOT add a
+   right-click menu item (`plugin_actions_for_context` in
+   `src/app/api/plugins/mod.rs` is unwired) — its only sidebar channel is
+   decorating an existing row with a metadata token. The 2026-10-12
+   feature-by-feature verdict of what could leave core is ceo-bora#358.
 3. **pi packages** — `https://pi.dev/packages?name=<term>`, one query per
    term. `omp` is of the pi lineage, so a pi package frequently runs on omp.
 4. **omp plugins** — <https://github.com/topics/omp-plugin>. omp is the
