@@ -36,6 +36,14 @@ pub(crate) struct ClientShellConfig {
     /// ceo-bora#302): `0` disables. Presentation-side comparison against the
     /// server-side `ClientShellPane.idle_seconds` fact.
     pub(super) idle_attention_seconds: u64,
+    /// Idle-tier fresh edge in seconds (`ui.idle_fresh_minutes * 60`,
+    /// ceo-bora#352): `0` disables. A second, independent reading of
+    /// `ClientShellPane.idle_seconds` from `idle_attention_seconds` above,
+    /// for the agent panel's name color (`client::shell::attention::idle_tier`).
+    pub(super) idle_fresh_seconds: u64,
+    /// Idle-tier stale edge in seconds (`ui.idle_stale_minutes * 60`,
+    /// ceo-bora#352): `0` disables. See `idle_fresh_seconds`.
+    pub(super) idle_stale_seconds: u64,
     pub(super) status_indicators: crate::config::StatusIndicatorStyle,
     pub(super) sound_enabled: bool,
     pub(super) toast_delivery: crate::config::ToastDelivery,

@@ -44,6 +44,7 @@ pub(crate) use self::keybinds::parse_key_combo;
 
 #[cfg(test)]
 pub(crate) use self::io::IsolatedDirs;
+pub(crate) use self::sidebar::sidebar_token_color_from_ratatui;
 #[allow(unused_imports)]
 pub use self::sidebar::{SidebarTokenStyle, SpaceSidebarToken};
 pub(crate) use self::write::{update_file_at, write_edit, ConfigEdit};
@@ -133,6 +134,7 @@ impl Config {
             .chain(tab_bar_right_diagnostics(&self.ui.tab_bar_right))
             .chain(window_title_diagnostics(&self.ui.window_title))
             .chain(self.invalid_sidebar_bounds_diagnostic())
+            .chain(self.invalid_idle_tier_bounds_diagnostic())
             .chain(self.invalid_headless_size_diagnostic())
             .collect()
     }
@@ -163,6 +165,19 @@ impl Config {
                     self.ui.sidebar_min_width, self.ui.sidebar_max_width
                 )
             })
+    }
+
+    pub(crate) fn invalid_idle_tier_bounds_diagnostic(&self) -> Option<String> {
+        (!model::idle_tier_bounds_are_sane(
+            self.ui.idle_fresh_minutes,
+            self.ui.idle_stale_minutes,
+        ))
+        .then(|| {
+            format!(
+                "ui.idle_fresh_minutes ({}) is greater than ui.idle_stale_minutes ({}); the stale edge is checked first, so some panes meant to show fresh will show stale instead",
+                self.ui.idle_fresh_minutes, self.ui.idle_stale_minutes
+            )
+        })
     }
 
     pub(crate) fn remote_image_paste_key(&self) -> Result<Option<(KeyCode, KeyModifiers)>, String> {

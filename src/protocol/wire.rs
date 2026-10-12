@@ -1099,7 +1099,7 @@ pub struct ClientShellPane {
     pub foreground_cwd: Option<String>,
     pub focused: bool,
     pub right_click_passthrough: bool,
-    /// Seconds since the terminal last changed (`PaneInfo.idle_seconds`,
+    /// Seconds since the agent's last move to Idle (`PaneInfo.idle_seconds`,
     /// same computation). Server-side FACT; pane-attention presentation
     /// (waiting counter, idle-ramp color) is a client decision (ceo-bora#302).
     #[serde(default)]

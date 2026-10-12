@@ -1157,7 +1157,19 @@
           "key": "ui.idle_attention_seconds",
           "type": "integer",
           "default": "300",
-          "description": "Promote a background-workspace pane to the sidebar attention state (unseen: yellow/red dot, and the \"N waiting\" counter on the view row) after it has produced no output for this many seconds. Focusing its workspace clears it. 0 disables."
+          "description": "Promote a background-workspace pane to the sidebar attention state (unseen: yellow/red dot, and the \"N waiting\" counter on the view row) after it has been idle (time since the agent's last move to Idle) for this many seconds. Focusing its workspace clears it. 0 disables."
+        },
+        {
+          "key": "ui.idle_fresh_minutes",
+          "type": "integer",
+          "default": "15",
+          "description": "Idle-tier fresh edge, in minutes: an Idle/Done pane's name in the agent panel is colored with the Done/teal color while it has been idle fewer than this many minutes. 0 disables the Fresh tier. A separate reading of the same idle duration from `ui.idle_attention_seconds` above -- it does not move the Folders dots or the \"N waiting\" counter."
+        },
+        {
+          "key": "ui.idle_stale_minutes",
+          "type": "integer",
+          "default": "120",
+          "description": "Idle-tier stale edge, in minutes: an Idle/Done pane's name in the agent panel is colored overlay0 once it has been idle at least this many minutes. 0 disables the Stale tier. `ui.idle_fresh_minutes` greater than a nonzero `ui.idle_stale_minutes` is a config diagnostic, not a panic."
         },
         {
           "key": "ui.chat_view",

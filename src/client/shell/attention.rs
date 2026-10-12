@@ -1,5 +1,6 @@
 //! Pane-attention presentation (ceo-bora#302). A pane is "waiting" for
-//! attention when it has produced no PTY output for
+//! attention when it has been idle (time since the agent's last move to
+//! Idle, `ClientShellPane.idle_seconds`) for at least
 //! `ui.idle_attention_seconds` (client config; `0` disables the ramp) or is
 //! `Blocked` (always attention-worthy, regardless of idle time) -- unless
 //! its workspace is the one currently focused, in which case the operator
@@ -14,6 +15,12 @@
 //! Mirrors the pre-merge fork's `attention_pane_counts` (`ceo-bora` history,
 //! pre-0.9.0-sync `src/ui/sidebar.rs`): a plain waiting pane is yellow, one
 //! that is also `Blocked` pulls the aggregate to red.
+//!
+//! `IdleTier`/`idle_tier` (ceo-bora#352) is a second, independent reading of
+//! the same `idle_seconds` fact, for the agent panel's name color rather
+//! than the Folders dots/badge: Fresh, Plain, or Stale by how long an
+//! `Idle`/`Done` pane has sat, gated by `ui.idle_fresh_minutes` and
+//! `ui.idle_stale_minutes`. It does not move the waiting counter.
 
 use super::*;
 
@@ -59,6 +66,51 @@ pub(in crate::client::shell) fn pane_attention_color(
     } else {
         palette.yellow
     }
+}
+
+/// Idle-duration tier for an `Idle`/`Done` pane's name color in the agent
+/// panel (ceo-bora#352), a second, independent reading of
+/// `ClientShellPane.idle_seconds` from the Folders-dot/badge ramp above:
+/// `Fresh` just went idle, `Stale` has sat unseen a long time, `Plain` is
+/// in between.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::client::shell) enum IdleTier {
+    Fresh,
+    Plain,
+    Stale,
+}
+
+/// Map a pane's status and idle duration to its agent-panel name tier, if
+/// any. Only `Idle` and `Done` panes get a tier -- `idle_seconds` tracks
+/// time since the last move to `Idle`, which says nothing about a
+/// `Working`/`Blocked`/`Unknown` pane. `None` idle_seconds (just
+/// transitioned, no duration yet) also gets no tier.
+///
+/// `fresh_seconds == 0` disables the Fresh edge; `stale_seconds == 0`
+/// disables the Stale edge. The Stale edge is checked first: `seconds >=
+/// stale_seconds` (when nonzero) wins over the Fresh check, so a config
+/// with `fresh_seconds > stale_seconds` (flagged as a diagnostic by
+/// `Config::invalid_idle_tier_bounds_diagnostic`, never a panic) still
+/// composes -- the stale edge simply catches everything past it, and
+/// nothing past the stale edge is ever read as fresh instead.
+pub(in crate::client::shell) fn idle_tier(
+    status: crate::api::schema::AgentStatus,
+    idle_seconds: Option<u64>,
+    fresh_seconds: u64,
+    stale_seconds: u64,
+) -> Option<IdleTier> {
+    use crate::api::schema::AgentStatus;
+    if !matches!(status, AgentStatus::Idle | AgentStatus::Done) {
+        return None;
+    }
+    let seconds = idle_seconds?;
+    if stale_seconds > 0 && seconds >= stale_seconds {
+        return Some(IdleTier::Stale);
+    }
+    if fresh_seconds > 0 && seconds < fresh_seconds {
+        return Some(IdleTier::Fresh);
+    }
+    Some(IdleTier::Plain)
 }
 
 /// Aggregate `(waiting, blocked)` counts across the whole snapshot, for the
@@ -162,5 +214,82 @@ mod tests {
         // the focused workspace, so it never competes for attention.
         assert!(!pane_is_waiting(AgentStatus::Blocked, None, 300, true));
         assert!(!pane_is_waiting(AgentStatus::Idle, Some(9_999), 300, true));
+    }
+
+    #[test]
+    fn idle_tier_fresh_before_the_fresh_edge() {
+        assert_eq!(
+            idle_tier(AgentStatus::Idle, Some(0), 900, 7_200),
+            Some(IdleTier::Fresh)
+        );
+        assert_eq!(
+            idle_tier(AgentStatus::Idle, Some(899), 900, 7_200),
+            Some(IdleTier::Fresh)
+        );
+    }
+
+    #[test]
+    fn idle_tier_plain_between_the_two_edges() {
+        assert_eq!(
+            idle_tier(AgentStatus::Idle, Some(900), 900, 7_200),
+            Some(IdleTier::Plain)
+        );
+        assert_eq!(
+            idle_tier(AgentStatus::Idle, Some(7_199), 900, 7_200),
+            Some(IdleTier::Plain)
+        );
+    }
+
+    #[test]
+    fn idle_tier_stale_at_and_past_the_stale_edge() {
+        assert_eq!(
+            idle_tier(AgentStatus::Idle, Some(7_200), 900, 7_200),
+            Some(IdleTier::Stale)
+        );
+        assert_eq!(
+            idle_tier(AgentStatus::Idle, Some(99_999), 900, 7_200),
+            Some(IdleTier::Stale)
+        );
+    }
+
+    #[test]
+    fn idle_tier_zero_fresh_edge_disables_the_fresh_tier() {
+        assert_eq!(
+            idle_tier(AgentStatus::Idle, Some(0), 0, 7_200),
+            Some(IdleTier::Plain)
+        );
+    }
+
+    #[test]
+    fn idle_tier_zero_stale_edge_disables_the_stale_tier() {
+        assert_eq!(
+            idle_tier(AgentStatus::Idle, Some(99_999), 900, 0),
+            Some(IdleTier::Plain)
+        );
+    }
+
+    #[test]
+    fn idle_tier_working_and_blocked_panes_get_no_tier() {
+        assert_eq!(
+            idle_tier(AgentStatus::Working, Some(99_999), 900, 7_200),
+            None
+        );
+        assert_eq!(
+            idle_tier(AgentStatus::Blocked, Some(99_999), 900, 7_200),
+            None
+        );
+        assert_eq!(idle_tier(AgentStatus::Idle, None, 900, 7_200), None);
+    }
+
+    #[test]
+    fn idle_tier_done_pane_gets_a_tier() {
+        assert_eq!(
+            idle_tier(AgentStatus::Done, Some(0), 900, 7_200),
+            Some(IdleTier::Fresh)
+        );
+        assert_eq!(
+            idle_tier(AgentStatus::Done, Some(7_200), 900, 7_200),
+            Some(IdleTier::Stale)
+        );
     }
 }

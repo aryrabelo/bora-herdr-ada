@@ -833,6 +833,88 @@ fn muted_agent_sidebar_rows_do_not_stack_terminal_faint() {
 }
 
 #[test]
+fn idle_tier_colors_a_fresh_and_a_stale_agent_name_from_the_rendered_buffer() {
+    let mut projected = snapshot();
+    projected.panes[0].idle_seconds = Some(0);
+    let mut stale_pane = projected.panes[0].clone();
+    stale_pane.pane_id = "pane_2".into();
+    stale_pane.focused = false;
+    stale_pane.idle_seconds = Some(7_200);
+    projected.panes.push(stale_pane);
+    projected.agents = vec![
+        ClientShellAgent {
+            pane_id: "pane_1".into(),
+            workspace_id: "ws_1".into(),
+            tab_id: "tab_1".into(),
+            name: Some("fresh-agent".into()),
+            display_agent: None,
+            agent: Some("pi".into()),
+            title: None,
+            terminal_title: None,
+            terminal_title_stripped: None,
+            agent_status: AgentStatus::Idle,
+            state_change_seq: 1,
+            state_labels: Vec::new(),
+            tokens: Vec::new(),
+            focused: false,
+        },
+        ClientShellAgent {
+            pane_id: "pane_2".into(),
+            workspace_id: "ws_1".into(),
+            tab_id: "tab_1".into(),
+            name: Some("stale-agent".into()),
+            display_agent: None,
+            agent: Some("pi".into()),
+            title: None,
+            terminal_title: None,
+            terminal_title_stripped: None,
+            agent_status: AgentStatus::Idle,
+            state_change_seq: 2,
+            state_labels: Vec::new(),
+            tokens: Vec::new(),
+            focused: false,
+        },
+    ];
+    let config = Config::default();
+    let shell_config = ClientShellConfig::from_config(&config);
+    let expected_fresh = shell_config.palette.teal;
+    let expected_stale = shell_config.palette.overlay0;
+    let mut state = ClientShellState::new(shell_config);
+    state.set_snapshot(Box::new(projected));
+    state.set_pane_surface(surface());
+
+    let frame = state.compose(106, 30).expect("agent sidebar frame");
+    let buffer = frame.to_ratatui_buffer().expect("agent sidebar buffer");
+    let fresh_row = state
+        .hits
+        .agents
+        .iter()
+        .find(|(_, pane_id)| pane_id == "pane_1")
+        .expect("fresh agent hit")
+        .0;
+    let stale_row = state
+        .hits
+        .agents
+        .iter()
+        .find(|(_, pane_id)| pane_id == "pane_2")
+        .expect("stale agent hit")
+        .0;
+    let (fresh_x, fresh_y) = cell_symbol_position(&frame, fresh_row, "fresh-agent");
+    let (stale_x, stale_y) = cell_symbol_position(&frame, stale_row, "stale-agent");
+    let fresh_cell = buffer.cell((fresh_x, fresh_y)).expect("fresh name cell");
+    let stale_cell = buffer.cell((stale_x, stale_y)).expect("stale name cell");
+
+    assert_eq!(
+        fresh_cell.fg, expected_fresh,
+        "fresh agent name should use the Done/teal color: {fresh_cell:?}"
+    );
+    assert_eq!(
+        stale_cell.fg, expected_stale,
+        "stale agent name should use overlay0: {stale_cell:?}"
+    );
+}
+
+#[test]
 fn workspace_state_text_does_not_stack_terminal_faint() {
     use crate::config::SpaceSidebarToken;
 

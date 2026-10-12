@@ -52,6 +52,22 @@ impl SidebarTokenColor {
     }
 }
 
+/// Build a `SidebarTokenStyle.fg` override from a ratatui color, reusing
+/// the existing per-token style-patch channel (`apply_token_style` in
+/// `src/ui/sidebar.rs`) for runtime tier coloring (ceo-bora#352) instead of
+/// threading a new style parameter through the shared row renderer.
+/// `None` for a non-RGB palette color (the 16-color `terminal` theme),
+/// where a tier can't be expressed as true color anyway and the row's
+/// existing default style stays authoritative.
+pub(crate) fn sidebar_token_color_from_ratatui(
+    color: ratatui::style::Color,
+) -> Option<SidebarTokenColor> {
+    match color {
+        ratatui::style::Color::Rgb(r, g, b) => Some(SidebarTokenColor { r, g, b }),
+        _ => None,
+    }
+}
+
 impl Serialize for SidebarTokenColor {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where

@@ -390,6 +390,18 @@ pub fn validated_sidebar_bounds(min: u16, max: u16) -> Option<(u16, u16)> {
     }
 }
 
+/// Validate `[ui]` idle-tier bound configuration (ceo-bora#352). `false`
+/// only when both edges are nonzero and `fresh_minutes > stale_minutes` --
+/// a genuine inversion. Unlike sidebar bounds, an inverted pair never
+/// panics downstream: `client::shell::attention::idle_tier` checks the
+/// stale edge first, so it still composes, just with the stale edge
+/// "winning" for any duration past it. This only flags the situation so
+/// `Config::invalid_idle_tier_bounds_diagnostic` can surface a diagnostic;
+/// it does not change which values `idle_tier` receives.
+pub fn idle_tier_bounds_are_sane(fresh_minutes: u64, stale_minutes: u64) -> bool {
+    !(fresh_minutes > 0 && stale_minutes > 0 && fresh_minutes > stale_minutes)
+}
+
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -1114,9 +1126,26 @@ pub struct UiConfig {
     /// Default: false.
     pub hide_pane_badges: bool,
     /// Promote a background-workspace pane to the sidebar attention state
-    /// (unseen: yellow/red dot, "N waiting" counter) after it has produced
-    /// no PTY output for this many seconds. `0` disables. Default: 300.
+    /// (unseen: yellow/red dot, "N waiting" counter) after it has been idle
+    /// (time since the agent's last move to Idle) for this many seconds.
+    /// `0` disables. Default: 300.
     pub idle_attention_seconds: u64,
+    /// Idle-tier fresh edge, in minutes (ceo-bora#352): an `Idle`/`Done`
+    /// pane's name in the agent panel is colored with the Done/teal color
+    /// while it has been idle fewer than this many minutes. `0` disables
+    /// the Fresh tier. This is a separate reading of `idle_seconds` from
+    /// `idle_attention_seconds` above -- it does not move the Folders dots
+    /// or the "N waiting" counter. Default: 15.
+    pub idle_fresh_minutes: u64,
+    /// Idle-tier stale edge, in minutes (ceo-bora#352): an `Idle`/`Done`
+    /// pane's name in the agent panel is colored `overlay0` once it has
+    /// been idle at least this many minutes. `0` disables the Stale tier.
+    /// `idle_fresh_minutes` greater than a nonzero `idle_stale_minutes` is
+    /// a config diagnostic (`Config::invalid_idle_tier_bounds_diagnostic`),
+    /// not a panic -- the stale edge is checked first by
+    /// `client::shell::attention::idle_tier`, so it still composes.
+    /// Default: 120.
+    pub idle_stale_minutes: u64,
     /// Lead each split pane border with its public pane id (`w26:p1`) so two panes
     /// running the same agent stay distinguishable. Default: false.
     pub show_pane_ids_on_pane_borders: bool,
@@ -1385,6 +1414,8 @@ impl Default for UiConfig {
             view_mode: ViewMode::Repo,
             hide_pane_badges: false,
             idle_attention_seconds: 300,
+            idle_fresh_minutes: 15,
+            idle_stale_minutes: 120,
             show_pane_ids_on_pane_borders: false,
             channel_group_name: "channels".to_string(),
             chat_view: false,
@@ -2265,6 +2296,43 @@ idle_attention_seconds = 0
         )
         .unwrap();
         assert_eq!(config.ui.idle_attention_seconds, 0);
+    }
+
+    #[test]
+    fn idle_tier_minutes_parse_and_default_and_flag_inverted_bounds() {
+        let config = Config::default();
+        assert_eq!(config.ui.idle_fresh_minutes, 15);
+        assert_eq!(config.ui.idle_stale_minutes, 120);
+        assert!(config.collect_diagnostics().is_empty());
+
+        let config: Config = toml::from_str(
+            r#"
+[ui]
+idle_fresh_minutes = 0
+idle_stale_minutes = 0
+"#,
+        )
+        .unwrap();
+        assert_eq!(config.ui.idle_fresh_minutes, 0);
+        assert_eq!(config.ui.idle_stale_minutes, 0);
+        assert!(config.collect_diagnostics().is_empty());
+
+        let inverted: Config = toml::from_str(
+            r#"
+[ui]
+idle_fresh_minutes = 120
+idle_stale_minutes = 15
+"#,
+        )
+        .unwrap();
+        let diagnostics = inverted.collect_diagnostics();
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.contains("idle_fresh_minutes")
+                    && diagnostic.contains("idle_stale_minutes")),
+            "diagnostics: {diagnostics:?}"
+        );
     }
 
     #[test]

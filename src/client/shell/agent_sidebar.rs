@@ -310,12 +310,67 @@ pub(super) fn agent_row(
         },
         state_text,
     );
+    let idle_tier = attention::idle_tier(
+        agent.agent_status,
+        pane.and_then(|pane| pane.idle_seconds),
+        config.idle_fresh_seconds,
+        config.idle_stale_seconds,
+    );
+    let rows = idle_tiered_agent_token_rows(rows, idle_tier, agent.focused, &config.palette);
     Some(AgentRow {
         pane_id: agent.pane_id.clone(),
         status: agent.agent_status,
         focused: agent.focused,
         rows,
     })
+}
+
+/// Recolor the `Agent`-kind token in each row by idle tier (ceo-bora#352),
+/// via the existing per-token `SidebarTokenStyle` patch channel
+/// (`apply_token_style` in `src/ui/sidebar.rs`) rather than a new style
+/// parameter threaded through the shared row renderer -- `ResolvedTokenKind::Agent`
+/// shares its `secondary_style` slot with `Machine`/`Tab`/`Pane`/`Branch`, so
+/// a per-row style override would recolor those too. `None` (Working/
+/// Blocked/Unknown) leaves the token untouched: today's hardcoded
+/// `overlay0` stands, unchanged. `Plain` explicitly repaints it to the
+/// focus-aware base text color -- without this, it would otherwise keep
+/// that same hardcoded `overlay0`, which is not "the normal text colour"
+/// the Plain tier is supposed to show.
+fn idle_tiered_agent_token_rows(
+    rows: Vec<Vec<crate::ui::ResolvedToken>>,
+    idle_tier: Option<attention::IdleTier>,
+    focused: bool,
+    palette: &Palette,
+) -> Vec<Vec<crate::ui::ResolvedToken>> {
+    let Some(tier) = idle_tier else {
+        return rows;
+    };
+    let color = match tier {
+        attention::IdleTier::Fresh => palette.teal,
+        attention::IdleTier::Stale => palette.overlay0,
+        attention::IdleTier::Plain => {
+            if focused {
+                palette.text
+            } else {
+                palette.subtext0
+            }
+        }
+    };
+    let Some(fg) = crate::config::sidebar_token_color_from_ratatui(color) else {
+        return rows;
+    };
+    rows.into_iter()
+        .map(|row| {
+            row.into_iter()
+                .map(|mut token| {
+                    if matches!(token.kind, crate::ui::ResolvedTokenKind::Agent(_)) {
+                        token.style.fg = Some(fg);
+                    }
+                    token
+                })
+                .collect()
+        })
+        .collect()
 }
 
 pub(super) fn render_agent_row(
