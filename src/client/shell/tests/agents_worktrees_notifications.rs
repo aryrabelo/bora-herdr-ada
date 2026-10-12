@@ -914,6 +914,75 @@ fn idle_tier_colors_a_fresh_and_a_stale_agent_name_from_the_rendered_buffer() {
     );
 }
 
+/// cubic P2 on aryrabelo/bora-herdr-ada#52: the 16-color `terminal` theme
+/// resolves the palette to named colors, and the tier recolor used to drop
+/// any non-RGB color, so every tier fell back to the untiered `overlay0`
+/// (`Gray`). The named colors must reach the buffer. Under this palette
+/// `subtext0` and `overlay0` are both `Gray`, so an unfocused Plain row reads
+/// the same as a Stale one; only Fresh (`Cyan`) stands apart.
+#[test]
+fn idle_tier_colors_names_under_the_terminal_palette() {
+    use ratatui::style::Color;
+
+    let mut projected = snapshot();
+    let mut agents = Vec::new();
+    projected.panes.clear();
+    for (index, (name, idle)) in [
+        ("fresh-agent", 0),
+        ("plain-agent", 1_800),
+        ("stale-agent", 7_200),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut pane = snapshot().panes[0].clone();
+        pane.pane_id = format!("pane_{}", index + 1);
+        pane.focused = false;
+        pane.idle_seconds = Some(idle);
+        projected.panes.push(pane);
+        agents.push(ClientShellAgent {
+            pane_id: format!("pane_{}", index + 1),
+            workspace_id: "ws_1".into(),
+            tab_id: "tab_1".into(),
+            name: Some(name.into()),
+            display_agent: None,
+            agent: Some("pi".into()),
+            title: None,
+            terminal_title: None,
+            terminal_title_stripped: None,
+            agent_status: AgentStatus::Idle,
+            state_change_seq: index as u64 + 1,
+            state_labels: Vec::new(),
+            tokens: Vec::new(),
+            focused: false,
+        });
+    }
+    projected.agents = agents;
+    let mut config = ClientShellConfig::from_config(&Config::default());
+    config.palette = Palette::terminal();
+    let mut state = ClientShellState::new(config);
+    state.set_snapshot(Box::new(projected));
+    state.set_pane_surface(surface());
+
+    let frame = state.compose(106, 30).expect("agent sidebar frame");
+    let buffer = frame.to_ratatui_buffer().expect("agent sidebar buffer");
+    let name_fg = |pane_id: &str, name: &str| {
+        let row = state
+            .hits
+            .agents
+            .iter()
+            .find(|(_, hit)| hit == pane_id)
+            .unwrap_or_else(|| panic!("{name} hit"))
+            .0;
+        let (x, y) = cell_symbol_position(&frame, row, name);
+        buffer.cell((x, y)).expect("agent name cell").fg
+    };
+
+    assert_eq!(name_fg("pane_1", "fresh-agent"), Color::Cyan);
+    assert_eq!(name_fg("pane_2", "plain-agent"), Color::Gray);
+    assert_eq!(name_fg("pane_3", "stale-agent"), Color::Gray);
+}
+
 /// ceo-bora#352 live-smoke defect: the server stamps `idle_seconds` only when
 /// it builds a snapshot, so on a quiet screen a Fresh row stayed teal until
 /// some unrelated snapshot arrived. Here no second snapshot is ever sent;

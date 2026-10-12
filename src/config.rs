@@ -44,7 +44,7 @@ pub(crate) use self::keybinds::parse_key_combo;
 
 #[cfg(test)]
 pub(crate) use self::io::IsolatedDirs;
-pub(crate) use self::sidebar::sidebar_token_color_from_ratatui;
+pub(crate) use self::sidebar::SidebarTokenColor;
 #[allow(unused_imports)]
 pub use self::sidebar::{SidebarTokenStyle, SpaceSidebarToken};
 pub(crate) use self::write::{update_file_at, write_edit, ConfigEdit};

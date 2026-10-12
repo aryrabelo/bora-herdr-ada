@@ -335,7 +335,9 @@ pub(super) fn agent_row(
 /// `overlay0` stands, unchanged. `Plain` explicitly repaints it to the
 /// focus-aware base text color -- without this, it would otherwise keep
 /// that same hardcoded `overlay0`, which is not "the normal text colour"
-/// the Plain tier is supposed to show.
+/// the Plain tier is supposed to show. Under the 16-color `terminal` theme
+/// the palette resolves to named colors (Fresh `Cyan`, Plain `Gray`/focused
+/// `Reset`, Stale `Gray`), carried as-is by `SidebarTokenColor::from_palette`.
 fn idle_tiered_agent_token_rows(
     rows: Vec<Vec<crate::ui::ResolvedToken>>,
     idle_tier: Option<attention::IdleTier>,
@@ -356,9 +358,7 @@ fn idle_tiered_agent_token_rows(
             }
         }
     };
-    let Some(fg) = crate::config::sidebar_token_color_from_ratatui(color) else {
-        return rows;
-    };
+    let fg = crate::config::SidebarTokenColor::from_palette(color);
     rows.into_iter()
         .map(|row| {
             row.into_iter()
