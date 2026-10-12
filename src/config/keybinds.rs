@@ -405,6 +405,7 @@ pub struct Keybinds {
     pub resize_pane_right: ActionKeybinds,
     pub toggle_sidebar: ActionKeybinds,
     pub cycle_view_mode: ActionKeybinds,
+    pub cycle_agent_panel_sort: ActionKeybinds,
     pub custom_commands: Vec<CustomCommandKeybind>,
 }
 
@@ -590,6 +591,7 @@ impl Config {
             resize_pane_right: empty_action!(),
             toggle_sidebar: empty_action!(),
             cycle_view_mode: empty_action!(),
+            cycle_agent_panel_sort: empty_action!(),
             custom_commands: Vec::new(),
         };
 
@@ -740,6 +742,11 @@ impl Config {
             apply_action!(keybinds.resize_pane_right, resize_pane_right, source);
             apply_action!(keybinds.toggle_sidebar, toggle_sidebar, source);
             apply_action!(keybinds.cycle_view_mode, cycle_view_mode, source);
+            apply_action!(
+                keybinds.cycle_agent_panel_sort,
+                cycle_agent_panel_sort,
+                source
+            );
 
             if source == field_source!(indexed) {
                 append_legacy_indexed_bindings(
@@ -2278,6 +2285,36 @@ command = "echo no"
         assert!(diagnostics.iter().any(|diag| {
             diag.contains("kept keys.new_tab") && diag.contains("disabled keys.command[0].key")
         }));
+    }
+
+    /// `prefix+a` is free among the defaults, and a user's own `prefix+a`
+    /// command (the shipped example config binds one) keeps the chord
+    /// without a diagnostic: the default action silently steps aside.
+    #[test]
+    fn cycle_agent_panel_sort_recent_sort_defaults_to_prefix_a_and_yields_to_user_command() {
+        let defaults = Config::default();
+        let keybinds = defaults.keybinds();
+        let labels = keybinds
+            .cycle_agent_panel_sort
+            .bindings
+            .iter()
+            .map(|binding| binding.label.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(labels, ["prefix+a"]);
+        assert!(defaults.collect_diagnostics().is_empty());
+
+        let config: Config = toml::from_str(
+            r#"
+[[keys.command]]
+key = "prefix+a"
+command = "echo board"
+"#,
+        )
+        .unwrap();
+        let keybinds = config.keybinds();
+        assert!(keybinds.cycle_agent_panel_sort.bindings.is_empty());
+        assert_eq!(keybinds.custom_commands.len(), 1);
+        assert!(config.collect_diagnostics().is_empty());
     }
 
     #[test]

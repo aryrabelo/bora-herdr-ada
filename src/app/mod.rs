@@ -331,6 +331,11 @@ fn agent_panel_sort_from_config(
     match sort {
         crate::config::AgentPanelSortConfig::Spaces => state::AgentPanelSort::Spaces,
         crate::config::AgentPanelSortConfig::Priority => state::AgentPanelSort::Priority,
+        // `recent` (ceo-bora#354) is a client presentation order: it ranks
+        // idle agents by the client-aged `idle_seconds`, which the server's
+        // `agent_order` cannot track between snapshots, so the server keeps
+        // its natural (spaces) order for it.
+        crate::config::AgentPanelSortConfig::Recent => state::AgentPanelSort::Spaces,
     }
 }
 

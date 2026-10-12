@@ -92,6 +92,10 @@ pub enum ToastClipboardPosition {
     BottomRight,
 }
 
+/// Agent panel order. `Recent` (ceo-bora#354) is one flat list by last
+/// activity: Working/Blocked agents first by newest state change, then
+/// Idle/Done agents by shortest idle time (see
+/// `client::shell::agent_sidebar::recent_sort_key`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum AgentPanelSortConfig {
@@ -99,6 +103,19 @@ pub enum AgentPanelSortConfig {
     #[serde(alias = "workspaces")]
     Spaces,
     Priority,
+    Recent,
+}
+
+impl AgentPanelSortConfig {
+    /// Spaces -> Priority -> Recent -> Spaces. The one cycle shared by
+    /// `keys.cycle_agent_panel_sort` and the agent panel header click.
+    pub fn cycle(self) -> Self {
+        match self {
+            Self::Spaces => Self::Priority,
+            Self::Priority => Self::Recent,
+            Self::Recent => Self::Spaces,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -555,6 +572,9 @@ pub struct KeysConfig {
     /// Cycle the sidebar view mode: flat -> folders -> repo -> flat.
     /// Default: "prefix+shift+v"
     pub cycle_view_mode: BindingConfig,
+    /// Cycle the agent panel order: spaces -> priority -> recent -> spaces.
+    /// Default: "prefix+a"
+    pub cycle_agent_panel_sort: BindingConfig,
     /// Optional indexed shortcuts expanded over number keys 1-9.
     pub indexed: IndexedKeysConfig,
     /// Prefix-mode custom command bindings.
@@ -696,6 +716,8 @@ pub(crate) struct KeysConfigOverlay {
     #[serde(skip_serializing_if = "Option::is_none")]
     cycle_view_mode: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    cycle_agent_panel_sort: Option<BindingConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     indexed: Option<IndexedKeysConfig>,
     #[serde(skip_serializing)]
     command: Option<Vec<CommandKeybindConfig>>,
@@ -809,6 +831,7 @@ impl<'de> Deserialize<'de> for KeysConfig {
         apply_field!(resize_pane_right);
         apply_field!(toggle_sidebar);
         apply_field!(cycle_view_mode);
+        apply_field!(cycle_agent_panel_sort);
         apply_field!(indexed);
         apply_field!(command);
 
@@ -916,6 +939,7 @@ impl KeysConfig {
         copy_effective_action_field!(resize_pane_right, keybinds.resize_pane_right);
         copy_effective_action_field!(toggle_sidebar, keybinds.toggle_sidebar);
         copy_effective_action_field!(cycle_view_mode, keybinds.cycle_view_mode);
+        copy_effective_action_field!(cycle_agent_panel_sort, keybinds.cycle_agent_panel_sort);
         copy_user_field!(indexed);
 
         profile
@@ -1191,7 +1215,7 @@ pub struct UiConfig {
     /// Format for the outer terminal window title. Empty leaves the title alone.
     /// Default: "{hostname}: {workspace}".
     pub window_title: String,
-    /// Agent sidebar ordering. Saved values are "spaces" or "priority". Default: "spaces".
+    /// Agent sidebar ordering. Saved values are "spaces", "priority" or "recent". Default: "spaces".
     pub agent_panel_sort: AgentPanelSortConfig,
     /// Retired setting that Herdr wrote before the workspace filter was removed.
     #[serde(rename = "agent_panel_scope")]
@@ -1382,6 +1406,7 @@ impl Default for KeysConfig {
             resize_pane_right: BindingConfig::empty(),
             toggle_sidebar: BindingConfig::one("prefix+b"),
             cycle_view_mode: BindingConfig::one("prefix+shift+v"),
+            cycle_agent_panel_sort: BindingConfig::one("prefix+a"),
             indexed: IndexedKeysConfig::default(),
             command: Vec::new(),
             user_fields: BTreeSet::new(),
@@ -1750,6 +1775,31 @@ agent_panel_scope = "current"
 "#;
         let config: Config = toml::from_str(toml).unwrap();
         assert_eq!(config.ui.agent_panel_sort, AgentPanelSortConfig::Spaces);
+    }
+
+    #[test]
+    fn agent_panel_sort_config_parses_recent_sort_and_cycles_three_values() {
+        let toml = r#"
+[ui]
+agent_panel_sort = "recent"
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert_eq!(config.ui.agent_panel_sort, AgentPanelSortConfig::Recent);
+
+        let mut walked = vec![AgentPanelSortConfig::Spaces];
+        for _ in 0..3 {
+            let next = walked.last().copied().unwrap().cycle();
+            walked.push(next);
+        }
+        assert_eq!(
+            walked,
+            [
+                AgentPanelSortConfig::Spaces,
+                AgentPanelSortConfig::Priority,
+                AgentPanelSortConfig::Recent,
+                AgentPanelSortConfig::Spaces,
+            ]
+        );
     }
 
     #[test]

@@ -197,6 +197,7 @@ const DEFAULT_CONFIG: &str = r##"# bora configuration
 # resize_pane_up = ""     # optional, e.g. "ctrl+shift+alt+up"
 # resize_pane_right = ""  # optional, e.g. "ctrl+shift+alt+right"
 # toggle_sidebar = "prefix+b"
+# cycle_agent_panel_sort = "prefix+a"  # spaces -> priority -> recent, same as clicking the agent panel header
 
 # Navigate-mode movement. These local shortcuts win while navigate mode is open.
 # They are independent from focus_pane_*. Do not include prefix+, esc, enter, tab, or 1..9 here.
@@ -351,8 +352,10 @@ const DEFAULT_CONFIG: &str = r##"# bora configuration
 # Set to "" to leave the outer terminal title alone.
 # window_title = "{hostname}: {workspace}"
 
-# Agent panel ordering: "spaces" (grouped by space) or "priority" (attention queue).
-# "workspaces" is accepted as an alias for "spaces".
+# Agent panel ordering: "spaces" (grouped by space), "priority" (attention queue), or
+# "recent" (working/blocked by newest change, then idle/done by shortest idle time).
+# "workspaces" is accepted as an alias for "spaces". prefix+a or a click on the panel
+# header cycles it for this client only.
 # agent_panel_sort = "spaces"
 
 # Agent status indicators: "dots" preserves the compact color marks; "symbols" uses

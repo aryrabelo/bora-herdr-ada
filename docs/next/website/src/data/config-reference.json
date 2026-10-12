@@ -872,6 +872,12 @@
           "description": "Keybinding that cycles the sidebar view mode: flat -> folders -> repo -> flat. Same thing the view-mode label on the sidebar's workspace header toggles when clicked."
         },
         {
+          "key": "keys.cycle_agent_panel_sort",
+          "type": "keybinding",
+          "default": "\"prefix+a\"",
+          "description": "Cycle the agent panel order: spaces -> priority -> recent -> spaces. Same thing a click on the agent panel header's sort label does; the choice is saved for this client and server only, not written to the config file."
+        },
+        {
           "key": "keys.chat",
           "type": "string",
           "default": "\"prefix+i\"",
@@ -1072,10 +1078,11 @@
           "key": "ui.agent_panel_sort",
           "type": "enum",
           "default": "\"spaces\"",
-          "description": "Agent sidebar ordering. Saved values are \"spaces\" or \"priority\"; \"workspaces\" is accepted as an alias for \"spaces\".",
+          "description": "Agent sidebar ordering. Saved values are \"spaces\", \"priority\" or \"recent\"; \"workspaces\" is accepted as an alias for \"spaces\". \"recent\" is one flat list by last activity: working and blocked agents first by newest state change, then idle and done agents by shortest idle time; idle agents of unknown idle age and agents with no known state follow. With several machines connected, \"priority\" and \"recent\" keep an offline machine's cached rows below every online row (\"spaces\" keeps machine order). With ui.dim_stale_agents on, stale idle rows sink below the other rows of their block: the online or offline block in \"priority\" and \"recent\", their workspace in \"spaces\". An active agent.view replaces the order entirely.",
           "values": [
             "spaces",
-            "priority"
+            "priority",
+            "recent"
           ]
         },
         {

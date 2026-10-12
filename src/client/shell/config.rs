@@ -60,6 +60,11 @@ impl ClientShellState {
             agent_panel_sort: self
                 .agent_panel_sort_manual
                 .then_some(self.config.agent_panel_sort),
+            unreadable_agent_panel_sort: self
+                .config
+                .preferences
+                .unreadable_agent_panel_sort
+                .clone(),
             collapsed_groups,
             remote_collapsed_groups,
         };

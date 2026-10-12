@@ -1047,20 +1047,7 @@ fn idle_tier_row_crosses_fresh_to_plain_without_a_new_snapshot() {
 /// other idle rows). Default edges: stale at 120 minutes (7200 s), fresh
 /// under 15.
 fn stale_row_snapshot() -> ClientShellSnapshot {
-    let mut projected = snapshot();
-    let mut second_workspace = projected.workspaces[0].clone();
-    second_workspace.workspace_id = "ws_2".into();
-    second_workspace.active_tab_id = "tab_2".into();
-    second_workspace.number = 2;
-    second_workspace.label = "second-space".into();
-    second_workspace.focused = false;
-    projected.workspaces.push(second_workspace);
-    let mut second_tab = projected.tabs[0].clone();
-    second_tab.tab_id = "tab_2".into();
-    second_tab.workspace_id = "ws_2".into();
-    second_tab.focused = false;
-    projected.tabs.push(second_tab);
-    let rows = [
+    two_space_agent_snapshot(&[
         (
             "pane_1",
             "ws_1",
@@ -1101,7 +1088,29 @@ fn stale_row_snapshot() -> ClientShellSnapshot {
             1,
             Some(0),
         ),
-    ];
+    ])
+}
+
+/// One agent fixture row: pane id, workspace (`ws_1` or `ws_2`), agent
+/// name, status, `state_change_seq`, and the pane's `idle_seconds`.
+type AgentOrderRow<'a> = (&'a str, &'a str, &'a str, AgentStatus, u64, Option<u64>);
+
+/// A snapshot with two spaces (`ws_1`/`tab_1`, `ws_2`/`tab_2`) whose
+/// `agents` and `panes` are `rows`, in that order.
+fn two_space_agent_snapshot(rows: &[AgentOrderRow<'_>]) -> ClientShellSnapshot {
+    let mut projected = snapshot();
+    let mut second_workspace = projected.workspaces[0].clone();
+    second_workspace.workspace_id = "ws_2".into();
+    second_workspace.active_tab_id = "tab_2".into();
+    second_workspace.number = 2;
+    second_workspace.label = "second-space".into();
+    second_workspace.focused = false;
+    projected.workspaces.push(second_workspace);
+    let mut second_tab = projected.tabs[0].clone();
+    second_tab.tab_id = "tab_2".into();
+    second_tab.workspace_id = "ws_2".into();
+    second_tab.focused = false;
+    projected.tabs.push(second_tab);
     let tab_of = |workspace_id: &str| {
         if workspace_id == "ws_1" {
             "tab_1"
@@ -1617,6 +1626,366 @@ fn agent_sort_toggle_is_client_local_and_persists_per_endpoint() {
         crate::config::AgentPanelSortConfig::Priority
     );
     assert!(reloaded.agent_panel_sort_manual);
+    std::fs::remove_file(path).expect("remove agent sort preferences");
+}
+
+/// ceo-bora#354 `recent` fixture, in `snapshot.agents` order (not the
+/// recent order, and not the `priority` one either: that would put
+/// `block-new` first and rank the idle rows by `state_change_seq`).
+/// `idle-unknown` has no idle age; `idle-stale` is past the default
+/// 120-minute stale edge.
+fn recent_sort_snapshot() -> ClientShellSnapshot {
+    two_space_agent_snapshot(&[
+        (
+            "pane_1",
+            "ws_1",
+            "idle-old",
+            AgentStatus::Idle,
+            9,
+            Some(600),
+        ),
+        ("pane_2", "ws_1", "work-old", AgentStatus::Working, 2, None),
+        ("pane_3", "ws_2", "idle-new", AgentStatus::Idle, 1, Some(30)),
+        ("pane_4", "ws_2", "block-new", AgentStatus::Blocked, 7, None),
+        ("pane_5", "ws_1", "work-new", AgentStatus::Working, 8, None),
+        (
+            "pane_6",
+            "ws_2",
+            "idle-unknown",
+            AgentStatus::Idle,
+            10,
+            None,
+        ),
+        (
+            "pane_7",
+            "ws_1",
+            "idle-stale",
+            AgentStatus::Idle,
+            11,
+            Some(9_000),
+        ),
+    ])
+}
+
+const RECENT_SORT_NAMES: [&str; 7] = [
+    "idle-old",
+    "work-old",
+    "idle-new",
+    "block-new",
+    "work-new",
+    "idle-unknown",
+    "idle-stale",
+];
+
+fn recent_sort_state(dim_stale_agents: bool) -> ClientShellState {
+    let mut config = Config::default();
+    config.ui.agent_panel_sort = crate::config::AgentPanelSortConfig::Recent;
+    config.ui.dim_stale_agents = dim_stale_agents;
+    stale_row_state(&config, recent_sort_snapshot())
+}
+
+/// The agent panel header's sort label, read off the drawn frame.
+fn recent_sort_header_label(state: &mut ClientShellState) -> String {
+    let frame = state.compose(106, 60).expect("agent panel frame");
+    let toggle = state.hits.agent_sort_toggle;
+    assert!(!toggle.is_empty(), "the sort label is drawn and clickable");
+    frame_rows(&frame)[toggle.y as usize]
+        .chars()
+        .skip(toggle.x as usize)
+        .take(toggle.width as usize)
+        .collect()
+}
+
+fn recent_sort_preferences_path(tag: &str) -> std::path::PathBuf {
+    std::env::temp_dir().join(format!(
+        "herdr-shell-recent-sort-{tag}-{}-{}.json",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_nanos()
+    ))
+}
+
+/// What a fresh client on the same endpoint loads from `path`: the sort
+/// and whether it counts as a saved (manual) choice.
+fn recent_sort_reloaded(path: &std::path::Path) -> (crate::config::AgentPanelSortConfig, bool) {
+    let reloaded = ClientShellState::new(
+        ClientShellConfig::from_config(&Config::default()).with_preferences_path(path.into()),
+    );
+    (
+        reloaded.config.agent_panel_sort,
+        reloaded.agent_panel_sort_manual,
+    )
+}
+
+/// From each drawn row in turn, the agent `action` (`NextAgent` or
+/// `PreviousAgent`) focuses next, as names.
+fn recent_sort_relative_walk(
+    state: &mut ClientShellState,
+    drawn: &[&str],
+    action: crate::input::KeybindAction,
+) -> Vec<String> {
+    let agents = state.snapshot.as_deref().expect("snapshot").agents.clone();
+    let pane_of = |name: &str| {
+        agents
+            .iter()
+            .find(|agent| agent.name.as_deref() == Some(name))
+            .map(|agent| agent.pane_id.clone())
+            .expect("fixture agent")
+    };
+    drawn
+        .iter()
+        .map(|name| {
+            state
+                .snapshot
+                .as_deref_mut()
+                .expect("snapshot")
+                .focused_pane_id = Some(pane_of(name));
+            let Some(crate::api::schema::Method::PaneFocus(target)) =
+                state.endpoint_method_for_action(action)
+            else {
+                panic!("{action:?} from {name} must focus a pane");
+            };
+            agents
+                .iter()
+                .find(|agent| agent.pane_id == target.pane_id)
+                .and_then(|agent| agent.name.clone())
+                .expect("focused agent name")
+        })
+        .collect()
+}
+
+#[test]
+fn recent_sort_draws_live_agents_by_newest_change_then_idle_by_shortest_idle() {
+    let mut state = recent_sort_state(true);
+    assert_eq!(recent_sort_header_label(&mut state), "recent");
+    let drawn = stale_row_drawn_order(&mut state, &RECENT_SORT_NAMES);
+    assert_eq!(
+        drawn,
+        [
+            "work-new",
+            "block-new",
+            "work-old",
+            "idle-new",
+            "idle-old",
+            "idle-unknown",
+            "idle-stale",
+        ]
+    );
+    assert_eq!(
+        stale_row_keyboard_order(&mut state, &RECENT_SORT_NAMES),
+        drawn
+    );
+    let mut next = drawn[1..].to_vec();
+    next.push(drawn[0]);
+    assert_eq!(
+        recent_sort_relative_walk(&mut state, &drawn, crate::input::KeybindAction::NextAgent),
+        next
+    );
+    let mut previous = vec![drawn[drawn.len() - 1]];
+    previous.extend_from_slice(&drawn[..drawn.len() - 1]);
+    assert_eq!(
+        recent_sort_relative_walk(
+            &mut state,
+            &drawn,
+            crate::input::KeybindAction::PreviousAgent
+        ),
+        previous
+    );
+}
+
+/// The #353 sink is consistent in `recent`: a stale row drops below every
+/// live row, including the unknown-age one. With `dim_stale_agents` off
+/// it keeps its `idle_seconds` place, still after every shorter idle.
+#[test]
+fn recent_sort_sinks_stale_rows_only_while_dim_stale_agents_is_on() {
+    let mut state = recent_sort_state(false);
+    let drawn = stale_row_drawn_order(&mut state, &RECENT_SORT_NAMES);
+    assert_eq!(
+        drawn,
+        [
+            "work-new",
+            "block-new",
+            "work-old",
+            "idle-new",
+            "idle-old",
+            "idle-stale",
+            "idle-unknown",
+        ]
+    );
+    assert_eq!(
+        stale_row_keyboard_order(&mut state, &RECENT_SORT_NAMES),
+        drawn
+    );
+}
+
+#[test]
+fn cycle_agent_panel_sort_key_recent_sort_repaints_and_persists_each_step() {
+    use crate::config::AgentPanelSortConfig;
+
+    let path = recent_sort_preferences_path("key");
+    let mut state = ClientShellState::new(
+        ClientShellConfig::from_config(&Config::default()).with_preferences_path(path.clone()),
+    );
+    state.set_snapshot(Box::new(recent_sort_snapshot()));
+    state.set_pane_surface(surface());
+    assert_eq!(recent_sort_header_label(&mut state), "grouped");
+
+    for (sort, label) in [
+        (AgentPanelSortConfig::Priority, "priority"),
+        (AgentPanelSortConfig::Recent, "recent"),
+        (AgentPanelSortConfig::Spaces, "grouped"),
+    ] {
+        let mut outcome = ClientShellInput::default();
+        state.record_binding(
+            crate::input::KeybindMatch::Action(crate::input::KeybindAction::CycleAgentPanelSort),
+            &mut outcome,
+        );
+        assert!(outcome.repaint, "cycling to {label} must repaint");
+        assert!(outcome.actions.is_empty(), "the sort is client-local");
+        assert_eq!(recent_sort_header_label(&mut state), label);
+        assert_eq!(recent_sort_reloaded(&path), (sort, true));
+    }
+
+    // The default binding reaches the same action: prefix, then `a`.
+    state.mode = ClientShellMode::Navigate;
+    state.handle_raw_events(vec![RawInputEvent::Key(crate::input::TerminalKey::new(
+        KeyCode::Char('a'),
+        KeyModifiers::empty(),
+    ))]);
+    assert_eq!(recent_sort_header_label(&mut state), "priority");
+    assert_eq!(
+        recent_sort_reloaded(&path),
+        (AgentPanelSortConfig::Priority, true)
+    );
+    std::fs::remove_file(path).expect("remove agent sort preferences");
+}
+
+#[test]
+fn agent_sort_header_click_recent_sort_walks_all_three_values() {
+    use crate::config::AgentPanelSortConfig;
+
+    let path = recent_sort_preferences_path("click");
+    let mut state = ClientShellState::new(
+        ClientShellConfig::from_config(&Config::default()).with_preferences_path(path.clone()),
+    );
+    state.set_snapshot(Box::new(recent_sort_snapshot()));
+    state.set_pane_surface(surface());
+
+    for (sort, label) in [
+        (AgentPanelSortConfig::Priority, "priority"),
+        (AgentPanelSortConfig::Recent, "recent"),
+        (AgentPanelSortConfig::Spaces, "grouped"),
+    ] {
+        state.compose(106, 60).expect("agent panel frame");
+        let toggle = state.hits.agent_sort_toggle;
+        let click =
+            state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: toggle.x,
+                row: toggle.y,
+                modifiers: KeyModifiers::empty(),
+            })]);
+        assert!(click.repaint, "clicking to {label} must repaint");
+        assert!(click.actions.is_empty(), "the sort is client-local");
+        assert_eq!(recent_sort_header_label(&mut state), label);
+        assert_eq!(recent_sort_reloaded(&path), (sort, true));
+        if sort == AgentPanelSortConfig::Recent {
+            assert_eq!(
+                stale_row_drawn_order(&mut state, &RECENT_SORT_NAMES)[..3],
+                ["work-new", "block-new", "work-old"]
+            );
+        }
+    }
+    std::fs::remove_file(path).expect("remove agent sort preferences");
+}
+
+/// A newer client may save a sort this build does not know. Loading it
+/// must keep every other saved choice, fall back to the config default
+/// for the sort (not the older-client `agent_panel_sort` key: the v2 key
+/// wins), and say so exactly once. Saving another preference must write
+/// the newer client's keys back verbatim; only an explicit sort choice here
+/// replaces them.
+#[test]
+fn recent_sort_unknown_saved_value_loads_config_default_with_one_warning() {
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+    use tracing_subscriber::layer::SubscriberExt as _;
+
+    struct WarnCounter(Arc<AtomicUsize>);
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for WarnCounter {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            if *event.metadata().level() == tracing::Level::WARN {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+    }
+
+    let path = recent_sort_preferences_path("unknown");
+    std::fs::write(
+        &path,
+        r#"{"sidebar_width":30,"view_mode":"flat","agent_panel_sort":"spaces","agent_panel_sort_v2":"oldest"}"#,
+    )
+    .expect("write preferences");
+    let mut config = Config::default();
+    config.ui.agent_panel_sort = crate::config::AgentPanelSortConfig::Priority;
+    let config = ClientShellConfig::from_config(&config);
+    let warnings = Arc::new(AtomicUsize::new(0));
+    let subscriber = tracing_subscriber::registry().with(WarnCounter(warnings.clone()));
+    let mut state = tracing::subscriber::with_default(subscriber, || {
+        ClientShellState::new(config.with_preferences_path(path.clone()))
+    });
+
+    assert_eq!(
+        state.config.agent_panel_sort,
+        crate::config::AgentPanelSortConfig::Priority
+    );
+    assert!(!state.agent_panel_sort_manual);
+    assert_eq!(
+        (state.sidebar_width, state.sidebar_width_manual),
+        (30, true)
+    );
+    assert_eq!(state.view_mode, crate::config::ViewMode::Flat);
+    assert_eq!(warnings.load(Ordering::SeqCst), 1);
+
+    let saved = |path: &std::path::Path| -> serde_json::Value {
+        serde_json::from_str(&std::fs::read_to_string(path).expect("read preferences"))
+            .expect("preferences json")
+    };
+    let mut outcome = ClientShellInput::default();
+    state.record_binding(
+        crate::input::KeybindMatch::Action(crate::input::KeybindAction::CycleViewMode),
+        &mut outcome,
+    );
+    assert_eq!(
+        saved(&path),
+        serde_json::json!({
+            "sidebar_width": 30,
+            "view_mode": "folders",
+            "agent_panel_sort": "spaces",
+            "agent_panel_sort_v2": "oldest",
+        })
+    );
+
+    state.record_binding(
+        crate::input::KeybindMatch::Action(crate::input::KeybindAction::CycleAgentPanelSort),
+        &mut outcome,
+    );
+    assert_eq!(
+        saved(&path),
+        serde_json::json!({
+            "sidebar_width": 30,
+            "view_mode": "folders",
+            "agent_panel_sort_v2": "recent",
+        })
+    );
     std::fs::remove_file(path).expect("remove agent sort preferences");
 }
 

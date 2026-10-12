@@ -505,14 +505,39 @@ fn agent_navigation_reveals_target_using_destination_sort() {
 fn stale_row_two_machine_state() -> (ClientShellState, ClientEndpointId) {
     use crate::api::schema::AgentStatus;
 
+    two_machine_agent_state(
+        crate::config::AgentPanelSortConfig::Priority,
+        [
+            ("loc-live", AgentStatus::Working, 1, None),
+            ("loc-stale", AgentStatus::Idle, 2, Some(7_200)),
+        ],
+        [
+            ("far-live", AgentStatus::Idle, 3, Some(30)),
+            ("far-stale", AgentStatus::Done, 4, Some(9_000)),
+        ],
+    )
+}
+
+/// One machine's two agents (`pane_1`, `pane_2`): name, status,
+/// `state_change_seq`, and the pane's `idle_seconds`.
+type MachineAgentRows<'a> = [(&'a str, crate::api::schema::AgentStatus, u64, Option<u64>); 2];
+
+/// Local and an online `Build` machine, each with two agents; the local
+/// snapshot arrives first, so every remote change is the more recent one
+/// in the client-observed `agent_recency`.
+fn two_machine_agent_state(
+    sort: crate::config::AgentPanelSortConfig,
+    local: MachineAgentRows<'_>,
+    remote_agents: MachineAgentRows<'_>,
+) -> (ClientShellState, ClientEndpointId) {
     let mut config = Config::default();
-    config.ui.agent_panel_sort = crate::config::AgentPanelSortConfig::Priority;
+    config.ui.agent_panel_sort = sort;
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
     let profile = remote_profile();
     let remote = ClientEndpointId::Ssh(profile.id.clone());
     state.set_endpoint_catalog(&[profile]);
     state.set_endpoint_status(&remote, ClientEndpointStatus::Online);
-    let projection = |boot_id: &str, agents: [(&str, AgentStatus, u64, Option<u64>); 2]| {
+    let projection = |boot_id: &str, agents: MachineAgentRows<'_>| {
         let mut projected = snapshot();
         projected.boot_id = boot_id.into();
         let template = projected.panes[0].clone();
@@ -534,37 +559,14 @@ fn stale_row_two_machine_state() -> (ClientShellState, ClientEndpointId) {
         }
         projected
     };
-    state.set_snapshot(Box::new(projection(
-        "boot-1",
-        [
-            ("loc-live", AgentStatus::Working, 1, None),
-            ("loc-stale", AgentStatus::Idle, 2, Some(7_200)),
-        ],
-    )));
+    state.set_snapshot(Box::new(projection("boot-1", local)));
     state.set_pane_surface(surface());
-    state.set_endpoint_snapshot(
-        &remote,
-        Box::new(projection(
-            "remote-boot",
-            [
-                ("far-live", AgentStatus::Idle, 3, Some(30)),
-                ("far-stale", AgentStatus::Done, 4, Some(9_000)),
-            ],
-        )),
-    );
+    state.set_endpoint_snapshot(&remote, Box::new(projection("remote-boot", remote_agents)));
     (state, remote)
 }
 
-/// ceo-bora#353 across machines: in `priority` order the stale rows sink
-/// below every live row of every machine, and `FocusAgent(n)` walks
-/// exactly the order the panel draws -- both read off the same
-/// `aggregate_agent_rows`, compared here against the rendered frame.
-#[test]
-fn stale_row_navigation_walks_the_order_the_panel_draws() {
-    let names = ["loc-stale", "loc-live", "far-stale", "far-live"];
-    let build = stale_row_two_machine_state;
-
-    let (mut state, _) = build();
+/// Agent names top to bottom as the multi-machine panel drew them.
+fn two_machine_drawn_order<'a>(state: &mut ClientShellState, names: &[&'a str]) -> Vec<&'a str> {
     let frame = state.compose(100, 40).expect("combined endpoint frame");
     let body = state.hits.agent_body;
     let mut drawn = names
@@ -575,10 +577,40 @@ fn stale_row_navigation_walks_the_order_the_panel_draws() {
         })
         .collect::<Vec<_>>();
     drawn.sort_by_key(|(position, _)| *position);
-    let drawn = drawn.into_iter().map(|(_, name)| name).collect::<Vec<_>>();
-    assert_eq!(drawn, ["loc-live", "far-live", "far-stale", "loc-stale"]);
+    drawn.into_iter().map(|(_, name)| name).collect()
+}
 
-    let walked = (0..names.len())
+/// ceo-bora#353 across machines: in `priority` order the stale rows sink
+/// below every live row of every machine, and `FocusAgent(n)` walks
+/// exactly the order the panel draws -- both read off the same
+/// `aggregate_agent_rows`, compared here against the rendered frame.
+#[test]
+fn stale_row_navigation_walks_the_order_the_panel_draws() {
+    let (mut state, _) = stale_row_two_machine_state();
+    let drawn = two_machine_drawn_order(
+        &mut state,
+        &["loc-stale", "loc-live", "far-stale", "far-live"],
+    );
+    assert_eq!(drawn, ["loc-live", "far-live", "far-stale", "loc-stale"]);
+    assert_eq!(
+        two_machine_focus_walk(
+            stale_row_two_machine_state,
+            ["loc-live", "loc-stale"],
+            ["far-live", "far-stale"],
+        ),
+        drawn
+    );
+}
+
+/// The names `FocusAgent(0..4)` reach, each from a fresh `build()` (a
+/// focus activates the target's machine). `local`/`remote` name each
+/// machine's `pane_1` and `pane_2`.
+fn two_machine_focus_walk<'a>(
+    build: impl Fn() -> (ClientShellState, ClientEndpointId),
+    local: [&'a str; 2],
+    remote_names: [&'a str; 2],
+) -> Vec<&'a str> {
+    (0..4)
         .map(|index| {
             let (mut state, remote) = build();
             state.compose(100, 40).expect("combined endpoint frame");
@@ -597,16 +629,61 @@ fn stale_row_navigation_walks_the_order_the_panel_draws() {
                     outcome.actions
                 );
             };
-            match (endpoint_id == &remote, pane_id.as_str()) {
-                (false, "pane_1") => "loc-live",
-                (false, "pane_2") => "loc-stale",
-                (true, "pane_1") => "far-live",
-                (true, "pane_2") => "far-stale",
+            let names = if endpoint_id == &remote {
+                remote_names
+            } else {
+                local
+            };
+            match pane_id.as_str() {
+                "pane_1" => names[0],
+                "pane_2" => names[1],
                 other => panic!("unexpected target {other:?}"),
             }
         })
-        .collect::<Vec<_>>();
-    assert_eq!(walked, drawn);
+        .collect()
+}
+
+/// ceo-bora#354 across machines: each server's `state_change_seq` is its
+/// own counter, so `recent` ranks live rows by the client-observed
+/// recency (every remote change arrived later here) and idle rows by
+/// `idle_seconds`, a clock that does compare across machines. `priority`
+/// would draw `far-idle` (the more recent change) above `loc-idle`.
+fn recent_sort_two_machine_state() -> (ClientShellState, ClientEndpointId) {
+    use crate::api::schema::AgentStatus;
+
+    two_machine_agent_state(
+        crate::config::AgentPanelSortConfig::Recent,
+        [
+            ("loc-work", AgentStatus::Working, 7, None),
+            ("loc-idle", AgentStatus::Idle, 8, Some(30)),
+        ],
+        [
+            ("far-idle", AgentStatus::Idle, 1, Some(600)),
+            ("far-work", AgentStatus::Working, 2, None),
+        ],
+    )
+}
+
+#[test]
+fn recent_sort_ranks_rows_across_machines_and_keeps_offline_rows_last() {
+    let names = ["loc-work", "loc-idle", "far-idle", "far-work"];
+    let (mut state, remote) = recent_sort_two_machine_state();
+    let drawn = two_machine_drawn_order(&mut state, &names);
+    assert_eq!(drawn, ["far-work", "loc-work", "loc-idle", "far-idle"]);
+    assert_eq!(
+        two_machine_focus_walk(
+            recent_sort_two_machine_state,
+            ["loc-work", "loc-idle"],
+            ["far-idle", "far-work"],
+        ),
+        drawn
+    );
+
+    state.set_endpoint_status(&remote, ClientEndpointStatus::Reconnecting);
+    assert_eq!(
+        two_machine_drawn_order(&mut state, &names),
+        ["loc-work", "loc-idle", "far-work", "far-idle"]
+    );
 }
 
 /// The multi-machine collapsed rail dims an idle-stale online row across
