@@ -12,6 +12,19 @@ impl ClientShellState {
         self.persist_chrome_preferences(outcome);
     }
 
+    /// Cycle the agent panel order (spaces -> priority -> recent). Shared by
+    /// `keys.cycle_agent_panel_sort` and the panel header click, so both walk
+    /// all three values and save the choice the same way: client-local, in
+    /// this endpoint's preferences file. The order changes under the list,
+    /// so it scrolls back to the top.
+    pub(super) fn cycle_agent_panel_sort(&mut self, outcome: &mut ClientShellInput) {
+        self.config.agent_panel_sort = self.config.agent_panel_sort.cycle();
+        self.agent_panel_sort_manual = true;
+        self.agent_scroll = 0;
+        outcome.repaint = true;
+        self.persist_chrome_preferences(outcome);
+    }
+
     pub(super) fn record_binding(
         &mut self,
         binding: crate::input::KeybindMatch,
@@ -32,6 +45,11 @@ impl ClientShellState {
             }
             crate::input::KeybindMatch::Action(crate::input::KeybindAction::CycleViewMode) => {
                 self.cycle_view_mode(outcome);
+            }
+            crate::input::KeybindMatch::Action(
+                crate::input::KeybindAction::CycleAgentPanelSort,
+            ) => {
+                self.cycle_agent_panel_sort(outcome);
             }
             crate::input::KeybindMatch::Action(action) => {
                 if self.workspace_preview_action_blocked()

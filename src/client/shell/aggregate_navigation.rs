@@ -176,10 +176,12 @@ pub(super) fn aggregate_agent_rows<'a>(
     rows
 }
 
-/// `priority` re-sorts across machines, so the idle-stale sink runs after
-/// it, inside each online/offline block (offline machines' cached rows
-/// stay last, below every online row). `spaces` keeps machine order and
-/// sinks inside each machine's workspace runs.
+/// `priority` and `recent` re-sort across machines, so the idle-stale sink
+/// runs after them, inside each online/offline block (offline machines'
+/// cached rows stay last, below every online row). `recent` ranks by
+/// `agent_sidebar::recent_sort_key` with the client-observed `recency` as
+/// its activity, since each server's `state_change_seq` is its own counter.
+/// `spaces` keeps machine order and sinks inside each machine's workspace runs.
 fn order_aggregate_rows(
     rows: &mut [AggregateAgentRow<'_>],
     sort: crate::config::AgentPanelSortConfig,
@@ -191,6 +193,26 @@ fn order_aggregate_rows(
                     row.endpoint.stale(),
                     std::cmp::Reverse(status_priority(row.agent.agent_status)),
                     std::cmp::Reverse(row.recency),
+                )
+            });
+            super::agent_sidebar::sink_idle_stale_rows(
+                rows,
+                |row| row.endpoint.stale(),
+                |row| row.sink_idle_stale,
+            );
+        }
+        crate::config::AgentPanelSortConfig::Recent => {
+            rows.sort_by_cached_key(|row| {
+                (
+                    row.endpoint.stale(),
+                    super::agent_sidebar::recent_sort_key(
+                        row.agent.agent_status,
+                        super::agent_sidebar::pane_idle_seconds(
+                            row.endpoint.snapshot,
+                            &row.agent.pane_id,
+                        ),
+                        row.recency,
+                    ),
                 )
             });
             super::agent_sidebar::sink_idle_stale_rows(

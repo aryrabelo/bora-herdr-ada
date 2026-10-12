@@ -71,6 +71,7 @@ pub(crate) enum KeybindAction {
     Detach,
     OpenNavigator,
     CycleViewMode,
+    CycleAgentPanelSort,
 }
 
 pub(crate) fn resolve_direct_binding(
@@ -149,6 +150,10 @@ pub(crate) fn resolve_non_indexed_action(
         (&keybinds.resize_pane_right, KeybindAction::ResizePaneRight),
         (&keybinds.toggle_sidebar, KeybindAction::ToggleSidebar),
         (&keybinds.cycle_view_mode, KeybindAction::CycleViewMode),
+        (
+            &keybinds.cycle_agent_panel_sort,
+            KeybindAction::CycleAgentPanelSort,
+        ),
         (&keybinds.reload_config, KeybindAction::ReloadConfig),
         (
             &keybinds.open_notification_target,

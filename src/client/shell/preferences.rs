@@ -24,12 +24,43 @@ pub(super) struct ClientChromePreferences {
     pub(super) sidebar_collapsed: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) view_mode: Option<crate::config::ViewMode>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_agent_panel_sort"
+    )]
     pub(super) agent_panel_sort: Option<crate::config::AgentPanelSortConfig>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(super) collapsed_groups: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(super) remote_collapsed_groups: Vec<ClientRemoteCollapsedGroups>,
+}
+
+/// A saved sort a newer client wrote (a value this build does not know)
+/// must not cost the whole preferences file: `load` would otherwise fail and
+/// drop the sidebar width, collapse state and every other saved choice with
+/// it. The unknown value reads as "not saved", so the config default applies,
+/// and one warning names it (ceo-bora#354).
+fn deserialize_agent_panel_sort<'de, D>(
+    deserializer: D,
+) -> Result<Option<crate::config::AgentPanelSortConfig>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let Some(value) = Option::<serde_json::Value>::deserialize(deserializer)? else {
+        return Ok(None);
+    };
+    match crate::config::AgentPanelSortConfig::deserialize(&value) {
+        Ok(sort) => Ok(Some(sort)),
+        Err(error) => {
+            tracing::warn!(
+                saved = %value,
+                %error,
+                "ignoring unknown saved agent_panel_sort; using the config default"
+            );
+            Ok(None)
+        }
+    }
 }
 
 pub(super) fn path_for_local_endpoint(socket_path: &Path) -> PathBuf {
