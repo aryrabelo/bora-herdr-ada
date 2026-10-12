@@ -381,6 +381,21 @@ today's upstream sync.)
   test module (`cargo nextest run -E 'test(<area>)'`) before trusting `cargo check`.
   A green compile is evidence the tree builds; it is not evidence the tree still does
   what its tests claim. (learned 2026-09-24, binding.)
+- **"Keep ours" on `docs/preview/` only covers files that CONFLICT. Files upstream ADDS there
+  arrive silently and break the snapshot check.** The `5b997b8d` sync (2563803d) brought
+  `add-herdr-support.mdx` (en/ja/zh-cn) into `docs/preview/website`. `72a87ee2` kept the
+  fork's snapshot for the conflicting files, but these three were additions, so they merged
+  clean, and `node scripts/docs/preview.mjs check` failed from then on. It compares the
+  snapshot against `distribution/preview.json`'s commit, and `validate` (distribution.yml) and
+  `build` (website.yml) stayed red on `main` from 2026-10-09 to 2026-10-12. After every sync,
+  run `node scripts/docs/preview.mjs check`. If it fails, repair with
+  `node scripts/docs/preview.mjs snapshot <preview.json commit>`, the same command Preview CI
+  runs, and confirm the diff is only the upstream additions. Never edit the files by hand.
+  `scripts/review_rules.py` still flags that repair as a hand-edit of generated output,
+  because a deletion can never be merge-inherited. So land the repair as a direct commit on
+  `main` and name the snapshot command in the commit body. Never route it through a PR the
+  gate would block, and never dispatch Preview just for this: Preview publishes a new
+  prerelease. (learned 2026-10-12, binding.)
 - **Upstream-only release machinery stays verbatim and unwired.** `validate-release-source`,
   `update-nix-package` (`.github/workflows/release.yml`), `scripts/release.py`
   (+`scripts/test_release.py`, kept in `maintenance-test` so a sync can't silently break
