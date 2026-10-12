@@ -914,6 +914,63 @@ fn idle_tier_colors_a_fresh_and_a_stale_agent_name_from_the_rendered_buffer() {
     );
 }
 
+/// ceo-bora#352 live-smoke defect: the server stamps `idle_seconds` only when
+/// it builds a snapshot, so on a quiet screen a Fresh row stayed teal until
+/// some unrelated snapshot arrived. Here no second snapshot is ever sent;
+/// only the client's poll tick advances time, and the row must still cross
+/// Fresh -> Plain and ask for the repaint that draws it.
+#[test]
+fn idle_tier_row_crosses_fresh_to_plain_without_a_new_snapshot() {
+    let mut projected = snapshot();
+    projected.panes[0].idle_seconds = Some(899);
+    projected.agents = vec![ClientShellAgent {
+        pane_id: "pane_1".into(),
+        workspace_id: "ws_1".into(),
+        tab_id: "tab_1".into(),
+        name: Some("ageing-agent".into()),
+        display_agent: None,
+        agent: Some("pi".into()),
+        title: None,
+        terminal_title: None,
+        terminal_title_stripped: None,
+        agent_status: AgentStatus::Idle,
+        state_change_seq: 1,
+        state_labels: Vec::new(),
+        tokens: Vec::new(),
+        focused: false,
+    }];
+    let shell_config = ClientShellConfig::from_config(&Config::default());
+    let fresh = shell_config.palette.teal;
+    let plain = shell_config.palette.subtext0;
+    let mut state = ClientShellState::new(shell_config);
+    state.set_snapshot(Box::new(projected));
+    state.set_pane_surface(surface());
+    let name_fg = |state: &mut ClientShellState| {
+        let frame = state.compose(106, 30).expect("agent sidebar frame");
+        let row = state.hits.agents.first().expect("agent row hit").0;
+        let (x, y) = cell_symbol_position(&frame, row, "ageing-agent");
+        frame
+            .to_ratatui_buffer()
+            .expect("agent sidebar buffer")
+            .cell((x, y))
+            .expect("agent name cell")
+            .fg
+    };
+    assert_eq!(name_fg(&mut state), fresh);
+
+    let start = std::time::Instant::now();
+    assert!(
+        !state.tick_idle_ageing(start),
+        "the first tick only takes the baseline"
+    );
+    assert_eq!(name_fg(&mut state), fresh);
+    assert!(
+        state.tick_idle_ageing(start + std::time::Duration::from_secs(1)),
+        "crossing the 15-minute fresh edge must request a repaint"
+    );
+    assert_eq!(name_fg(&mut state), plain);
+}
+
 #[test]
 fn workspace_state_text_does_not_stack_terminal_faint() {
     use crate::config::SpaceSidebarToken;

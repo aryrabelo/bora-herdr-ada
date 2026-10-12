@@ -113,6 +113,57 @@ pub(in crate::client::shell) fn idle_tier(
     Some(IdleTier::Plain)
 }
 
+/// Client-side ageing of one cached snapshot's `ClientShellPane.idle_seconds`
+/// (ceo-bora#352 follow-up). The server stamps `idle_seconds` when it builds
+/// a snapshot and sends a new one only when something else changes, so on a
+/// quiet screen the fact froze and neither an idle tier nor the
+/// `idle_attention_seconds` ramp could cross its edge. The client ages it
+/// instead: `advance(now)` returns the whole seconds elapsed since the last
+/// call, measured from a baseline taken on the first call after the snapshot
+/// was cached. The clock is passed in, never read here, so tests drive it
+/// deterministically (same rule as the frame-counter spinner).
+#[derive(Debug, Clone, Copy, Default)]
+pub(in crate::client::shell) struct IdleAge {
+    baseline: Option<std::time::Instant>,
+    applied_seconds: u64,
+}
+
+impl IdleAge {
+    pub(in crate::client::shell) fn advance(&mut self, now: std::time::Instant) -> u64 {
+        let Some(baseline) = self.baseline else {
+            self.baseline = Some(now);
+            return 0;
+        };
+        let elapsed = now.saturating_duration_since(baseline).as_secs();
+        let seconds = elapsed.saturating_sub(self.applied_seconds);
+        self.applied_seconds = elapsed;
+        seconds
+    }
+}
+
+/// Add `seconds` to every pane's known `idle_seconds` and report whether any
+/// pane crossed one of `edges` (the attention ramp and both tier edges; `0`
+/// edges are disabled) -- the only case where the aged value changes what a
+/// frame draws, so the caller repaints on `true` and stays idle otherwise.
+pub(in crate::client::shell) fn age_idle_seconds(
+    snapshot: &mut ClientShellSnapshot,
+    seconds: u64,
+    edges: [u64; 3],
+) -> bool {
+    let mut crossed = false;
+    for pane in &mut snapshot.panes {
+        let Some(before) = pane.idle_seconds else {
+            continue;
+        };
+        let after = before.saturating_add(seconds);
+        pane.idle_seconds = Some(after);
+        crossed |= edges
+            .iter()
+            .any(|&edge| edge > 0 && before < edge && after >= edge);
+    }
+    crossed
+}
+
 /// Aggregate `(waiting, blocked)` counts across the whole snapshot, for the
 /// sidebar header's "N waiting" badge. Channel workspaces (label prefixed
 /// `#`, ceo-bora#31/#33) contribute no panes: their panes go quiet by
@@ -279,6 +330,37 @@ mod tests {
             None
         );
         assert_eq!(idle_tier(AgentStatus::Idle, None, 900, 7_200), None);
+    }
+
+    #[test]
+    fn idle_tier_age_baselines_first_then_counts_whole_seconds() {
+        let start = std::time::Instant::now();
+        let mut age = IdleAge::default();
+        assert_eq!(age.advance(start), 0);
+        assert_eq!(
+            age.advance(start + std::time::Duration::from_millis(900)),
+            0
+        );
+        assert_eq!(
+            age.advance(start + std::time::Duration::from_millis(2_500)),
+            2
+        );
+        assert_eq!(age.advance(start + std::time::Duration::from_secs(3)), 1);
+    }
+
+    #[test]
+    fn idle_tier_ageing_reports_only_an_edge_crossing() {
+        let mut snapshot = crate::client::shell::tests::snapshot();
+        snapshot.panes[0].idle_seconds = Some(898);
+        assert!(!age_idle_seconds(&mut snapshot, 1, [300, 900, 7_200]));
+        assert_eq!(snapshot.panes[0].idle_seconds, Some(899));
+        assert!(age_idle_seconds(&mut snapshot, 1, [300, 900, 7_200]));
+        assert_eq!(snapshot.panes[0].idle_seconds, Some(900));
+        assert!(!age_idle_seconds(&mut snapshot, 10_000, [0, 0, 0]));
+
+        snapshot.panes[0].idle_seconds = None;
+        assert!(!age_idle_seconds(&mut snapshot, 10_000, [300, 900, 7_200]));
+        assert_eq!(snapshot.panes[0].idle_seconds, None);
     }
 
     #[test]

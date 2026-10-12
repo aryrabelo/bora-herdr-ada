@@ -22,6 +22,10 @@ pub(crate) struct ClientShellEndpoint {
     pending_agent_view_projection: Option<ClientEndpointAgentViewProjection>,
     pub(crate) agent_view_projection_supported: bool,
     pub(crate) methods: Option<HashSet<String>>,
+    /// Client-side ageing of `snapshot`'s pane `idle_seconds` between server
+    /// snapshots (`attention::IdleAge`, ceo-bora#352). Reset whenever a new
+    /// snapshot is cached; advanced by `ClientShellState::tick_idle_ageing`.
+    pub(super) idle_age: super::attention::IdleAge,
 }
 
 pub(super) struct MachineHit {
@@ -88,6 +92,9 @@ impl ClientShellState {
                 agent_view_projection_supported: previous
                     .is_some_and(|endpoint| endpoint.agent_view_projection_supported),
                 methods: previous.and_then(|endpoint| endpoint.methods.clone()),
+                idle_age: previous
+                    .map(|endpoint| endpoint.idle_age)
+                    .unwrap_or_default(),
             });
         }
 
@@ -622,6 +629,7 @@ impl ClientShellState {
         endpoint.agent_recency = recency;
         endpoint.snapshot_generation = generation;
         endpoint.snapshot = Some(snapshot);
+        endpoint.idle_age = Default::default();
         let pending_matches =
             endpoint
                 .pending_agent_view_projection
@@ -742,5 +750,6 @@ pub(super) fn local_endpoint() -> ClientShellEndpoint {
         pending_agent_view_projection: None,
         agent_view_projection_supported: false,
         methods: None,
+        idle_age: Default::default(),
     }
 }

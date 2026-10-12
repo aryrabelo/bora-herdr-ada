@@ -2080,6 +2080,40 @@ impl ClientShellState {
         false
     }
 
+    /// Age every cached snapshot's pane `idle_seconds` by the wall time since
+    /// it arrived (`attention::IdleAge`, ceo-bora#352) and return whether a
+    /// pane crossed an idle-tier or `idle_attention_seconds` edge, i.e.
+    /// whether the next frame draws differently. Called from the client's
+    /// existing ~100ms poll (`timer_delay`) with that poll's `now`; ages in
+    /// whole seconds, so between edge crossings it costs one `Instant`
+    /// subtraction per endpoint and never forces a repaint. The active
+    /// `self.snapshot` is a clone of its endpoint's cached snapshot, so it
+    /// takes the same increment and stays in step.
+    pub(crate) fn tick_idle_ageing(&mut self, now: std::time::Instant) -> bool {
+        let edges = [
+            self.config.idle_attention_seconds,
+            self.config.idle_fresh_seconds,
+            self.config.idle_stale_seconds,
+        ];
+        let mut crossed = false;
+        for endpoint in &mut self.endpoints {
+            let Some(snapshot) = endpoint.snapshot.as_deref_mut() else {
+                continue;
+            };
+            let seconds = endpoint.idle_age.advance(now);
+            if seconds == 0 {
+                continue;
+            }
+            crossed |= attention::age_idle_seconds(snapshot, seconds, edges);
+            if endpoint.endpoint_id == self.active_endpoint_id {
+                if let Some(active) = self.snapshot.as_deref_mut() {
+                    crossed |= attention::age_idle_seconds(active, seconds, edges);
+                }
+            }
+        }
+        crossed
+    }
+
     pub(crate) fn timer_delay(&self, now: std::time::Instant) -> std::time::Duration {
         let default = std::time::Duration::from_millis(100);
         self.selection_autoscroll_deadline
