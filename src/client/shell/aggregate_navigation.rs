@@ -46,6 +46,9 @@ pub(super) struct AggregateAgentRow<'a> {
     pub(super) endpoint: CachedEndpointSnapshot<'a>,
     pub(super) agent: &'a ClientShellAgent,
     pub(super) recency: u64,
+    /// The pane's client-aged `idle_seconds`, read once when the row is
+    /// built so the `recent` key and the stale flag never re-scan panes.
+    idle_seconds: Option<u64>,
     /// Idle-stale (`agent_sidebar::agent_is_idle_stale`) AND not held in
     /// place by an active `agent.view`: the row sinks (ceo-bora#353).
     sink_idle_stale: bool,
@@ -91,25 +94,26 @@ pub(super) fn aggregate_agent_rows<'a>(
     if let Some(Ok(view)) = active_view {
         let mut rows = cached_endpoint_snapshots(endpoints)
             .flat_map(|endpoint| {
-                endpoint
-                    .snapshot
-                    .agents
-                    .iter()
-                    .map(move |agent| AggregateAgentRow {
+                let idle_seconds = super::agent_sidebar::pane_idle_seconds_by_id(endpoint.snapshot);
+                endpoint.snapshot.agents.iter().map(move |agent| {
+                    let idle_seconds = idle_seconds.get(agent.pane_id.as_str()).copied();
+                    AggregateAgentRow {
                         recency: endpoint
                             .agent_recency
                             .get(&agent.pane_id)
                             .copied()
                             .unwrap_or_default(),
+                        idle_seconds,
                         sink_idle_stale: view.is_none()
-                            && super::agent_sidebar::agent_is_idle_stale(
-                                endpoint.snapshot,
-                                agent,
+                            && super::agent_sidebar::idle_seconds_are_stale(
+                                agent.agent_status,
+                                idle_seconds,
                                 config,
                             ),
                         endpoint,
                         agent,
-                    })
+                    }
+                })
             })
             .collect::<Vec<_>>();
         if let Some(view) = view {
@@ -146,6 +150,7 @@ pub(super) fn aggregate_agent_rows<'a>(
 
     let mut rows = cached_endpoint_snapshots(endpoints)
         .flat_map(|endpoint| {
+            let idle_seconds = super::agent_sidebar::pane_idle_seconds_by_id(endpoint.snapshot);
             super::agent_sidebar::ordered_agent_pane_ids(endpoint.snapshot, config)
                 .into_iter()
                 .filter_map(move |pane_id| {
@@ -154,16 +159,18 @@ pub(super) fn aggregate_agent_rows<'a>(
                         .agents
                         .iter()
                         .find(|agent| agent.pane_id == pane_id)?;
+                    let idle_seconds = idle_seconds.get(pane_id.as_str()).copied();
                     Some(AggregateAgentRow {
                         recency: endpoint
                             .agent_recency
                             .get(&pane_id)
                             .copied()
                             .unwrap_or_default(),
+                        idle_seconds,
                         sink_idle_stale: endpoint.snapshot.agent_view_label.is_none()
-                            && super::agent_sidebar::agent_is_idle_stale(
-                                endpoint.snapshot,
-                                agent,
+                            && super::agent_sidebar::idle_seconds_are_stale(
+                                agent.agent_status,
+                                idle_seconds,
                                 config,
                             ),
                         endpoint,
@@ -202,15 +209,12 @@ fn order_aggregate_rows(
             );
         }
         crate::config::AgentPanelSortConfig::Recent => {
-            rows.sort_by_cached_key(|row| {
+            rows.sort_by_key(|row| {
                 (
                     row.endpoint.stale(),
                     super::agent_sidebar::recent_sort_key(
                         row.agent.agent_status,
-                        super::agent_sidebar::pane_idle_seconds(
-                            row.endpoint.snapshot,
-                            &row.agent.pane_id,
-                        ),
+                        row.idle_seconds,
                         row.recency,
                     ),
                 )

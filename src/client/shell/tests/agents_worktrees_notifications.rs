@@ -1903,7 +1903,10 @@ fn agent_sort_header_click_recent_sort_walks_all_three_values() {
 
 /// A newer client may save a sort this build does not know. Loading it
 /// must keep every other saved choice, fall back to the config default
-/// for the sort, and say so exactly once.
+/// for the sort (not the older-client `agent_panel_sort` key: the v2 key
+/// wins), and say so exactly once. Saving another preference must write
+/// the newer client's keys back verbatim; only an explicit sort choice here
+/// replaces them.
 #[test]
 fn recent_sort_unknown_saved_value_loads_config_default_with_one_warning() {
     use std::sync::{
@@ -1928,7 +1931,7 @@ fn recent_sort_unknown_saved_value_loads_config_default_with_one_warning() {
     let path = recent_sort_preferences_path("unknown");
     std::fs::write(
         &path,
-        r#"{"sidebar_width":30,"view_mode":"flat","agent_panel_sort":"oldest"}"#,
+        r#"{"sidebar_width":30,"view_mode":"flat","agent_panel_sort":"spaces","agent_panel_sort_v2":"oldest"}"#,
     )
     .expect("write preferences");
     let mut config = Config::default();
@@ -1936,7 +1939,7 @@ fn recent_sort_unknown_saved_value_loads_config_default_with_one_warning() {
     let config = ClientShellConfig::from_config(&config);
     let warnings = Arc::new(AtomicUsize::new(0));
     let subscriber = tracing_subscriber::registry().with(WarnCounter(warnings.clone()));
-    let state = tracing::subscriber::with_default(subscriber, || {
+    let mut state = tracing::subscriber::with_default(subscriber, || {
         ClientShellState::new(config.with_preferences_path(path.clone()))
     });
 
@@ -1951,6 +1954,38 @@ fn recent_sort_unknown_saved_value_loads_config_default_with_one_warning() {
     );
     assert_eq!(state.view_mode, crate::config::ViewMode::Flat);
     assert_eq!(warnings.load(Ordering::SeqCst), 1);
+
+    let saved = |path: &std::path::Path| -> serde_json::Value {
+        serde_json::from_str(&std::fs::read_to_string(path).expect("read preferences"))
+            .expect("preferences json")
+    };
+    let mut outcome = ClientShellInput::default();
+    state.record_binding(
+        crate::input::KeybindMatch::Action(crate::input::KeybindAction::CycleViewMode),
+        &mut outcome,
+    );
+    assert_eq!(
+        saved(&path),
+        serde_json::json!({
+            "sidebar_width": 30,
+            "view_mode": "folders",
+            "agent_panel_sort": "spaces",
+            "agent_panel_sort_v2": "oldest",
+        })
+    );
+
+    state.record_binding(
+        crate::input::KeybindMatch::Action(crate::input::KeybindAction::CycleAgentPanelSort),
+        &mut outcome,
+    );
+    assert_eq!(
+        saved(&path),
+        serde_json::json!({
+            "sidebar_width": 30,
+            "view_mode": "folders",
+            "agent_panel_sort_v2": "recent",
+        })
+    );
     std::fs::remove_file(path).expect("remove agent sort preferences");
 }
 

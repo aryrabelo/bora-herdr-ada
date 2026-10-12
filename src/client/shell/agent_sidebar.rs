@@ -48,41 +48,57 @@ pub(super) fn ordered_agent_pane_ids(
             .cloned()
             .collect();
     }
+    let idle_seconds = pane_idle_seconds_by_id(snapshot);
     let mut agents = snapshot
         .agents
         .iter()
-        .map(|agent| (agent, agent_is_idle_stale(snapshot, agent, config)))
+        .map(|agent| {
+            let idle_seconds = idle_seconds.get(agent.pane_id.as_str()).copied();
+            OrderedAgent {
+                agent,
+                idle_seconds,
+                idle_stale: idle_seconds_are_stale(agent.agent_status, idle_seconds, config),
+            }
+        })
         .collect::<Vec<_>>();
     match config.agent_panel_sort {
         crate::config::AgentPanelSortConfig::Priority => {
-            agents.sort_by_key(|(agent, _)| {
+            agents.sort_by_key(|row| {
                 (
-                    std::cmp::Reverse(status_priority(agent.agent_status)),
-                    std::cmp::Reverse(agent.state_change_seq),
+                    std::cmp::Reverse(status_priority(row.agent.agent_status)),
+                    std::cmp::Reverse(row.agent.state_change_seq),
                 )
             });
-            sink_idle_stale_rows(&mut agents, |_| (), |(_, idle_stale)| *idle_stale);
+            sink_idle_stale_rows(&mut agents, |_| (), |row| row.idle_stale);
         }
         crate::config::AgentPanelSortConfig::Recent => {
-            agents.sort_by_cached_key(|(agent, _)| {
+            agents.sort_by_key(|row| {
                 recent_sort_key(
-                    agent.agent_status,
-                    pane_idle_seconds(snapshot, &agent.pane_id),
-                    agent.state_change_seq,
+                    row.agent.agent_status,
+                    row.idle_seconds,
+                    row.agent.state_change_seq,
                 )
             });
-            sink_idle_stale_rows(&mut agents, |_| (), |(_, idle_stale)| *idle_stale);
+            sink_idle_stale_rows(&mut agents, |_| (), |row| row.idle_stale);
         }
         crate::config::AgentPanelSortConfig::Spaces => sink_idle_stale_rows(
             &mut agents,
-            |(agent, _)| agent.workspace_id.as_str(),
-            |(_, idle_stale)| *idle_stale,
+            |row| row.agent.workspace_id.as_str(),
+            |row| row.idle_stale,
         ),
     }
     agents
         .into_iter()
-        .map(|(agent, _)| agent.pane_id.clone())
+        .map(|row| row.agent.pane_id.clone())
         .collect()
+}
+
+/// One agent while `ordered_agent_pane_ids` sorts: its pane's idle age and
+/// stale flag, each read once per ordering call.
+struct OrderedAgent<'a> {
+    agent: &'a crate::protocol::ClientShellAgent,
+    idle_seconds: Option<u64>,
+    idle_stale: bool,
 }
 
 /// The `recent` order key (ceo-bora#354): one flat list by last activity.
@@ -121,13 +137,15 @@ pub(super) fn recent_sort_key(
     }
 }
 
-/// The pane's client-aged `idle_seconds`, if the snapshot carries the pane.
-pub(super) fn pane_idle_seconds(snapshot: &ClientShellSnapshot, pane_id: &str) -> Option<u64> {
+/// Every pane's client-aged `idle_seconds` by pane id, built once per
+/// ordering call so the sort keys and the stale flags look panes up in
+/// O(1) instead of scanning `snapshot.panes` per agent on every frame.
+pub(super) fn pane_idle_seconds_by_id(snapshot: &ClientShellSnapshot) -> HashMap<&str, u64> {
     snapshot
         .panes
         .iter()
-        .find(|pane| pane.pane_id == pane_id)
-        .and_then(|pane| pane.idle_seconds)
+        .filter_map(|pane| Some((pane.pane_id.as_str(), pane.idle_seconds?)))
+        .collect()
 }
 
 /// Move every `idle_stale` row to the end of its run, where a run is a
@@ -165,6 +183,24 @@ pub(super) fn agent_is_idle_stale(
         .iter()
         .find(|pane| pane.pane_id == agent.pane_id);
     idle_tier_dims_row(agent_idle_tier(agent, pane, config), config)
+}
+
+/// `agent_is_idle_stale` for a caller that already holds the pane's
+/// `idle_seconds` (the order owners, via `pane_idle_seconds_by_id`).
+pub(super) fn idle_seconds_are_stale(
+    status: crate::api::schema::AgentStatus,
+    idle_seconds: Option<u64>,
+    config: &ClientShellConfig,
+) -> bool {
+    idle_tier_dims_row(
+        attention::idle_tier(
+            status,
+            idle_seconds,
+            config.idle_fresh_seconds,
+            config.idle_stale_seconds,
+        ),
+        config,
+    )
 }
 
 fn agent_idle_tier(
