@@ -1640,13 +1640,13 @@ mod tests {
             }
         });
 
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
+        // Keep the name short: macOS CI's temp_dir is long and a unix socket
+        // path must fit in sockaddr_un.sun_path (104 bytes there).
+        static NEXT_SOCKET: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let path = std::env::temp_dir().join(format!(
-            "herdr-prompt-wait-blocked-hold-{}-{nanos}",
-            std::process::id()
+            "herdr-pw-{}-{}",
+            std::process::id(),
+            NEXT_SOCKET.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ));
         let listener = crate::ipc::bind_local_listener(&path).unwrap();
         let _client = crate::ipc::connect_local_stream(&path).unwrap();
