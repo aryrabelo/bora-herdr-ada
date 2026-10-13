@@ -395,6 +395,7 @@ Agent 行支持以下内置 token：
 - `agent` — 检测到或报告的智能体显示名称。
 - `terminal_title` — 经过安全规范化的最新 OSC 0/2 终端标题。
 - `terminal_title_stripped` — 从终端标题开头移除一个可识别的活动或旋转指示符字形及其后空白后的结果。
+- `agent_mark` — 表示智能体类型的字形，使用 `[ui.sidebar.agents.marks]` 中该类型的颜色绘制。没有标记的类型不绘制任何内容，也不占宽度。
 - `$name` — 名为 `name` 的自定义窗格元数据。
 
 Space 行支持以下内置 token：
@@ -459,6 +460,28 @@ claude = [
 ```
 
 覆盖项会替换 `rows`，而不是扩展它。覆盖项的键是区分大小写的规范智能体 ID，例如 `claude`、`codex` 和 `pi`。不接受 `claude-code` 等检测别名。没有覆盖项的智能体（包括自定义报告的智能体）会使用 `rows`。
+
+`agent_mark` 不在默认行中；请把它加入 `rows` 或某个 `rows_by_agent` 覆盖。标记使用同样的规范智能体 ID 作为键：
+
+```toml
+[ui.sidebar.agents]
+title_by_status = true
+
+[ui.sidebar.agents.rows_by_agent]
+claude = [
+  ["state_icon", "agent_mark", "agent"],
+  ["workspace", "tab"],
+]
+
+[ui.sidebar.agents.marks]
+claude = { glyph = "\uEC82", fg = "#fab387" }
+```
+
+`glyph` 是不含控制字符的非空文本；`fg` 接受严格的 `#RGB` 或 `#RRGGBB`。红色和绿色在整个侧边栏中表示智能体状态，因此与主题红色或绿色相同的 `fg` 会被配置诊断拒绝，该 ID 若有内置标记则改用内置标记。配置的标记只替换该 ID 的内置标记。
+
+内置标记是用主题颜色绘制的 Nerd Font 字形，因此需要 JetBrainsMono Nerd Font 等 Nerd Font：`codex` `U+EC81`、`claude` `U+EC82`、`copilot` `U+EC1E`、`gemini` `U+F0AE2`、`pi` 和 `omp` `U+F03FF`、`cursor` `U+F01C0`。如果内置标记的主题颜色恰好是该主题的红色或绿色，则改用文本颜色绘制。其他智能体在你配置之前没有内置标记。`{ token = "agent_mark", bold = true }` 这样的样式表可以改变标记样式；`agent_mark` 不接受 `rules`。
+
+`title_by_status` 默认为 `false`。设为 `true` 时，working、blocked 和 done 智能体的 `agent` token 使用与 `state_icon` 相同的状态颜色。idle 智能体保留其空闲分级颜色。
 
 自定义 `$name` token 是动态值，而不是字面文本。先将 token 添加到布局，再通过脚本或插件报告其值：
 

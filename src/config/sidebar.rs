@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::app::state::Palette;
 use crate::detect::Agent;
 
 const MAX_SIDEBAR_ROWS: usize = 16;
@@ -57,6 +58,15 @@ impl SidebarTokenColor {
     pub(crate) fn ratatui(self) -> ratatui::style::Color {
         self.0
     }
+
+    /// The `#rrggbb` spelling config uses; `None` for a named theme color,
+    /// which only `from_palette` (render-time, never written to config) holds.
+    fn hex(self) -> Option<String> {
+        let ratatui::style::Color::Rgb(r, g, b) = self.0 else {
+            return None;
+        };
+        Some(format!("#{r:02x}{g:02x}{b:02x}"))
+    }
 }
 
 impl Serialize for SidebarTokenColor {
@@ -64,14 +74,12 @@ impl Serialize for SidebarTokenColor {
     where
         S: serde::Serializer,
     {
-        let ratatui::style::Color::Rgb(r, g, b) = self.0 else {
-            // Only `from_palette` (render-time, never written to config) can
-            // hold a named color, so no TOML form exists for it.
+        let Some(hex) = self.hex() else {
             return Err(serde::ser::Error::custom(
                 "sidebar token fg has no #RRGGBB form for a named theme color",
             ));
         };
-        serializer.serialize_str(&format!("#{r:02x}{g:02x}{b:02x}"))
+        serializer.serialize_str(&hex)
     }
 }
 
@@ -129,6 +137,7 @@ pub enum AgentSidebarToken {
     Agent,
     TerminalTitle,
     TerminalTitleStripped,
+    AgentMark,
     Custom(String),
     Styled {
         token: Box<AgentSidebarToken>,
@@ -214,7 +223,10 @@ impl RawSidebarToken {
                     return Err("sidebar tokens may contain at most 16 rules".into());
                 }
                 if !token.rules.is_empty()
-                    && matches!(token.token.as_str(), "state_icon" | "git_status")
+                    && matches!(
+                        token.token.as_str(),
+                        "state_icon" | "git_status" | "agent_mark"
+                    )
                 {
                     return Err("sidebar rules require a text-valued token".into());
                 }
@@ -293,6 +305,7 @@ fn agent_token_name(token: &AgentSidebarToken) -> String {
         AgentSidebarToken::Agent => "agent".into(),
         AgentSidebarToken::TerminalTitle => "terminal_title".into(),
         AgentSidebarToken::TerminalTitleStripped => "terminal_title_stripped".into(),
+        AgentSidebarToken::AgentMark => "agent_mark".into(),
         AgentSidebarToken::Custom(name) => format!("${name}"),
         AgentSidebarToken::Styled { token, .. } => agent_token_name(token),
     }
@@ -352,6 +365,7 @@ impl<'de> Deserialize<'de> for AgentSidebarToken {
                 ("agent", Self::Agent),
                 ("terminal_title", Self::TerminalTitle),
                 ("terminal_title_stripped", Self::TerminalTitleStripped),
+                ("agent_mark", Self::AgentMark),
             ],
         )
         .map_err(serde::de::Error::custom)?;
@@ -433,6 +447,105 @@ where
     Ok(rows_by_agent)
 }
 
+/// One `[ui.sidebar.agents.marks]` entry: the glyph the `agent_mark` token
+/// draws for a canonical agent id, in a strict `#RGB`/`#RRGGBB` foreground
+/// (the same syntax as an occurrence style's `fg`).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentMark {
+    pub glyph: String,
+    pub fg: SidebarTokenColor,
+}
+
+/// A built-in `agent_mark`. `fg` picks a theme `Palette` slot, resolved at
+/// render time, so a default follows the theme (named colors under the
+/// 16-color `terminal` theme). None of the slots is `red` or `green`, which
+/// belong to agent states across the whole sidebar (AGENTS.md colour
+/// reservation) -- but a theme may map a slot onto its red or green
+/// (`rose-pine`'s `blue` IS its `green`), so `mark_for_agent` draws such a
+/// mark in `text` instead.
+struct DefaultAgentMark {
+    id: &'static str,
+    glyph: &'static str,
+    fg: fn(&Palette) -> ratatui::style::Color,
+}
+
+/// Built-in marks, ONLY for glyphs measured present, codepoint by codepoint,
+/// in the operator's font file (`JetBrainsMonoNerdFontMono-Regular.ttf`,
+/// cmap parsed directly; AGENTS.md glyph-coverage rule). A canonical id with
+/// no entry here and none in `[ui.sidebar.agents.marks]` draws nothing.
+const DEFAULT_AGENT_MARKS: &[DefaultAgentMark] = &[
+    // nf-cod-openai
+    DefaultAgentMark {
+        id: "codex",
+        glyph: "\u{EC81}",
+        fg: |palette| palette.text,
+    },
+    // nf-cod-claude
+    DefaultAgentMark {
+        id: "claude",
+        glyph: "\u{EC82}",
+        fg: |palette| palette.peach,
+    },
+    // nf-cod-copilot
+    DefaultAgentMark {
+        id: "copilot",
+        glyph: "\u{EC1E}",
+        fg: |palette| palette.overlay1,
+    },
+    // nf-md-star_four_points
+    DefaultAgentMark {
+        id: "gemini",
+        glyph: "\u{F0AE2}",
+        fg: |palette| palette.blue,
+    },
+    // nf-md-pi
+    DefaultAgentMark {
+        id: "pi",
+        glyph: "\u{F03FF}",
+        fg: |palette| palette.mauve,
+    },
+    // nf-md-pi: omp is pi lineage; its colour tells the two apart.
+    DefaultAgentMark {
+        id: "omp",
+        glyph: "\u{F03FF}",
+        fg: |palette| palette.subtext0,
+    },
+    // nf-md-cursor_default
+    DefaultAgentMark {
+        id: "cursor",
+        glyph: "\u{F01C0}",
+        fg: |palette| palette.text,
+    },
+];
+
+/// Whether a mark colour is the palette's red or green, which a kind mark may
+/// never take (AGENTS.md colour reservation): the one rule behind both the
+/// config diagnostic and the render-time refusal.
+fn is_reserved_mark_color(fg: ratatui::style::Color, palette: &Palette) -> bool {
+    fg == palette.red || fg == palette.green
+}
+
+fn deserialize_agent_marks<'de, D>(deserializer: D) -> Result<BTreeMap<String, AgentMark>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let marks = BTreeMap::<String, AgentMark>::deserialize(deserializer)?;
+    for (id, mark) in &marks {
+        if crate::detect::parse_canonical_agent_label(id).is_none() {
+            return Err(serde::de::Error::custom(format!(
+                "unknown canonical agent id `{id}` in sidebar marks"
+            )));
+        }
+        if mark.glyph.is_empty() || mark.glyph.chars().any(char::is_control) {
+            return Err(serde::de::Error::custom(format!(
+                "sidebar mark glyph for `{id}` must be non-empty with no control characters"
+            )));
+        }
+    }
+    Ok(marks)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct AgentsSidebarConfig {
@@ -441,6 +554,9 @@ pub struct AgentsSidebarConfig {
     #[serde(default, deserialize_with = "deserialize_rows_by_agent")]
     pub rows_by_agent: BTreeMap<String, AgentSidebarRows>,
     pub row_gap: u16,
+    #[serde(default, deserialize_with = "deserialize_agent_marks")]
+    pub marks: BTreeMap<String, AgentMark>,
+    pub title_by_status: bool,
 }
 
 impl AgentsSidebarConfig {
@@ -448,6 +564,57 @@ impl AgentsSidebarConfig {
         agent
             .and_then(|agent| self.rows_by_agent.get(crate::detect::agent_label(agent)))
             .unwrap_or(&self.rows)
+    }
+
+    /// The `agent_mark` glyph and colour for one canonical agent: its
+    /// `[ui.sidebar.agents.marks]` entry unless that `fg` is the palette's
+    /// red or green (refused; `reserved_mark_color_diagnostics` reports it),
+    /// else the built-in default -- in `text` when its slot is this palette's
+    /// red or green. `None` draws nothing.
+    pub(crate) fn mark_for_agent(
+        &self,
+        agent: Agent,
+        palette: &Palette,
+    ) -> Option<(&str, ratatui::style::Color)> {
+        let id = crate::detect::agent_label(agent);
+        self.marks
+            .get(id)
+            .map(|mark| (mark.glyph.as_str(), mark.fg.ratatui()))
+            .filter(|(_, fg)| !is_reserved_mark_color(*fg, palette))
+            .or_else(|| {
+                let mark = DEFAULT_AGENT_MARKS.iter().find(|mark| mark.id == id)?;
+                let fg = (mark.fg)(palette);
+                if is_reserved_mark_color(fg, palette) {
+                    Some((mark.glyph, palette.text))
+                } else {
+                    Some((mark.glyph, fg))
+                }
+            })
+    }
+
+    /// One config diagnostic per `[ui.sidebar.agents.marks]` entry whose
+    /// `fg` is the red or green of any palette the theme config can resolve
+    /// to. The render path refuses the same entry (`mark_for_agent`).
+    pub(crate) fn reserved_mark_color_diagnostics(&self, palettes: &[Palette]) -> Vec<String> {
+        self.marks
+            .iter()
+            .filter_map(|(id, mark)| {
+                let fg = mark.fg.ratatui();
+                let reserved = palettes.iter().find_map(|palette| {
+                    if fg == palette.red {
+                        Some("red")
+                    } else if fg == palette.green {
+                        Some("green")
+                    } else {
+                        None
+                    }
+                })?;
+                Some(format!(
+                    "ui.sidebar.agents.marks.{id}.fg ({}) is the theme's {reserved}, reserved for agent states; ignoring this mark",
+                    mark.fg.hex().unwrap_or_default()
+                ))
+            })
+            .collect()
     }
 }
 
@@ -465,6 +632,8 @@ impl Default for AgentsSidebarConfig {
             ],
             rows_by_agent: BTreeMap::new(),
             row_gap: DEFAULT_SIDEBAR_ROW_GAP,
+            marks: BTreeMap::new(),
+            title_by_status: false,
         }
     }
 }
@@ -739,5 +908,145 @@ rows = [[{ token = "$status", rules = [{ contains = "error", bold = true }] }]]
                 "accepted key {key:?}"
             );
         }
+    }
+
+    #[test]
+    fn agent_mark_entries_parse_by_canonical_id_and_override_the_builtin() {
+        let config: crate::config::Config = toml::from_str(
+            r##"
+[ui.sidebar.agents]
+title_by_status = true
+
+[ui.sidebar.agents.rows_by_agent]
+claude = [["agent_mark", "agent"]]
+
+[ui.sidebar.agents.marks]
+claude = { glyph = "C", fg = "#89b4fa" }
+"##,
+        )
+        .expect("agent mark config");
+        let agents = &config.ui.sidebar.agents;
+        let palette = Palette::catppuccin();
+
+        assert!(agents.title_by_status);
+        assert_eq!(
+            agents.rows_by_agent["claude"],
+            vec![vec![AgentSidebarToken::AgentMark, AgentSidebarToken::Agent]]
+        );
+        assert_eq!(
+            agents.marks["claude"],
+            AgentMark {
+                glyph: "C".into(),
+                fg: SidebarTokenColor::from_palette(ratatui::style::Color::Rgb(137, 180, 250)),
+            }
+        );
+        assert_eq!(
+            agents.mark_for_agent(Agent::Claude, &palette),
+            Some(("C", ratatui::style::Color::Rgb(137, 180, 250)))
+        );
+        assert_eq!(
+            agents.mark_for_agent(Agent::Codex, &palette),
+            Some(("\u{EC81}", palette.text)),
+            "an id without a user entry keeps its built-in mark"
+        );
+        assert_eq!(agents.mark_for_agent(Agent::Devin, &palette), None);
+        assert_eq!(
+            toml::from_str::<SidebarConfig>(&toml::to_string(&config.ui.sidebar).unwrap()).unwrap(),
+            config.ui.sidebar
+        );
+
+        let defaults = AgentsSidebarConfig::default();
+        assert!(!defaults.title_by_status);
+        assert!(defaults.marks.is_empty());
+
+        for entry in [
+            r##"claude-code = { glyph = "C", fg = "#89b4fa" }"##,
+            r##"claude = { glyph = "", fg = "#89b4fa" }"##,
+            r##"claude = { glyph = "\u0007", fg = "#89b4fa" }"##,
+            r##"claude = { glyph = "C", fg = "blue" }"##,
+            r##"claude = { glyph = "C" }"##,
+            r##"claude = { glyph = "C", fg = "#89b4fa", bold = true }"##,
+        ] {
+            let input = format!("[ui.sidebar.agents.marks]\n{entry}\n");
+            assert!(
+                toml::from_str::<crate::config::Config>(&input).is_err(),
+                "accepted {entry}"
+            );
+        }
+        let input =
+            "[ui.sidebar.agents]\nrows = [[{ token = 'agent_mark', rules = [{ equals = 'x' }] }]]";
+        assert!(toml::from_str::<crate::config::Config>(input).is_err());
+    }
+
+    #[test]
+    fn agent_mark_red_or_green_fg_is_refused_with_a_config_diagnostic() {
+        let palette = Palette::catppuccin();
+        let config: crate::config::Config = toml::from_str(
+            r##"
+[ui.sidebar.agents.marks]
+claude = { glyph = "C", fg = "#f38ba8" }
+codex = { glyph = "X", fg = "#a6e3a1" }
+gemini = { glyph = "G", fg = "#89b4fa" }
+"##,
+        )
+        .expect("agent mark config");
+        let diagnostics = config.collect_diagnostics();
+        let mark_diagnostics = diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.starts_with("ui.sidebar.agents.marks."))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            mark_diagnostics,
+            vec![
+                "ui.sidebar.agents.marks.claude.fg (#f38ba8) is the theme's red, reserved for agent states; ignoring this mark",
+                "ui.sidebar.agents.marks.codex.fg (#a6e3a1) is the theme's green, reserved for agent states; ignoring this mark",
+            ],
+            "{diagnostics:?}"
+        );
+        let agents = &config.ui.sidebar.agents;
+        assert_eq!(
+            agents.mark_for_agent(Agent::Claude, &palette),
+            Some(("\u{EC82}", palette.peach)),
+            "a refused entry falls back to the built-in mark"
+        );
+        assert_eq!(
+            agents.mark_for_agent(Agent::Codex, &palette),
+            Some(("\u{EC81}", palette.text))
+        );
+        assert_eq!(
+            agents.mark_for_agent(Agent::Gemini, &palette),
+            Some(("G", ratatui::style::Color::Rgb(137, 180, 250)))
+        );
+    }
+
+    #[test]
+    fn agent_mark_builtins_are_canonical_and_never_red_or_green_in_any_theme() {
+        for mark in DEFAULT_AGENT_MARKS {
+            assert!(
+                crate::detect::parse_canonical_agent_label(mark.id).is_some(),
+                "{} is not a canonical agent id",
+                mark.id
+            );
+        }
+        let config = AgentsSidebarConfig::default();
+        for name in crate::config::THEME_NAMES {
+            let palette = Palette::from_name(name).expect("built-in theme");
+            for agent in Agent::ALL {
+                if let Some((_, fg)) = config.mark_for_agent(agent, &palette) {
+                    assert!(
+                        !is_reserved_mark_color(fg, &palette),
+                        "{agent:?} mark is red or green under {name}"
+                    );
+                }
+            }
+        }
+        let rose_pine = Palette::from_name("rose-pine").expect("rose-pine");
+        assert_eq!(rose_pine.blue, rose_pine.green);
+        assert_eq!(
+            config.mark_for_agent(Agent::Gemini, &rose_pine),
+            Some(("\u{F0AE2}", rose_pine.text)),
+            "a built-in slot that is the theme's green draws in text"
+        );
     }
 }

@@ -135,6 +135,7 @@ impl Config {
             .chain(window_title_diagnostics(&self.ui.window_title))
             .chain(self.invalid_sidebar_bounds_diagnostic())
             .chain(self.invalid_idle_tier_bounds_diagnostic())
+            .chain(self.reserved_agent_mark_color_diagnostics())
             .chain(self.invalid_headless_size_diagnostic())
             .collect()
     }
@@ -178,6 +179,27 @@ impl Config {
                 self.ui.idle_fresh_minutes, self.ui.idle_stale_minutes
             )
         })
+    }
+
+    /// `[ui.sidebar.agents.marks]` entries whose `fg` is a red or green the
+    /// client can draw with: the startup palette, plus the light one when the
+    /// theme auto-switches with the host appearance.
+    pub(crate) fn reserved_agent_mark_color_diagnostics(&self) -> Vec<String> {
+        if self.ui.sidebar.agents.marks.is_empty() {
+            return Vec::new();
+        }
+        let runtime = crate::app::client_theme_runtime_from_config(self);
+        let mut palettes = vec![crate::app::client_palette_from_config(self)];
+        if runtime.auto_switch {
+            palettes.push(crate::app::client_palette_for_theme(
+                &runtime,
+                &runtime.light_name,
+            ));
+        }
+        self.ui
+            .sidebar
+            .agents
+            .reserved_mark_color_diagnostics(&palettes)
     }
 
     pub(crate) fn remote_image_paste_key(&self) -> Result<Option<(KeyCode, KeyModifiers)>, String> {

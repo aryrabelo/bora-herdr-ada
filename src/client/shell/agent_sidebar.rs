@@ -479,11 +479,19 @@ pub(super) fn agent_row(
             terminal_title_stripped: agent.terminal_title_stripped.as_deref(),
             canonical_agent,
             tokens: &tokens,
+            palette: &config.palette,
         },
         state_text,
     );
     let idle_tier = agent_idle_tier(agent, pane, config);
-    let rows = idle_tiered_agent_token_rows(rows, idle_tier, agent.focused, &config.palette);
+    let name_color = agent_name_color(
+        agent.agent_status,
+        idle_tier,
+        agent.focused,
+        config.agents.title_by_status,
+        &config.palette,
+    );
+    let rows = recolor_agent_name_tokens(rows, name_color);
     Some(AgentRow {
         pane_id: agent.pane_id.clone(),
         status: agent.agent_status,
@@ -493,29 +501,34 @@ pub(super) fn agent_row(
     })
 }
 
-/// Recolor the `Agent`-kind token in each row by idle tier (ceo-bora#352),
-/// via the existing per-token `SidebarTokenStyle` patch channel
-/// (`apply_token_style` in `src/ui/sidebar.rs`) rather than a new style
-/// parameter threaded through the shared row renderer -- `ResolvedTokenKind::Agent`
-/// shares its `secondary_style` slot with `Machine`/`Tab`/`Pane`/`Branch`, so
-/// a per-row style override would recolor those too. `None` (Working/
-/// Blocked/Unknown) leaves the token untouched: today's hardcoded
-/// `overlay0` stands, unchanged. `Plain` explicitly repaints it to the
+/// The agent name's colour, or `None` to leave the token's style alone.
+/// With `[ui.sidebar.agents].title_by_status` on (ceo-bora#357), a Working,
+/// Blocked or Done agent's name takes `status_color`, the colour its state
+/// icon already draws in. Otherwise the idle tier (ceo-bora#352) decides:
+/// `None` (Working/Blocked/Unknown) leaves the token untouched, so today's
+/// hardcoded `overlay0` stands. `Plain` explicitly repaints it to the
 /// focus-aware base text color -- without this, it would otherwise keep
 /// that same hardcoded `overlay0`, which is not "the normal text colour"
 /// the Plain tier is supposed to show. Under the 16-color `terminal` theme
 /// the palette resolves to named colors (Fresh `Cyan`, Plain `Gray`/focused
 /// `Reset`, Stale `Gray`), carried as-is by `SidebarTokenColor::from_palette`.
-fn idle_tiered_agent_token_rows(
-    rows: Vec<Vec<crate::ui::ResolvedToken>>,
+fn agent_name_color(
+    status: crate::api::schema::AgentStatus,
     idle_tier: Option<attention::IdleTier>,
     focused: bool,
+    title_by_status: bool,
     palette: &Palette,
-) -> Vec<Vec<crate::ui::ResolvedToken>> {
-    let Some(tier) = idle_tier else {
-        return rows;
-    };
-    let color = match tier {
+) -> Option<ratatui::style::Color> {
+    use crate::api::schema::AgentStatus;
+    if title_by_status
+        && matches!(
+            status,
+            AgentStatus::Working | AgentStatus::Blocked | AgentStatus::Done
+        )
+    {
+        return Some(status_color(status, palette));
+    }
+    Some(match idle_tier? {
         attention::IdleTier::Fresh => palette.teal,
         attention::IdleTier::Stale => palette.overlay0,
         attention::IdleTier::Plain => {
@@ -525,6 +538,21 @@ fn idle_tiered_agent_token_rows(
                 palette.subtext0
             }
         }
+    })
+}
+
+/// Recolor the `Agent`-kind token in each row to `agent_name_color`, via the
+/// existing per-token `SidebarTokenStyle` patch channel (`apply_token_style`
+/// in `src/ui/sidebar.rs`) rather than a new style parameter threaded
+/// through the shared row renderer -- `ResolvedTokenKind::Agent` shares its
+/// `secondary_style` slot with `Machine`/`Tab`/`Pane`/`Branch`, so a per-row
+/// style override would recolor those too.
+fn recolor_agent_name_tokens(
+    rows: Vec<Vec<crate::ui::ResolvedToken>>,
+    color: Option<ratatui::style::Color>,
+) -> Vec<Vec<crate::ui::ResolvedToken>> {
+    let Some(color) = color else {
+        return rows;
     };
     let fg = crate::config::SidebarTokenColor::from_palette(color);
     rows.into_iter()

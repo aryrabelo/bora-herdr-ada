@@ -395,6 +395,7 @@ Agent の行では、次の組み込みトークンを使えます:
 - `agent` — 検出または報告されたエージェントの表示名。
 - `terminal_title` — 安全性のための正規化後の最新の OSC 0/2 ターミナルタイトル。
 - `terminal_title_stripped` — 認識された先頭のアクティビティまたはスピナーのグリフ 1 つと、それに続く空白を除去したターミナルタイトル。
+- `agent_mark` — エージェントの種類を表すグリフ。`[ui.sidebar.agents.marks]` のその種類の色で描画されます。マークがない種類では何も描画されず、幅も取りません。
 - `$name` — `name` という名前のカスタムペインメタデータ。
 
 Space の行では、次の組み込みトークンを使えます:
@@ -459,6 +460,28 @@ claude = [
 ```
 
 上書きは `rows` を置き換えるもので、拡張するものではありません。上書きのキーには、`claude`、`codex`、`pi` のような大文字と小文字を区別する正規エージェント ID を使います。`claude-code` のような検出エイリアスは使えません。カスタム報告されたエージェントを含め、上書きがないエージェントには `rows` が使われます。
+
+`agent_mark` はデフォルト行には含まれません。`rows` または `rows_by_agent` の上書きに追加してください。マークは同じ正規エージェント ID をキーにします:
+
+```toml
+[ui.sidebar.agents]
+title_by_status = true
+
+[ui.sidebar.agents.rows_by_agent]
+claude = [
+  ["state_icon", "agent_mark", "agent"],
+  ["workspace", "tab"],
+]
+
+[ui.sidebar.agents.marks]
+claude = { glyph = "\uEC82", fg = "#fab387" }
+```
+
+`glyph` は制御文字を含まない空でないテキストです。`fg` は厳密な `#RGB` または `#RRGGBB` を受け付けます。赤と緑はサイドバー全体でエージェントの状態を表すため、テーマの赤または緑と同じ `fg` は設定診断で拒否され、その ID に組み込みマークがあればそれが使われます。設定したマークは、その ID の組み込みマークだけを置き換えます。
+
+組み込みマークはテーマの色で描画される Nerd Font グリフなので、JetBrainsMono Nerd Font などの Nerd Font が必要です: `codex` `U+EC81`、`claude` `U+EC82`、`copilot` `U+EC1E`、`gemini` `U+F0AE2`、`pi` と `omp` `U+F03FF`、`cursor` `U+F01C0`。組み込みマークのテーマ色がそのテーマの赤または緑と同じ場合は、テキスト色で描画されます。その他のエージェントには、設定するまで組み込みマークはありません。`{ token = "agent_mark", bold = true }` のようなスタイルテーブルでマークのスタイルを変えられますが、`agent_mark` は `rules` を受け付けません。
+
+`title_by_status` のデフォルトは `false` です。`true` にすると、working、blocked、done のエージェントでは `agent` トークンが `state_icon` と同じ状態色になります。idle のエージェントはアイドル段階の色を保ちます。
 
 カスタム `$name` トークンは動的な値であり、リテラルテキストではありません。トークンをレイアウトに追加してから、スクリプトまたはプラグインで値を報告します:
 

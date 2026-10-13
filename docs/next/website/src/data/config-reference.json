@@ -1114,6 +1114,18 @@
           "description": "Complete Agent-row overrides keyed by strict canonical agent id. Agents without an override use ui.sidebar.agents.rows."
         },
         {
+          "key": "ui.sidebar.agents.marks",
+          "type": "table of { glyph, fg }",
+          "default": "{}",
+          "description": "Glyph and #RGB/#RRGGBB color the agent_mark token draws, keyed by strict canonical agent id. An entry replaces the built-in Nerd Font mark for that id (codex, claude, copilot, gemini, pi, omp, cursor). An fg equal to the theme's red or green is refused with a config diagnostic. Agents with no entry and no built-in mark draw nothing."
+        },
+        {
+          "key": "ui.sidebar.agents.title_by_status",
+          "type": "boolean",
+          "default": "false",
+          "description": "Color the agent token with the state color for working, blocked, and done agents. Idle agents keep their idle-tier color."
+        },
+        {
           "key": "ui.sidebar.spaces.row_gap",
           "type": "integer",
           "default": "0",
