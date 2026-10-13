@@ -230,6 +230,15 @@ impl RawSidebarToken {
                 {
                     return Err("sidebar rules require a text-valued token".into());
                 }
+                // The mark's colour belongs to `[ui.sidebar.agents.marks]`,
+                // where `mark_for_agent` refuses red and green; an occurrence
+                // `fg` would draw past that check (ceo-bora#357).
+                if token.fg.is_some() && token.token == "agent_mark" {
+                    return Err(
+                        "agent_mark takes its fg from [ui.sidebar.agents.marks], not from a style table"
+                            .into(),
+                    );
+                }
                 Ok((
                     token.token,
                     Some(SidebarTokenStyle {
@@ -1047,6 +1056,78 @@ gemini = { glyph = "G", fg = "#89b4fa" }
             config.mark_for_agent(Agent::Gemini, &rose_pine),
             Some(("\u{F0AE2}", rose_pine.text)),
             "a built-in slot that is the theme's green draws in text"
+        );
+    }
+
+    /// cubic P2 on aryrabelo/bora-herdr-ada#57: the diagnostic must check the
+    /// palettes the client renders, `[theme.custom.light]` included.
+    #[test]
+    fn agent_mark_light_mode_custom_red_is_refused_with_a_config_diagnostic() {
+        let config: crate::config::Config = toml::from_str(
+            r##"
+[theme]
+auto_switch = true
+
+[theme.custom.light]
+red = "#123456"
+
+[ui.sidebar.agents.marks]
+claude = { glyph = "C", fg = "#123456" }
+"##,
+        )
+        .expect("light-mode custom theme config");
+        let diagnostics = config.collect_diagnostics();
+        assert!(
+            diagnostics.contains(
+                &"ui.sidebar.agents.marks.claude.fg (#123456) is the theme's red, reserved for agent states; ignoring this mark"
+                    .to_string()
+            ),
+            "{diagnostics:?}"
+        );
+
+        let runtime = crate::app::client_theme_runtime_from_config(&config);
+        let light = crate::app::client_palette_for_appearance(
+            &runtime,
+            crate::terminal_theme::HostAppearance::Light,
+        );
+        assert_eq!(light.red, ratatui::style::Color::Rgb(0x12, 0x34, 0x56));
+        assert_eq!(
+            config
+                .ui
+                .sidebar
+                .agents
+                .mark_for_agent(Agent::Claude, &light),
+            Some(("\u{EC82}", light.peach)),
+            "the light client refuses the same entry the diagnostic names"
+        );
+    }
+
+    /// cubic P2 on aryrabelo/bora-herdr-ada#57: an occurrence `fg` would draw
+    /// the mark past the red/green refusal, so `agent_mark` refuses one.
+    #[test]
+    fn agent_mark_occurrence_fg_is_rejected_because_marks_own_the_color() {
+        for input in [
+            "[ui.sidebar.agents]\nrows = [[{ token = 'agent_mark', fg = '#f38ba8' }]]\n",
+            "[ui.sidebar.agents.rows_by_agent]\nclaude = [[{ token = 'agent_mark', fg = '#89b4fa' }]]\n",
+        ] {
+            let err = toml::from_str::<crate::config::Config>(input)
+                .expect_err(input)
+                .to_string();
+            assert!(
+                err.contains("agent_mark takes its fg from [ui.sidebar.agents.marks]"),
+                "{err}"
+            );
+        }
+
+        let config: crate::config::Config = toml::from_str(
+            "[ui.sidebar.agents]\nrows = [[{ token = 'agent_mark', bold = true, dim = false }]]\n",
+        )
+        .expect("bold and dim stay accepted");
+        let (token, style) = config.ui.sidebar.agents.rows[0][0].parts();
+        assert_eq!(token, &AgentSidebarToken::AgentMark);
+        assert_eq!(
+            (style.fg, style.bold, style.dim),
+            (None, Some(true), Some(false))
         );
     }
 }

@@ -395,7 +395,7 @@ Agent の行では、次の組み込みトークンを使えます:
 - `agent` — 検出または報告されたエージェントの表示名。
 - `terminal_title` — 安全性のための正規化後の最新の OSC 0/2 ターミナルタイトル。
 - `terminal_title_stripped` — 認識された先頭のアクティビティまたはスピナーのグリフ 1 つと、それに続く空白を除去したターミナルタイトル。
-- `agent_mark` — エージェントの種類を表すグリフ。`[ui.sidebar.agents.marks]` のその種類の色で描画されます。マークがない種類では何も描画されず、幅も取りません。
+- `agent_mark` — エージェントの種類を表すグリフ。その種類の色で描画されます: `[ui.sidebar.agents.marks]` にエントリがあればその色、なければ組み込みマークをテーマの色で描画します。どちらもない種類では何も描画されず、幅も取りません。
 - `$name` — `name` という名前のカスタムペインメタデータ。
 
 Space の行では、次の組み込みトークンを使えます:
@@ -479,7 +479,7 @@ claude = { glyph = "\uEC82", fg = "#fab387" }
 
 `glyph` は制御文字を含まない空でないテキストです。`fg` は厳密な `#RGB` または `#RRGGBB` を受け付けます。赤と緑はサイドバー全体でエージェントの状態を表すため、テーマの赤または緑と同じ `fg` は設定診断で拒否され、その ID に組み込みマークがあればそれが使われます。設定したマークは、その ID の組み込みマークだけを置き換えます。
 
-組み込みマークはテーマの色で描画される Nerd Font グリフなので、JetBrainsMono Nerd Font などの Nerd Font が必要です: `codex` `U+EC81`、`claude` `U+EC82`、`copilot` `U+EC1E`、`gemini` `U+F0AE2`、`pi` と `omp` `U+F03FF`、`cursor` `U+F01C0`。組み込みマークのテーマ色がそのテーマの赤または緑と同じ場合は、テキスト色で描画されます。その他のエージェントには、設定するまで組み込みマークはありません。`{ token = "agent_mark", bold = true }` のようなスタイルテーブルでマークのスタイルを変えられますが、`agent_mark` は `rules` を受け付けません。
+組み込みマークはテーマの色で描画される Nerd Font グリフなので、JetBrainsMono Nerd Font などの Nerd Font が必要です: `codex` `U+EC81`、`claude` `U+EC82`、`copilot` `U+EC1E`、`gemini` `U+F0AE2`、`pi` と `omp` `U+F03FF`、`cursor` `U+F01C0`。`[ui.sidebar.agents.marks]` のエントリがなくても描画されます。組み込みマークのテーマ色がそのテーマの赤または緑と同じ場合は、テキスト色で描画されます。その他のエージェントには、設定するまで組み込みマークはありません。`agent_mark` のスタイルテーブルは `{ token = "agent_mark", bold = true }` のように `bold` と `dim` を受け付けますが、`fg` と `rules` は拒否します。マークの色は `[ui.sidebar.agents.marks]` のエントリか組み込みマークだけから決まるためです。
 
 `title_by_status` のデフォルトは `false` です。`true` にすると、working、blocked、done のエージェントでは `agent` トークンが `state_icon` と同じ状態色になります。idle のエージェントはアイドル段階の色を保ちます。
 

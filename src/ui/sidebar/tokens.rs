@@ -726,4 +726,64 @@ codex = { glyph = "X", fg = "#f38ba8" }
         assert_eq!(rows.len(), 2);
         assert_eq!(text, "* \u{F03FF} devin");
     }
+
+    /// cubic P2 on aryrabelo/bora-herdr-ada#57: even a programmatic occurrence
+    /// `fg` (config refuses one) cannot repaint the mark; bold/dim still apply.
+    #[test]
+    fn agent_mark_occurrence_fg_never_overrides_the_mark_color() {
+        use ratatui::style::{Modifier, Style};
+        let palette = crate::app::state::Palette::catppuccin();
+        let mark = ResolvedToken::new(
+            ResolvedTokenKind::AgentMark {
+                glyph: "\u{EC82}".into(),
+                fg: palette.peach,
+            },
+            SidebarTokenStyle {
+                fg: Some(crate::config::SidebarTokenColor::from_palette(palette.red)),
+                bold: Some(true),
+                dim: None,
+            },
+        );
+        let spans = super::super::resolved_token_spans(
+            &[mark],
+            ("*", Style::default()),
+            Style::default(),
+            Style::default(),
+            Style::default(),
+            Style::default(),
+            &palette,
+            10,
+        );
+
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].content, "\u{EC82}");
+        assert_eq!(spans[0].style.fg, Some(palette.peach));
+        assert!(spans[0].style.add_modifier.contains(Modifier::BOLD));
+    }
+
+    /// A built-in mark needs no `[marks]` entry: its colour is the theme's.
+    #[test]
+    fn agent_mark_builtin_draws_in_its_theme_color_without_a_marks_entry() {
+        let config: AgentsSidebarConfig = toml::from_str(r#"rows = [["agent_mark"]]"#).unwrap();
+        assert!(config.marks.is_empty());
+        let mut entry = entry();
+        entry.canonical_agent = Some(crate::detect::Agent::Claude);
+        for palette in [
+            crate::app::state::Palette::catppuccin(),
+            crate::app::state::Palette::terminal(),
+        ] {
+            entry.palette = palette.clone();
+            assert_eq!(
+                agent_rows(&config, context(&entry), "working")[0][0].kind,
+                ResolvedTokenKind::AgentMark {
+                    glyph: "\u{EC82}".into(),
+                    fg: palette.peach,
+                }
+            );
+        }
+        assert_eq!(
+            crate::app::state::Palette::terminal().peach,
+            ratatui::style::Color::Yellow
+        );
+    }
 }

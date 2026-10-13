@@ -228,9 +228,11 @@ pub(crate) fn resolved_token_spans(
                 state_icon.0.to_string(),
                 apply_token_style(state_icon.1, token.style),
             )),
+            // The mark colour wins over any occurrence `fg`: config refuses
+            // one, and `mark_for_agent` already kept the colour off red/green.
             ResolvedTokenKind::AgentMark { glyph, fg } => spans.push(Span::styled(
                 glyph.clone(),
-                apply_token_style(Style::default().fg(*fg), token.style),
+                apply_token_style(Style::default(), token.style).fg(*fg),
             )),
             ResolvedTokenKind::StateText(text) => spans.push(Span::styled(
                 truncate_end(text, budgets[index]),

@@ -369,6 +369,7 @@ const DEFAULT_CONFIG: &str = r##"# bora configuration
 # Expanded agent rows. Built-ins are state_icon, state_text, machine, workspace, tab,
 # pane, agent, agent_mark, terminal_title, and terminal_title_stripped.
 # agent_mark draws the agent kind's glyph in its colour and takes no width for a kind without one.
+# Its colour comes only from [ui.sidebar.agents.marks] or the built-in mark: style it with bold/dim, not fg.
 # Custom values reported through pane metadata use a $name token.
 # A token occurrence may be styled with { token = "workspace", fg = "#89b4fa", bold = true, dim = false }.
 # Omitted style fields preserve the contextual default.

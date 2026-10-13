@@ -401,7 +401,7 @@ Agent rows accept these built-in tokens:
 - `agent` — detected or reported agent display name.
 - `terminal_title` — latest OSC 0/2 terminal title after safety normalization.
 - `terminal_title_stripped` — the terminal title with one recognized leading activity or spinner glyph and its following whitespace removed.
-- `agent_mark` — a glyph for the agent's kind, drawn in that kind's color from `[ui.sidebar.agents.marks]`. A kind without a mark draws nothing and takes no space.
+- `agent_mark` — a glyph for the agent's kind in that kind's color: the agent's `[ui.sidebar.agents.marks]` entry when one exists, otherwise its built-in mark in a theme color. A kind with neither draws nothing and takes no space.
 - `$name` — custom pane metadata named `name`.
 
 Space rows accept these built-in tokens:
@@ -485,7 +485,7 @@ claude = { glyph = "\uEC82", fg = "#fab387" }
 
 `glyph` is any non-empty text without control characters; `fg` accepts strict `#RGB` or `#RRGGBB`. Red and green mean agent states across the whole sidebar, so an `fg` equal to the theme's red or green is refused with a config diagnostic, and that ID falls back to its built-in mark, if it has one. A configured mark replaces the built-in one for that ID only.
 
-Built-in marks are Nerd Font glyphs drawn in theme colors, so they need a Nerd Font such as JetBrainsMono Nerd Font: `codex` `U+EC81`, `claude` `U+EC82`, `copilot` `U+EC1E`, `gemini` `U+F0AE2`, `pi` and `omp` `U+F03FF`, and `cursor` `U+F01C0`. When a theme's color for a built-in mark is that theme's red or green, the mark is drawn in the text color. Other agents have no built-in mark until you configure one. A style table such as `{ token = "agent_mark", bold = true }` restyles the mark; `agent_mark` does not accept `rules`.
+Built-in marks are Nerd Font glyphs drawn in theme colors, so they need a Nerd Font such as JetBrainsMono Nerd Font: `codex` `U+EC81`, `claude` `U+EC82`, `copilot` `U+EC1E`, `gemini` `U+F0AE2`, `pi` and `omp` `U+F03FF`, and `cursor` `U+F01C0`. They draw with no `[ui.sidebar.agents.marks]` entry. When a theme's color for a built-in mark is that theme's red or green, the mark is drawn in the text color. Other agents have no built-in mark until you configure one. A style table on `agent_mark` accepts `bold` and `dim`, such as `{ token = "agent_mark", bold = true }`; it refuses `fg` and `rules`, because the mark's color comes only from its `[ui.sidebar.agents.marks]` entry or the built-in mark.
 
 `title_by_status` defaults to `false`. When `true`, the `agent` token takes the state color for working, blocked, and done agents, the same color as their `state_icon`. Idle agents keep their idle-tier color.
 

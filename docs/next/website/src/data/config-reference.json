@@ -1105,7 +1105,7 @@
           "key": "ui.sidebar.agents.rows",
           "type": "list of token rows",
           "default": "[[\"state_icon\", \"machine\", \"workspace\", \"tab\"], [\"agent\"]]",
-          "description": "Default expanded Agent sidebar layout. Entries may be token strings or inline { token, fg, bold, dim, rules } style tables. Text-valued built-ins and $name metadata tokens accept up to 16 ordered rules using equals, contains, starts_with, gt, or lt; the first match overrides specified styles. Text conditions optionally accept ignore_case for ASCII matching; numeric conditions require full finite numbers. state_icon accepts fixed styles only. At most 16 rows and 16 tokens per row."
+          "description": "Default expanded Agent sidebar layout. Entries may be token strings or inline { token, fg, bold, dim, rules } style tables. Text-valued built-ins and $name metadata tokens accept up to 16 ordered rules using equals, contains, starts_with, gt, or lt; the first match overrides specified styles. Text conditions optionally accept ignore_case for ASCII matching; numeric conditions require full finite numbers. state_icon accepts fixed styles only. agent_mark accepts bold and dim only; its color comes from ui.sidebar.agents.marks or its built-in mark. At most 16 rows and 16 tokens per row."
         },
         {
           "key": "ui.sidebar.agents.rows_by_agent",
@@ -1117,7 +1117,7 @@
           "key": "ui.sidebar.agents.marks",
           "type": "table of { glyph, fg }",
           "default": "{}",
-          "description": "Glyph and #RGB/#RRGGBB color the agent_mark token draws, keyed by strict canonical agent id. An entry replaces the built-in Nerd Font mark for that id (codex, claude, copilot, gemini, pi, omp, cursor). An fg equal to the theme's red or green is refused with a config diagnostic. Agents with no entry and no built-in mark draw nothing."
+          "description": "Glyph and #RGB/#RRGGBB color the agent_mark token draws, keyed by strict canonical agent id. An entry replaces the built-in Nerd Font mark for that id; built-in marks (codex, claude, copilot, gemini, pi, omp, cursor) draw in theme colors with no entry. An fg equal to the theme's red or green is refused with a config diagnostic. Agents with no entry and no built-in mark draw nothing."
         },
         {
           "key": "ui.sidebar.agents.title_by_status",
