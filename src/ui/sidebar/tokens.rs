@@ -741,7 +741,7 @@ codex = { glyph = "X", fg = "#f38ba8" }
             SidebarTokenStyle {
                 fg: Some(crate::config::SidebarTokenColor::from_palette(palette.red)),
                 bold: Some(true),
-                dim: None,
+                dim: Some(true),
             },
         );
         let spans = super::super::resolved_token_spans(
@@ -759,6 +759,7 @@ codex = { glyph = "X", fg = "#f38ba8" }
         assert_eq!(spans[0].content, "\u{EC82}");
         assert_eq!(spans[0].style.fg, Some(palette.peach));
         assert!(spans[0].style.add_modifier.contains(Modifier::BOLD));
+        assert!(spans[0].style.add_modifier.contains(Modifier::DIM));
     }
 
     /// A built-in mark needs no `[marks]` entry: its colour is the theme's.

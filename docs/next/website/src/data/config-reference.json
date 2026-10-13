@@ -1117,7 +1117,7 @@
           "key": "ui.sidebar.agents.marks",
           "type": "table of { glyph, fg }",
           "default": "{}",
-          "description": "Glyph and #RGB/#RRGGBB color the agent_mark token draws, keyed by strict canonical agent id. An entry replaces the built-in Nerd Font mark for that id; built-in marks (codex, claude, copilot, gemini, pi, omp, cursor) draw in theme colors with no entry. An fg equal to the theme's red or green is refused with a config diagnostic. Agents with no entry and no built-in mark draw nothing."
+          "description": "Glyph and #RGB/#RRGGBB color the agent_mark token draws, keyed by strict canonical agent id. An entry replaces the built-in Nerd Font mark for that id; built-in marks (codex, claude, copilot, gemini, pi, omp, cursor) draw in theme colors with no entry. An fg equal to the theme's red or green is refused with a config diagnostic; when that red or green is a named terminal color (the terminal theme), an fg within RGB distance 128 of its standard xterm rendering is refused too. A host terminal that remaps ANSI red or green is not visible to Bora. Agents with no entry and no built-in mark draw nothing."
         },
         {
           "key": "ui.sidebar.agents.title_by_status",

@@ -477,7 +477,7 @@ claude = [
 claude = { glyph = "\uEC82", fg = "#fab387" }
 ```
 
-`glyph` 是不含控制字符的非空文本；`fg` 接受严格的 `#RGB` 或 `#RRGGBB`。红色和绿色在整个侧边栏中表示智能体状态，因此与主题红色或绿色相同的 `fg` 会被配置诊断拒绝，该 ID 若有内置标记则改用内置标记。配置的标记只替换该 ID 的内置标记。
+`glyph` 是不含控制字符的非空文本；`fg` 接受严格的 `#RGB` 或 `#RRGGBB`。红色和绿色在整个侧边栏中表示智能体状态，因此与主题红色或绿色相同的 `fg` 会被配置诊断拒绝，该 ID 若有内置标记则改用内置标记。当主题的红色或绿色是具名终端颜色时（如 `terminal` 主题），Bora 会将 `fg` 与该颜色的标准 xterm 渲染值比较，拒绝 RGB 距离小于 128 的颜色，例如 `#ff0000` 或 `#32cd32`。Bora 无法得知宿主终端是否重新映射了 ANSI 红色或绿色，因此与重新映射后的值相同的十六进制颜色不会被拒绝。配置的标记只替换该 ID 的内置标记。
 
 内置标记是用主题颜色绘制的 Nerd Font 字形，因此需要 JetBrainsMono Nerd Font 等 Nerd Font：`codex` `U+EC81`、`claude` `U+EC82`、`copilot` `U+EC1E`、`gemini` `U+F0AE2`、`pi` 和 `omp` `U+F03FF`、`cursor` `U+F01C0`。它们无需 `[ui.sidebar.agents.marks]` 条目即可绘制。如果内置标记的主题颜色恰好是该主题的红色或绿色，则改用文本颜色绘制。其他智能体在你配置之前没有内置标记。`agent_mark` 的样式表接受 `bold` 和 `dim`，例如 `{ token = "agent_mark", bold = true }`；它拒绝 `fg` 和 `rules`，因为标记颜色只来自其 `[ui.sidebar.agents.marks]` 条目或内置标记。
 

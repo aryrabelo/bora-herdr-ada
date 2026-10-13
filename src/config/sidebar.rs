@@ -528,11 +528,65 @@ const DEFAULT_AGENT_MARKS: &[DefaultAgentMark] = &[
     },
 ];
 
-/// Whether a mark colour is the palette's red or green, which a kind mark may
-/// never take (AGENTS.md colour reservation): the one rule behind both the
-/// config diagnostic and the render-time refusal.
+/// Which reserved hue, if any, a mark colour takes: the palette's red or
+/// green, which a kind mark may never take (AGENTS.md colour reservation).
+/// The one rule behind both the config diagnostic and the render-time refusal.
+fn reserved_mark_hue(fg: ratatui::style::Color, palette: &Palette) -> Option<&'static str> {
+    if takes_slot_color(fg, palette.red) {
+        Some("red")
+    } else if takes_slot_color(fg, palette.green) {
+        Some("green")
+    } else {
+        None
+    }
+}
+
 fn is_reserved_mark_color(fg: ratatui::style::Color, palette: &Palette) -> bool {
-    fg == palette.red || fg == palette.green
+    reserved_mark_hue(fg, palette).is_some()
+}
+
+/// Squared RGB distance under which an `Rgb` mark draws as a named ANSI slot.
+/// 128 is half a channel's range: it takes in the dim, pure and light
+/// renderings of one hue (`#800000` and `#ff5555` against xterm red) and stops
+/// at the neighbouring half-step hues -- orange `#ff8000`, pink `#ff0080`,
+/// chartreuse `#80ff00` all sit exactly 128 away and stay allowed.
+const ANSI_NEAR_SQ: u32 = 128 * 128;
+
+/// Whether `fg` draws as the palette slot `slot`. An `Rgb` slot is drawn
+/// exactly, so only equality counts. A named ANSI slot (the `terminal` theme,
+/// or a custom theme naming a colour) is coloured by the host, which the
+/// client never reads back, so an `Rgb` `fg` near that hue's standard xterm
+/// rendering counts too.
+fn takes_slot_color(fg: ratatui::style::Color, slot: ratatui::style::Color) -> bool {
+    fg == slot || ansi_hue_xterm_rgb(slot).is_some_and(|hue| near_any_rendering(fg, &hue))
+}
+
+/// Whether an `Rgb` `fg` lies within `ANSI_NEAR_SQ` of either rendering.
+fn near_any_rendering(fg: ratatui::style::Color, renderings: &[(u8, u8, u8); 2]) -> bool {
+    let ratatui::style::Color::Rgb(r, g, b) = fg else {
+        return false;
+    };
+    let d = |a: u8, b: u8| u32::from(a.abs_diff(b)).pow(2);
+    renderings
+        .iter()
+        .any(|&(sr, sg, sb)| d(r, sr) + d(g, sg) + d(b, sb) < ANSI_NEAR_SQ)
+}
+
+/// Standard xterm renderings (normal, bright) of a named ANSI colour's hue;
+/// `None` for a colour the client draws itself (`Rgb`, `Reset`, indexed).
+fn ansi_hue_xterm_rgb(color: ratatui::style::Color) -> Option<[(u8, u8, u8); 2]> {
+    use ratatui::style::Color;
+    Some(match color {
+        Color::Black | Color::DarkGray => [(0, 0, 0), (127, 127, 127)],
+        Color::Red | Color::LightRed => [(205, 0, 0), (255, 0, 0)],
+        Color::Green | Color::LightGreen => [(0, 205, 0), (0, 255, 0)],
+        Color::Yellow | Color::LightYellow => [(205, 205, 0), (255, 255, 0)],
+        Color::Blue | Color::LightBlue => [(0, 0, 238), (92, 92, 255)],
+        Color::Magenta | Color::LightMagenta => [(205, 0, 205), (255, 0, 255)],
+        Color::Cyan | Color::LightCyan => [(0, 205, 205), (0, 255, 255)],
+        Color::Gray | Color::White => [(229, 229, 229), (255, 255, 255)],
+        _ => return None,
+    })
 }
 
 fn deserialize_agent_marks<'de, D>(deserializer: D) -> Result<BTreeMap<String, AgentMark>, D::Error>
@@ -609,15 +663,9 @@ impl AgentsSidebarConfig {
             .iter()
             .filter_map(|(id, mark)| {
                 let fg = mark.fg.ratatui();
-                let reserved = palettes.iter().find_map(|palette| {
-                    if fg == palette.red {
-                        Some("red")
-                    } else if fg == palette.green {
-                        Some("green")
-                    } else {
-                        None
-                    }
-                })?;
+                let reserved = palettes
+                    .iter()
+                    .find_map(|palette| reserved_mark_hue(fg, palette))?;
                 Some(format!(
                     "ui.sidebar.agents.marks.{id}.fg ({}) is the theme's {reserved}, reserved for agent states; ignoring this mark",
                     mark.fg.hex().unwrap_or_default()
@@ -1128,6 +1176,62 @@ claude = { glyph = "C", fg = "#123456" }
         assert_eq!(
             (style.fg, style.bold, style.dim),
             (None, Some(true), Some(false))
+        );
+    }
+
+    /// cubic P3 on aryrabelo/bora-herdr-ada#57: the `terminal` theme's red and
+    /// green are named ANSI colours the host draws, so an `Rgb` mark near
+    /// their xterm rendering is refused even though it never equals them.
+    #[test]
+    fn agent_mark_hex_red_or_green_on_the_terminal_theme_is_refused() {
+        let config: crate::config::Config = toml::from_str(
+            r##"
+[theme]
+name = "terminal"
+
+[ui.sidebar.agents.marks]
+claude = { glyph = "C", fg = "#ff0000" }
+codex = { glyph = "X", fg = "#32cd32" }
+gemini = { glyph = "G", fg = "#ff8000" }
+"##,
+        )
+        .expect("terminal theme mark config");
+        let diagnostics = config.collect_diagnostics();
+        let mark_diagnostics = diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.starts_with("ui.sidebar.agents.marks."))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            mark_diagnostics,
+            vec![
+                "ui.sidebar.agents.marks.claude.fg (#ff0000) is the theme's red, reserved for agent states; ignoring this mark",
+                "ui.sidebar.agents.marks.codex.fg (#32cd32) is the theme's green, reserved for agent states; ignoring this mark",
+            ],
+            "{diagnostics:?}"
+        );
+
+        let terminal = Palette::terminal();
+        assert_eq!(terminal.red, ratatui::style::Color::LightRed);
+        let agents = &config.ui.sidebar.agents;
+        assert_eq!(
+            agents.mark_for_agent(Agent::Claude, &terminal),
+            Some(("\u{EC82}", terminal.peach)),
+            "the terminal client refuses the same entry the diagnostic names"
+        );
+        assert_eq!(
+            agents.mark_for_agent(Agent::Gemini, &terminal),
+            Some(("G", ratatui::style::Color::Rgb(0xff, 0x80, 0x00))),
+            "orange sits exactly 128 from xterm red and stays allowed"
+        );
+
+        // An `Rgb` palette keeps exact matching: one step off its red is allowed.
+        let catppuccin = Palette::catppuccin();
+        assert_eq!(catppuccin.red, ratatui::style::Color::Rgb(0xf3, 0x8b, 0xa8));
+        let near: AgentsSidebarConfig =
+            toml::from_str("[marks]\nclaude = { glyph = \"C\", fg = \"#f38ba9\" }").unwrap();
+        assert_eq!(
+            near.mark_for_agent(Agent::Claude, &catppuccin),
+            Some(("C", ratatui::style::Color::Rgb(0xf3, 0x8b, 0xa9)))
         );
     }
 }
