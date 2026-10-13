@@ -234,6 +234,10 @@ impl AppState {
         }
     }
 
+    /// Focusing a pane shows it, so it marks that pane seen — and only that
+    /// pane (ceo-bora#355). The focus moves before the tab is shown so that
+    /// `Workspace::switch_tab` never acknowledges the tab's previous focus on
+    /// the way to another pane.
     pub(crate) fn focus_pane_in_workspace(&mut self, ws_idx: usize, pane_id: PaneId) -> bool {
         let Some(ws) = self.workspaces.get(ws_idx) else {
             return false;
@@ -247,21 +251,22 @@ impl AppState {
             pane_id,
         };
         if previous.as_ref() == Some(&target) {
+            self.mark_focused_pane_seen();
             return false;
         }
 
-        self.switch_workspace_tab(ws_idx, tab_idx);
-        if let Some(tab) = self
+        let Some(tab) = self
             .workspaces
             .get_mut(ws_idx)
             .and_then(|ws| ws.tabs.get_mut(tab_idx))
-        {
-            tab.layout.focus_pane(pane_id);
-            self.previous_pane_focus = previous;
-            self.mark_session_dirty();
-            return true;
-        }
-        false
+        else {
+            return false;
+        };
+        tab.layout.focus_pane(pane_id);
+        self.switch_workspace_tab(ws_idx, tab_idx);
+        self.previous_pane_focus = previous;
+        self.mark_session_dirty();
+        true
     }
 }
 
@@ -461,26 +466,13 @@ impl AppState {
         }
     }
 
-    pub(crate) fn mark_active_tab_seen(&mut self) -> bool {
-        let Some(ws_idx) = self.active else {
-            return false;
-        };
-        let Some(tab) = self
-            .workspaces
-            .get_mut(ws_idx)
+    /// Marks the focused pane of the active tab seen; other panes of the tab
+    /// keep `done` until they are focused themselves (ceo-bora#355).
+    pub(crate) fn mark_focused_pane_seen(&mut self) -> bool {
+        self.active
+            .and_then(|ws_idx| self.workspaces.get_mut(ws_idx))
             .and_then(crate::workspace::Workspace::active_tab_mut)
-        else {
-            return false;
-        };
-
-        let mut changed = false;
-        for pane in tab.panes.values_mut() {
-            if !pane.seen {
-                pane.seen = true;
-                changed = true;
-            }
-        }
-        changed
+            .is_some_and(crate::workspace::Tab::mark_focused_pane_seen)
     }
 
     pub fn move_workspace(&mut self, source_idx: usize, insert_idx: usize) -> bool {
@@ -1857,15 +1849,18 @@ impl AppState {
         let is_active_tab = self.pane_is_in_active_tab(ws_idx, pane_id);
         let suppress_active_tab_notifications =
             active_tab_suppresses_notifications(is_active_tab, self.outer_terminal_focus);
-        let pane = self.workspaces[ws_idx]
-            .tabs
-            .iter_mut()
-            .find_map(|tab| tab.panes.get_mut(&pane_id))?;
+        let (pane, focused) = self.workspaces[ws_idx].tabs.iter_mut().find_map(|tab| {
+            let focused = tab.layout.focused() == pane_id;
+            tab.panes.get_mut(&pane_id).map(|pane| (pane, focused))
+        })?;
 
         if change.state != AgentState::Idle {
             pane.seen = true;
         } else if !suppress_completion && is_completion_transition(change) {
-            pane.seen = suppress_active_tab_notifications;
+            // A completion is seen only when it lands in the pane being
+            // looked at; a visible but unfocused pane keeps `done` until it is
+            // focused, same as `Tab::mark_focused_pane_seen` (ceo-bora#355).
+            pane.seen = suppress_active_tab_notifications && focused;
         }
         let seen = pane.seen;
 
@@ -2785,15 +2780,130 @@ mod tests {
         assert_eq!(state.selected, 2);
     }
 
+    /// The status `bora pane list` reports for a pane.
+    fn api_status(
+        state: &AppState,
+        ws_idx: usize,
+        pane_id: PaneId,
+    ) -> crate::api::schema::AgentStatus {
+        let pane = state.workspaces[ws_idx]
+            .pane_state(pane_id)
+            .expect("pane exists");
+        crate::app::api_helpers::pane_agent_status(
+            state.terminals[&pane.attached_terminal_id].state,
+            pane.seen,
+        )
+    }
+
+    /// Drives a pane's agent from working to idle through the detection path.
+    fn finish_agent(state: &mut AppState, ws_idx: usize, pane_id: PaneId) {
+        let terminal_id = state.terminal_id_for_pane(ws_idx, pane_id).unwrap();
+        state.terminals.get_mut(&terminal_id).unwrap().state = AgentState::Working;
+        state.handle_app_event(AppEvent::StateChanged {
+            pane_id,
+            agent: Some(Agent::Pi),
+            state: AgentState::Idle,
+            visible_blocker: false,
+            visible_working: false,
+            process_exited: false,
+            observed_at: std::time::Instant::now(),
+        });
+    }
+
+    /// Splits workspace `ws_idx`'s active tab, keeps focus on its root pane and
+    /// returns `(focused, background)`.
+    fn split_keeping_root_focused(state: &mut AppState, ws_idx: usize) -> (PaneId, PaneId) {
+        let tab_idx = state.workspaces[ws_idx].active_tab;
+        let focused = state.workspaces[ws_idx].tabs[tab_idx].root_pane;
+        let background = state.workspaces[ws_idx].test_split(Direction::Horizontal);
+        state.workspaces[ws_idx].tabs[tab_idx]
+            .layout
+            .focus_pane(focused);
+        state.ensure_test_terminals();
+        (focused, background)
+    }
+
     #[test]
     fn switch_workspace_marks_panes_seen() {
+        use crate::api::schema::AgentStatus;
+
         let mut state = app_with_workspaces(&["a", "b"]);
-        // Mark a pane in workspace 1 as unseen
-        let id = *state.workspaces[1].panes.keys().next().unwrap();
-        state.workspaces[1].panes.get_mut(&id).unwrap().seen = false;
+        let (focused, background) = split_keeping_root_focused(&mut state, 1);
+        finish_agent(&mut state, 1, focused);
+        finish_agent(&mut state, 1, background);
+        assert_eq!(api_status(&state, 1, focused), AgentStatus::Done);
+        assert_eq!(api_status(&state, 1, background), AgentStatus::Done);
 
         state.switch_workspace(1);
-        assert!(state.workspaces[1].panes.get(&id).unwrap().seen);
+
+        assert_eq!(api_status(&state, 1, focused), AgentStatus::Idle);
+        assert_eq!(
+            api_status(&state, 1, background),
+            AgentStatus::Done,
+            "showing the workspace marks only the focused pane seen"
+        );
+    }
+
+    #[test]
+    fn done_per_pane_background_pane_stays_done_when_its_tab_is_shown() {
+        use crate::api::schema::AgentStatus;
+
+        let mut state = app_with_workspaces(&["tabs"]);
+        state.outer_terminal_focus = Some(true);
+        let split_tab = state.workspaces[0].test_add_tab(None);
+        state.workspaces[0].active_tab = split_tab;
+        let (focused, background) = split_keeping_root_focused(&mut state, 0);
+        state.workspaces[0].active_tab = 0;
+        finish_agent(&mut state, 0, focused);
+        finish_agent(&mut state, 0, background);
+
+        assert!(state.switch_workspace_tab(0, split_tab));
+        // The headless server repeats this on every request from a focused client.
+        state.mark_focused_pane_seen();
+
+        assert_eq!(api_status(&state, 0, focused), AgentStatus::Idle);
+        assert_eq!(api_status(&state, 0, background), AgentStatus::Done);
+
+        // A click on the pane arrives as `pane.focus`, which lands here.
+        assert!(state.focus_pane_in_workspace(0, background));
+        assert_eq!(api_status(&state, 0, background), AgentStatus::Idle);
+    }
+
+    #[test]
+    fn done_per_pane_single_pane_tab_clears_when_shown() {
+        use crate::api::schema::AgentStatus;
+
+        let mut state = app_with_workspaces(&["a", "b"]);
+        let pane_id = state.workspaces[1].tabs[0].root_pane;
+        finish_agent(&mut state, 1, pane_id);
+        assert_eq!(api_status(&state, 1, pane_id), AgentStatus::Done);
+
+        state.switch_workspace(1);
+
+        assert_eq!(api_status(&state, 1, pane_id), AgentStatus::Idle);
+    }
+
+    #[test]
+    fn done_per_pane_visible_unfocused_completion_stays_done_until_focused() {
+        use crate::api::schema::AgentStatus;
+
+        let mut state = app_with_workspaces(&["visible"]);
+        state.outer_terminal_focus = Some(true);
+        let (focused, background) = split_keeping_root_focused(&mut state, 0);
+
+        finish_agent(&mut state, 0, focused);
+        finish_agent(&mut state, 0, background);
+        state.mark_focused_pane_seen();
+
+        assert_eq!(
+            api_status(&state, 0, focused),
+            AgentStatus::Idle,
+            "a completion in the pane being looked at is seen at once"
+        );
+        assert_eq!(api_status(&state, 0, background), AgentStatus::Done);
+
+        assert!(state.focus_pane_in_workspace(0, background));
+        assert_eq!(api_status(&state, 0, background), AgentStatus::Idle);
     }
 
     #[test]

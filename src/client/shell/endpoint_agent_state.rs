@@ -130,7 +130,11 @@ impl EndpointAgentPresentation {
         }
 
         let mut changed = false;
-        for pane in &surface.panes {
+        // Only the focused pane of the presented tab is acknowledged; another
+        // finished pane in the same tab keeps `done` until it is focused. This
+        // mirrors the server's `Tab::mark_focused_pane_seen` so the sidebar
+        // and `bora pane list` agree about every pane (ceo-bora#355).
+        for pane in surface.panes.iter().filter(|pane| pane.focused) {
             let Some(agent) = snapshot
                 .agents
                 .iter()
@@ -234,7 +238,40 @@ mod tests {
         snapshot
     }
 
+    /// One tab (`tab_1` of `ws_1`, the fixture's only tab) split into the given
+    /// agent panes, so the tab and workspace aggregates the sidebar draws are
+    /// projected from them.
+    fn split_snapshot(revision: u64, agents: &[(&str, AgentStatus, u64)]) -> ClientShellSnapshot {
+        let mut snapshot = crate::client::shell::tests::snapshot();
+        snapshot.boot_id = "endpoint-boot".into();
+        snapshot.revision = revision;
+        snapshot.agents = agents
+            .iter()
+            .map(|&(pane_id, status, sequence)| ClientShellAgent {
+                pane_id: pane_id.into(),
+                workspace_id: "ws_1".into(),
+                tab_id: "tab_1".into(),
+                ..agent(status, sequence)
+            })
+            .collect();
+        snapshot
+    }
+
+    fn status_of(snapshot: &ClientShellSnapshot, pane_id: &str) -> AgentStatus {
+        snapshot
+            .agents
+            .iter()
+            .find(|agent| agent.pane_id == pane_id)
+            .expect("agent in snapshot")
+            .agent_status
+    }
+
     fn surface(revision: u64) -> PaneSurfaceFrame {
+        split_surface(revision, &[("agent-pane", true)])
+    }
+
+    /// A presented tab surface holding `panes`, each `(pane_id, focused)`.
+    fn split_surface(revision: u64, panes: &[(&str, bool)]) -> PaneSurfaceFrame {
         let rect = SurfaceRect {
             x: 0,
             y: 0,
@@ -253,24 +290,52 @@ mod tests {
                 hyperlinks: Vec::new(),
                 graphics: Vec::new(),
             },
-            panes: vec![PaneSurfacePane {
-                pane_id: "agent-pane".into(),
-                content_revision: 1,
-                rect,
-                inner_rect: rect,
-                scrollbar_rect: None,
-                scroll: None,
-                focused: true,
-                mouse_reporting: false,
-                sgr_pixel_mouse: false,
-                alternate_screen_active: false,
-                pixel_width: 0,
-                pixel_height: 0,
-            }],
+            panes: panes
+                .iter()
+                .map(|&(pane_id, focused)| PaneSurfacePane {
+                    pane_id: pane_id.into(),
+                    content_revision: 1,
+                    rect,
+                    inner_rect: rect,
+                    scrollbar_rect: None,
+                    scroll: None,
+                    focused,
+                    mouse_reporting: false,
+                    sgr_pixel_mouse: false,
+                    alternate_screen_active: false,
+                    pixel_width: 0,
+                    pixel_height: 0,
+                })
+                .collect(),
             splits: Vec::new(),
             popup: None,
             graphics: Default::default(),
         }
+    }
+
+    /// Both agents of a split tab worked and then finished while the client
+    /// watched, so both project `done` before the tab is presented.
+    fn split_tab_with_two_finished_agents() -> (EndpointAgentPresentation, ClientShellSnapshot) {
+        let mut presentation = EndpointAgentPresentation::default();
+        let mut working = split_snapshot(
+            1,
+            &[
+                ("focused-pane", AgentStatus::Working, 1),
+                ("background-pane", AgentStatus::Working, 2),
+            ],
+        );
+        presentation.project_snapshot(&mut working);
+        let mut finished = split_snapshot(
+            2,
+            &[
+                ("focused-pane", AgentStatus::Idle, 3),
+                ("background-pane", AgentStatus::Idle, 4),
+            ],
+        );
+        presentation.project_snapshot(&mut finished);
+        assert_eq!(status_of(&finished, "focused-pane"), AgentStatus::Done);
+        assert_eq!(status_of(&finished, "background-pane"), AgentStatus::Done);
+        (presentation, finished)
     }
 
     #[test]
@@ -424,14 +489,123 @@ mod tests {
 
     #[test]
     fn coherent_presented_surface_acknowledges_completion() {
-        let mut presentation = EndpointAgentPresentation::default();
-        let mut initial = snapshot(AgentStatus::Working, 4, 1);
-        presentation.project_snapshot(&mut initial);
-        let mut completed = snapshot(AgentStatus::Idle, 5, 2);
-        presentation.project_snapshot(&mut completed);
+        let (mut presentation, mut completed) = split_tab_with_two_finished_agents();
 
-        assert!(presentation.acknowledge_surface(&mut completed, &surface(2), Some(true)));
-        assert_eq!(completed.agents[0].agent_status, AgentStatus::Idle);
+        assert!(presentation.acknowledge_surface(
+            &mut completed,
+            &split_surface(2, &[("focused-pane", true), ("background-pane", false)]),
+            Some(true)
+        ));
+
+        assert_eq!(status_of(&completed, "focused-pane"), AgentStatus::Idle);
+        assert_eq!(
+            status_of(&completed, "background-pane"),
+            AgentStatus::Done,
+            "presenting the tab acknowledges only its focused pane"
+        );
+        assert_eq!(completed.tabs[0].agent_status, AgentStatus::Done);
+    }
+
+    #[test]
+    fn done_per_pane_split_surface_keeps_an_unfocused_completion_done() {
+        let (mut presentation, mut completed) = split_tab_with_two_finished_agents();
+        let shown = split_surface(2, &[("focused-pane", true), ("background-pane", false)]);
+        presentation.acknowledge_surface(&mut completed, &shown, Some(true));
+
+        assert!(
+            !presentation.acknowledge_surface(&mut completed, &shown, Some(true)),
+            "re-presenting the same focus acknowledges nothing new"
+        );
+        assert_eq!(status_of(&completed, "background-pane"), AgentStatus::Done);
+        assert_eq!(completed.tabs[0].agent_status, AgentStatus::Done);
+        assert_eq!(completed.workspaces[0].agent_status, AgentStatus::Done);
+
+        let refocused = split_surface(2, &[("focused-pane", false), ("background-pane", true)]);
+        assert!(presentation.acknowledge_surface(&mut completed, &refocused, Some(true)));
+        assert_eq!(status_of(&completed, "background-pane"), AgentStatus::Idle);
+        assert_eq!(completed.tabs[0].agent_status, AgentStatus::Idle);
+        assert_eq!(completed.workspaces[0].agent_status, AgentStatus::Idle);
+    }
+
+    #[test]
+    fn done_per_pane_single_pane_surface_acknowledges_its_pane_on_show() {
+        let mut presentation = EndpointAgentPresentation::default();
+        let mut working = split_snapshot(1, &[("only-pane", AgentStatus::Working, 1)]);
+        presentation.project_snapshot(&mut working);
+        let mut finished = split_snapshot(2, &[("only-pane", AgentStatus::Idle, 2)]);
+        presentation.project_snapshot(&mut finished);
+        assert_eq!(status_of(&finished, "only-pane"), AgentStatus::Done);
+
+        assert!(presentation.acknowledge_surface(
+            &mut finished,
+            &split_surface(2, &[("only-pane", true)]),
+            Some(true)
+        ));
+        assert_eq!(status_of(&finished, "only-pane"), AgentStatus::Idle);
+        assert_eq!(finished.tabs[0].agent_status, AgentStatus::Idle);
+    }
+
+    /// The server's `seen` (what `bora pane list` reports) and this client's
+    /// projection (what the sidebar draws) must agree pane by pane on the same
+    /// scenario: a split tab whose two agents finished while it was hidden,
+    /// then shown with its root pane focused.
+    #[test]
+    fn done_per_pane_client_and_server_agree_on_a_split_tab() {
+        use crate::detect::{Agent, AgentState};
+
+        let mut server = crate::app::AppState::test_new();
+        server.workspaces = vec![
+            crate::workspace::Workspace::test_new("visible"),
+            crate::workspace::Workspace::test_new("split"),
+        ];
+        let focused = server.workspaces[1].tabs[0].root_pane;
+        let background = server.workspaces[1].test_split(ratatui::layout::Direction::Horizontal);
+        server.workspaces[1].tabs[0].layout.focus_pane(focused);
+        server.ensure_test_terminals();
+        server.active = Some(0);
+        server.outer_terminal_focus = Some(true);
+        for pane_id in [focused, background] {
+            let terminal_id = server.terminal_id_for_pane(1, pane_id).expect("terminal");
+            server
+                .terminals
+                .get_mut(&terminal_id)
+                .expect("terminal")
+                .state = AgentState::Working;
+            server.handle_app_event(crate::events::AppEvent::StateChanged {
+                pane_id,
+                agent: Some(Agent::Pi),
+                state: AgentState::Idle,
+                visible_blocker: false,
+                visible_working: false,
+                process_exited: false,
+                observed_at: std::time::Instant::now(),
+            });
+        }
+        server.switch_workspace(1);
+        // What the headless server does on every request from a focused client.
+        server.mark_focused_pane_seen();
+
+        let (mut presentation, mut completed) = split_tab_with_two_finished_agents();
+        let server_tab = &server.workspaces[1].tabs[0];
+        let panes = [("focused-pane", focused), ("background-pane", background)];
+        let surface_panes =
+            panes.map(|(name, pane_id)| (name, server_tab.layout.focused() == pane_id));
+        presentation.acknowledge_surface(
+            &mut completed,
+            &split_surface(2, &surface_panes),
+            Some(true),
+        );
+
+        for (name, pane_id) in panes {
+            let server_status = if server_tab.panes[&pane_id].seen {
+                AgentStatus::Idle
+            } else {
+                AgentStatus::Done
+            };
+            assert_eq!(status_of(&completed, name), server_status, "{name}");
+        }
+        assert_eq!(status_of(&completed, "focused-pane"), AgentStatus::Idle);
+        assert_eq!(status_of(&completed, "background-pane"), AgentStatus::Done);
     }
 
     #[test]
