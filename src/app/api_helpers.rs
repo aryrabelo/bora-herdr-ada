@@ -101,7 +101,8 @@ pub(super) fn pane_agent_status(
 /// [`pane_agent_status`]. Every read-out point (pane, tab, workspace, events,
 /// terminal targets) folds through here so the mapping and the override
 /// precedence each keep a single owner. Detection keeps running underneath
-/// both, so clearing either reveals the live state immediately.
+/// both, but live detection is visible again only once NEITHER override
+/// remains: clearing one while the other stands exposes the other.
 ///
 /// Pin vs hold (ceo-bora#356): both are stamped from one monotonic counter
 /// and the newer statement wins. A pin set after the hold is the human's
