@@ -367,7 +367,8 @@ const DEFAULT_CONFIG: &str = r##"# bora configuration
 # accent = "cyan"
 
 # Expanded agent rows. Built-ins are state_icon, state_text, machine, workspace, tab,
-# pane, agent, terminal_title, and terminal_title_stripped.
+# pane, agent, agent_mark, terminal_title, and terminal_title_stripped.
+# agent_mark draws the agent kind's glyph in its colour and takes no width for a kind without one.
 # Custom values reported through pane metadata use a $name token.
 # A token occurrence may be styled with { token = "workspace", fg = "#89b4fa", bold = true, dim = false }.
 # Omitted style fields preserve the contextual default.
@@ -375,9 +376,14 @@ const DEFAULT_CONFIG: &str = r##"# bora configuration
 # Blank rows between agent entries. Set to 1 to restore the previous spacing.
 # row_gap = 0
 # rows = [["state_icon", "machine", "workspace", "tab"], ["agent"]]
+# Colour the agent name by status (working, blocked, done); idle keeps its age colour.
+# title_by_status = false
 # Optional canonical agent IDs replace the default rows for matching agents.
 # [ui.sidebar.agents.rows_by_agent]
 # claude = [["state_icon", "machine", "workspace", "tab"], ["terminal_title_stripped"], ["agent"]]
+# Per-kind marks for agent_mark, keyed by canonical agent ID. fg may not be the theme's red or green.
+# [ui.sidebar.agents.marks]
+# claude = { glyph = "\uEC82", fg = "#fab387" }
 
 # Expanded space rows. Built-ins are state_icon, state_text, workspace, branch, and git_status.
 # Custom values reported through workspace metadata use a $name token, for example $jj_status.
