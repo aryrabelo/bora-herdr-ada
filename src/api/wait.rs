@@ -265,8 +265,6 @@ pub(super) fn prompt_agent(
                 .map_err(std::io::Error::other);
         }
     };
-    let prompt_started_working =
-        before_prompt.agent_status == crate::api::schema::AgentStatus::Working;
     let target = params.target.clone();
     if let Some(prompt_wait) = params.wait.as_mut() {
         prompt_wait.submission_deadline = wait
@@ -302,11 +300,7 @@ pub(super) fn prompt_agent(
         return agent_wait_not_running(request_id).map(Some);
     }
 
-    let prompt_activity_observed = prompt_started_working
-        || matches!(
-            prompted.agent_status,
-            crate::api::schema::AgentStatus::Working | crate::api::schema::AgentStatus::Blocked
-        );
+    let prompt_activity_observed = prompt_effect_observed(&before_prompt, &prompted);
     let prompt_state_change_seq = prompted.state_change_seq;
     let until = agent_wait_statuses(wait.until);
     let mut initial = prompted;
@@ -585,6 +579,23 @@ fn prompt_activity_statuses() -> Vec<crate::api::schema::AgentStatus> {
         crate::api::schema::AgentStatus::Working,
         crate::api::schema::AgentStatus::Blocked,
     ]
+}
+
+/// Whether a prompt's effect is already visible at dispatch: the agent was
+/// working before it, or reached `working`/`blocked` through a detected move
+/// made after it. The status alone is not enough - a pane held after
+/// Blocked -> Idle (ceo-bora#356) or pinned by hand already reads `blocked`
+/// before the prompt lands, and its `state_change_seq` has not moved.
+fn prompt_effect_observed(
+    before_prompt: &crate::api::schema::AgentInfo,
+    prompted: &crate::api::schema::AgentInfo,
+) -> bool {
+    before_prompt.agent_status == crate::api::schema::AgentStatus::Working
+        || agent_wait_matches(
+            prompted,
+            &prompt_activity_statuses(),
+            Some(before_prompt.state_change_seq),
+        )
 }
 
 fn agent_wait_statuses(
@@ -1490,6 +1501,66 @@ mod tests {
         let unavailable: ErrorResponse = serde_json::from_str(&unavailable).unwrap();
         assert_eq!(unavailable.id, "wait");
         assert_eq!(unavailable.error.code, "server_unavailable");
+    }
+
+    fn prompt_agent_info(
+        agent_status: crate::api::schema::AgentStatus,
+        state_change_seq: u64,
+    ) -> crate::api::schema::AgentInfo {
+        crate::api::schema::AgentInfo {
+            terminal_id: "t1".into(),
+            name: Some("main".into()),
+            agent: Some("pi".into()),
+            title: None,
+            terminal_title: None,
+            terminal_title_stripped: None,
+            display_agent: None,
+            agent_status,
+            screen_detection_skipped: false,
+            state_labels: Default::default(),
+            tokens: Default::default(),
+            agent_session: None,
+            workspace_id: "w1".into(),
+            tab_id: "w1t1".into(),
+            pane_id: "p1".into(),
+            focused: false,
+            launch_pending: false,
+            interactive_ready: true,
+            state_change_seq,
+            completion_seq: None,
+            cwd: None,
+            foreground_cwd: None,
+            revision: 1,
+        }
+    }
+
+    /// A held pane (ceo-bora#356) is admitted - detection reads Idle - yet
+    /// reports `blocked` before and right after the prompt. That stale
+    /// `blocked` is not the prompt's effect: `agent prompt --wait` must keep
+    /// waiting for a detected move, or it returns at once on a pane the
+    /// prompt never reached.
+    #[test]
+    fn prompt_effect_ignores_a_blocked_hold_already_present() {
+        use crate::api::schema::AgentStatus;
+        let held = prompt_agent_info(AgentStatus::Blocked, 7);
+        assert!(!prompt_effect_observed(&held, &held.clone()));
+
+        // A detected move after the prompt still counts, blocked included.
+        assert!(prompt_effect_observed(
+            &held,
+            &prompt_agent_info(AgentStatus::Blocked, 8)
+        ));
+        assert!(prompt_effect_observed(
+            &held,
+            &prompt_agent_info(AgentStatus::Working, 8)
+        ));
+        assert!(!prompt_effect_observed(
+            &held,
+            &prompt_agent_info(AgentStatus::Idle, 8)
+        ));
+        // Already working before the prompt: the effect is in flight.
+        let working = prompt_agent_info(AgentStatus::Working, 7);
+        assert!(prompt_effect_observed(&working, &working.clone()));
     }
 
     mod channel_wait {
