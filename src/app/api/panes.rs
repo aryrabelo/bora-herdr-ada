@@ -1715,7 +1715,13 @@ impl App {
             terminal.state,
             previous_seen,
         );
-        if terminal.manual_status.is_none() && terminal.state == crate::detect::AgentState::Idle {
+        // A held pane reads `blocked` (ceo-bora#356) and its completion is
+        // already minted underneath, so it gets no fresh sequence either: a
+        // bump would look like a detected move to `agent prompt --wait`.
+        if terminal.manual_status.is_none()
+            && terminal.blocked_hold.is_none()
+            && terminal.state == crate::detect::AgentState::Idle
+        {
             self.state.next_agent_state_change_seq += 1;
             terminal.last_agent_state_change_seq = Some(self.state.next_agent_state_change_seq);
             terminal.last_agent_completion_seq = Some(self.state.next_agent_state_change_seq);
@@ -5694,6 +5700,38 @@ mod tests {
         assert_eq!(
             blocked_hold_listed_status(&mut app, &public_pane_id),
             AgentStatus::Idle
+        );
+    }
+
+    /// `agent prompt --wait` takes a `working`/`blocked` read-out as the
+    /// agent's reaction only once `state_change_seq` moves, so the sequence
+    /// may advance only on a detected move. `pane.mark_unseen` mints one for
+    /// a plain idle pane; on a held pane, which already reads `blocked`, that
+    /// bump would pass for the agent reacting to a prompt it never saw.
+    #[test]
+    fn blocked_hold_mark_unseen_mints_no_state_change() {
+        let (mut app, public_pane_id) = app_with_test_workspace();
+        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        let terminal_id = terminal_id_for(&app, pane_id);
+        blocked_hold_session(&mut app, pane_id, 1, "first");
+        blocked_hold_detect(&mut app, pane_id, AgentState::Working);
+        blocked_hold_detect(&mut app, pane_id, AgentState::Blocked);
+        blocked_hold_detect(&mut app, pane_id, AgentState::Idle);
+        assert!(app.state.terminals[&terminal_id].blocked_hold.is_some());
+        let sequence_before = app.state.terminals[&terminal_id].last_agent_state_change_seq;
+
+        let response = app.handle_api_request(mark_unseen_request(&public_pane_id));
+        let response: SuccessResponse =
+            serde_json::from_str(&response).expect("mark_unseen succeeds");
+        assert!(matches!(response.result, ResponseResult::Ok {}));
+
+        assert_eq!(
+            app.state.terminals[&terminal_id].last_agent_state_change_seq,
+            sequence_before
+        );
+        assert_eq!(
+            blocked_hold_listed_status(&mut app, &public_pane_id),
+            AgentStatus::Blocked
         );
     }
 }
