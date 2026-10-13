@@ -649,4 +649,45 @@ mod tests {
         assert!(!presentation.acknowledge_surface(&mut completed, &surface(2), Some(false)));
         assert_eq!(completed.agents[0].agent_status, AgentStatus::Done);
     }
+
+    /// A held pane (ceo-bora#356): the server's Blocked -> Idle move minted a
+    /// completion, yet the server reports the pane `blocked` until its agent
+    /// works. The client's own completion projection must leave that red, and
+    /// the "N waiting" badge must count it as blocked.
+    #[test]
+    fn blocked_hold_stays_red_in_the_waiting_badge_over_a_pending_completion() {
+        let held_snapshot = |status, sequence, revision| {
+            let mut snapshot = snapshot(status, sequence, revision);
+            snapshot.panes[0].pane_id = "agent-pane".into();
+            snapshot.workspaces[0].focused = false;
+            snapshot
+        };
+        let mut presentation = EndpointAgentPresentation::default();
+        let mut working = held_snapshot(AgentStatus::Working, 4, 1);
+        presentation.project_snapshot(&mut working);
+
+        presentation.receive_completions(None, completions("endpoint-boot", 2, Some(6)));
+        let mut held = held_snapshot(AgentStatus::Blocked, 6, 2);
+        presentation.project_snapshot(&mut held);
+
+        assert_eq!(held.agents[0].agent_status, AgentStatus::Blocked);
+        assert_eq!(
+            crate::client::shell::attention::attention_counts(&held, 300),
+            (1, 1),
+            "a held pane is waiting and red"
+        );
+
+        // Showing the pane acknowledges the completion, never the hold.
+        presentation.acknowledge_surface(&mut held, &surface(2), Some(true));
+        assert_eq!(held.agents[0].agent_status, AgentStatus::Blocked);
+
+        // Released by work: no client-side `done` resurfaces from the old move.
+        let mut released = held_snapshot(AgentStatus::Working, 7, 3);
+        presentation.project_snapshot(&mut released);
+        assert_eq!(released.agents[0].agent_status, AgentStatus::Working);
+        assert_eq!(
+            crate::client::shell::attention::attention_counts(&released, 300),
+            (0, 0)
+        );
+    }
 }

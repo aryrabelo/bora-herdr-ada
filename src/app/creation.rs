@@ -1,6 +1,9 @@
 use std::path::PathBuf;
 
-use super::{api_helpers::effective_agent_status, App, Mode};
+use super::{
+    api_helpers::{effective_agent_status, newest_blocked_hold},
+    App, Mode,
+};
 use crate::api::schema::{EventData, EventEnvelope, EventKind};
 use crate::{config::NewTerminalCwdConfig, workspace::Workspace};
 
@@ -213,6 +216,7 @@ impl App {
             pane_count: tab.panes.len(),
             agent_status: effective_agent_status(
                 tab.manual_status_pin(&self.state.terminals),
+                newest_blocked_hold(tab.panes.values(), &self.state.terminals),
                 agg_state,
                 seen,
             ),
@@ -352,7 +356,12 @@ impl App {
             terminal_title: terminal.terminal_title.clone(),
             terminal_title_stripped: terminal.terminal_title_stripped(),
             display_agent: presentation.display_agent,
-            agent_status: effective_agent_status(terminal.manual_status, terminal.state, pane.seen),
+            agent_status: effective_agent_status(
+                terminal.manual_status,
+                terminal.blocked_hold,
+                terminal.state,
+                pane.seen,
+            ),
             idle_seconds: terminal.idle_since.map(|since| since.elapsed().as_secs()),
             state_labels: presentation.state_labels,
             tokens: terminal.metadata_tokens.values(),
@@ -397,6 +406,10 @@ impl App {
             }),
             agent_status: effective_agent_status(
                 ws.manual_status_pin(&self.state.terminals),
+                newest_blocked_hold(
+                    ws.tabs.iter().flat_map(|tab| tab.panes.values()),
+                    &self.state.terminals,
+                ),
                 agg_state,
                 seen,
             ),

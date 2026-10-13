@@ -150,12 +150,25 @@ pub struct ManualAgentStatus {
     pub set_seq: u64,
 }
 
-/// Monotonic ordering source for [`ManualAgentStatus::set_seq`]; the clock
-/// has coarse ticks on some platforms, this counter does not.
-static NEXT_MANUAL_PIN_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// A pane that went Blocked -> Idle without working reads `blocked` until its
+/// agent next works (ceo-bora#356): answering or dismissing a prompt is not
+/// the agent finishing anything. `set_seq` comes from the same counter as
+/// [`ManualAgentStatus::set_seq`], so `effective_agent_status` can tell which
+/// of a hold and a pin is newer. Pure runtime state like the pin: never in a
+/// session snapshot, so a restart or live handoff reads detection again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BlockedHold {
+    pub set_seq: u64,
+}
 
-fn next_manual_pin_seq() -> u64 {
-    NEXT_MANUAL_PIN_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+/// Monotonic ordering source for [`ManualAgentStatus::set_seq`] and
+/// [`BlockedHold::set_seq`]; the clock has coarse ticks on some platforms,
+/// this counter does not.
+static NEXT_STATUS_OVERRIDE_SEQ: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+fn next_status_override_seq() -> u64 {
+    NEXT_STATUS_OVERRIDE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -191,6 +204,11 @@ pub struct TerminalState {
     /// Detection keeps running while this is set — see
     /// `crate::app::api_helpers::effective_agent_status`.
     pub manual_status: Option<ManualAgentStatus>,
+    /// Set when the agent moved Blocked -> Idle as a counted completion,
+    /// cleared on its next effective Working or when the agent goes away.
+    /// Folded in at read-out only, like `manual_status`; detection and the
+    /// `when_idle` drain never see it.
+    pub blocked_hold: Option<BlockedHold>,
     pub agent_name: Option<String>,
     agent_name_owner: Option<AgentNameOwner>,
     managed_agent: Option<ManagedAgent>,
@@ -234,6 +252,7 @@ impl TerminalState {
             terminal_title: None,
             manual_label: None,
             manual_status: None,
+            blocked_hold: None,
             agent_name: None,
             agent_name_owner: None,
             managed_agent: None,
@@ -2329,7 +2348,7 @@ impl TerminalState {
         self.manual_status = Some(ManualAgentStatus {
             status,
             set_at: now,
-            set_seq: next_manual_pin_seq(),
+            set_seq: next_status_override_seq(),
         });
     }
 
@@ -2337,6 +2356,16 @@ impl TerminalState {
     /// running underneath the whole time.
     pub fn clear_manual_status(&mut self) {
         self.manual_status = None;
+    }
+
+    /// Hold this terminal at `blocked` until its agent next works. The app
+    /// calls this on a Blocked -> Idle move that counts as a completion
+    /// (`AppState::update_terminal_state_with_completion_policy`); clearing
+    /// is owned here, in `recompute_effective_state` and the respawn reset.
+    pub fn set_blocked_hold(&mut self) {
+        self.blocked_hold = Some(BlockedHold {
+            set_seq: next_status_override_seq(),
+        });
     }
 
     pub fn set_agent_name(&mut self, name: String) {
@@ -2570,6 +2599,7 @@ impl TerminalState {
         self.state = AgentState::Unknown;
         self.last_agent_state_change_seq = None;
         self.last_agent_completion_seq = None;
+        self.blocked_hold = None;
         self.launch_argv = None;
         self.respawn_shell_on_exit = false;
         self.recent_agent_process_exit = None;
@@ -2665,6 +2695,11 @@ impl TerminalState {
             return None;
         }
 
+        // A blocked hold ends when its agent works again, by detection or by
+        // hook report alike: both reach the effective state only through here.
+        if state == AgentState::Working {
+            self.blocked_hold = None;
+        }
         self.state = state;
         Some(EffectiveStateChange {
             previous_agent_label,

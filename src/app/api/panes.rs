@@ -1661,12 +1661,22 @@ impl App {
         let Some(terminal) = self.state.terminals.get_mut(&terminal_id) else {
             return pane_not_found(id, &params.pane_id);
         };
-        let previous_status = effective_agent_status(terminal.manual_status, terminal.state, seen);
+        let previous_status = effective_agent_status(
+            terminal.manual_status,
+            terminal.blocked_hold,
+            terminal.state,
+            seen,
+        );
         match params.status {
             Some(status) => terminal.set_manual_status_at(status, std::time::Instant::now()),
             None => terminal.clear_manual_status(),
         }
-        let status = effective_agent_status(terminal.manual_status, terminal.state, seen);
+        let status = effective_agent_status(
+            terminal.manual_status,
+            terminal.blocked_hold,
+            terminal.state,
+            seen,
+        );
         if status != previous_status {
             self.emit_pane_agent_status_changed(ws_idx, pane_id);
         }
@@ -1699,14 +1709,23 @@ impl App {
         let Some(terminal) = self.state.terminals.get_mut(&terminal_id) else {
             return pane_not_found(id, &target.pane_id);
         };
-        let previous_status =
-            effective_agent_status(terminal.manual_status, terminal.state, previous_seen);
+        let previous_status = effective_agent_status(
+            terminal.manual_status,
+            terminal.blocked_hold,
+            terminal.state,
+            previous_seen,
+        );
         if terminal.manual_status.is_none() && terminal.state == crate::detect::AgentState::Idle {
             self.state.next_agent_state_change_seq += 1;
             terminal.last_agent_state_change_seq = Some(self.state.next_agent_state_change_seq);
             terminal.last_agent_completion_seq = Some(self.state.next_agent_state_change_seq);
         }
-        let status = effective_agent_status(terminal.manual_status, terminal.state, false);
+        let status = effective_agent_status(
+            terminal.manual_status,
+            terminal.blocked_hold,
+            terminal.state,
+            false,
+        );
         if let Some(pane) = self
             .state
             .workspaces
@@ -5570,5 +5589,111 @@ mod tests {
         let response: ErrorResponse =
             serde_json::from_str(&response).expect("missing pane is rejected");
         assert_eq!(response.error.code, "pane_not_found");
+    }
+
+    fn blocked_hold_detect(app: &mut App, pane_id: PaneId, state: AgentState) {
+        app.handle_internal_event(crate::events::AppEvent::StateChanged {
+            pane_id,
+            agent: Some(crate::detect::Agent::Claude),
+            state,
+            visible_blocker: state == AgentState::Blocked,
+            visible_working: state == AgentState::Working,
+            process_exited: false,
+            observed_at: std::time::Instant::now(),
+        });
+    }
+
+    fn blocked_hold_session(app: &mut App, pane_id: PaneId, seq: u64, session: &str) {
+        app.handle_internal_event(crate::events::AppEvent::AgentSessionReported {
+            pane_id,
+            source: "herdr:claude".into(),
+            agent_label: "claude".into(),
+            seq: Some(seq),
+            session_ref: crate::agent_resume::AgentSessionRef::id(session),
+            session_start_source: Some(if seq == 1 { "startup" } else { "clear" }.into()),
+        });
+    }
+
+    fn blocked_hold_listed_status(app: &mut App, public_pane_id: &str) -> AgentStatus {
+        let response =
+            app.handle_pane_list("req_list".into(), PaneListParams { workspace_id: None });
+        let response: SuccessResponse = serde_json::from_str(&response).expect("pane list");
+        let ResponseResult::PaneList { panes } = response.result else {
+            panic!("expected pane list");
+        };
+        panes
+            .into_iter()
+            .find(|pane| pane.pane_id == public_pane_id)
+            .expect("listed panes contain the target pane")
+            .agent_status
+    }
+
+    #[test]
+    fn blocked_hold_pane_list_reports_blocked_and_its_release_emits_once() {
+        let (mut app, public_pane_id) = app_with_test_workspace();
+        // The pane is the one being looked at, so its completion is seen and
+        // detection reads plain `idle` underneath the hold: releasing it later
+        // moves only the EFFECTIVE status, which is what the emit gate must see.
+        app.state.active = Some(0);
+        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        let terminal_id = terminal_id_for(&app, pane_id);
+        let hub = app.event_hub.clone();
+        blocked_hold_session(&mut app, pane_id, 1, "first");
+        blocked_hold_detect(&mut app, pane_id, AgentState::Working);
+        blocked_hold_detect(&mut app, pane_id, AgentState::Blocked);
+
+        let before = hub.current_sequence();
+        blocked_hold_detect(&mut app, pane_id, AgentState::Idle);
+        assert!(app.state.terminals[&terminal_id].blocked_hold.is_some());
+        assert_eq!(
+            status_changed_events(&hub, before),
+            vec![AgentStatus::Blocked],
+            "the detected move reports the held, effective status"
+        );
+        assert_eq!(
+            blocked_hold_listed_status(&mut app, &public_pane_id),
+            AgentStatus::Blocked
+        );
+        assert_eq!(app.workspace_info(0).agent_status, AgentStatus::Blocked);
+        assert_eq!(
+            app.tab_info(0, 0).expect("tab").agent_status,
+            AgentStatus::Blocked
+        );
+        assert_eq!(
+            app.session_metadata_snapshot().agents[0].agent_status,
+            AgentStatus::Blocked,
+            "the client shell snapshot carries the held status"
+        );
+
+        // Released by work: the detected move and the release are one event.
+        let before = hub.current_sequence();
+        blocked_hold_detect(&mut app, pane_id, AgentState::Working);
+        assert!(app.state.terminals[&terminal_id].blocked_hold.is_none());
+        assert_eq!(
+            status_changed_events(&hub, before),
+            vec![AgentStatus::Working]
+        );
+        assert_eq!(
+            blocked_hold_listed_status(&mut app, &public_pane_id),
+            AgentStatus::Working
+        );
+
+        // Released without a detected move: a session replacement drops the
+        // hold while detection stays Idle (seen, focused) -> exactly one event.
+        blocked_hold_detect(&mut app, pane_id, AgentState::Blocked);
+        blocked_hold_detect(&mut app, pane_id, AgentState::Idle);
+        assert_eq!(
+            blocked_hold_listed_status(&mut app, &public_pane_id),
+            AgentStatus::Blocked
+        );
+        let before = hub.current_sequence();
+        blocked_hold_session(&mut app, pane_id, 2, "second");
+        assert!(app.state.terminals[&terminal_id].blocked_hold.is_none());
+        assert_eq!(app.state.terminals[&terminal_id].state, AgentState::Idle);
+        assert_eq!(status_changed_events(&hub, before), vec![AgentStatus::Idle]);
+        assert_eq!(
+            blocked_hold_listed_status(&mut app, &public_pane_id),
+            AgentStatus::Idle
+        );
     }
 }

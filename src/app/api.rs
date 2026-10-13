@@ -713,32 +713,32 @@ impl App {
             });
         }
 
-        // The emission gate stays on the automatically detected status, exactly
-        // as before: detection runs underneath a manual pin, and the queued
-        // `when_idle` drain below is detection-driven machinery, not a read-out.
-        // Only the reported status folds the pin in.
+        // The drain gate stays on the automatically detected status, exactly
+        // as before: detection runs underneath a manual pin or a blocked hold,
+        // and the queued `when_idle` drain below is detection-driven
+        // machinery, not a read-out. Only the reported status folds the
+        // overrides in.
         let previous_agent_status = pane_agent_status(update.previous_state, update.previous_seen);
-        let (seen, manual_status) = self
+        let (seen, manual_status, blocked_hold) = self
             .state
             .workspaces
             .get(update.ws_idx)
             .and_then(|ws| ws.pane_state(update.pane_id))
             .map(|pane| {
-                let manual = self
-                    .state
-                    .terminals
-                    .get(&pane.attached_terminal_id)
-                    .and_then(|terminal| terminal.manual_status);
-                (pane.seen, manual)
+                let terminal = self.state.terminals.get(&pane.attached_terminal_id);
+                (
+                    pane.seen,
+                    terminal.and_then(|terminal| terminal.manual_status),
+                    terminal.and_then(|terminal| terminal.blocked_hold),
+                )
             })
-            .unwrap_or((update.seen, None));
+            .unwrap_or((update.seen, None, None));
         let detected_agent_status = pane_agent_status(update.state, seen);
-        let agent_status = effective_agent_status(manual_status, update.state, seen);
+        let agent_status = effective_agent_status(manual_status, blocked_hold, update.state, seen);
+        let detected_moved = previous_agent_status != detected_agent_status
+            || update.previous_presentation != update.presentation;
 
-        if previous_agent_status != detected_agent_status
-            || update.previous_presentation != update.presentation
-        {
-            let presentation = update.presentation.clone();
+        if detected_moved {
             // A queued `when_idle` prompt no longer drains on this first
             // tick away from `Working` — only its settle timer starts (or,
             // on a return to `Working`, cancels) here; the actual replay
@@ -754,6 +754,13 @@ impl App {
                 detected_agent_status,
                 Instant::now(),
             );
+        }
+        // One event per update: a released blocked hold moves the effective
+        // status even when detection did not (Idle stays Idle while the
+        // read-out goes blocked -> idle), and must not add a second event when
+        // it coincides with a detected move such as Idle -> Working.
+        if detected_moved || update.blocked_hold_released {
+            let presentation = update.presentation.clone();
             self.emit_event(crate::api::schema::EventEnvelope {
                 event: crate::api::schema::EventKind::PaneAgentStatusChanged,
                 data: crate::api::schema::EventData::PaneAgentStatusChanged {
