@@ -2083,6 +2083,47 @@ mod tests {
     }
 
     #[test]
+    fn done_per_pane_agent_focus_clears_only_the_focused_pane() {
+        let mut app = app_with_agent();
+        app.state.workspaces.push(Workspace::test_new("split"));
+        let focused = app.state.workspaces[1].tabs[0].root_pane;
+        let background = app.state.workspaces[1].test_split(ratatui::layout::Direction::Horizontal);
+        app.state.workspaces[1].tabs[0].layout.focus_pane(focused);
+        app.state.ensure_test_terminals();
+        for pane_id in [focused, background] {
+            let pane = app.state.workspaces[1].pane_state_mut(pane_id).unwrap();
+            pane.seen = false;
+            let terminal_id = pane.attached_terminal_id.clone();
+            app.state
+                .terminals
+                .get_mut(&terminal_id)
+                .unwrap()
+                .set_detected_state(Some(Agent::Pi), AgentState::Idle);
+        }
+        let status = |app: &App, pane_id| app.pane_info(1, pane_id).unwrap().agent_status;
+        assert_eq!(status(&app, background), AgentStatus::Done);
+
+        let response = app.handle_agent_focus(
+            "req".into(),
+            AgentTarget {
+                target: app.public_pane_id(1, background).unwrap(),
+            },
+        );
+
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        let ResponseResult::AgentInfo { agent } = success.result else {
+            panic!("expected agent info response");
+        };
+        assert_eq!(agent.agent_status, AgentStatus::Idle);
+        assert_eq!(status(&app, background), AgentStatus::Idle);
+        assert_eq!(
+            status(&app, focused),
+            AgentStatus::Done,
+            "the tab's previous focus is not acknowledged on the way to the target"
+        );
+    }
+
+    #[test]
     fn agent_focus_marks_already_focused_done_agent_seen() {
         let mut app = app_with_agent();
         app.state.outer_terminal_focus = Some(false);

@@ -205,6 +205,18 @@ impl Tab {
         self.custom_name = Some(name);
     }
 
+    /// The one place a shown tab marks a pane seen: only its focused pane.
+    /// A finished agent in another pane of the same tab keeps `done` until
+    /// that pane itself is focused (ceo-bora#355). The client mirrors this in
+    /// `EndpointAgentPresentation::acknowledge_surface`. Returns whether the
+    /// pane was unseen.
+    pub(crate) fn mark_focused_pane_seen(&mut self) -> bool {
+        let focused = self.layout.focused();
+        self.panes
+            .get_mut(&focused)
+            .is_some_and(|pane| !std::mem::replace(&mut pane.seen, true))
+    }
+
     pub fn split_focused_command(
         &mut self,
         direction: Direction,

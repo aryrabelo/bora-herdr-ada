@@ -528,7 +528,6 @@ impl App {
         };
 
         self.state.focus_pane_in_workspace(ws_idx, pane_id);
-        self.state.mark_active_tab_seen();
         self.state.mode = crate::app::Mode::Terminal;
 
         let Some(pane) = self.pane_info(ws_idx, pane_id) else {
@@ -1676,8 +1675,8 @@ impl App {
     }
 
     /// Put a pane back in the "finished while you were away" state: an idle
-    /// pane reads `done` until a focus or tab switch marks it seen again. The
-    /// manual pin, hook authority and notifications are left alone.
+    /// pane reads `done` until that pane itself is focused. The manual pin,
+    /// hook authority and notifications are left alone.
     ///
     /// Clearing `pane.seen` is enough for the API, but each TUI client keeps
     /// its own acknowledgement and only projects `done` for a completion newer
@@ -4589,6 +4588,45 @@ mod tests {
         assert_eq!(app.state.workspaces[1].active_tab, target_tab_idx);
         assert_eq!(app.state.workspaces[1].focused_pane_id(), Some(target_pane));
         assert_eq!(app.state.mode, Mode::Terminal);
+    }
+
+    #[test]
+    fn done_per_pane_pane_focus_clears_only_the_focused_pane() {
+        let (mut app, _) = app_with_test_workspace();
+        app.state.workspaces.push(Workspace::test_new("split"));
+        let focused = app.state.workspaces[1].tabs[0].root_pane;
+        let background = app.state.workspaces[1].test_split(ratatui::layout::Direction::Horizontal);
+        app.state.workspaces[1].tabs[0].layout.focus_pane(focused);
+        app.state.ensure_test_terminals();
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        for pane_id in [focused, background] {
+            let pane = app.state.workspaces[1].pane_state_mut(pane_id).unwrap();
+            pane.seen = false;
+            let terminal_id = pane.attached_terminal_id.clone();
+            app.state.terminals.get_mut(&terminal_id).unwrap().state = AgentState::Idle;
+        }
+        let status = |app: &App, pane_id| app.pane_info(1, pane_id).unwrap().agent_status;
+        assert_eq!(status(&app, background), AgentStatus::Done);
+
+        let response = app.handle_pane_focus(
+            "req".into(),
+            PaneTarget {
+                pane_id: app.public_pane_id(1, background).unwrap(),
+            },
+        );
+
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        let ResponseResult::PaneInfo { pane } = success.result else {
+            panic!("expected pane info response");
+        };
+        assert_eq!(pane.agent_status, AgentStatus::Idle);
+        assert_eq!(status(&app, background), AgentStatus::Idle);
+        assert_eq!(
+            status(&app, focused),
+            AgentStatus::Done,
+            "the tab's previous focus is not acknowledged on the way to the target"
+        );
     }
 
     #[test]
