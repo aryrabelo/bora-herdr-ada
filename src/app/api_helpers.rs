@@ -96,20 +96,46 @@ pub(super) fn pane_agent_status(
     }
 }
 
-/// The status a reader must see: a hand-set pin when one is present, otherwise
-/// live detection through [`pane_agent_status`]. Every read-out point (pane,
-/// tab, workspace, events, terminal targets) folds through here so the mapping
-/// and the override precedence each keep a single owner. Detection keeps
-/// running underneath a pin, so clearing it reveals the live state immediately.
+/// The status a reader must see: the newer of a hand-set pin and a blocked
+/// hold when either is present, otherwise live detection through
+/// [`pane_agent_status`]. Every read-out point (pane, tab, workspace, events,
+/// terminal targets) folds through here so the mapping and the override
+/// precedence each keep a single owner. Detection keeps running underneath
+/// both, but live detection is visible again only once NEITHER override
+/// remains: clearing one while the other stands exposes the other.
+///
+/// Pin vs hold (ceo-bora#356): both are stamped from one monotonic counter
+/// and the newer statement wins. A pin set after the hold is the human's
+/// answer to it; a hold set after the pin is a new blocking episode the pin
+/// predates, so it reads `blocked` until the agent works or a newer pin lands.
 pub(super) fn effective_agent_status(
     manual: Option<crate::terminal::ManualAgentStatus>,
+    blocked_hold: Option<crate::terminal::BlockedHold>,
     state: crate::detect::AgentState,
     seen: bool,
 ) -> crate::api::schema::AgentStatus {
-    match manual {
-        Some(manual) => manual.status,
-        None => pane_agent_status(state, seen),
+    match (manual, blocked_hold) {
+        (Some(manual), Some(hold)) if hold.set_seq > manual.set_seq => {
+            crate::api::schema::AgentStatus::Blocked
+        }
+        (Some(manual), _) => manual.status,
+        (None, Some(_)) => crate::api::schema::AgentStatus::Blocked,
+        (None, None) => pane_agent_status(state, seen),
     }
+}
+
+/// The newest blocked hold among `panes`, the tab/workspace counterpart of
+/// `Tab::manual_status_pin`: a rollup is held as soon as one of its panes is.
+pub(super) fn newest_blocked_hold<'a>(
+    panes: impl Iterator<Item = &'a crate::pane::PaneState>,
+    terminals: &std::collections::HashMap<
+        crate::terminal::TerminalId,
+        crate::terminal::TerminalState,
+    >,
+) -> Option<crate::terminal::BlockedHold> {
+    panes
+        .filter_map(|pane| terminals.get(&pane.attached_terminal_id)?.blocked_hold)
+        .max_by_key(|hold| hold.set_seq)
 }
 
 pub(super) fn read_terminal_snapshot(

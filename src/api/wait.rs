@@ -265,8 +265,6 @@ pub(super) fn prompt_agent(
                 .map_err(std::io::Error::other);
         }
     };
-    let prompt_started_working =
-        before_prompt.agent_status == crate::api::schema::AgentStatus::Working;
     let target = params.target.clone();
     if let Some(prompt_wait) = params.wait.as_mut() {
         prompt_wait.submission_deadline = wait
@@ -302,11 +300,7 @@ pub(super) fn prompt_agent(
         return agent_wait_not_running(request_id).map(Some);
     }
 
-    let prompt_activity_observed = prompt_started_working
-        || matches!(
-            prompted.agent_status,
-            crate::api::schema::AgentStatus::Working | crate::api::schema::AgentStatus::Blocked
-        );
+    let prompt_activity_observed = prompt_effect_observed(&before_prompt, &prompted);
     let prompt_state_change_seq = prompted.state_change_seq;
     let until = agent_wait_statuses(wait.until);
     let mut initial = prompted;
@@ -468,9 +462,15 @@ fn wait_for_resolved_agent(
                     ..
                 } if event_pane == pane_id => {
                     if released {
+                        // A transient event match is the agent's reaction
+                        // only once a probe shows `state_change_seq` past
+                        // the baseline; a released agent cannot be probed,
+                        // so under a sequence gate only the DETECTED
+                        // `final_status` counts - the event may be a pin.
                         if let Some(status) = final_status
                             .filter(|status| wait.until.contains(status))
-                            .or(matched_event_status)
+                            .or(matched_event_status
+                                .filter(|_| wait.after_state_change_seq.is_none()))
                         {
                             let mut matched = wait.initial;
                             matched.agent_status = status;
@@ -540,7 +540,13 @@ fn wait_for_resolved_agent(
                     .map(AgentWaitOutcome::Response)
                     .map(Some);
             }
-            if let Some(status) = matched_event_status {
+            // `pane.agent_status_changed` carries the read-out status, so a
+            // manual pin emits one with no detected move behind it. Under a
+            // sequence gate the event only counts once detection has moved
+            // past the baseline, exactly like the snapshot below.
+            if let Some(status) = matched_event_status
+                .filter(|_| state_changed_after(&current, wait.after_state_change_seq))
+            {
                 let mut matched = current;
                 matched.agent_status = status;
                 return Ok(Some(AgentWaitOutcome::Matched(Box::new(matched))));
@@ -585,6 +591,23 @@ fn prompt_activity_statuses() -> Vec<crate::api::schema::AgentStatus> {
         crate::api::schema::AgentStatus::Working,
         crate::api::schema::AgentStatus::Blocked,
     ]
+}
+
+/// Whether a prompt's effect is already visible at dispatch: the agent was
+/// working before it, or reached `working`/`blocked` through a detected move
+/// made after it. The status alone is not enough - a pane held after
+/// Blocked -> Idle (ceo-bora#356) or pinned by hand already reads `blocked`
+/// before the prompt lands, and its `state_change_seq` has not moved.
+fn prompt_effect_observed(
+    before_prompt: &crate::api::schema::AgentInfo,
+    prompted: &crate::api::schema::AgentInfo,
+) -> bool {
+    before_prompt.agent_status == crate::api::schema::AgentStatus::Working
+        || agent_wait_matches(
+            prompted,
+            &prompt_activity_statuses(),
+            Some(before_prompt.state_change_seq),
+        )
 }
 
 fn agent_wait_statuses(
@@ -700,8 +723,15 @@ fn agent_wait_matches(
     until: &[crate::api::schema::AgentStatus],
     after_state_change_seq: Option<u64>,
 ) -> bool {
-    until.contains(&agent.agent_status)
-        && after_state_change_seq.is_none_or(|baseline| agent.state_change_seq > baseline)
+    until.contains(&agent.agent_status) && state_changed_after(agent, after_state_change_seq)
+}
+
+/// Whether detection moved the agent after `baseline`. `state_change_seq`
+/// advances only on a detected move (and `pane.mark_unseen` of a plain idle
+/// pane), never on a manual pin or a blocked hold, so it separates the
+/// agent's own reaction from a read-out override that only looks like one.
+fn state_changed_after(agent: &crate::api::schema::AgentInfo, baseline: Option<u64>) -> bool {
+    baseline.is_none_or(|baseline| agent.state_change_seq > baseline)
 }
 
 fn agent_get(
@@ -1490,6 +1520,200 @@ mod tests {
         let unavailable: ErrorResponse = serde_json::from_str(&unavailable).unwrap();
         assert_eq!(unavailable.id, "wait");
         assert_eq!(unavailable.error.code, "server_unavailable");
+    }
+
+    fn prompt_agent_info(
+        agent_status: crate::api::schema::AgentStatus,
+        state_change_seq: u64,
+    ) -> crate::api::schema::AgentInfo {
+        crate::api::schema::AgentInfo {
+            terminal_id: "t1".into(),
+            name: Some("main".into()),
+            agent: Some("pi".into()),
+            title: None,
+            terminal_title: None,
+            terminal_title_stripped: None,
+            display_agent: None,
+            agent_status,
+            screen_detection_skipped: false,
+            state_labels: Default::default(),
+            tokens: Default::default(),
+            agent_session: None,
+            workspace_id: "w1".into(),
+            tab_id: "w1t1".into(),
+            pane_id: "p1".into(),
+            focused: false,
+            launch_pending: false,
+            interactive_ready: true,
+            state_change_seq,
+            completion_seq: None,
+            cwd: None,
+            foreground_cwd: None,
+            revision: 1,
+        }
+    }
+
+    /// A held pane (ceo-bora#356) is admitted - detection reads Idle - yet
+    /// reports `blocked` before and right after the prompt. That stale
+    /// `blocked` is not the prompt's effect: `agent prompt --wait` must keep
+    /// waiting for a detected move, or it returns at once on a pane the
+    /// prompt never reached.
+    #[test]
+    fn prompt_effect_ignores_a_blocked_hold_already_present() {
+        use crate::api::schema::AgentStatus;
+        let held = prompt_agent_info(AgentStatus::Blocked, 7);
+        assert!(!prompt_effect_observed(&held, &held.clone()));
+
+        // A detected move after the prompt still counts, blocked included.
+        assert!(prompt_effect_observed(
+            &held,
+            &prompt_agent_info(AgentStatus::Blocked, 8)
+        ));
+        assert!(prompt_effect_observed(
+            &held,
+            &prompt_agent_info(AgentStatus::Working, 8)
+        ));
+        assert!(!prompt_effect_observed(
+            &held,
+            &prompt_agent_info(AgentStatus::Idle, 8)
+        ));
+        // Already working before the prompt: the effect is in flight.
+        let working = prompt_agent_info(AgentStatus::Working, 7);
+        assert!(prompt_effect_observed(&working, &working.clone()));
+    }
+
+    /// Runs `prompt_agent --wait --until working` against a fake App: every
+    /// `agent.get` answers `before` until the prompt is dispatched, and the
+    /// dispatch pushes one `pane.agent_status_changed` carrying `event` and
+    /// switches `agent.get` to `after`. Returns the wire response.
+    #[cfg(unix)]
+    fn prompt_wait_through(
+        before: crate::api::schema::AgentInfo,
+        event: crate::api::schema::AgentStatus,
+        after: crate::api::schema::AgentInfo,
+    ) -> serde_json::Value {
+        use interprocess::local_socket::traits::Listener as _;
+
+        let event_hub = EventHub::default();
+        let (api_tx, mut api_rx) =
+            tokio::sync::mpsc::unbounded_channel::<crate::api::ApiRequestMessage>();
+        let responder_hub = event_hub.clone();
+        let responder = std::thread::spawn(move || {
+            let mut current = before.clone();
+            while let Some(msg) = api_rx.blocking_recv() {
+                let result = match msg.request.method {
+                    Method::AgentGet(_) => ResponseResult::AgentInfo {
+                        agent: current.clone(),
+                    },
+                    Method::AgentPrompt(_) => {
+                        responder_hub.push(EventEnvelope {
+                            event: EventKind::PaneAgentStatusChanged,
+                            data: EventData::PaneAgentStatusChanged {
+                                pane_id: before.pane_id.clone(),
+                                workspace_id: before.workspace_id.clone(),
+                                agent_status: event,
+                                agent: before.agent.clone(),
+                                title: None,
+                                display_agent: None,
+                                state_labels: Default::default(),
+                            },
+                        });
+                        current = after.clone();
+                        ResponseResult::AgentPrompted {
+                            agent: before.clone(),
+                            outcome: crate::api::schema::AgentPromptOutcome::Injected,
+                            queue_position: None,
+                            queue_id: None,
+                        }
+                    }
+                    other => panic!("unexpected request: {other:?}"),
+                };
+                msg.respond_to
+                    .send(
+                        serde_json::to_string(&SuccessResponse {
+                            id: msg.request.id,
+                            result,
+                        })
+                        .unwrap(),
+                    )
+                    .unwrap();
+            }
+        });
+
+        // Keep the name short: macOS CI's temp_dir is long and a unix socket
+        // path must fit in sockaddr_un.sun_path (104 bytes there).
+        static NEXT_SOCKET: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "herdr-pw-{}-{}",
+            std::process::id(),
+            NEXT_SOCKET.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        let listener = crate::ipc::bind_local_listener(&path).unwrap();
+        let _client = crate::ipc::connect_local_stream(&path).unwrap();
+        let mut server = listener.accept().unwrap();
+        let running = Arc::new(AtomicBool::new(true));
+        let response = prompt_agent(
+            "prompt".into(),
+            crate::api::schema::AgentPromptParams {
+                target: "main".into(),
+                text: "hi".into(),
+                wait: Some(crate::api::schema::AgentPromptWaitOptions {
+                    until: vec![crate::api::schema::AgentStatus::Working],
+                    timeout_ms: Some(400),
+                    submission_deadline: None,
+                }),
+                from_pane: None,
+                when_idle: None,
+                when_idle_timeout_ms: None,
+                peer_pid: None,
+                origin_channel: None,
+            },
+            &mut server,
+            &api_tx,
+            &event_hub,
+            &running,
+        )
+        .unwrap()
+        .expect("prompt wait answers");
+        drop(api_tx);
+        responder.join().unwrap();
+        let _ = std::fs::remove_file(&path);
+        serde_json::from_str(&response).unwrap()
+    }
+
+    /// `pane.agent_status_changed` carries the read-out status, so a manual
+    /// pin set after dispatch - on a plain idle pane or on one held after
+    /// Blocked -> Idle (ceo-bora#356) - emits `working` with detection still
+    /// idle. The prompt wait must not take that for the agent's reaction;
+    /// only a detected move past the pre-prompt `state_change_seq` counts.
+    #[cfg(unix)]
+    #[test]
+    fn prompt_wait_ignores_a_pin_over_idle_or_blocked_hold_after_dispatch() {
+        use crate::api::schema::AgentStatus;
+
+        for before in [
+            prompt_agent_info(AgentStatus::Idle, 7),
+            prompt_agent_info(AgentStatus::Blocked, 7),
+        ] {
+            let pinned = prompt_wait_through(
+                before.clone(),
+                AgentStatus::Working,
+                prompt_agent_info(AgentStatus::Working, 7),
+            );
+            assert_eq!(
+                pinned["error"]["code"], "timeout",
+                "a pin over {:?} reported prompt success: {pinned}",
+                before.agent_status
+            );
+
+            let worked = prompt_wait_through(
+                before,
+                AgentStatus::Working,
+                prompt_agent_info(AgentStatus::Working, 8),
+            );
+            assert_eq!(worked["result"]["type"], "agent_prompted", "{worked}");
+            assert_eq!(worked["result"]["agent"]["agent_status"], "working");
+        }
     }
 
     mod channel_wait {

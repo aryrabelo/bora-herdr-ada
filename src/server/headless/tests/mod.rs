@@ -6438,6 +6438,107 @@ async fn headless_scheduled_tasks_drain_settled_pending_agent_prompts() {
     shutdown_test_runtimes(&mut server);
 }
 
+/// A held pane (ceo-bora#356) reads `blocked` everywhere, but the `when_idle`
+/// machinery keeps reading DETECTION: a prompt deferred while the agent was
+/// working is still replayed by the headless tick once it goes
+/// Blocked -> Idle, and a fresh `when_idle` prompt to the held pane is
+/// injected at once instead of being refused as blocked.
+#[tokio::test]
+async fn headless_blocked_hold_still_drains_when_idle_prompts() {
+    let mut server = test_headless_server();
+    let workspace = crate::workspace::Workspace::test_new("agent");
+    let pane_id = workspace.tabs[0].root_pane;
+    let terminal_id = workspace.terminal_id(pane_id).cloned().unwrap();
+    server.app.state.workspaces = vec![workspace];
+    server.app.state.active = Some(0);
+    server.app.state.ensure_test_terminals();
+    server
+        .app
+        .state
+        .terminals
+        .get_mut(&terminal_id)
+        .unwrap()
+        .set_agent_name("reviewer".into());
+    let (runtime, mut rx) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+    server.app.state.insert_test_runtime(pane_id, runtime);
+    let public_pane_id = server.app.public_pane_id(0, pane_id).unwrap();
+    let detect = |server: &mut HeadlessServer, state: crate::detect::AgentState| {
+        server
+            .app
+            .handle_internal_event(crate::events::AppEvent::StateChanged {
+                pane_id,
+                agent: Some(crate::detect::Agent::OpenCode),
+                state,
+                visible_blocker: state == crate::detect::AgentState::Blocked,
+                visible_working: state == crate::detect::AgentState::Working,
+                process_exited: false,
+                observed_at: Instant::now(),
+            });
+    };
+    let prompt = |server: &mut HeadlessServer, text: &str| -> serde_json::Value {
+        serde_json::from_str(&server.app.handle_agent_prompt(
+            "req".into(),
+            crate::api::schema::AgentPromptParams {
+                target: public_pane_id.clone(),
+                text: text.into(),
+                wait: None,
+                from_pane: None,
+                when_idle: Some(true),
+                when_idle_timeout_ms: None,
+                peer_pid: None,
+                origin_channel: None,
+            },
+        ))
+        .unwrap()
+    };
+
+    detect(&mut server, crate::detect::AgentState::Working);
+    let receipt = prompt(&mut server, "after your turn");
+    assert_eq!(receipt["result"]["outcome"], "deferred");
+    let queue_id = receipt["result"]["queue_id"].as_u64().unwrap();
+
+    // The agent asks, then goes idle without working: the pane is held.
+    detect(&mut server, crate::detect::AgentState::Blocked);
+    detect(&mut server, crate::detect::AgentState::Idle);
+    assert!(server.app.state.terminals[&terminal_id]
+        .blocked_hold
+        .is_some());
+    assert_eq!(
+        server.app.session_metadata_snapshot().panes[0].agent_status,
+        crate::api::schema::AgentStatus::Blocked
+    );
+
+    let settled = Instant::now() + crate::app::PENDING_AGENT_PROMPT_DRAIN_SETTLE;
+    assert!(server.handle_scheduled_tasks_headless(settled + Duration::from_millis(50), false));
+    assert_eq!(
+        rx.try_recv().unwrap(),
+        Bytes::from_static(b"after your turn")
+    );
+    assert!(server
+        .app
+        .event_hub
+        .events_after(0)
+        .iter()
+        .any(|(_, event)| matches!(
+            &event.data,
+            crate::api::schema::EventData::QueuedPromptDelivered { queue_id: id, .. }
+                if *id == queue_id
+        )));
+
+    // Still held, a new `when_idle` prompt goes straight in.
+    assert!(server.app.state.terminals[&terminal_id]
+        .blocked_hold
+        .is_some());
+    let receipt = prompt(&mut server, "while held");
+    assert_eq!(receipt["result"]["outcome"], "injected", "{receipt}");
+    let mut delivered = Vec::new();
+    while let Ok(bytes) = rx.try_recv() {
+        delivered.push(bytes);
+    }
+    assert!(delivered.contains(&Bytes::from_static(b"while held")));
+    shutdown_test_runtimes(&mut server);
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn headless_scheduled_tasks_start_pending_agent_resume_without_foreground_client() {

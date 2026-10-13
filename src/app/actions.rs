@@ -30,6 +30,16 @@ fn is_completion_transition(change: &EffectiveStateChange) -> bool {
     is_background_completion_transition(change.previous_state, change.state)
 }
 
+/// A Blocked -> Idle move by the same agent: the agent stopped asking without
+/// working, so the pane holds `blocked` until it works again (ceo-bora#356).
+/// Only applied where the move also counts as a completion, so a startup trust
+/// prompt or an acquisition settle never holds.
+fn is_blocked_hold_transition(change: &EffectiveStateChange) -> bool {
+    change.previous_state == AgentState::Blocked
+        && change.state == AgentState::Idle
+        && change.previous_agent_label == change.agent_label
+}
+
 fn public_tab_id_for_index(ws: &crate::workspace::Workspace, tab_idx: usize) -> Option<String> {
     let tab_number = ws.public_tab_number(tab_idx)?;
     Some(crate::workspace::public_tab_id_for_number(
@@ -192,6 +202,10 @@ pub struct PaneStateUpdate {
     pub agent_released: bool,
     pub agent_release_status: Option<crate::api::schema::AgentStatus>,
     pub suppress_completion: bool,
+    /// The pane's blocked hold ended in this update. The status event fires on
+    /// it even when the detected status did not move, because the effective
+    /// status did (`App::emit_pane_state_update`).
+    pub blocked_hold_released: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -317,10 +331,10 @@ impl AppState {
             .into_iter()
             .filter_map(|(ws_idx, pane_id, terminal_id)| {
                 let previous_seen = self.workspaces[ws_idx].pane_state(pane_id)?.seen;
-                let mutation = self
-                    .terminals
-                    .get_mut(&terminal_id)?
-                    .expire_agent_metadata_at(scheduled_deadline, now)?;
+                let terminal = self.terminals.get_mut(&terminal_id)?;
+                let had_blocked_hold = terminal.blocked_hold.is_some();
+                let mutation = terminal.expire_agent_metadata_at(scheduled_deadline, now)?;
+                let blocked_hold_released = had_blocked_hold && terminal.blocked_hold.is_none();
                 let change = mutation.effective_state_change?;
                 let seen = self.apply_pane_state_change(ws_idx, pane_id, &change, false)?;
                 let update = PaneStateUpdate {
@@ -340,6 +354,7 @@ impl AppState {
                     agent_released: false,
                     agent_release_status: None,
                     suppress_completion: false,
+                    blocked_hold_released,
                 };
                 Some(update)
             })
@@ -1676,10 +1691,12 @@ impl AppState {
             unchanged_change,
             suppress_acquisition_completion,
             completion_reset,
+            had_blocked_hold,
         ) = {
             let terminal = self.terminals.get_mut(&terminal_id)?;
             let previous_agent_name = terminal.agent_name.clone();
             let had_completion = terminal.last_agent_completion_seq.is_some() || !previous_seen;
+            let had_blocked_hold = terminal.blocked_hold.is_some();
             let resume_revision = terminal.reported_resume_revision();
             let mutation = update(terminal);
             terminal.reconcile_reported_resume();
@@ -1695,6 +1712,9 @@ impl AppState {
                     .is_some_and(|change| change.previous_agent_label != change.agent_label);
             if completion_reset {
                 terminal.last_agent_completion_seq = None;
+                // The hold, like the done mark, belongs to the agent session
+                // that produced it.
+                terminal.blocked_hold = None;
             }
             let managed_changed = terminal.reconcile_managed_agent_at(now, false);
             let suppress_acquisition_completion = terminal.finish_agent_process_acquisition();
@@ -1710,6 +1730,7 @@ impl AppState {
                 unchanged_change,
                 suppress_acquisition_completion,
                 completion_reset,
+                had_blocked_hold,
             )
         };
         if completion_reset {
@@ -1738,8 +1759,19 @@ impl AppState {
                 terminal.last_agent_completion_seq = (!suppress_completion
                     && is_completion_transition(&change))
                 .then_some(self.next_agent_state_change_seq);
+                // The hold replaces exactly the completion this move would
+                // otherwise read as `done` (or `idle` when seen).
+                if !suppress_completion && !completion_reset && is_blocked_hold_transition(&change)
+                {
+                    terminal.set_blocked_hold();
+                }
             }
         }
+        let blocked_hold_released = had_blocked_hold
+            && self
+                .terminals
+                .get(&terminal_id)
+                .is_some_and(|terminal| terminal.blocked_hold.is_none());
         let seen = self.apply_pane_state_change(ws_idx, pane_id, &change, suppress_completion)?;
         let update = PaneStateUpdate {
             pane_id,
@@ -1766,6 +1798,7 @@ impl AppState {
             agent_released,
             agent_release_status: agent_released.then(|| pane_agent_status(change.state, seen)),
             suppress_completion,
+            blocked_hold_released,
         };
         Some(update)
     }
@@ -3525,6 +3558,309 @@ mod tests {
             true,
             &[AgentState::Idle, AgentState::Working, AgentState::Idle],
             true,
+        );
+    }
+
+    /// What every read-out reports for a pane: `effective_agent_status`, the
+    /// pin and the blocked hold folded over detection.
+    fn blocked_hold_effective_status(
+        state: &AppState,
+        ws_idx: usize,
+        pane_id: PaneId,
+    ) -> crate::api::schema::AgentStatus {
+        let pane = state.workspaces[ws_idx]
+            .pane_state(pane_id)
+            .expect("pane exists");
+        let terminal = &state.terminals[&pane.attached_terminal_id];
+        crate::app::api_helpers::effective_agent_status(
+            terminal.manual_status,
+            terminal.blocked_hold,
+            terminal.state,
+            pane.seen,
+        )
+    }
+
+    fn blocked_hold_terminal(
+        state: &mut AppState,
+        ws_idx: usize,
+        pane_id: PaneId,
+    ) -> &mut crate::terminal::TerminalState {
+        let terminal_id = state.terminal_id_for_pane(ws_idx, pane_id).unwrap();
+        state.terminals.get_mut(&terminal_id).unwrap()
+    }
+
+    fn blocked_hold_drive(state: &mut AppState, pane_id: PaneId, states: &[AgentState]) {
+        for &agent_state in states {
+            state.handle_app_event(AppEvent::StateChanged {
+                pane_id,
+                agent: Some(Agent::Pi),
+                state: agent_state,
+                visible_blocker: agent_state == AgentState::Blocked,
+                visible_working: agent_state == AgentState::Working,
+                process_exited: false,
+                observed_at: Instant::now(),
+            });
+        }
+    }
+
+    /// A pane in a background workspace whose agent worked, asked, and went
+    /// idle without working again.
+    fn blocked_hold_background_pane() -> (AppState, PaneId) {
+        let mut state = app_with_workspaces(&["active", "background"]);
+        state.active = Some(0);
+        let pane_id = state.workspaces[1].tabs[0].root_pane;
+        state.handle_app_event(AppEvent::AgentProcessDetected {
+            pane_id,
+            agent: Agent::Pi,
+            observed_at: Instant::now(),
+        });
+        blocked_hold_drive(
+            &mut state,
+            pane_id,
+            &[AgentState::Working, AgentState::Blocked, AgentState::Idle],
+        );
+        (state, pane_id)
+    }
+
+    #[test]
+    fn blocked_hold_set_on_blocked_to_idle_reads_blocked_until_it_works() {
+        use crate::api::schema::AgentStatus;
+
+        let (mut state, pane_id) = blocked_hold_background_pane();
+
+        assert!(blocked_hold_terminal(&mut state, 1, pane_id)
+            .blocked_hold
+            .is_some());
+        assert_eq!(
+            api_status(&state, 1, pane_id),
+            AgentStatus::Done,
+            "detection underneath still reads the unseen completion"
+        );
+        assert_eq!(
+            blocked_hold_effective_status(&state, 1, pane_id),
+            AgentStatus::Blocked
+        );
+
+        // Looking at the pane acknowledges the completion, not the hold.
+        state.switch_workspace(1);
+        assert_eq!(api_status(&state, 1, pane_id), AgentStatus::Idle);
+        assert_eq!(
+            blocked_hold_effective_status(&state, 1, pane_id),
+            AgentStatus::Blocked
+        );
+    }
+
+    #[test]
+    fn blocked_hold_skips_a_startup_trust_prompt() {
+        let mut state = app_with_workspaces(&["active", "background"]);
+        state.active = Some(0);
+        let pane_id = state.workspaces[1].tabs[0].root_pane;
+        state.handle_app_event(AppEvent::AgentProcessDetected {
+            pane_id,
+            agent: Agent::Pi,
+            observed_at: Instant::now(),
+        });
+        blocked_hold_drive(
+            &mut state,
+            pane_id,
+            &[AgentState::Blocked, AgentState::Idle],
+        );
+
+        assert!(
+            blocked_hold_terminal(&mut state, 1, pane_id)
+                .blocked_hold
+                .is_none(),
+            "a Blocked -> Idle move that is not a completion holds nothing"
+        );
+        assert_eq!(
+            blocked_hold_effective_status(&state, 1, pane_id),
+            crate::api::schema::AgentStatus::Idle
+        );
+    }
+
+    #[test]
+    fn blocked_hold_and_manual_pin_newest_statement_wins() {
+        use crate::api::schema::AgentStatus;
+
+        let (mut state, pane_id) = blocked_hold_background_pane();
+
+        // A pin set after the hold is the human answering it.
+        blocked_hold_terminal(&mut state, 1, pane_id)
+            .set_manual_status_at(AgentStatus::Idle, Instant::now());
+        assert_eq!(
+            blocked_hold_effective_status(&state, 1, pane_id),
+            AgentStatus::Idle
+        );
+
+        // A new blocking episode after the pin holds again over it.
+        blocked_hold_drive(
+            &mut state,
+            pane_id,
+            &[AgentState::Working, AgentState::Blocked, AgentState::Idle],
+        );
+        let terminal = blocked_hold_terminal(&mut state, 1, pane_id);
+        assert!(
+            terminal.blocked_hold.expect("held again").set_seq
+                > terminal.manual_status.expect("pin kept").set_seq
+        );
+        assert_eq!(
+            blocked_hold_effective_status(&state, 1, pane_id),
+            AgentStatus::Blocked
+        );
+
+        // Dropping the older pin leaves the hold standing.
+        blocked_hold_terminal(&mut state, 1, pane_id).clear_manual_status();
+        assert_eq!(
+            blocked_hold_effective_status(&state, 1, pane_id),
+            AgentStatus::Blocked
+        );
+    }
+
+    #[test]
+    fn blocked_hold_clears_on_working_without_a_stale_done() {
+        use crate::api::schema::AgentStatus;
+
+        let (mut state, pane_id) = blocked_hold_background_pane();
+        assert_eq!(
+            blocked_hold_effective_status(&state, 1, pane_id),
+            AgentStatus::Blocked
+        );
+
+        blocked_hold_drive(&mut state, pane_id, &[AgentState::Working]);
+        let terminal = blocked_hold_terminal(&mut state, 1, pane_id);
+        assert!(terminal.blocked_hold.is_none(), "working releases the hold");
+        assert!(
+            terminal.last_agent_completion_seq.is_none(),
+            "the held completion does not survive the next turn"
+        );
+        assert_eq!(
+            blocked_hold_effective_status(&state, 1, pane_id),
+            AgentStatus::Working
+        );
+        assert!(state.workspaces[1].panes[&pane_id].seen);
+
+        // The next finish is a fresh completion of the new turn, not the old one.
+        blocked_hold_drive(&mut state, pane_id, &[AgentState::Idle]);
+        let terminal = blocked_hold_terminal(&mut state, 1, pane_id);
+        assert!(terminal.blocked_hold.is_none());
+        assert_eq!(
+            terminal.last_agent_completion_seq,
+            terminal.last_agent_state_change_seq
+        );
+        assert_eq!(
+            blocked_hold_effective_status(&state, 1, pane_id),
+            AgentStatus::Done
+        );
+    }
+
+    #[test]
+    fn blocked_hold_hook_reported_working_clears_it() {
+        let mut state = app_with_workspaces(&["active", "background"]);
+        state.active = Some(0);
+        let pane_id = state.workspaces[1].tabs[0].root_pane;
+        for (seq, agent_state) in [
+            (1, AgentState::Working),
+            (2, AgentState::Blocked),
+            (3, AgentState::Idle),
+            (4, AgentState::Working),
+        ] {
+            let updates = state.handle_app_event(AppEvent::HookStateReported {
+                pane_id,
+                source: "herdr:codex".into(),
+                agent_label: "codex".into(),
+                state: agent_state,
+                message: None,
+                seq: Some(seq),
+                session_ref: None,
+                background: false,
+            });
+            let held = blocked_hold_terminal(&mut state, 1, pane_id)
+                .blocked_hold
+                .is_some();
+            assert_eq!(held, seq == 3, "hook-reported {agent_state:?}");
+            if seq == 4 {
+                assert!(updates
+                    .iter()
+                    .any(|update| update.pane_id == pane_id && update.blocked_hold_released));
+            }
+        }
+    }
+
+    #[test]
+    fn blocked_hold_released_when_the_agent_exits() {
+        let (mut state, pane_id) = blocked_hold_background_pane();
+
+        let update = state
+            .publish_pane_process_exit_if_agent(pane_id, false)
+            .expect("agent exit publishes a release");
+
+        assert!(update.blocked_hold_released);
+        assert!(blocked_hold_terminal(&mut state, 1, pane_id)
+            .blocked_hold
+            .is_none());
+        assert_ne!(
+            blocked_hold_effective_status(&state, 1, pane_id),
+            crate::api::schema::AgentStatus::Blocked
+        );
+    }
+
+    #[test]
+    fn blocked_hold_goes_with_its_pane_on_close() {
+        let mut state = app_with_workspaces(&["held"]);
+        let held = state.workspaces[0].tabs[0].root_pane;
+        let sibling = state.workspaces[0].test_split(Direction::Horizontal);
+        state.ensure_test_terminals();
+        state.workspaces[0].tabs[0].layout.focus_pane(held);
+        blocked_hold_drive(
+            &mut state,
+            held,
+            &[AgentState::Working, AgentState::Blocked, AgentState::Idle],
+        );
+        let held_terminal = state.terminal_id_for_pane(0, held).unwrap();
+        assert!(state.terminals[&held_terminal].blocked_hold.is_some());
+
+        state.close_pane();
+
+        assert!(!state.terminals.contains_key(&held_terminal));
+        assert!(state.workspaces[0].pane_state(sibling).is_some());
+        assert!(
+            state
+                .terminals
+                .values()
+                .all(|terminal| terminal.blocked_hold.is_none()),
+            "no surviving pane inherits the hold"
+        );
+    }
+
+    #[test]
+    fn blocked_hold_is_not_in_the_session_snapshot() {
+        let (mut state, pane_id) = blocked_hold_background_pane();
+        let runtimes = crate::terminal::TerminalRuntimeRegistry::default();
+        let capture = |state: &AppState| {
+            serde_json::to_value(crate::persist::capture(
+                &state.workspaces,
+                &state.terminals,
+                &runtimes,
+                state.active,
+                state.selected,
+                state.sidebar_width,
+                state.sidebar_section_split,
+                state.collapsed_space_keys.clone(),
+                state.view_mode,
+            ))
+            .expect("snapshot serializes")
+        };
+
+        assert!(blocked_hold_terminal(&mut state, 1, pane_id)
+            .blocked_hold
+            .is_some());
+        let held = capture(&state);
+        blocked_hold_terminal(&mut state, 1, pane_id).blocked_hold = None;
+        let released = capture(&state);
+
+        assert_eq!(
+            held, released,
+            "the hold is runtime-only: a restart or live handoff reads detection again"
         );
     }
 
