@@ -1,0 +1,79 @@
+# bora's opinionated config. `just install` (component `config`) copies this
+# to ~/.config/bora/config.toml ONLY when that file does not exist yet; an
+# existing config is never touched, the installer just lists which of these
+# keys it lacks. Run `bora config check` after editing, and
+# `bora server reload-config` to apply without restarting.
+#
+# The cmd+... chords below only reach bora once Ghostty stops consuming them:
+# see examples/opinionated/ghostty.conf (component `ghostty`).
+
+# Restore agent sessions after a server restart (bora staggers the starts,
+# see [session] startup_per_agent_delay_ms in `bora --default-config`).
+[session]
+resume_agents_on_restore = true
+
+# Narrowing a pane keeps what the program already drew instead of re-wrapping
+# it. Trade-off: content wider than the new size is truncated until the
+# program repaints (tmux semantics).
+[terminal]
+reflow_on_resize = false
+
+[ui]
+# Folders sidebar: workspaces grouped by visual group, nested groups,
+# drag-to-join. Other values: "repo", "flat".
+view_mode = "folders"
+# Channel chat view for `bora channel` conversations.
+chat_view = true
+show_agent_labels_on_pane_borders = true
+show_pane_ids_on_pane_borders = true
+# Agent panel ordered as an attention queue.
+agent_panel_sort = "priority"
+status_indicators = "dots"
+
+# Background notifications go to the outer terminal (desktop notification).
+[ui.toast]
+delivery = "terminal"
+
+[experimental]
+pane_history = true
+# macOS/Windows: switch to an ASCII layout while the prefix is held, so prefix
+# commands work under a non-Latin input source.
+switch_ascii_input_source_in_prefix = true
+
+[theme]
+name = "catppuccin"
+auto_switch = false
+
+[keys]
+prefix = "ctrl+space"
+
+# Each action fires three ways: the prefix chord, a Cmd chord (delivered once
+# Ghostty unbinds it), and a ctrl+alt fallback that works without the kitty
+# keyboard protocol.
+new_tab = ["prefix+c", "cmd+t", "ctrl+alt+c"]
+close_pane = ["prefix+x", "cmd+w", "ctrl+alt+x"]
+new_workspace = ["prefix+shift+n", "cmd+n", "ctrl+alt+n"]
+split_vertical = ["prefix+v", "cmd+d", "ctrl+alt+d"]
+split_horizontal = ["prefix+minus", "cmd+shift+d", "ctrl+alt+shift+d"]
+new_worktree = ["prefix+shift+g", "cmd+shift+g", "ctrl+alt+g"]
+
+# Tabs on cmd+] / cmd+[, workspaces on the shifted pair. ctrl+tab /
+# ctrl+shift+tab stay as the workspace fallback because macOS's Window menu
+# can still own cmd+shift+] / [ (see examples/opinionated/ghostty.conf).
+next_tab = ["prefix+n", "cmd+]"]
+previous_tab = ["prefix+p", "cmd+["]
+next_workspace = ["ctrl+tab", "cmd+shift+]"]
+previous_workspace = ["ctrl+shift+tab", "cmd+shift+["]
+
+# Agent navigation. Needs `macos-option-as-alt = true` in Ghostty.
+next_agent = "alt+a"
+previous_agent = "alt+shift+a"
+focus_agent = "alt+1..9"
+
+# herdr-file-viewer plugin (component `plugins`): git-aware file viewer in a
+# split.
+[[keys.command]]
+key = "prefix+f"
+type = "plugin_action"
+command = "herdr-file-viewer.open-file-viewer"
+description = "file viewer"

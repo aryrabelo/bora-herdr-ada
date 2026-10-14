@@ -6,17 +6,7 @@ stock `herdr` install (brew/mise) instead of overwriting it.
 
 ## What's different from upstream
 
-- **omp (oh-my-pi) is a first-class detected agent.** Upstream only recognizes
-  `omp` while its lifecycle integration is live; with no live integration it
-  could not identify omp panes (no `Agent::Omp`, no detection manifest) and they
-  fell back to a wrong/stale agent label, leaving the sidebar state stuck. The
-  fork adds `Agent::Omp`, process/label recognition, and an `omp.toml` detection
-  manifest keyed on the `π  /` status bar (working = braille spinner / `⟦esc⟧`).
-  See commit `fix(detect): recognize omp (oh-my-pi) as a first-class agent`.
-
-- **Worktree creation auto-provisions `.context/`.** Every worktree bora
-  creates gets a `.context/` scratch dir for notes and handoffs, git-excluded
-  centrally rather than per worktree. See "Worktree creation" below.
+See [README-FORK.md](README-FORK.md): every fork feature, how to use it, and what the fork removed on purpose.
 
 ## Branch layout
 

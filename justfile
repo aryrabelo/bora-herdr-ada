@@ -139,20 +139,20 @@ build:
 build:
     python scripts/package_windows_conpty.py build-local
 
-# Build release and COPY it to ~/.local/bin/bora. Prints the version it just
-# installed, because the failure mode this recipe exists to prevent is a stale
-# binary hiding behind a path that looks fine. A copy, not a symlink: this
-# machine pins one shared cargo target dir, so a symlink into it is rewritten
-# by any `cargo build --release` from any worktree (an agent's WIP build broke
-# every CLI call with protocol_mismatch that way). Run `just bootstrap` once
-# per machine afterwards for the fork's default plugins and keybind.
+# Components live one file each in scripts/install/components/: binary,
+# plugins, omp, ghostty, config. Flags: --all, --only <a,b>, --yes (defaults,
+# no prompt), --list.
+# TTY rule: with no flags and stdin or stdout not a terminal (agents, pipes,
+# CI) it installs ONLY `binary`, no prompt: release build, COPY to
+# ~/.local/bin/bora, print the version. That is what
+# `just install && bora server live-handoff` means. A copy, not a symlink:
+# this machine pins one shared cargo target dir, so a symlink into it is
+# rewritten by any `cargo build --release` from any worktree (an agent's WIP
+# build broke every CLI call with protocol_mismatch that way).
+# Install bora and its opinionated setup (menu on a terminal, binary only otherwise)
 [unix]
-install:
-    cargo build --release --locked
-    mkdir -p ~/.local/bin
-    rm -f ~/.local/bin/bora
-    install -m 755 "$(cargo metadata --format-version 1 --no-deps | sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p')/release/bora" ~/.local/bin/bora
-    @echo "installed: $(~/.local/bin/bora --version)"
+install *args:
+    scripts/install.sh {{args}}
 
 # Non-gating full-render scaling profile for background workspaces and active panes
 bench-render-scale:
@@ -364,21 +364,7 @@ release version:
 default-config:
     cargo run --release --locked -- --default-config
 
-# Install the fork's default plugins + keybind (idempotent). Run once per machine after installing bora.
+# The suggested setup minus the binary (kept for muscle memory).
+[unix]
 bootstrap:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    reg="${XDG_CONFIG_HOME:-$HOME/.config}/bora/plugins.json"
-    if [ -f "$reg" ] && grep -q herdr-file-viewer "$reg"; then
-        echo "plugin herdr-file-viewer: already installed"
-    else
-        bora plugin install smarzban/herdr-file-viewer --yes
-    fi
-    cfg="${XDG_CONFIG_HOME:-$HOME/.config}/bora/config.toml"
-    if [ -f "$cfg" ] && grep -q 'command = "open-file-viewer"' "$cfg"; then
-        echo "keybind prefix+f: already set"
-    else
-        mkdir -p "$(dirname "$cfg")"
-        printf '\n[[keys.command]]\nkey = "prefix+f"\ntype = "plugin_action"\ncommand = "open-file-viewer"\n' >> "$cfg"
-        echo "keybind prefix+f -> open-file-viewer (right split): added to $cfg"
-    fi
+    scripts/install.sh --yes --without binary

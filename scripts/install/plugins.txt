@@ -1,0 +1,11 @@
+# bora plugins installed by `just install` (component `plugins`).
+# One per line: <owner/repo[/subdir]> [plugin_id]
+# plugin_id is the `id` in the plugin's herdr-plugin.toml; it defaults to the
+# repo name and is how an existing install is detected in plugins.json.
+
+# Git-aware read-only file viewer in a split; bound to prefix+f by
+# examples/opinionated/config.toml.
+smarzban/herdr-file-viewer herdr-file-viewer
+
+# Names tabs after directory, branch, ssh host or running program/agent.
+qu8n/herdr-automatic-rename herdr-automatic-rename
