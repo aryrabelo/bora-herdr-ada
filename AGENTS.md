@@ -492,6 +492,16 @@ just check              # formatting check + cargo nextest + maintenance script 
 
 Run `just check` before committing unless Can explicitly accepts narrower validation. Do not bypass failing checks; fix the failure or explain exactly why a narrower check is enough.
 
+**`just install` is an installer (`scripts/install.sh`, one file per component
+in `scripts/install/components/`, documented in `README-FORK.md`), but off a
+terminal it is still binary-only.** With no flags and stdin or stdout not a
+TTY it runs only the `binary` component (release build, copy, version print),
+so `just install && bora server live-handoff` from an agent means what it
+always did. The opinionated components (plugins, omp, ghostty, config) run
+only after the interactive "Install the suggested setup?" answer or an explicit
+`--yes`/`--all`/`--only`, and the ghostty and config components never write
+through a symlink (see the `~/.config/bora/config.toml` symlink note under Code Conventions).
+
 **A fix is not in the operator's hands until `just install` runs, and a running
 `bora` keeps the old binary.** `~/.local/bin/bora` is a plain file that
 `just install` overwrites with a copy of the release build (since 2026-09-09 —
