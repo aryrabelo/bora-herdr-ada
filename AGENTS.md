@@ -531,10 +531,11 @@ it was built.)
   (inside the worktree), never the machine default, and proof-of-work binaries are
   invoked by path. (learned 2026-09-09, binding.)
   **And a fourth: under the machine target dir, `just check` in a worktree is green
-  while one test never ran.** `upstream_wiring::no_source_file_is_orphaned_from_the_build`
-  reads the `.d` files under `<checkout>/target/{debug,release}`; with none there it
-  prints `SKIP` to stderr and returns PASS, and nextest's `--success-output never` hides
-  the line. The 2026-10-14 sync reported "4347 passed" this way while upstream's new
+  while two tests never ran.** `upstream_wiring::no_source_file_is_orphaned_from_the_build`
+  and `sidebar_token_rendering_stays_wired` read the `.d` files (`reached_src_files()`)
+  under `<checkout>/target/{debug,release}`; with none there they print `SKIP` to stderr
+  and return PASS, and nextest's `--success-output never` hides the line. The 2026-10-14
+  sync reported "4347 passed" this way while upstream's new
   `src/platform/{linux,windows}/power.rs` were orphans, and an independent reviewer
   building with `--target-dir target` got the red. In a worktree, run `just check` with
   `CARGO_TARGET_DIR=$PWD/target`. (learned 2026-10-14, binding.)
