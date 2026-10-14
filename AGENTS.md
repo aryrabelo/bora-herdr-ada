@@ -171,6 +171,16 @@ instead. Do not re-run the smoke hoping for a different number; a stable release
 across this line needs an explicit decision to ship with the note or to first
 profile the server-side visible-pane path. (learned 2026-09-11, binding.)
 
+**`just bench-render-scale` cannot pass on macOS.** `native_file_render_scale_profile`
+(`src/server/headless/tests/native_graphics.rs:1061`, upstream-owned since herdr's #4561)
+asserts source-file CoW retention in its `source_retention` variant. The snapshot callback
+declines off Linux (`crates/ghostty-vt/src/native_source.rs:72`), so the profile panics on its
+third row ("source profile requires working CoW retention"), and `pre-release-check` stops
+before `bench-release-smoke`. It is not a performance regression. On macOS, run the rest with
+`cargo test --release --locked --bin bora render_scale_profile -- --ignored --nocapture
+--test-threads=1 --skip native_file_render_scale_profile`, then `just bench-release-smoke`. Run
+the native-file profile on Linux. (learned 2026-10-14, binding.)
+
 ### Runtime/client boundary guardrail
 
 Herdr is migrating toward a server-owned runtime protocol with the TUI as one client. New work should not deepen the current server/TUI coupling.
@@ -396,6 +406,15 @@ today's upstream sync.)
   `main` and name the snapshot command in the commit body. Never route it through a PR the
   gate would block, and never dispatch Preview just for this: Preview publishes a new
   prerelease. (learned 2026-10-12, binding.)
+- **An upstream release commit can swallow the fork's unreleased changelog entries.**
+  Upstream's `release:` commits run `changelog.py prepare` on `docs/next/CHANGELOG.md`, turning
+  `## Unreleased` into `## [0.9.x]`. Merging upstream 0.9.1 (`0f6e6acf`) took that heading over the
+  fork's own Unreleased entries and dropped herdr's 0.9.1 notes, so the fork's features sat under
+  an upstream version, and root `CHANGELOG.md` (which never got 0.9.1..0.9.5) failed
+  `check-history-sync` at release time. After every sync, diff each upstream section of
+  `docs/next/CHANGELOG.md` against `upstream/master:CHANGELOG.md` (herdr->bora renamed). Fork
+  entries belong under `## Unreleased`. The release-prep commit copies the released history
+  docs/next -> root, never root -> docs/next. (learned 2026-10-14, binding.)
 - **Upstream-only release machinery stays verbatim and unwired.** `validate-release-source`,
   `update-nix-package` (`.github/workflows/release.yml`), `scripts/release.py`
   (+`scripts/test_release.py`, kept in `maintenance-test` so a sync can't silently break
