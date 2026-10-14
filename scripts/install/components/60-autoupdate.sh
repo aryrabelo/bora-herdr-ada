@@ -7,8 +7,10 @@ DESCRIPTION="schedules scripts/autoupdate.sh from this checkout daily at 05:00: 
 # follows `main` of THIS clone (a clone on another branch or with local edits
 # is left alone and the run only logs why). PATH is the one `just install`
 # ran with, captured into the job: launchd and systemd start jobs with a bare
-# PATH, where cargo is missing and autoupdate.sh would wrongly pick release
-# mode. 05:00 local time; a Mac asleep at 05:00 runs it on wake, and the
+# PATH, where cargo is missing. A checkout without cargo cannot update itself
+# (autoupdate.sh refuses `bora update` over a source build, see its header),
+# so the component is unavailable there instead of scheduling a job that only
+# fails. 05:00 local time; a Mac asleep at 05:00 runs it on wake, and the
 # systemd timer is Persistent for the same catch-up. Machines whose
 # nix-darwin config already loads org.nixos.bora-autoupdate are not touched.
 # Test overrides: BORA_INSTALL_LAUNCH_AGENTS_DIR, BORA_INSTALL_SYSTEMD_USER_DIR
@@ -17,6 +19,7 @@ DESCRIPTION="schedules scripts/autoupdate.sh from this checkout daily at 05:00: 
 AUTOUPDATE_LABEL=dev.bora.autoupdate
 AUTOUPDATE_NIX_LABEL=org.nixos.bora-autoupdate
 AUTOUPDATE_HOUR=5
+AUTOUPDATE_TIME="$(printf '%02d:00' "$AUTOUPDATE_HOUR")"
 AUTOUPDATE_UNIT=bora-autoupdate
 LAUNCHCTL="${BORA_INSTALL_LAUNCHCTL:-launchctl}"
 SYSTEMCTL="${BORA_INSTALL_SYSTEMCTL:-systemctl}"
@@ -24,6 +27,10 @@ LAUNCH_AGENTS_DIR="${BORA_INSTALL_LAUNCH_AGENTS_DIR:-$HOME/Library/LaunchAgents}
 SYSTEMD_USER_DIR="${BORA_INSTALL_SYSTEMD_USER_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user}"
 
 available() {
+    if [ -e "$ROOT/.git" ] && ! command -v cargo >/dev/null 2>&1; then
+        echo "cargo not on PATH (autoupdate rebuilds this checkout from source; run the installer from a shell with cargo)"
+        return 1
+    fi
     if is_macos; then
         command -v "$LAUNCHCTL" >/dev/null 2>&1 || { echo "launchctl not found"; return 1; }
     elif [ "$(uname -s)" = Linux ]; then
@@ -89,21 +96,43 @@ autoupdate_plist() {
 EOF
 }
 
+# systemd_value TEXT — TEXT for a unit setting: `%` starts a specifier, so it
+# is doubled everywhere.
+systemd_value() {
+    printf '%s' "${1//%/%%}"
+}
+
+# systemd_quoted TEXT — TEXT as a double-quoted unit word: specifiers doubled,
+# `\` and `"` backslash-escaped.
+systemd_quoted() {
+    local s="$1"
+    s="${s//\\/\\\\}"
+    s="${s//\"/\\\"}"
+    printf '"%s"' "$(systemd_value "$s")"
+}
+
+# systemd_exec_word TEXT — a quoted ExecStart= word: ExecStart also expands
+# `$VAR`, so `$` is doubled there. Environment= performs no variable
+# expansion (systemd.exec(5)), so `$` stays single in the PATH value.
+systemd_exec_word() {
+    systemd_quoted "${1//\$/\$\$}"
+}
+
 autoupdate_service() {
     cat <<EOF
 [Unit]
-Description=bora autoupdate ($ROOT)
+Description=bora autoupdate ($(systemd_value "$ROOT"))
 
 [Service]
 Type=oneshot
-Environment="PATH=$PATH"
-ExecStart="$(command -v bash)" "$ROOT/scripts/autoupdate.sh"
+Environment=$(systemd_quoted "PATH=$PATH")
+ExecStart=$(systemd_exec_word "$(command -v bash)") $(systemd_exec_word "$ROOT/scripts/autoupdate.sh")
 EOF
 }
 
 autoupdate_timer() {
-    printf '%s\n' "[Unit]" "Description=bora autoupdate, daily at 0$AUTOUPDATE_HOUR:00" "" \
-        "[Timer]" "OnCalendar=*-*-* 0$AUTOUPDATE_HOUR:00:00" "Persistent=true" "" \
+    printf '%s\n' "[Unit]" "Description=bora autoupdate, daily at $AUTOUPDATE_TIME" "" \
+        "[Timer]" "OnCalendar=*-*-* $AUTOUPDATE_TIME:00" "Persistent=true" "" \
         "[Install]" "WantedBy=timers.target"
 }
 
@@ -122,7 +151,7 @@ install_launchd() {
     local plist="$LAUNCH_AGENTS_DIR/$AUTOUPDATE_LABEL.plist" domain changed=0
     domain="gui/$(id -u)"
     if refuse_symlink autoupdate "$plist"; then
-        note "write $plist yourself (label $AUTOUPDATE_LABEL, /bin/bash $ROOT/scripts/autoupdate.sh daily at 0$AUTOUPDATE_HOUR:00),"
+        note "write $plist yourself (label $AUTOUPDATE_LABEL, /bin/bash $ROOT/scripts/autoupdate.sh daily at $AUTOUPDATE_TIME),"
         note "then: launchctl bootstrap $domain $plist"
         return 0
     fi
@@ -133,14 +162,14 @@ install_launchd() {
     fi
     "$LAUNCHCTL" bootout "$domain/$AUTOUPDATE_LABEL" >/dev/null 2>&1 || true
     "$LAUNCHCTL" bootstrap "$domain" "$plist"
-    say autoupdate "installed ($plist, daily at 0$AUTOUPDATE_HOUR:00, log: ${XDG_STATE_HOME:-$HOME/.local/state}/bora/autoupdate.log)"
+    say autoupdate "installed ($plist, daily at $AUTOUPDATE_TIME, log: ${XDG_STATE_HOME:-$HOME/.local/state}/bora/autoupdate.log)"
 }
 
 install_systemd() {
     local service="$SYSTEMD_USER_DIR/$AUTOUPDATE_UNIT.service"
     local timer="$SYSTEMD_USER_DIR/$AUTOUPDATE_UNIT.timer" changed=0
     if refuse_symlink autoupdate "$service" || refuse_symlink autoupdate "$timer"; then
-        note "write $service and $timer yourself (oneshot running $ROOT/scripts/autoupdate.sh, OnCalendar=*-*-* 0$AUTOUPDATE_HOUR:00:00),"
+        note "write $service and $timer yourself (oneshot running $ROOT/scripts/autoupdate.sh, OnCalendar=*-*-* $AUTOUPDATE_TIME:00),"
         note "then: systemctl --user daemon-reload && systemctl --user enable --now $AUTOUPDATE_UNIT.timer"
         return 0
     fi
@@ -154,7 +183,7 @@ install_systemd() {
     fi
     "$SYSTEMCTL" --user daemon-reload
     "$SYSTEMCTL" --user enable --now "$AUTOUPDATE_UNIT.timer"
-    say autoupdate "installed ($timer, daily at 0$AUTOUPDATE_HOUR:00, log: ${XDG_STATE_HOME:-$HOME/.local/state}/bora/autoupdate.log)"
+    say autoupdate "installed ($timer, daily at $AUTOUPDATE_TIME, log: ${XDG_STATE_HOME:-$HOME/.local/state}/bora/autoupdate.log)"
 }
 
 install_component() {

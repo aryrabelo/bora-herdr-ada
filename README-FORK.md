@@ -47,7 +47,7 @@ exit non-zero.
 | `ghostty` | writes `~/.config/ghostty/bora.conf` from [examples/opinionated/ghostty.conf](examples/opinionated/ghostty.conf) (rewritten on every install) and adds one line, `config-file = ?bora.conf`, to your Ghostty config | macOS with Ghostty installed |
 | `ghostty-menu` | changes macOS user defaults for Ghostty (`defaults write com.mitchellh.ghostty NSUserKeyEquivalents`): moves the menu items "Show Next Tab", "Show Previous Tab" and "Reload Configuration" to `cmd+ctrl+]`, `cmd+ctrl+[` and `cmd+ctrl+shift+,`, because menu shortcuts resolve before Ghostty's keybinds and would otherwise eat `cmd+shift+]`, `cmd+shift+[` and `cmd+shift+,`. The keys are the titles the menu actually shows, so they are resolved for your languages ([scripts/install/ghostty-menu-titles.js](scripts/install/ghostty-menu-titles.js)); if a title can't be resolved, the component fails instead of writing a key the menu ignores. A different existing shortcut prints `replacing <old> -> <new>`. Takes effect after quitting Ghostty (Cmd+Q) and relaunching | macOS with Ghostty installed |
 | `config` | creates `~/.config/bora/config.toml` from [examples/opinionated/config.toml](examples/opinionated/config.toml) when it does not exist; an existing config is never edited, the installer only lists the template keys it lacks | always |
-| `autoupdate` | schedules [scripts/autoupdate.sh](scripts/autoupdate.sh) from this checkout daily at 05:00 local time (see [Updating](#updating)): on macOS writes the user LaunchAgent `~/Library/LaunchAgents/dev.bora.autoupdate.plist` (`RunAtLoad` false, `PATH` captured from the shell that ran `just install`) and loads it with `launchctl bootstrap gui/<uid>`; on Linux writes `bora-autoupdate.service` and `bora-autoupdate.timer` to `~/.config/systemd/user/` and runs `systemctl --user enable --now bora-autoupdate.timer`. Rewritten and reloaded only when the content changed. Writes nothing when nix-darwin already loads `org.nixos.bora-autoupdate` | macOS with `launchctl` or Linux with `systemctl --user`, unless `org.nixos.bora-autoupdate` is loaded |
+| `autoupdate` | schedules [scripts/autoupdate.sh](scripts/autoupdate.sh) from this checkout daily at 05:00 local time (see [Updating](#updating)): on macOS writes the user LaunchAgent `~/Library/LaunchAgents/dev.bora.autoupdate.plist` (`RunAtLoad` false, `PATH` captured from the shell that ran `just install`) and loads it with `launchctl bootstrap gui/<uid>`; on Linux writes `bora-autoupdate.service` and `bora-autoupdate.timer` to `~/.config/systemd/user/` and runs `systemctl --user enable --now bora-autoupdate.timer`. Rewritten and reloaded only when the content changed. Writes nothing when nix-darwin already loads `org.nixos.bora-autoupdate` | `cargo` on `PATH`, and macOS with `launchctl` or Linux with `systemctl --user`, unless `org.nixos.bora-autoupdate` is loaded |
 
 The split between the three layers: **Ghostty** stops consuming Cmd chords
 (`keybind = cmd+t=unbind`, ...), turns Option into Alt and maps Cmd+Z to
@@ -122,13 +122,18 @@ git pull && just install && bora server live-handoff
 
 or every day with the `autoupdate` component (`just install --only autoupdate`),
 which runs [scripts/autoupdate.sh](scripts/autoupdate.sh) from that clone at
-05:00. On `main` with no uncommitted changes and an upstream to track, it
-fetches and fast-forwards; when `HEAD` did not move and `~/.local/bin/bora`
-exists it logs `up to date` and builds nothing; otherwise it runs
-`scripts/install.sh --only binary` and, if a server is running,
-`bora server live-handoff`. Another branch, uncommitted changes or local
-commits not in upstream: it logs why and touches nothing. A failed build
-keeps the old binary and is retried by the next run. Every run is logged to
+05:00. On `main` with no uncommitted changes, tracking a remote's `main`
+(e.g. `origin/main`), it fetches and fast-forwards; when `HEAD` did not move
+and `~/.local/bin/bora` exists it logs `up to date` and builds nothing;
+otherwise it runs `scripts/install.sh --only binary` and, if
+`bora status server` reports a running server, `bora server live-handoff`.
+Another branch, uncommitted changes, an upstream that is not a remote's
+`main`, or local commits not in upstream: it logs why and touches nothing. A
+failed build keeps the old binary, and a failed build or handoff is retried
+by the next run. A clone without `cargo` (or `git`) on the job's `PATH`
+fails loudly and never falls back to `bora update`; the component is
+unavailable when the shell running `just install` has no `cargo`, because
+that `PATH` is the one the job gets. Every run is logged to
 `~/.local/state/bora/autoupdate.log` (`$XDG_STATE_HOME/bora/` when set); run
 `scripts/autoupdate.sh` by hand anytime, two runs never overlap.
 
@@ -142,9 +147,9 @@ bora channel set stable
 bora update --handoff
 ```
 
-`--handoff` moves a running server onto the new binary. On a machine without
-`cargo` (or without the clone), `scripts/autoupdate.sh` runs exactly
-`bora update --handoff`.
+`--handoff` moves a running server onto the new binary. `scripts/autoupdate.sh`
+runs exactly `bora update --handoff` only when it is not inside a git
+checkout.
 
 The built-in check does not install anything: a running server checks every
 30 minutes and only tells you a new version is available

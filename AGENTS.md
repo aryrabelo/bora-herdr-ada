@@ -516,9 +516,11 @@ other languages with `BORA_INSTALL_APPLE_LANGUAGES` and
 `launchctl`/`systemctl --user` drive the real user's domain whatever `$HOME`
 says: sandbox runs of `autoupdate` set `BORA_INSTALL_LAUNCHCTL` /
 `BORA_INSTALL_SYSTEMCTL` to stubs. `scripts/autoupdate.sh` must never call
-`bora update` in source mode: the preview channel compares build ids, a local
-build has none, and the "update" is a downgrade to a release (measured
-2026-09-15, 0.47.0 → 0.46.8-preview).
+`bora update` from a git checkout, not even when cargo is missing from the
+job's PATH (that case exits 1): the preview channel compares build ids, a
+local build has none, and the "update" is a downgrade to a release (measured
+2026-09-15, 0.47.0 → 0.46.8-preview) that also skips the branch and
+dirty-tree guards. Release mode is keyed on `$ROOT/.git` being absent.
 
 **A fix is not in the operator's hands until `just install` runs, and a running
 `bora` keeps the old binary.** `~/.local/bin/bora` is a plain file that
