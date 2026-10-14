@@ -791,15 +791,19 @@ requested directly by Ary after an update shipped under the old version number.)
 
 ### Fork version identity
 
-The fork's human-facing version is `v<upstream herdr version>[<upstream commit>].bora-<our
-minor>`, rendered by `build_info::fork_version_display()`. `UPSTREAM_HERDR_VERSION` and
+The fork's human-facing version is `<upstream herdr version>+<bora version>` (e.g.
+`0.9.5+0.52.11`), rendered by `build_info::fork_version_display()`; `bora --version` prints
+`bora 0.9.5+0.52.11 (herdr <upstream commit>)` via `build_info::version_line()`. (Owner
+decision 2026-10-14; it replaced `v<upstream>[<commit>].bora-<minor>`.) `UPSTREAM_HERDR_VERSION` and
 `UPSTREAM_HERDR_COMMIT` in `src/build_info.rs` must be updated in the same commit as any
 merge of `upstream/master`: set them to the upstream release the merged tip belongs to and
 the short SHA of that merged upstream tip — never the fork's own merge commit, which says
 nothing about herdr. `BASE_VERSION` and `version()` stay plain semver on purpose: update
 checks (`update::Version`), the wire protocol `version` field, live-handoff acceptance, and
-seen-state storage keys all compare them, and none of those comparisons may see the fork
-suffix. (learned 2026-08-19, binding.)
+seen-state storage keys all compare them, and none of those comparisons may see the
+upstream prefix. Do not move the composite into `Cargo.toml` either: semver precedence
+ignores `+` build metadata, so `0.9.5+0.52.11` and `0.9.5+0.52.12` would compare equal
+and the fork would lose ordering between its own builds. (learned 2026-08-19, binding.)
 
 ### Commit Style
 

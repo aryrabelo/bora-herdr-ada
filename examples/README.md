@@ -30,10 +30,10 @@ bora --version
 This prints something like:
 
 ```
-bora 0.24.0 (v0.8.1[a5c69bea].bora-24)
+bora 0.9.5+0.52.11 (herdr 2f3432c6)
 ```
 
-The first part (`0.24.0`) is bora's own release version. The parenthesized part is the fork identity: `v0.8.1` is the upstream herdr release this fork's `master` branch is merged up to, `[a5c69bea]` is the upstream commit that merge brought in, and `.bora-24` is this fork's own build number on top of that base.
+The version reads `<upstream>+<bora>`: `0.9.5` is the upstream herdr release this fork's `master` branch is merged up to, and `0.52.11` is bora's own release version on top of it (the one updates and `bora update` compare). `(herdr 2f3432c6)` is the upstream commit that merge brought in.
 
 Prebuilt binaries currently cover Linux and macOS (x86_64 and aarch64). Windows support is landing but is not in every release yet — check [GitHub releases](https://github.com/aryrabelo/bora-herdr-ada/releases) for your platform.
 

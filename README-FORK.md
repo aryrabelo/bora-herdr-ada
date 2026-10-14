@@ -114,7 +114,7 @@ this repo; only generic pieces belong in the templates.
 | Feature | How to use | Docs |
 |---|---|---|
 | Separate `bora` binary that coexists with `herdr` | `bora` has its own config/state dir `~/.config/bora`; `HERDR_NAMESPACE=<name>` points it at another namespace (e.g. `herdr`) | [BORA.md](BORA.md#coexistence-model) |
-| Fork version identity | `bora --version` prints `bora <fork version> (v<upstream release>[<upstream sha>].bora-<n>)` | [examples/README.md](examples/README.md) |
+| Fork version identity | `bora --version` prints `bora <upstream herdr release>+<bora version> (herdr <upstream sha>)`, e.g. `bora 0.9.5+0.52.11 (herdr 2f3432c6)` | [examples/README.md](examples/README.md) |
 | omp (oh-my-pi) as a first-class agent | upstream identifies omp only while its integration is live; bora also detects it from its `π  /` status bar (`src/detect/manifests/omp.toml`). `bora integration install omp` adds hook-reported state; `bora agent start <name> --kind omp --pane <id>` | [agents.mdx](docs/next/website/src/content/docs/agents.mdx) |
 | Opinionated setup | `just install` (see Install above) | this file |
 | Folders sidebar view | `[ui] view_mode = "folders"`, or cycle Flat → Folders → Repo with `prefix+shift+v`; drag a workspace onto a folder to join it; folder right-click menu renames and nests; `bora workspace set-group <workspace_id> [name]` | [docs/next/CHANGELOG.md](docs/next/CHANGELOG.md) |

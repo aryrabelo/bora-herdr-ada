@@ -8,26 +8,25 @@ pub const BASE_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const UPSTREAM_HERDR_VERSION: &str = "0.9.5";
 pub const UPSTREAM_HERDR_COMMIT: &str = "2f3432c6";
 
-/// Human-facing fork identity, e.g. `v0.8.1[a5c69bea].bora-24`: the upstream
-/// herdr release, the upstream commit merged into this fork, and this fork's
-/// own build number (`BASE_VERSION`'s minor, plus its patch when non-zero).
+/// Human-facing fork identity, `<upstream herdr release>+<bora version>`, e.g.
+/// `0.9.5+0.52.11`: the upstream release this fork is merged up to, then this
+/// fork's own version (with the channel suffix [`version`] adds on preview).
 ///
 /// Display only. Every machine comparison — update checks, the wire protocol
 /// `version` field, live-handoff acceptance, seen-state storage keys — keeps
-/// using [`version`]/[`BASE_VERSION`], which stay plain semver.
+/// using [`version`]/[`BASE_VERSION`], which stay plain semver. The fork version
+/// cannot move into semver build metadata (`+`): precedence ignores it, so two
+/// bora builds on the same upstream would compare equal.
 pub fn fork_version_display() -> String {
-    format!(
-        "v{UPSTREAM_HERDR_VERSION}[{UPSTREAM_HERDR_COMMIT}].bora-{}",
-        fork_build_number()
-    )
+    format!("{UPSTREAM_HERDR_VERSION}+{}", version())
 }
 
-fn fork_build_number() -> String {
-    match crate::update::Version::parse(BASE_VERSION) {
-        Some(version) if version.patch == 0 => version.minor.to_string(),
-        Some(version) => format!("{}.{}", version.minor, version.patch),
-        None => BASE_VERSION.to_string(),
-    }
+/// `bora --version` line: the fork identity plus the upstream commit merged in.
+pub fn version_line() -> String {
+    format!(
+        "bora {} (herdr {UPSTREAM_HERDR_COMMIT})",
+        fork_version_display()
+    )
 }
 
 pub fn channel() -> &'static str {

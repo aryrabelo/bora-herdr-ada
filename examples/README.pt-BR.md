@@ -30,10 +30,10 @@ bora --version
 Isso imprime algo como:
 
 ```
-bora 0.24.0 (v0.8.1[a5c69bea].bora-24)
+bora 0.9.5+0.52.11 (herdr 2f3432c6)
 ```
 
-A primeira parte (`0.24.0`) é a versão de release do próprio bora. A parte entre parênteses é a identidade do fork: `v0.8.1` é o release do herdr upstream até o qual a branch `master` deste fork está mergeada, `[a5c69bea]` é o commit upstream que esse merge trouxe, e `.bora-24` é o número de build deste fork em cima dessa base.
+A versão se lê `<upstream>+<bora>`: `0.9.5` é o release do herdr upstream até o qual a branch `master` deste fork está mergeada, e `0.52.11` é a versão de release do próprio bora em cima dele (é a que o update e o `bora update` comparam). `(herdr 2f3432c6)` é o commit upstream que esse merge trouxe.
 
 Binários pré-compilados atualmente cobrem Linux e macOS (x86_64 e aarch64). O suporte a Windows está a caminho mas ainda não está em todo release — confira os [GitHub releases](https://github.com/aryrabelo/bora-herdr-ada/releases) para sua plataforma.
 
