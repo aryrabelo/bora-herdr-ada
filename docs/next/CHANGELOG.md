@@ -4,6 +4,36 @@ Bora is a fork of [herdr](https://github.com/ogulcancelik/herdr). This changelog
 
 ## Unreleased
 
+### Synced from herdr
+- bora is now based on upstream herdr 0.9.5: merged `herdrdev/herdr` through `2f3432c6`, bringing in herdr 0.9.1, 0.9.2, 0.9.3, 0.9.4 and 0.9.5 (their notes are in this changelog under those versions, and on https://github.com/herdrdev/herdr/releases). Wire protocol 26; omp integration asset 12, so run `bora integration install omp` after updating.
+
+### Added
+- `just install` asks before it changes anything beyond the binary: install the suggested setup (binary, the bora plugins in `scripts/install/plugins.txt`, the omp cmd-z-undo extension, the Ghostty layer and menu shortcuts, a starter `config.toml`), only the binary, or a checklist you customize. Off a terminal and without flags it still installs only the binary. A component you selected that cannot run fails the install instead of being skipped, and the installer refuses to write through a symlinked config path. `just bootstrap` runs only the non-binary components. [README-FORK.md](https://github.com/aryrabelo/bora-herdr-ada/blob/main/README-FORK.md) lists what the fork adds to herdr and documents each component.
+- `bora worktree create` does the whole dispatch in one command. It resolves the repository from your own directory, starts a branch that exists as `origin/<branch>` from the remote tip, labels the workspace with the branch slug, puts it in the calling pane's sidebar folder (`--group`/`--no-group` to override), and with `--agent`, `--agent-name`, `--prompt` or `--prompt-file` starts a named agent on the new pane and delivers the prompt once it is ready. Running it again reuses the existing worktree and workspace. (#45)
+- Channel questions are first-class. `bora channel asks [<name>] [--open] [--to-human]` lists the questions asked with `bora channel ask` and whether each was answered, and `bora channel reply <name> <seq> <text>` answers one as your seat (`ui.chat_name`), delivered only to the pane that asked. The `channel.message` event carries `kind`, `in_reply_to` and `to_human`. An unanswered question to you counts in the sidebar's `N waiting` badge, red like a blocked pane; the view never switches to the channel by itself. (#49)
+- Pin a pane's agent status by hand from the pane context menu (Status: Working, Blocked, Idle, Done, or Auto to clear it), or with `pane.set_status` on the socket API. Detection keeps running underneath, so clearing the pin shows the live state. (#41)
+- `bora pane mark-unseen <pane_id>...` (or `--all`) puts panes back in the "finished while you were away" state: an idle pane shows Done until you focus it, with no sound or toast. Socket API: `pane.mark_unseen`. (#50)
+- Idle agents age visibly in the agent panel. The agent name is colored fresh, plain or stale by how long it has been idle (`ui.idle_fresh_minutes`, default 15; `ui.idle_stale_minutes`, default 120), and stale rows are dimmed and sink below the active ones (`ui.dim_stale_agents = false` turns that off).
+- `ui.agent_panel_sort = "recent"` orders the agent panel by last activity. `keys.cycle_agent_panel_sort` (default `prefix+a`) or a click on the panel header cycles spaces, priority and recent, and the choice is saved per machine.
+- `ui.new_workspace_position = "after_source"` places a new workspace right after the one it was opened from instead of at the end of the list. (#43)
+- `[terminal] reflow_on_resize = false` stops a pane from re-wrapping output that was already printed when it gets narrower; text past the new width is cut off, as in tmux. The default (`true`) keeps today's behavior. (#42)
+
+### Changed
+- `bora --version` and Settings show the fork version as `<herdr version>+<bora version>`, for example `bora 0.9.5+0.52.11 (herdr 2f3432c6)`, so you can see which herdr release a build is based on. Update checks still compare the plain bora version.
+- A pane whose agent goes from blocked straight to idle keeps reading blocked (in the sidebar, `bora pane list` and the `N waiting` badge) until the agent works again, its session resets, or the pane closes, so a question you never answered does not quietly disappear.
+- Showing a tab marks only its focused pane as seen. A split pane that finished in the background keeps its Done badge until you focus that pane.
+
+### Fixed
+- Closing a workspace in Folders or Flat view closes only that workspace. Before, closing a repository's root checkout also closed its worktrees, even ones filed in other folders; Repo view still closes the group it shows. (#40)
+- `prefix+]`, `prefix+[` and the switch-workspace keys step through workspaces in the order the sidebar shows them in every view mode, including collapsed folders and a collapsed sidebar. (#40)
+- Typing is no longer swallowed after an incomplete escape sequence, such as the one a window focus change or an Alt chord can leave behind. Keystrokes from `terminal attach` and `agent attach`, pastes, image pastes and replayed prompts wait in the pane's input queue instead of being dropped when it is busy, and a channel briefing is only marked as sent once the pane actually received it.
+- The workspace list header names the current view mode again, and clicking it cycles Flat, Folders and Repo, as `prefix+shift+v` does.
+- omp panes stay working while omp subagents run in the background instead of flipping to idle mid-task. Run `bora integration install omp` to update the extension.
+- Text sent with the kitty text-sizing protocol (OSC 66) is printed at normal size instead of leaving an empty line. (#42)
+- A pane's terminal title is still reported by the API after a live handoff.
+- `bora update` works again from 0.45.5 and earlier: those builds fetch the release manifest at `website/latest.json`, which the 0.9.0 sync had moved to `distribution/`. Both paths are now published and kept identical.
+- Panes restored from a saved session no longer inherit `HERDR_STARTUP_CWD` from the server, so a nested `bora server` started from one of them no longer opens an extra workspace at that path. (#39)
+
 ## [0.9.5] - 2026-10-14
 
 This is a hotfix release for v0.9.4. See the v0.9.4 notes for the full feature release: https://github.com/herdrdev/herdr/releases/tag/v0.9.4
@@ -128,14 +158,61 @@ This is a hotfix release for v0.9.2. See the v0.9.2 notes for the full feature r
 ## [0.9.1] - 2026-09-16
 
 ### Added
-- `bora worktree create` is the whole dispatch chain in one command. It resolves the repository from the caller's own directory (a linked worktree resolves its parent repo) instead of the workspace focused in the app; defaults the workspace label to the branch slug; inherits the sidebar folder of the calling pane (`$HERDR_PANE_ID`, `--group`/`--no-group` to override); and with `--agent`/`--agent-name`/`--prompt`/`--prompt-file` also puts a named agent on the new pane and delivers the prompt once it is interactive. A pane that already runs an agent is renamed rather than reported as `agent_pane_busy`. The response gained `branch_source`, `head` and `already_open`: a branch that exists as `origin/<branch>` now starts at the remote tip with upstream tracking instead of being branched off the trunk, a new branch without `--base` starts from the remote's default branch, and re-running the same command reuses the existing worktree and workspace.
-- Channel questions are first-class. Every transcript line carries a `kind`: `bora channel ask` stores its question as `ask`, everything else is `message` (older lines read as `message`), and the `channel.message` event carries `kind`, `in_reply_to` and `to_human`, so a hook can tell a question to you from its answer. `bora channel asks [<name>] [--open] [--to-human]` lists the questions with whether and how each was answered, derived from the transcripts, so they survive the asker giving up and a server restart. `bora channel reply <name> <seq> <text>` answers one as your seat (`ui.chat_name`), delivers the answer only to the pane that asked, and refuses a second answer, a plain message, an unknown seq, or a missing `ui.chat_name`.
-- An unanswered channel question addressed to you counts in the sidebar header's `N waiting` badge, red like a blocked pane, until it is answered. The view never switches to the channel by itself, and a question in the workspace you are looking at does not count.
-- `bora pane mark-unseen <pane_id>...` (or `--all`, every pane `pane list` reports) marks panes unread again: an idle pane goes back to `done` with the Done badge in the sidebar, exactly as if its agent had just finished in a background tab, until you focus it. It plays no sound, raises no toast and leaves a manual status pin (the pane menu's Status rows, `pane.set_status`) alone. Exposed on the socket API as `pane.mark_unseen`.
+- Control agents, panes, workspaces, and worktrees on saved SSH machines with `bora --machine <label-or-id>`. Commands use the saved machine's session without needing an open bora window. Update bora on both machines to use CLI forwarding; failed remote commands never fall back to Local. (#3918)
+- Connect to Windows SSH hosts from Linux, macOS, or Windows. Interactive setup can install or update the complete Windows package after confirmation; background reconnects never install updates. (#3651, #3701, #3661, #3687, thanks @JJLiebig)
+- Edit names, filters, and search text at the cursor instead of only at the end. bora inputs now support character and word movement, Home/End, deletion, and familiar Ctrl+A/E/K/U/W/Y shortcuts, including Unicode text. (#1803, #3698, thanks @markjaquith)
+- Added Letta Code detection and native conversation restore, including default conversations. Its experimental integration is installed through `bora integration install letta`, not the Settings integration list or JSON integration API. (#3106, #3107, thanks @just-cameron)
+- Hold Ctrl over a link to highlight it before opening it. Wrapped URLs and OSC 8 links remain clickable even when their beginning or end is outside the viewport. (#1282)
+- Sidebar token rules can now hide matching tokens and their separators with `hide = true`; rows disappear when no tokens remain. (#3925)
+
+### Changed
+- Workspace keyboard navigation now spans connected machines in sidebar order, with a visible highlight before Enter switches machines. Collapsed machine and worktree groups remain navigable without accidentally sending actions to the wrong machine. (#3754)
+- Experimental live handoff can now transfer more than 64 panes when the sending server includes this update. An older running server still has its old limit for the first upgrade; this does not change update installation order or make live handoff non-experimental. (#3393, #3411, thanks @kataokatsuki)
+- On Linux and macOS, terminal observers that stop accepting output are disconnected after 30 seconds without write progress. Their pane and other clients keep running; an interrupted stream may end without a final close record. (#3612)
+- Windows terminal cleanup now explicitly resets mouse-reporting modes. The remaining standalone Git Bash detach report in #3748 is still under investigation; do not treat this release as a confirmed fix for that report. (#4055, thanks @JJLiebig)
 
 ### Fixed
-- `bora update` works again from 0.45.5 and earlier: those builds fetch the release manifest at `website/latest.json`, which the 0.9.0 sync had moved to `distribution/`. Both paths are now published and kept identical.
-- Panes restored from a saved session no longer inherit `HERDR_STARTUP_CWD` from the server. A nested `bora server` launched from such a pane saw the variable and seeded an unexpected workspace at that path.
+- Remote typing, switching, and popup interaction no longer resend the entire pane screen for small changes. Busy SSH sessions use less bandwidth, and idle attached clients avoid unnecessary redraw work. (#3769, #3745, #3822)
+- A stalled SSH machine no longer traps the client away from Local. Clicking a local workspace or agent cancels the unfinished remote switch, and a recovered remote workspace refreshes without an away-and-back selection. Stale screens from before a reconnect are not reused. (#3903, #3842)
+- Idle SSH connections use less CPU without losing final output. Repeated connection failures back off instead of reconnecting rapidly, and supported idle bridges clean up without stopping remote panes. (#3728, #4083)
+- Large pastes no longer disconnect the client with an output-queue error. (#3833)
+- SSH setup now shows authentication instructions and useful errors, including Tailscale login URLs and host-key failures, rather than appearing to hang or only reporting a lost connection. `machine add` also accepts options before the SSH target. (#3606, #3731, #3883)
+- Machine and worktree groups collapse correctly without changing the selected workspace. The sidebar respects workspace row gaps, stays stable during resizing, and reveals newly focused workspaces. (#3778, #3738, #3817)
+- The agent list keeps its scroll position when switching machines. Current-workspace and current-tab filters distinguish identical IDs on different machines. (#3937, #4101, #3732, thanks @minatoaquaMK2)
+- Background machine activation no longer resizes another client's focused pane. Window titles follow each client's own view rather than another client's selection. (#3744, #4091, #4130, thanks @JJLiebig)
+- `agent focus` and `pane move --focus` now move attached clients to the requested pane. Moving without focus no longer leaves a client following a deleted tab or later unrelated focus changes. (#3760, #4153, #4171, thanks @minatoaquaMK2)
+- Creating a worktree focuses its new workspace again. Partially failed worktree removals can be retried, and worktrees with submodules offer an explicit forced-removal choice rather than failing without a recovery action. (#3766, #3314, #1797)
+- Temporary worktree-action error banners expire instead of remaining on screen indefinitely. (#1827, #4063, thanks @JJLiebig)
+- The last tab remains fully visible when the tab strip overflows, and the session navigator once again draws connected tree branches. (#4151, #3843)
+- Muted sidebar and tab labels remain readable on dark themes, including Windows Terminal. (#2692, #4062, thanks @JJLiebig)
+- Mouse drag and copy-mode selections stay active while output continues, even when part of the selection is outside the viewport. Copying uses the current text in the selected range. Selection repainting also avoids building up a backlog of mouse movements. (#3841, #3895)
+- Double-click selections remain visible with automatic copy disabled. Holding the second click and dragging extends by whole words, and token selection stops at CJK punctuation. Host selection colors remain visible on transparent backgrounds. (#3847, #1836, #3706, #3798)
+- Scrolling no longer combines mismatched terminal snapshots or leaves stale wrapped rows in fullscreen applications such as Neovim. Alternate-screen history reads preserve content across changing headers and scrollbars. (#3900, #3329, #3979)
+- Local Kitty graphics keep their direct transport after the first image. Popups and notifications hide only overlapping image placements; uncovered images remain visible. (#3785, #4081)
+- Pixel mouse coordinates work independently of image rendering and use the terminal's integer cell size, preventing clicks from drifting across the screen. (#3295, #4140, thanks @JJLiebig)
+- Function keys F1–F12 are recognized in Kitty keyboard reports, and F1–F4 also work with parameterized reports from terminals such as foot. (#1809, #2378, #4067, thanks @ashokDevs and @JJLiebig)
+- WezTerm control-key reports now preserve Enter, Backspace, Tab, and Escape. Cmd/Super-modified input reaches pane applications with its modifier intact. Modified Enter stays compatible with panes that have not requested enhanced key encoding. (#3589, #3710, #4103, #4110, thanks @minatoaquaMK2)
+- Mouse reports split across delayed reads no longer leak their trailing bytes into pane input. Clients reassert mouse reporting after terminal reconnects. (#3911, #4079, thanks @JJLiebig)
+- Saved sessions that cannot be loaded are preserved before replacement, rather than silently overwritten. Recovery copies are kept in `session-backups/`; failed preservation leaves the original untouched. (#4125)
+- Deleting a session now requires its exact name, including case, on case-insensitive filesystems. Names beginning with a hyphen can be passed after `--`. (#3819, #4233, #3220, thanks @minatoaquaMK2)
+- Newly started macOS servers retain access to user lookup and DNS across logout. Existing affected servers need a full session restart; live handoff cannot repair their inherited service context. (#4100)
+- Linux process discovery stays responsive around stuck WSL agents and avoids repeatedly scanning an ever-growing process tree. (#2179, #3621, #3674, thanks @dark2momo and @caner-akca)
+- Linux desktop notifications identify bora as their source. (#3638)
+- `pane split` without a target now splits the calling pane when invoked inside bora, rather than another client's focused pane. Explicit targets keep their existing behavior. (#4123)
+- Live agent names survive temporary process-detection uncertainty instead of leaving an active agent unreachable by name. (#3225, #3574, thanks @caner-akca)
+- Windows Codex prompts reliably submit after pasted text instead of losing Enter, including long prompts. (#3187, #3961, thanks @JJLiebig)
+- OpenCode V2 reports lifecycle state from the pane displaying the conversation, so shared servers do not mix up panes. Completed and interrupted turns return to idle, while pending permissions, forms, and failed executions remain blocked. V1 remains supported; restart OpenCode after installing the updated integration. (#3757, thanks @markjaquith)
+- Codex stays working with static titles, animations disabled, and queued follow-ups. Composer sparkles and old confirmation text no longer make an idle pane appear blocked. (#4092, #4099, #3988, thanks @minatoaquaMK2)
+- Claude Code's Unicode activity spinner and Pi's working border are recognized correctly. Cline launcher detection and idle-state reporting are more reliable. (#3949, #3629, #2396)
+- Pi records native session paths on Windows. Nested OMP processes no longer replace the parent pane's resumable session, and Windows Kimi npm shims are recognized. (#3726, #2593, #3994, #3317, #4053, thanks @JJLiebig)
+- Grok updates its restore reference after `/new`, and its imported Claude-compatible hooks no longer overwrite that reference. Reinstall the Claude integration to adopt the narrower hook matching. (#2681, #4018)
+- Integration configuration updates preserve existing files when writes fail. Hermes installation also preserves valid YAML when enabled plugins use an inline list. (#3970, #3839, #4056, thanks @JJLiebig)
+- Plugin registry writes preserve symlinks. Plugins keep using the running server's compatible binary after a client-only update, and manual pane navigation emits focus events again. (#3922, #3824, #4077)
+- Config files containing a UTF-8 BOM load and save correctly. The default config places `ui.accent` in the right table. (#3678, #3962, #2697, thanks @JJLiebig)
+- Windows local and SSH input preserves Alt combinations, Ctrl+S, and enhanced keyboard text instead of dropping keys or inserting garbage. Remote dead-key input no longer adds an extra base character. (#3702, #3910, #3932, #3948, #4133, #4148, thanks @JJLiebig)
+- Windows mouse capture preserves SGR coordinates, including past column 95, and reattaching restores mouse reporting. Legacy SSH mouse reports no longer produce phantom characters or block subsequent input. (#4155, #3735, #4080, thanks @JJLiebig)
+- Git Bash SSH connections honor host aliases from the user's SSH config. (#3947, #4054, thanks @JJLiebig)
+- Windows login-mode panes honor the configured shell and keep PowerShell working-directory reports current. Pane launch paths use consistent directory casing. (#1445, #4060, #4065, #4199, thanks @JJLiebig)
 
 ## [0.46.9] - 2026-09-11
 
