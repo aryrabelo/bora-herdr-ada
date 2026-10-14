@@ -465,7 +465,7 @@ function insertPreviewNotice(content, relativePath, { buildId, commit }) {
   ].join('\n');
   const indexPrefix =
     relativePath === 'index.mdx'
-      ? content.replace('title: Herdr documentation', 'title: Herdr preview documentation')
+      ? content.replace(/title: (Herdr|Bora) documentation/, 'title: $1 preview documentation')
       : content;
   const frontmatter = indexPrefix.match(/^---\n[\s\S]*?\n---\n/);
   if (!frontmatter) {

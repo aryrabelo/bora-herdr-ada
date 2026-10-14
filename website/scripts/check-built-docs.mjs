@@ -134,10 +134,14 @@ for (const [name, content] of [
   ['llms-small.txt', llmsSmall],
   ['llms-full.txt', llmsFull],
 ]) {
-  assertIncludes(content, '# Herdr documentation');
+  // The fork's docs title is "Bora documentation" (herdr→bora rename since the
+  // 0.9.1 sync); published versions before that still say "Herdr".
+  if (!/^# (?:Herdr|Bora) documentation$/m.test(content)) {
+    throw new Error(`built documentation is missing # Bora documentation in ${name}`);
+  }
   assertIncludes(content, '# Troubleshooting');
   assertIncludes(content, '# Socket API');
-  if (content.match(/^# Herdr documentation$/gm)?.length !== 1) {
+  if (content.match(/^# (?:Herdr|Bora) documentation$/gm)?.length !== 1) {
     throw new Error(`${name} must contain exactly one stable documentation set`);
   }
   if (/\]\(\/docs\/(?:preview|\d+\.\d+\.\d+)(?:\/|\))/.test(content)) {
