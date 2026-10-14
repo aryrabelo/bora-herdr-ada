@@ -68,15 +68,15 @@ This is the load-bearing step. Three things in that file matter, in order:
 
 **The `keybind = cmd+X=unbind` block** — Ghostty binds most `cmd+…` chords to its own tab/window actions (new tab, close window, etc.) by default and consumes them before they ever reach the process running inside it. Each `unbind` line frees one chord so the raw key event reaches bora instead, which then binds it directly in `bora`'s own config (see step 5). Unbinding is per-chord: adding a new `cmd+…` binding to your `bora` config does nothing until the matching `keybind = cmd+X=unbind` line exists here too.
 
-**The AppKit menu layer** — some chords (`cmd+shift+]`, `cmd+shift+[`, and reload-config's `cmd+shift+,`) are additionally owned by Ghostty's own **application menu** (Window → "Show Next Tab", etc.), which macOS resolves *before* Ghostty's own keybind table is ever consulted. `keybind = ...=unbind` cannot reach these — the fix is to remap the menu item itself via macOS's `NSUserKeyEquivalents` preference for the Ghostty bundle:
+**The AppKit menu layer** — some chords (`cmd+shift+]`, `cmd+shift+[`, and reload-config's `cmd+shift+,`) are additionally owned by Ghostty's own **application menu** (Window → "Show Next Tab", etc.), which macOS resolves *before* Ghostty's own keybind table is ever consulted. `keybind = ...=unbind` cannot reach these — the fix is to remap the menu item itself via macOS's `NSUserKeyEquivalents` preference for the Ghostty bundle. `just install` does this for you (component `ghostty-menu`, see [README-FORK.md](../README-FORK.md#install)); by hand it is:
 
 ```sh
-defaults write com.mitchellh.ghostty NSUserKeyEquivalents -dict-add "Show Next Tab" "@^]"
-defaults write com.mitchellh.ghostty NSUserKeyEquivalents -dict-add "Show Previous Tab" "@^["
-defaults write com.mitchellh.ghostty NSUserKeyEquivalents -dict-add "Reload Configuration" "@^\$,"
+defaults write com.mitchellh.ghostty NSUserKeyEquivalents -dict-add "Show Next Tab" '"@^]"'
+defaults write com.mitchellh.ghostty NSUserKeyEquivalents -dict-add "Show Previous Tab" '"@^["'
+defaults write com.mitchellh.ghostty NSUserKeyEquivalents -dict-add "Reload Configuration" '"@^$,"'
 ```
 
-> **Not independently verified.** These `-dict-add` invocations were written from the documented `NSUserKeyEquivalents` mechanism, not run and confirmed here — this repo does not execute `defaults write` against a real user domain to test it. The declarative, verified equivalent is a nix-darwin `system.defaults.CustomUserPreferences` block:
+> The inner double quotes are required: `defaults` parses the value as an old-style plist string, and an unquoted `@^]` fails with `Could not parse: @^]`. These exact commands were run against a throwaway domain and read back with `defaults read`. The declarative equivalent is a nix-darwin `system.defaults.CustomUserPreferences` block:
 >
 > ```nix
 > system.defaults.CustomUserPreferences."com.mitchellh.ghostty" = {
@@ -173,4 +173,4 @@ If the last two don't fire, go back to step 4 — that's a Ghostty config issue,
 
 ---
 
-**Unverified claims in this document:** the `defaults write ... -dict-add` commands in step 4 were derived from the documented `NSUserKeyEquivalents` preference key but not executed against a real domain to confirm they work non-destructively; the declarative nix-darwin block next to them is the verified path. Everything else — the installer behavior, the version string format, the Ghostty config semantics, the `bora` config bindings, and the OMP rule-file format — was checked directly against this repo's source or the referenced config files before being written here.
+**Verification notes:** the `defaults write ... -dict-add` commands in step 4 were run against a throwaway defaults domain and read back, not against the real `com.mitchellh.ghostty` domain; the menu titles come from Ghostty's accessibility tree. Everything else — the installer behavior, the version string format, the Ghostty config semantics, the `bora` config bindings, and the OMP rule-file format — was checked directly against this repo's source or the referenced config files before being written here.

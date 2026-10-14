@@ -364,7 +364,7 @@ release version:
 default-config:
     cargo run --release --locked -- --default-config
 
-# The non-binary components of `just install` (kept for muscle memory).
+# The suggested setup minus the binary (kept for muscle memory).
 [unix]
 bootstrap:
-    scripts/install.sh --only plugins,omp,ghostty,config
+    scripts/install.sh --yes --without binary

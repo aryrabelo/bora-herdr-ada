@@ -68,15 +68,15 @@ Esse é o passo load-bearing. Três coisas nesse arquivo importam, nessa ordem:
 
 **O bloco `keybind = cmd+X=unbind`** — o Ghostty vincula a maioria dos chords `cmd+…` às suas próprias ações de tab/janela (nova aba, fechar janela, etc.) por padrão, e os consome antes que cheguem ao processo rodando dentro dele. Cada linha `unbind` libera um chord para que o evento de tecla bruto chegue ao bora em vez disso, que então o vincula diretamente na própria config do `bora` (veja o passo 5). O unbind é por chord: adicionar um novo binding `cmd+…` na sua config do `bora` não faz nada até que a linha `keybind = cmd+X=unbind` correspondente também exista aqui.
 
-**A camada de menu do AppKit** — alguns chords (`cmd+shift+]`, `cmd+shift+[`, e o `cmd+shift+,` do reload de config) são adicionalmente donos do próprio **menu de aplicativo** do Ghostty (Window → "Show Next Tab", etc.), que o macOS resolve *antes* que a própria tabela de keybinds do Ghostty seja sequer consultada. `keybind = ...=unbind` não alcança isso — a correção é remapear o próprio item de menu via a preferência `NSUserKeyEquivalents` do macOS para o bundle do Ghostty:
+**A camada de menu do AppKit** — alguns chords (`cmd+shift+]`, `cmd+shift+[`, e o `cmd+shift+,` do reload de config) são adicionalmente donos do próprio **menu de aplicativo** do Ghostty (Window → "Show Next Tab", etc.), que o macOS resolve *antes* que a própria tabela de keybinds do Ghostty seja sequer consultada. `keybind = ...=unbind` não alcança isso — a correção é remapear o próprio item de menu via a preferência `NSUserKeyEquivalents` do macOS para o bundle do Ghostty. O `just install` faz isso por você (componente `ghostty-menu`, veja [README-FORK.md](../README-FORK.md#install)); à mão é:
 
 ```sh
-defaults write com.mitchellh.ghostty NSUserKeyEquivalents -dict-add "Show Next Tab" "@^]"
-defaults write com.mitchellh.ghostty NSUserKeyEquivalents -dict-add "Show Previous Tab" "@^["
-defaults write com.mitchellh.ghostty NSUserKeyEquivalents -dict-add "Reload Configuration" "@^\$,"
+defaults write com.mitchellh.ghostty NSUserKeyEquivalents -dict-add "Show Next Tab" '"@^]"'
+defaults write com.mitchellh.ghostty NSUserKeyEquivalents -dict-add "Show Previous Tab" '"@^["'
+defaults write com.mitchellh.ghostty NSUserKeyEquivalents -dict-add "Reload Configuration" '"@^$,"'
 ```
 
-> **Não verificado independentemente.** Essas invocações de `-dict-add` foram escritas a partir do mecanismo documentado de `NSUserKeyEquivalents`, mas não foram rodadas e confirmadas aqui — este repo não executa `defaults write` contra um domínio de usuário real para testar. O equivalente declarativo e verificado é um bloco `system.defaults.CustomUserPreferences` do nix-darwin:
+> As aspas duplas internas são obrigatórias: o `defaults` interpreta o valor como string de plist no formato antigo, e um `@^]` sem aspas falha com `Could not parse: @^]`. Esses comandos exatos foram rodados contra um domínio descartável e lidos de volta com `defaults read`. O equivalente declarativo é um bloco `system.defaults.CustomUserPreferences` do nix-darwin:
 >
 > ```nix
 > system.defaults.CustomUserPreferences."com.mitchellh.ghostty" = {
@@ -173,4 +173,4 @@ Se os dois últimos não dispararem, volte ao passo 4 — isso é um problema de
 
 ---
 
-**Alegações não verificadas neste documento:** os comandos `defaults write ... -dict-add` no passo 4 foram derivados da preferência documentada `NSUserKeyEquivalents`, mas não executados contra um domínio real para confirmar que funcionam de forma não destrutiva; o bloco declarativo do nix-darwin ao lado deles é o caminho verificado. Todo o resto — o comportamento do instalador, o formato da string de versão, a semântica da config do Ghostty, os bindings da config do `bora`, e o formato dos arquivos de regra do OMP — foi conferido diretamente contra o código-fonte deste repo ou os arquivos de config referenciados antes de ser escrito aqui.
+**Notas de verificação:** os comandos `defaults write ... -dict-add` no passo 4 foram rodados contra um domínio de defaults descartável e lidos de volta, não contra o domínio real `com.mitchellh.ghostty`; os títulos de menu vêm da árvore de acessibilidade do Ghostty. Todo o resto — o comportamento do instalador, o formato da string de versão, a semântica da config do Ghostty, os bindings da config do `bora`, e o formato dos arquivos de regra do OMP — foi conferido diretamente contra o código-fonte deste repo ou os arquivos de config referenciados antes de ser escrito aqui.
