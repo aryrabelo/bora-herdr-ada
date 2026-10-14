@@ -1,0 +1,67 @@
+---
+title: Agent skill file
+description: Install Bora instructions for Claude Code or another coding agent.
+---
+
+Bora ships a reusable agent skill file at [`skills/herdr/SKILL.md`](https://github.com/herdrdev/herdr/blob/master/skills/herdr/SKILL.md).
+
+Install that file into any coding agent that supports reusable skills or custom instructions. The skill teaches the agent how to control Bora from inside a Bora pane.
+
+Bora also serves a separate guide at [`herdr.dev/agent-guide.md`](https://herdr.dev/agent-guide.md) for a different job: an agent helping a human learn, set up, or troubleshoot Bora. The skill is for an agent operating Bora; the guide is for an agent teaching a human.
+
+## What the skill does
+
+The skill tells an agent to use the `bora` CLI when `HERDR_ENV=1` is set. That means the agent is running inside a Bora-managed pane and can safely talk to the local Bora socket.
+
+With the skill installed, an agent can:
+
+- inspect workspaces, tabs, panes, and neighboring agents
+- split panes and run commands without stealing focus
+- read pane output and recent logs
+- wait for servers, tests, or another agent to finish
+- start helper agents in sibling panes
+
+The skill is a Markdown instruction file for agents. If Bora is already installed, run `bora --skill` to print the release-matched copy bundled with that binary.
+
+## Install it
+
+Install the skill with `npx skills`:
+
+```bash
+npx skills add herdrdev/herdr --skill bora -g
+```
+
+If you installed the skill while it lived at the repository root, rerun this add command once instead of using `skills update`. The add command replaces the oversized copy and records the new location.
+
+The `-g` flag installs it globally for supported agents. Omit `-g` to install it into the current project.
+
+Use the repository copy as the manual fallback and source of truth:
+
+```text
+https://github.com/herdrdev/herdr/blob/master/skills/herdr/SKILL.md
+```
+
+For agents with a skill system, install that file as a skill named `bora`. For agents without a skill system, paste the file into the agent's project or user instructions.
+
+After installation, start the agent inside Bora:
+
+```bash
+bora
+claude
+```
+
+Or use any other coding agent in a Bora pane so `HERDR_ENV=1` is available to the agent process.
+
+## Safety rule
+
+The skill starts with one guardrail: if `HERDR_ENV=1` is not set, the agent should stop and say it is not running inside a Bora-managed pane.
+
+This prevents an agent outside Bora from trying to control a session it does not own.
+
+## Agent-facing reference
+
+The full command guide lives in the skill file itself. It covers pane IDs, `pane split`, `pane run`, `pane read`, `pane wait-output`, `agent wait`, workspace and tab commands, and coordination recipes.
+
+Read the source file here:
+
+[Open `SKILL.md` on GitHub →](https://github.com/herdrdev/herdr/blob/master/skills/herdr/SKILL.md)
