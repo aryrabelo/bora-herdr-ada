@@ -4,6 +4,8 @@ Bora is a fork of [herdr](https://github.com/ogulcancelik/herdr). This changelog
 
 ## Unreleased
 
+## [0.52.11] - 2026-10-14
+
 ### Synced from herdr
 - bora is now based on upstream herdr 0.9.5: merged `herdrdev/herdr` through `2f3432c6`, bringing in herdr 0.9.1, 0.9.2, 0.9.3, 0.9.4 and 0.9.5 (their notes are in this changelog under those versions, and on https://github.com/herdrdev/herdr/releases). Wire protocol 26; omp integration asset 12, so run `bora integration install omp` after updating.
 

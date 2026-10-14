@@ -4,6 +4,39 @@ Bora is a fork of [herdr](https://github.com/ogulcancelik/herdr). This changelog
 
 ## Unreleased
 
+## [0.52.11] - 2026-10-14
+
+### Synced from herdr
+- bora is now based on upstream herdr 0.9.5: merged `herdrdev/herdr` through `2f3432c6`, bringing in herdr 0.9.1, 0.9.2, 0.9.3, 0.9.4 and 0.9.5 (their notes are in this changelog under those versions, and on https://github.com/herdrdev/herdr/releases). Wire protocol 26; omp integration asset 12, so run `bora integration install omp` after updating.
+
+### Added
+- `just install` asks before it changes anything beyond the binary: install the suggested setup (binary, the bora plugins in `scripts/install/plugins.txt`, the omp cmd-z-undo extension, the Ghostty layer and menu shortcuts, a starter `config.toml`), only the binary, or a checklist you customize. Off a terminal and without flags it still installs only the binary. A component you selected that cannot run fails the install instead of being skipped, and the installer refuses to write through a symlinked config path. `just bootstrap` runs only the non-binary components. [README-FORK.md](https://github.com/aryrabelo/bora-herdr-ada/blob/main/README-FORK.md) lists what the fork adds to herdr and documents each component.
+- Source installs can update themselves every day: the `autoupdate` component of `just install` (`just install --only autoupdate`) schedules `scripts/autoupdate.sh` at 05:00 with a user LaunchAgent on macOS or a systemd user timer on Linux. On a clean `main` that tracks a remote's `main` it fast-forwards, rebuilds and hands a running server off to the new binary; any other branch, uncommitted changes or local commits are left alone, and every run is logged to `~/.local/state/bora/autoupdate.log`. It never runs `bora update` over a source build. Release installs keep updating with `bora update --handoff`.
+- `bora worktree create` does the whole dispatch in one command. It resolves the repository from your own directory, starts a branch that exists as `origin/<branch>` from the remote tip, labels the workspace with the branch slug, puts it in the calling pane's sidebar folder (`--group`/`--no-group` to override), and with `--agent`, `--agent-name`, `--prompt` or `--prompt-file` starts a named agent on the new pane and delivers the prompt once it is ready. Running it again reuses the existing worktree and workspace. (#45)
+- Channel questions are first-class. `bora channel asks [<name>] [--open] [--to-human]` lists the questions asked with `bora channel ask` and whether each was answered, and `bora channel reply <name> <seq> <text>` answers one as your seat (`ui.chat_name`), delivered only to the pane that asked. The `channel.message` event carries `kind`, `in_reply_to` and `to_human`. An unanswered question to you counts in the sidebar's `N waiting` badge, red like a blocked pane; the view never switches to the channel by itself. (#49)
+- Pin a pane's agent status by hand from the pane context menu (Status: Working, Blocked, Idle, Done, or Auto to clear it), or with `pane.set_status` on the socket API. Detection keeps running underneath, so clearing the pin shows the live state. (#41)
+- `bora pane mark-unseen <pane_id>...` (or `--all`) puts panes back in the "finished while you were away" state: an idle pane shows Done until you focus it, with no sound or toast. Socket API: `pane.mark_unseen`. (#50)
+- Idle agents age visibly in the agent panel. The agent name is colored fresh, plain or stale by how long it has been idle (`ui.idle_fresh_minutes`, default 15; `ui.idle_stale_minutes`, default 120), and stale rows are dimmed and sink below the active ones (`ui.dim_stale_agents = false` turns that off).
+- `ui.agent_panel_sort = "recent"` orders the agent panel by last activity. `keys.cycle_agent_panel_sort` (default `prefix+a`) or a click on the panel header cycles spaces, priority and recent, and the choice is saved per machine.
+- `ui.new_workspace_position = "after_source"` places a new workspace right after the one it was opened from instead of at the end of the list. (#43)
+- `[terminal] reflow_on_resize = false` stops a pane from re-wrapping output that was already printed when it gets narrower; text past the new width is cut off, as in tmux. The default (`true`) keeps today's behavior. (#42)
+
+### Changed
+- `bora --version` and Settings show the fork version as `<herdr version>+<bora version>`, for example `bora 0.9.5+0.52.11 (herdr 2f3432c6)`, so you can see which herdr release a build is based on. Update checks still compare the plain bora version.
+- A pane whose agent goes from blocked straight to idle keeps reading blocked (in the sidebar, `bora pane list` and the `N waiting` badge) until the agent works again, its session resets, or the pane closes, so a question you never answered does not quietly disappear.
+- Showing a tab marks only its focused pane as seen. A split pane that finished in the background keeps its Done badge until you focus that pane.
+
+### Fixed
+- Closing a workspace in Folders or Flat view closes only that workspace. Before, closing a repository's root checkout also closed its worktrees, even ones filed in other folders; Repo view still closes the group it shows. (#40)
+- `prefix+]`, `prefix+[` and the switch-workspace keys step through workspaces in the order the sidebar shows them in every view mode, including collapsed folders and a collapsed sidebar. (#40)
+- Typing is no longer swallowed after an incomplete escape sequence, such as the one a window focus change or an Alt chord can leave behind. Keystrokes from `terminal attach` and `agent attach`, pastes, image pastes and replayed prompts wait in the pane's input queue instead of being dropped when it is busy, and a channel briefing is only marked as sent once the pane actually received it.
+- The workspace list header names the current view mode again, and clicking it cycles Flat, Folders and Repo, as `prefix+shift+v` does.
+- omp panes stay working while omp subagents run in the background instead of flipping to idle mid-task. Run `bora integration install omp` to update the extension.
+- Text sent with the kitty text-sizing protocol (OSC 66) is printed at normal size instead of leaving an empty line. (#42)
+- A pane's terminal title is still reported by the API after a live handoff.
+- `bora update` works again from 0.45.5 and earlier: those builds fetch the release manifest at `website/latest.json`, which the 0.9.0 sync had moved to `distribution/`. Both paths are now published and kept identical.
+- Panes restored from a saved session no longer inherit `HERDR_STARTUP_CWD` from the server, so a nested `bora server` started from one of them no longer opens an extra workspace at that path. (#39)
+
 ## [0.9.5] - 2026-10-14
 
 This is a hotfix release for v0.9.4. See the v0.9.4 notes for the full feature release: https://github.com/herdrdev/herdr/releases/tag/v0.9.4

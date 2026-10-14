@@ -101,9 +101,9 @@ IDs and live agent names are scoped to one server. Two saved SSH machines can bo
 To control a saved SSH machine, use the same global prefix for discovery and every later command:
 
 ```bash
-herdr --machine <label-or-id> agent list
-herdr --machine <label-or-id> pane list
-herdr --machine <label-or-id> agent prompt <remote-agent-name> "Reply with your current status." --wait --timeout 120000
+bora --machine <label-or-id> agent list
+bora --machine <label-or-id> pane list
+bora --machine <label-or-id> agent prompt <remote-agent-name> "Reply with your current status." --wait --timeout 120000
 ```
 
 The selector must be an enabled saved profile ID or a unique, case-sensitive label, not an arbitrary SSH hostname. Commands use that profile's remote session without an open TUI. Do not combine `--machine` with `--session` or `--remote`. Discover IDs on that machine; inherited local IDs and `--current` do not identify remote panes.
@@ -162,7 +162,7 @@ Submit work through the agent surface:
 bora agent prompt reviewer "Review the current diff and report only actionable findings." --wait --timeout 120000
 ```
 
-`agent prompt` honors the pane's live bracketed-paste mode and sends text followed by encoded Enter as one ordered submission. It reports successful submission only after both have been written; that alone does not prove the agent started a turn. For Codex on Windows, Herdr sends a paste boundary before Enter so submission does not depend on prompt size. It rejects an agent already waiting at an approval or question dialog with `agent_blocked` before sending any input. Inspect the blocked UI and ask the user before answering it. For normal agent work, `--wait` is enough: it waits for the first settled `idle`, `done`, or `blocked` state. Do not repeat those defaults with `--until`.
+`agent prompt` honors the pane's live bracketed-paste mode and sends text followed by encoded Enter as one ordered submission. It reports successful submission only after both have been written; that alone does not prove the agent started a turn. For Codex on Windows, Bora sends a paste boundary before Enter so submission does not depend on prompt size. It rejects an agent already waiting at an approval or question dialog with `agent_blocked` before sending any input. Inspect the blocked UI and ask the user before answering it. For normal agent work, `--wait` is enough: it waits for the first settled `idle`, `done`, or `blocked` state. Do not repeat those defaults with `--until`.
 
 By default the prompt is injected immediately, even while the agent is mid-turn (steering). Add `--when-idle` to hold submission server-side until the target leaves `working`; pair it with `--timeout` so the hold is bounded. The CLI attributes the prompt to your pane from `HERDR_PANE_ID`; `--from <pane>` overrides that and `--no-from` suppresses it.
 
@@ -202,6 +202,8 @@ bora agent <name> prompt "first task" [--kind KIND]
 ```
 
 `--new` always creates: two runs give two agents, and a derived name that is already taken gets a `-2`, `-3` suffix. `agent <name> prompt` is get-or-create: the name is the idempotency key, so an existing agent with that name only receives the prompt (`.result.created` is `false`), and a missing one is created with exactly that name. The kind resolves `--kind`, then `[agents] default` in config.toml, then `omp`. The prompt is injected without `--wait`; follow up with `bora agent wait <name>` when you need the result. Because both forms create a whole workspace, prefer the sibling-pane flow above unless the user asked for a separate workspace.
+
+When the user asks for an agent on its own branch or worktree, `bora worktree create --branch <name> --agent <kind> --prompt "<text>"` does the whole chain: it resolves the repository from your current directory, creates or reuses the worktree, opens a workspace labeled after the branch in your pane's sidebar folder, starts an agent named after that label (`--agent-name` overrides it), and delivers the prompt (`--prompt-file <path>` sends a pointer to a spec file instead). A branch that already exists as `origin/<branch>` starts at the remote tip. Re-running it reuses the existing worktree and workspace. Check `.result.ok`: when a later step fails after the checkout exists, it is `false`, `.result.failed_step` names the step, and the rest of the result still describes what was built.
 
 ## Run an ordinary command in another pane
 
@@ -268,6 +270,7 @@ bora channel tail eng --after 42
 - Delivery is immediate by default, even into a member that is mid-turn. `--when-idle` holds delivery for each working member until it is free; that member's receipt says `deferred`, which means queued, not failed. Do not resend it.
 - `channel note` appends to the transcript without injecting into any pane. `channel ask <name> <nick> "<text>"` blocks until the member replies with `channel send … --reply-to <seq>` or the timeout (default 300000 ms) expires; a timeout is a clean `answered: false`, not an error.
 - `channel tail <name> --after SEQ` catches up on messages missed since the last seen `seq`, reporting a `#gap:` notice on stderr if log rotation dropped anything in between. `--follow` keeps watching; `--json` emits structured lines.
+- `channel ask` stores its question with `kind: "ask"`. `channel asks [<name>] [--open] [--to-human]` lists the questions and whether each was answered; `channel reply <name> <seq> "<text>"` answers one as the human seat (`ui.chat_name`) and is for the human, not for agents answering each other, which use `channel send … --reply-to <seq>`.
 
 Bora injects a one-time protocol block into a pane's own terminal the first time it joins a channel or receives a channel message, teaching the same verbs from inside the agent's session. This section is discovery; that injected block is the binding contract for a pane already on a channel.
 
@@ -276,7 +279,7 @@ Bora injects a one-time protocol block into a pane's own terminal the first time
 - Use `--no-focus` for background work unless the user asked to switch context.
 - Use `--current`, an explicit pane ID, or a unique agent name. Do not rely on another client's focused pane.
 - Parse IDs from JSON responses. Do not derive them from sidebar order or examples.
-- Do not close workspaces, tabs, panes, or sessions you did not create unless the user explicitly asked. Ordinary CLI/API closes do not inherit the TUI's last-pane confirmation. `workspace close --group` closes the primary workspace and its linked worktree workspaces; never add it merely to bypass `workspace_group_close_required`.
+- Do not close workspaces, tabs, panes, or sessions you did not create unless the user explicitly asked. Ordinary CLI/API closes do not inherit the TUI's last-pane confirmation. `bora workspace close <id>` closes only that workspace, even a repository's root checkout; its linked worktree workspaces stay open.
 - Use `--trust-repository` only after the user has verified the repository. It grants per-request Git trust; it is not a routine retry for a failed worktree command.
 - Client and server versions can differ after an update. Check `bora status` before relying on new server features. A missing method is not permission to stop or upgrade a server.
 - Never run `bora server stop` from an active session unless the user explicitly intends to stop the server and its pane processes.
