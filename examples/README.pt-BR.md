@@ -13,10 +13,10 @@ Você pode parar depois do passo 2 com uma instalação funcional do `bora`. Os 
 ## 2. Instale o bora
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/aryrabelo/bora-herdr-ada/main/website/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/aryrabelo/bora-herdr-ada/main/distribution/install.sh | sh
 ```
 
-Esse é o instalador próprio deste fork (`website/install.sh`), não `herdr.dev/install.sh` — esse aí instala o herdr upstream, um projeto diferente. O script:
+Esse é o instalador próprio deste fork (`distribution/install.sh`), não `herdr.dev/install.sh` — esse aí instala o herdr upstream, um projeto diferente. O script:
 
 - baixa o binário de release correspondente à sua plataforma a partir dos GitHub releases deste fork,
 - instala como `bora` em `${HERDR_INSTALL_DIR:-$HOME/.local/bin}` — defina `HERDR_INSTALL_DIR` para instalar em outro lugar.
@@ -38,6 +38,8 @@ A versão se lê `<upstream>+<bora>`: `0.9.5` é o release do herdr upstream at�
 Binários pré-compilados atualmente cobrem Linux e macOS (x86_64 e aarch64). O suporte a Windows está a caminho mas ainda não está em todo release — confira os [GitHub releases](https://github.com/aryrabelo/bora-herdr-ada/releases) para sua plataforma.
 
 Para compilar a partir do código-fonte (ex.: para acompanhar `main` no dia a dia), veja a [seção de instalação do README raiz](../README.md#install) para todos os detalhes. Resumindo: `git clone` o repo, rode `just fetch-libghostty-vt` para baixar a lib estática pré-compilada do `libghostty-vt` (precisa de um toolchain Rust, `just`, e `python3` no seu `PATH`), depois `cargo build --release` e faça um symlink de `target/release/bora` no seu `PATH`. Essa configuração de exemplo não depende de qual método de instalação você usou.
+
+Para atualizar depois: uma instalação por release roda `bora update --handoff` (baixa o release mais novo e passa o server que está rodando para ele); um build do código-fonte atualiza com `git pull && just install && bora server live-handoff`, ou todo dia com o componente `autoupdate` do instalador. Nunca rode `bora update` num build do código-fonte no canal preview: ele troca o binário por um release mais antigo. Detalhes em [README-FORK.md, Updating](../README-FORK.md#updating).
 
 ## 3. Instale o Ghostty, e por quê
 

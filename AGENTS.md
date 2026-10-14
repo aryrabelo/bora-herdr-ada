@@ -499,7 +499,7 @@ TTY it runs only the `binary` component (release build, copy, version print),
 so `just install && bora server live-handoff` from an agent means what it
 always did, and a selected component that cannot run (no `cargo`) FAILS with a
 non-zero exit instead of skipping, so the handoff never reaches a stale binary.
-The opinionated components (plugins, omp, ghostty, ghostty-menu, config) run
+The opinionated components (plugins, omp, ghostty, ghostty-menu, config, autoupdate) run
 only after the interactive "Install the suggested setup?" answer or an explicit
 `--yes`/`--all`/`--only`, and none of them writes when the target or any parent
 directory below `$HOME` is a symlink (`symlinked_component` in
@@ -512,7 +512,15 @@ language, not AppleLanguages, unless the app sets
 `CFBundleAllowMixedLocalizations` (measured 2026-10-14 with a probe app;
 Ghostty 1.3.1 ships only `en`, so its menu is English for a pt-BR user). Test
 other languages with `BORA_INSTALL_APPLE_LANGUAGES` and
-`BORA_INSTALL_GHOSTTY_APP`, never by changing the global defaults.
+`BORA_INSTALL_GHOSTTY_APP`, never by changing the global defaults. Likewise
+`launchctl`/`systemctl --user` drive the real user's domain whatever `$HOME`
+says: sandbox runs of `autoupdate` set `BORA_INSTALL_LAUNCHCTL` /
+`BORA_INSTALL_SYSTEMCTL` to stubs. `scripts/autoupdate.sh` must never call
+`bora update` from a git checkout, not even when cargo is missing from the
+job's PATH (that case exits 1): the preview channel compares build ids, a
+local build has none, and the "update" is a downgrade to a release (measured
+2026-09-15, 0.47.0 → 0.46.8-preview) that also skips the branch and
+dirty-tree guards. Release mode is keyed on `$ROOT/.git` being absent.
 
 **A fix is not in the operator's hands until `just install` runs, and a running
 `bora` keeps the old binary.** `~/.local/bin/bora` is a plain file that
