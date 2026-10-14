@@ -13,10 +13,10 @@ You can stop after step 2 with a working `bora` install. Steps 3–6 build the r
 ## 2. Install bora
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/aryrabelo/bora-herdr-ada/main/website/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/aryrabelo/bora-herdr-ada/main/distribution/install.sh | sh
 ```
 
-This is this fork's own installer (`website/install.sh`), not `herdr.dev/install.sh` — that one installs upstream herdr, a different project. The script:
+This is this fork's own installer (`distribution/install.sh`), not `herdr.dev/install.sh` — that one installs upstream herdr, a different project. The script:
 
 - downloads the release binary matching your platform from this fork's GitHub releases,
 - installs it as `bora` at `${HERDR_INSTALL_DIR:-$HOME/.local/bin}` — set `HERDR_INSTALL_DIR` to install elsewhere.
@@ -38,6 +38,8 @@ The version reads `<upstream>+<bora>`: `0.9.5` is the upstream herdr release thi
 Prebuilt binaries currently cover Linux and macOS (x86_64 and aarch64). Windows support is landing but is not in every release yet — check [GitHub releases](https://github.com/aryrabelo/bora-herdr-ada/releases) for your platform.
 
 To build from source instead (e.g. to track `main` day to day), see the [root README's install section](../README.md#install) for full details. In short: `git clone` the repo, run `just fetch-libghostty-vt` to pull the prebuilt `libghostty-vt` static lib (needs a Rust toolchain, `just`, and `python3` on your `PATH`), then `cargo build --release` and symlink `target/release/bora` onto your `PATH`. This example setup does not depend on which install method you used.
+
+To update later: a release install runs `bora update --handoff` (downloads the newest release and hands a running server off to it); a source build updates with `git pull && just install && bora server live-handoff`, or daily with the `autoupdate` install component. Never run `bora update` on a source build on the preview channel: it replaces it with an older release. Details in [README-FORK.md, Updating](../README-FORK.md#updating).
 
 ## 3. Install Ghostty, and why
 
