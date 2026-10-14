@@ -238,7 +238,7 @@ case "$mode" in
         if [ -t 0 ] && [ -t 1 ]; then
             ask_suggested
         else
-            echo "not a terminal: installing only 'binary' (see --help for --all/--only/--yes)" >&2
+            binary_only_notice=1
             select_binary_only
         fi
         ;;
@@ -251,6 +251,18 @@ for name in ${without//,/ }; do
     fi
     selected[i]=0
 done
+
+any=0
+for ((i = 0; i < count; i++)); do
+    if [ "${selected[$i]:-0}" = 1 ]; then any=1; fi
+done
+if [ "$any" = 0 ]; then
+    echo "nothing selected"
+    exit 0
+fi
+if [ "${binary_only_notice:-0}" = 1 ]; then
+    echo "not a terminal: installing only 'binary' (see --help for --all/--only/--yes)" >&2
+fi
 
 # A selected component that cannot run here FAILS: the selection was explicit
 # (--only, the menu) or implied (binary off a terminal, `n`), and a skip would

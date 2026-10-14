@@ -88,7 +88,7 @@ defaults write com.mitchellh.ghostty NSUserKeyEquivalents -dict-add "Reload Conf
 > };
 > ```
 >
-> Glyphs: `@` = cmd, `^` = ctrl, `~` = alt/option, `$` = shift. Menu item titles must match **exactly** — a wrong title is silently ignored (no error, override just never fires). Confirm the real titles for your Ghostty version with:
+> Glyphs: `@` = cmd, `^` = ctrl, `~` = alt/option, `$` = shift. Menu item titles must match **exactly**, and they are the titles the menu *shows*, i.e. localized. A wrong title is silently ignored (no error, the override just never fires). Ghostty 1.3 ships only the `en` localization and does not set `CFBundleAllowMixedLocalizations`, so its menu stays English even with pt-BR first in your system languages; a localized Ghostty would show e.g. "Mostrar Aba Seguinte". `just install` resolves the titles for you. Confirm the real titles for your Ghostty version with:
 >
 > ```sh
 > osascript -e 'tell application "System Events" to tell process "Ghostty" to get name of every menu item of menu 1 of menu bar item "Window" of menu bar 1'

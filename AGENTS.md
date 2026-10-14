@@ -506,7 +506,13 @@ directory below `$HOME` is a symlink (`symlinked_component` in
 `scripts/install/lib.sh`; see the `~/.config/bora/config.toml` symlink note
 under Code Conventions). Sandbox runs must set
 `BORA_INSTALL_GHOSTTY_DEFAULTS_DOMAIN` to a throwaway domain: `defaults` writes
-the real user's preferences regardless of `$HOME`.
+the real user's preferences regardless of `$HOME`. NSUserKeyEquivalents keys
+are LOCALIZED menu titles, and AppKit's titles follow Ghostty's bundle
+language, not AppleLanguages, unless the app sets
+`CFBundleAllowMixedLocalizations` (measured 2026-10-14 with a probe app;
+Ghostty 1.3.1 ships only `en`, so its menu is English for a pt-BR user). Test
+other languages with `BORA_INSTALL_APPLE_LANGUAGES` and
+`BORA_INSTALL_GHOSTTY_APP`, never by changing the global defaults.
 
 **A fix is not in the operator's hands until `just install` runs, and a running
 `bora` keeps the old binary.** `~/.local/bin/bora` is a plain file that

@@ -76,7 +76,7 @@ defaults write com.mitchellh.ghostty NSUserKeyEquivalents -dict-add "Show Previo
 defaults write com.mitchellh.ghostty NSUserKeyEquivalents -dict-add "Reload Configuration" '"@^$,"'
 ```
 
-> As aspas duplas internas são obrigatórias: o `defaults` interpreta o valor como string de plist no formato antigo, e um `@^]` sem aspas falha com `Could not parse: @^]`. Esses comandos exatos foram rodados contra um domínio descartável e lidos de volta com `defaults read`. O equivalente declarativo é um bloco `system.defaults.CustomUserPreferences` do nix-darwin:
+> As aspas duplas internas são obrigatórias: o `defaults` interpreta o valor como string de plist no formato antigo, e um `@^]` sem aspas falha com `Could not parse: @^]`. Esses comandos exatos foram rodados contra um domínio descartável e lidos de volta com `defaults read`. As chaves são os títulos que o menu mostra. O Ghostty 1.3 só traz a localização `en` e não define `CFBundleAllowMixedLocalizations`, então o menu dele fica em inglês mesmo com pt-BR em primeiro lugar nos idiomas do sistema. Um Ghostty futuro localizado usaria "Mostrar Aba Seguinte" / "Mostrar Aba Anterior"; o `just install` resolve isso sozinho. O equivalente declarativo é um bloco `system.defaults.CustomUserPreferences` do nix-darwin:
 >
 > ```nix
 > system.defaults.CustomUserPreferences."com.mitchellh.ghostty" = {
