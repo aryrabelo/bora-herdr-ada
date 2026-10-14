@@ -497,10 +497,16 @@ in `scripts/install/components/`, documented in `README-FORK.md`), but off a
 terminal it is still binary-only.** With no flags and stdin or stdout not a
 TTY it runs only the `binary` component (release build, copy, version print),
 so `just install && bora server live-handoff` from an agent means what it
-always did. The opinionated components (plugins, omp, ghostty, config) run
+always did, and a selected component that cannot run (no `cargo`) FAILS with a
+non-zero exit instead of skipping, so the handoff never reaches a stale binary.
+The opinionated components (plugins, omp, ghostty, ghostty-menu, config) run
 only after the interactive "Install the suggested setup?" answer or an explicit
-`--yes`/`--all`/`--only`, and the ghostty and config components never write
-through a symlink (see the `~/.config/bora/config.toml` symlink note under Code Conventions).
+`--yes`/`--all`/`--only`, and none of them writes when the target or any parent
+directory below `$HOME` is a symlink (`symlinked_component` in
+`scripts/install/lib.sh`; see the `~/.config/bora/config.toml` symlink note
+under Code Conventions). Sandbox runs must set
+`BORA_INSTALL_GHOSTTY_DEFAULTS_DOMAIN` to a throwaway domain: `defaults` writes
+the real user's preferences regardless of `$HOME`.
 
 **A fix is not in the operator's hands until `just install` runs, and a running
 `bora` keeps the old binary.** `~/.local/bin/bora` is a plain file that
