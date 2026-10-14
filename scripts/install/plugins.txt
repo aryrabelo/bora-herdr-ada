@@ -1,7 +1,11 @@
 # bora plugins installed by `just install` (component `plugins`).
-# One per line: <owner/repo[/subdir]> [plugin_id]
+# One per line: <owner/repo[/subdir]> [plugin_id] [requires=<cmd>[,<cmd>...]]
 # plugin_id is the `id` in the plugin's herdr-plugin.toml; it defaults to the
 # repo name and is how an existing install is detected in plugins.json.
+# requires= lists commands the plugin cannot run without; when one is missing
+# from PATH the plugin is skipped with the reason, never failed.
+# Security review of each entry (maintainer, what it runs, what it reaches):
+# README-FORK.md, "Bundled plugins".
 
 # Git-aware read-only file viewer in a split; bound to prefix+f by
 # examples/opinionated/config.toml.
@@ -9,3 +13,11 @@ smarzban/herdr-file-viewer herdr-file-viewer
 
 # Names tabs after directory, branch, ssh host or running program/agent.
 qu8n/herdr-automatic-rename herdr-automatic-rename
+
+# Mobile web UI to watch and reply to agents over Tailscale. Bun builds it at
+# install; nothing runs until the "Start Collie" action.
+AltanS/collie herdr.collie requires=bun
+
+# PR number and CI state as a `pr` token on the focused pane's sidebar row.
+# Runs `bun bin/...` on every pane focus and asks `gh` (your GitHub auth).
+wyattjoh/herdr-plugin-gh-pr gh-pr requires=bun,gh

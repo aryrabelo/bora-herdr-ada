@@ -1,7 +1,7 @@
 # shellcheck shell=bash
 # shellcheck disable=SC2034  # NAME/DESCRIPTION are read by scripts/install.sh
 NAME=binary
-DESCRIPTION="builds release bora and copies it to ~/.local/bin/bora"
+DESCRIPTION="builds release bora, copies it to ~/.local/bin/bora and links ~/.local/bin/herdr to it"
 
 available() {
     command -v cargo >/dev/null 2>&1 || { echo "cargo not on PATH"; return 1; }
@@ -24,9 +24,28 @@ install_component() {
     mkdir -p "$HOME/.local/bin"
     if [ -f "$dest" ] && [ ! -L "$dest" ] && cmp -s "$src" "$dest"; then
         say binary "already present ($("$dest" --version))"
-        return 0
+    else
+        rm -f "$dest"
+        command install -m 755 "$src" "$dest"
+        say binary "installed ($("$dest" --version))"
     fi
-    rm -f "$dest"
-    command install -m 755 "$src" "$dest"
-    say binary "installed ($("$dest" --version))"
+    link_herdr_alias
+}
+
+# Plugins written for upstream call the binary by its upstream name (gh-pr
+# runs `herdr pane current` and swallows the failure), so without this alias
+# they install and silently do nothing. An existing herdr is never replaced:
+# it may be a real upstream install.
+link_herdr_alias() {
+    local alias="$HOME/.local/bin/herdr" target
+    target="$(readlink "$alias" 2>/dev/null || true)"
+    if [ "$target" = bora ] || [ "$target" = "$HOME/.local/bin/bora" ]; then
+        say "herdr alias" "already present"
+    elif [ -e "$alias" ] || [ -L "$alias" ]; then
+        say "herdr alias" "skipped ($alias exists and is not a link to bora)"
+        note "plugins that call \`herdr\` will reach that binary, not bora"
+    else
+        ln -s bora "$alias"
+        say "herdr alias" "installed ($alias -> bora)"
+    fi
 }

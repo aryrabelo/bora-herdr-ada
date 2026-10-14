@@ -41,9 +41,9 @@ exit non-zero.
 
 | Component | What it changes on disk | Suggested when |
 |---|---|---|
-| `binary` | builds `cargo build --release --locked` and copies it to `~/.local/bin/bora` (a copy, not a symlink), then prints `bora --version` | always |
-| `plugins` | installs the bora plugins listed in [scripts/install/plugins.txt](scripts/install/plugins.txt) with `bora plugin install <owner/repo> --yes`: `smarzban/herdr-file-viewer` (git-aware file viewer, `prefix+f`) and `qu8n/herdr-automatic-rename` (names tabs after directory, branch, host or running agent) | always |
-| `omp` | runs `omp plugin install github:aryrabelo/omp-cmd-z-undo`: Ctrl+Z (and Cmd+Z) undo typing in the omp prompt instead of suspending | `omp` is on `PATH` |
+| `binary` | builds `cargo build --release --locked` and copies it to `~/.local/bin/bora` (a copy, not a symlink), then prints `bora --version`; also links `~/.local/bin/herdr -> bora` when no `herdr` is there, because plugins written for upstream (gh-pr) call `herdr` by name and fail silently without it. An existing `herdr` is never replaced | always |
+| `plugins` | installs the bora plugins listed in [scripts/install/plugins.txt](scripts/install/plugins.txt) with `bora plugin install <owner/repo> --yes`: file viewer, automatic rename, Collie and gh-pr (see [Bundled plugins](#bundled-plugins)). A plugin whose `requires=` command is missing (Bun, `gh`) is skipped with the reason, not failed | always |
+| `omp` | runs `omp plugin install` for each entry in [scripts/install/omp-plugins.txt](scripts/install/omp-plugins.txt): today `omp-cmd-z-undo` (Ctrl+Z and Cmd+Z undo typing in the omp prompt instead of suspending) and `omp-mermaid` (collapsible ASCII render of mermaid blocks, see [Bundled plugins](#bundled-plugins) for its costs) | `omp` is on `PATH` |
 | `ghostty` | writes `~/.config/ghostty/bora.conf` from [examples/opinionated/ghostty.conf](examples/opinionated/ghostty.conf) (rewritten on every install) and adds one line, `config-file = ?bora.conf`, to your Ghostty config | macOS with Ghostty installed |
 | `ghostty-menu` | changes macOS user defaults for Ghostty (`defaults write com.mitchellh.ghostty NSUserKeyEquivalents`): moves the menu items "Show Next Tab", "Show Previous Tab" and "Reload Configuration" to `cmd+ctrl+]`, `cmd+ctrl+[` and `cmd+ctrl+shift+,`, because menu shortcuts resolve before Ghostty's keybinds and would otherwise eat `cmd+shift+]`, `cmd+shift+[` and `cmd+shift+,`. The keys are the titles the menu actually shows, so they are resolved for your languages ([scripts/install/ghostty-menu-titles.js](scripts/install/ghostty-menu-titles.js)); if a title can't be resolved, the component fails instead of writing a key the menu ignores. A different existing shortcut prints `replacing <old> -> <new>`. Takes effect after quitting Ghostty (Cmd+Q) and relaunching | macOS with Ghostty installed |
 | `config` | creates `~/.config/bora/config.toml` from [examples/opinionated/config.toml](examples/opinionated/config.toml) when it does not exist; an existing config is never edited, the installer only lists the template keys it lacks | always |
@@ -67,7 +67,8 @@ of them is a symlink (e.g. into a dotfiles repo), that step prints
 `skipped (<path> is a symlink to <target>; not writing through it)` and the
 exact line or command to run yourself. `$HOME` and its ancestors are not
 checked. The `binary` component is the exception: it writes cargo's target
-directory and `~/.local/bin/bora`.
+directory, `~/.local/bin/bora` and, when no `herdr` is there, the
+`~/.local/bin/herdr` link.
 
 ### Non-interactive use
 
@@ -106,7 +107,37 @@ write with `refuse_symlink "<thing>" <path>`. The
 function is `install_component`, not `install`, so it does not shadow
 `install(1)`. Adding a bora plugin is one line in
 [scripts/install/plugins.txt](scripts/install/plugins.txt):
-`<owner/repo[/subdir]> [plugin_id]`.
+`<owner/repo[/subdir]> [plugin_id] [requires=<cmd>,...]`; an omp plugin is one
+line in [scripts/install/omp-plugins.txt](scripts/install/omp-plugins.txt):
+`<source> <package-name> [linked=<path under $HOME>]`. Either way, add its row
+to [Bundled plugins](#bundled-plugins) in the same change.
+
+### Bundled plugins
+
+An enabled bora plugin receives `HERDR_SOCKET_PATH`, which is the reach of the
+whole CLI (prompt agents, send input, close workspaces), and its startup and
+event hooks run with nobody watching. An omp plugin runs inside the omp
+process with omp's permissions. Bundling one installs that on the machine of
+everyone who runs `just install`, so every entry carries this review
+(checked 2026-10-14 against the installed checkout):
+
+| Plugin | Maintainer | Runs | Reaches |
+|---|---|---|---|
+| `herdr-file-viewer` | smarzban | install: downloads its prebuilt binary from the repo's GitHub releases, else builds with `cargo`. After that, panes and actions only, on `prefix+f` | files under the chosen root, read-only; `git` |
+| `herdr-automatic-rename` | qu8n | a startup hook plus hooks on ~20 workspace, worktree, tab and pane events, all `bash automatic-rename.sh` | the bora socket (renames tabs and workspaces); `git` in the pane's cwd |
+| `herdr.collie` | AltanS (MIT, ~1.3k★) | install: a Bun build. After that, nothing until the "Start Collie" action, which starts a background service (launchd/systemd `--user`) | when started: a local HTTP server published on your tailnet with `tailscale serve`. **Anyone on that tailnet can read your agents and send them text.** "Uninstall Collie" removes the service and the serve |
+| `gh-pr` | wyattjoh (no licence file) | `bun bin/update-pr-status.ts` on every pane focus and worktree open/create | `git` in the pane's cwd; `gh pr view`/`gh pr checks` with your GitHub auth; `herdr pane report-metadata` |
+| `omp-cmd-z-undo` | aryrabelo | an omp extension: at TUI session start it wraps the prompt editor and rebinds Ctrl+Z and Cmd+Z to undo, in memory only (your keybindings file is never written). Ctrl+Z stops suspending omp, and is also taken off `app.tools.expand`, `app.editor.external` and `app.message.copy` wherever those actions are checked | omp's in-memory keybindings and editor component; no file writes, no network, no subprocess |
+| `omp-mermaid` | aryrabelo, fork of Gurpartap/pi-mermaid (MIT) | an omp extension: on every user input and at the end of every agent turn it scans for ```` ```mermaid ```` blocks and adds a collapsible top-down render (`ctrl+o` expands it, with the source) | in-process: the work runs in the `mermaid` parser and `beautiful-mermaid`; its own code (`index.ts`) makes no network call and spawns nothing |
+
+Two costs of `omp-mermaid`, measured 2026-10-14 on omp 18.10.4. omp already
+draws mermaid blocks natively in user and assistant messages, so with the
+plugin each diagram shows twice: the native render inline, then the plugin's
+box. And the install pulls its `@oh-my-pi/*` peer packages as real copies,
+about 1.1 GB under `~/.omp/plugins`. It is the fork rather than upstream
+`pi-mermaid` because upstream also loads under omp but its expand hint loses
+the key (`35 more lines,  to expand`, omp #2998) and its peers are a second,
+standalone pi stack (369 MB).
 
 Personal configuration (machine paths, private scripts, wrappers) stays out of
 this repo; only generic pieces belong in the templates.

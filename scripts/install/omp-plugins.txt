@@ -1,0 +1,17 @@
+# omp plugins installed by `just install` (component `omp`).
+# One per line: <source> <package-name> [linked=<path under $HOME>]
+# <source> is what `omp plugin install` takes (an npm name or github:owner/repo);
+# <package-name> is how an existing install is found in `omp plugin list --json`.
+# linked= is an extension file that counts as already installed (a hand-linked
+# alternative install), so the plugin never loads twice.
+# Security review of each entry: README-FORK.md, "Bundled plugins".
+
+# Ctrl+Z (and Cmd+Z through bora.conf) undo typing in the omp prompt instead
+# of suspending omp to the shell.
+github:aryrabelo/omp-cmd-z-undo @aryrabelo/omp-cmd-z-undo linked=.omp/agent/extensions/cmd-z-undo.ts
+
+# Collapsible top-down ASCII render of ```mermaid blocks (ctrl+o expands it,
+# with the source). Fork of Gurpartap/pi-mermaid retargeted to omp: upstream
+# loads under omp but loses the key in its expand hint (omp #2998). omp also
+# draws mermaid natively, so with this plugin each diagram shows twice.
+github:aryrabelo/omp-mermaid omp-mermaid
