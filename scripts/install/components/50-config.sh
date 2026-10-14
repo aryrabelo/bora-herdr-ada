@@ -26,12 +26,15 @@ install_component() {
     local cfg template
     cfg="$(bora_config_file)"
     template="$ROOT/examples/opinionated/config.toml"
-    if [ -L "$cfg" ]; then
-        say "bora config.toml" "skipped ($cfg is a symlink to $(resolve_link "$cfg"); not writing through it)"
-        if [ -r "$cfg" ]; then config_missing_keys "$cfg" "$template"; fi
-    elif [ -e "$cfg" ]; then
+    if [ -e "$cfg" ] && [ ! -L "$cfg" ]; then
         say "bora config.toml" "already present ($cfg)"
         config_missing_keys "$cfg" "$template"
+    elif refuse_symlink "bora config.toml" "$cfg"; then
+        if [ -r "$cfg" ]; then
+            config_missing_keys "$cfg" "$template"
+        else
+            note "to adopt the template, copy $template to $(resolve_link "$cfg") yourself"
+        fi
     else
         mkdir -p "$(dirname "$cfg")"
         cp "$template" "$cfg"

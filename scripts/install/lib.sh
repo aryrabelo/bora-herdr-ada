@@ -17,9 +17,63 @@ is_macos() {
     [ "$(uname -s)" = "Darwin" ]
 }
 
-# Where a symlink finally points (for notices only; never written through).
+# Where a path really lives, through every symlink (for notices only; never
+# written through). Missing components resolve via the nearest existing
+# ancestor.
 resolve_link() {
-    readlink -f "$1" 2>/dev/null || readlink "$1"
+    local p="$1" rest=""
+    while [ ! -e "$p" ] && [ ! -L "$p" ] && [ "$p" != "/" ] && [ "$p" != "." ]; do
+        rest="/$(basename "$p")$rest"
+        p="$(dirname "$p")"
+    done
+    if [ -d "$p" ] && [ ! -L "$p" ]; then
+        printf '%s%s\n' "$(cd -P "$p" && pwd -P)" "$rest"
+    else
+        printf '%s%s\n' "$(readlink -f "$p" 2>/dev/null || printf '%s' "$p")" "$rest"
+    fi
+}
+
+# bora's namespace directory name, as app_dir_name() in src/config/io.rs
+# resolves it for a release build: trimmed $HERDR_NAMESPACE, else "bora".
+bora_namespace() {
+    local ns="${HERDR_NAMESPACE:-}"
+    ns="${ns#"${ns%%[![:space:]]*}"}"
+    ns="${ns%"${ns##*[![:space:]]}"}"
+    printf '%s\n' "${ns:-bora}"
+}
+
+# bora's state directory on Unix: $XDG_STATE_HOME, else ~/.local/state.
+bora_state_dir() {
+    printf '%s/%s\n' "${XDG_STATE_HOME:-$HOME/.local/state}" "$(bora_namespace)"
+}
+
+# symlinked_component PATH — the write guard. Prints the first component of
+# PATH that is a symlink (PATH itself, or any parent directory) and succeeds;
+# fails when there is none. Run it before every write or mkdir: a symlinked
+# ~/.config, ~/.config/ghostty or config file usually points into a dotfiles
+# repo, and writing through it edits that repo. $HOME and its ancestors are
+# not checked (system layout, not dotfiles). Components that do not exist yet
+# are fine: mkdir creates real directories.
+symlinked_component() {
+    local p="$1" home="${HOME%/}"
+    case "$p" in /*) ;; *) p="$PWD/$p" ;; esac
+    while [ -n "$p" ] && [ "$p" != "/" ]; do
+        p="${p%/}"
+        case "$home/" in "$p"/*) return 1 ;; esac
+        if [ -L "$p" ]; then
+            printf '%s\n' "$p"
+            return 0
+        fi
+        p="$(dirname "$p")"
+    done
+    return 1
+}
+
+# refuse_symlink THING PATH — say/notes for a write refused by the guard.
+refuse_symlink() {
+    local link
+    link="$(symlinked_component "$2")" || return 1
+    say "$1" "skipped ($link is a symlink to $(resolve_link "$link"); not writing through it)"
 }
 
 # The bora binary to drive: the one on PATH, else the one the `binary`
@@ -34,14 +88,10 @@ bora_bin() {
     fi
 }
 
-# bora's config directory, resolved exactly like config_dir() and
-# app_dir_name() in src/config/io.rs (release build): $XDG_CONFIG_HOME, else
-# ~/.config, joined with the trimmed $HERDR_NAMESPACE, else "bora".
+# bora's config directory, resolved like config_dir() in src/config/io.rs:
+# $XDG_CONFIG_HOME, else ~/.config, joined with the namespace.
 bora_config_dir() {
-    local ns="${HERDR_NAMESPACE:-}"
-    ns="${ns#"${ns%%[![:space:]]*}"}"
-    ns="${ns%"${ns##*[![:space:]]}"}"
-    printf '%s/%s\n' "${XDG_CONFIG_HOME:-$HOME/.config}" "${ns:-bora}"
+    printf '%s/%s\n' "${XDG_CONFIG_HOME:-$HOME/.config}" "$(bora_namespace)"
 }
 
 # bora's config.toml, honoring HERDR_CONFIG_PATH like config_path() does.

@@ -27,16 +27,15 @@ install_component() {
     dir="$(ghostty_config_dir)"
     managed="$dir/bora.conf"
     template="$ROOT/examples/opinionated/ghostty.conf"
-    mkdir -p "$dir"
 
-    # bora.conf is ours and rewritten on every install, unless it is a
-    # symlink: then it belongs to someone's dotfiles and is never written.
-    if [ -L "$managed" ]; then
-        say "ghostty bora.conf" "skipped ($managed is a symlink to $(resolve_link "$managed"); not writing through it)"
-        note "to adopt the template, copy $template there yourself"
+    # bora.conf is ours and rewritten on every install, unless it or a parent
+    # directory is a symlink: then it lives in someone's dotfiles.
+    if refuse_symlink "ghostty bora.conf" "$managed"; then
+        note "to adopt the template, copy $template to $(resolve_link "$managed") yourself"
     elif [ -f "$managed" ] && cmp -s "$template" "$managed"; then
         say "ghostty bora.conf" "already present"
     else
+        mkdir -p "$dir"
         cp "$template" "$managed.tmp.$$"
         mv -f "$managed.tmp.$$" "$managed"
         say "ghostty bora.conf" "installed ($managed)"
@@ -53,19 +52,19 @@ install_component() {
             [ -n "$user" ] || user="$candidate"
         fi
     done
+    [ -n "$user" ] || user="$dir/config.ghostty"
 
-    if [ -z "$user" ]; then
-        user="$dir/config.ghostty"
-        printf '# bora opinionated layer, managed by just install\n%s\n' "$GHOSTTY_INCLUDE" >"$user"
-        say "ghostty include" "installed (created $user)"
-    elif [ -L "$user" ]; then
-        say "ghostty include" "skipped ($user is a symlink to $(resolve_link "$user"); not writing through it)"
+    if refuse_symlink "ghostty include" "$user"; then
         note "add this line to $(resolve_link "$user"):"
         note "  $GHOSTTY_INCLUDE"
         return 0
-    else
+    elif [ -e "$user" ]; then
         printf '\n# bora opinionated layer, managed by just install\n%s\n' "$GHOSTTY_INCLUDE" >>"$user"
         say "ghostty include" "installed (appended to $user)"
+    else
+        mkdir -p "$dir"
+        printf '# bora opinionated layer, managed by just install\n%s\n' "$GHOSTTY_INCLUDE" >"$user"
+        say "ghostty include" "installed (created $user)"
     fi
     note "reload Ghostty (menu Ghostty > Reload Configuration); macos-* keys need a full quit and relaunch"
 }

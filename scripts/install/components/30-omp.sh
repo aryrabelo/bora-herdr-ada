@@ -17,6 +17,11 @@ install_component() {
         say "omp cmd-z-undo" "already present"
         return 0
     fi
+    # omp installs user-scope plugins under ~/.omp/plugins.
+    if refuse_symlink "omp cmd-z-undo" "$HOME/.omp/plugins/package.json"; then
+        note "install it yourself: omp plugin install $OMP_UNDO_SOURCE"
+        return 0
+    fi
     omp plugin install "$OMP_UNDO_SOURCE"
     say "omp cmd-z-undo" "installed"
 }

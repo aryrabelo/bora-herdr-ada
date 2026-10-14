@@ -24,17 +24,19 @@ export ROOT
 
 usage() {
     cat <<'EOF'
-Usage: just install [--all | --only <a,b,...> | --yes | --list]
+Usage: just install [--all | --only <a,b,...> | --yes | --list] [--without <a,b,...>]
 
 With no flags on a terminal: asks "Install the suggested setup? [Y/n/customize]"
   (Y = suggested components, n = binary only, customize = checklist).
 With no flags off a terminal (pipe, agent, CI): installs only `binary`.
+A selected component that cannot run on this machine fails the install.
 
-  --all          install every component available on this machine
-  --only <a,b>   install exactly these components (comma-separated names)
-  --yes          install the suggested setup without prompting
-  --list         print components and availability, change nothing
-  -h, --help     this help
+  --all            install every component available on this machine
+  --only <a,b>     install exactly these components (comma-separated names)
+  --yes            install the suggested setup without prompting
+  --without <a,b>  drop these components from the selection
+  --list           print components and availability, change nothing
+  -h, --help       this help
 EOF
 }
 
@@ -94,7 +96,7 @@ list_components() {
         else
             state="available, not suggested"
         fi
-        printf '%-8s %s\n         %s\n' "${names[$i]}" "${descs[$i]}" "$state"
+        printf '%-12s %s\n             %s\n' "${names[$i]}" "${descs[$i]}" "$state"
     done
 }
 
@@ -111,9 +113,9 @@ ask_suggested() {
     echo "bora installer. The suggested setup changes, on this machine:"
     for ((i = 0; i < count; i++)); do
         if [ -n "${reasons[$i]}" ]; then
-            printf '  -  %-8s unavailable: %s\n' "${names[$i]}" "${reasons[$i]}"
+            printf '  -  %-12s unavailable: %s\n' "${names[$i]}" "${reasons[$i]}"
         elif [ "${defaults[$i]}" = 1 ]; then
-            printf '  +  %-8s %s\n' "${names[$i]}" "${descs[$i]}"
+            printf '  +  %-12s %s\n' "${names[$i]}" "${descs[$i]}"
         fi
     done
     while true; do
@@ -145,7 +147,7 @@ menu() {
             else
                 mark=" "
             fi
-            printf '  %d) [%s] %-8s %s' "$((i + 1))" "$mark" "${names[$i]}" "${descs[$i]}"
+            printf '  %d) [%s] %-12s %s' "$((i + 1))" "$mark" "${names[$i]}" "${descs[$i]}"
             if [ -n "${reasons[$i]}" ]; then printf ' (unavailable: %s)' "${reasons[$i]}"; fi
             printf '\n'
         done
@@ -185,7 +187,7 @@ menu() {
     done
 }
 
-mode="" only=""
+mode="" only="" without=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --all) [ -z "$mode" ] || { usage >&2; exit 2; }; mode=all ;;
@@ -197,6 +199,12 @@ while [ $# -gt 0 ]; do
             shift
             ;;
         --only=*) [ -z "$mode" ] || { usage >&2; exit 2; }; mode=only only="${1#--only=}" ;;
+        --without)
+            [ $# -ge 2 ] || { usage >&2; exit 2; }
+            without="$2"
+            shift
+            ;;
+        --without=*) without="${1#--without=}" ;;
         -h | --help) usage; exit 0 ;;
         *) echo "unknown argument: $1" >&2; usage >&2; exit 2 ;;
     esac
@@ -209,7 +217,9 @@ case "$mode" in
         exit 0
         ;;
     all)
-        for ((i = 0; i < count; i++)); do selected[i]=1; done
+        for ((i = 0; i < count; i++)); do
+            if [ -z "${reasons[$i]}" ]; then selected[i]=1; else selected[i]=0; fi
+        done
         ;;
     yes)
         selected=("${defaults[@]}")
@@ -234,11 +244,23 @@ case "$mode" in
         ;;
 esac
 
+for name in ${without//,/ }; do
+    if ! i="$(index_of "$name")"; then
+        echo "unknown component: $name (known: ${names[*]})" >&2
+        exit 2
+    fi
+    selected[i]=0
+done
+
+# A selected component that cannot run here FAILS: the selection was explicit
+# (--only, the menu) or implied (binary off a terminal, `n`), and a skip would
+# let `just install && bora server live-handoff` hand off to a stale binary.
 failed=()
 for ((i = 0; i < count; i++)); do
     [ "${selected[$i]:-0}" = 1 ] || continue
     if [ -n "${reasons[$i]}" ]; then
-        say "${names[$i]}" "skipped (${reasons[$i]})"
+        say "${names[$i]}" "failed (${reasons[$i]})"
+        failed+=("${names[$i]}")
         continue
     fi
     # Not under `if`: errexit is ignored there, and a failing command must
