@@ -1,118 +1,105 @@
 use std::time::{Duration, Instant};
 
 use crate::api::schema::{
-    AgentPromptParams, AgentPromptWaitOptions, AgentReadParams, AgentRenameParams,
-    AgentSendKeysParams, AgentStartParams, AgentTarget, AgentWaitParams, EmptyParams, ErrorBody,
-    ErrorResponse, Method, PaneProcessInfoParams, PaneTarget, ReadFormat, ReadSource, Request,
-    WorkspaceCreateParams,
+    AgentPromptParams, AgentReadParams, AgentRenameParams, AgentSendKeysParams, AgentStartParams,
+    AgentTarget, AgentWaitParams, EmptyParams, ErrorBody, ErrorResponse, Method,
+    PaneProcessInfoParams, PaneTarget, Request, WorkspaceCreateParams,
 };
 
 const AGENT_START_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const PANE_SHELL_READINESS_RETRY_TIMEOUT: Duration = Duration::from_secs(2);
 
+pub(crate) mod bindings;
+#[cfg(test)]
+mod bindings_tests;
+
+pub(crate) fn command() -> clap::Command {
+    bindings::command()
+}
+
 pub(super) fn run_agent_command(args: &[String]) -> std::io::Result<i32> {
-    let Some(subcommand) = args.first().map(std::string::String::as_str) else {
-        print_agent_help();
-        return Ok(2);
+    use super::projection::ParseError;
+    use bindings::Operation;
+
+    match args.first().map(String::as_str) {
+        Some("--new") => return agent_new(&args[1..]),
+        // `bora agent <name> prompt <text>`: get-or-create, the name is the
+        // idempotency key. Real subcommands keep their own grammar.
+        Some(name)
+            if args.get(1).map(String::as_str) == Some("prompt")
+                && !command()
+                    .get_subcommands()
+                    .any(|leaf| leaf.get_name() == name) =>
+        {
+            return agent_named_prompt(name, &args[2..]);
+        }
+        _ => {}
+    }
+    // `--until exited` waits for the agent's pane to exit; it is not an agent
+    // status, so it is taken out before the status grammar sees it.
+    let without_exited;
+    let (args, wait_exited) = match args.first().map(String::as_str) {
+        Some("wait") if until_exited_requested(args) => {
+            without_exited = strip_until_exited(args);
+            (&without_exited[..], true)
+        }
+        _ => (args, false),
     };
 
-    match subcommand {
-        "list" => agent_list(&args[1..]),
-        "get" => agent_get(&args[1..]),
-        "read" => agent_read(&args[1..]),
-        "send-keys" => agent_send_keys(&args[1..]),
-        "prompt" => agent_prompt(&args[1..]),
-        "rename" => agent_rename(&args[1..]),
-        "focus" => agent_focus(&args[1..]),
-        "wait" => agent_wait(&args[1..]),
-        "attach" => agent_attach(&args[1..]),
-        "start" => agent_start(&args[1..]),
-        "--new" => agent_new(&args[1..]),
-        "explain" => agent_explain(&args[1..]),
-        "help" | "--help" | "-h" => {
-            print_agent_help();
-            Ok(0)
+    // `explain` and `wait` historically treat a bare `help` operand after the target as help.
+    let help_args;
+    let args = match args.first().map(String::as_str) {
+        Some(leaf @ ("explain" | "wait")) => {
+            let operands = super::projection::operands(&command(), args);
+            let skip = usize::from(leaf == "wait");
+            if operands.iter().skip(skip).any(|operand| *operand == "help") {
+                help_args = [leaf.to_owned(), "--help".to_owned()];
+                &help_args[..]
+            } else {
+                args
+            }
         }
-        // `bora agent <name> prompt <text>` — get-or-create, name is the
-        // idempotency key. Must come before the catch-all usage arm.
-        _ if args.get(1).map(String::as_str) == Some("prompt") => {
-            agent_named_prompt(subcommand, &args[2..])
+        _ => args,
+    };
+    let operation = match super::projection::parse(
+        command().bin_name("bora agent"),
+        args,
+        bindings::from_matches,
+    ) {
+        Ok(operation) => operation,
+        Err(ParseError::Clap(error)) => return super::print_clap_error(&error),
+        Err(ParseError::Usage(message)) => {
+            eprintln!("{message}");
+            return Ok(2);
         }
-        _ => {
-            print_agent_help();
-            Ok(2)
+        Err(ParseError::Io(error)) => return Err(error),
+    };
+    match operation {
+        Operation::List => agent_list(),
+        Operation::Get(params) => agent_get(params),
+        Operation::Focus(params) => agent_focus(params),
+        Operation::Read(params) => agent_read(params),
+        Operation::SendKeys(params) => agent_send_keys(params),
+        Operation::Rename(params) => agent_rename(params),
+        Operation::Wait(params) if wait_exited => {
+            agent_wait_exited(&params.target, params.timeout_ms)
         }
+        Operation::Wait(params) => agent_wait(params),
+        Operation::Prompt(params) => agent_prompt(params),
+        Operation::Start(params) => agent_start(params),
+        Operation::Attach(params) => agent_attach(params),
+        Operation::Explain(params) => agent_explain(params),
     }
 }
 
-fn agent_explain(args: &[String]) -> std::io::Result<i32> {
-    let mut file = None;
-    let mut agent = None;
-    let mut json = false;
-    let mut verbose = false;
-    let mut target = None;
-
-    let mut index = 0;
-    while index < args.len() {
-        match args[index].as_str() {
-            "--file" => {
-                let Some(value) = args.get(index + 1) else {
-                    eprintln!("missing value for --file");
-                    return Ok(2);
-                };
-                file = Some(value.clone());
-                index += 2;
-            }
-            "--agent" => {
-                let Some(value) = args.get(index + 1) else {
-                    eprintln!("missing value for --agent");
-                    return Ok(2);
-                };
-                agent = Some(value.clone());
-                index += 2;
-            }
-            "--json" => {
-                json = true;
-                index += 1;
-            }
-            "--format" => {
-                let Some(value) = args.get(index + 1) else {
-                    eprintln!("missing value for --format");
-                    return Ok(2);
-                };
-                match value.as_str() {
-                    "json" => json = true,
-                    "text" => json = false,
-                    other => {
-                        eprintln!("invalid --format: {other} (expected text or json)");
-                        return Ok(2);
-                    }
-                }
-                index += 2;
-            }
-            "--verbose" | "-v" => {
-                verbose = true;
-                index += 1;
-            }
-            "help" | "--help" | "-h" => {
-                eprintln!("usage: bora agent explain <target> [--json|--verbose]");
-                eprintln!("usage: bora agent explain --file PATH --agent LABEL [--json|--verbose]");
-                return Ok(0);
-            }
-            value if value.starts_with('-') => {
-                eprintln!("unknown option: {value}");
-                return Ok(2);
-            }
-            value => {
-                if target.is_some() {
-                    eprintln!("usage: bora agent explain <target> [--json]");
-                    return Ok(2);
-                }
-                target = Some(value.to_string());
-                index += 1;
-            }
-        }
-    }
+fn agent_explain(params: bindings::Explain) -> std::io::Result<i32> {
+    let bindings::Explain {
+        file,
+        agent,
+        json,
+        verbose,
+        target,
+    } = params;
 
     let explain = if let Some(path) = file {
         if target.is_some() {
@@ -288,72 +275,19 @@ fn matched_rule_region_preview<'a>(
         .filter(|preview| !preview.is_empty())
 }
 
-fn agent_start(args: &[String]) -> std::io::Result<i32> {
-    let Some(name) = args.first() else {
-        eprintln!("usage: bora agent start <name> --kind KIND --pane ID [--timeout MS] [-- <agent-args...>]");
-        return Ok(2);
-    };
-    let separator = args
-        .iter()
-        .position(|arg| arg == "--")
-        .unwrap_or(args.len());
-    let mut kind = None;
-    let mut pane_id = None;
-    let mut timeout_ms = None;
-    let mut index = 1;
-    while index < separator {
-        match args[index].as_str() {
-            "--kind" => {
-                let Some(value) = args.get(index + 1).filter(|_| index + 1 < separator) else {
-                    eprintln!("missing value for --kind");
-                    return Ok(2);
-                };
-                kind = Some(value.clone());
-                index += 2;
-            }
-            "--pane" => {
-                let Some(value) = args.get(index + 1).filter(|_| index + 1 < separator) else {
-                    eprintln!("missing value for --pane");
-                    return Ok(2);
-                };
-                pane_id = Some(super::normalize_pane_id(value));
-                index += 2;
-            }
-            "--timeout" => {
-                let Some(value) = args.get(index + 1).filter(|_| index + 1 < separator) else {
-                    eprintln!("missing value for --timeout");
-                    return Ok(2);
-                };
-                timeout_ms = match parse_timeout(value) {
-                    Ok(timeout_ms) => Some(timeout_ms),
-                    Err(exit_code) => return Ok(exit_code),
-                };
-                index += 2;
-            }
-            other => {
-                eprintln!("unknown option: {other}");
-                return Ok(2);
-            }
-        }
-    }
-    let Some(kind) = kind else {
-        eprintln!("missing required --kind");
-        return Ok(2);
-    };
-    let Some(pane_id) = pane_id else {
-        eprintln!("missing required --pane");
-        return Ok(2);
-    };
+fn agent_start(params: AgentStartParams) -> std::io::Result<i32> {
+    let AgentStartParams {
+        name,
+        kind,
+        pane_id,
+        args: agent_args,
+        timeout_ms,
+    } = params;
     let Some(_) = crate::detect::parse_agent_label(&kind) else {
         eprintln!("unsupported interactive agent kind: {kind}");
         return Ok(2);
     };
-    let agent_args = if separator < args.len() {
-        args[separator + 1..].to_vec()
-    } else {
-        Vec::new()
-    };
-    match start_agent_core(name, &kind, &pane_id, agent_args, timeout_ms) {
+    match start_agent_core(&name, &kind, &pane_id, agent_args, timeout_ms) {
         Ok(response) => super::print_response(&response),
         Err(err) => {
             print_agent_transport_error(err, "cli:agent:start", "agent_start_transport_failed")
@@ -456,6 +390,287 @@ fn start_agent_core(
         Ok(Err(error)) => Ok(error),
         Err(err) => Err(err),
     }
+}
+
+fn agent_list() -> std::io::Result<i32> {
+    super::print_response(&super::send_request(&Request {
+        id: "cli:agent:list".into(),
+        method: Method::AgentList(EmptyParams::default()),
+    })?)
+}
+
+fn agent_get(params: AgentTarget) -> std::io::Result<i32> {
+    super::print_response(&super::send_request(&Request {
+        id: "cli:agent:get".into(),
+        method: Method::AgentGet(params),
+    })?)
+}
+
+fn agent_focus(params: AgentTarget) -> std::io::Result<i32> {
+    super::print_response(&super::send_request(&Request {
+        id: "cli:agent:focus".into(),
+        method: Method::AgentFocus(params),
+    })?)
+}
+
+fn agent_attach(params: bindings::Attach) -> std::io::Result<i32> {
+    let bindings::Attach { target, takeover } = params;
+
+    let response = resolve_agent_target(&target, "cli:agent:attach:resolve")?;
+    if response.get("error").is_some() {
+        return super::print_response(&response);
+    }
+    let Some(terminal_id) = response["result"]["agent"]["terminal_id"].as_str() else {
+        eprintln!("agent attach failed: response did not include terminal_id");
+        return Ok(1);
+    };
+    crate::client::run_terminal_attach(terminal_id.to_owned(), takeover)?;
+    Ok(0)
+}
+
+fn agent_wait(params: AgentWaitParams) -> std::io::Result<i32> {
+    super::print_response(&super::send_request(&Request {
+        id: "cli:agent:wait".into(),
+        method: Method::AgentWait(params),
+    })?)
+}
+
+fn wait_for_named_agent(
+    name: &str,
+    fallback_pane_id: &str,
+    timeout: Duration,
+    expected_kind: &str,
+    expected_terminal_id: &str,
+) -> std::io::Result<Result<serde_json::Value, serde_json::Value>> {
+    let deadline = Instant::now().checked_add(timeout);
+    let mut first_poll = true;
+    loop {
+        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            // Let the server reconcile its matching startup deadline before
+            // returning so the pending name is immediately reusable.
+            let _ = resolve_agent_target_unchecked(name, "cli:agent:start:timeout");
+            return Ok(Err(agent_wait_timeout()));
+        }
+        let poll_id = "cli:agent:start";
+        let mut response = if first_poll {
+            first_poll = false;
+            resolve_agent_target(name, poll_id)?
+        } else {
+            resolve_agent_target_unchecked(name, poll_id)?
+        };
+        if response.get("error").is_some() {
+            response = resolve_agent_target_unchecked(fallback_pane_id, poll_id)?;
+            if response.get("error").is_some() {
+                std::thread::sleep(AGENT_START_POLL_INTERVAL);
+                continue;
+            }
+        }
+        let agent = &response["result"]["agent"];
+        let outcome = if agent["terminal_id"].as_str() != Some(expected_terminal_id) {
+            Some(Err(agent_name_lost_error("cli:agent:start", name)))
+        } else if let Some(actual) = agent["agent"]
+            .as_str()
+            .filter(|actual| *actual != expected_kind)
+        {
+            Some(Err(cli_agent_error(
+                "cli:agent:start",
+                "agent_kind_mismatch",
+                format!("expected {expected_kind}, detected {actual}"),
+            )))
+        } else if agent["name"].as_str() != Some(name) {
+            Some(Err(agent_name_lost_error("cli:agent:start", name)))
+        } else {
+            match agent["agent_status"].as_str() {
+                Some("blocked") => Some(Err(cli_agent_error(
+                    "cli:agent:start",
+                    "agent_not_ready",
+                    format!("agent {name} is blocked during startup and is not ready for prompts"),
+                ))),
+                Some("unknown")
+                    if expected_kind == "codex"
+                        && agent["interactive_ready"].as_bool() == Some(true) =>
+                {
+                    Some(Ok(agent.clone()))
+                }
+                Some("working" | "unknown") => None,
+                Some("idle" | "done") if agent["interactive_ready"].as_bool() == Some(true) => {
+                    Some(Ok(agent.clone()))
+                }
+                Some("idle" | "done") if !agent["launch_pending"].as_bool().unwrap_or(false) => {
+                    Some(Err(cli_agent_error(
+                        "cli:agent:start",
+                        "agent_start_failed",
+                        "agent process exited before becoming interactive",
+                    )))
+                }
+                _ => None,
+            }
+        };
+        if let Some(outcome) = outcome {
+            return Ok(outcome);
+        }
+        std::thread::sleep(AGENT_START_POLL_INTERVAL);
+    }
+}
+
+fn pane_terminal_id(pane_id: &str) -> std::io::Result<Option<String>> {
+    let response = super::send_request(&Request {
+        id: "cli:agent:start:pane".into(),
+        method: Method::PaneGet(PaneTarget {
+            pane_id: pane_id.to_owned(),
+        }),
+    })?;
+    Ok(response["result"]["pane"]["terminal_id"]
+        .as_str()
+        .map(str::to_owned))
+}
+
+fn pane_shell_is_initializing(pane_id: &str) -> std::io::Result<bool> {
+    let response = super::send_request(&Request {
+        id: "cli:agent:start:process_info".into(),
+        method: Method::PaneProcessInfo(PaneProcessInfoParams {
+            pane_id: Some(pane_id.to_owned()),
+        }),
+    })?;
+    Ok(process_info_shows_shell_initialization(
+        &response["result"]["process_info"],
+    ))
+}
+
+#[cfg(unix)]
+fn process_info_shows_shell_initialization(process_info: &serde_json::Value) -> bool {
+    let Some(shell_pid) = process_info["shell_pid"].as_u64() else {
+        return false;
+    };
+    if process_info["foreground_process_group_id"].as_u64() != Some(shell_pid) {
+        return false;
+    }
+    process_info["foreground_processes"]
+        .as_array()
+        .is_some_and(|processes| {
+            processes.iter().any(|process| {
+                process["pid"].as_u64() == Some(shell_pid)
+                    && (process["name"]
+                        .as_str()
+                        .is_some_and(crate::platform::is_pane_shell_process_name)
+                        || process["argv"]
+                            .as_array()
+                            .and_then(|argv| argv.first())
+                            .and_then(serde_json::Value::as_str)
+                            .is_some_and(crate::platform::is_pane_shell_process_name))
+            })
+        })
+}
+
+// Windows exposes no foreground process group, so shell initialization is not
+// observable and a busy `agent.start` is not retried there.
+#[cfg(not(unix))]
+fn process_info_shows_shell_initialization(_process_info: &serde_json::Value) -> bool {
+    false
+}
+
+fn agent_name_lost_error(request_id: &str, expected_name: &str) -> serde_json::Value {
+    cli_agent_error(
+        request_id,
+        "agent_name_not_found",
+        format!("named agent {expected_name} no longer owns the target terminal"),
+    )
+}
+
+fn print_agent_transport_error(
+    err: std::io::Error,
+    request_id: &str,
+    code: &str,
+) -> std::io::Result<i32> {
+    if super::protocol_mismatch_was_reported(&err) {
+        return Ok(1);
+    }
+    // A dead-server marker reaches here from `send_request` in the agent
+    // startup path; surface its deferred response exactly once instead of
+    // printing a second, generic transport-error line.
+    if let Some(response) = super::server_not_running_reported_response(&err) {
+        let value = serde_json::to_value(response).map_err(std::io::Error::other)?;
+        return super::print_response(&value);
+    }
+    super::print_response(&cli_agent_error(request_id, code, err.to_string()))
+}
+
+fn agent_wait_timeout() -> serde_json::Value {
+    cli_agent_error(
+        "cli:agent:start",
+        "timeout",
+        "timed out waiting for agent startup",
+    )
+}
+
+fn cli_agent_error(id: &str, code: &str, message: impl Into<String>) -> serde_json::Value {
+    serde_json::json!({
+        "id": id,
+        "error": { "code": code, "message": message.into() }
+    })
+}
+
+fn resolve_agent_target(target: &str, request_id: &str) -> std::io::Result<serde_json::Value> {
+    super::send_request(&agent_get_request(target, request_id))
+}
+
+fn resolve_agent_target_unchecked(
+    target: &str,
+    request_id: &str,
+) -> std::io::Result<serde_json::Value> {
+    super::send_request_unchecked(&agent_get_request(target, request_id))
+}
+
+fn agent_get_request(target: &str, request_id: &str) -> Request {
+    Request {
+        id: request_id.into(),
+        method: Method::AgentGet(AgentTarget {
+            target: target.to_owned(),
+        }),
+    }
+}
+
+fn agent_rename(params: AgentRenameParams) -> std::io::Result<i32> {
+    super::print_response(&super::send_request(&Request {
+        id: "cli:agent:rename".into(),
+        method: Method::AgentRename(params),
+    })?)
+}
+
+fn agent_prompt(mut params: AgentPromptParams) -> std::io::Result<i32> {
+    params.from_pane = match params.from_pane {
+        None => caller_pane(),
+        Some(pane_id) if pane_id.is_empty() => None,
+        explicit => explicit,
+    };
+    let response = super::send_request(&Request {
+        id: "cli:agent:prompt".into(),
+        method: Method::AgentPrompt(params),
+    })?;
+    if response.get("error").is_none() && response["result"]["outcome"].as_str() == Some("deferred")
+    {
+        let queue_position = response["result"]["queue_position"].as_u64();
+        let position_note = queue_position
+            .map(|position| format!(" (pos {position})"))
+            .unwrap_or_default();
+        eprintln!("deferred: target working, queued{position_note}");
+    }
+    super::print_response(&response)
+}
+
+fn agent_send_keys(params: AgentSendKeysParams) -> std::io::Result<i32> {
+    super::print_response(&super::send_request(&Request {
+        id: "cli:agent:send-keys".into(),
+        method: Method::AgentSendKeys(params),
+    })?)
+}
+
+fn agent_read(params: AgentReadParams) -> std::io::Result<i32> {
+    let response = super::send_request(&Request {
+        id: "cli:agent:read".into(),
+        method: Method::AgentRead(params),
+    })?;
+    super::print_read_response(&response)
 }
 
 /// `bora agent --new "<prompt>" [--kind KIND] [--name NAME]` — one command
@@ -680,11 +895,16 @@ fn prompt_existing_agent(
     }))
 }
 
-fn send_new_agent_prompt(target: &str, text: &str) -> std::io::Result<serde_json::Value> {
-    let from_pane = std::env::var("HERDR_PANE_ID")
+/// Default prompt attribution: the pane this CLI runs in, if any.
+fn caller_pane() -> Option<String> {
+    std::env::var("HERDR_PANE_ID")
         .ok()
         .filter(|value| !value.trim().is_empty())
-        .map(|value| super::normalize_pane_id(&value));
+        .map(|value| super::normalize_pane_id(&value))
+}
+
+fn send_new_agent_prompt(target: &str, text: &str) -> std::io::Result<serde_json::Value> {
+    let from_pane = caller_pane();
     super::send_request(&Request {
         id: "cli:agent:prompt".into(),
         method: Method::AgentPrompt(AgentPromptParams {
@@ -884,333 +1104,6 @@ fn resolve_new_kind(flag: Option<&str>, agents: &crate::config::AgentsConfig) ->
         .unwrap_or_else(|| agents.default_kind().to_owned())
 }
 
-fn agent_list(args: &[String]) -> std::io::Result<i32> {
-    if !args.is_empty() {
-        eprintln!("usage: bora agent list");
-        return Ok(2);
-    }
-
-    super::print_response(&super::send_request(&Request {
-        id: "cli:agent:list".into(),
-        method: Method::AgentList(EmptyParams::default()),
-    })?)
-}
-
-fn agent_get(args: &[String]) -> std::io::Result<i32> {
-    let Some(target) = args.first() else {
-        eprintln!("usage: bora agent get <target>");
-        return Ok(2);
-    };
-    if args.len() != 1 {
-        eprintln!("usage: bora agent get <target>");
-        return Ok(2);
-    }
-
-    super::print_response(&super::send_request(&Request {
-        id: "cli:agent:get".into(),
-        method: Method::AgentGet(AgentTarget {
-            target: target.clone(),
-        }),
-    })?)
-}
-
-fn agent_focus(args: &[String]) -> std::io::Result<i32> {
-    let Some(target) = args.first() else {
-        eprintln!("usage: bora agent focus <target>");
-        return Ok(2);
-    };
-    if args.len() != 1 {
-        eprintln!("usage: bora agent focus <target>");
-        return Ok(2);
-    }
-
-    super::print_response(&super::send_request(&Request {
-        id: "cli:agent:focus".into(),
-        method: Method::AgentFocus(AgentTarget {
-            target: target.clone(),
-        }),
-    })?)
-}
-
-fn agent_attach(args: &[String]) -> std::io::Result<i32> {
-    let (target, takeover) =
-        match super::parse_attach_target(args, "usage: bora agent attach <target> [--takeover]") {
-            Ok(parsed) => parsed,
-            Err(code) => return Ok(code),
-        };
-
-    let response = resolve_agent_target(&target, "cli:agent:attach:resolve")?;
-    if response.get("error").is_some() {
-        return super::print_response(&response);
-    }
-    let Some(terminal_id) = response["result"]["agent"]["terminal_id"].as_str() else {
-        eprintln!("agent attach failed: response did not include terminal_id");
-        return Ok(1);
-    };
-    crate::client::run_terminal_attach(terminal_id.to_owned(), takeover)?;
-    Ok(0)
-}
-
-fn agent_wait(args: &[String]) -> std::io::Result<i32> {
-    let Some(target) = args.first() else {
-        eprintln!("usage: bora agent wait <target> [--until <idle|working|blocked|done|unknown|exited>]... [--timeout MS]");
-        return Ok(2);
-    };
-    let mut until = Vec::new();
-    let mut timeout_ms = None;
-    let mut wait_exited = false;
-    let mut index = 1;
-    while index < args.len() {
-        match args[index].as_str() {
-            "--until" => {
-                let Some(value) = args.get(index + 1) else {
-                    eprintln!("--until requires at least one status");
-                    return Ok(2);
-                };
-                if value == "exited" {
-                    wait_exited = true;
-                } else {
-                    let status = match super::parse_agent_status(value) {
-                        Ok(status) => status,
-                        Err(err) => {
-                            eprintln!("{err}");
-                            return Ok(2);
-                        }
-                    };
-                    until.push(status);
-                }
-                index += 2;
-            }
-            "--timeout" => {
-                let Some(value) = args.get(index + 1) else {
-                    eprintln!("missing value for --timeout");
-                    return Ok(2);
-                };
-                timeout_ms = match parse_timeout(value) {
-                    Ok(timeout_ms) => Some(timeout_ms),
-                    Err(exit_code) => return Ok(exit_code),
-                };
-                index += 2;
-            }
-            "help" | "--help" | "-h" => {
-                eprintln!("usage: bora agent wait <target> [--until <idle|working|blocked|done|unknown|exited>]... [--timeout MS]");
-                return Ok(0);
-            }
-            other => {
-                eprintln!("unknown option: {other}");
-                return Ok(2);
-            }
-        }
-    }
-
-    if wait_exited {
-        return agent_wait_exited(target, timeout_ms);
-    }
-    super::print_response(&super::send_request(&Request {
-        id: "cli:agent:wait".into(),
-        method: Method::AgentWait(AgentWaitParams {
-            target: target.clone(),
-            until,
-            timeout_ms,
-        }),
-    })?)
-}
-
-fn wait_for_named_agent(
-    name: &str,
-    fallback_pane_id: &str,
-    timeout: Duration,
-    expected_kind: &str,
-    expected_terminal_id: &str,
-) -> std::io::Result<Result<serde_json::Value, serde_json::Value>> {
-    let deadline = Instant::now().checked_add(timeout);
-    let mut first_poll = true;
-    loop {
-        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
-            // Let the server reconcile its matching startup deadline before
-            // returning so the pending name is immediately reusable.
-            let _ = resolve_agent_target_unchecked(name, "cli:agent:start:timeout");
-            return Ok(Err(agent_wait_timeout()));
-        }
-        let poll_id = "cli:agent:start";
-        let mut response = if first_poll {
-            first_poll = false;
-            resolve_agent_target(name, poll_id)?
-        } else {
-            resolve_agent_target_unchecked(name, poll_id)?
-        };
-        if response.get("error").is_some() {
-            response = resolve_agent_target_unchecked(fallback_pane_id, poll_id)?;
-            if response.get("error").is_some() {
-                std::thread::sleep(AGENT_START_POLL_INTERVAL);
-                continue;
-            }
-        }
-        let agent = &response["result"]["agent"];
-        let outcome = if agent["terminal_id"].as_str() != Some(expected_terminal_id) {
-            Some(Err(agent_name_lost_error("cli:agent:start", name)))
-        } else if let Some(actual) = agent["agent"]
-            .as_str()
-            .filter(|actual| *actual != expected_kind)
-        {
-            Some(Err(cli_agent_error(
-                "cli:agent:start",
-                "agent_kind_mismatch",
-                format!("expected {expected_kind}, detected {actual}"),
-            )))
-        } else if agent["name"].as_str() != Some(name) {
-            Some(Err(agent_name_lost_error("cli:agent:start", name)))
-        } else {
-            match agent["agent_status"].as_str() {
-                Some("blocked") => Some(Err(cli_agent_error(
-                    "cli:agent:start",
-                    "agent_not_ready",
-                    format!("agent {name} is blocked during startup and is not ready for prompts"),
-                ))),
-                Some("unknown")
-                    if expected_kind == "codex"
-                        && agent["interactive_ready"].as_bool() == Some(true) =>
-                {
-                    Some(Ok(agent.clone()))
-                }
-                Some("working" | "unknown") => None,
-                Some("idle" | "done") if agent["interactive_ready"].as_bool() == Some(true) => {
-                    Some(Ok(agent.clone()))
-                }
-                Some("idle" | "done") if !agent["launch_pending"].as_bool().unwrap_or(false) => {
-                    Some(Err(cli_agent_error(
-                        "cli:agent:start",
-                        "agent_start_failed",
-                        "agent process exited before becoming interactive",
-                    )))
-                }
-                _ => None,
-            }
-        };
-        if let Some(outcome) = outcome {
-            return Ok(outcome);
-        }
-        std::thread::sleep(AGENT_START_POLL_INTERVAL);
-    }
-}
-
-fn pane_terminal_id(pane_id: &str) -> std::io::Result<Option<String>> {
-    let response = super::send_request(&Request {
-        id: "cli:agent:start:pane".into(),
-        method: Method::PaneGet(PaneTarget {
-            pane_id: pane_id.to_owned(),
-        }),
-    })?;
-    Ok(response["result"]["pane"]["terminal_id"]
-        .as_str()
-        .map(str::to_owned))
-}
-
-fn pane_shell_is_initializing(pane_id: &str) -> std::io::Result<bool> {
-    let response = super::send_request(&Request {
-        id: "cli:agent:start:process_info".into(),
-        method: Method::PaneProcessInfo(PaneProcessInfoParams {
-            pane_id: Some(pane_id.to_owned()),
-        }),
-    })?;
-    Ok(process_info_shows_shell_initialization(
-        &response["result"]["process_info"],
-    ))
-}
-
-#[cfg(unix)]
-fn process_info_shows_shell_initialization(process_info: &serde_json::Value) -> bool {
-    let Some(shell_pid) = process_info["shell_pid"].as_u64() else {
-        return false;
-    };
-    if process_info["foreground_process_group_id"].as_u64() != Some(shell_pid) {
-        return false;
-    }
-    process_info["foreground_processes"]
-        .as_array()
-        .is_some_and(|processes| {
-            processes.iter().any(|process| {
-                process["pid"].as_u64() == Some(shell_pid)
-                    && (process["name"]
-                        .as_str()
-                        .is_some_and(crate::platform::is_pane_shell_process_name)
-                        || process["argv"]
-                            .as_array()
-                            .and_then(|argv| argv.first())
-                            .and_then(serde_json::Value::as_str)
-                            .is_some_and(crate::platform::is_pane_shell_process_name))
-            })
-        })
-}
-
-// Windows exposes no foreground process group, so shell initialization is not
-// observable and a busy `agent.start` is not retried there.
-#[cfg(not(unix))]
-fn process_info_shows_shell_initialization(_process_info: &serde_json::Value) -> bool {
-    false
-}
-
-fn agent_name_lost_error(request_id: &str, expected_name: &str) -> serde_json::Value {
-    cli_agent_error(
-        request_id,
-        "agent_name_not_found",
-        format!("named agent {expected_name} no longer owns the target terminal"),
-    )
-}
-
-fn print_agent_transport_error(
-    err: std::io::Error,
-    request_id: &str,
-    code: &str,
-) -> std::io::Result<i32> {
-    if super::protocol_mismatch_was_reported(&err) {
-        return Ok(1);
-    }
-    // A dead-server marker reaches here from `send_request` in the agent
-    // startup path; surface its deferred response exactly once instead of
-    // printing a second, generic transport-error line.
-    if let Some(response) = super::server_not_running_reported_response(&err) {
-        let value = serde_json::to_value(response).map_err(std::io::Error::other)?;
-        return super::print_response(&value);
-    }
-    super::print_response(&cli_agent_error(request_id, code, err.to_string()))
-}
-
-fn agent_wait_timeout() -> serde_json::Value {
-    cli_agent_error(
-        "cli:agent:start",
-        "timeout",
-        "timed out waiting for agent startup",
-    )
-}
-
-fn cli_agent_error(id: &str, code: &str, message: impl Into<String>) -> serde_json::Value {
-    serde_json::json!({
-        "id": id,
-        "error": { "code": code, "message": message.into() }
-    })
-}
-
-fn resolve_agent_target(target: &str, request_id: &str) -> std::io::Result<serde_json::Value> {
-    super::send_request(&agent_get_request(target, request_id))
-}
-
-fn resolve_agent_target_unchecked(
-    target: &str,
-    request_id: &str,
-) -> std::io::Result<serde_json::Value> {
-    super::send_request_unchecked(&agent_get_request(target, request_id))
-}
-
-fn agent_get_request(target: &str, request_id: &str) -> Request {
-    Request {
-        id: request_id.into(),
-        method: Method::AgentGet(AgentTarget {
-            target: target.to_owned(),
-        }),
-    }
-}
-
 /// `agent wait <target> --status exited` — resolve the target's pane and block
 /// until that pane exits. A target that no longer resolves has already exited
 /// (that is the success case, not an error): one-shot agents are reaped on exit.
@@ -1234,250 +1127,26 @@ fn agent_wait_exited(target: &str, timeout_ms: Option<u64>) -> std::io::Result<i
     super::wait_for_pane_exited(&pane_id, timeout_ms)
 }
 
-fn agent_rename(args: &[String]) -> std::io::Result<i32> {
-    let [target, value] = args else {
-        eprintln!("usage: bora agent rename <target> <name>|--clear");
-        return Ok(2);
-    };
-    let name = if value == "--clear" {
-        None
-    } else {
-        Some(value.clone())
-    };
-
-    super::print_response(&super::send_request(&Request {
-        id: "cli:agent:rename".into(),
-        method: Method::AgentRename(AgentRenameParams {
-            target: target.clone(),
-            name,
-        }),
-    })?)
+fn until_exited_requested(args: &[String]) -> bool {
+    args.windows(2)
+        .any(|pair| pair[0] == "--until" && pair[1] == "exited")
+        || args.iter().any(|arg| arg == "--until=exited")
 }
 
-fn agent_prompt(args: &[String]) -> std::io::Result<i32> {
-    let Some(target) = args.first() else {
-        eprintln!(
-            "usage: bora agent prompt <target> <text> [--wait] [--until STATUS]... [--timeout MS] [--when-idle] [--from PANE] [--no-from]"
-        );
-        return Ok(2);
-    };
-    let Some(text) = args.get(1) else {
-        eprintln!("agent prompt requires text");
-        return Ok(2);
-    };
-    let mut wait = false;
-    let mut when_idle = false;
-    let mut until = Vec::new();
-    let mut timeout_ms = None;
-    let env_pane_id = std::env::var("HERDR_PANE_ID")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .map(|value| super::normalize_pane_id(&value));
-    let mut from_pane = env_pane_id;
-    let mut no_from = false;
-    let mut index = 2;
+fn strip_until_exited(args: &[String]) -> Vec<String> {
+    let mut kept = Vec::with_capacity(args.len());
+    let mut index = 0;
     while index < args.len() {
-        match args[index].as_str() {
-            "--wait" => {
-                wait = true;
-                index += 1;
-            }
-            "--when-idle" => {
-                when_idle = true;
-                index += 1;
-            }
-            "--until" => {
-                let Some(value) = args.get(index + 1) else {
-                    eprintln!("--until requires at least one status");
-                    return Ok(2);
-                };
-                let status = match super::parse_agent_status(value) {
-                    Ok(status) => status,
-                    Err(err) => {
-                        eprintln!("{err}");
-                        return Ok(2);
-                    }
-                };
-                until.push(status);
-                index += 2;
-            }
-            "--timeout" => {
-                let Some(value) = args.get(index + 1) else {
-                    eprintln!("missing value for --timeout");
-                    return Ok(2);
-                };
-                timeout_ms = match parse_timeout(value) {
-                    Ok(timeout_ms) => Some(timeout_ms),
-                    Err(exit_code) => return Ok(exit_code),
-                };
-                index += 2;
-            }
-            "--from" => {
-                let Some(value) = args.get(index + 1) else {
-                    eprintln!("missing value for --from");
-                    return Ok(2);
-                };
-                from_pane = Some(super::normalize_pane_id(value));
-                no_from = false;
-                index += 2;
-            }
-            "--no-from" => {
-                no_from = true;
-                index += 1;
-            }
-            option => {
-                eprintln!("unknown option: {option}");
-                return Ok(2);
-            }
+        if args[index] == "--until" && args.get(index + 1).map(String::as_str) == Some("exited") {
+            index += 2;
+            continue;
         }
-    }
-    if !until.is_empty() && !wait {
-        eprintln!("--until requires --wait");
-        return Ok(2);
-    }
-    if timeout_ms.is_some() && !wait && !when_idle {
-        eprintln!("--timeout requires --wait or --when-idle");
-        return Ok(2);
-    }
-    if no_from {
-        from_pane = None;
-    }
-    let response = super::send_request(&Request {
-        id: "cli:agent:prompt".into(),
-        method: Method::AgentPrompt(AgentPromptParams {
-            target: target.clone(),
-            text: text.clone(),
-            wait: wait.then_some(AgentPromptWaitOptions {
-                until,
-                timeout_ms,
-                submission_deadline: None,
-            }),
-            from_pane,
-            when_idle: when_idle.then_some(true),
-            when_idle_timeout_ms: when_idle.then_some(timeout_ms).flatten(),
-            peer_pid: None,
-            origin_channel: None,
-        }),
-    })?;
-    if response.get("error").is_none() && response["result"]["outcome"].as_str() == Some("deferred")
-    {
-        let queue_position = response["result"]["queue_position"].as_u64();
-        let position_note = queue_position
-            .map(|position| format!(" (pos {position})"))
-            .unwrap_or_default();
-        eprintln!("deferred: target working, queued{position_note}");
-    }
-    super::print_response(&response)
-}
-
-fn agent_send_keys(args: &[String]) -> std::io::Result<i32> {
-    if args.len() < 2 {
-        eprintln!("usage: bora agent send-keys <target> <key> [key ...]");
-        return Ok(2);
-    }
-
-    super::print_response(&super::send_request(&Request {
-        id: "cli:agent:send-keys".into(),
-        method: Method::AgentSendKeys(AgentSendKeysParams {
-            target: args[0].clone(),
-            keys: args[1..].to_vec(),
-        }),
-    })?)
-}
-
-fn agent_read(args: &[String]) -> std::io::Result<i32> {
-    let Some(target) = args.first() else {
-        eprintln!("usage: bora agent read <target> [--source visible|recent|recent-unwrapped] [--lines N] [--format text|ansi] [--ansi]");
-        return Ok(2);
-    };
-
-    let mut source = ReadSource::Recent;
-    let mut lines = None;
-    let mut format = ReadFormat::Text;
-    let mut strip_ansi = true;
-
-    let mut index = 1;
-    while index < args.len() {
-        match args[index].as_str() {
-            "--source" => {
-                let Some(value) = args.get(index + 1) else {
-                    eprintln!("missing value for --source");
-                    return Ok(2);
-                };
-                source = super::parse_read_source(value)?;
-                index += 2;
-            }
-            "--lines" => {
-                let Some(value) = args.get(index + 1) else {
-                    eprintln!("missing value for --lines");
-                    return Ok(2);
-                };
-                lines = Some(super::parse_u32_flag("--lines", value)?);
-                index += 2;
-            }
-            "--format" => {
-                let Some(value) = args.get(index + 1) else {
-                    eprintln!("missing value for --format");
-                    return Ok(2);
-                };
-                format = super::parse_read_format(value)?;
-                strip_ansi = !matches!(format, ReadFormat::Ansi);
-                index += 2;
-            }
-            "--ansi" => {
-                format = ReadFormat::Ansi;
-                strip_ansi = false;
-                index += 1;
-            }
-            other => {
-                eprintln!("unknown option: {other}");
-                return Ok(2);
-            }
+        if args[index] != "--until=exited" {
+            kept.push(args[index].clone());
         }
+        index += 1;
     }
-
-    let response = super::send_request(&Request {
-        id: "cli:agent:read".into(),
-        method: Method::AgentRead(AgentReadParams {
-            target: target.clone(),
-            source,
-            lines,
-            format,
-            strip_ansi,
-        }),
-    })?;
-    super::print_read_response(&response)
-}
-
-fn print_agent_help() {
-    eprintln!("bora agent commands:");
-    eprintln!("  bora agent list");
-    eprintln!("  bora agent get <target>");
-    eprintln!("  bora agent read <target> [--source visible|recent|recent-unwrapped|detection] [--lines N] [--format text|ansi] [--ansi]");
-    eprintln!("  bora agent send-keys <target> <key> [key ...]");
-    eprintln!("  bora agent prompt <target> <text> [--wait] [--until STATUS]... [--timeout MS] [--when-idle]");
-    eprintln!("  bora agent rename <target> <name>|--clear");
-    eprintln!("  bora agent focus <target>");
-    eprintln!("  bora agent wait <target> [--until <idle|working|blocked|done|unknown|exited>]... [--timeout MS]");
-    eprintln!("  bora agent attach <target> [--takeover]");
-    eprintln!(
-        "  bora agent start <name> --kind KIND --pane ID [--timeout MS] [-- <agent-args...>]"
-    );
-    eprintln!("  bora agent --new <prompt> [--kind KIND] [--name NAME]");
-    eprintln!("  bora agent <name> prompt <text> [--kind KIND]   (get-or-create: name is the idempotency key)");
-    eprintln!("  bora agent explain <target> [--json|--format text|json] [--verbose]");
-    eprintln!(
-        "  bora agent explain --file PATH --agent LABEL [--json|--format text|json] [--verbose]"
-    );
-    eprintln!("  targets accept unique agent names and pane ids that currently host agents");
-    eprintln!("  kinds: {}", super::spec::agent_kind_values().join("|"));
-}
-
-fn parse_timeout(value: &str) -> Result<u64, i32> {
-    super::parse_u64_flag("--timeout", value).map_err(|err| {
-        eprintln!("{err}");
-        2
-    })
+    kept
 }
 
 #[cfg(test)]

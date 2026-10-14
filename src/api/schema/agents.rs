@@ -3,50 +3,68 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 use super::common::{AgentStatus, ReadFormat, ReadSource};
+use crate::cli::agent::bindings;
+use crate::cli::projection::{cli_params, Field};
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-pub struct AgentReadParams {
-    pub target: String,
-    pub source: ReadSource,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub lines: Option<u32>,
-    #[serde(default)]
-    pub format: ReadFormat,
-    #[serde(default = "super::common::default_true")]
-    pub strip_ansi: bool,
+cli_params! {
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+    pub struct AgentReadParams => AgentReadProjection {
+        pub target: String => Field::new(String::new()).input(bindings::target()),
+        pub source: ReadSource => Field::new(ReadSource::Recent).input(bindings::source()),
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub lines: Option<u32> => Field::new(None).input(bindings::lines()),
+        #[serde(default)]
+        pub format: ReadFormat => Field::new(ReadFormat::Text)
+            .input(bindings::format()).input(bindings::ansi()),
+        #[serde(default = "super::common::default_true")]
+        pub strip_ansi: bool => Field::new(true),
+    }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-pub struct AgentSendKeysParams {
-    pub target: String,
-    pub keys: Vec<String>,
+cli_params! {
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+    pub struct AgentSendKeysParams => AgentSendKeysProjection {
+        pub target: String => Field::new(String::new()).input(bindings::target()),
+        pub keys: Vec<String> => Field::new(Vec::new()).input(bindings::keys()),
+    }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-pub struct AgentWaitParams {
-    pub target: String,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub until: Vec<AgentStatus>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub timeout_ms: Option<u64>,
+cli_params! {
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+    pub struct AgentWaitParams => AgentWaitProjection {
+        pub target: String => Field::new(String::new()).input(bindings::target()),
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        pub until: Vec<AgentStatus> => Field::new(Vec::new()).input(bindings::until()
+            .help("State to match; repeat for more than one state")),
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub timeout_ms: Option<u64> => Field::new(None).input(bindings::timeout()
+            .help("Fail after this many milliseconds")),
+    }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-pub struct AgentPromptWaitOptions {
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub until: Vec<AgentStatus>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub timeout_ms: Option<u64>,
-    #[serde(skip)]
-    #[schemars(skip)]
-    pub(crate) submission_deadline: Option<std::time::Instant>,
+cli_params! {
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+    pub struct AgentPromptWaitOptions => AgentPromptWaitProjection {
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        pub until: Vec<AgentStatus> => Field::new(Vec::new()).input(bindings::until()
+            .help("State to match after --wait; repeat for more than one state")),
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub timeout_ms: Option<u64> => Field::new(None).input(bindings::timeout()
+            .help("Fail after this many milliseconds")),
+        #[serde(skip)]
+        #[schemars(skip)]
+        pub(crate) submission_deadline: Option<std::time::Instant> => Field::new(None::<std::time::Instant>),
+    }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-pub struct AgentRenameParams {
-    pub target: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
+cli_params! {
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+    pub struct AgentRenameParams => AgentRenameProjection {
+        pub target: String => Field::new(String::new()).input(bindings::target()),
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub name: Option<String> => Field::new(None)
+            .input(bindings::rename_name()).input(bindings::clear_name()),
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -163,50 +181,56 @@ pub enum AgentViewSortOrder {
     Desc,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-pub struct AgentStartParams {
-    pub name: String,
-    pub kind: String,
-    pub pane_id: String,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub args: Vec<String>,
-    /// Startup timeout in milliseconds. Values must be greater than 3000 and at most 300000.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub timeout_ms: Option<u64>,
+cli_params! {
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+    pub struct AgentStartParams => AgentStartProjection {
+        pub name: String => Field::new(String::new()).input(bindings::text_position("name", "NAME", 0)),
+        pub kind: String => Field::new(String::new()).input(bindings::kind()),
+        pub pane_id: String => Field::new(String::new()).input(bindings::pane()),
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        pub args: Vec<String> => Field::new(Vec::new()).input(bindings::agent_args()),
+        /// Startup timeout in milliseconds. Values must be greater than 3000 and at most 300000.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub timeout_ms: Option<u64> => Field::new(None).input(bindings::timeout()
+            .help("Wait for interactive readiness (default: 30000; max: 300000)")),
+    }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-pub struct AgentPromptParams {
-    pub target: String,
-    pub text: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub wait: Option<AgentPromptWaitOptions>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub from_pane: Option<String>,
-    /// When true, and the target is currently `working`, block server-side until the
-    /// target leaves the working state (bounded by `when_idle_timeout_ms`) before
-    /// injecting the prompt. Absent/false: byte-identical to always-inject behavior.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub when_idle: Option<bool>,
-    /// Idle-gate timeout in milliseconds; only meaningful with `when_idle: true`.
-    /// Defaults to 60000ms when omitted.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub when_idle_timeout_ms: Option<u64>,
-    /// Caller PID from OS-level socket peer credentials, set by the connection accept
-    /// loop before dispatch. `#[serde(skip)]`: never accepted from a client, never
-    /// echoed back; a client-supplied value in the wire JSON is silently ignored.
-    /// Used to verify `from_pane` actually descends from the claimed pane's shell
-    /// process instead of trusting the caller-supplied string at face value.
-    #[serde(skip)]
-    pub peer_pid: Option<u32>,
-    /// Channel name (without leading `#`) when this prompt was sent as a
-    /// `channel.send` fan-out delivery, set internally by
-    /// `handle_channel_send`. `#[serde(skip)]`: never accepted from or echoed
-    /// back to a client. Threaded onto `PendingAgentPrompt` so a later terminal
-    /// drop of this queued delivery (cap eviction, pane close, replay failure)
-    /// can append an honest system line to that channel's history.
-    #[serde(skip)]
-    pub origin_channel: Option<String>,
+cli_params! {
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+    pub struct AgentPromptParams => AgentPromptProjection {
+        pub target: String => Field::new(String::new()).input(bindings::target()),
+        pub text: String => Field::new(String::new()).input(bindings::text_position("text", "TEXT", 1).verbatim()),
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub wait: Option<AgentPromptWaitOptions> => Field::new(None).input(bindings::wait_presence()),
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub from_pane: Option<String> => Field::new(None)
+            .input(bindings::from_pane()).input(bindings::no_from()),
+        /// When true, and the target is currently `working`, block server-side until the
+        /// target leaves the working state (bounded by `when_idle_timeout_ms`) before
+        /// injecting the prompt. Absent/false: byte-identical to always-inject behavior.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub when_idle: Option<bool> => Field::new(None).input(bindings::when_idle()),
+        /// Idle-gate timeout in milliseconds; only meaningful with `when_idle: true`.
+        /// Defaults to 60000ms when omitted.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub when_idle_timeout_ms: Option<u64> => Field::<Option<u64>>::new(None),
+        /// Caller PID from OS-level socket peer credentials, set by the connection accept
+        /// loop before dispatch. `#[serde(skip)]`: never accepted from a client, never
+        /// echoed back; a client-supplied value in the wire JSON is silently ignored.
+        /// Used to verify `from_pane` actually descends from the claimed pane's shell
+        /// process instead of trusting the caller-supplied string at face value.
+        #[serde(skip)]
+        pub peer_pid: Option<u32> => Field::<Option<u32>>::new(None),
+        /// Channel name (without leading `#`) when this prompt was sent as a
+        /// `channel.send` fan-out delivery, set internally by
+        /// `handle_channel_send`. `#[serde(skip)]`: never accepted from or echoed
+        /// back to a client. Threaded onto `PendingAgentPrompt` so a later terminal
+        /// drop of this queued delivery (cap eviction, pane close, replay failure)
+        /// can append an honest system line to that channel's history.
+        #[serde(skip)]
+        pub origin_channel: Option<String> => Field::<Option<String>>::new(None),
+    }
 }
 
 #[derive(

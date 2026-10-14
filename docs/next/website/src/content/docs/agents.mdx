@@ -79,9 +79,13 @@ Some restricted Linux runtimes do not expose a terminal foreground process group
 
 Blocked detection is deliberately strict for screen-manifest agents. Bora only marks `blocked` when the live bottom-buffer snapshot matches known visible approval, question, or permission UI. If no manifest rule matches for a known agent other than Codex, Bora falls back to `idle` and labels that fallback as `default_known_agent_idle_fallback` in explain output. Codex falls back to `unknown` because its title and composer can look the same during an active turn and after a response.
 
-For those other agents, unusual new prompts may initially show as `idle` instead of `blocked` until Bora learns that screen shape. The misclassification affects only the visible status and waits. It should not make Bora send input or take destructive action.
+For those other agents, unusual new prompts may initially show as `idle` instead of `blocked` until Bora learns that screen shape. Detection itself does not send input, but automation that trusts a mistaken idle state can type into an approval dialog. Inspect unexpected prompts before sending more input; idle status is not authorization to approve an action.
 
 For Codex, a visible spinner or live activity timer can establish `working`, and a visible approval prompt can establish `blocked`. An ordinary title, composer, or missing spinner cannot establish that a turn ended. Codex may therefore stay `unknown` after a response, and waits for `idle` or completion may time out. Managed startup uses the initial composer only to determine when it can accept a prompt; that observation does not change turn status.
+
+Antigravity and Grok count as idle once they return to their prompt, even if background tasks, monitors, or subagents are still running. `agent wait` and `agent prompt --wait` observe the agent's state, not completion of those jobs.
+
+Suspending an agent with Ctrl+Z preserves its name, session reference, and hook authority while the exact process remains alive behind the shell or another non-agent command. Returning with `fg` keeps that identity. This does not cover another recognized agent taking over the foreground. A retained identity does not mean the agent can receive input while suspended; inspect the pane before prompting it.
 
 ## Detection manifests
 

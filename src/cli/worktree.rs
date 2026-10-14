@@ -1,9 +1,13 @@
+#[path = "worktree_bindings.rs"]
+pub(crate) mod bindings;
+
 use std::time::Duration;
 
-use crate::api::schema::{
-    Method, PaneTarget, Request, WorkspaceSetGroupParams, WorkspaceTarget, WorktreeCreateParams,
-    WorktreeListParams, WorktreeOpenParams, WorktreeRemoveParams,
-};
+use crate::api::schema::{Method, PaneTarget, Request, WorkspaceSetGroupParams, WorkspaceTarget};
+
+use super::projection::ParseError;
+
+pub(crate) use bindings::command;
 
 /// How long to wait for a pane that launches its own agent to register it
 /// before giving up on the rename. Measured on this fleet: registration lands
@@ -17,231 +21,27 @@ fn cli_error(code: &str, message: &str) -> serde_json::Value {
     })
 }
 
-// Worktree output is always JSON. The parsers retain `--json` as a hidden compatibility no-op.
 pub(super) fn run_worktree_command(args: &[String]) -> std::io::Result<i32> {
-    let Some(subcommand) = args.first().map(std::string::String::as_str) else {
-        print_worktree_help();
-        return Ok(2);
+    if args.first().map(String::as_str) == Some("create") {
+        return worktree_create(&args[1..]);
+    }
+    super::run_json_request(bindings::request(args))
+}
+
+/// `worktree create` is a dispatch chain, not one request: checkout, then the
+/// sidebar folder, agent, and prompt the follow-up flags ask for.
+fn worktree_create(args: &[String]) -> std::io::Result<i32> {
+    let (mut params, follow_up) = match bindings::create_request(args) {
+        Ok(parsed) => parsed,
+        Err(ParseError::Usage(message)) => {
+            eprintln!("{message}");
+            return Ok(2);
+        }
+        Err(ParseError::Io(error)) => return Err(error),
+        Err(ParseError::Clap(error)) => return super::print_clap_error(&error),
     };
 
-    match subcommand {
-        "list" => worktree_list(&args[1..]),
-        "create" => worktree_create(&args[1..]),
-        "open" => worktree_open(&args[1..]),
-        "remove" => worktree_remove(&args[1..]),
-        "help" | "--help" | "-h" => {
-            print_worktree_help();
-            Ok(0)
-        }
-        _ => {
-            print_worktree_help();
-            Ok(2)
-        }
-    }
-}
-
-fn worktree_list(args: &[String]) -> std::io::Result<i32> {
-    let mut workspace_id = None;
-    let mut cwd = None;
-    let mut trust_repository = false;
-
-    let mut index = 0;
-    while index < args.len() {
-        match args[index].as_str() {
-            "--workspace" => {
-                let Some(value) = args.get(index + 1) else {
-                    eprintln!("missing value for --workspace");
-                    return Ok(2);
-                };
-                workspace_id = Some(super::normalize_workspace_id(value));
-                index += 2;
-            }
-            "--cwd" => {
-                let Some(value) = args.get(index + 1) else {
-                    eprintln!("missing value for --cwd");
-                    return Ok(2);
-                };
-                cwd = Some(normalize_path_arg(value)?);
-                index += 2;
-            }
-            "--trust-repository" => {
-                trust_repository = true;
-                index += 1;
-            }
-            "--json" => index += 1,
-            other => {
-                eprintln!("unknown option: {other}");
-                return Ok(2);
-            }
-        }
-    }
-    if workspace_id.is_some() && cwd.is_some() {
-        eprintln!(
-            "usage: bora worktree list [--workspace ID | --cwd PATH] [--json] [--trust-repository]"
-        );
-        return Ok(2);
-    }
-
-    super::runtime::worktree_list(WorktreeListParams {
-        workspace_id,
-        cwd,
-        trust_repository,
-    })
-}
-
-fn worktree_create(args: &[String]) -> std::io::Result<i32> {
-    let mut workspace_id = None;
-    let mut cwd = None;
-    let mut branch = None;
-    let mut base = None;
-    let mut pr = None;
-    let mut path = None;
-    let mut label = None;
-    let mut group = None;
-    let mut no_group = false;
-    let mut focus = false;
-    let mut trust_repository = false;
-    let mut agent_kind = None;
-    let mut agent_name = None;
-    let mut prompt = None;
-    let mut prompt_file = None;
-
-    let mut index = 0;
-    while index < args.len() {
-        match args[index].as_str() {
-            "--workspace" => {
-                let Some(value) = args.get(index + 1) else {
-                    eprintln!("missing value for --workspace");
-                    return Ok(2);
-                };
-                workspace_id = Some(super::normalize_workspace_id(value));
-                index += 2;
-            }
-            "--cwd" => {
-                let Some(value) = args.get(index + 1) else {
-                    eprintln!("missing value for --cwd");
-                    return Ok(2);
-                };
-                cwd = Some(normalize_path_arg(value)?);
-                index += 2;
-            }
-            "--branch" => {
-                let Some(value) = args.get(index + 1) else {
-                    eprintln!("missing value for --branch");
-                    return Ok(2);
-                };
-                branch = Some(value.clone());
-                index += 2;
-            }
-            "--base" => {
-                let Some(value) = args.get(index + 1) else {
-                    eprintln!("missing value for --base");
-                    return Ok(2);
-                };
-                base = Some(value.clone());
-                index += 2;
-            }
-            "--pr" => {
-                let Some(value) = args.get(index + 1) else {
-                    eprintln!("missing value for --pr");
-                    return Ok(2);
-                };
-                let Ok(number) = value.parse::<u64>() else {
-                    eprintln!("invalid value for --pr: {value}");
-                    return Ok(2);
-                };
-                pr = Some(number);
-                index += 2;
-            }
-            "--path" => {
-                let Some(value) = args.get(index + 1) else {
-                    eprintln!("missing value for --path");
-                    return Ok(2);
-                };
-                path = Some(normalize_path_arg(value)?);
-                index += 2;
-            }
-            "--label" => {
-                let Some(value) = args.get(index + 1) else {
-                    eprintln!("missing value for --label");
-                    return Ok(2);
-                };
-                label = Some(value.clone());
-                index += 2;
-            }
-            "--group" => {
-                let Some(value) = args.get(index + 1) else {
-                    eprintln!("missing value for --group");
-                    return Ok(2);
-                };
-                group = Some(value.clone());
-                index += 2;
-            }
-            "--no-group" => {
-                no_group = true;
-                index += 1;
-            }
-            "--agent" => {
-                let Some(value) = args.get(index + 1) else {
-                    eprintln!("missing value for --agent");
-                    return Ok(2);
-                };
-                agent_kind = Some(value.clone());
-                index += 2;
-            }
-            "--agent-name" => {
-                let Some(value) = args.get(index + 1) else {
-                    eprintln!("missing value for --agent-name");
-                    return Ok(2);
-                };
-                agent_name = Some(value.clone());
-                index += 2;
-            }
-            "--prompt" => {
-                let Some(value) = args.get(index + 1) else {
-                    eprintln!("missing value for --prompt");
-                    return Ok(2);
-                };
-                prompt = Some(value.clone());
-                index += 2;
-            }
-            "--prompt-file" => {
-                let Some(value) = args.get(index + 1) else {
-                    eprintln!("missing value for --prompt-file");
-                    return Ok(2);
-                };
-                prompt_file = Some(value.clone());
-                index += 2;
-            }
-            "--focus" => {
-                focus = true;
-                index += 1;
-            }
-            "--no-focus" => {
-                focus = false;
-                index += 1;
-            }
-            "--trust-repository" => {
-                trust_repository = true;
-                index += 1;
-            }
-            "--json" => index += 1,
-            other => {
-                eprintln!("unknown option: {other}");
-                return Ok(2);
-            }
-        }
-    }
-    if workspace_id.is_some() && cwd.is_some()
-        || pr.is_some() && (branch.is_some() || base.is_some())
-        || prompt.is_some() && prompt_file.is_some()
-        || group.is_some() && no_group
-    {
-        print_worktree_create_usage();
-        return Ok(2);
-    }
-
-    let prompt = match resolve_prompt_text(prompt, prompt_file) {
+    let prompt = match resolve_prompt_text(follow_up.prompt, follow_up.prompt_file) {
         Ok(prompt) => prompt,
         Err(message) => {
             eprintln!("{message}");
@@ -252,49 +52,44 @@ fn worktree_create(args: &[String]) -> std::io::Result<i32> {
     // The repo is the caller's shell, not whatever workspace the human last
     // clicked in the app: without this the server resolves the focused
     // workspace's repo and answers about a different repository entirely.
-    if workspace_id.is_none() && cwd.is_none() {
-        cwd = caller_repo_root(trust_repository);
+    if params.workspace_id.is_none() && params.cwd.is_none() {
+        params.cwd = caller_repo_root(params.trust_repository);
     }
 
     // Label carries the branch so a later `workspace list` is searchable by it
     // and nobody opens a second workspace for the same branch.
-    let label = label.or_else(|| {
-        branch
+    if params.label.is_none() {
+        params.label = params
+            .branch
             .as_deref()
             .map(crate::worktree::branch_to_path_slug)
-            .filter(|slug| !slug.is_empty())
-    });
+            .filter(|slug| !slug.is_empty());
+    }
 
-    let agent =
-        match resolve_agent_request(agent_kind, agent_name, prompt.is_some(), label.as_deref()) {
-            Ok(agent) => agent,
-            Err(message) => {
-                eprintln!("{message}");
-                return Ok(2);
-            }
-        };
+    let agent = match resolve_agent_request(
+        follow_up.agent_kind,
+        follow_up.agent_name,
+        prompt.is_some(),
+        params.label.as_deref(),
+    ) {
+        Ok(agent) => agent,
+        Err(message) => {
+            eprintln!("{message}");
+            return Ok(2);
+        }
+    };
 
     // The caller's own folder, resolved before anything is created so a
     // failure here never leaves a stray ungrouped workspace behind.
-    let group = if no_group {
+    let group = if follow_up.no_group {
         None
     } else {
-        group.or_else(caller_group)
+        follow_up.group.or_else(caller_group)
     };
 
     let created = super::send_request(&Request {
         id: "cli:worktree:create".into(),
-        method: Method::WorktreeCreate(WorktreeCreateParams {
-            workspace_id,
-            cwd,
-            branch,
-            base,
-            pr,
-            path,
-            label,
-            focus,
-            trust_repository,
-        }),
+        method: Method::WorktreeCreate(params),
     })?;
     if created.get("error").is_some() {
         // Nothing was created: report the wire error unchanged.
@@ -528,167 +323,6 @@ fn print_partial_worktree_create(
     Ok(1)
 }
 
-fn worktree_open(args: &[String]) -> std::io::Result<i32> {
-    let mut workspace_id = None;
-    let mut cwd = None;
-    let mut path = None;
-    let mut branch = None;
-    let mut label = None;
-    let mut focus = false;
-    let mut trust_repository = false;
-
-    let mut index = 0;
-    while index < args.len() {
-        match args[index].as_str() {
-            "--workspace" => {
-                let Some(value) = args.get(index + 1) else {
-                    eprintln!("missing value for --workspace");
-                    return Ok(2);
-                };
-                workspace_id = Some(super::normalize_workspace_id(value));
-                index += 2;
-            }
-            "--cwd" => {
-                let Some(value) = args.get(index + 1) else {
-                    eprintln!("missing value for --cwd");
-                    return Ok(2);
-                };
-                cwd = Some(normalize_path_arg(value)?);
-                index += 2;
-            }
-            "--path" => {
-                let Some(value) = args.get(index + 1) else {
-                    eprintln!("missing value for --path");
-                    return Ok(2);
-                };
-                path = Some(normalize_path_arg(value)?);
-                index += 2;
-            }
-            "--branch" => {
-                let Some(value) = args.get(index + 1) else {
-                    eprintln!("missing value for --branch");
-                    return Ok(2);
-                };
-                branch = Some(value.clone());
-                index += 2;
-            }
-            "--label" => {
-                let Some(value) = args.get(index + 1) else {
-                    eprintln!("missing value for --label");
-                    return Ok(2);
-                };
-                label = Some(value.clone());
-                index += 2;
-            }
-            "--focus" => {
-                focus = true;
-                index += 1;
-            }
-            "--no-focus" => {
-                focus = false;
-                index += 1;
-            }
-            "--trust-repository" => {
-                trust_repository = true;
-                index += 1;
-            }
-            "--json" => index += 1,
-            other => {
-                eprintln!("unknown option: {other}");
-                return Ok(2);
-            }
-        }
-    }
-    if workspace_id.is_some() && cwd.is_some() {
-        eprintln!(
-            "usage: bora worktree open [--workspace ID | --cwd PATH] (--path PATH | --branch NAME) [--label TEXT] [--focus] [--no-focus] [--json] [--trust-repository]"
-        );
-        return Ok(2);
-    }
-    if path.is_some() == branch.is_some() {
-        eprintln!(
-            "usage: bora worktree open [--workspace ID | --cwd PATH] (--path PATH | --branch NAME) [--label TEXT] [--focus] [--no-focus] [--json] [--trust-repository]"
-        );
-        return Ok(2);
-    }
-
-    super::runtime::worktree_open(WorktreeOpenParams {
-        workspace_id,
-        cwd,
-        path,
-        branch,
-        label,
-        focus,
-        trust_repository,
-    })
-}
-
-fn worktree_remove(args: &[String]) -> std::io::Result<i32> {
-    let mut workspace_id = None;
-    let mut force = false;
-    let mut trust_repository = false;
-
-    let mut index = 0;
-    while index < args.len() {
-        match args[index].as_str() {
-            "--workspace" => {
-                let Some(value) = args.get(index + 1) else {
-                    eprintln!("missing value for --workspace");
-                    return Ok(2);
-                };
-                workspace_id = Some(super::normalize_workspace_id(value));
-                index += 2;
-            }
-            "--force" => {
-                force = true;
-                index += 1;
-            }
-            "--trust-repository" => {
-                trust_repository = true;
-                index += 1;
-            }
-            "--json" => index += 1,
-            other => {
-                eprintln!("unknown option: {other}");
-                return Ok(2);
-            }
-        }
-    }
-
-    let Some(workspace_id) = workspace_id else {
-        eprintln!(
-            "usage: bora worktree remove --workspace ID [--force] [--json] [--trust-repository]"
-        );
-        return Ok(2);
-    };
-
-    super::runtime::worktree_remove(WorktreeRemoveParams {
-        workspace_id,
-        force,
-        trust_repository,
-    })
-}
-
-const WORKTREE_CREATE_USAGE: &str = "usage: bora worktree create [--workspace ID | --cwd PATH] [--branch NAME] [--base REF] [--pr NUMBER] [--path PATH] [--label TEXT] [--group NAME] [--no-group] [--agent KIND] [--agent-name NAME] [--prompt TEXT | --prompt-file PATH] [--focus] [--no-focus] [--json] [--trust-repository]";
-
-fn print_worktree_create_usage() {
-    eprintln!("{WORKTREE_CREATE_USAGE}");
-    eprintln!("  --workspace and --cwd are mutually exclusive; without either, the caller's own repo is used");
-    eprintln!("  --pr is mutually exclusive with --branch/--base");
-    eprintln!("  --prompt and --prompt-file are mutually exclusive, and need an agent");
-    eprintln!("  --group and --no-group are mutually exclusive; without either, the caller pane's folder is inherited");
-}
-
-fn print_worktree_help() {
-    eprintln!("bora worktree commands:");
-    eprintln!("  bora worktree list [--workspace ID | --cwd PATH] [--json] [--trust-repository]");
-    eprintln!("  {}", WORKTREE_CREATE_USAGE.trim_start_matches("usage: "));
-    eprintln!(
-        "  bora worktree open [--workspace ID | --cwd PATH] (--path PATH | --branch NAME) [--label TEXT] [--focus] [--no-focus] [--json] [--trust-repository]"
-    );
-    eprintln!("  bora worktree remove --workspace ID [--force] [--json] [--trust-repository]");
-}
-
 fn normalize_path_arg(value: &str) -> std::io::Result<String> {
     if super::target::is_remote() {
         if super::target::remote_path_is_absolute(value) || value == "~" || value.starts_with("~/")
@@ -711,6 +345,85 @@ fn normalize_path_arg(value: &str) -> std::io::Result<String> {
 
 #[cfg(test)]
 mod machine_tests {
+    fn args(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| (*value).to_owned()).collect()
+    }
+
+    #[test]
+    fn simple_families_worktree_rejects_invalid_grammar_before_transport() {
+        for values in [
+            vec!["list", "--workspace"],
+            vec!["list", "--workspace", "2", "--cwd", "."],
+            vec!["create", "--branch"],
+            vec!["create", "--base"],
+            vec!["create", "--path"],
+            vec!["create", "--label"],
+            vec!["create", "--focus=true"],
+            vec!["create", "--workspace", "2", "--cwd", "."],
+            vec!["open"],
+            vec!["open", "--json"],
+            vec!["open", "--path", ".", "--branch", "topic"],
+            vec![
+                "open",
+                "--workspace",
+                "2",
+                "--cwd",
+                ".",
+                "--branch",
+                "topic",
+            ],
+            vec!["remove"],
+            vec!["remove", "--json", "--force", "--trust-repository"],
+            vec!["remove", "--workspace"],
+        ] {
+            assert!(
+                super::bindings::request(&args(&values)).is_err(),
+                "argv: {values:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn simple_families_worktree_validates_every_path_occurrence() {
+        crate::cli::target::with_test_client(crate::api::client::ApiClient::local(), || {
+            for values in [
+                vec!["list", "--cwd", "relative", "--cwd", "/valid"],
+                vec!["create", "--path", "relative", "--path", "/valid"],
+                vec!["open", "--path", "relative", "--path", "/valid"],
+            ] {
+                assert!(super::bindings::request(&args(&values)).is_err());
+            }
+            assert_eq!(super::normalize_path_arg("~").unwrap(), "~");
+        });
+    }
+
+    #[test]
+    fn simple_families_worktree_dto_literal_defaults() {
+        use crate::api::schema::{
+            WorktreeCreateParams, WorktreeListParams, WorktreeOpenParams, WorktreeRemoveParams,
+        };
+        assert_eq!(
+            serde_json::to_value(WorktreeListParams::default()).unwrap(),
+            serde_json::json!({})
+        );
+        assert_eq!(
+            serde_json::to_value(WorktreeCreateParams::default()).unwrap(),
+            serde_json::json!({"focus": false})
+        );
+        assert_eq!(
+            serde_json::to_value(WorktreeOpenParams::default()).unwrap(),
+            serde_json::json!({"focus": false})
+        );
+        let remove: WorktreeRemoveParams =
+            serde_json::from_value(serde_json::json!({"workspace_id": "ws-2"})).unwrap();
+        assert!(!remove.force);
+        assert!(!remove.trust_repository);
+        assert_eq!(
+            serde_json::to_value(remove).unwrap(),
+            serde_json::json!({"workspace_id": "ws-2", "force": false})
+        );
+    }
+
     #[test]
     fn remote_worktree_paths_are_not_expanded_on_the_caller_machine() {
         crate::cli::target::with_test_client(crate::api::client::ApiClient::local(), || {

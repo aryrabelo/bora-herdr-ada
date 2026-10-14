@@ -64,8 +64,6 @@ Bora uses integrations in two ways:
 | Lifecycle authority | Pi, OMP, Kimi Code CLI, OpenCode, Kilo Code CLI, MastraCode | When installed and actively reporting for the pane, hook or plugin events author `idle`, `working`, and `blocked`. Bora does not also use screen manifest fallback for that same lifecycle authority. |
 | Session identity | Claude Code, Codex, GitHub Copilot CLI, Devin CLI, Droid, Qoder CLI, Qwen Code, Letta Code, Cursor Agent CLI, Hermes Agent, Antigravity CLI, Grok CLI | The integration reports native session references for restore. State still comes from Bora's screen manifest detection. |
 
-Codex reports turn state when run with `--no-daemon`; screen detection still handles its visible blockers.
-
 Custom integrations can also report state that is not visible in the native terminal UI. They do not need to be built into Bora or use a recognized agent executable.
 
 ## Integrate your own agent
@@ -155,7 +153,7 @@ Install the Codex hook:
 bora integration install codex
 ```
 
-When Codex runs with `--no-daemon`, the hook reports session identity and turn start/stop state through Bora's local socket API. Screen detection still handles visible blockers and fills gaps when hooks are unavailable. A shared Codex daemon can route hooks to the wrong pane, so use `--no-daemon` for reliable reports; disabling daemon auto-start alone does not stop an existing daemon.
+The Codex hook reports session identity through the same local socket API used by other integrations. Codex state comes from Bora's screen manifest detection.
 
 Bora uses `~/.codex` by default, or `CODEX_HOME` when set. The Codex config directory must already exist. Install writes `herdr-agent-state.sh`, updates `hooks.json`, and ensures `[features] hooks = true` in `config.toml`. It also removes the deprecated top-level `codex_hooks` flag when present. Uninstall removes Bora entries from `hooks.json` and deletes the hook script, but leaves `config.toml` unchanged.
 
