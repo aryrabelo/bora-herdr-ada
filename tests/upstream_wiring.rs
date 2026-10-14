@@ -65,6 +65,14 @@ const PLATFORM_GATED_ALLOWLIST: &[(&str, &str)] = &[
         "src/platform/windows/notifications.rs",
         "child of windows.rs, windows-only desktop notifications, not compiled on macOS",
     ),
+    (
+        "src/platform/linux/power.rs",
+        "child of linux.rs, linux-only host sleep/wake monitor, not compiled on macOS",
+    ),
+    (
+        "src/platform/windows/power.rs",
+        "child of windows.rs, windows-only host sleep/wake monitor, not compiled on macOS",
+    ),
 ];
 
 /// Linux CI host: same contract as the macOS list above -- windows-only
@@ -122,6 +130,14 @@ const PLATFORM_GATED_ALLOWLIST: &[(&str, &str)] = &[
     (
         "src/platform/windows/notifications.rs",
         "child of windows.rs, windows-only desktop notifications, not compiled on Linux",
+    ),
+    (
+        "src/platform/macos/power.rs",
+        "child of macos.rs, macos-only host sleep/wake monitor, not compiled on Linux",
+    ),
+    (
+        "src/platform/windows/power.rs",
+        "child of windows.rs, windows-only host sleep/wake monitor, not compiled on Linux",
     ),
 ];
 
