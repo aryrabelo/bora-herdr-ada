@@ -3030,3 +3030,171 @@ fn collapsed_sidebar_navigates_in_snapshot_order_whatever_the_view_mode() {
     state.sidebar_collapsed = true;
     assert_eq!(second_row(&mut state), "ws_2");
 }
+
+/// ceo-bora#357 fixture: one unfocused agent per `(name, kind, status,
+/// idle_seconds)`, each on its own pane in `ws_1`/`tab_1`.
+fn agent_mark_snapshot(
+    revision: u64,
+    rows: &[(&str, &str, AgentStatus, Option<u64>)],
+) -> ClientShellSnapshot {
+    let mut projected = snapshot();
+    projected.revision = revision;
+    projected.panes.clear();
+    projected.agents.clear();
+    for (index, (name, kind, status, idle_seconds)) in rows.iter().enumerate() {
+        let pane_id = format!("pane_{}", index + 1);
+        let mut pane = snapshot().panes[0].clone();
+        pane.pane_id = pane_id.clone();
+        pane.focused = false;
+        pane.idle_seconds = *idle_seconds;
+        projected.panes.push(pane);
+        projected.agents.push(ClientShellAgent {
+            pane_id,
+            workspace_id: "ws_1".into(),
+            tab_id: "tab_1".into(),
+            name: Some((*name).into()),
+            display_agent: None,
+            agent: Some((*kind).into()),
+            title: None,
+            terminal_title: None,
+            terminal_title_stripped: None,
+            agent_status: *status,
+            state_change_seq: revision * 10 + index as u64,
+            state_labels: Vec::new(),
+            tokens: Vec::new(),
+            focused: false,
+        });
+    }
+    projected
+}
+
+/// The style of the cell where `needle` starts inside `pane_id`'s agent row.
+fn agent_mark_cell(
+    state: &ClientShellState,
+    frame: &FrameData,
+    pane_id: &str,
+    needle: &str,
+) -> ((u16, u16), ratatui::buffer::Cell) {
+    let row = state
+        .hits
+        .agents
+        .iter()
+        .find(|(_, hit)| hit == pane_id)
+        .unwrap_or_else(|| panic!("{pane_id} agent hit"))
+        .0;
+    let position = cell_symbol_position(frame, row, needle);
+    let cell = frame
+        .to_ratatui_buffer()
+        .expect("agent sidebar buffer")
+        .cell(position)
+        .expect("agent row cell")
+        .clone();
+    (position, cell)
+}
+
+/// ceo-bora#357: `agent_mark` draws the kind's glyph in the kind's colour --
+/// a configured mark, a built-in one -- and a kind with neither draws
+/// nothing: its name sits one space after the state icon, as without the token.
+#[test]
+fn agent_mark_draws_the_kind_glyph_in_its_color_from_the_rendered_buffer() {
+    let config: Config = toml::from_str(
+        r##"
+[ui.sidebar.agents]
+rows = [["state_icon", "agent_mark", "agent"]]
+
+[ui.sidebar.agents.marks]
+claude = { glyph = "§", fg = "#89b4fa" }
+"##,
+    )
+    .expect("agent mark config");
+    let shell_config = ClientShellConfig::from_config(&config);
+    let mauve = shell_config.palette.mauve;
+    let mut state = ClientShellState::new(shell_config);
+    state.set_snapshot(Box::new(agent_mark_snapshot(
+        1,
+        &[
+            ("claude-agent", "claude", AgentStatus::Idle, None),
+            ("pi-agent", "pi", AgentStatus::Idle, None),
+            ("devin-agent", "devin", AgentStatus::Idle, None),
+        ],
+    )));
+    state.set_pane_surface(surface());
+    let frame = state.compose(106, 30).expect("agent sidebar frame");
+
+    let ((mark_x, mark_y), claude_mark) = agent_mark_cell(&state, &frame, "pane_1", "§");
+    assert_eq!(claude_mark.symbol(), "§");
+    assert_eq!(
+        claude_mark.fg,
+        ratatui::style::Color::Rgb(137, 180, 250),
+        "{claude_mark:?}"
+    );
+    let (name, _) = agent_mark_cell(&state, &frame, "pane_1", "claude-agent");
+    assert_eq!(
+        name,
+        (mark_x + 2, mark_y),
+        "one space between mark and name"
+    );
+
+    let (_, pi_mark) = agent_mark_cell(&state, &frame, "pane_2", "\u{F03FF}");
+    assert_eq!(pi_mark.symbol(), "\u{F03FF}");
+    assert_eq!(pi_mark.fg, mauve, "{pi_mark:?}");
+
+    let ((name_x, name_y), _) = agent_mark_cell(&state, &frame, "pane_3", "devin-agent");
+    let ((icon_x, icon_y), _) = agent_mark_cell(&state, &frame, "pane_3", "○");
+    assert_eq!(
+        (name_x, name_y),
+        (icon_x + 2, icon_y),
+        "no mark, no stray space"
+    );
+}
+
+/// ceo-bora#357: with `title_by_status = true`, a Working, Blocked or Done
+/// agent's name takes its `status_color`; an Idle one keeps its #352 tier
+/// colour. Off (the default), a Working name keeps the plain `overlay0`.
+#[test]
+fn title_by_status_colors_working_blocked_done_names_and_idle_keeps_its_tier() {
+    let rows = |done: AgentStatus| {
+        [
+            ("idle-agent", "pi", AgentStatus::Idle, Some(1_800)),
+            ("working-agent", "pi", AgentStatus::Working, None),
+            ("blocked-agent", "pi", AgentStatus::Blocked, None),
+            ("done-agent", "pi", done, Some(1_800)),
+        ]
+    };
+    let render = |title_by_status: bool| {
+        let mut config = Config::default();
+        config.ui.sidebar.agents.title_by_status = title_by_status;
+        let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+        // Working first, then Done: the client shows Done only after it saw
+        // the work (a first-seen Done projects to Idle).
+        state.set_snapshot(Box::new(agent_mark_snapshot(
+            1,
+            &rows(AgentStatus::Working),
+        )));
+        state.set_snapshot(Box::new(agent_mark_snapshot(2, &rows(AgentStatus::Done))));
+        state.set_pane_surface(surface());
+        let frame = state.compose(106, 30).expect("agent sidebar frame");
+        let fg = |pane_id: &str, name: &str| agent_mark_cell(&state, &frame, pane_id, name).1.fg;
+        [
+            fg("pane_1", "idle-agent"),
+            fg("pane_2", "working-agent"),
+            fg("pane_3", "blocked-agent"),
+            fg("pane_4", "done-agent"),
+        ]
+    };
+    let palette = ClientShellConfig::from_config(&Config::default()).palette;
+
+    assert_eq!(
+        render(true),
+        [palette.subtext0, palette.yellow, palette.red, palette.teal]
+    );
+    assert_eq!(
+        render(false),
+        [
+            palette.subtext0,
+            palette.overlay0,
+            palette.overlay0,
+            palette.subtext0
+        ]
+    );
+}

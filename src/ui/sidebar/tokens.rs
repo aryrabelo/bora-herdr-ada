@@ -20,8 +20,17 @@ pub(crate) enum ResolvedTokenKind {
     Agent(String),
     TerminalTitle(String),
     Branch(String),
-    GitStatus { ahead: usize, behind: usize },
+    GitStatus {
+        ahead: usize,
+        behind: usize,
+    },
     Custom(String),
+    /// The agent kind's mark: a glyph drawn in its own colour, both from
+    /// `AgentsSidebarConfig::mark_for_agent`.
+    AgentMark {
+        glyph: String,
+        fg: ratatui::style::Color,
+    },
 }
 
 impl ResolvedTokenKind {
@@ -36,7 +45,7 @@ impl ResolvedTokenKind {
             | Self::TerminalTitle(value)
             | Self::Branch(value)
             | Self::Custom(value) => Some(value),
-            Self::StateIcon | Self::GitStatus { .. } => None,
+            Self::StateIcon | Self::GitStatus { .. } | Self::AgentMark { .. } => None,
         }
     }
 }
@@ -62,6 +71,9 @@ pub(crate) struct AgentTokenContext<'a> {
     pub(crate) terminal_title_stripped: Option<&'a str>,
     pub(crate) canonical_agent: Option<crate::detect::Agent>,
     pub(crate) tokens: &'a std::collections::HashMap<String, String>,
+    /// The live theme palette `agent_mark` resolves a built-in colour against
+    /// and checks a configured one for red/green.
+    pub(crate) palette: &'a crate::app::state::Palette,
 }
 
 pub(crate) fn agent_rows(
@@ -108,6 +120,13 @@ pub(crate) fn agent_rows(
                             .get(name)
                             .cloned()
                             .map(ResolvedTokenKind::Custom),
+                        AgentSidebarToken::AgentMark => context
+                            .canonical_agent
+                            .and_then(|agent| config.mark_for_agent(agent, context.palette))
+                            .map(|(glyph, fg)| ResolvedTokenKind::AgentMark {
+                                glyph: glyph.to_string(),
+                                fg,
+                            }),
                         AgentSidebarToken::Styled { .. } => None,
                     }?;
                     let style = kind
@@ -178,8 +197,10 @@ pub(crate) fn space_rows(
 }
 
 pub(crate) fn separator(previous: &ResolvedToken, current: &ResolvedToken) -> &'static str {
-    if matches!(previous.kind, ResolvedTokenKind::StateIcon)
-        || matches!(current.kind, ResolvedTokenKind::GitStatus { .. })
+    if matches!(
+        previous.kind,
+        ResolvedTokenKind::StateIcon | ResolvedTokenKind::AgentMark { .. }
+    ) || matches!(current.kind, ResolvedTokenKind::GitStatus { .. })
     {
         " "
     } else {
@@ -201,6 +222,7 @@ mod tests {
         terminal_title_stripped: Option<String>,
         canonical_agent: Option<crate::detect::Agent>,
         tokens: std::collections::HashMap<String, String>,
+        palette: crate::app::state::Palette,
     }
 
     fn entry() -> Entry {
@@ -213,6 +235,7 @@ mod tests {
             terminal_title_stripped: None,
             canonical_agent: Some(crate::detect::Agent::Pi),
             tokens: std::collections::HashMap::new(),
+            palette: crate::app::state::Palette::catppuccin(),
         }
     }
 
@@ -227,6 +250,7 @@ mod tests {
             terminal_title_stripped: entry.terminal_title_stripped.as_deref(),
             canonical_agent: entry.canonical_agent,
             tokens: &entry.tokens,
+            palette: &entry.palette,
         }
     }
 
@@ -582,6 +606,185 @@ rows = [[{ token = "$load", rules = [{ lt = 50, hide = true }] }], ["workspace"]
             vec![vec![ResolvedToken::unstyled(ResolvedTokenKind::Custom(
                 "2 changes".into()
             ))]]
+        );
+    }
+
+    #[test]
+    fn agent_mark_resolves_glyph_and_color_by_canonical_id() {
+        use ratatui::style::Color;
+        let config: AgentsSidebarConfig = toml::from_str(
+            r##"
+rows = [[{ token = "agent_mark", bold = true }, "agent"]]
+[marks]
+claude = { glyph = "C", fg = "#89b4fa" }
+codex = { glyph = "X", fg = "#f38ba8" }
+"##,
+        )
+        .unwrap();
+        let mut entry = entry();
+        let palette = entry.palette.clone();
+        let mark = |entry: &Entry| agent_rows(&config, context(entry), "working")[0][0].clone();
+
+        entry.canonical_agent = Some(crate::detect::Agent::Claude);
+        let claude = mark(&entry);
+        assert_eq!(
+            claude.kind,
+            ResolvedTokenKind::AgentMark {
+                glyph: "C".into(),
+                fg: Color::Rgb(137, 180, 250),
+            }
+        );
+        assert_eq!(claude.style.bold, Some(true));
+
+        entry.canonical_agent = Some(crate::detect::Agent::Pi);
+        assert_eq!(
+            mark(&entry).kind,
+            ResolvedTokenKind::AgentMark {
+                glyph: "\u{F03FF}".into(),
+                fg: palette.mauve,
+            },
+            "an id without a user entry draws its built-in mark"
+        );
+
+        entry.canonical_agent = Some(crate::detect::Agent::Codex);
+        assert_eq!(
+            mark(&entry).kind,
+            ResolvedTokenKind::AgentMark {
+                glyph: "\u{EC81}".into(),
+                fg: palette.text,
+            },
+            "a red fg is refused and the built-in mark draws instead"
+        );
+
+        entry.palette = crate::app::state::Palette::terminal();
+        entry.canonical_agent = Some(crate::detect::Agent::Claude);
+        assert_eq!(
+            mark(&entry).kind,
+            ResolvedTokenKind::AgentMark {
+                glyph: "C".into(),
+                fg: Color::Rgb(137, 180, 250),
+            }
+        );
+        entry.canonical_agent = Some(crate::detect::Agent::Gemini);
+        assert_eq!(
+            mark(&entry).kind,
+            ResolvedTokenKind::AgentMark {
+                glyph: "\u{F0AE2}".into(),
+                fg: Color::Blue,
+            }
+        );
+    }
+
+    #[test]
+    fn agent_mark_without_an_entry_renders_nothing_and_takes_zero_width() {
+        use ratatui::style::Style;
+        let marked: AgentsSidebarConfig =
+            toml::from_str(r#"rows = [["state_icon", "agent_mark", "agent"], ["agent_mark"]]"#)
+                .unwrap();
+        let plain: AgentsSidebarConfig =
+            toml::from_str(r#"rows = [["state_icon", "agent"]]"#).unwrap();
+        let render = |config: &AgentsSidebarConfig, entry: &Entry| {
+            let rows = agent_rows(config, context(entry), "working");
+            let spans = super::super::resolved_token_spans(
+                &rows[0],
+                ("*", Style::default()),
+                Style::default(),
+                Style::default(),
+                Style::default(),
+                Style::default(),
+                &entry.palette,
+                40,
+            );
+            (
+                rows,
+                spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>(),
+            )
+        };
+
+        let mut entry = entry();
+        entry.agent_label = Some("devin".into());
+        for canonical_agent in [Some(crate::detect::Agent::Devin), None] {
+            entry.canonical_agent = canonical_agent;
+            let (rows, text) = render(&marked, &entry);
+            assert_eq!(
+                rows,
+                vec![vec![
+                    ResolvedToken::unstyled(ResolvedTokenKind::StateIcon),
+                    ResolvedToken::unstyled(ResolvedTokenKind::Agent("devin".into())),
+                ]],
+                "no mark token, and a row holding only the mark disappears"
+            );
+            assert_eq!(text, "* devin");
+            assert_eq!(text, render(&plain, &entry).1, "no stray space");
+        }
+
+        entry.canonical_agent = Some(crate::detect::Agent::Pi);
+        let (rows, text) = render(&marked, &entry);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(text, "* \u{F03FF} devin");
+    }
+
+    /// cubic P2 on aryrabelo/bora-herdr-ada#57: even a programmatic occurrence
+    /// `fg` (config refuses one) cannot repaint the mark; bold/dim still apply.
+    #[test]
+    fn agent_mark_occurrence_fg_never_overrides_the_mark_color() {
+        use ratatui::style::{Modifier, Style};
+        let palette = crate::app::state::Palette::catppuccin();
+        let mark = ResolvedToken::new(
+            ResolvedTokenKind::AgentMark {
+                glyph: "\u{EC82}".into(),
+                fg: palette.peach,
+            },
+            SidebarTokenStyle {
+                fg: Some(crate::config::SidebarTokenColor::from_palette(palette.red)),
+                bold: Some(true),
+                dim: Some(true),
+            },
+        );
+        let spans = super::super::resolved_token_spans(
+            &[mark],
+            ("*", Style::default()),
+            Style::default(),
+            Style::default(),
+            Style::default(),
+            Style::default(),
+            &palette,
+            10,
+        );
+
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].content, "\u{EC82}");
+        assert_eq!(spans[0].style.fg, Some(palette.peach));
+        assert!(spans[0].style.add_modifier.contains(Modifier::BOLD));
+        assert!(spans[0].style.add_modifier.contains(Modifier::DIM));
+    }
+
+    /// A built-in mark needs no `[marks]` entry: its colour is the theme's.
+    #[test]
+    fn agent_mark_builtin_draws_in_its_theme_color_without_a_marks_entry() {
+        let config: AgentsSidebarConfig = toml::from_str(r#"rows = [["agent_mark"]]"#).unwrap();
+        assert!(config.marks.is_empty());
+        let mut entry = entry();
+        entry.canonical_agent = Some(crate::detect::Agent::Claude);
+        for palette in [
+            crate::app::state::Palette::catppuccin(),
+            crate::app::state::Palette::terminal(),
+        ] {
+            entry.palette = palette.clone();
+            assert_eq!(
+                agent_rows(&config, context(&entry), "working")[0][0].kind,
+                ResolvedTokenKind::AgentMark {
+                    glyph: "\u{EC82}".into(),
+                    fg: palette.peach,
+                }
+            );
+        }
+        assert_eq!(
+            crate::app::state::Palette::terminal().peach,
+            ratatui::style::Color::Yellow
         );
     }
 }
