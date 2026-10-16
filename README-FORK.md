@@ -52,7 +52,10 @@ exit non-zero.
 The split between the three layers: **Ghostty** stops consuming Cmd chords
 (`keybind = cmd+t=unbind`, ...), turns Option into Alt and maps Cmd+Z to
 Ctrl+_; **bora's config** binds those chords (`cmd+t` new tab, `cmd+d` split,
-`cmd+shift+]` next workspace, `alt+a` next agent, `prefix+f` file viewer);
+`cmd+shift+]` next workspace, `alt+a` next agent, `prefix+f` file viewer,
+`prefix+shift+a` force automatic naming of the focused tab and its workspace
+now); your own commands go in the same `[[keys.command]]` table
+(`type = "shell" | "pane" | "popup" | "plugin_action"`);
 **omp** gets the undo extension that Ctrl+_ / Ctrl+Z land on. The macOS menu
 remap (`ghostty-menu`) is the part a config file cannot do; the manual
 commands are in [examples/README.md](examples/README.md) step 4.

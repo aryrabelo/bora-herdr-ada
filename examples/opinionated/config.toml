@@ -77,3 +77,15 @@ key = "prefix+f"
 type = "plugin_action"
 command = "herdr-file-viewer.open-file-viewer"
 description = "file viewer"
+
+# Force automatic naming now, for the focused tab AND its workspace. The tab
+# half is herdr-automatic-rename's `reset` action (opts a hand-renamed tab back
+# in and renames it at once); the workspace half clears the custom label, which
+# puts bora's own directory/repo label back (the plugin then re-applies its
+# numbering). Same `[[keys.command]]` mechanism for any command of your own:
+# type = "shell" | "pane" | "popup" | "plugin_action".
+[[keys.command]]
+key = "prefix+shift+a"
+type = "shell"
+command = 'b="${HERDR_BIN_PATH:-bora}"; "$b" plugin action invoke herdr-automatic-rename.reset >/dev/null; "$b" workspace rename "$HERDR_ACTIVE_WORKSPACE_ID" "" >/dev/null'
+description = "auto-rename tab + workspace"
