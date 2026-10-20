@@ -3,6 +3,13 @@ set windows-shell := ["cmd.exe", "/d", "/s", "/c"]
 
 python := if os() == "windows" { "python" } else { "python3" }
 
+# Menu com busca (padrão): `just` ou `just start [busca]`
+default: start
+
+# Menu com busca das receitas e scripts deste repo; sem terminal, imprime o catálogo
+start *busca:
+    @if command -v central >/dev/null; then central --repo "{{justfile_directory()}}" {{busca}}; else "$HOME/Sites/dotfiles-2026/bin/central" --repo "{{justfile_directory()}}" {{busca}}; fi
+
 # Run tests
 test:
     cargo nextest run --locked --status-level fail --final-status-level fail --failure-output final --success-output never
